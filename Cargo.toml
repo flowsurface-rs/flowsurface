@@ -1,44 +1,47 @@
 [package]
-name = "iced-trade"
-version = "0.4.0"
+name = "flowsurface"
+version = "0.5.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-iced = { git = "https://github.com/iced-rs/iced.git", features = ["canvas", "tokio"] }
-chrono = "0.4.37"
-tokio = { version = "1.37.0", features = ["full", "macros"] }
+iced = { version = "0.14.0-dev", features = ["canvas", "tokio", "image", "advanced", "lazy"] }
+iced_futures = "0.13.2"
+chrono = "0.4.38"
+tokio = { version = "1.41.1", features = ["full", "macros"] }
 tokio-tungstenite = "0.21.0"
-url = "2.5.0"
+url = "2.5.3"
 tokio-native-tls = "0.3.1"
-base64 = "0.22.0"
-native-tls = "0.2.11"
+base64 = "0.22.1"
+native-tls = "0.2.12"
 tungstenite = "0.21.0"
-futures = "0.3.30"
-futures-util = "0.3.30"
-serde_json = "1.0.115"
+futures = "0.3.31"
+futures-util = "0.3.31"
+serde_json = "1.0.132"
 serde = { version = "1.0", features = ["derive"] }
-reqwest = { version = "0.12.2", features = ["json"] }
+reqwest = { version = "0.12.9", features = ["json"] }
 hmac = "0.12.1"
 sha2 = "0.10.8"
 hex = "0.4.3"
-iced_table = "0.12.0"
-iced_futures = "0.12.0"
-anyhow = "1.0.86"
-bytes = "1.6.0"
-sonic-rs = "0.3.7"
-fastwebsockets = { version = "0.7.2", features = ["upgrade"] }
+bytes = "1.8.0"
+sonic-rs = "0.3.17"
+fastwebsockets = { version = "0.8.0", features = ["upgrade"] }
 http-body-util = "0.1.2"
 hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1.0", features = ["tokio"] }
-tokio-rustls = "0.24.0"
-webpki-roots = "0.23.0"
-uuid = { version = "1.10.0", features = ["v4"] }
+hyper-util = { version = "0.1.10", features = ["tokio"] }
+tokio-rustls = "0.24.1"
+webpki-roots = "0.23.1"
 rustc-hash = "2.0.0"
 fern = "0.6.2"
 log = "0.4.22"
-thiserror = "1.0.63"
+thiserror = "1.0.68"
+ordered-float = "4.5.0"
+regex = "1.11.1"
+rust_decimal = "1.36.0"
+uuid = { version = "1.11.0", features = ["v4"] }
+
 [dependencies.async-tungstenite]
 version = "0.25"
 features = ["tokio-rustls-webpki-roots"]
+
+[patch.crates-io]
+iced = { git = "https://github.com/iced-rs/iced", rev = "a687a837653a576cb0599f7bc8ecd9c6054213a9" }

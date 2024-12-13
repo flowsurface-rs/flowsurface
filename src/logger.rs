@@ -1,9 +1,12 @@
 use chrono::Local;
-use std::{fs::{self, File}, process};
+use std::{
+    fs::{self, File},
+    process,
+};
 
 const MAX_LOG_FILE_SIZE: u64 = 10_000_000; // 10 MB
 
-pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), anyhow::Error> {
+pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), fern::InitError> {
     let log_level = if log_trace {
         log::LevelFilter::Trace
     } else {
@@ -19,7 +22,7 @@ pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), anyhow::Error> {
                 record.file().unwrap_or("unknown"),
                 record.line().unwrap_or(0),
                 message
-            ))
+            ));
         })
         .level(log_level);
 
@@ -49,13 +52,13 @@ fn monitor_file_size(file_path: &str, max_size_bytes: u64) {
                 if metadata.len() > max_size_bytes {
                     eprintln!(
                         "Things went south. Log file size caused panic exceeding {} MB",
-                        metadata.len() / 1_000_000, 
+                        metadata.len() / 1_000_000,
                     );
                     process::exit(1);
                 }
             }
             Err(err) => {
-                eprintln!("Error reading log file metadata: {}", err);
+                eprintln!("Error reading log file metadata: {err}");
                 process::exit(1);
             }
         }

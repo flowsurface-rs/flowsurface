@@ -1,16 +1,38 @@
-use std::fmt;
-
-use iced::{alignment, widget::{button, container, pane_grid, pick_list, row, scrollable, text, tooltip, Column, Container, Row, Slider, Text}, Alignment, Element, Length, Renderer, Theme};
+use iced::{
+    alignment::{Horizontal, Vertical}, padding, widget::{
+        button, center, column, container, pane_grid, row, scrollable, text, tooltip, Container, Slider
+    }, Alignment, Element, Length, Renderer, Task, Theme
+};
 use serde::{Deserialize, Serialize};
-pub use uuid::Uuid;
 
 use crate::{
     charts::{
-        self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, timeandsales::TimeAndSales
-    }, data_providers::{
-        Exchange, TickMultiplier, Ticker, Timeframe
-    }, modal, style::{self, Icon, ICON_FONT}, StreamType
+        self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, 
+        indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator}, 
+        timeandsales::TimeAndSales
+    },
+    data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe},
+    screen::{
+        self, create_button, create_notis_column, modal::{pane_menu, pane_notification}, DashboardError, UserTimezone
+    },
+    style::{self, get_icon_text, Icon},
+    window::{self, Window},
+    StreamType,
 };
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+pub enum PaneModal {
+    StreamModifier,
+    Settings,
+    Indicators,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -21,46 +43,254 @@ pub enum Message {
     SplitPane(pane_grid::Axis, pane_grid::Pane),
     MaximizePane(pane_grid::Pane),
     Restore,
-    TicksizeSelected(TickMultiplier, Uuid),
-    TimeframeSelected(Timeframe, Uuid),
-    TickerSelected(Ticker, Uuid),
-    ExchangeSelected(Exchange, Uuid),
-    ShowModal(pane_grid::Pane),
-    HideModal(Uuid),
-    PaneContentSelected(String, Uuid, Vec<StreamType>),
+    TicksizeSelected(TickMultiplier, pane_grid::Pane),
+    TimeframeSelected(Timeframe, pane_grid::Pane),
+    ToggleModal(pane_grid::Pane, PaneModal),
+    InitPaneContent(window::Id, String, Option<pane_grid::Pane>, Vec<StreamType>),
     ReplacePane(pane_grid::Pane),
-    ChartUserUpdate(charts::Message, Uuid),
-    SliderChanged(Uuid, f32),
-    SetMinTickSize(Uuid, f32),
+    ChartUserUpdate(pane_grid::Pane, charts::Message),
+    SliderChanged(pane_grid::Pane, f32, bool),
+    ToggleIndicator(pane_grid::Pane, String),
+    Popout,
+    Merge,
 }
 
-#[derive(Debug)]
 pub struct PaneState {
-    pub id: Uuid,
-    pub show_modal: bool,
+    pub modal: PaneModal,
     pub stream: Vec<StreamType>,
     pub content: PaneContent,
     pub settings: PaneSettings,
 }
 
 impl PaneState {
-    pub fn new(id: Uuid, stream: Vec<StreamType>, settings: PaneSettings) -> Self {
+    pub fn new(stream: Vec<StreamType>, settings: PaneSettings) -> Self {
         Self {
-            id,
-            show_modal: false,
+            modal: PaneModal::None,
             stream,
             content: PaneContent::Starter,
             settings,
         }
     }
 
-    pub fn from_config(content: PaneContent, stream: Vec<StreamType>, settings: PaneSettings) -> Self {
+    pub fn from_config(
+        content: PaneContent,
+        stream: Vec<StreamType>,
+        settings: PaneSettings,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
-            show_modal: false,
+            modal: PaneModal::None,
             stream,
             content,
             settings,
+        }
+    }
+
+    /// sets the tick size. returns the tick size with the multiplier applied
+    pub fn set_tick_size(&mut self, multiplier: TickMultiplier, min_tick_size: f32) -> f32 {
+        self.settings.tick_multiply = Some(multiplier);
+        self.settings.min_tick_size = Some(min_tick_size);
+
+        multiplier.multiply_with_min_tick_size(min_tick_size)
+    }
+
+    /// gets the timeframe if exists, otherwise sets timeframe w given
+    pub fn set_timeframe(&mut self, timeframe: Timeframe) -> Timeframe {
+        if self.settings.selected_timeframe.is_none() {
+            self.settings.selected_timeframe = Some(timeframe);
+        }
+
+        timeframe
+    }
+
+    pub fn get_ticker_exchange(&self) -> Option<(Exchange, Ticker)> {
+        for stream in &self.stream {
+            match stream {
+                StreamType::DepthAndTrades { exchange, ticker } => {
+                    return Some((*exchange, *ticker));
+                }
+                StreamType::Kline {
+                    exchange, ticker, ..
+                } => {
+                    return Some((*exchange, *ticker));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    pub fn init_content_task(
+        &mut self,
+        content: &str,
+        exchange: Exchange,
+        ticker: Ticker,
+        pane: pane_grid::Pane,
+        window: window::Id,
+    ) -> Task<Message> {
+        let streams = match content {
+            "heatmap" | "time&sales" => {
+                vec![StreamType::DepthAndTrades { exchange, ticker }]
+            }
+            "footprint" => {
+                let timeframe = self
+                    .settings
+                    .selected_timeframe
+                    .unwrap_or(Timeframe::M15);
+
+                vec![
+                    StreamType::DepthAndTrades { exchange, ticker },
+                    StreamType::Kline {
+                        exchange,
+                        ticker,
+                        timeframe,
+                    },
+                ]
+            }
+            "candlestick" => {
+                let timeframe = self
+                    .settings
+                    .selected_timeframe
+                    .unwrap_or(Timeframe::M5);
+
+                vec![StreamType::Kline {
+                    exchange,
+                    ticker,
+                    timeframe,
+                }]
+            }
+            _ => vec![],
+        };
+
+        self.stream = streams.clone();
+
+        Task::done(Message::InitPaneContent(
+            window,
+            content.to_string(),
+            Some(pane),
+            streams,
+        ))
+    }
+
+    pub fn set_content(
+        &mut self, 
+        ticker_info: TickerInfo, 
+        content_str: &str, 
+        timezone: UserTimezone
+    ) -> Result<(), DashboardError> {
+        self.content = match content_str {
+            "heatmap" => {
+                let tick_size = self.set_tick_size(
+                    TickMultiplier(10),
+                    ticker_info.tick_size,
+                );
+
+                PaneContent::Heatmap(
+                    HeatmapChart::new(
+                        tick_size,
+                        100,
+                        timezone,
+                    ),
+                    vec![],
+                )
+            }
+            "footprint" => {
+                let tick_size = self.set_tick_size(
+                    TickMultiplier(50),
+                    ticker_info.tick_size,
+                );
+                let timeframe = self.set_timeframe(Timeframe::M15);
+                PaneContent::Footprint(
+                    FootprintChart::new(
+                        timeframe,
+                        tick_size,
+                        vec![],
+                        vec![],
+                        timezone,
+                    ),
+                    vec![
+                        FootprintIndicator::Volume,
+                        FootprintIndicator::OpenInterest,
+                    ],
+                )
+            }
+            "candlestick" => {
+                let tick_size = self.set_tick_size(
+                    TickMultiplier(1),
+                    ticker_info.tick_size,
+                );
+                let timeframe = self.set_timeframe(Timeframe::M5);
+                PaneContent::Candlestick(
+                    CandlestickChart::new(
+                        vec![],
+                        timeframe,
+                        tick_size,
+                        timezone,
+                    ),
+                    vec![
+                        CandlestickIndicator::Volume,
+                        CandlestickIndicator::OpenInterest,
+                    ],
+                )
+            }
+            "time&sales" => PaneContent::TimeAndSales(TimeAndSales::new()),
+            _ => {
+                log::error!("content not found: {}", content_str);
+                return Err(DashboardError::PaneSet("content not found: ".to_string() + content_str));
+            }
+        };
+
+        Ok(())
+    }
+
+    pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: Vec<OpenInterest>) {
+        match &mut self.content {
+            PaneContent::Candlestick(chart, _) => {
+                chart.insert_open_interest(req_id, oi);
+            }
+            PaneContent::Footprint(chart, _) => {
+                chart.insert_open_interest(req_id, oi);
+            }
+            _ => {
+                log::error!("pane content not candlestick");
+            }
+        }
+    }
+
+    pub fn insert_klines_vec(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        timeframe: Timeframe,
+        klines: &Vec<Kline>,
+        timezone: UserTimezone,
+    ) {
+        match &mut self.content {
+            PaneContent::Candlestick(chart, _) => {
+                if let Some(id) = req_id {
+                    chart.insert_new_klines(id, klines);
+                } else {
+                    let tick_size = chart.get_tick_size();
+
+                    *chart = CandlestickChart::new(klines.clone(), timeframe, tick_size, timezone);
+                }
+            }
+            PaneContent::Footprint(chart, _) => {
+                if let Some(id) = req_id {
+                    chart.insert_new_klines(id, klines);
+                } else {
+                    let (raw_trades, tick_size) = (chart.get_raw_trades(), chart.get_tick_size());
+
+                    *chart = FootprintChart::new(
+                        timeframe,
+                        tick_size,
+                        klines.clone(),
+                        raw_trades,
+                        timezone,
+                    );
+                }
+            }
+            _ => {
+                log::error!("pane content not candlestick or footprint");
+            }
         }
     }
 
@@ -70,85 +300,116 @@ impl PaneState {
         panes: usize,
         is_focused: bool,
         maximized: bool,
-    ) -> iced::widget::pane_grid::Content<'a, Message, Theme, Renderer> {
-        let stream_info = self.stream.iter().find_map(|stream: &StreamType| {
-            match stream {
-                StreamType::Kline { exchange, ticker, timeframe } => {
-                    Some(
-                        Some((exchange, format!("{} {}", ticker, timeframe)))
-                    )
-                }
-                _ => None,
-            }
-        }).or_else(|| {
-            self.stream.iter().find_map(|stream: &StreamType| {
-                match stream {
-                    StreamType::DepthAndTrades { exchange, ticker } => {
-                        Some(
-                            Some((exchange, ticker.to_string()))
-                        )
-                    }
-                    _ => None,
-                }
-            })
-        }).unwrap_or(None);
+        window: window::Id,
+        main_window: &'a Window,
+        notifications: Option<&'a Vec<screen::Notification>>,
+    ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
+        let mut stream_info_element = row![]
+            .padding(padding::left(8))
+            .align_y(Vertical::Center)
+            .spacing(8)
+            .height(Length::Fixed(32.0));
 
-        let mut stream_info_element: Row<Message> = Row::new();
+        if let Some((exchange, ticker)) = self.get_ticker_exchange() {
+            let (ticker_str, market) = ticker.get_string();
 
-        if let Some((exchange, info)) = stream_info {
-            stream_info_element = Row::new()
-                .spacing(3)
-                .push(
+            stream_info_element = stream_info_element.push(
+                row![
                     match exchange {
-                        Exchange::BinanceFutures => text(char::from(Icon::BinanceLogo).to_string()).font(ICON_FONT),
-                        Exchange::BybitLinear => text(char::from(Icon::BybitLogo).to_string()).font(ICON_FONT),
-                    }
-                )
-                .push(Text::new(info));
-        }
-        
-        let mut content: pane_grid::Content<'_, Message, _, Renderer> = 
-            pane_grid::Content::new({
-                match self.content {
-                    PaneContent::Starter => view_starter(&self.id, &self.settings),
-
-                    PaneContent::Heatmap(ref chart) => view_chart(self, chart),
-
-                    PaneContent::Footprint(ref chart) => view_chart(self, chart),
-
-                    PaneContent::Candlestick(ref chart) => view_chart(self, chart),
-
-                    PaneContent::TimeAndSales(ref chart) => view_chart(self, chart),
-                }
-            })
-            .style(
-                if is_focused {
-                    style::pane_focused
-                } else {
-                    style::pane_active
-                }
+                        Exchange::BinanceFutures | Exchange::BinanceSpot => get_icon_text(Icon::BinanceLogo, 14),
+                        Exchange::BybitLinear | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 14),
+                    },
+                    text({
+                        if market == MarketType::LinearPerps {
+                            ticker_str + " PERP"
+                        } else {
+                            ticker_str
+                        }
+                    }).size(14),
+                ]
+                .spacing(4),
             );
+        }
+
+        let mut is_chart = false;
+        let is_stream_modifier = self.modal == PaneModal::StreamModifier;
+
+        match self.content {
+            PaneContent::Heatmap(_, _) => {
+                stream_info_element = stream_info_element.push(
+                    button(text(
+                        self.settings
+                            .tick_multiply
+                            .unwrap_or(TickMultiplier(1))
+                            .to_string(),
+                    ))
+                    .style(move |theme, status| {
+                        style::button_modifier(theme, status, !is_stream_modifier)
+                    })
+                    .on_press(Message::ToggleModal(id, PaneModal::StreamModifier)),
+                );
+
+                is_chart = true;
+            }
+            PaneContent::Footprint(_, _) => {
+                stream_info_element = stream_info_element.push(
+                    button(text(format!(
+                        "{} - {}",
+                        self.settings.selected_timeframe.unwrap_or(Timeframe::M1),
+                        self.settings.tick_multiply.unwrap_or(TickMultiplier(1)),
+                    )))
+                    .style(move |theme, status| {
+                        style::button_modifier(theme, status, !is_stream_modifier)
+                    })
+                    .on_press(Message::ToggleModal(id, PaneModal::StreamModifier)),
+                );
+
+                is_chart = true;
+            }
+            PaneContent::Candlestick(_, _) => {
+                stream_info_element = stream_info_element.push(
+                    button(text(
+                        self.settings
+                            .selected_timeframe
+                            .unwrap_or(Timeframe::M1)
+                            .to_string(),
+                    ))
+                    .style(move |theme, status| {
+                        style::button_modifier(theme, status, !is_stream_modifier)
+                    })
+                    .on_press(Message::ToggleModal(id, PaneModal::StreamModifier)),
+                );
+
+                is_chart = true;
+            }
+            _ => {}
+        }
+
+        let content = pane_grid::Content::new(match &self.content {
+            PaneContent::Starter => 
+                center(text("select a ticker to start").size(16)).into(),
+            PaneContent::Heatmap(content, indicators) => 
+                view_chart(id, self, content, notifications, indicators),
+            PaneContent::Footprint(content, indicators) => 
+                view_chart(id, self, content, notifications, indicators),
+            PaneContent::Candlestick(content, indicators) => 
+                view_chart(id, self, content, notifications, indicators),
+            PaneContent::TimeAndSales(content) => 
+                view_panel(id, self, content, notifications),
+        })
+        .style(move |theme| style::pane_primary(theme, is_focused));
 
         let title_bar = pane_grid::TitleBar::new(stream_info_element)
             .controls(view_controls(
                 id,
-                self.id,
-                &self.content,
                 panes,
                 maximized,
-                &self.settings,
+                window != main_window.id,
+                is_chart,
             ))
-            .padding(4)
-            .style(
-                if is_focused {
-                    style::title_bar_focused
-                } else {
-                    style::title_bar_active
-                }
-            );
-        content = content.title_bar(title_bar);
+            .style(style::title_bar);
 
-        content
+        content.title_bar(title_bar)
     }
 
     pub fn matches_stream(&self, stream_type: &StreamType) -> bool {
@@ -157,429 +418,522 @@ impl PaneState {
 }
 
 trait ChartView {
-    fn view(&self, id: &PaneState) -> Element<Message>;
+    fn view<'a, I: Indicator>(
+        &'a self, 
+        pane: pane_grid::Pane, 
+        state: &PaneState, 
+        indicators: &'a [I],
+    ) -> Element<Message>;
+}
+
+trait PanelView {
+    fn view(&self, pane: pane_grid::Pane, state: &PaneState) -> Element<Message>;
 }
 
 impl ChartView for HeatmapChart {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        let pane_id = pane.id;
+    fn view<'a, I: Indicator>(
+        &'a self, 
+        pane: pane_grid::Pane, 
+        state: &PaneState, 
+        indicators: &'a [I],
+    ) -> Element<Message> {
+        let underlay = self
+            .view(indicators)
+            .map(move |message| Message::ChartUserUpdate(pane, message));
 
-        let underlay = self.view().map(move |message| Message::ChartUserUpdate(message, pane_id));
-
-        if pane.show_modal {
-            let size_filter = &self.get_size_filter();
-
-            let signup: Container<Message, Theme, _> = container(
-                Column::new()
-                    .spacing(10)
-                    .align_x(Alignment::Center)
-                    .push(
-                        Text::new("Heatmap > Settings")
-                            .size(16)
-                    )
-                    .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
-                            .push(Text::new("Size Filtering"))
-                            .push(
-                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(pane_id, value))
-                                    .step(500.0)
-                            )
-                            .push(
-                                Text::new(format!("${size_filter}")).size(16)
-                            )
-                    )
-                    .push( 
-                        Row::new()
-                            .spacing(10)
-                            .push(
-                                button("Close")
-                                .on_press(Message::HideModal(pane_id))
-                            )
-                    )
-            )
-            .width(Length::Shrink)
-            .padding(20)
-            .max_width(500)
-            .style(style::chart_modal);
-
-            return modal(underlay, signup, Message::HideModal(pane_id));
-        } else {
-            underlay
+        match state.modal {
+            PaneModal::Settings => {
+                let (trade_size_filter, order_size_filter) = self.get_size_filters();
+                pane_menu(
+                    underlay,
+                    size_filter_view(Some(trade_size_filter), Some(order_size_filter), pane),
+                    Message::ToggleModal(pane, PaneModal::None),
+                    padding::right(12).left(12),
+                    Alignment::End,
+                )
+            }
+            PaneModal::StreamModifier => pane_menu(
+                underlay,
+                stream_modifier_view(
+                    pane,
+                    state.settings.tick_multiply,
+                    None,
+                ),
+                Message::ToggleModal(pane, PaneModal::None),
+                padding::left(36),
+                Alignment::Start,
+            ),
+            PaneModal::Indicators => pane_menu(
+                underlay,
+                indicators_view::<I>(pane, indicators),
+                Message::ToggleModal(pane, PaneModal::None),
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            _ => underlay,
         }
     }
 }
-impl ChartView for FootprintChart {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        let pane_id = pane.id;
 
-        self.view().map(move |message| Message::ChartUserUpdate(message, pane_id))
+impl ChartView for FootprintChart {
+    fn view<'a, I: Indicator>(
+        &'a self, 
+        pane: pane_grid::Pane, 
+        state: &PaneState, 
+        indicators: &'a [I],
+    ) -> Element<Message> {
+        let underlay = self
+            .view(indicators)
+            .map(move |message| Message::ChartUserUpdate(pane, message));
+
+        match state.modal {
+            PaneModal::StreamModifier => pane_menu(
+                underlay,
+                stream_modifier_view(
+                    pane,
+                    state.settings.tick_multiply,
+                    state.settings.selected_timeframe,
+                ),
+                Message::ToggleModal(pane, PaneModal::None),
+                padding::left(36),
+                Alignment::Start,
+            ),
+            PaneModal::Indicators => pane_menu(
+                underlay,
+                indicators_view::<I>(pane, indicators),
+                Message::ToggleModal(pane, PaneModal::None),
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            _ => underlay,
+        }
     }
 }
-impl ChartView for TimeAndSales {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        let pane_id = pane.id;
 
+impl ChartView for CandlestickChart {
+    fn view<'a, I: Indicator>(
+        &'a self,
+        pane: pane_grid::Pane, 
+        state: &PaneState, 
+        indicators: &'a [I],
+    ) -> Element<Message> {
+        let underlay = self
+            .view(indicators)
+            .map(move |message| Message::ChartUserUpdate(pane, message));
+
+        match state.modal {
+            PaneModal::StreamModifier => pane_menu(
+                underlay,
+                stream_modifier_view(
+                    pane,
+                    None,
+                    state.settings.selected_timeframe,
+                ),
+                Message::ToggleModal(pane, PaneModal::None),
+                padding::left(36),
+                Alignment::Start,
+            ),
+            PaneModal::Indicators => pane_menu(
+                underlay,
+                indicators_view::<I>(pane, indicators),
+                Message::ToggleModal(pane, PaneModal::None),
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            _ => underlay,
+        }
+    }
+}
+
+impl PanelView for TimeAndSales {
+    fn view(
+        &self, 
+        pane: pane_grid::Pane, 
+        state: &PaneState, 
+    ) -> Element<Message> {
         let underlay = self.view();
 
-        if pane.show_modal {
-            let size_filter = &self.get_size_filter();
-
-            let signup = container(
-                Column::new()
-                    .spacing(10)
-                    .align_x(Alignment::Center)
-                    .push(
-                        Text::new("Time&Sales > Settings")
-                            .size(16)
-                    )
-                    .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
-                            .push(Text::new("Size Filtering"))
-                            .push(
-                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(pane_id, value))
-                                    .step(500.0)
-                            )
-                            .push(
-                                Text::new(format!("${size_filter}")).size(16)
-                            )
-                    )
-                    .push( 
-                        Row::new()
-                            .spacing(10)
-                            .push(
-                                button("Close")
-                                .on_press(Message::HideModal(pane_id))
-                            )
-                    )
-            )
-            .width(Length::Shrink)
-            .padding(20)
-            .max_width(500)
-            .style(style::chart_modal);
-
-            return modal(underlay, signup, Message::HideModal(pane_id));
-        } else {
-            underlay
+        match state.modal {
+            PaneModal::Settings => {
+                let trade_size_filter = self.get_size_filter();
+                pane_menu(
+                    underlay,
+                    size_filter_view(Some(trade_size_filter), None, pane),
+                    Message::ToggleModal(pane, PaneModal::None),
+                    padding::right(12).left(12),
+                    Alignment::End,
+                )
+            }
+            _ => underlay,
         }
     }
 }
-impl ChartView for CandlestickChart {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        let pane_id = pane.id;
 
-        self.view().map(move |message| Message::ChartUserUpdate(message, pane_id))
+fn indicators_view<I: Indicator> (
+    pane: pane_grid::Pane,
+    selected: &[I]
+) -> Element<Message> {
+    let mut content_row = column![
+        container(
+            text("Indicators").size(14)
+        )
+        .padding(padding::bottom(8)),
+    ]
+    .spacing(4);
+
+    for indicator in I::get_available() {
+        content_row = content_row.push(
+            if selected.contains(indicator) {
+                button(text(indicator.to_string()))
+                    .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+                    .width(Length::Fill)
+                    .style(move |theme, status| style::button_transparent(theme, status, true))
+            } else {
+                button(text(indicator.to_string()))
+                    .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+                    .width(Length::Fill)
+                    .style(move |theme, status| style::button_transparent(theme, status, false))
+            }
+        );
+    }
+
+    container(content_row)
+        .max_width(200)
+        .padding(16)
+        .style(style::chart_modal)
+        .into()
+}
+
+fn size_filter_view<'a>(
+    trade_size_filter: Option<f32>,
+    order_size_filter: Option<f32>,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    container(
+        column![
+            text("Size Filtering").size(14),
+            if let Some(trade_filter) = trade_size_filter {
+                container(
+                    row![
+                        text("Trade size"),
+                        column![
+                            Slider::new(0.0..=50000.0, trade_filter, move |value| {
+                                Message::SliderChanged(pane, value, true)
+                            })
+                            .step(500.0),
+                            text(format!("${}", format_with_commas(trade_filter))).size(13),
+                        ]
+                        .spacing(2)
+                        .align_x(Alignment::Center),
+                    ]
+                    .align_y(Alignment::Center)
+                    .spacing(8)
+                    .padding(8),
+                )
+                .style(style::modal_container)
+            } else {
+                container(row![])
+            },
+            if let Some(order_filter) = order_size_filter {
+                container(
+                    row![
+                        text("Order size"),
+                        column![
+                            Slider::new(0.0..=500_000.0, order_filter, move |value| {
+                                Message::SliderChanged(pane, value, false)
+                            })
+                            .step(1000.0),
+                            text(format!("${}", format_with_commas(order_filter))).size(13),
+                        ]
+                        .spacing(2)
+                        .align_x(Alignment::Center),
+                    ]
+                    .align_y(Alignment::Center)
+                    .spacing(8)
+                    .padding(8),
+                )
+                .style(style::modal_container)
+            } else {
+                container(row![])
+            },
+        ]
+        .spacing(20)
+        .padding(16)
+        .align_x(Alignment::Center),
+    )
+    .width(Length::Shrink)
+    .padding(16)
+    .max_width(500)
+    .style(style::chart_modal)
+    .into()
+}
+
+fn stream_modifier_view<'a>(
+    pane: pane_grid::Pane,
+    selected_ticksize: Option<TickMultiplier>,
+    selected_timeframe: Option<Timeframe>,
+) -> iced::Element<'a, Message> {
+    let create_button = |content: String, msg: Option<Message>| {
+        let btn = button(text(content))
+            .width(Length::Fill)
+            .style(move |theme, status| style::button_transparent(theme, status, false));
+            
+        if let Some(msg) = msg {
+            btn.on_press(msg)
+        } else {
+            btn
+        }
+    };
+
+    let mut content_row = row![]
+        .align_y(Vertical::Center)
+        .spacing(16);
+
+    let mut timeframes_column = column![]
+        .padding(4)
+        .align_x(Horizontal::Center);
+
+    if selected_timeframe.is_some() {
+        timeframes_column =
+            timeframes_column.push(container(text("Timeframe"))
+                .padding(padding::bottom(8)));
+
+        for timeframe in &Timeframe::ALL {
+            let msg = if selected_timeframe == Some(*timeframe) {
+                None
+            } else {
+                Some(Message::TimeframeSelected(*timeframe, pane))
+            };
+            timeframes_column = timeframes_column.push(
+                create_button(timeframe.to_string(), msg)
+            );
+        }
+
+        content_row = content_row.push(timeframes_column);
+    }
+
+    let mut ticksizes_column = column![]
+        .padding(4)
+        .align_x(Horizontal::Center);
+
+    if selected_ticksize.is_some() {
+        ticksizes_column =
+            ticksizes_column.push(container(text("Ticksize Mltp."))
+                .padding(padding::bottom(8)));
+
+        for ticksize in &TickMultiplier::ALL {
+            let msg = if selected_ticksize == Some(*ticksize) {
+                None
+            } else {
+                Some(Message::TicksizeSelected(*ticksize, pane))
+            };
+            ticksizes_column = ticksizes_column.push(
+                create_button(ticksize.to_string(), msg)
+            );
+        }
+
+        content_row = content_row.push(ticksizes_column);
+    }
+
+    container(
+        scrollable::Scrollable::with_direction(
+            content_row, 
+            scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new().width(4).scroller_width(4),
+            )
+        ))
+        .padding(16)
+        .max_width(
+            if selected_ticksize.is_some() && selected_timeframe.is_some() {
+                240
+            } else {
+                120
+            },
+        )
+        .style(style::chart_modal)
+        .into()
+}
+
+fn view_panel<'a, C: PanelView>(
+    pane: pane_grid::Pane,
+    state: &'a PaneState,
+    content: &'a C,
+    notifications: Option<&'a Vec<screen::Notification>>,
+) -> Element<'a, Message> {
+    let base: Container<'_, Message> = center(content.view(pane, state));
+
+    if let Some(notifications) = notifications {
+        if !notifications.is_empty() {
+            pane_notification(base, create_notis_column(notifications))
+        } else {
+            base.into()
+        }
+    } else {
+        base.into()
     }
 }
 
-fn view_chart<'a, C: ChartView>(
-    pane: &'a PaneState,
-    chart: &'a C,
+fn view_chart<'a, C: ChartView, I: Indicator>(
+    pane: pane_grid::Pane,
+    state: &'a PaneState,
+    content: &'a C,
+    notifications: Option<&'a Vec<screen::Notification>>,
+    indicators: &'a [I],
 ) -> Element<'a, Message> {
-    let chart_view: Element<Message> = chart.view(pane);
+    let base: Container<'_, Message> = center(content.view(pane, state, indicators));
 
-    let container = Container::new(chart_view)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    container.into()
+    if let Some(notifications) = notifications {
+        if !notifications.is_empty() {
+            pane_notification(base, create_notis_column(notifications))
+        } else {
+            base.into()
+        }
+    } else {
+        base.into()
+    }
 }
 
 fn view_controls<'a>(
     pane: pane_grid::Pane,
-    pane_id: Uuid,
-    pane_type: &PaneContent,
     total_panes: usize,
     is_maximized: bool,
-    settings: &PaneSettings,
+    is_popout: bool,
+    is_chart: bool,
 ) -> Element<'a, Message> {
-    let mut row = row![].spacing(5);
+    let button_style = |theme: &Theme, status: button::Status| 
+        style::button_transparent(theme, status, false);
+    let tooltip_pos = tooltip::Position::Bottom;
 
-    let (icon, message) = if is_maximized {
-        (Icon::ResizeSmall, Message::Restore)
-    } else {
-        (Icon::ResizeFull, Message::MaximizePane(pane))
-    };
-
-    match pane_type {
-        PaneContent::Heatmap(_) => {
-            let ticksize_picker = pick_list(
-                [TickMultiplier(1), TickMultiplier(2), TickMultiplier(5), TickMultiplier(10), TickMultiplier(25), TickMultiplier(50)],
-                settings.tick_multiply, 
-                move |tick_multiply| Message::TicksizeSelected(tick_multiply, pane_id)
-            ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
-
-            let ticksize_tooltip = tooltip(
-                ticksize_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Ticksize multiplier",
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(ticksize_tooltip);
-        },
-        PaneContent::TimeAndSales(_) => {
-        },
-        PaneContent::Footprint(_) => {
-            let timeframe_picker = pick_list(
-                &Timeframe::ALL[..],
-                settings.selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
-            ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
-    
-            let tf_tooltip = tooltip(
-                timeframe_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Timeframe",
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(tf_tooltip);
-
-            let ticksize_picker = pick_list(
-                [TickMultiplier(1), TickMultiplier(2), TickMultiplier(5), TickMultiplier(10), TickMultiplier(25), TickMultiplier(50), TickMultiplier(100), TickMultiplier(200)],
-                settings.tick_multiply, 
-                move |tick_multiply| Message::TicksizeSelected(tick_multiply, pane_id)
-            ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
-            
-            let ticksize_tooltip = tooltip(
-                ticksize_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Ticksize multiplier",
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(ticksize_tooltip);
-        },
-        PaneContent::Candlestick(_) => {
-            let timeframe_picker = pick_list(
-                &Timeframe::ALL[..],
-                settings.selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
-            ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
-    
-            let tooltip = tooltip(
-                timeframe_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Timeframe", 
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(tooltip);
-        },
-        PaneContent::Starter => {
-        },
-    }
-
-    let mut buttons = vec![
-        (container(text(char::from(Icon::Cog).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::ShowModal(pane)),
-        (container(text(char::from(icon).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), message),
+    let mut buttons = row![
+        create_button(
+            get_icon_text(Icon::Cog, 12),
+            Message::ToggleModal(pane, PaneModal::Settings),
+            None,
+            tooltip_pos,
+            button_style,
+        )
     ];
 
-    if total_panes > 1 {
-        buttons.push((container(text(char::from(Icon::Close).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::ClosePane(pane)));
+    if is_chart {
+        buttons = buttons.push(create_button(
+            get_icon_text(Icon::ChartOutline, 12),
+            Message::ToggleModal(pane, PaneModal::Indicators),
+            Some("Indicators"),
+            tooltip_pos,
+            button_style,
+        ));
     }
 
-    for (content, message) in buttons {        
-        row = row.push(
-            button(content)
-                .style(style::button_primary)
-                .padding(3)
-                .on_press(message),
-        );
-    } 
+    if is_popout {
+        buttons = buttons.push(create_button(
+            get_icon_text(Icon::Popout, 12),
+            Message::Merge,
+            Some("Merge"),
+            tooltip_pos,
+            button_style,
+        ));
+    } else if total_panes > 1 {
+        buttons = buttons.push(create_button(
+            get_icon_text(Icon::Popout, 12),
+            Message::Popout,
+            Some("Pop out"),
+            tooltip_pos,
+            button_style,
+        ));
+    }
 
-    row.into()
-}
-
-fn view_starter<'a>(
-    pane_id: &'a Uuid,
-    pane_settings: &'a PaneSettings,
-) -> Element<'a, Message> {
-    let content_names = ["Heatmap chart", "Footprint chart", "Candlestick chart", "Time&Sales"];
-    
-    let content_selector = content_names.iter().fold(
-        Column::new()
-            .spacing(6)
-            .align_x(Alignment::Center), |column, &label| {
-                let mut btn = button(label).width(Length::Fill);
-                if let (Some(exchange), Some(ticker)) = (pane_settings.selected_exchange, pane_settings.selected_ticker) {
-                    let timeframe = pane_settings.selected_timeframe.unwrap_or_else(
-                        || { log::error!("No timeframe found"); Timeframe::M1 }
-                    );
-
-                    let pane_stream: Vec<StreamType> = match label {
-                        "Heatmap chart" | "Time&Sales" => vec![
-                            StreamType::DepthAndTrades { exchange, ticker }
-                        ],
-                        "Footprint chart" => vec![
-                            StreamType::DepthAndTrades { exchange, ticker }, 
-                            StreamType::Kline { exchange, ticker, timeframe }
-                        ],
-                        "Candlestick chart" => vec![
-                            StreamType::Kline { exchange, ticker, timeframe }
-                        ],
-                        _ => vec![]
-                    };
-                
-                    btn = btn.on_press(
-                        Message::PaneContentSelected(
-                            label.to_string(),
-                            *pane_id,
-                            pane_stream
-                        )
-                    );
-                }
-                column.push(btn)
-            }
-    );
-
-    let symbol_selector = pick_list(
-        &Ticker::ALL[..],
-        pane_settings.selected_ticker,
-        move |ticker| Message::TickerSelected(ticker, *pane_id),
-    ).placeholder("ticker...").text_size(13).width(Length::Fill);
-
-    let exchange_selector = pick_list(
-        &Exchange::ALL[..],
-        pane_settings.selected_exchange,
-        move |exchange| Message::ExchangeSelected(exchange, *pane_id),
-    ).placeholder("exchange...").text_size(13).width(Length::Fill);
-
-    let picklists = Row::new()
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .push(exchange_selector.style(style::picklist_primary).menu_style(style::picklist_menu_primary))
-        .push(symbol_selector.style(style::picklist_primary).menu_style(style::picklist_menu_primary));
-
-    let column = Column::new()
-        .padding(10)
-        .spacing(10)
-        .align_x(Alignment::Center)
-        .push(picklists)
-        .push(content_selector);
+    if total_panes > 1 {
+        let (resize_icon, message) = if is_maximized {
+            (Icon::ResizeSmall, Message::Restore)
+        } else {
+            (Icon::ResizeFull, Message::MaximizePane(pane))
+        };
         
-    let container = Container::new(
-        Column::new()
-            .spacing(10)
-            .padding(20)
-            .align_x(Alignment::Center)
-            .max_width(300)
-            .push(
-                Text::new("Initialize the pane").size(16)
-            )
-            .push(scrollable(column))
-        ).align_x(alignment::Horizontal::Center);
-    
-    container.into()
+        buttons = buttons.push(create_button(
+            get_icon_text(resize_icon, 12),
+            message,
+            None,
+            tooltip_pos,
+            button_style,
+        ));
+
+        buttons = buttons.push(create_button(
+            get_icon_text(Icon::Close, 12),
+            Message::ClosePane(pane),
+            None,
+            tooltip_pos,
+            button_style,
+        ));
+    }
+
+    buttons
+        .padding(padding::right(4))
+        .align_y(Vertical::Center)
+        .height(Length::Fixed(32.0))
+        .into()
 }
 
 pub enum PaneContent {
-    Heatmap(HeatmapChart),
-    Footprint(FootprintChart),
-    Candlestick(CandlestickChart),
+    Heatmap(HeatmapChart, Vec<HeatmapIndicator>),
+    Footprint(FootprintChart, Vec<FootprintIndicator>),
+    Candlestick(CandlestickChart, Vec<CandlestickIndicator>),
     TimeAndSales(TimeAndSales),
     Starter,
 }
 
-impl fmt::Debug for PaneContent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl PaneContent {
+    pub fn change_timezone(&mut self, timezone: UserTimezone) {
         match self {
-            PaneContent::Heatmap(_) => write!(f, "Heatmap"),
-            PaneContent::Footprint(_) => write!(f, "Footprint"),
-            PaneContent::Candlestick(_) => write!(f, "Candlestick"),
-            PaneContent::TimeAndSales(_) => write!(f, "TimeAndSales"),
-            PaneContent::Starter => write!(f, "Starter"),
+            PaneContent::Heatmap(chart, _) => chart.change_timezone(timezone),
+            PaneContent::Footprint(chart, _) => chart.change_timezone(timezone),
+            PaneContent::Candlestick(chart, _) => chart.change_timezone(timezone),
+            _ => {}
+        }
+    }
+
+    pub fn toggle_indicator(&mut self, indicator_str: String) {
+        match self {
+            PaneContent::Footprint(_, indicators) => {
+                let indicator = match indicator_str.as_str() {
+                    "Volume" => FootprintIndicator::Volume,
+                    "Open Interest" => FootprintIndicator::OpenInterest,
+                    _ => {
+                        log::error!("indicator not found: {}", indicator_str);
+                        return
+                    },
+                };
+
+                if indicators.contains(&indicator) {
+                    indicators.retain(|i| i != &indicator);
+                } else {
+                    indicators.push(indicator);
+                }
+            }
+            PaneContent::Candlestick(_, indicators) => {
+                let indicator = match indicator_str.as_str() {
+                    "Volume" => CandlestickIndicator::Volume,
+                    "Open Interest" => CandlestickIndicator::OpenInterest,
+                    _ => {
+                        log::error!("indicator not found: {}", indicator_str);
+                        return
+                    },
+                };
+
+                if indicators.contains(&indicator) {
+                    indicators.retain(|i| i != &indicator);
+                } else {
+                    indicators.push(indicator);
+                }
+            }
+            _ => {}
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
 pub struct PaneSettings {
     pub min_tick_size: Option<f32>,
     pub trade_size_filter: Option<f32>,
     pub tick_multiply: Option<TickMultiplier>,
-    pub selected_ticker: Option<Ticker>,
-    pub selected_exchange: Option<Exchange>,
     pub selected_timeframe: Option<Timeframe>,
-}
-impl Default for PaneSettings {
-    fn default() -> Self {
-        Self {
-            min_tick_size: None,
-            trade_size_filter: Some(0.0),
-            tick_multiply: Some(TickMultiplier(10)),
-            selected_ticker: None,
-            selected_exchange: None,
-            selected_timeframe: Some(Timeframe::M1),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum SerializablePane {
-    Split {
-        axis: Axis,
-        ratio: f32,
-        a: Box<SerializablePane>,
-        b: Box<SerializablePane>,
-    },
-    Starter,
-    HeatmapChart {
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-    },
-    FootprintChart {
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-    },
-    CandlestickChart {
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-    },
-    TimeAndSales {
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-    },
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub enum Axis {
-    Horizontal,
-    Vertical,
-}
-
-impl From<&PaneState> for SerializablePane {
-    fn from(pane: &PaneState) -> Self {
-        let pane_stream = pane.stream.clone();
-
-        match pane.content {
-            PaneContent::Starter => SerializablePane::Starter,
-            PaneContent::Heatmap(_) => SerializablePane::HeatmapChart {
-                stream_type: pane_stream,
-                settings: pane.settings,
-            },
-            PaneContent::Footprint(_) => SerializablePane::FootprintChart {
-                stream_type: pane_stream,
-                settings: pane.settings,
-            },
-            PaneContent::Candlestick(_) => SerializablePane::CandlestickChart {
-                stream_type: pane_stream,
-                settings: pane.settings,
-            },
-            PaneContent::TimeAndSales(_) => SerializablePane::TimeAndSales {
-                stream_type: pane_stream,
-                settings: pane.settings,
-            }
-        }
-    }
 }

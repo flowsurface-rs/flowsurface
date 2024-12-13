@@ -1,0 +1,98 @@
+use iced::{
+    padding,
+    widget::{container, mouse_area, opaque, stack},
+    Alignment, Element, Length,
+};
+
+pub fn dashboard_modal<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+    padding: padding::Padding,
+    align_y: Alignment,
+    align_x: Alignment,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(
+            container(opaque(content))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(padding)
+                .align_y(align_y)
+                .align_x(align_x)
+        )
+        .on_press(on_blur)
+    ]
+    .into()
+}
+
+pub fn pane_menu<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+    padding: padding::Padding,
+    alignment: Alignment,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(
+            container(opaque(content))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(padding)
+                .align_x(alignment)
+        )
+        .on_press(on_blur)
+    ]
+    .into()
+}
+
+// Notifications
+pub fn dashboard_notification<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(
+            container(opaque(content))
+                .padding(20)
+                .style(|_theme| {
+                    container::Style {
+                        ..container::Style::default()
+                    }
+                })
+        )
+    ]
+    .into()
+}
+
+pub fn pane_notification<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(
+            container(opaque(content))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(12)
+                .align_x(Alignment::End)
+        )
+    ]
+    .into()
+}

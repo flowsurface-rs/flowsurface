@@ -1,236 +1,394 @@
 use std::collections::BTreeMap;
-use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
-};
-use iced::widget::{Column, Row, Container, Text};
-use crate::data_providers::Kline;
 
-use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
-use super::{chart_button, calculate_price_step, calculate_time_step};
+use iced::widget::canvas::{LineDash, Path, Stroke};
+use iced::{mouse, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
+use iced::widget::{canvas::{self, Event, Geometry}, column};
+
+use crate::screen::UserTimezone;
+use crate::data_providers::{
+    fetcher::{FetchRange, RequestHandler},
+    Kline, OpenInterest as OIData, Timeframe
+};
+
+use super::indicators::{self, CandlestickIndicator, Indicator};
+
+use super::{request_fetch, Caches, Chart, ChartConstants, CommonChartData, Interaction, Message, PriceInfoLabel};
+use super::{canvas_interaction, view_chart, update_chart, count_decimals};
+
+impl Chart for CandlestickChart {
+    fn get_common_data(&self) -> &CommonChartData {
+        &self.chart
+    }
+
+    fn get_common_data_mut(&mut self) -> &mut CommonChartData {
+        &mut self.chart
+    }
+
+    fn update_chart(&mut self, message: &Message) -> Task<Message> {
+        let task = update_chart(self, message);
+        self.render_start();
+
+        task
+    }
+
+    fn canvas_interaction(
+        &self,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        canvas_interaction(self, interaction, event, bounds, cursor)
+    }
+
+    fn view_indicator<I: Indicator>(&self, enabled: &[I]) -> Element<Message> {
+        self.view_indicators(enabled)
+    }
+
+    fn get_visible_timerange(&self) -> (i64, i64) {
+        let chart = self.get_common_data();
+
+        let visible_region = chart.visible_region(chart.bounds.size());
+
+        let earliest = chart.x_to_time(visible_region.x);
+        let latest = chart.x_to_time(visible_region.x + visible_region.width);
+
+        (earliest, latest)
+    }
+}
+
+impl ChartConstants for CandlestickChart {
+    const MIN_SCALING: f32 = 0.6;
+    const MAX_SCALING: f32 = 2.5;
+
+    const MAX_CELL_WIDTH: f32 = 16.0;
+    const MIN_CELL_WIDTH: f32 = 1.0;
+
+    const MAX_CELL_HEIGHT: f32 = 8.0;
+    const MIN_CELL_HEIGHT: f32 = 1.0;
+
+    const DEFAULT_CELL_WIDTH: f32 = 4.0;
+}
+
+#[allow(dead_code)]
+enum Indicators {
+    Volume(Caches, BTreeMap<i64, (f32, f32)>),
+    OpenInterest(Caches, BTreeMap<i64, f32>),
+}
+
+impl Indicators {
+    fn clear_cache(&mut self) {
+        match self {
+            Indicators::Volume(caches, _) 
+            | Indicators::OpenInterest(caches, _) => {
+                caches.clear_all();
+            }
+        }
+    }
+}
 
 pub struct CandlestickChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, Kline>,
-    timeframe: u16,
-}
-
-impl Chart for CandlestickChart {
-    type DataPoint = BTreeMap<i64, Kline>;
-
-    fn get_common_data(&self) -> &CommonChartData {
-        &self.chart
-    }
-    fn get_common_data_mut(&mut self) -> &mut CommonChartData {
-        &mut self.chart
-    }
+    indicators: Vec<Indicators>,
+    request_handler: RequestHandler,
+    fetching_oi: bool,
 }
 
 impl CandlestickChart {
-    const MIN_SCALING: f32 = 0.1;
-    const MAX_SCALING: f32 = 2.0;
+    pub fn new(
+        klines_raw: Vec<Kline>,
+        timeframe: Timeframe,
+        tick_size: f32,
+        timezone: UserTimezone,
+    ) -> CandlestickChart {
+        let mut data_points = BTreeMap::new();
+        let mut volume_data = BTreeMap::new();
 
-    pub fn new(klines: Vec<Kline>, timeframe: u16) -> CandlestickChart {
-        let mut klines_raw = BTreeMap::new();
+        let base_price_y = klines_raw.last().unwrap_or(&Kline::default()).close;
 
-        for kline in klines {
-            klines_raw.insert(kline.time as i64, kline);
+        for kline in klines_raw {
+            volume_data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+            data_points.entry(kline.time as i64).or_insert(kline);
         }
 
+        let mut latest_x = 0;
+        let (mut scale_high, mut scale_low) = (0.0f32, f32::MAX);
+        data_points.iter().rev().for_each(|(time, kline)| {
+            scale_high = scale_high.max(kline.high);
+            scale_low = scale_low.min(kline.low);
+
+            latest_x = latest_x.max(*time);
+        });
+
+        let y_ticks = (scale_high - scale_low) / tick_size;
+
         CandlestickChart {
-            chart: CommonChartData::default(),
-            data_points: klines_raw,
-            timeframe,
+            chart: CommonChartData {
+                cell_width: Self::DEFAULT_CELL_WIDTH,
+                cell_height: 200.0 / y_ticks,
+                base_range: 100.0 / y_ticks,
+                base_price_y,
+                latest_x,
+                timeframe: timeframe.to_milliseconds(),
+                tick_size,
+                timezone,
+                indicators_height: 30,
+                decimals: count_decimals(tick_size),
+                ..Default::default()
+            },
+            data_points,
+            indicators: vec![
+                Indicators::Volume(Caches::default(), volume_data.clone()),
+                Indicators::OpenInterest(Caches::default(), BTreeMap::new()),
+            ],
+            request_handler: RequestHandler::new(),
+            fetching_oi: false,
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline) {
+    pub fn change_timezone(&mut self, timezone: UserTimezone) {
+        let chart = self.get_common_data_mut();
+        chart.timezone = timezone;
+    }
+
+    pub fn get_tick_size(&self) -> f32 {
+        self.chart.tick_size
+    }
+
+    pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
         self.data_points.insert(kline.time as i64, *kline);
+
+        self.indicators.iter_mut().for_each(|indicator| {
+            if let Indicators::Volume(_, data) = indicator {
+                data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+            }
+        });
+
+        let chart = self.get_common_data_mut();
+
+        if (kline.time as i64) > chart.latest_x {
+            chart.latest_x = kline.time as i64;
+        }
+
+        chart.last_price = if kline.close > kline.open {
+            Some(PriceInfoLabel::Up(kline.close))
+        } else {
+            Some(PriceInfoLabel::Down(kline.close))
+        };
+        
+        if !chart.already_fetching {
+            return self.get_missing_data_task();
+        }
+
+        self.render_start();
+        Task::none()
+    }
+
+    fn get_missing_data_task(&mut self) -> Task<Message> {
+        let mut task = Task::none();
+
+        let (visible_earliest, visible_latest) = self.get_visible_timerange();
+        let (kline_earliest, kline_latest) = self.get_kline_timerange();
+
+        let earliest = visible_earliest - (visible_latest - visible_earliest);
+
+        if visible_earliest < kline_earliest {
+            let latest = kline_earliest;
+
+            if let Some(task) = request_fetch(
+                &mut self.request_handler, FetchRange::Kline(earliest, latest)
+            ) {
+                self.get_common_data_mut().already_fetching = true;
+                return task;
+            }
+        }
+
+        for indicator in &self.indicators {
+            if let Indicators::OpenInterest(_, _) = indicator {
+                if !self.fetching_oi {
+                    let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
+
+                    if visible_earliest < oi_earliest {
+                        let latest = oi_earliest;
+
+                        if let Some(fetch_task) = request_fetch(
+                            &mut self.request_handler, FetchRange::OpenInterest(earliest, latest)
+                        ) {
+                            self.fetching_oi = true;
+                            task = fetch_task;
+                        }
+                    } else if oi_latest < kline_latest {
+                        let latest = visible_latest;
+
+                        if let Some(fetch_task) = request_fetch(
+                            &mut self.request_handler, FetchRange::OpenInterest(oi_latest, latest)
+                        ) {
+                            self.fetching_oi = true;
+                            task = fetch_task;
+                        }
+                    }
+                }
+            }
+        };
+
+        self.render_start();
+        task
+    }
+
+    pub fn insert_new_klines(&mut self, req_id: uuid::Uuid, klines_raw: &Vec<Kline>) {
+        let mut volume_data = BTreeMap::new();
+
+        for kline in klines_raw {
+            volume_data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+            self.data_points.entry(kline.time as i64).or_insert(*kline);
+        }
+
+        self.indicators.iter_mut().for_each(|indicator| {
+            if let Indicators::Volume(_, data) = indicator {
+                data.extend(volume_data.clone());
+            }
+        });
+
+        if klines_raw.len() > 1 {
+            self.request_handler.mark_completed(req_id);
+        } else {
+            self.request_handler
+                .mark_failed(req_id, "No data received".to_string());
+        }
+
+        self.get_common_data_mut().already_fetching = false;
 
         self.render_start();
     }
 
-    pub fn render_start(&mut self) {
-        let (latest, earliest, highest, lowest) = self.calculate_range();
-
-        if latest == 0 || highest == 0.0 {
-            return;
-        }
-
-        let chart_state = self.get_common_data_mut();
-
-        if earliest != chart_state.x_min_time || latest != chart_state.x_max_time || lowest != chart_state.y_min_price || highest != chart_state.y_max_price {
-            chart_state.x_labels_cache.clear();
-            chart_state.mesh_cache.clear();
-        }
-
-        chart_state.x_min_time = earliest;
-        chart_state.x_max_time = latest;
-        chart_state.y_min_price = lowest;
-        chart_state.y_max_price = highest;
-
-        chart_state.y_labels_cache.clear();
-        chart_state.crosshair_cache.clear();
-
-        chart_state.main_cache.clear();
-    }
-
-    fn calculate_range(&self) -> (i64, i64, f32, f32) {
-        let chart = self.get_common_data();
-
-        let timestamp_latest = self.data_points.keys().last().map_or(0, |time| *time);
-    
-        let latest: i64 = timestamp_latest - ((chart.translation.x*8000.0)*(self.timeframe as f32)) as i64;
-        let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
-    
-        let visible_klines = self.data_points.range(earliest..=latest);
-    
-        let (highest, lowest, avg_body_height, count) = visible_klines.fold((f32::MIN, f32::MAX, 0.0f32, 0), |(highest, lowest, total_body_height, count), (_, kline)| {
-            let body_height = (kline.open - kline.close).abs();
-            (
-                highest.max(kline.high),
-                lowest.min(kline.low),
-                total_body_height + body_height,
-                count + 1,
-            )
+    pub fn insert_open_interest(&mut self, _req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
+        self.indicators.iter_mut().for_each(|indicator| {
+            if let Indicators::OpenInterest(_, data) = indicator {
+                data.extend(oi_data
+                    .iter().map(|oi| (oi.time, oi.value))
+                );
+            }
         });
     
-        if count <= 1 {
-            return (0, 0, 0.0, 0.0);
-        }
-    
-        let avg_body_height = if count > 1 { avg_body_height / (count - 1) as f32 } else { 0.0 };
-        let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
-    
-        (latest, earliest, highest, lowest)
+        self.fetching_oi = false;
     }
 
-    pub fn update(&mut self, message: &Message) {
-        match message {
-            Message::Translated(translation) => {
-                let chart = self.get_common_data_mut();
+    fn get_kline_timerange(&self) -> (i64, i64) {
+        let mut from_time = i64::MAX;
+        let mut to_time = i64::MIN;
 
-                if chart.autoscale {
-                    chart.translation.x = translation.x;
-                } else {
-                    chart.translation = *translation;
-                }
-                chart.crosshair_position = Point::new(0.0, 0.0);
+        self.data_points.iter().for_each(|(time, _)| {
+            from_time = from_time.min(*time);
+            to_time = to_time.max(*time);
+        });
 
-                self.render_start();
-            },
-            Message::Scaled(scaling, translation) => {
-                let chart = self.get_common_data_mut();
+        (from_time, to_time)
+    }
 
-                chart.scaling = *scaling;
-                
-                if let Some(translation) = translation {
-                    if chart.autoscale {
-                        chart.translation.x = translation.x;
+    fn get_oi_timerange(&self, latest_kline: i64) -> (i64, i64) {
+        let mut from_time = latest_kline;
+        let mut to_time = i64::MIN;
+
+        self.indicators.iter().for_each(|indicator| {
+            if let Indicators::OpenInterest(_, data) = indicator {
+                data.iter().for_each(|(time, _)| {
+                    from_time = from_time.min(*time);
+                    to_time = to_time.max(*time);
+                });
+            }
+        });
+
+        (from_time, to_time)
+    }
+
+    fn render_start(&mut self) {
+        let chart_state = &mut self.chart;
+
+        if chart_state.autoscale {
+            chart_state.translation =
+                Vector::new(0.4 * chart_state.bounds.width / chart_state.scaling, {
+                    if let Some((_, kline)) = self.data_points.last_key_value() {
+                        let y_low = chart_state.price_to_y(kline.low);
+                        let y_high = chart_state.price_to_y(kline.high);
+
+                        -(y_low + y_high) / 2.0
                     } else {
-                        chart.translation = *translation;
+                        0.0
+                    }
+                });
+        }
+
+        chart_state.cache.clear_all();
+
+        self.indicators.iter_mut().for_each(|indicator| {
+            indicator.clear_cache();
+        });
+    }
+
+    fn get_volume_indicator(&self) -> Option<(&Caches, &BTreeMap<i64, (f32, f32)>)> {
+        for indicator in &self.indicators {
+            if let Indicators::Volume(cache, data) = indicator {
+                return Some((cache, data));
+            }
+        }
+
+        None
+    }
+
+    fn get_oi_indicator(&self) -> Option<(&Caches, &BTreeMap<i64, f32>)> {
+        for indicator in &self.indicators {
+            if let Indicators::OpenInterest(cache, data) = indicator {
+                return Some((cache, data));
+            }
+        }
+
+        None
+    }
+
+    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Element<Message> {
+        let chart_state: &CommonChartData = self.get_common_data();
+
+        let visible_region = chart_state.visible_region(chart_state.bounds.size());
+
+        let earliest = chart_state.x_to_time(visible_region.x);
+        let latest = chart_state.x_to_time(visible_region.x + visible_region.width);
+
+        let mut indicators: iced::widget::Column<'_, Message> = column![];
+
+        for indicator in I::get_enabled(enabled) {
+            if let Some(candlestick_indicator) = indicator
+                .as_any()
+                .downcast_ref::<CandlestickIndicator>() 
+            {
+                match candlestick_indicator {
+                    CandlestickIndicator::Volume => {
+                        if let Some((cache, data)) = self.get_volume_indicator() {
+                            indicators = indicators.push(
+                                indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                            );
+                        }
+                    },
+                    CandlestickIndicator::OpenInterest => {
+                        if let Some((cache, data)) = self.get_oi_indicator() {
+                            indicators = indicators.push(
+                                indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                            );
+                        }
                     }
                 }
-                chart.crosshair_position = Point::new(0.0, 0.0);
-
-                self.render_start();
-            },
-            Message::ChartBounds(bounds) => {
-                self.chart.bounds = *bounds;
-            },
-            Message::AutoscaleToggle => {
-                self.chart.autoscale = !self.chart.autoscale;
-            },
-            Message::CrosshairToggle => {
-                self.chart.crosshair = !self.chart.crosshair;
-            },
-            Message::CrosshairMoved(position) => {
-                let chart = self.get_common_data_mut();
-
-                chart.crosshair_position = *position;
-                if chart.crosshair {
-                    chart.crosshair_cache.clear();
-                    chart.y_crosshair_cache.clear();
-                    chart.x_crosshair_cache.clear();
-                }
-            },
-            _ => {}
+            }
         }
+
+        indicators.into()
     }
 
-    pub fn view(&self) -> Element<Message> {
-        let chart = Canvas::new(self)
-            .width(Length::FillPortion(10))
-            .height(Length::FillPortion(10));
+    pub fn update(&mut self, message: &Message) -> Task<Message> {
+        self.update_chart(message)
+    }
 
-        let chart_state = self.get_common_data();
-    
-        let axis_labels_x = Canvas::new(
-            AxisLabelXCanvas { 
-                labels_cache: &chart_state.x_labels_cache, 
-                min: chart_state.x_min_time, 
-                max: chart_state.x_max_time, 
-                crosshair_cache: &chart_state.x_crosshair_cache, 
-                crosshair_position: chart_state.crosshair_position, 
-                crosshair: chart_state.crosshair,
-                timeframe: Some(self.timeframe)
-            })
-            .width(Length::FillPortion(10))
-            .height(Length::Fixed(26.0));
-    
-        let axis_labels_y = Canvas::new(
-            AxisLabelYCanvas { 
-                labels_cache: &chart_state.y_labels_cache, 
-                y_croshair_cache: &chart_state.y_crosshair_cache, 
-                min: chart_state.y_min_price,
-                max: chart_state.y_max_price,
-                crosshair_position: chart_state.crosshair_position, 
-                crosshair: chart_state.crosshair
-            })
-            .width(Length::Fixed(60.0))
-            .height(Length::FillPortion(10));
-
-        let autoscale_button = button(
-            Text::new("A")
-                .size(12)
-                .align_x(alignment::Horizontal::Center)
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .on_press(Message::AutoscaleToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, chart_state.autoscale));
-        let crosshair_button = button(
-            Text::new("+")
-                .size(12)
-                .align_x(alignment::Horizontal::Center)
-            ) 
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .on_press(Message::CrosshairToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, chart_state.crosshair));
-    
-        let chart_controls = Container::new(
-            Row::new()
-                .push(autoscale_button)
-                .push(crosshair_button).spacing(2)
-            ).padding([0, 2])
-            .width(Length::Fixed(60.0))
-            .height(Length::Fixed(26.0));
-
-        let chart_and_y_labels = Row::new()
-            .push(chart)
-            .push(axis_labels_y);
-    
-        let bottom_row = Row::new()
-            .push(axis_labels_x)
-            .push(chart_controls);
-    
-        let content = Column::new()
-            .push(chart_and_y_labels)
-            .push(bottom_row)
-            .spacing(0)
-            .padding(5);
-    
-        content.into()
+    pub fn view<'a, I: Indicator>(&'a self, indicators: &'a [I]) -> Element<Message> {
+        view_chart(self, indicators)
     }
 }
 
@@ -243,285 +401,128 @@ impl canvas::Program<Message> for CandlestickChart {
         event: Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {  
-        let chart_state = self.get_common_data();
-
-        if bounds != chart_state.bounds {
-            return (event::Status::Ignored, Some(Message::ChartBounds(bounds)));
-        } 
-        
-        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
-            *interaction = Interaction::None;
-        }
-
-        let Some(cursor_position) = cursor.position_in(bounds) else {
-            return (event::Status::Ignored, 
-                if chart_state.crosshair {
-                    Some(Message::CrosshairMoved(Point::new(0.0, 0.0)))
-                } else {
-                    None
-                }
-                );
-        };
-
-        match event {
-            Event::Mouse(mouse_event) => match mouse_event {
-                mouse::Event::ButtonPressed(button) => {
-                    let message = match button {
-                        mouse::Button::Left => {
-                            *interaction = Interaction::Panning {
-                                translation: chart_state.translation,
-                                start: cursor_position,
-                            };
-                            None
-                        }
-                        _ => None,
-                    };
-
-                    (event::Status::Captured, message)
-                }
-                mouse::Event::CursorMoved { .. } => {
-                    let message = match *interaction {
-                        Interaction::Panning { translation, start } => {
-                            Some(Message::Translated(
-                                translation
-                                    + (cursor_position - start)
-                                        * (1.0 / chart_state.scaling),
-                            ))
-                        }
-                        Interaction::None => 
-                            if chart_state.crosshair && cursor.is_over(bounds) {
-                                Some(Message::CrosshairMoved(cursor_position))
-                            } else {
-                                None
-                            },
-                        _ => None,
-                    };
-
-                    let event_status = match interaction {
-                        Interaction::None => event::Status::Ignored,
-                        _ => event::Status::Captured,
-                    };
-
-                    (event_status, message)
-                }
-                mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. }
-                    | mouse::ScrollDelta::Pixels { y, .. } => {
-                        if y < 0.0 && chart_state.scaling > Self::MIN_SCALING
-                            || y > 0.0 && chart_state.scaling < Self::MAX_SCALING
-                        {
-                            //let old_scaling = self.scaling;
-
-                            let scaling = (chart_state.scaling * (1.0 + y / 30.0))
-                                .clamp(
-                                    Self::MIN_SCALING,  // 0.1
-                                    Self::MAX_SCALING,  // 2.0
-                                );
-
-                            //let translation =
-                            //    if let Some(cursor_to_center) =
-                            //        cursor.position_from(bounds.center())
-                            //    {
-                            //        let factor = scaling - old_scaling;
-
-                            //        Some(
-                            //            self.translation
-                            //                - Vector::new(
-                            //                    cursor_to_center.x * factor
-                            //                        / (old_scaling
-                            //                            * old_scaling),
-                            //                    cursor_to_center.y * factor
-                            //                        / (old_scaling
-                            //                            * old_scaling),
-                            //                ),
-                            //        )
-                            //    } else {
-                            //        None
-                            //    };
-
-                            (
-                                event::Status::Captured,
-                                Some(Message::Scaled(scaling, None)),
-                            )
-                        } else {
-                            (event::Status::Captured, None)
-                        }
-                    }
-                },
-                _ => (event::Status::Ignored, None),
-            },
-            _ => (event::Status::Ignored, None),
-        }
+    ) -> Option<canvas::Action<Message>> {
+        self.canvas_interaction(interaction, event, bounds, cursor)
     }
-    
+
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {    
+    ) -> Vec<Geometry> {
+        if self.data_points.is_empty() {
+            return vec![];
+        }
+
         let chart = self.get_common_data();
 
-        let (latest, earliest) = (chart.x_max_time, chart.x_min_time);    
-        let (lowest, highest) = (chart.y_min_price, chart.y_max_price);
+        let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
+        let bounds_size = bounds.size();
 
-        let y_range = highest - lowest;
+        let palette = theme.extended_palette();
 
-        let volume_area_height = bounds.height / 8.0; 
-        let candlesticks_area_height = bounds.height - volume_area_height;
-
-        let y_labels_can_fit = (bounds.height / 32.0) as i32;
-        let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
-
-        let x_labels_can_fit = (bounds.width / 90.0) as i32;
-        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit, Some(self.timeframe));
-
-        let background = chart.mesh_cache.draw(renderer, bounds.size(), |frame| {
+        let candlesticks = chart.cache.main.draw(renderer, bounds_size, |frame| {
             frame.with_save(|frame| {
-                let mut time = rounded_earliest;
+                frame.translate(center);
+                frame.scale(chart.scaling);
+                frame.translate(chart.translation);
 
-                while time <= latest {                    
-                    let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+                let region = chart.visible_region(frame.size());
 
-                    if x_position >= 0.0 && x_position <= bounds.width as f64 {
-                        let line = Path::line(
-                            Point::new(x_position as f32, 0.0), 
-                            Point::new(x_position as f32, bounds.height)
+                let earliest = chart.x_to_time(region.x);
+                let latest = chart.x_to_time(region.x + region.width);
+
+                let candle_width = chart.cell_width * 0.8;
+
+                self.data_points.range(earliest..=latest)
+                    .for_each(|(timestamp, kline)| {
+                        let x_position = chart.time_to_x(*timestamp);
+
+                        let y_open = chart.price_to_y(kline.open);
+                        let y_high = chart.price_to_y(kline.high);
+                        let y_low = chart.price_to_y(kline.low);
+                        let y_close = chart.price_to_y(kline.close);
+
+                        let body_color = if kline.close >= kline.open {
+                            palette.success.base.color
+                        } else {
+                            palette.danger.base.color
+                        };
+                        frame.fill_rectangle(
+                            Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
+                            Size::new(candle_width, (y_open - y_close).abs()),
+                            body_color,
                         );
-                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0))
+
+                        let wick_color = if kline.close >= kline.open {
+                            palette.success.base.color
+                        } else {
+                            palette.danger.base.color
+                        };
+                        frame.fill_rectangle(
+                            Point::new(x_position - (candle_width / 8.0), y_high),
+                            Size::new(candle_width / 4.0, (y_high - y_low).abs()),
+                            wick_color,
+                        );
+                    });
+
+                // last price line
+                chart.last_price.map(|price| {
+                    let (line_color, y_pos) = match price {
+                        PriceInfoLabel::Up(p) => (palette.success.weak.color, chart.price_to_y(p)),
+                        PriceInfoLabel::Down(p) => (palette.danger.weak.color, chart.price_to_y(p)),
                     };
-                    
-                    time += time_step;
-                }
+
+                    let marker_line = Stroke::with_color(
+                        Stroke {
+                            width: 1.0,
+                            line_dash: LineDash {
+                                segments: &[2.0, 2.0],
+                                offset: 4,
+                            },
+                            ..Default::default()
+                        },
+                        line_color.scale_alpha(0.5),
+                    );
+    
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(0.0, y_pos),
+                            Point::new(region.x + region.width, y_pos),
+                        ),
+                        marker_line,
+                    );
+                });
             });
-            
-            frame.with_save(|frame| {
-                let mut y = rounded_lowest;
-
-                while y <= highest {
-                    let y_position = candlesticks_area_height - ((y - lowest) / y_range * candlesticks_area_height);
-                    let line = Path::line(
-                        Point::new(0.0, y_position), 
-                        Point::new(bounds.width, y_position)
-                    );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0));
-                    y += step;
-                }
-            });
-        });
-
-        let candlesticks = chart.main_cache.draw(renderer, bounds.size(), |frame| {
-            let mut max_volume: f32 = 0.0;
-
-            for (_, kline) in self.data_points.range(earliest..=latest) {
-                max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
-            }
-
-            for (time, kline) in self.data_points.range(earliest..=latest) {
-                let x_position: f64 = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-
-                if x_position.is_nan() {
-                    continue;
-                }
-                
-                let y_open = candlesticks_area_height - ((kline.open - lowest) / y_range * candlesticks_area_height);
-                let y_high = candlesticks_area_height - ((kline.high - lowest) / y_range * candlesticks_area_height);
-                let y_low = candlesticks_area_height - ((kline.low - lowest) / y_range * candlesticks_area_height);
-                let y_close = candlesticks_area_height - ((kline.close - lowest) / y_range * candlesticks_area_height);
-                
-                let color = if kline.close >= kline.open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
-
-                let body = Path::rectangle(
-                    Point::new(x_position as f32 - (2.0 * chart.scaling), y_open.min(y_close)), 
-                    Size::new(4.0 * chart.scaling, (y_open - y_close).abs())
-                );                    
-                frame.fill(&body, color);
-                
-                let wick = Path::line(
-                    Point::new(x_position as f32, y_high), 
-                    Point::new(x_position as f32, y_low)
-                );
-                frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
-
-                if kline.volume.0 != -1.0 {
-                    let buy_bar_height = (kline.volume.0 / max_volume) * volume_area_height;
-                    let sell_bar_height = (kline.volume.1 / max_volume) * volume_area_height;
-                    
-                    let buy_bar = Path::rectangle(
-                        Point::new(x_position as f32, bounds.height - buy_bar_height), 
-                        Size::new(2.0 * chart.scaling, buy_bar_height)
-                    );
-                    frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
-                    
-                    let sell_bar = Path::rectangle(
-                        Point::new(x_position as f32 - (2.0 * chart.scaling), bounds.height - sell_bar_height), 
-                        Size::new(2.0 * chart.scaling, sell_bar_height)
-                    );
-                    frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
-                } else {
-                    let bar_height = ((kline.volume.1) / max_volume) * volume_area_height;
-                    
-                    let bar = Path::rectangle(
-                        Point::new(x_position as f32 - (2.0 * chart.scaling), bounds.height - bar_height), 
-                        Size::new(4.0 * chart.scaling, bar_height)
-                    );
-                    let color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
-
-                    frame.fill(&bar, color);
-                }
-            }
         });
 
         if chart.crosshair {
-            let crosshair = chart.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+            let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
-                    let line = Path::line(
-                        Point::new(0.0, cursor_position.y), 
-                        Point::new(bounds.width, cursor_position.y)
-                    );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
+                    let (_, rounded_timestamp) =
+                        chart.draw_crosshair(frame, theme, bounds_size, cursor_position);
 
-                    let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
-                    let crosshair_millis = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
-                    let rounded_timestamp = (crosshair_millis / (self.timeframe as f64 * 60.0 * 1000.0)).round() as i64 * self.timeframe as i64 * 60 * 1000;
-
-                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / (latest as f64 - earliest as f64);
-                    let snap_x = snap_ratio * bounds.width as f64;
-
-                    if snap_x.is_nan() {
-                        return;
-                    }
-
-                    let line = Path::line(
-                        Point::new(snap_x as f32, 0.0), 
-                        Point::new(snap_x as f32, bounds.height)
-                    );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
-
-                    if let Some((_, kline)) = self.data_points.iter()
-                        .find(|(time, _)| **time == rounded_timestamp) {
-
-                        
-                        let tooltip_text: String = if kline.volume.0 != -1.0 {
-                            format!(
-                                "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                                kline.open, kline.high, kline.low, kline.close, kline.volume.0, kline.volume.1
-                            )
-                        } else {
-                            format!(
-                                "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
-                                kline.open, kline.high, kline.low, kline.close, kline.volume.1
-                            )
-                        };
+                    if let Some((_, kline)) = self
+                        .data_points
+                        .iter()
+                        .find(|(time, _)| **time == rounded_timestamp)
+                    {
+                        let tooltip_text = format!(
+                            "O: {}   H: {}   L: {}   C: {}",
+                            kline.open,
+                            kline.high,
+                            kline.low,
+                            kline.close,
+                        );
 
                         let text = canvas::Text {
                             content: tooltip_text,
-                            position: Point::new(10.0, 10.0),
+                            position: Point::new(8.0, 8.0),
                             size: iced::Pixels(12.0),
-                            color: Color::from_rgba8(120, 120, 120, 1.0),
+                            color: palette.background.base.text,
                             ..canvas::Text::default()
                         };
                         frame.fill_text(text);
@@ -529,9 +530,9 @@ impl canvas::Program<Message> for CandlestickChart {
                 }
             });
 
-            vec![background, crosshair, candlesticks]
-        }   else {
-            vec![background, candlesticks]
+            vec![candlesticks, crosshair]
+        } else {
+            vec![candlesticks]
         }
     }
 
@@ -544,14 +545,28 @@ impl canvas::Program<Message> for CandlestickChart {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
-            Interaction::None if cursor.is_over(bounds) => {
-                if self.chart.crosshair {
-                    mouse::Interaction::Crosshair
-                } else {
-                    mouse::Interaction::default()
+            Interaction::None => {
+                if cursor.is_over(Rectangle {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: bounds.width,
+                    height: bounds.height - 8.0,
+                }) {
+                    if self.chart.crosshair {
+                        return mouse::Interaction::Crosshair;
+                    }
+                } else if cursor.is_over(Rectangle {
+                    x: bounds.x,
+                    y: bounds.y + bounds.height - 8.0,
+                    width: bounds.width,
+                    height: 8.0,
+                }) {
+                    return mouse::Interaction::ResizingVertically;
                 }
+
+                mouse::Interaction::default()
             }
-            Interaction::None => { mouse::Interaction::default() }
+            _ => mouse::Interaction::default(),
         }
     }
 }
