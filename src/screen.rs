@@ -79,6 +79,8 @@ impl Serialize for UserTimezone {
 #[derive(Debug, Clone, Copy)]
 pub enum InfoType {
     FetchingKlines,
+    FetchingTrades,
+    FetchingOI,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +245,8 @@ fn create_notis_column<'a, M: 'a>(notifications: &'a [Notification]) -> Column<'
             Notification::Warn(warn) => warn.to_string(),
             Notification::Info(info) => match info {
                 InfoType::FetchingKlines => "Fetching klines...".to_string(),
+                InfoType::FetchingTrades => "Fetching trades...".to_string(),
+                InfoType::FetchingOI => "Fetching open interest...".to_string(),
             },
         };
 

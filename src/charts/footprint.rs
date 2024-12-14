@@ -96,6 +96,7 @@ pub struct FootprintChart {
     raw_trades: Vec<Trade>,
     indicators: Vec<Indicators>,
     fetching_oi: bool,
+    fetching_trades: bool,
     request_handler: RequestHandler,
 }
 
@@ -178,6 +179,7 @@ impl FootprintChart {
                 Indicators::OpenInterest(Caches::default(), BTreeMap::new()),
             ],
             fetching_oi: false,
+            fetching_trades: false,
             request_handler: RequestHandler::new(),
         }
     }
@@ -211,6 +213,32 @@ impl FootprintChart {
             }
 
             self.raw_trades.push(*trade);
+        }
+    }
+
+    pub fn insert_trades(&mut self, raw_trades: Vec<Trade>) {
+        let aggregate_time = self.chart.timeframe as i64;
+        let tick_size = self.chart.tick_size;
+
+        for trade in &raw_trades {
+            let rounded_time = (trade.time / aggregate_time) * aggregate_time;
+            let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+
+            let entry = self.data_points
+                .entry(rounded_time)
+                .or_insert((HashMap::new(), Kline::default()));
+
+            if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
+                if trade.is_sell {
+                    *sell_qty += trade.qty;
+                } else {
+                    *buy_qty += trade.qty;
+                }
+            } else if trade.is_sell {
+                entry.0.insert(price_level, (0.0, trade.qty));
+            } else {
+                entry.0.insert(price_level, (trade.qty, 0.0));
+            }
         }
     }
 
@@ -270,6 +298,23 @@ impl FootprintChart {
             ) {
                 self.get_common_data_mut().already_fetching = true;
                 return task;
+            }
+        }
+
+        if !self.fetching_trades {
+            let (trade_earliest, _) = self.get_trades_timerange(kline_latest);
+
+            if visible_earliest < trade_earliest {
+                dbg!("fetchun");
+
+                let latest = trade_earliest;
+
+                if let Some(task) = request_fetch(
+                    &mut self.request_handler, FetchRange::Trades(earliest, latest)
+                ) {
+                    self.fetching_trades = true;
+                    return task;
+                }
             }
         }
 
@@ -342,6 +387,21 @@ impl FootprintChart {
                 });
             }
         });
+
+        (from_time, to_time)
+    }
+
+    fn get_trades_timerange(&self, latest: i64) -> (i64, i64) {
+        let mut from_time = latest;
+        let mut to_time = latest;
+
+        self.data_points
+            .iter()
+            .filter(|(_, (trades, _))| !trades.is_empty())
+            .for_each(|(time, _)| {
+                from_time = from_time.min(*time);
+                to_time = to_time.min(*time.min(&latest));
+            });
 
         (from_time, to_time)
     }

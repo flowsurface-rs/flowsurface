@@ -68,6 +68,7 @@ impl RequestHandler {
 pub enum FetchRange {
     Kline(i64, i64),
     OpenInterest(i64, i64),
+    Trades(i64, i64),
 }
 
 #[derive(PartialEq, Debug)]

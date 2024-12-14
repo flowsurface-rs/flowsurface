@@ -832,6 +832,46 @@ pub async fn fetch_ticker_prices(market: MarketType) -> Result<HashMap<Ticker, T
     Ok(ticker_price_map)
 }
 
+pub async fn fetch_hist_trades(
+    ticker: Ticker,
+    range: Option<(i64, i64)>,
+) -> Result<Vec<Trade>, StreamError> {
+    let (symbol_str, market_type) = ticker.get_string();
+    let base_url = match market_type {
+        MarketType::Spot => "https://api.binance.com/api/v3/aggTrades",
+        MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/aggTrades",
+    };
+
+    let mut url = format!(
+        "{base_url}?symbol={symbol_str}&limit=1000",
+    );
+
+    if let Some((start, end)) = range {
+        url.push_str(&format!(
+            "&startTime={start}"
+        ));
+    }
+
+    log::info!("Fetching trades from {}", url);
+
+    let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
+    let text = response.text().await.map_err(StreamError::FetchError)?;
+
+    let trades: Vec<Trade> = {
+        let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)
+            .map_err(|e| StreamError::ParseError(format!("Failed to parse trades: {e}")))?;
+
+        de_trades.into_iter().map(|de_trade| Trade {
+            time: de_trade.time as i64,
+            is_sell: de_trade.is_sell,
+            price: str_f32_parse(&de_trade.price),
+            qty: str_f32_parse(&de_trade.qty),
+        }).collect()
+    };
+
+    Ok(trades)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeOpenInterest {

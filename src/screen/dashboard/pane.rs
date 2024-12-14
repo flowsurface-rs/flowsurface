@@ -135,7 +135,7 @@ impl PaneState {
                 let timeframe = self
                     .settings
                     .selected_timeframe
-                    .unwrap_or(Timeframe::M15);
+                    .unwrap_or(Timeframe::M5);
 
                 vec![
                     StreamType::DepthAndTrades { exchange, ticker },
@@ -150,7 +150,7 @@ impl PaneState {
                 let timeframe = self
                     .settings
                     .selected_timeframe
-                    .unwrap_or(Timeframe::M5);
+                    .unwrap_or(Timeframe::M15);
 
                 vec![StreamType::Kline {
                     exchange,
@@ -198,7 +198,7 @@ impl PaneState {
                     TickMultiplier(50),
                     ticker_info.tick_size,
                 );
-                let timeframe = self.set_timeframe(Timeframe::M15);
+                let timeframe = self.set_timeframe(Timeframe::M5);
                 PaneContent::Footprint(
                     FootprintChart::new(
                         timeframe,
@@ -218,7 +218,7 @@ impl PaneState {
                     TickMultiplier(1),
                     ticker_info.tick_size,
                 );
-                let timeframe = self.set_timeframe(Timeframe::M5);
+                let timeframe = self.set_timeframe(Timeframe::M15);
                 PaneContent::Candlestick(
                     CandlestickChart::new(
                         vec![],

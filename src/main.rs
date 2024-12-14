@@ -83,7 +83,7 @@ fn main() {
                                     .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
                             );
 
-                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
+                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
 
                         Configuration::Pane(PaneState::from_config(
                             PaneContent::Candlestick(
@@ -111,7 +111,7 @@ fn main() {
                                     .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
                             );
 
-                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
+                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
 
                         Configuration::Pane(PaneState::from_config(
                             PaneContent::Footprint(
