@@ -650,7 +650,8 @@ impl Dashboard {
                 stream_type,
                 to_time,
             ) => {
-                let last_trade_time = trades.last().map_or(0, |trade| trade.time);
+                let last_trade_time = trades.last()
+                    .map_or(0, |trade| trade.time);
 
                 self.notification_manager.increment_fetching_trades(
                     window_id,
@@ -659,23 +660,34 @@ impl Dashboard {
                 );
 
                 if last_trade_time < to_time {
-                    let insert_trades = self.insert_fetched_trades(
+                    match self.insert_fetched_trades(
                         main_window.id,
                         window_id,
                         pane,
                         &trades,
-                        &stream_type,
                         false,
-                    );
-                    let fetch_next_batch = Task::done(Message::FetchTrades(
-                        window_id,
-                        pane,
-                        last_trade_time,
-                        to_time,
-                        stream_type,
-                    ));
+                    ) {
+                        Ok(_) => {
+                            return Task::done(Message::FetchTrades(
+                                window_id,
+                                pane,
+                                last_trade_time,
+                                to_time,
+                                stream_type,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notification_manager.remove_info_type(
+                                window_id,
+                                &pane,
+                                &InfoType::FetchingTrades(0),
+                            );
 
-                    return Task::batch(vec![insert_trades, fetch_next_batch]);
+                            return Task::done(
+                                Message::ErrorOccurred(window_id, Some(pane), err)
+                            );
+                        }
+                    }
                 } else {
                     self.notification_manager.remove_info_type(
                         window_id,
@@ -683,14 +695,20 @@ impl Dashboard {
                         &InfoType::FetchingTrades(0),
                     );
 
-                    return self.insert_fetched_trades(
+                    match self.insert_fetched_trades(
                         main_window.id,
                         window_id,
                         pane,
                         &trades,
-                        &stream_type,
                         true,
-                    );
+                    ) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            return Task::done(
+                                Message::ErrorOccurred(window_id, Some(pane), err)
+                            );
+                        }
+                    }
                 }
             }
             Message::RefreshStreams => {
@@ -1204,25 +1222,23 @@ impl Dashboard {
         window: window::Id,
         pane: pane_grid::Pane,
         trades: &[Trade],
-        stream_type: &StreamType,
         is_batches_done: bool,
-    ) -> Task<Message> {
-        let mut found_match = false;
-
-        if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-            if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
-                chart.insert_trades(trades.to_owned(), is_batches_done);
-
-                found_match = true;
-            }
-        }
-
-        if found_match {
-            Task::none()
-        } else {
-            log::error!("No matching pane found for the stream: {stream_type:?}");
-            Task::done(Message::RefreshStreams)
-        }
+    ) -> Result<(), DashboardError> {
+        self.get_mut_pane(main_window, window, pane)
+            .map_or_else(
+                || Err(
+                    DashboardError::Unknown("Couldnt get the pane for fetched trades".to_string())
+                ),
+                |pane_state| match &mut pane_state.content {
+                    PaneContent::Footprint(chart, _) => {
+                        chart.insert_trades(trades.to_owned(), is_batches_done);
+                        Ok(())
+                    }
+                    _ => Err(
+                        DashboardError::Unknown("No matching chart found for fetched trades".to_string())
+                    ),
+                }
+            )
     }
 
     pub fn update_latest_klines(
