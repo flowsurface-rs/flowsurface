@@ -630,7 +630,7 @@ impl Dashboard {
                         self.notification_manager.remove_info_type(
                             window_id,
                             &pane,
-                            &InfoType::FetchingTrades,
+                            &InfoType::FetchingTrades(0),
                         );
 
                         return Task::done(Message::ErrorOccurred(
@@ -652,9 +652,10 @@ impl Dashboard {
             ) => {
                 let last_trade_time = trades.last().map_or(0, |trade| trade.time);
 
-                log::info!(
-                    "Fetched {} trades for {stream_type:?} up to {last_trade_time}",
-                    trades.len()
+                self.notification_manager.increment_fetching_trades(
+                    window_id,
+                    &pane,
+                    trades.len(),
                 );
 
                 if last_trade_time < to_time {
@@ -679,7 +680,7 @@ impl Dashboard {
                     self.notification_manager.remove_info_type(
                         window_id,
                         &pane,
-                        &InfoType::FetchingTrades,
+                        &InfoType::FetchingTrades(0),
                     );
 
                     return self.insert_fetched_trades(
@@ -767,7 +768,7 @@ impl Dashboard {
                                 self.notification_manager.push(
                                     window,
                                     pane,
-                                    Notification::Info(InfoType::FetchingTrades),
+                                    Notification::Info(InfoType::FetchingTrades(0)),
                                 );
 
                                 return Task::done(Message::FetchTrades(
@@ -1210,7 +1211,7 @@ impl Dashboard {
 
         if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
             if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
-                chart.insert_trades(trades.to_owned());
+                chart.insert_trades(trades.to_owned(), is_batches_done);
 
                 found_match = true;
             }

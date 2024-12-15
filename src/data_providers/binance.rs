@@ -846,15 +846,20 @@ pub async fn fetch_hist_trades(
         "{base_url}?symbol={symbol_str}&limit=1000",
     );
 
-    if let Some((start, end)) = range {
-        url.push_str(&format!(
-            "&startTime={start}"
-        ));
+    if let Some((start, _)) = range {
+        url.push_str(&format!("&startTime={start}"));
     }
 
-    log::info!("Fetching trades from {}", url);
-
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
+
+    // track the api limit
+    let headers = response.headers();
+    for (name, value) in headers {
+        if name == "x-mbx-used-weight-1m" {
+            log::info!("Used weight: {}", value.to_str().unwrap());
+        }
+    }
+
     let text = response.text().await.map_err(StreamError::FetchError)?;
 
     let trades: Vec<Trade> = {

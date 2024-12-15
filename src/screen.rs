@@ -79,7 +79,7 @@ impl Serialize for UserTimezone {
 #[derive(Debug, Clone, Copy)]
 pub enum InfoType {
     FetchingKlines,
-    FetchingTrades,
+    FetchingTrades(usize),
     FetchingOI,
 }
 
@@ -139,6 +139,35 @@ impl NotificationManager {
     pub fn push(&mut self, window: window::Id, pane: pane_grid::Pane, notification: Notification) {
         self.get_or_create_notifications(window, pane)
             .push(notification);
+    }
+
+    pub fn increment_fetching_trades(
+        &mut self,
+        window: window::Id,
+        pane: &pane_grid::Pane,
+        increment_by: usize,
+    ) {
+        if let Some(window_map) = self.notifications.get_mut(&window) {
+            if let Some(notification_list) = window_map.get_mut(pane) {
+                let found = notification_list.iter_mut().any(|notification| {
+                    if let Notification::Info(InfoType::FetchingTrades(count)) = notification {
+                        *count += increment_by;
+                        return true;
+                    }
+                    false
+                });
+
+                if !found {
+                    notification_list.push(Notification::Info(InfoType::FetchingTrades(increment_by)));
+                }
+            } else {
+                window_map.insert(*pane, vec![Notification::Info(InfoType::FetchingTrades(increment_by))]);
+            }
+        } else {
+            let mut pane_map = HashMap::new();
+            pane_map.insert(*pane, vec![Notification::Info(InfoType::FetchingTrades(increment_by))]);
+            self.notifications.insert(window, pane_map);
+        }
     }
 
     /// Remove notifications of a specific type for a pane in a window
@@ -245,7 +274,10 @@ fn create_notis_column<'a, M: 'a>(notifications: &'a [Notification]) -> Column<'
             Notification::Warn(warn) => warn.to_string(),
             Notification::Info(info) => match info {
                 InfoType::FetchingKlines => "Fetching klines...".to_string(),
-                InfoType::FetchingTrades => "Fetching trades...".to_string(),
+                InfoType::FetchingTrades(total_fetched) => format!(
+                    "Fetching trades...\n({} fetched)",
+                    total_fetched
+                ),
                 InfoType::FetchingOI => "Fetching open interest...".to_string(),
             },
         };
