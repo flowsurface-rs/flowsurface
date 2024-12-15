@@ -244,16 +244,21 @@ impl FootprintChart {
         }
 
         if !self.fetching_trades {
-            let (trade_earliest, _) = self.get_trades_timerange(kline_latest);
+            let (kline_earliest, _) = self.get_trades_timerange(kline_latest);
 
-            if visible_earliest < trade_earliest {
-                let latest = trade_earliest;
-
-                if let Some(task) = request_fetch(
-                    &mut self.request_handler, FetchRange::Trades(visible_earliest, latest)
-                ) {
-                    self.fetching_trades = true;
-                    return task;
+            if visible_earliest < kline_earliest {
+                let trade_earliest = self.raw_trades.iter()
+                    .filter(|trade| trade.time >= kline_earliest)
+                    .map(|trade| trade.time)
+                    .min();
+            
+                if let Some(earliest) = trade_earliest {
+                    if let Some(task) = request_fetch(
+                        &mut self.request_handler, FetchRange::Trades(visible_earliest, earliest)
+                    ) {
+                        self.fetching_trades = true;
+                        return task;
+                    }
                 }
             }
         }
@@ -381,16 +386,16 @@ impl FootprintChart {
         (from_time, to_time)
     }
 
-    fn get_trades_timerange(&self, latest: i64) -> (i64, i64) {
-        let mut from_time = latest;
-        let mut to_time = latest;
+    fn get_trades_timerange(&self, latest_kline: i64) -> (i64, i64) {
+        let mut from_time = latest_kline;
+        let mut to_time = 0;
 
         self.data_points
             .iter()
             .filter(|(_, (trades, _))| !trades.is_empty())
             .for_each(|(time, _)| {
                 from_time = from_time.min(*time);
-                to_time = to_time.min(*time.min(&latest));
+                to_time = to_time.max(*time);
             });
 
         (from_time, to_time)
@@ -423,9 +428,9 @@ impl FootprintChart {
                     trades.insert(price_level, (trade.qty, 0.0));
                 }
             }
-
-            self.raw_trades.push(*trade);
         }
+
+        self.raw_trades.extend_from_slice(trades_buffer);
     }
 
     pub fn insert_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
