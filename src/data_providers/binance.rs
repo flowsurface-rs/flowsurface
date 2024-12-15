@@ -10,10 +10,9 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::{to_object_iter_unchecked, FastStr};
 
 use super::{
-    deserialize_string_to_f32,
-    setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    Connection, Event, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, 
-    StreamError, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache,
+    deserialize_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
+    Connection, Event, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, StreamError,
+    Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache,
 };
 
 async fn connect(
@@ -728,6 +727,25 @@ pub async fn fetch_ticksize(market: MarketType) -> Result<HashMap<Ticker, Option
     let exchange_info: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse exchange info: {e}")))?;
 
+    let rate_limits = exchange_info["rateLimits"]
+        .as_array()
+        .ok_or_else(|| StreamError::ParseError("Missing rateLimits array".to_string()))?;
+
+    let request_limit = rate_limits
+        .iter()
+        .find(|x| x["rateLimitType"].as_str().unwrap_or_default() == "REQUEST_WEIGHT")
+        .and_then(|x| x["limit"].as_i64())
+        .ok_or_else(|| StreamError::ParseError("Missing request weight limit".to_string()))?;
+
+    log::info!(
+        "Binance req. weight limit per minute {}: {:?}", 
+        match market {
+            MarketType::Spot => "Spot",
+            MarketType::LinearPerps => "Linear Perps",
+        },
+        request_limit
+    );
+
     let symbols = exchange_info["symbols"]
         .as_array()
         .ok_or_else(|| StreamError::ParseError("Missing symbols array".to_string()))?;
@@ -832,6 +850,36 @@ pub async fn fetch_ticker_prices(market: MarketType) -> Result<HashMap<Ticker, T
     Ok(ticker_price_map)
 }
 
+async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result<(), StreamError> {
+    let weight = headers
+        .get("x-mbx-used-weight-1m")
+        .ok_or_else(|| StreamError::ParseError("Missing rate limit header".to_string()))?
+        .to_str()
+        .map_err(|e| StreamError::ParseError(format!("Invalid header value: {e}")))?
+        .parse::<i32>()
+        .map_err(|e| StreamError::ParseError(format!("Invalid weight value: {e}")))?;
+
+    let usage_percentage = (weight as f32 / max_limit) * 100.0;
+
+    match usage_percentage {
+        p if p >= 95.0 => {
+            log::warn!("Rate limit critical ({:.1}%), sleeping for 10s", p);
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        }
+        p if p >= 90.0 => {
+            log::warn!("Rate limit high ({:.1}%), sleeping for 5s", p);
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+        p if p >= 80.0 => {
+            log::warn!("Rate limit warning ({:.1}%), sleeping for 3s", p);
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        }
+        _ => (),
+    }
+
+    Ok(())
+}
+
 pub async fn fetch_hist_trades(
     ticker: Ticker,
     range: Option<(i64, i64)>,
@@ -852,13 +900,13 @@ pub async fn fetch_hist_trades(
 
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
 
-    // track the api limit
-    let headers = response.headers();
-    for (name, value) in headers {
-        if name == "x-mbx-used-weight-1m" {
-            log::info!("Used weight: {}", value.to_str().unwrap());
-        }
-    }
+    handle_rate_limit(
+        response.headers(), 
+        match market_type {
+            MarketType::Spot => 6000.0,
+            MarketType::LinearPerps => 2400.0,
+        },
+    ).await?;
 
     let text = response.text().await.map_err(StreamError::FetchError)?;
 
