@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-
+use std::{collections::HashMap, io::BufReader};
+use csv::ReaderBuilder;
 use fastwebsockets::{FragmentCollector, OpCode};
 use ::futures::{SinkExt, Stream};
 use hyper::upgrade::Upgraded;
@@ -880,9 +880,30 @@ async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result
     Ok(())
 }
 
-pub async fn fetch_hist_trades(
+pub async fn fetch_trades(
+    ticker: Ticker, 
+    from_time: i64,
+) -> Result<Vec<Trade>, StreamError> {
+    let today_midnight = chrono::Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc();
+    
+    if from_time >= today_midnight.timestamp_millis() {
+        return fetch_intraday_trades(ticker, from_time).await;
+    }
+
+    let from_date = chrono::DateTime::from_timestamp_millis(from_time)
+        .ok_or_else(|| StreamError::ParseError("Invalid timestamp".into()))?
+        .date_naive();
+
+    get_hist_trades(ticker, from_date).await
+}
+
+pub async fn fetch_intraday_trades(
     ticker: Ticker,
-    range: Option<(i64, i64)>,
+    from: i64,
 ) -> Result<Vec<Trade>, StreamError> {
     let (symbol_str, market_type) = ticker.get_string();
     let base_url = match market_type {
@@ -894,9 +915,7 @@ pub async fn fetch_hist_trades(
         "{base_url}?symbol={symbol_str}&limit=1000",
     );
 
-    if let Some((start, _)) = range {
-        url.push_str(&format!("&startTime={start}"));
-    }
+    url.push_str(&format!("&startTime={}", from));
 
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
 
@@ -923,6 +942,106 @@ pub async fn fetch_hist_trades(
     };
 
     Ok(trades)
+}
+
+pub async fn get_hist_trades(
+    ticker: Ticker,
+    date: chrono::NaiveDate,
+) -> Result<Vec<Trade>, StreamError> {    
+    let (symbol, market_type) = ticker.get_string();
+
+    let base_path = match market_type {
+        MarketType::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
+        MarketType::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
+    };
+
+    std::fs::create_dir_all(&base_path)
+        .map_err(|e| StreamError::ParseError(format!("Failed to create directories: {e}")))?;
+
+    let zip_path = format!(
+        "{}/{}-aggTrades-{}.zip",
+        base_path,
+        symbol.to_uppercase(), 
+        date.format("%Y-%m-%d").to_string(),
+    );
+    
+    if std::fs::metadata(&zip_path).is_ok() {
+        log::info!("Using cached {}", zip_path);
+    } else {
+        let url = format!("https://data.binance.vision/{zip_path}");
+
+        log::info!("Downloading from {}", url);
+        
+        let resp = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
+        
+        if !resp.status().is_success() {
+            return Err(StreamError::InvalidRequest(
+                format!("Failed to fetch from {}: {}", url, resp.status())
+            ));
+        }
+
+        let body = resp.bytes().await.map_err(StreamError::FetchError)?;
+        
+        std::fs::write(&zip_path, &body)
+            .map_err(|e| StreamError::ParseError(format!("Failed to write zip file: {e}")))?;
+    }
+
+    match std::fs::File::open(&zip_path) {
+        Ok(file) => {
+            let mut archive = zip::ZipArchive::new(file)
+                .map_err(|e| StreamError::ParseError(format!("Failed to unzip file: {e}")))?;
+
+            let mut trades = Vec::new();
+            for i in 0..archive.len() {
+                let csv_file = archive.by_index(i)
+                    .map_err(|e| StreamError::ParseError(format!("Failed to read csv: {e}")))?;
+
+                let mut csv_reader = ReaderBuilder::new()
+                    .has_headers(false)
+                    .from_reader(BufReader::new(csv_file));
+
+                trades.extend(csv_reader.records().filter_map(|record| {
+                    record.ok().and_then(|record| {
+                        let time = record[5].parse::<u64>().ok()?;
+                        let is_sell = record[6].parse::<bool>().ok()?;
+                        let price = str_f32_parse(&record[1]);
+                        let qty = str_f32_parse(&record[2]);
+                        
+                        Some(match market_type {
+                            MarketType::Spot => Trade {
+                                time: time as i64,
+                                is_sell,
+                                price,
+                                qty,
+                            },
+                            MarketType::LinearPerps => Trade {
+                                time: time as i64,
+                                is_sell,
+                                price,
+                                qty,
+                            }
+                        })
+                    })
+                }));
+            }
+            
+            if let Some(latest_trade) = trades.last() {
+                match fetch_intraday_trades(ticker, latest_trade.time).await {
+                    Ok(intraday_trades) => {
+                        trades.extend(intraday_trades);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to fetch intraday trades: {}", e);
+                    }
+                }
+            }
+
+            Ok(trades)
+        }
+        Err(e) => Err(
+            StreamError::ParseError(format!("Failed to open compressed file: {e}"))
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]

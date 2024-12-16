@@ -610,7 +610,7 @@ impl Dashboard {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
                     if exchange == Exchange::BinanceFutures || exchange == Exchange::BinanceSpot {
                         return Task::perform(
-                            binance::fetch_hist_trades(ticker, Some((from_time, to_time))),
+                            binance::fetch_trades(ticker, from_time),
                             move |result| match result {
                                 Ok(trades) => Message::DistributeFetchedTrades(
                                     window_id,
