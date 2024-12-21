@@ -468,6 +468,9 @@ impl Dashboard {
                             pane_state.content.toggle_indicator(indicator_str);
                         }
                     }
+                    pane::Message::HideNotification(pane, notification) => {
+                        self.notification_manager.find_and_remove(window, pane, notification);
+                    }
                 }
             }
             Message::FetchEvent(req_id, klines, pane_stream, pane_id, window) => {
@@ -1002,7 +1005,10 @@ impl Dashboard {
         if !self.notification_manager.global_notifications.is_empty() {
             dashboard_notification(
                 base,
-                create_notis_column(&self.notification_manager.global_notifications),
+                create_notis_column(
+                    &self.notification_manager.global_notifications, 
+                    Message::ClearLastGlobalNotification,
+                ),
             )
         } else {
             base.into()

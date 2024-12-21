@@ -1,7 +1,7 @@
 use iced::{
     alignment::{Horizontal, Vertical}, padding, widget::{
-        button, center, column, container, pane_grid, row, scrollable, text, tooltip, Container, Slider
-    }, Alignment, Element, Length, Renderer, Task, Theme
+        button, center, column, container, pane_grid, row, scrollable, text, tooltip, Column, Slider
+    }, Alignment, Element, Length, Renderer, Task, Theme,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,7 @@ use crate::{
     },
     data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe},
     screen::{
-        self, create_button, create_notis_column, modal::{pane_menu, pane_notification}, DashboardError, UserTimezone
+        self, create_button, modal::{pane_menu, pane_notification}, DashboardError, InfoType, Notification, UserTimezone
     },
     style::{self, get_icon_text, Icon},
     window::{self, Window},
@@ -51,6 +51,7 @@ pub enum Message {
     ChartUserUpdate(pane_grid::Pane, charts::Message),
     SliderChanged(pane_grid::Pane, f32, bool),
     ToggleIndicator(pane_grid::Pane, String),
+    HideNotification(pane_grid::Pane, Notification),
     Popout,
     Merge,
 }
@@ -672,7 +673,7 @@ fn stream_modifier_view<'a>(
     pane: pane_grid::Pane,
     selected_ticksize: Option<TickMultiplier>,
     selected_timeframe: Option<Timeframe>,
-) -> iced::Element<'a, Message> {
+) -> Element<'a, Message> {
     let create_button = |content: String, msg: Option<Message>| {
         let btn = button(text(content))
             .width(Length::Fill)
@@ -760,14 +761,16 @@ fn view_panel<'a, C: PanelView>(
     content: &'a C,
     notifications: Option<&'a Vec<screen::Notification>>,
 ) -> Element<'a, Message> {
-    let base: Container<'_, Message> = center(content.view(pane, state));
+    let base = center(content.view(pane, state));
 
     if let Some(notifications) = notifications {
-        if !notifications.is_empty() {
-            pane_notification(base, create_notis_column(notifications))
-        } else {
-            base.into()
-        }
+        pane_notification(
+            base, 
+            notification_modals(
+                pane,
+                notifications, 
+            )
+        )
     } else {
         base.into()
     }
@@ -780,17 +783,50 @@ fn view_chart<'a, C: ChartView, I: Indicator>(
     notifications: Option<&'a Vec<screen::Notification>>,
     indicators: &'a [I],
 ) -> Element<'a, Message> {
-    let base: Container<'_, Message> = center(content.view(pane, state, indicators));
+    let base = center(content.view(pane, state, indicators));
 
     if let Some(notifications) = notifications {
-        if !notifications.is_empty() {
-            pane_notification(base, create_notis_column(notifications))
-        } else {
-            base.into()
-        }
+        pane_notification(
+            base, 
+            notification_modals(
+                pane,
+                notifications, 
+            )
+        )
     } else {
         base.into()
     }
+}
+
+fn notification_modals<'a>(
+    pane: pane_grid::Pane,
+    notifications: &'a [Notification],
+) -> Column<'a, Message> {
+    let mut notifications_column = column![].align_x(Alignment::End).spacing(6);
+
+    for notification in notifications.iter().rev().take(5) {
+        let notification_str = match notification {
+            Notification::Error(error) => error.to_string(),
+            Notification::Warn(warn) => warn.to_string(),
+            Notification::Info(info) => match info {
+                InfoType::FetchingKlines => "Fetching klines...".to_string(),
+                InfoType::FetchingTrades(total_fetched) => format!(
+                    "Fetching trades...\n({} fetched)",
+                    total_fetched
+                ),
+                InfoType::FetchingOI => "Fetching open interest...".to_string(),
+            },
+        };
+
+        notifications_column = notifications_column
+            .push(
+                button(container(text(notification_str)).padding(6))
+                    .on_press(Message::HideNotification(pane, notification.clone())),
+            )
+            .padding(12);
+    }
+
+    notifications_column
 }
 
 fn view_controls<'a>(
