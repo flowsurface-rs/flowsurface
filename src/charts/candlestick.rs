@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::{mouse, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
@@ -71,16 +71,16 @@ impl ChartConstants for CandlestickChart {
 }
 
 #[allow(dead_code)]
-enum Indicators {
+enum IndicatorData {
     Volume(Caches, BTreeMap<i64, (f32, f32)>),
     OpenInterest(Caches, BTreeMap<i64, f32>),
 }
 
-impl Indicators {
+impl IndicatorData {
     fn clear_cache(&mut self) {
         match self {
-            Indicators::Volume(caches, _) 
-            | Indicators::OpenInterest(caches, _) => {
+            IndicatorData::Volume(caches, _) 
+            | IndicatorData::OpenInterest(caches, _) => {
                 caches.clear_all();
             }
         }
@@ -90,7 +90,7 @@ impl Indicators {
 pub struct CandlestickChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, Kline>,
-    indicators: Vec<Indicators>,
+    indicators: HashMap<CandlestickIndicator, IndicatorData>,
     request_handler: RequestHandler,
     fetching_oi: bool,
 }
@@ -101,6 +101,7 @@ impl CandlestickChart {
         timeframe: Timeframe,
         tick_size: f32,
         timezone: UserTimezone,
+        enabled_indicators: &[CandlestickIndicator],
     ) -> CandlestickChart {
         let mut data_points = BTreeMap::new();
         let mut volume_data = BTreeMap::new();
@@ -138,10 +139,25 @@ impl CandlestickChart {
                 ..Default::default()
             },
             data_points,
-            indicators: vec![
-                Indicators::Volume(Caches::default(), volume_data.clone()),
-                Indicators::OpenInterest(Caches::default(), BTreeMap::new()),
-            ],
+            indicators: {
+                let mut indicators = HashMap::new();
+
+                for indicator in enabled_indicators {
+                    indicators.insert(
+                        *indicator,
+                        match indicator {
+                            CandlestickIndicator::Volume => {
+                                IndicatorData::Volume(Caches::default(), volume_data.clone())
+                            },
+                            CandlestickIndicator::OpenInterest => {
+                                IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
+                            }
+                        }
+                    );
+                }
+
+                indicators
+            },
             request_handler: RequestHandler::new(),
             fetching_oi: false,
         }
@@ -159,11 +175,10 @@ impl CandlestickChart {
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
         self.data_points.insert(kline.time as i64, *kline);
 
-        self.indicators.iter_mut().for_each(|indicator| {
-            if let Indicators::Volume(_, data) = indicator {
+        if let Some(IndicatorData::Volume(_, data)) = 
+            self.indicators.get_mut(&CandlestickIndicator::Volume) {
                 data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
-            }
-        });
+            };
 
         let chart = self.get_common_data_mut();
 
@@ -204,8 +219,8 @@ impl CandlestickChart {
             }
         }
 
-        for indicator in &self.indicators {
-            if let Indicators::OpenInterest(_, _) = indicator {
+        for (_, data) in &self.indicators {
+            if let IndicatorData::OpenInterest(_, _) = data {
                 if !self.fetching_oi {
                     let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
 
@@ -244,11 +259,10 @@ impl CandlestickChart {
             self.data_points.entry(kline.time as i64).or_insert(*kline);
         }
 
-        self.indicators.iter_mut().for_each(|indicator| {
-            if let Indicators::Volume(_, data) = indicator {
+        if let Some(IndicatorData::Volume(_, data)) = 
+            self.indicators.get_mut(&CandlestickIndicator::Volume) {
                 data.extend(volume_data.clone());
-            }
-        });
+            };
 
         if klines_raw.len() > 1 {
             self.request_handler.mark_completed(req_id);
@@ -263,13 +277,12 @@ impl CandlestickChart {
     }
 
     pub fn insert_open_interest(&mut self, _req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
-        self.indicators.iter_mut().for_each(|indicator| {
-            if let Indicators::OpenInterest(_, data) = indicator {
+        if let Some(IndicatorData::OpenInterest(_, data)) = 
+            self.indicators.get_mut(&CandlestickIndicator::OpenInterest) {
                 data.extend(oi_data
                     .iter().map(|oi| (oi.time, oi.value))
                 );
-            }
-        });
+            };
     
         self.fetching_oi = false;
     }
@@ -290,14 +303,13 @@ impl CandlestickChart {
         let mut from_time = latest_kline;
         let mut to_time = i64::MIN;
 
-        self.indicators.iter().for_each(|indicator| {
-            if let Indicators::OpenInterest(_, data) = indicator {
+        if let Some(IndicatorData::OpenInterest(_, data)) = 
+            self.indicators.get(&CandlestickIndicator::OpenInterest) {
                 data.iter().for_each(|(time, _)| {
                     from_time = from_time.min(*time);
                     to_time = to_time.max(*time);
                 });
-            }
-        });
+            };
 
         (from_time, to_time)
     }
@@ -321,29 +333,34 @@ impl CandlestickChart {
 
         chart_state.cache.clear_all();
 
-        self.indicators.iter_mut().for_each(|indicator| {
-            indicator.clear_cache();
+        self.indicators.iter_mut().for_each(|(_, data)| {
+            data.clear_cache();
         });
     }
 
-    fn get_volume_indicator(&self) -> Option<(&Caches, &BTreeMap<i64, (f32, f32)>)> {
-        for indicator in &self.indicators {
-            if let Indicators::Volume(cache, data) = indicator {
-                return Some((cache, data));
+    pub fn toggle_indicator(&mut self, indicator: CandlestickIndicator) {
+        if self.indicators.contains_key(&indicator) {
+            self.indicators.remove(&indicator);
+        } else {
+            match indicator {
+                CandlestickIndicator::Volume => {
+                    let volume_data = self.data_points.iter()
+                        .map(|(time, kline)| (*time, (kline.volume.0, kline.volume.1)))
+                        .collect();
+
+                    self.indicators.insert(
+                        indicator,
+                        IndicatorData::Volume(Caches::default(), volume_data)
+                    );
+                },
+                CandlestickIndicator::OpenInterest => {
+                    self.indicators.insert(
+                        indicator,
+                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
+                    );
+                }
             }
         }
-
-        None
-    }
-
-    fn get_oi_indicator(&self) -> Option<(&Caches, &BTreeMap<i64, f32>)> {
-        for indicator in &self.indicators {
-            if let Indicators::OpenInterest(cache, data) = indicator {
-                return Some((cache, data));
-            }
-        }
-
-        None
     }
 
     pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Element<Message> {
@@ -363,18 +380,20 @@ impl CandlestickChart {
             {
                 match candlestick_indicator {
                     CandlestickIndicator::Volume => {
-                        if let Some((cache, data)) = self.get_volume_indicator() {
-                            indicators = indicators.push(
-                                indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                            );
-                        }
+                        if let Some(IndicatorData::Volume(cache, data)) = self.indicators
+                            .get(&CandlestickIndicator::Volume) {
+                                indicators = indicators.push(
+                                    indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                                );
+                            }
                     },
                     CandlestickIndicator::OpenInterest => {
-                        if let Some((cache, data)) = self.get_oi_indicator() {
-                            indicators = indicators.push(
-                                indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                            );
-                        }
+                        if let Some(IndicatorData::OpenInterest(cache, data)) = 
+                            self.indicators.get(&CandlestickIndicator::OpenInterest) {
+                                indicators = indicators.push(
+                                    indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                                );
+                            }
                     }
                 }
             }

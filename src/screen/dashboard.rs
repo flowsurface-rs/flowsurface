@@ -166,6 +166,7 @@ impl Dashboard {
     pub fn from_config(
         panes: Configuration<PaneState>,
         popout_windows: Vec<(Configuration<PaneState>, (Point, Size))>,
+        trade_fetch_enabled: bool,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
 
@@ -187,7 +188,7 @@ impl Dashboard {
             tickers_info: HashMap::new(),
             popout,
             timezone: UserTimezone::default(),
-            trade_fetch_enabled: false,
+            trade_fetch_enabled,
         }
     }
 
@@ -566,16 +567,17 @@ impl Dashboard {
                             if state.matches_stream(&stream_type) {
                                 if let StreamType::Kline { timeframe, .. } = stream_type {
                                     match &mut state.content {
-                                        PaneContent::Candlestick(chart, _) => {
+                                        PaneContent::Candlestick(chart, indicators) => {
                                             let tick_size = chart.get_tick_size();
                                             *chart = CandlestickChart::new(
                                                 klines.clone(),
                                                 timeframe,
                                                 tick_size,
                                                 timezone,
+                                                &indicators,
                                             );
                                         }
-                                        PaneContent::Footprint(chart, _) => {
+                                        PaneContent::Footprint(chart, indicators) => {
                                             let (raw_trades, tick_size) =
                                                 (chart.get_raw_trades(), chart.get_tick_size());
                                             *chart = FootprintChart::new(
@@ -584,6 +586,7 @@ impl Dashboard {
                                                 klines.clone(),
                                                 raw_trades,
                                                 timezone,
+                                                &indicators,
                                             );
                                         }
                                         _ => {}

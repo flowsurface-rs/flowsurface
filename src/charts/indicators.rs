@@ -19,7 +19,7 @@ pub trait Indicator: PartialEq + Display + ToString + Debug + 'static  {
 }
 
 /// Candlestick chart indicators
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum CandlestickIndicator {
     Volume,
     OpenInterest,
@@ -79,7 +79,7 @@ impl Display for HeatmapIndicator {
 }
 
 /// Footprint chart indicators
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum FootprintIndicator {
     Volume,
     OpenInterest,

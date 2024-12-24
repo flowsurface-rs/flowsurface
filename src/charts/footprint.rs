@@ -61,16 +61,16 @@ impl Chart for FootprintChart {
 }
 
 #[allow(dead_code)]
-enum Indicators {
+enum IndicatorData {
     Volume(Caches, BTreeMap<i64, (f32, f32)>),
     OpenInterest(Caches, BTreeMap<i64, f32>),
 }
 
-impl Indicators {
+impl IndicatorData {
     fn clear_cache(&mut self) {
         match self {
-            Indicators::Volume(caches, _) 
-            | Indicators::OpenInterest(caches, _) => {
+            IndicatorData::Volume(caches, _) 
+            | IndicatorData::OpenInterest(caches, _) => {
                 caches.clear_all();
             }
         }
@@ -94,7 +94,7 @@ pub struct FootprintChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (HashMap<OrderedFloat<f32>, (f32, f32)>, Kline)>,
     raw_trades: Vec<Trade>,
-    indicators: Vec<Indicators>,
+    indicators: HashMap<FootprintIndicator, IndicatorData>,
     fetching_oi: bool,
     fetching_trades: bool,
     request_handler: RequestHandler,
@@ -107,6 +107,7 @@ impl FootprintChart {
         klines_raw: Vec<Kline>,
         raw_trades: Vec<Trade>,
         timezone: UserTimezone,
+        enabled_indicators: &[FootprintIndicator],
     ) -> Self {
         let mut data_points = BTreeMap::new();
         let mut volume_data = BTreeMap::new();
@@ -174,10 +175,25 @@ impl FootprintChart {
             },
             data_points,
             raw_trades,
-            indicators: vec![
-                Indicators::Volume(Caches::default(), volume_data.clone()),
-                Indicators::OpenInterest(Caches::default(), BTreeMap::new()),
-            ],
+            indicators: {
+                let mut indicators = HashMap::new();
+
+                for indicator in enabled_indicators {
+                    indicators.insert(
+                        *indicator,
+                        match indicator {
+                            FootprintIndicator::Volume => {
+                                IndicatorData::Volume(Caches::default(), volume_data.clone())
+                            },
+                            FootprintIndicator::OpenInterest => {
+                                IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
+                            }
+                        }
+                    );
+                }
+
+                indicators
+            },
             fetching_oi: false,
             fetching_trades: false,
             request_handler: RequestHandler::new(),
@@ -196,11 +212,10 @@ impl FootprintChart {
                 .insert(kline.time as i64, (HashMap::new(), *kline));
         }
 
-        self.indicators.iter_mut().for_each(|indicator| {
-            if let Indicators::Volume(_, data) = indicator {
+        if let Some(IndicatorData::Volume(_, data)) = 
+            self.indicators.get_mut(&FootprintIndicator::Volume) {
                 data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
-            }
-        });
+            };
 
         let chart = self.get_common_data_mut();
 
@@ -263,8 +278,8 @@ impl FootprintChart {
             }
         }
 
-        for indicator in &self.indicators {
-            if let Indicators::OpenInterest(_, _) = indicator {
+        for (_, data) in &self.indicators {
+            if let IndicatorData::OpenInterest(_, _) = data {
                 if !self.fetching_oi {
                     let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
 
@@ -377,14 +392,13 @@ impl FootprintChart {
         let mut from_time = latest_kline;
         let mut to_time = i64::MIN;
 
-        self.indicators.iter().for_each(|indicator| {
-            if let Indicators::OpenInterest(_, data) = indicator {
+        if let Some(IndicatorData::OpenInterest(_, data)) = 
+            self.indicators.get(&FootprintIndicator::OpenInterest) {
                 data.iter().for_each(|(time, _)| {
                     from_time = from_time.min(*time);
                     to_time = to_time.max(*time);
                 });
-            }
-        });
+            };
 
         (from_time, to_time)
     }
@@ -478,11 +492,10 @@ impl FootprintChart {
                 .or_insert((HashMap::new(), *kline));
         }
 
-        self.indicators.iter_mut().for_each(|indicator| {
-            if let Indicators::Volume(_, data) = indicator {
+        if let Some(IndicatorData::Volume(_, data)) = 
+            self.indicators.get_mut(&FootprintIndicator::Volume) {
                 data.extend(volume_data.clone());
-            }
-        });
+            };
 
         if klines_raw.len() > 1 {
             self.request_handler.mark_completed(req_id);
@@ -497,13 +510,12 @@ impl FootprintChart {
     }
 
     pub fn insert_open_interest(&mut self, _req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
-        self.indicators.iter_mut().for_each(|indicator| {
-            if let Indicators::OpenInterest(_, data) = indicator {
+        if let Some(IndicatorData::OpenInterest(_, data)) = 
+            self.indicators.get_mut(&FootprintIndicator::OpenInterest) {
                 data.extend(oi_data
                     .iter().map(|oi| (oi.time, oi.value))
                 );
-            }
-        });
+            };
     
         self.fetching_oi = false;
     }
@@ -557,29 +569,34 @@ impl FootprintChart {
 
         chart_state.cache.clear_all();
 
-        self.indicators.iter_mut().for_each(|indicator| {
-            indicator.clear_cache();
+        self.indicators.iter_mut().for_each(|(_, data)| {
+            data.clear_cache();
         });
     }
 
-    fn get_volume_indicator(&self) -> Option<(&Caches, &BTreeMap<i64, (f32, f32)>)> {
-        for indicator in &self.indicators {
-            if let Indicators::Volume(cache, data) = indicator {
-                return Some((cache, data));
+    pub fn toggle_indicator(&mut self, indicator: FootprintIndicator) {
+        if self.indicators.contains_key(&indicator) {
+            self.indicators.remove(&indicator);
+        } else {
+            match indicator {
+                FootprintIndicator::Volume => {
+                    let volume_data = self.data_points.iter()
+                        .map(|(time, kline)| (*time, (kline.1.volume.0, kline.1.volume.1)))
+                        .collect();
+
+                    self.indicators.insert(
+                        indicator,
+                        IndicatorData::Volume(Caches::default(), volume_data)
+                    );
+                },
+                FootprintIndicator::OpenInterest => {
+                    self.indicators.insert(
+                        indicator,
+                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
+                    );
+                }
             }
         }
-
-        None
-    }
-
-    fn get_oi_indicator(&self) -> Option<(&Caches, &BTreeMap<i64, f32>)> {
-        for indicator in &self.indicators {
-            if let Indicators::OpenInterest(cache, data) = indicator {
-                return Some((cache, data));
-            }
-        }
-
-        None
     }
 
     pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Element<Message> {
@@ -599,18 +616,20 @@ impl FootprintChart {
             {
                 match candlestick_indicator {
                     FootprintIndicator::Volume => {
-                        if let Some((cache, data)) = self.get_volume_indicator() {
-                            indicators = indicators.push(
-                                indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                            );
-                        }
+                        if let Some(IndicatorData::Volume(cache, data)) = 
+                            self.indicators.get(&FootprintIndicator::Volume) {
+                                indicators = indicators.push(
+                                    indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                                );
+                            }
                     },
                     FootprintIndicator::OpenInterest => {
-                        if let Some((cache, data)) = self.get_oi_indicator() {
-                            indicators = indicators.push(
-                                indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                            );
-                        }
+                        if let Some(IndicatorData::OpenInterest(cache, data)) = 
+                            self.indicators.get(&FootprintIndicator::OpenInterest) {
+                                indicators = indicators.push(
+                                    indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                                );
+                            }
                     }
                 }
             }

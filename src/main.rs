@@ -92,6 +92,7 @@ fn main() {
                                     timeframe,
                                     tick_size,
                                     UserTimezone::default(),
+                                    &indicators,
                                 ),
                                 indicators,
                             ),
@@ -121,6 +122,7 @@ fn main() {
                                     vec![],
                                     vec![],
                                     UserTimezone::default(),
+                                    &indicators,
                                 ),
                                 indicators,
                             ),
@@ -175,8 +177,9 @@ fn main() {
                     ));
                 }
 
-                let dashboard =
-                    Dashboard::from_config(configuration(dashboard.pane.clone()), popout_windows);
+                let dashboard = Dashboard::from_config(
+                    configuration(dashboard.pane.clone()), popout_windows, dashboard.trade_fetch_enabled
+                );
 
                 de_state.layouts.insert(*id, dashboard);
             }

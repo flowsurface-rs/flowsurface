@@ -200,6 +200,10 @@ impl PaneState {
                     ticker_info.tick_size,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M5);
+                let enabled_indicators = vec![
+                    FootprintIndicator::Volume,
+                    FootprintIndicator::OpenInterest,
+                ];
                 PaneContent::Footprint(
                     FootprintChart::new(
                         timeframe,
@@ -207,11 +211,9 @@ impl PaneState {
                         vec![],
                         vec![],
                         timezone,
+                        &enabled_indicators,
                     ),
-                    vec![
-                        FootprintIndicator::Volume,
-                        FootprintIndicator::OpenInterest,
-                    ],
+                    enabled_indicators,
                 )
             }
             "candlestick" => {
@@ -220,17 +222,19 @@ impl PaneState {
                     ticker_info.tick_size,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M15);
+                let enabled_indicators = vec![
+                    CandlestickIndicator::Volume,
+                    CandlestickIndicator::OpenInterest,
+                ];
                 PaneContent::Candlestick(
                     CandlestickChart::new(
                         vec![],
                         timeframe,
                         tick_size,
                         timezone,
+                        &enabled_indicators,
                     ),
-                    vec![
-                        CandlestickIndicator::Volume,
-                        CandlestickIndicator::OpenInterest,
-                    ],
+                    enabled_indicators,
                 )
             }
             "time&sales" => PaneContent::TimeAndSales(TimeAndSales::new()),
@@ -265,16 +269,22 @@ impl PaneState {
         timezone: UserTimezone,
     ) {
         match &mut self.content {
-            PaneContent::Candlestick(chart, _) => {
+            PaneContent::Candlestick(chart, indicators) => {
                 if let Some(id) = req_id {
                     chart.insert_new_klines(id, klines);
                 } else {
                     let tick_size = chart.get_tick_size();
 
-                    *chart = CandlestickChart::new(klines.clone(), timeframe, tick_size, timezone);
+                    *chart = CandlestickChart::new(
+                        klines.clone(), 
+                        timeframe, 
+                        tick_size, 
+                        timezone,
+                        &indicators,
+                    );
                 }
             }
-            PaneContent::Footprint(chart, _) => {
+            PaneContent::Footprint(chart, indicators) => {
                 if let Some(id) = req_id {
                     chart.insert_new_klines(id, klines);
                 } else {
@@ -286,6 +296,7 @@ impl PaneState {
                         klines.clone(),
                         raw_trades,
                         timezone,
+                        &indicators,
                     );
                 }
             }
@@ -929,7 +940,7 @@ impl PaneContent {
 
     pub fn toggle_indicator(&mut self, indicator_str: String) {
         match self {
-            PaneContent::Footprint(_, indicators) => {
+            PaneContent::Footprint(chart, indicators) => {
                 let indicator = match indicator_str.as_str() {
                     "Volume" => FootprintIndicator::Volume,
                     "Open Interest" => FootprintIndicator::OpenInterest,
@@ -944,8 +955,10 @@ impl PaneContent {
                 } else {
                     indicators.push(indicator);
                 }
+
+                chart.toggle_indicator(indicator);
             }
-            PaneContent::Candlestick(_, indicators) => {
+            PaneContent::Candlestick(chart, indicators) => {
                 let indicator = match indicator_str.as_str() {
                     "Volume" => CandlestickIndicator::Volume,
                     "Open Interest" => CandlestickIndicator::OpenInterest,
@@ -960,6 +973,8 @@ impl PaneContent {
                 } else {
                     indicators.push(indicator);
                 }
+
+                chart.toggle_indicator(indicator);
             }
             _ => {}
         }

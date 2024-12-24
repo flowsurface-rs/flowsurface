@@ -219,6 +219,7 @@ impl SerializableState {
 pub struct SerializableDashboard {
     pub pane: SerializablePane,
     pub popout: Vec<(SerializablePane, (f32, f32), (f32, f32))>,
+    pub trade_fetch_enabled: bool,
 }
 
 impl<'a> From<&'a Dashboard> for SerializableDashboard {
@@ -265,6 +266,7 @@ impl<'a> From<&'a Dashboard> for SerializableDashboard {
                     })
                     .collect()
             },
+            trade_fetch_enabled: dashboard.trade_fetch_enabled,
         }
     }
 }
@@ -274,6 +276,7 @@ impl Default for SerializableDashboard {
         Self {
             pane: SerializablePane::Starter,
             popout: vec![],
+            trade_fetch_enabled: false,
         }
     }
 }
