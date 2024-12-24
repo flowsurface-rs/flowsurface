@@ -898,7 +898,13 @@ pub async fn fetch_trades(
         .ok_or_else(|| StreamError::ParseError("Invalid timestamp".into()))?
         .date_naive();
 
-    get_hist_trades(ticker, from_date).await
+    match get_hist_trades(ticker, from_date).await {
+        Ok(trades) => Ok(trades),
+        Err(e) => {
+            log::warn!("Historical trades fetch failed: {}, falling back to intraday fetch", e);
+            fetch_intraday_trades(ticker, from_time).await
+        }
+    }
 }
 
 pub async fn fetch_intraday_trades(

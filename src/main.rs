@@ -11,7 +11,7 @@ mod tooltip;
 mod window;
 
 use tooltip::tooltip;
-use screen::modal::dashboard_modal;
+use screen::modal::{confirmation_modal, dashboard_modal};
 use layout::{SerializableDashboard, SerializablePane, Sidebar};
 
 use futures::TryFutureExt;
@@ -260,6 +260,7 @@ enum Message {
     ToggleModal(DashboardModal),
 
     MarketWsEvent(Exchange, data_providers::Event),
+    ToggleTradeFetch(bool),
 
     WindowEvent(WindowEvent),
     SaveAndExit(HashMap<window::Id, (Point, Size)>),
@@ -279,6 +280,7 @@ enum Message {
     FetchAndUpdateTickersTable,
 
     LoadLayout(layout::LayoutId),
+    ToggleDialogModal(Option<String>),
 }
 
 struct State {
@@ -292,6 +294,7 @@ struct State {
     ticker_info_map: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
     show_tickers_dashboard: bool,
     tickers_table: TickersTable,
+    confirmation_dialog: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -364,6 +367,7 @@ impl State {
                 show_tickers_dashboard: false,
                 sidebar_location: saved_state.sidebar,
                 tickers_table: TickersTable::new(saved_state.favorited_tickers),
+                confirmation_dialog: None,
             },
             open_main_window
                 .then(|_| Task::none())
@@ -650,6 +654,18 @@ impl State {
             Message::SidebarPosition(pos) => {
                 self.sidebar_location = pos;
             }
+            Message::ToggleTradeFetch(checked) => {
+                self.layouts.values_mut().for_each(|dashboard| {
+                    dashboard.toggle_trade_fetch(checked, &self.main_window);
+                });
+                    
+                if checked {
+                    self.confirmation_dialog = None;
+                }
+            }
+            Message::ToggleDialogModal(dialog) => {
+                self.confirmation_dialog = dialog;
+            }
         }
         Task::none()
     }
@@ -790,7 +806,7 @@ impl State {
                 .view(&self.main_window)
                 .map(Message::Dashboard);
 
-            let content = column![
+            let base = column![
                 {
                     #[cfg(target_os = "macos")] {
                         center(
@@ -829,23 +845,50 @@ impl State {
 
             match self.active_modal {
                 DashboardModal::Settings => {
-                    let mut all_themes: Vec<Theme> = Theme::ALL.to_vec();
-                    all_themes.push(Theme::Custom(style::custom_theme().into()));
-    
-                    let theme_picklist =
-                        pick_list(all_themes, Some(self.theme.clone()), Message::ThemeSelected);
-    
-                    let timezone_picklist = pick_list(
-                        [UserTimezone::Utc, UserTimezone::Local],
-                        Some(dashboard.get_timezone()),
-                        Message::SetTimezone,
-                    );
-                    let sidebar_pos = pick_list(
-                        [Sidebar::Left, Sidebar::Right],
-                        Some(self.sidebar_location),
-                        Message::SidebarPosition,
-                    );
                     let settings_modal = {
+                        let mut all_themes: Vec<Theme> = Theme::ALL.to_vec();
+                        all_themes.push(Theme::Custom(style::custom_theme().into()));
+
+                        let trade_fetch_checkbox = {
+                            let is_active = dashboard.trade_fetch_enabled;
+                    
+                            let checkbox = iced::widget::checkbox("Fetch trades (Binance)", is_active)
+                                .on_toggle(|checked| {
+                                        if checked {
+                                            Message::ToggleDialogModal(
+                                                Some(
+                                                    "This might be unreliable and take some time to complete"
+                                                    .to_string()
+                                                ),
+                                            )
+                                        } else {
+                                            Message::ToggleTradeFetch(false)
+                                        }
+                                    }
+                                );
+                    
+                            tooltip(
+                                checkbox,
+                                Some("Try to fetch trades for footprint charts"),
+                                tooltip::Position::Top,
+                            )
+                        };
+
+                        let theme_picklist =
+                            pick_list(all_themes, Some(self.theme.clone()), Message::ThemeSelected);
+        
+                        let timezone_picklist = pick_list(
+                            [UserTimezone::Utc, UserTimezone::Local],
+                            Some(dashboard.get_timezone()),
+                            Message::SetTimezone,
+                        );
+
+                        let sidebar_pos = pick_list(
+                            [Sidebar::Left, Sidebar::Right],
+                            Some(self.sidebar_location),
+                            Message::SidebarPosition,
+                        );
+
                         container(
                             column![
                                 column![
@@ -854,6 +897,10 @@ impl State {
                                 ].spacing(4),
                                 column![text("Time zone").size(14), timezone_picklist,].spacing(4),
                                 column![text("Theme").size(14), theme_picklist,].spacing(4),
+                                column![
+                                    text("Experimental").size(14),
+                                    trade_fetch_checkbox,
+                                ].spacing(4),
                             ]
                             .spacing(16),
                         )
@@ -867,15 +914,41 @@ impl State {
                         Sidebar::Left => (Alignment::Start, padding::left(48).top(8)),
                         Sidebar::Right => (Alignment::End, padding::right(48).top(8)),
                     };
-    
-                    dashboard_modal(
-                        content,
+
+                    let base_content = dashboard_modal(
+                        base,
                         settings_modal,
                         Message::ToggleModal(DashboardModal::None),
                         padding,
                         Alignment::End,
                         align_x,
-                    )
+                    );
+
+                    if let Some(confirm_dialog) = &self.confirmation_dialog {
+                        let dialog_content = container(
+                            column![
+                                text(confirm_dialog),
+                                row![
+                                    button(text("Cancel"))
+                                        .on_press(Message::ToggleDialogModal(None)),
+                                    button(text("Confirm"))
+                                        .on_press(Message::ToggleTradeFetch(true)),
+                                ]
+                                .spacing(8),
+                            ]
+                            .spacing(16),
+                        )
+                        .padding(24)
+                        .style(style::dashboard_modal);
+    
+                        confirmation_modal(
+                            base_content, 
+                            dialog_content, 
+                            Message::ToggleDialogModal(None)
+                        )
+                    } else {
+                        base_content.into()
+                    }
                 }
                 DashboardModal::Layout => {
                     let layout_picklist = pick_list(
@@ -964,7 +1037,7 @@ impl State {
                     };
     
                     dashboard_modal(
-                        content,
+                        base,
                         manage_layout_modal,
                         Message::ToggleModal(DashboardModal::None),
                         padding,
@@ -972,7 +1045,7 @@ impl State {
                         align_x,
                     )
                 }
-                DashboardModal::None => content.into(),
+                DashboardModal::None => base.into(),
             }
         }
     }

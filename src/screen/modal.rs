@@ -1,7 +1,5 @@
 use iced::{
-    padding,
-    widget::{container, mouse_area, opaque, stack},
-    Alignment, Element, Length,
+    padding, widget::{center, container, mouse_area, opaque, stack}, Alignment, Color, Element, Length
 };
 
 pub fn dashboard_modal<'a, Message>(
@@ -26,6 +24,36 @@ where
                 .align_x(align_x)
         )
         .on_press(on_blur)
+    ]
+    .into()
+}
+
+
+pub fn confirmation_modal<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        opaque(
+            mouse_area(center(opaque(content)).style(|_theme| {
+                container::Style {
+                    background: Some(
+                        Color {
+                            a: 0.8,
+                            ..Color::BLACK
+                        }
+                        .into(),
+                    ),
+                    ..container::Style::default()
+                }
+            }))
+            .on_press(on_blur)
+        )
     ]
     .into()
 }

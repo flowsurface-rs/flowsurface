@@ -297,6 +297,9 @@ impl FootprintChart {
 
     pub fn reset_request_handler(&mut self) {
         self.request_handler = RequestHandler::new();
+        self.fetching_trades = false;
+        self.fetching_oi = false;
+        self.chart.already_fetching = false;
     }
 
     pub fn change_timezone(&mut self, timezone: UserTimezone) {

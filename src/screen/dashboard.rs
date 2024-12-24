@@ -90,6 +90,7 @@ pub struct Dashboard {
     notification_manager: NotificationManager,
     tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
     timezone: UserTimezone,
+    pub trade_fetch_enabled: bool,
 }
 
 impl Default for Dashboard {
@@ -109,6 +110,7 @@ impl Dashboard {
             tickers_info: HashMap::new(),
             popout: HashMap::new(),
             timezone: UserTimezone::default(),
+            trade_fetch_enabled: false,
         }
     }
 
@@ -185,6 +187,7 @@ impl Dashboard {
             tickers_info: HashMap::new(),
             popout,
             timezone: UserTimezone::default(),
+            trade_fetch_enabled: false,
         }
     }
 
@@ -775,6 +778,10 @@ impl Dashboard {
                                 }
                         }
                         FetchRange::Trades(from, to) => {
+                            if !self.trade_fetch_enabled {
+                                return Task::none();
+                            }
+
                             let trade_stream = self
                                 .get_pane(main_window.id, window, pane)
                                 .and_then(|pane| {
@@ -1220,6 +1227,17 @@ impl Dashboard {
         }
 
         Task::none()
+    }
+
+    pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
+        self.trade_fetch_enabled = is_enabled;
+
+        self.iter_all_panes_mut(main_window.id)
+            .for_each(|(_, _, pane_state)| {
+                if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
+                    chart.reset_request_handler();
+                }
+            });
     }
 
     fn insert_fetched_trades(
