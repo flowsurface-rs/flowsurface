@@ -1,7 +1,3 @@
-<a href="https://github.com/iced-rs/iced">
-  <img src="https://gist.githubusercontent.com/hecrj/ad7ecd38f6e47ff3688a38c79fd108f0/raw/74384875ecbad02ae2a926425e9bcafd0695bade/color.svg" width="130px">
-</a>
-
 <div align="center">
   <img height="247" width="400" alt="iced-trade" src="https://github.com/user-attachments/assets/79bd0f07-d97c-4186-921f-2e726dcb2c00">
   <img height="247" width="400" alt="iced-trade" src="https://github.com/user-attachments/assets/c862ba41-71f9-411d-bfe4-97f716c36b56">
@@ -20,19 +16,21 @@
   <img height="235" width="200" alt="iced-trade" src="https://github.com/user-attachments/assets/a93ff39f-e80a-4f87-a99b-d4582f4bb818">
 </div>
 
-##### There is no server-side. User receives market data directly from exchange APIs.
+##### User receives market data directly from exchange APIs.
 
 - As historical data, it can fetch OHLCV, open interest and partially, trades:
 
 #### Historical trades on footprint chart:
 
-Optionally, you can enable "manual trade fetching" from settings menu, experimental because of unreliability:
+Optionally, you can enable trade fetching from settings menu, experimental because of unreliability:
 
-Both of the connectors support downloading historical data, acquired from "public.bybit.com" & "data.binance.vision", fast and easy way to get trades, but these ends dont have intraday trades
-Binance connector supports intraday trades via public REST APIs: "/fapi/v1/aggTrades & api/v3/aggTrades", but its slow for batched full fetches because of the rate-limits
-Bybit doesnt have a similar purpose end, which is mostly the reason for this feature's unreliability
+- Binance connector supports downloading historical trades from [data.binance.vision](https://data.binance.vision), fast and easy way to get trades, but they dont support intraday data.
+Intraday trades fetched by pagination using Binance's public REST APIs: `/fapi/v1/aggTrades` & `api/v3/aggTrades`, it might be slow because of rate-limits
 
-Flowsurface tries to leverage all this to get it done being independent of a database. So, when a chart instance sends signal to exchange connector after a data integrity check; it tries via fetching, downloading and/or loading from cache to ensure this integrity
+- Bybit itself doesnt have a similar purpose public API
+
+Flowsurface tries to leverage this via Binance tickers, to visualize historical public trades while being independent of a 'middleman' database between exchange and the user.
+So, when a chart instance signal the exchange connector after a data integrity check, about missing trades in the visible range; it tries via fetching, downloading and/or loading from cache, whichever suitable, to ensure this integrity
 
 ## Build from source
 
@@ -56,3 +54,7 @@ cd flowsurface
 cargo build --release
 cargo run --release
 ```
+
+<a href="https://github.com/iced-rs/iced">
+  <img src="https://gist.githubusercontent.com/hecrj/ad7ecd38f6e47ff3688a38c79fd108f0/raw/74384875ecbad02ae2a926425e9bcafd0695bade/color.svg" width="130px">
+</a>
