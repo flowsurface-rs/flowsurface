@@ -686,7 +686,7 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
             .parse::<f32>()
             .map_err(|_| StreamError::ParseError("Failed to parse tick size".to_string()))?;
 
-        ticker_info_map.insert(Ticker::new(symbol, market_type), Some(TickerInfo { tick_size }));
+        ticker_info_map.insert(Ticker::new(symbol, market_type), Some(TickerInfo { tick_size, market_type }));
     }
 
     Ok(ticker_info_map)

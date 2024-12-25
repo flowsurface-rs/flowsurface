@@ -362,7 +362,11 @@ impl Dashboard {
 
                         // set pane's stream and content identifiers
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            if let Err(err) = pane_state.set_content(ticker_info, &content_str, timezone) {
+                            if let Err(err) = pane_state.set_content(
+                                ticker_info,
+                                &content_str, 
+                                timezone
+                            ) {
                                 return err_occurred(err);
                             }
                         } else {

@@ -174,7 +174,7 @@ impl PaneState {
 
     pub fn set_content(
         &mut self, 
-        ticker_info: TickerInfo, 
+        ticker_info: TickerInfo,
         content_str: &str, 
         timezone: UserTimezone
     ) -> Result<(), DashboardError> {
@@ -200,10 +200,16 @@ impl PaneState {
                     ticker_info.tick_size,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M5);
-                let enabled_indicators = vec![
-                    FootprintIndicator::Volume,
-                    FootprintIndicator::OpenInterest,
-                ];
+                let enabled_indicators = {
+                    if ticker_info.market_type == MarketType::LinearPerps {
+                        vec![
+                            FootprintIndicator::Volume,
+                            FootprintIndicator::OpenInterest,
+                        ]
+                    } else {
+                        vec![FootprintIndicator::Volume]
+                    }
+                };
                 PaneContent::Footprint(
                     FootprintChart::new(
                         timeframe,
@@ -222,10 +228,16 @@ impl PaneState {
                     ticker_info.tick_size,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M15);
-                let enabled_indicators = vec![
-                    CandlestickIndicator::Volume,
-                    CandlestickIndicator::OpenInterest,
-                ];
+                let enabled_indicators = {
+                    if ticker_info.market_type == MarketType::LinearPerps {
+                        vec![
+                            CandlestickIndicator::Volume,
+                            CandlestickIndicator::OpenInterest,
+                        ]
+                    } else {
+                        vec![CandlestickIndicator::Volume]
+                    }
+                };
                 PaneContent::Candlestick(
                     CandlestickChart::new(
                         vec![],

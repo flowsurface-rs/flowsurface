@@ -52,6 +52,7 @@ pub enum StreamError {
 pub struct TickerInfo {
     #[serde(rename = "tickSize")]
     pub tick_size: f32,
+    pub market_type: MarketType,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]

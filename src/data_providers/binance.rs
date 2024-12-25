@@ -716,8 +716,8 @@ pub async fn fetch_klines(
     Ok(klines)
 }
 
-pub async fn fetch_ticksize(market: MarketType) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
-    let url = match market {
+pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
+    let url = match market_type {
         MarketType::Spot => "https://api.binance.com/api/v3/exchangeInfo".to_string(),
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string(),
     };
@@ -739,7 +739,7 @@ pub async fn fetch_ticksize(market: MarketType) -> Result<HashMap<Ticker, Option
 
     log::info!(
         "Binance req. weight limit per minute {}: {:?}", 
-        match market {
+        match market_type {
             MarketType::Spot => "Spot",
             MarketType::LinearPerps => "Linear Perps",
         },
@@ -783,9 +783,9 @@ pub async fn fetch_ticksize(market: MarketType) -> Result<HashMap<Ticker, Option
                 .parse::<f32>()
                 .map_err(|e| StreamError::ParseError(format!("Failed to parse tickSize: {e}")))?;
 
-            ticker_info_map.insert(Ticker::new(ticker, market), Some(TickerInfo { tick_size }));
+            ticker_info_map.insert(Ticker::new(ticker, market_type), Some(TickerInfo { tick_size, market_type }));
         } else {
-            ticker_info_map.insert(Ticker::new(ticker, market), None);
+            ticker_info_map.insert(Ticker::new(ticker, market_type), None);
         }
     }
 
