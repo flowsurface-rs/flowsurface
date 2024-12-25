@@ -580,13 +580,13 @@ impl FootprintChart {
         } else {
             match indicator {
                 FootprintIndicator::Volume => {
-                    let volume_data = self.data_points.iter()
-                        .map(|(time, kline)| (*time, (kline.1.volume.0, kline.1.volume.1)))
+                    let data = self.data_points.iter()
+                        .map(|(time, (_, kline))| (*time, (kline.volume.0, kline.volume.1)))
                         .collect();
 
                     self.indicators.insert(
                         indicator,
-                        IndicatorData::Volume(Caches::default(), volume_data)
+                        IndicatorData::Volume(Caches::default(), data)
                     );
                 },
                 FootprintIndicator::OpenInterest => {

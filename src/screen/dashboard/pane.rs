@@ -517,6 +517,15 @@ impl ChartView for FootprintChart {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
+            PaneModal::Settings => {
+                pane_menu(
+                    underlay,
+                    blank_settings_view(),
+                    Message::ToggleModal(pane, PaneModal::None),
+                    padding::right(12).left(12),
+                    Alignment::End,
+                )
+            },
             _ => underlay,
         }
     }
@@ -552,6 +561,15 @@ impl ChartView for CandlestickChart {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
+            PaneModal::Settings => {
+                pane_menu(
+                    underlay,
+                    blank_settings_view(),
+                    Message::ToggleModal(pane, PaneModal::None),
+                    padding::right(12).left(12),
+                    Alignment::End,
+                )
+            },
             _ => underlay,
         }
     }
@@ -762,6 +780,15 @@ fn stream_modifier_view<'a>(
                 120
             },
         )
+        .style(style::chart_modal)
+        .into()
+}
+
+fn blank_settings_view<'a>() -> Element<'a, Message> {
+    container(text("This chart type doesn't have any configurations, WIP..."))
+        .padding(16)
+        .width(Length::Shrink)
+        .max_width(500)
         .style(style::chart_modal)
         .into()
 }
