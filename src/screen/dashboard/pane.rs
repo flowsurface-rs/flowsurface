@@ -178,6 +178,8 @@ impl PaneState {
         content_str: &str, 
         timezone: UserTimezone
     ) -> Result<(), DashboardError> {
+        self.settings = PaneSettings::default();
+
         self.content = match content_str {
             "heatmap" => {
                 let tick_size = self.set_tick_size(
@@ -448,31 +450,28 @@ trait ChartView {
     fn view<'a, I: Indicator>(
         &'a self, 
         pane: pane_grid::Pane, 
-        state: &PaneState, 
+        state: &'a PaneState, 
         indicators: &'a [I],
     ) -> Element<Message>;
 }
 
 fn handle_chart_view<'a, F>(
     underlay: Element<'a, Message>,
-    modal: PaneModal,
+    state: &'a PaneState,
     pane: pane_grid::Pane,
     indicators: &'a [impl Indicator],
     settings_view: F,
-    selected_ticksize: Option<TickMultiplier>,
-    selected_timeframe: Option<Timeframe>,
-    market_type: Option<MarketType>,
 ) -> Element<'a, Message>
 where
     F: FnOnce() -> Element<'a, Message>,
 {
-    match modal {
+    match state.modal {
         PaneModal::StreamModifier => pane_menu(
             underlay,
             stream_modifier_view(
                 pane,
-                selected_ticksize,
-                selected_timeframe,
+                state.settings.tick_multiply,
+                state.settings.selected_timeframe,
             ),
             Message::ToggleModal(pane, PaneModal::None),
             padding::left(36),
@@ -482,7 +481,7 @@ where
             underlay,
             indicators_view(
                 pane,
-                market_type,
+                state.settings.ticker_info.map(|info| info.market_type),
                 indicators
             ),
             Message::ToggleModal(pane, PaneModal::None),
@@ -506,7 +505,7 @@ impl ChartView for HeatmapChart {
     fn view<'a, I: Indicator>(
         &'a self,
         pane: pane_grid::Pane,
-        state: &PaneState,
+        state: &'a PaneState,
         indicators: &'a [I],
     ) -> Element<Message> {
         let underlay = self
@@ -520,13 +519,10 @@ impl ChartView for HeatmapChart {
             
         handle_chart_view(
             underlay,
-            state.modal,
+            state,
             pane, 
             indicators, 
             settings_view,
-            state.settings.tick_multiply,
-            None,
-            state.settings.ticker_info.map(|info| info.market_type),
         )
     }
 }
@@ -535,7 +531,7 @@ impl ChartView for FootprintChart {
     fn view<'a, I: Indicator>(
         &'a self,
         pane: pane_grid::Pane,
-        state: &PaneState,
+        state: &'a PaneState,
         indicators: &'a [I],
     ) -> Element<Message> {
         let underlay = self
@@ -548,13 +544,10 @@ impl ChartView for FootprintChart {
 
         handle_chart_view(
             underlay,
-            state.modal,
+            state,
             pane, 
             indicators, 
             settings_view,
-            state.settings.tick_multiply,
-            state.settings.selected_timeframe,
-            state.settings.ticker_info.map(|info| info.market_type),
         )
     }
 }
@@ -563,7 +556,7 @@ impl ChartView for CandlestickChart {
     fn view<'a, I: Indicator>(
         &'a self,
         pane: pane_grid::Pane,
-        state: &PaneState,
+        state: &'a PaneState,
         indicators: &'a [I],
     ) -> Element<Message> {
         let underlay = self
@@ -576,13 +569,10 @@ impl ChartView for CandlestickChart {
 
         handle_chart_view(
             underlay,
-            state.modal,
+            state,
             pane, 
             indicators, 
             settings_view,
-            None,
-            state.settings.selected_timeframe,
-            state.settings.ticker_info.map(|info| info.market_type),
         )
     }
 }
