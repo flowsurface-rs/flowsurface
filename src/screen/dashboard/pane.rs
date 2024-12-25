@@ -87,11 +87,11 @@ impl PaneState {
     }
 
     /// sets the tick size. returns the tick size with the multiplier applied
-    pub fn set_tick_size(&mut self, multiplier: TickMultiplier, min_tick_size: f32) -> f32 {
+    pub fn set_tick_size(&mut self, multiplier: TickMultiplier, ticker_info: TickerInfo) -> f32 {
         self.settings.tick_multiply = Some(multiplier);
-        self.settings.min_tick_size = Some(min_tick_size);
+        self.settings.ticker_info = Some(ticker_info);
 
-        multiplier.multiply_with_min_tick_size(min_tick_size)
+        multiplier.multiply_with_min_tick_size(ticker_info)
     }
 
     /// gets the timeframe if exists, otherwise sets timeframe w given
@@ -182,7 +182,7 @@ impl PaneState {
             "heatmap" => {
                 let tick_size = self.set_tick_size(
                     TickMultiplier(10),
-                    ticker_info.tick_size,
+                    ticker_info,
                 );
 
                 PaneContent::Heatmap(
@@ -197,7 +197,7 @@ impl PaneState {
             "footprint" => {
                 let tick_size = self.set_tick_size(
                     TickMultiplier(50),
-                    ticker_info.tick_size,
+                    ticker_info,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M5);
                 let enabled_indicators = {
@@ -225,7 +225,7 @@ impl PaneState {
             "candlestick" => {
                 let tick_size = self.set_tick_size(
                     TickMultiplier(1),
-                    ticker_info.tick_size,
+                    ticker_info,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M15);
                 let enabled_indicators = {
@@ -462,7 +462,7 @@ impl ChartView for HeatmapChart {
         indicators: &'a [I],
     ) -> Element<Message> {
         let underlay = self
-            .view(indicators)
+            .view(indicators, state.settings.ticker_info)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         match state.modal {
@@ -489,7 +489,11 @@ impl ChartView for HeatmapChart {
             ),
             PaneModal::Indicators => pane_menu(
                 underlay,
-                indicators_view::<I>(pane, indicators),
+                indicators_view::<I>(
+                    pane,
+                    state.settings.ticker_info.map(|info| info.market_type),
+                    indicators
+                ),
                 Message::ToggleModal(pane, PaneModal::None),
                 padding::right(12).left(12),
                 Alignment::End,
@@ -507,7 +511,7 @@ impl ChartView for FootprintChart {
         indicators: &'a [I],
     ) -> Element<Message> {
         let underlay = self
-            .view(indicators)
+            .view(indicators, state.settings.ticker_info)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         match state.modal {
@@ -524,7 +528,11 @@ impl ChartView for FootprintChart {
             ),
             PaneModal::Indicators => pane_menu(
                 underlay,
-                indicators_view::<I>(pane, indicators),
+                indicators_view::<I>(
+                    pane,
+                    state.settings.ticker_info.map(|info| info.market_type),
+                    indicators
+                ),
                 Message::ToggleModal(pane, PaneModal::None),
                 padding::right(12).left(12),
                 Alignment::End,
@@ -551,7 +559,7 @@ impl ChartView for CandlestickChart {
         indicators: &'a [I],
     ) -> Element<Message> {
         let underlay = self
-            .view(indicators)
+            .view(indicators, state.settings.ticker_info)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         match state.modal {
@@ -568,7 +576,11 @@ impl ChartView for CandlestickChart {
             ),
             PaneModal::Indicators => pane_menu(
                 underlay,
-                indicators_view::<I>(pane, indicators),
+                indicators_view::<I>(
+                    pane,
+                    state.settings.ticker_info.map(|info| info.market_type),
+                    indicators
+                ),
                 Message::ToggleModal(pane, PaneModal::None),
                 padding::right(12).left(12),
                 Alignment::End,
@@ -613,7 +625,8 @@ impl PanelView for TimeAndSales {
 
 fn indicators_view<I: Indicator> (
     pane: pane_grid::Pane,
-    selected: &[I]
+    market_type: Option<MarketType>,
+    selected: &[I],
 ) -> Element<Message> {
     let mut content_row = column![
         container(
@@ -623,7 +636,7 @@ fn indicators_view<I: Indicator> (
     ]
     .spacing(4);
 
-    for indicator in I::get_available() {
+    for indicator in I::get_available(market_type) {
         content_row = content_row.push(
             if selected.contains(indicator) {
                 button(text(indicator.to_string()))
@@ -1022,7 +1035,7 @@ impl PaneContent {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
 pub struct PaneSettings {
-    pub min_tick_size: Option<f32>,
+    pub ticker_info: Option<TickerInfo>,
     pub trade_size_filter: Option<f32>,
     pub tick_multiply: Option<TickMultiplier>,
     pub selected_timeframe: Option<Timeframe>,

@@ -10,7 +10,7 @@ use indicators::Indicator;
 use uuid::Uuid;
 
 use crate::{
-    data_providers::fetcher::{FetchRange, ReqError, RequestHandler},
+    data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo},
     screen::UserTimezone,
     style,
     tooltip::{self, tooltip},
@@ -129,7 +129,11 @@ trait Chart: ChartConstants + canvas::Program<Message> {
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>>;
 
-    fn view_indicator<I: Indicator>(&self, enabled: &[I]) -> Element<Message>;
+    fn view_indicator<I: Indicator>(
+        &self, 
+        enabled: &[I], 
+        ticker_info: Option<TickerInfo>
+    ) -> Element<Message>;
 
     fn get_visible_timerange(&self) -> (i64, i64);
 }
@@ -385,7 +389,11 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
     Task::none()
 }
 
-fn view_chart<'a, T: Chart, I: Indicator>(chart: &'a T, indicators: &'a [I]) -> Element<'a, Message> {
+fn view_chart<'a, T: Chart, I: Indicator>(
+    chart: &'a T, 
+    indicators: &'a [I], 
+    ticker_info: Option<TickerInfo>,
+) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 
     if chart_state.latest_x == 0 || chart_state.base_price_y == 0.0 {
@@ -464,7 +472,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(chart: &'a T, indicators: &'a [I]) -> 
     let mut indicators_row = row![];
     if !indicators.is_empty() {
         indicators_row = indicators_row
-            .push(container(chart.view_indicator(indicators))
+            .push(container(chart.view_indicator(indicators, ticker_info))
                 .width(Length::FillPortion(10))
                 .height(Length::FillPortion(chart_state.indicators_height))
             )

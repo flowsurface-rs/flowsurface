@@ -1099,18 +1099,18 @@ impl Dashboard {
         if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
             pane_state.settings.tick_multiply = Some(new_tick_multiply);
 
-            if let Some(min_tick_size) = pane_state.settings.min_tick_size {
+            if let Some(ticker_info) = pane_state.settings.ticker_info {
                 match pane_state.content {
                     PaneContent::Footprint(ref mut chart, _) => {
                         chart.change_tick_size(
-                            new_tick_multiply.multiply_with_min_tick_size(min_tick_size),
+                            new_tick_multiply.multiply_with_min_tick_size(ticker_info),
                         );
 
                         chart.reset_request_handler();
                     }
                     PaneContent::Heatmap(ref mut chart, _) => {
                         chart.change_tick_size(
-                            new_tick_multiply.multiply_with_min_tick_size(min_tick_size),
+                            new_tick_multiply.multiply_with_min_tick_size(ticker_info),
                         );
                     }
                     _ => {

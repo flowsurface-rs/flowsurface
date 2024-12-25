@@ -216,7 +216,9 @@ impl TickMultiplier {
     /// Returns the final tick size after applying the user selected multiplier
     ///
     /// Usually used for price steps in chart scales
-    pub fn multiply_with_min_tick_size(&self, min_tick_size: f32) -> f32 {
+    pub fn multiply_with_min_tick_size(&self, ticker_info: TickerInfo) -> f32 {
+        let min_tick_size = ticker_info.tick_size;
+
         let multiplier = if let Some(m) = Decimal::from_f32(f32::from(self.0)) {
             m
         } else {

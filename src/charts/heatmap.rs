@@ -6,6 +6,7 @@ use iced::{
 };
 use iced::widget::{column, canvas::{self, Event, Geometry, Path}};
 
+use crate::data_providers::TickerInfo;
 use crate::{
     data_providers::{Depth, Trade},
     screen::UserTimezone,
@@ -43,8 +44,12 @@ impl Chart for HeatmapChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicator<I: Indicator>(&self, indicators: &[I]) -> Element<Message> {
-        self.view_indicators(indicators)
+    fn view_indicator<I: Indicator>(
+        &self, 
+        indicators: &[I], 
+        ticker_info: Option<TickerInfo>
+    ) -> Element<Message> {
+        self.view_indicators(indicators, ticker_info)
     }
 
     fn get_visible_timerange(&self) -> (i64, i64) {
@@ -448,7 +453,7 @@ impl HeatmapChart {
     }
 
     /// gonna have to implement this later
-    pub fn view_indicators<I: Indicator>(&self, _indis: &[I]) -> Element<Message> {
+    pub fn view_indicators<I: Indicator>(&self, _indis: &[I], _ticker_info: Option<TickerInfo>) -> Element<Message> {
         let indicators: iced::widget::Column<'_, Message> = column![];
         indicators.into()
     }
@@ -457,8 +462,12 @@ impl HeatmapChart {
         self.update_chart(message)
     }
 
-    pub fn view<'a, I: Indicator>(&'a self, indicators: &'a [I]) -> Element<Message> {
-        view_chart(self, indicators)
+    pub fn view<'a, I: Indicator>(
+        &'a self, 
+        indicators: &'a [I], 
+        ticker_info: Option<TickerInfo>
+    ) -> Element<Message> {
+        view_chart(self, indicators, ticker_info)
     }
 }
 

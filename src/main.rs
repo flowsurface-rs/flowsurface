@@ -79,7 +79,7 @@ fn main() {
                         let tick_size = settings.tick_multiply
                             .unwrap_or(TickMultiplier(1))
                             .multiply_with_min_tick_size(
-                                settings.min_tick_size
+                                settings.ticker_info
                                     .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
                             );
 
@@ -108,7 +108,7 @@ fn main() {
                         let tick_size = settings.tick_multiply
                             .unwrap_or(TickMultiplier(50))
                             .multiply_with_min_tick_size(
-                                settings.min_tick_size
+                                settings.ticker_info
                                     .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
                             );
 
@@ -138,7 +138,7 @@ fn main() {
                         let tick_size = settings.tick_multiply
                             .unwrap_or(TickMultiplier(10))
                             .multiply_with_min_tick_size(
-                                settings.min_tick_size
+                                settings.ticker_info
                                     .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
                             );
 

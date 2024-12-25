@@ -5,6 +5,7 @@ use iced::{mouse, Alignment, Element, Point, Rectangle, Renderer, Size, Task, Th
 use iced::widget::{column, canvas::{self, Event, Geometry}};
 use ordered_float::OrderedFloat;
 
+use crate::data_providers::TickerInfo;
 use crate::screen::UserTimezone;
 use crate::data_providers::{
     fetcher::{FetchRange, RequestHandler},
@@ -43,8 +44,12 @@ impl Chart for FootprintChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicator<I: Indicator>(&self, indicators: &[I]) -> Element<Message> {
-        self.view_indicators(indicators)
+    fn view_indicator<I: Indicator>(
+        &self, 
+        indicators: &[I], 
+        ticker_info: Option<TickerInfo>
+    ) -> Element<Message> {
+        self.view_indicators(indicators, ticker_info)
     }
 
     fn get_visible_timerange(&self) -> (i64, i64) {
@@ -599,7 +604,11 @@ impl FootprintChart {
         }
     }
 
-    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Element<Message> {
+    pub fn view_indicators<I: Indicator>(
+        &self, 
+        enabled: &[I], 
+        ticker_info: Option<TickerInfo>
+    ) -> Element<Message> {
         let chart_state: &CommonChartData = self.get_common_data();
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
@@ -609,7 +618,10 @@ impl FootprintChart {
         let earliest = chart_state.x_to_time(visible_region.x);
         let latest = chart_state.x_to_time(visible_region.x + visible_region.width);
 
-        for indicator in I::get_enabled(enabled) {
+        for indicator in I::get_enabled(
+            enabled, 
+            ticker_info.map(|info| info.market_type)
+        ) {
             if let Some(candlestick_indicator) = indicator
                 .as_any()
                 .downcast_ref::<FootprintIndicator>() 
@@ -642,8 +654,12 @@ impl FootprintChart {
         self.update_chart(message)
     }
 
-    pub fn view<'a, I: Indicator>(&'a self, indicators: &'a [I]) -> Element<Message> {
-        view_chart(self, indicators)
+    pub fn view<'a, I: Indicator>(
+        &'a self, 
+        indicators: &'a [I], 
+        ticker_info: Option<TickerInfo>
+    ) -> Element<Message> {
+        view_chart(self, indicators, ticker_info)
     }
 }
 
