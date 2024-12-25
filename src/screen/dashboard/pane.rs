@@ -455,21 +455,24 @@ trait ChartView {
 
 fn handle_chart_view<'a, F>(
     underlay: Element<'a, Message>,
-    state: &PaneState,
+    modal: PaneModal,
     pane: pane_grid::Pane,
     indicators: &'a [impl Indicator],
     settings_view: F,
+    selected_ticksize: Option<TickMultiplier>,
+    selected_timeframe: Option<Timeframe>,
+    market_type: Option<MarketType>,
 ) -> Element<'a, Message>
 where
     F: FnOnce() -> Element<'a, Message>,
 {
-    match state.modal {
+    match modal {
         PaneModal::StreamModifier => pane_menu(
             underlay,
             stream_modifier_view(
                 pane,
-                state.settings.tick_multiply,
-                state.settings.selected_timeframe,
+                selected_ticksize,
+                selected_timeframe,
             ),
             Message::ToggleModal(pane, PaneModal::None),
             padding::left(36),
@@ -479,7 +482,7 @@ where
             underlay,
             indicators_view(
                 pane,
-                state.settings.ticker_info.map(|info| info.market_type),
+                market_type,
                 indicators
             ),
             Message::ToggleModal(pane, PaneModal::None),
@@ -515,7 +518,16 @@ impl ChartView for HeatmapChart {
             size_filter_view(Some(trade_size_filter), Some(order_size_filter), pane)
         };
             
-        handle_chart_view(underlay, state, pane, indicators, settings_view)
+        handle_chart_view(
+            underlay,
+            state.modal,
+            pane, 
+            indicators, 
+            settings_view,
+            state.settings.tick_multiply,
+            None,
+            state.settings.ticker_info.map(|info| info.market_type),
+        )
     }
 }
 
@@ -534,7 +546,16 @@ impl ChartView for FootprintChart {
             blank_settings_view()
         };
 
-        handle_chart_view(underlay, state, pane, indicators, settings_view)
+        handle_chart_view(
+            underlay,
+            state.modal,
+            pane, 
+            indicators, 
+            settings_view,
+            state.settings.tick_multiply,
+            state.settings.selected_timeframe,
+            state.settings.ticker_info.map(|info| info.market_type),
+        )
     }
 }
 
@@ -553,7 +574,16 @@ impl ChartView for CandlestickChart {
             blank_settings_view()
         };
 
-        handle_chart_view(underlay, state, pane, indicators, settings_view)
+        handle_chart_view(
+            underlay,
+            state.modal,
+            pane, 
+            indicators, 
+            settings_view,
+            None,
+            state.settings.selected_timeframe,
+            state.settings.ticker_info.map(|info| info.market_type),
+        )
     }
 }
 
