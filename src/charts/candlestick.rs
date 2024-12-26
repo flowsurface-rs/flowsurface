@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::canvas::{LineDash, Path, Stroke};
-use iced::{mouse, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
+use iced::widget::container;
+use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
 use iced::widget::{canvas::{self, Event, Geometry}, column};
 
 use crate::data_providers::TickerInfo;
@@ -46,7 +47,7 @@ impl Chart for CandlestickChart {
         &self, 
         indicators: &[I], 
         ticker_info: Option<TickerInfo>
-    ) -> Element<Message> {
+    ) -> Option<Element<Message>> {
         self.view_indicators(indicators, ticker_info)
     }
 
@@ -372,7 +373,7 @@ impl CandlestickChart {
         &self, 
         enabled: &[I], 
         ticker_info: Option<TickerInfo>
-    ) -> Element<Message> {
+    ) -> Option<Element<Message>> {
         let chart_state: &CommonChartData = self.get_common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
@@ -410,8 +411,13 @@ impl CandlestickChart {
                 }
             }
         }
-
-        indicators.into()
+        
+        Some(
+            container(indicators)
+                .width(Length::FillPortion(10))
+                .height(Length::FillPortion(chart_state.indicators_height))
+                .into()
+        )
     }
 
     pub fn update(&mut self, message: &Message) -> Task<Message> {

@@ -180,14 +180,16 @@ impl PaneState {
                     TickMultiplier(10),
                     ticker_info,
                 );
+                let enabled_indicators = vec![HeatmapIndicator::Volume];
 
                 PaneContent::Heatmap(
                     HeatmapChart::new(
                         tick_size,
                         100,
                         timezone,
+                        &enabled_indicators,
                     ),
-                    vec![],
+                    enabled_indicators,
                 )
             }
             "footprint" => {
@@ -206,6 +208,7 @@ impl PaneState {
                         vec![FootprintIndicator::Volume]
                     }
                 };
+
                 PaneContent::Footprint(
                     FootprintChart::new(
                         timeframe,
@@ -234,6 +237,7 @@ impl PaneState {
                         vec![CandlestickIndicator::Volume]
                     }
                 };
+
                 PaneContent::Candlestick(
                     CandlestickChart::new(
                         vec![],
@@ -974,6 +978,23 @@ impl PaneContent {
 
     pub fn toggle_indicator(&mut self, indicator_str: String) {
         match self {
+            PaneContent::Heatmap(chart, indicators) => {
+                let indicator = match indicator_str.as_str() {
+                    "Volume" => HeatmapIndicator::Volume,
+                    _ => {
+                        log::error!("indicator not found: {}", indicator_str);
+                        return
+                    },
+                };
+
+                if indicators.contains(&indicator) {
+                    indicators.retain(|i| i != &indicator);
+                } else {
+                    indicators.push(indicator);
+                }
+
+                chart.toggle_indicator(indicator);
+            }
             PaneContent::Footprint(chart, indicators) => {
                 let indicator = match indicator_str.as_str() {
                     "Volume" => FootprintIndicator::Volume,

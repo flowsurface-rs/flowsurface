@@ -133,7 +133,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
         &self, 
         enabled: &[I], 
         ticker_info: Option<TickerInfo>
-    ) -> Element<Message>;
+    ) -> Option<Element<Message>>;
 
     fn get_visible_timerange(&self) -> (i64, i64);
 }
@@ -472,9 +472,8 @@ fn view_chart<'a, T: Chart, I: Indicator>(
     let mut indicators_row = row![];
     if !indicators.is_empty() {
         indicators_row = indicators_row
-            .push(container(chart.view_indicator(indicators, ticker_info))
-                .width(Length::FillPortion(10))
-                .height(Length::FillPortion(chart_state.indicators_height))
+            .push_maybe(
+                chart.view_indicator(indicators, ticker_info)
             )
     }
 

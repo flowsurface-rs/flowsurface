@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::canvas::{LineDash, Path, Stroke};
-use iced::{mouse, Alignment, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
+use iced::widget::container;
+use iced::{mouse, Alignment, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
 use iced::widget::{column, canvas::{self, Event, Geometry}};
 use ordered_float::OrderedFloat;
 
@@ -48,7 +49,7 @@ impl Chart for FootprintChart {
         &self, 
         indicators: &[I], 
         ticker_info: Option<TickerInfo>
-    ) -> Element<Message> {
+    ) -> Option<Element<Message>> {
         self.view_indicators(indicators, ticker_info)
     }
 
@@ -608,7 +609,7 @@ impl FootprintChart {
         &self, 
         enabled: &[I], 
         ticker_info: Option<TickerInfo>
-    ) -> Element<Message> {
+    ) -> Option<Element<Message>> {
         let chart_state: &CommonChartData = self.get_common_data();
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
@@ -647,7 +648,12 @@ impl FootprintChart {
             }
         }
 
-        indicators.into()
+        Some(
+            container(indicators)
+                .width(Length::FillPortion(10))
+                .height(Length::FillPortion(chart_state.indicators_height))
+                .into()
+        )
     }
 
     pub fn update(&mut self, message: &Message) -> Task<Message> {

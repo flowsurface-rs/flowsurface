@@ -1,23 +1,22 @@
-use std::collections::HashMap;
-use std::default;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::Path;
+use regex::Regex;
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 use iced::widget::pane_grid::{self, Configuration};
 use iced::{Point, Size, Theme};
-use regex::Regex;
-use serde::{Deserialize, Serialize};
 
 use crate::charts::candlestick::CandlestickChart;
 use crate::charts::footprint::FootprintChart;
 use crate::charts::heatmap::HeatmapChart;
-use crate::charts::indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator};
 use crate::charts::timeandsales::TimeAndSales;
+use crate::charts::indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator};
 use crate::data_providers::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
-use crate::screen::dashboard::{Dashboard, PaneContent, PaneSettings, PaneState};
-use crate::screen::UserTimezone;
+use crate::screen::{UserTimezone, dashboard::{Dashboard, PaneContent, PaneSettings, PaneState}};
 use crate::style;
+
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::fs::File;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum LayoutId {
@@ -452,6 +451,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                                     tick_size,
                                     100,
                                     UserTimezone::default(),
+                                    &indicators,
                                 ),
                                 indicators,
                             ),
