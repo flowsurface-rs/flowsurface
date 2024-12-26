@@ -2,14 +2,19 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use iced::widget::pane_grid;
+use chrono::NaiveDate;
+use iced::widget::pane_grid::{self, Configuration};
 use iced::{Point, Size, Theme};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::charts::candlestick::CandlestickChart;
+use crate::charts::footprint::FootprintChart;
+use crate::charts::heatmap::HeatmapChart;
 use crate::charts::indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator};
-use crate::data_providers::{Exchange, StreamType, Ticker};
+use crate::charts::timeandsales::TimeAndSales;
+use crate::data_providers::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 use crate::screen::dashboard::{Dashboard, PaneContent, PaneSettings, PaneState};
-use crate::pane::Axis;
 use crate::screen::UserTimezone;
 use crate::style;
 
@@ -340,6 +345,166 @@ impl From<&PaneState> for SerializablePane {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+pub fn load_saved_state(file_path: &str) -> SavedState {
+    match read_from_file(file_path) {
+        Ok(state) => {
+            let mut de_state = SavedState {
+                selected_theme: state.selected_theme,
+                layouts: HashMap::new(),
+                favorited_tickers: state.favorited_tickers,
+                last_active_layout: state.last_active_layout,
+                window_size: state.window_size,
+                window_position: state.window_position,
+                timezone: state.timezone,
+                sidebar: state.sidebar,
+            };
+
+            fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
+                match pane {
+                    SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
+                        axis: match axis {
+                            Axis::Horizontal => pane_grid::Axis::Horizontal,
+                            Axis::Vertical => pane_grid::Axis::Vertical,
+                        },
+                        ratio,
+                        a: Box::new(configuration(*a)),
+                        b: Box::new(configuration(*b)),
+                    },
+                    SerializablePane::Starter => {
+                        Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+                    }
+                    SerializablePane::CandlestickChart {
+                        stream_type,
+                        settings,
+                        indicators,
+                    } => {
+                        let tick_size = settings.tick_multiply
+                            .unwrap_or(TickMultiplier(1))
+                            .multiply_with_min_tick_size(
+                                settings.ticker_info
+                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
+                            );
+
+                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
+
+                        Configuration::Pane(PaneState::from_config(
+                            PaneContent::Candlestick(
+                                CandlestickChart::new(
+                                    vec![],
+                                    timeframe,
+                                    tick_size,
+                                    UserTimezone::default(),
+                                    &indicators,
+                                ),
+                                indicators,
+                            ),
+                            stream_type,
+                            settings,
+                        ))
+                    }
+                    SerializablePane::FootprintChart {
+                        stream_type,
+                        settings,
+                        indicators,
+                    } => {
+                        let tick_size = settings.tick_multiply
+                            .unwrap_or(TickMultiplier(50))
+                            .multiply_with_min_tick_size(
+                                settings.ticker_info
+                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
+                            );
+
+                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
+
+                        Configuration::Pane(PaneState::from_config(
+                            PaneContent::Footprint(
+                                FootprintChart::new(
+                                    timeframe,
+                                    tick_size,
+                                    vec![],
+                                    vec![],
+                                    UserTimezone::default(),
+                                    &indicators,
+                                ),
+                                indicators,
+                            ),
+                            stream_type,
+                            settings,
+                        ))
+                    }
+                    SerializablePane::HeatmapChart {
+                        stream_type,
+                        settings,
+                        indicators,
+                    } => {
+                        let tick_size = settings.tick_multiply
+                            .unwrap_or(TickMultiplier(10))
+                            .multiply_with_min_tick_size(
+                                settings.ticker_info
+                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
+                            );
+
+                        Configuration::Pane(PaneState::from_config(
+                            PaneContent::Heatmap(
+                                HeatmapChart::new(
+                                    tick_size,
+                                    100,
+                                    UserTimezone::default(),
+                                ),
+                                indicators,
+                            ),
+                            stream_type,
+                            settings,
+                        ))
+                    }
+                    SerializablePane::TimeAndSales {
+                        stream_type,
+                        settings,
+                    } => Configuration::Pane(PaneState::from_config(
+                        PaneContent::TimeAndSales(TimeAndSales::new()),
+                        stream_type,
+                        settings,
+                    )),
+                }
+            }
+
+            for (id, dashboard) in &state.layouts {
+                let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> = Vec::new();
+
+                for (popout, pos, size) in &dashboard.popout {
+                    let configuration = configuration(popout.clone());
+                    popout_windows.push((
+                        configuration,
+                        (Point::new(pos.0, pos.1), Size::new(size.0, size.1)),
+                    ));
+                }
+
+                let dashboard = Dashboard::from_config(
+                    configuration(dashboard.pane.clone()), popout_windows, dashboard.trade_fetch_enabled
+                );
+
+                de_state.layouts.insert(*id, dashboard);
+            }
+
+            de_state
+        }
+        Err(e) => {
+            log::error!(
+                "Failed to load/find layout state: {}. Starting with a new layout.",
+                e
+            );
+
+            SavedState::default()
+        }
+    }
+}
+
 pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
     let path = Path::new(file_path);
     let mut file = File::create(path)?;
@@ -354,4 +519,59 @@ pub fn read_from_file(file_path: &str) -> Result<SerializableState, Box<dyn std:
     file.read_to_string(&mut contents)?;
 
     Ok(serde_json::from_str(&contents)?)
+}
+
+pub fn cleanup_old_data(data_path: &std::path::Path) -> usize {
+    if !data_path.exists() {
+        log::warn!("Data path {:?} does not exist, skipping cleanup", data_path);
+        return 0;
+    }
+
+    let re = Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$")
+        .expect("Cleanup regex pattern is valid");
+    let today = chrono::Local::now().date_naive();
+    let mut deleted_files = Vec::new();
+
+    let entries = match std::fs::read_dir(data_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::error!("Failed to read data directory: {}", e);
+            return 0;
+        }
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let symbol_dir = match std::fs::read_dir(entry.path()) {
+            Ok(dir) => dir,
+            Err(e) => {
+                log::error!("Failed to read symbol directory {:?}: {}", entry.path(), e);
+                continue;
+            }
+        };
+
+        for file in symbol_dir.filter_map(Result::ok) {
+            let path = file.path();
+            let filename = match path.to_str() {
+                Some(name) => name,
+                None => continue,
+            };
+
+            if let Some(cap) = re.captures(filename) {
+                if let Ok(file_date) = NaiveDate::parse_from_str(&cap[1], "%Y-%m-%d") {
+                    let days_old = today.signed_duration_since(file_date).num_days();
+                    if days_old > 4 {
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            log::error!("Failed to remove old file {}: {}", filename, e);
+                        } else {
+                            deleted_files.push(filename.to_string());
+                            log::info!("Removed old file: {}", filename);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    log::info!("File cleanup completed. Deleted {} files", deleted_files.len());
+    deleted_files.len()
 }

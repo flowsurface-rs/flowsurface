@@ -28,12 +28,6 @@ pub enum PaneModal {
     None,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub enum Axis {
-    Horizontal,
-    Vertical,
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
     PaneClicked(pane_grid::Pane),

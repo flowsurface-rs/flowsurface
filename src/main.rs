@@ -1,200 +1,45 @@
 #![windows_subsystem = "windows"]
 
+mod style;
 mod charts;
-mod data_providers;
+mod window;
 mod layout;
 mod logger;
 mod screen;
-mod style;
-mod tickers_table;
 mod tooltip;
-mod window;
+mod tickers_table;
+mod data_providers;
 
 use tooltip::tooltip;
-use screen::modal::{confirmation_modal, dashboard_modal};
-use layout::{SerializableDashboard, SerializablePane, Sidebar};
-
-use futures::TryFutureExt;
-use iced_futures::MaybeSend;
-use style::{get_icon_text, Icon, ICON_BYTES};
-
-use screen::{create_button, dashboard, handle_error, Notification, UserTimezone};
-use screen::dashboard::{Dashboard, pane, PaneContent, PaneSettings, PaneState};
-use data_providers::{
-    binance, bybit, Exchange, MarketType, StreamType, TickMultiplier, Ticker, TickerInfo, TickerStats, Timeframe
-};
 use tickers_table::TickersTable;
-
-use charts::footprint::FootprintChart;
-use charts::heatmap::HeatmapChart;
-use charts::candlestick::CandlestickChart;
-use charts::timeandsales::TimeAndSales;
+use layout::{SerializableDashboard, Sidebar};
+use style::{get_icon_text, Icon, ICON_BYTES};
+use screen::{
+    create_button, dashboard, handle_error, Notification, UserTimezone, 
+    dashboard::{Dashboard, pane},
+    modal::{confirmation_modal, dashboard_modal}
+};
+use data_providers::{
+    binance, bybit, Exchange, MarketType, StreamType, Ticker, TickerInfo, TickerStats, Timeframe
+};
 use window::{window_events, Window, WindowEvent};
-
-use std::future::Future;
-use std::{collections::HashMap, vec};
-
 use iced::{
-    widget::{button, pick_list, Space, column, container, row, text},
+    widget::{button, pick_list, Space, column, container, row, text, center, responsive, pane_grid},
     padding, Alignment, Element, Length, Point, Size, Subscription, Task, Theme,
 };
-use iced::widget::{center, responsive};
-use iced::widget::pane_grid::{self, Configuration};
+use iced_futures::MaybeSend;
+use futures::TryFutureExt;
+use std::{collections::HashMap, vec, future::Future};
 
 fn main() {
     logger::setup(false, false).expect("Failed to initialize logger");
 
-    let saved_state = match layout::read_from_file("dashboard_state.json") {
-        Ok(state) => {
-            let mut de_state = layout::SavedState {
-                selected_theme: state.selected_theme,
-                layouts: HashMap::new(),
-                favorited_tickers: state.favorited_tickers,
-                last_active_layout: state.last_active_layout,
-                window_size: state.window_size,
-                window_position: state.window_position,
-                timezone: state.timezone,
-                sidebar: state.sidebar,
-            };
+    std::thread::spawn(|| {
+        let data_dir_path = std::path::Path::new("data/futures/um/daily/aggTrades");
+        layout::cleanup_old_data(data_dir_path)
+    });
 
-            fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
-                match pane {
-                    SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
-                        axis: match axis {
-                            pane::Axis::Horizontal => pane_grid::Axis::Horizontal,
-                            pane::Axis::Vertical => pane_grid::Axis::Vertical,
-                        },
-                        ratio,
-                        a: Box::new(configuration(*a)),
-                        b: Box::new(configuration(*b)),
-                    },
-                    SerializablePane::Starter => {
-                        Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
-                    }
-                    SerializablePane::CandlestickChart {
-                        stream_type,
-                        settings,
-                        indicators,
-                    } => {
-                        let tick_size = settings.tick_multiply
-                            .unwrap_or(TickMultiplier(1))
-                            .multiply_with_min_tick_size(
-                                settings.ticker_info
-                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
-                            );
-
-                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
-
-                        Configuration::Pane(PaneState::from_config(
-                            PaneContent::Candlestick(
-                                CandlestickChart::new(
-                                    vec![],
-                                    timeframe,
-                                    tick_size,
-                                    UserTimezone::default(),
-                                    &indicators,
-                                ),
-                                indicators,
-                            ),
-                            stream_type,
-                            settings,
-                        ))
-                    }
-                    SerializablePane::FootprintChart {
-                        stream_type,
-                        settings,
-                        indicators,
-                    } => {
-                        let tick_size = settings.tick_multiply
-                            .unwrap_or(TickMultiplier(50))
-                            .multiply_with_min_tick_size(
-                                settings.ticker_info
-                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
-                            );
-
-                        let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
-
-                        Configuration::Pane(PaneState::from_config(
-                            PaneContent::Footprint(
-                                FootprintChart::new(
-                                    timeframe,
-                                    tick_size,
-                                    vec![],
-                                    vec![],
-                                    UserTimezone::default(),
-                                    &indicators,
-                                ),
-                                indicators,
-                            ),
-                            stream_type,
-                            settings,
-                        ))
-                    }
-                    SerializablePane::HeatmapChart {
-                        stream_type,
-                        settings,
-                        indicators,
-                    } => {
-                        let tick_size = settings.tick_multiply
-                            .unwrap_or(TickMultiplier(10))
-                            .multiply_with_min_tick_size(
-                                settings.ticker_info
-                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
-                            );
-
-                        Configuration::Pane(PaneState::from_config(
-                            PaneContent::Heatmap(
-                                HeatmapChart::new(
-                                    tick_size,
-                                    100,
-                                    UserTimezone::default(),
-                                ),
-                                indicators,
-                            ),
-                            stream_type,
-                            settings,
-                        ))
-                    }
-                    SerializablePane::TimeAndSales {
-                        stream_type,
-                        settings,
-                    } => Configuration::Pane(PaneState::from_config(
-                        PaneContent::TimeAndSales(TimeAndSales::new()),
-                        stream_type,
-                        settings,
-                    )),
-                }
-            }
-
-            for (id, dashboard) in &state.layouts {
-                let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> = Vec::new();
-
-                for (popout, pos, size) in &dashboard.popout {
-                    let configuration = configuration(popout.clone());
-                    popout_windows.push((
-                        configuration,
-                        (Point::new(pos.0, pos.1), Size::new(size.0, size.1)),
-                    ));
-                }
-
-                let dashboard = Dashboard::from_config(
-                    configuration(dashboard.pane.clone()), popout_windows, dashboard.trade_fetch_enabled
-                );
-
-                de_state.layouts.insert(*id, dashboard);
-            }
-
-            de_state
-        }
-        Err(e) => {
-            log::error!(
-                "Failed to load/find layout state: {}. Starting with a new layout.",
-                e
-            );
-
-            layout::SavedState::default()
-        }
-    };
+    let saved_state = layout::load_saved_state("dashboard_state.json");
 
     let window_size = saved_state.window_size.unwrap_or((1600.0, 900.0));
     let window_position = saved_state.window_position;
