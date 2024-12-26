@@ -288,7 +288,7 @@ impl PaneState {
                         timeframe, 
                         tick_size, 
                         timezone,
-                        &indicators,
+                        indicators,
                     );
                 }
             }
@@ -304,7 +304,7 @@ impl PaneState {
                         klines.clone(),
                         raw_trades,
                         timezone,
-                        &indicators,
+                        indicators,
                     );
                 }
             }
@@ -798,10 +798,10 @@ fn blank_settings_view<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn notification_modals<'a>(
+fn notification_modals(
     pane: pane_grid::Pane,
-    notifications: &'a [Notification],
-) -> Column<'a, Message> {
+    notifications: &[Notification],
+) -> Column<Message> {
     let mut notifications_column = column![].align_x(Alignment::End).spacing(6);
 
     for notification in notifications.iter().rev().take(5) {

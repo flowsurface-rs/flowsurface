@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::default;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -46,16 +47,11 @@ impl LayoutId {
     ];
 }
 
-#[derive(Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]
+#[derive(Default, Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]
 pub enum Sidebar {
+    #[default]
     Left,
     Right,
-}
-
-impl Default for Sidebar {
-    fn default() -> Self {
-        Sidebar::Left
-    }
 }
 
 impl std::fmt::Display for Sidebar {

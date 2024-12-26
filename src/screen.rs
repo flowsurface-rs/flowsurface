@@ -23,7 +23,7 @@ pub fn create_button<'a, M: Clone + 'a>(
         .on_press(message);
         
     if let Some(text) = tooltip_text {
-        tooltip(btn, Some(text), tooltip_pos).into()
+        tooltip(btn, Some(text), tooltip_pos)
     } else {
         btn.into()
     }

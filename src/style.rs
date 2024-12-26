@@ -87,7 +87,6 @@ pub fn branding_text(theme: &Theme) -> iced::widget::text::Style {
                 .color
                 .scale_alpha(if palette.is_dark { 0.1 } else { 0.8 })
         ),
-        ..Default::default()
     }
 }
 
@@ -443,7 +442,6 @@ pub fn modal_container(theme: &Theme) -> Style {
                 }
             ),
         },
-        ..Default::default()
     }
 }
 
@@ -475,7 +473,6 @@ pub fn sorter_container(theme: &Theme) -> Style {
                 }
             ),
         },
-        ..Default::default()
     }
 }
 
@@ -643,18 +640,18 @@ pub fn scroll_bar(theme: &Theme, status: widget::scrollable::Status) -> widget::
         widget::scrollable::Status::Dragged { .. } 
         | widget::scrollable::Status::Hovered { .. } => {
             (
-                palette.background.weak.color.scale_alpha(0.2 * light_factor).into(),
-                palette.secondary.weak.color.scale_alpha(0.8 * light_factor).into(),
+                palette.background.weak.color.scale_alpha(0.2 * light_factor),
+                palette.secondary.weak.color.scale_alpha(0.8 * light_factor),
             )
         },
         _ => (
-            palette.background.weak.color.scale_alpha(0.1 * light_factor).into(),
-            palette.secondary.weak.color.scale_alpha(0.4 * light_factor).into(),
+            palette.background.weak.color.scale_alpha(0.1 * light_factor),
+            palette.secondary.weak.color.scale_alpha(0.4 * light_factor),
         ),
     };
 
     let rail = Rail {
-        background: Some(rail_bg),
+        background: Some(iced::Background::Color(rail_bg)),
         border: Border {
             radius: 4.0.into(),
             width: 1.0,

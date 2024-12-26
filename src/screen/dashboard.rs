@@ -578,7 +578,7 @@ impl Dashboard {
                                                 timeframe,
                                                 tick_size,
                                                 timezone,
-                                                &indicators,
+                                                indicators,
                                             );
                                         }
                                         PaneContent::Footprint(chart, indicators) => {
@@ -590,7 +590,7 @@ impl Dashboard {
                                                 klines.clone(),
                                                 raw_trades,
                                                 timezone,
-                                                &indicators,
+                                                indicators,
                                             );
                                         }
                                         _ => {}

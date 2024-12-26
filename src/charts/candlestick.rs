@@ -224,7 +224,7 @@ impl CandlestickChart {
             }
         }
 
-        for (_, data) in &self.indicators {
+        for data in self.indicators.values() {
             if let IndicatorData::OpenInterest(_, _) = data {
                 if !self.fetching_oi {
                     let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
@@ -505,10 +505,10 @@ impl canvas::Program<Message> for CandlestickChart {
                     });
 
                 // last price line
-                chart.last_price.map(|price| {
+                if let Some(price) = &chart.last_price {
                     let (line_color, y_pos) = match price {
-                        PriceInfoLabel::Up(p) => (palette.success.weak.color, chart.price_to_y(p)),
-                        PriceInfoLabel::Down(p) => (palette.danger.weak.color, chart.price_to_y(p)),
+                        PriceInfoLabel::Up(p) => (palette.success.weak.color, chart.price_to_y(*p)),
+                        PriceInfoLabel::Down(p) => (palette.danger.weak.color, chart.price_to_y(*p)),
                     };
 
                     let marker_line = Stroke::with_color(
@@ -530,7 +530,7 @@ impl canvas::Program<Message> for CandlestickChart {
                         ),
                         marker_line,
                     );
-                });
+                };
             });
         });
 

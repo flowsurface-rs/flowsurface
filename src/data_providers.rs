@@ -282,11 +282,11 @@ impl std::fmt::Display for Exchange {
     }
 }
 impl Exchange {
-    pub const ALL: [Exchange; 4] = [
-        Exchange::BinanceFutures,
-        Exchange::BybitLinear,
-        Exchange::BybitSpot,
-        Exchange::BinanceSpot,
+    pub const MARKET_TYPES: [(Exchange, MarketType); 4] = [
+        (Exchange::BinanceFutures, MarketType::LinearPerps),
+        (Exchange::BybitLinear, MarketType::LinearPerps),
+        (Exchange::BinanceSpot, MarketType::Spot),
+        (Exchange::BybitSpot, MarketType::Spot),
     ];
 }
 

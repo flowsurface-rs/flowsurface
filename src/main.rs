@@ -156,52 +156,34 @@ impl State {
         let last_active_layout = saved_state.last_active_layout;
 
         let mut ticker_info_map = HashMap::new();
-        let mut ticksizes_tasks = Vec::new();
 
-        for exchange in &Exchange::ALL {
-            ticker_info_map.insert(*exchange, HashMap::new());
+        let exchange_fetch_tasks = {
+            Exchange::MARKET_TYPES.iter()
+                .flat_map(|(exchange, market_type)| {
+                    ticker_info_map.insert(*exchange, HashMap::new());
+                    
+                    let ticksizes_task = match exchange {
+                        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+                            fetch_ticker_info(*exchange, binance::fetch_ticksize(*market_type))
+                        }
+                        Exchange::BybitLinear | Exchange::BybitSpot => {
+                            fetch_ticker_info(*exchange, bybit::fetch_ticksize(*market_type))
+                        }
+                    };
 
-            let fetch_ticksize = match exchange {
-                Exchange::BinanceFutures => {
-                    fetch_ticker_info(*exchange, binance::fetch_ticksize(MarketType::LinearPerps))
-                }
-                Exchange::BybitLinear => {
-                    fetch_ticker_info(*exchange, bybit::fetch_ticksize(MarketType::LinearPerps))
-                }
-                Exchange::BinanceSpot => {
-                    fetch_ticker_info(*exchange, binance::fetch_ticksize(MarketType::Spot))
-                }
-                Exchange::BybitSpot => {
-                    fetch_ticker_info(*exchange, bybit::fetch_ticksize(MarketType::Spot))
-                }
-            };
-            ticksizes_tasks.push(fetch_ticksize);
-        }
+                    let prices_task = match exchange {
+                        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+                            fetch_ticker_prices(*exchange, binance::fetch_ticker_prices(*market_type))
+                        }
+                        Exchange::BybitLinear | Exchange::BybitSpot => {
+                            fetch_ticker_prices(*exchange, bybit::fetch_ticker_prices(*market_type))
+                        }
+                    };
 
-        let bybit_tickers_fetch = fetch_ticker_prices(
-            Exchange::BybitLinear,
-            bybit::fetch_ticker_prices(MarketType::LinearPerps),
-        );
-        let binance_tickers_fetch = fetch_ticker_prices(
-            Exchange::BinanceFutures,
-            binance::fetch_ticker_prices(MarketType::LinearPerps),
-        );
-        let binance_spot_tickers_fetch = fetch_ticker_prices(
-            Exchange::BinanceSpot,
-            binance::fetch_ticker_prices(MarketType::Spot),
-        );
-        let bybit_spot_tickers_fetch = fetch_ticker_prices(
-            Exchange::BybitSpot,
-            bybit::fetch_ticker_prices(MarketType::Spot),
-        );
-
-        let batch_fetch_tasks = Task::batch(vec![
-            bybit_tickers_fetch,
-            binance_tickers_fetch,
-            binance_spot_tickers_fetch,
-            bybit_spot_tickers_fetch,
-            Task::batch(ticksizes_tasks),
-        ]);
+                    vec![ticksizes_task, prices_task]
+                })
+                .collect::<Vec<_>>()
+        };
 
         (
             Self {
@@ -222,7 +204,7 @@ impl State {
                 .chain(Task::batch(vec![
                     Task::done(Message::LoadLayout(last_active_layout)),
                     Task::done(Message::SetTimezone(saved_state.timezone)),
-                    batch_fetch_tasks,
+                    Task::batch(exchange_fetch_tasks),
                 ])),
         )
     }
@@ -310,7 +292,7 @@ impl State {
                         Message::SaveAndExit
                     );
                 }
-            },
+            }
             Message::SaveAndExit(windows) => {
                 self.get_mut_dashboard(self.last_active_layout)
                     .popout
@@ -775,15 +757,17 @@ impl State {
                     if let Some(confirm_dialog) = &self.confirmation_dialog {
                         let dialog_content = container(
                             column![
-                                text(confirm_dialog),
+                                text(confirm_dialog).size(14),
                                 row![
                                     button(text("Cancel"))
+                                        .style(|theme, status| style::button_transparent(theme, status, false))
                                         .on_press(Message::ToggleDialogModal(None)),
                                     button(text("Confirm"))
                                         .on_press(Message::ToggleTradeFetch(true)),
                                 ]
                                 .spacing(8),
                             ]
+                            .align_x(Alignment::Center)
                             .spacing(16),
                         )
                         .padding(24)
@@ -795,7 +779,7 @@ impl State {
                             Message::ToggleDialogModal(None)
                         )
                     } else {
-                        base_content.into()
+                        base_content
                     }
                 }
                 DashboardModal::Layout => {

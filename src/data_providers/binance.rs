@@ -968,7 +968,7 @@ pub async fn get_hist_trades(
         "{}/{}-aggTrades-{}.zip",
         base_path,
         symbol.to_uppercase(), 
-        date.format("%Y-%m-%d").to_string(),
+        date.format("%Y-%m-%d"),
     );
     
     if std::fs::metadata(&zip_path).is_ok() {
