@@ -5,7 +5,7 @@ use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vect
 use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
 
 use crate::charts::{
-    calc_price_step, convert_to_qty_abbr, round_to_tick, AxisLabel, Caches, CommonChartData, Interaction, Label, Message
+    calc_value_step, convert_to_qty_abbr, round_to_tick, AxisLabel, Caches, CommonChartData, Interaction, Label, Message
 };
 use crate::data_providers::format_with_commas;
 
@@ -389,38 +389,17 @@ impl canvas::Program<Message> for OpenInterestLabels<'_> {
     ) -> Vec<Geometry> {
         let palette = theme.extended_palette();
 
-        let highest = self.max;
-        let lowest = self.min;
-
+        let (highest, lowest) = (self.max, self.min);
+        
         let text_size = 12.0;
 
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
-            frame.fill_rectangle(
-                Point::new(0.0, 0.0),
-                Size::new(bounds.width, 1.0),
-                if palette.is_dark {
-                    palette.background.weak.color.scale_alpha(0.2)
-                } else {
-                    palette.background.strong.color.scale_alpha(0.2)
-                },
-            );
-
-            frame.fill_rectangle(
-                Point::new(0.0, 0.0),
-                Size::new(1.0, bounds.height),
-                if palette.is_dark {
-                    palette.background.weak.color.scale_alpha(0.4)
-                } else {
-                    palette.background.strong.color.scale_alpha(0.4)
-                },
-            );
+            super::draw_borders(frame, bounds, palette);
 
             let y_range = highest - lowest;
+            let y_labels_can_fit = (bounds.height / (text_size * 2.0)) as i32;
 
-            let y_labels_can_fit: i32 = (bounds.height / (text_size * 2.0)) as i32;
-
-            let mut all_labels: Vec<AxisLabel> =
-                Vec::with_capacity((y_labels_can_fit + 2) as usize); // +2 for last_price and crosshair
+            let mut all_labels = Vec::with_capacity((y_labels_can_fit + 2) as usize);
 
             let rect = |y_pos: f32, label_amt: i16| {
                 let label_offset = text_size + (f32::from(label_amt) * (text_size / 2.0) + 2.0);
@@ -433,36 +412,39 @@ impl canvas::Program<Message> for OpenInterestLabels<'_> {
                 }
             };
 
-            // Regular price labels (priority 1)
-            let (step, rounded_lowest) = calc_price_step(highest, lowest, y_labels_can_fit, 1.0);
+            // Regular value labels (priority 1)
+            let (step, rounded_lowest) = calc_value_step(highest, lowest, y_labels_can_fit, 10.0);
 
             let mut y = rounded_lowest;
 
             while y <= highest {
-                let y_position = bounds.height - ((y - lowest) / y_range * bounds.height);
+                let label = Label {
+                    content: convert_to_qty_abbr(y),
+                    background_color: None,
+                    marker_color: if palette.is_dark {
+                        palette.background.weak.color.scale_alpha(0.6)
+                    } else {
+                        palette.background.strong.color.scale_alpha(0.6)
+                    },
+                    text_color: palette.background.base.text,
+                    text_size,
+                };
 
-                if y > 0.0 {
-                    let text_content = convert_to_qty_abbr(y);
-
-                    let label = Label {
-                        content: text_content,
-                        background_color: None,
-                        marker_color: if palette.is_dark {
-                            palette.background.weak.color.scale_alpha(0.6)
-                        } else {
-                            palette.background.strong.color.scale_alpha(0.6)
-                        },
-                        text_color: palette.background.base.text,
-                        text_size: 12.0,
-                    };
-
-                    all_labels.push(AxisLabel::Y(rect(y_position, 1), label, None));
-                }
+                all_labels.push(
+                    AxisLabel::Y(
+                        rect(
+                            bounds.height - ((y - lowest) / y_range * bounds.height), 
+                            1
+                        ),
+                        label, 
+                        None
+                    )
+                );
 
                 y += step;
             }
 
-            // Crosshair price (priority 3)
+            // Crosshair value (priority 3)
             if self.crosshair {
                 let common_bounds = Rectangle {
                     x: self.chart_bounds.x,
@@ -485,7 +467,7 @@ impl canvas::Program<Message> for OpenInterestLabels<'_> {
                         background_color: Some(palette.secondary.base.color),
                         marker_color: palette.background.strong.color,
                         text_color: palette.secondary.base.text,
-                        text_size: 12.0,
+                        text_size,
                     };
 
                     all_labels.push(AxisLabel::Y(rect(y_position, 1), label, None));

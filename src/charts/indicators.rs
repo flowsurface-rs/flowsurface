@@ -3,6 +3,7 @@ pub mod open_interest;
 
 use std::{any::Any, fmt::{self, Debug, Display}};
 
+use iced::{theme::palette::Extended, widget::canvas::Frame, Point, Rectangle, Size};
 use serde::{Deserialize, Serialize};
 
 use crate::data_providers::MarketType;
@@ -125,4 +126,30 @@ impl Display for FootprintIndicator {
             FootprintIndicator::OpenInterest => write!(f, "Open Interest"),
         }
     }
+}
+
+fn draw_borders(
+    frame: &mut Frame,
+    bounds: Rectangle,
+    palette: &Extended,
+) {
+    frame.fill_rectangle(
+        Point::new(0.0, 0.0),
+        Size::new(bounds.width, 1.0),
+        if palette.is_dark {
+            palette.background.weak.color.scale_alpha(0.2)
+        } else {
+            palette.background.strong.color.scale_alpha(0.2)
+        },
+    );
+
+    frame.fill_rectangle(
+        Point::new(0.0, 0.0),
+        Size::new(1.0, bounds.height),
+        if palette.is_dark {
+            palette.background.weak.color.scale_alpha(0.4)
+        } else {
+            palette.background.strong.color.scale_alpha(0.4)
+        },
+    );
 }

@@ -1150,7 +1150,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
 
             // Regular price labels (priority 1)
             let (step, rounded_lowest) =
-                calc_price_step(highest, lowest, y_labels_can_fit, self.tick_size);
+                calc_value_step(highest, lowest, y_labels_can_fit, self.tick_size);
 
             let mut y = rounded_lowest;
             while y <= highest {
@@ -1272,7 +1272,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
     }
 }
 
-fn calc_price_step(highest: f32, lowest: f32, labels_can_fit: i32, tick_size: f32) -> (f32, f32) {
+fn calc_value_step(highest: f32, lowest: f32, labels_can_fit: i32, tick_size: f32) -> (f32, f32) {
     let range = highest - lowest;
     let labels = labels_can_fit as f32;
 

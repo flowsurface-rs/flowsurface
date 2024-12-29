@@ -619,19 +619,17 @@ impl FootprintChart {
         let chart_state = &mut self.chart;
 
         if chart_state.autoscale {
-            chart_state.translation =
-                Vector::new(
-                    0.5 * (chart_state.bounds.width / chart_state.scaling) - (chart_state.cell_width / chart_state.scaling),
-                    {
-                    if let Some((_, (_, kline))) = self.data_points.last_key_value() {
-                        let y_low = chart_state.price_to_y(kline.low);
-                        let y_high = chart_state.price_to_y(kline.high);
+            chart_state.translation = Vector::new(
+                0.5 * (chart_state.bounds.width / chart_state.scaling) - (chart_state.cell_width / chart_state.scaling),
+                if let Some((_, (_, kline))) = self.data_points.last_key_value() {
+                    let y_low = chart_state.price_to_y(kline.low);
+                    let y_high = chart_state.price_to_y(kline.high);
 
-                        -(y_low + y_high) / 2.0
-                    } else {
-                        0.0
-                    }
-                });
+                    -(y_low + y_high) / 2.0
+                } else {
+                    0.0
+                },
+            );
         }
 
         chart_state.cache.clear_all();
