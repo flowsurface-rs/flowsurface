@@ -6,7 +6,7 @@ use iced::{mouse, Point, Rectangle, Renderer, Size, Theme, Vector};
 use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
 
 use crate::charts::{
-    calc_value_step, convert_to_qty_abbr, round_to_tick, AxisLabel, Caches, CommonChartData, Interaction, Label, Message
+    round_to_tick, Caches, CommonChartData, Interaction, Message
 };
 use crate::data_providers::format_with_commas;
 
@@ -38,7 +38,7 @@ pub fn create_indicator_elem<'a>(
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(0.0);
 
-    let indi_labels = Canvas::new(VolumeLabels {
+    let indi_labels = Canvas::new(super::IndicatorLabels {
         label_cache: &cache.y_labels,
         max: max_volume,
         min: 0.0,
@@ -346,143 +346,6 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     mouse::Interaction::default()
                 }
             }
-            _ => mouse::Interaction::default(),
-        }
-    }
-}
-
-pub struct VolumeLabels<'a> {
-    pub label_cache: &'a Cache,
-    pub crosshair: bool,
-    pub max: f32,
-    pub min: f32,
-    pub chart_bounds: Rectangle,
-}
-
-impl canvas::Program<Message> for VolumeLabels<'_> {
-    type State = Interaction;
-
-    fn update(
-        &self,
-        _state: &mut Self::State,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Option<canvas::Action<Message>> {
-        None
-    }
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        theme: &Theme,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let palette = theme.extended_palette();
-
-        let (highest, lowest) = (self.max, self.min);
-        
-        let text_size = 12.0;
-
-        let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
-            super::draw_borders(frame, bounds, palette);
-
-            let y_range = highest - lowest;
-            let y_labels_can_fit = (bounds.height / (text_size * 2.0)) as i32;
-
-            let mut all_labels: Vec<AxisLabel> = Vec::with_capacity((y_labels_can_fit + 2) as usize);
-
-            let rect = |y_pos: f32, label_amt: i16| {
-                let label_offset = text_size + (f32::from(label_amt) * (text_size / 2.0) + 2.0);
-
-                Rectangle {
-                    x: 6.0,
-                    y: y_pos - label_offset / 2.0,
-                    width: bounds.width - 8.0,
-                    height: label_offset,
-                }
-            };
-
-            // Regular value labels (priority 1)
-            let (step, rounded_lowest) = calc_value_step(highest, lowest, y_labels_can_fit, 10.0);
-
-            let mut y = rounded_lowest;
-
-            while y <= highest {
-                let label = Label {
-                    content: convert_to_qty_abbr(y),
-                    background_color: None,
-                    marker_color: if palette.is_dark {
-                        palette.background.weak.color.scale_alpha(0.6)
-                    } else {
-                        palette.background.strong.color.scale_alpha(0.6)
-                    },
-                    text_color: palette.background.base.text,
-                    text_size,
-                };
-
-                all_labels.push(
-                    AxisLabel::Y(
-                        rect(
-                            bounds.height - ((y - lowest) / y_range * bounds.height), 
-                            1
-                        ),
-                        label, 
-                        None
-                    )
-                );
-
-                y += step;
-            }
-
-            // Crosshair value (priority 3)
-            if self.crosshair {
-                let common_bounds = Rectangle {
-                    x: self.chart_bounds.x,
-                    y: bounds.y,
-                    width: self.chart_bounds.width,
-                    height: bounds.height,
-                };
-
-                if let Some(crosshair_pos) = cursor.position_in(common_bounds) {
-                    let raw_price =
-                        lowest + (y_range * (bounds.height - crosshair_pos.y) / bounds.height);
-                    let rounded_price = round_to_tick(raw_price, 1.0);
-                    let y_position =
-                        bounds.height - ((rounded_price - lowest) / y_range * bounds.height);
-
-                    let text_content = convert_to_qty_abbr(rounded_price);
-
-                    let label = Label {
-                        content: text_content,
-                        background_color: Some(palette.secondary.base.color),
-                        marker_color: palette.background.strong.color,
-                        text_color: palette.secondary.base.text,
-                        text_size,
-                    };
-
-                    all_labels.push(AxisLabel::Y(rect(y_position, 1), label, None));
-                }
-            }
-
-            AxisLabel::filter_and_draw(&all_labels, frame);
-        });
-
-        vec![labels]
-    }
-
-    fn mouse_interaction(
-        &self,
-        interaction: &Interaction,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        match interaction {
-            Interaction::Zoomin { .. } => mouse::Interaction::ResizingVertically,
-            Interaction::Panning { .. } => mouse::Interaction::None,
-            Interaction::None if cursor.is_over(bounds) => mouse::Interaction::ResizingVertically,
             _ => mouse::Interaction::default(),
         }
     }
