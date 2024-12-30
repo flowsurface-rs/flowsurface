@@ -45,7 +45,7 @@ pub fn create_indicator_elem<'a>(
     max_value += padding;
     min_value -= padding;
 
-    let indi_labels = Canvas::new(super::IndicatorLabels {
+    let indi_labels = Canvas::new(super::IndicatorLabel {
         label_cache: &cache.y_labels,
         max: max_value,
         min: min_value,

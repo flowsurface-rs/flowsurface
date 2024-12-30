@@ -38,7 +38,7 @@ pub fn create_indicator_elem<'a>(
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(0.0);
 
-    let indi_labels = Canvas::new(super::IndicatorLabels {
+    let indi_labels = Canvas::new(super::IndicatorLabel {
         label_cache: &cache.y_labels,
         max: max_volume,
         min: 0.0,

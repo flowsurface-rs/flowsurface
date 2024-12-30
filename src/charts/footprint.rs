@@ -17,7 +17,7 @@ use super::indicators::{self, FootprintIndicator, Indicator};
 use super::{
     request_fetch, round_to_tick, Caches, Chart, ChartConstants, CommonChartData, Interaction, Message, PriceInfoLabel
 };
-use super::{canvas_interaction, view_chart, update_chart, count_decimals, convert_to_qty_abbr};
+use super::{canvas_interaction, view_chart, update_chart, count_decimals, abbr_large_numbers};
 
 impl Chart for FootprintChart {
     fn get_common_data(&self) -> &CommonChartData {
@@ -841,7 +841,7 @@ impl canvas::Program<Message> for FootprintChart {
 
                             if trade.1 .0 > 0.0 {
                                 if cell_height_unscaled > 12.0 && cell_width_unscaled > 108.0 {
-                                    let text_content = convert_to_qty_abbr(trade.1 .0);
+                                    let text_content = abbr_large_numbers(trade.1 .0);
 
                                     let text_position =
                                         Point::new(x_position + (candle_width / 4.0), y_position);
@@ -872,7 +872,7 @@ impl canvas::Program<Message> for FootprintChart {
                             }
                             if trade.1 .1 > 0.0 {
                                 if cell_height_unscaled > 12.0 && cell_width_unscaled > 108.0 {
-                                    let text_content = convert_to_qty_abbr(trade.1 .1);
+                                    let text_content = abbr_large_numbers(trade.1 .1);
 
                                     let text_position =
                                         Point::new(x_position - (candle_width / 4.0), y_position);

@@ -6,7 +6,10 @@ use std::{any::Any, fmt::{self, Debug, Display}};
 use iced::{mouse, theme::palette::Extended, widget::canvas::{self, Cache, Frame, Geometry}, Event, Point, Rectangle, Renderer, Size, Theme};
 use serde::{Deserialize, Serialize};
 
-use crate::{charts::{calc_value_step, convert_to_qty_abbr, round_to_tick, AxisLabel, Label}, data_providers::MarketType};
+use crate::{
+    charts::{calc_value_step, abbr_large_numbers, round_to_tick, AxisLabel, Label}, 
+    data_providers::MarketType
+};
 
 use super::{Interaction, Message};
 
@@ -156,7 +159,7 @@ fn draw_borders(
     );
 }
 
-pub struct IndicatorLabels<'a> {
+pub struct IndicatorLabel<'a> {
     pub label_cache: &'a Cache,
     pub crosshair: bool,
     pub max: f32,
@@ -164,7 +167,7 @@ pub struct IndicatorLabels<'a> {
     pub chart_bounds: Rectangle,
 }
 
-impl canvas::Program<Message> for IndicatorLabels<'_> {
+impl canvas::Program<Message> for IndicatorLabel<'_> {
     type State = Interaction;
 
     fn update(
@@ -194,10 +197,10 @@ impl canvas::Program<Message> for IndicatorLabels<'_> {
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
             draw_borders(frame, bounds, palette);
 
-            let y_range = highest - lowest;
-            let y_labels_can_fit = (bounds.height / (text_size * 2.0)) as i32;
+            let range = highest - lowest;
+            let labels_can_fit = (bounds.height / (text_size * 2.0)) as i32;
 
-            let mut all_labels: Vec<AxisLabel> = Vec::with_capacity((y_labels_can_fit + 2) as usize);
+            let mut all_labels = Vec::with_capacity((labels_can_fit + 2) as usize);
 
             let rect = |y_pos: f32, label_amt: i16| {
                 let label_offset = text_size + (f32::from(label_amt) * (text_size / 2.0) + 2.0);
@@ -211,13 +214,13 @@ impl canvas::Program<Message> for IndicatorLabels<'_> {
             };
 
             // Regular value labels (priority 1)
-            let (step, rounded_lowest) = calc_value_step(highest, lowest, y_labels_can_fit, 10.0);
+            let (step, rounded_lowest) = calc_value_step(highest, lowest, labels_can_fit, 10.0);
 
-            let mut y = rounded_lowest;
+            let mut value = rounded_lowest;
 
-            while y <= highest {
+            while value <= highest {
                 let label = Label {
-                    content: convert_to_qty_abbr(y),
+                    content: abbr_large_numbers(value),
                     background_color: None,
                     marker_color: if palette.is_dark {
                         palette.background.weak.color.scale_alpha(0.6)
@@ -231,15 +234,15 @@ impl canvas::Program<Message> for IndicatorLabels<'_> {
                 all_labels.push(
                     AxisLabel::Y(
                         rect(
-                            bounds.height - ((y - lowest) / y_range * bounds.height), 
+                            bounds.height - ((value - lowest) / range * bounds.height), 
                             1
                         ),
                         label, 
-                        None
+                        None,
                     )
                 );
 
-                y += step;
+                value += step;
             }
 
             // Crosshair value (priority 3)
@@ -252,23 +255,32 @@ impl canvas::Program<Message> for IndicatorLabels<'_> {
                 };
 
                 if let Some(crosshair_pos) = cursor.position_in(common_bounds) {
-                    let raw_price =
-                        lowest + (y_range * (bounds.height - crosshair_pos.y) / bounds.height);
-                    let rounded_price = round_to_tick(raw_price, 1.0);
-                    let y_position =
-                        bounds.height - ((rounded_price - lowest) / y_range * bounds.height);
-
-                    let text_content = convert_to_qty_abbr(rounded_price);
+                    let rounded_value = round_to_tick(
+                        lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height), 
+                        10.0
+                    );
 
                     let label = Label {
-                        content: text_content,
+                        content: abbr_large_numbers(rounded_value),
                         background_color: Some(palette.secondary.base.color),
                         marker_color: palette.background.strong.color,
                         text_color: palette.secondary.base.text,
                         text_size,
                     };
 
-                    all_labels.push(AxisLabel::Y(rect(y_position, 1), label, None));
+                    let y_position =
+                        bounds.height - ((rounded_value - lowest) / range * bounds.height);
+
+                    all_labels.push(
+                        AxisLabel::Y(
+                            rect(
+                                y_position, 
+                                1
+                            ), 
+                            label, 
+                            None,
+                        )
+                    );
                 }
             }
 

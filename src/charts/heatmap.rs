@@ -14,7 +14,7 @@ use crate::{
 
 use super::indicators::{HeatmapIndicator, Indicator};
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
-use super::{canvas_interaction, view_chart, update_chart, count_decimals, convert_to_qty_abbr};
+use super::{canvas_interaction, view_chart, update_chart, count_decimals, abbr_large_numbers};
 
 use ordered_float::OrderedFloat;
 
@@ -580,7 +580,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                         && color_alpha > 0.4
                                     {
                                         frame.fill_text(canvas::Text {
-                                            content: convert_to_qty_abbr(run.qty.0),
+                                            content: abbr_large_numbers(run.qty.0),
                                             position: Point::new(
                                                 start_x + (cell_height / 2.0),
                                                 y_position,
@@ -641,7 +641,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     // max bid/ask quantity text
                     let text_size = 9.0 / chart.scaling;
-                    let text_content = convert_to_qty_abbr(max_qty);
+                    let text_content = abbr_large_numbers(max_qty);
                     let text_position = Point::new(50.0, region.y);
 
                     frame.fill_text(canvas::Text {
@@ -704,7 +704,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 if volume_indicator && max_aggr_volume > 0.0 {
                     let text_size = 9.0 / chart.scaling;
-                    let text_content = convert_to_qty_abbr(max_aggr_volume);
+                    let text_content = abbr_large_numbers(max_aggr_volume);
                     let text_width = (text_content.len() as f32 * text_size) / 1.5;
 
                     let text_position = Point::new(

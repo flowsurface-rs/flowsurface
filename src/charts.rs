@@ -1307,21 +1307,21 @@ enum PriceInfoLabel {
     Down(f32),
 }
 
-fn convert_to_qty_abbr(price: f32) -> String {
-    if price >= 1_000_000_000.0 {
-        format!("{:.2}b", price / 1_000_000_000.0)
-    } else if price >= 1_000_000.0 {
-        format!("{:.2}m", price / 1_000_000.0)
-    } else if price >= 1000.0 {
-        format!("{:.1}k", price / 1000.0)
-    } else if price >= 100.0 {
-        format!("{price:.0}")
-    } else if price >= 10.0 {
-        format!("{price:.1}")
-    } else if price >= 1.0 {
-        format!("{price:.2}")
+fn abbr_large_numbers(value: f32) -> String {
+    if value >= 1_000_000_000.0 {
+        format!("{:.2}b", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
+        format!("{:.2}m", value / 1_000_000.0)
+    } else if value >= 1000.0 {
+        format!("{:.1}k", value / 1000.0)
+    } else if value >= 100.0 {
+        format!("{value:.0}")
+    } else if value >= 10.0 {
+        format!("{value:.1}")
+    } else if value >= 1.0 {
+        format!("{value:.2}")
     } else {
-        format!("{price:.3}")
+        format!("{value:.3}")
     }
 }
 
