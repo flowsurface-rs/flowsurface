@@ -6,9 +6,10 @@ use std::{any::Any, fmt::{self, Debug, Display}};
 use iced::{mouse, theme::palette::Extended, widget::canvas::{self, Cache, Frame, Geometry}, Event, Point, Rectangle, Renderer, Size, Theme};
 use serde::{Deserialize, Serialize};
 
+use super::{abbr_large_numbers, round_to_tick, scales::linear};
 use crate::{
-    charts::{calc_value_step, abbr_large_numbers, round_to_tick, AxisLabel, Label}, 
-    data_providers::MarketType
+    charts::scales::{calc_label_rect, AxisLabel, Label}, 
+    data_providers::MarketType,
 };
 
 use super::{Interaction, Message};
@@ -191,61 +192,22 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
         let palette = theme.extended_palette();
 
         let (highest, lowest) = (self.max, self.min);
+        let range = highest - lowest;
         
         let text_size = 12.0;
 
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
             draw_borders(frame, bounds, palette);
 
-            let range = highest - lowest;
-            let labels_can_fit = (bounds.height / (text_size * 2.0)) as i32;
+            let mut all_labels = linear::generate_labels(
+                bounds,
+                self.min,
+                self.max,
+                text_size,
+                palette.background.base.text,
+                None,
+            );
 
-            let mut all_labels = Vec::with_capacity((labels_can_fit + 2) as usize);
-
-            let rect = |y_pos: f32, label_amt: i16| {
-                let label_offset = text_size + (f32::from(label_amt) * (text_size / 2.0) + 2.0);
-
-                Rectangle {
-                    x: 6.0,
-                    y: y_pos - label_offset / 2.0,
-                    width: bounds.width - 8.0,
-                    height: label_offset,
-                }
-            };
-
-            // Regular value labels (priority 1)
-            let (step, rounded_lowest) = calc_value_step(highest, lowest, labels_can_fit, 10.0);
-
-            let mut value = rounded_lowest;
-
-            while value <= highest {
-                let label = Label {
-                    content: abbr_large_numbers(value),
-                    background_color: None,
-                    marker_color: if palette.is_dark {
-                        palette.background.weak.color.scale_alpha(0.6)
-                    } else {
-                        palette.background.strong.color.scale_alpha(0.6)
-                    },
-                    text_color: palette.background.base.text,
-                    text_size,
-                };
-
-                all_labels.push(
-                    AxisLabel::Y(
-                        rect(
-                            bounds.height - ((value - lowest) / range * bounds.height), 
-                            1
-                        ),
-                        label, 
-                        None,
-                    )
-                );
-
-                value += step;
-            }
-
-            // Crosshair value (priority 3)
             if self.crosshair {
                 let common_bounds = Rectangle {
                     x: self.chart_bounds.x,
@@ -263,7 +225,6 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
                     let label = Label {
                         content: abbr_large_numbers(rounded_value),
                         background_color: Some(palette.secondary.base.color),
-                        marker_color: palette.background.strong.color,
                         text_color: palette.secondary.base.text,
                         text_size,
                     };
@@ -273,10 +234,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
 
                     all_labels.push(
                         AxisLabel::Y(
-                            rect(
-                                y_position, 
-                                1
-                            ), 
+                            calc_label_rect(y_position, 1, text_size, bounds),
                             label, 
                             None,
                         )

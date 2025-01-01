@@ -13,11 +13,10 @@ use crate::data_providers::{
     Kline, Timeframe, Trade, OpenInterest as OIData,
 };
 
+use super::scales::PriceInfoLabel;
 use super::indicators::{self, FootprintIndicator, Indicator};
-use super::{
-    request_fetch, round_to_tick, Caches, Chart, ChartConstants, CommonChartData, Interaction, Message, PriceInfoLabel
-};
-use super::{canvas_interaction, view_chart, update_chart, count_decimals, abbr_large_numbers};
+use super::{Caches, Chart, ChartConstants, CommonChartData, Interaction, Message};
+use super::{canvas_interaction, view_chart, update_chart, count_decimals, request_fetch, abbr_large_numbers, round_to_tick};
 
 impl Chart for FootprintChart {
     fn get_common_data(&self) -> &CommonChartData {

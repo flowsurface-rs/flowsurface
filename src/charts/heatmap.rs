@@ -14,7 +14,7 @@ use crate::{
 
 use super::indicators::{HeatmapIndicator, Indicator};
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
-use super::{canvas_interaction, view_chart, update_chart, count_decimals, abbr_large_numbers};
+use super::{canvas_interaction, view_chart, update_chart, abbr_large_numbers, count_decimals};
 
 use ordered_float::OrderedFloat;
 

@@ -12,10 +12,10 @@ use crate::data_providers::{
     Kline, OpenInterest as OIData, Timeframe
 };
 
+use super::scales::PriceInfoLabel;
 use super::indicators::{self, CandlestickIndicator, Indicator};
-
-use super::{request_fetch, Caches, Chart, ChartConstants, CommonChartData, Interaction, Message, PriceInfoLabel};
-use super::{canvas_interaction, view_chart, update_chart, count_decimals};
+use super::{Caches, Chart, ChartConstants, CommonChartData, Interaction, Message};
+use super::{canvas_interaction, view_chart, update_chart, count_decimals, request_fetch};
 
 impl Chart for CandlestickChart {
     fn get_common_data(&self) -> &CommonChartData {
