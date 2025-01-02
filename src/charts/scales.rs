@@ -8,6 +8,7 @@ use crate::screen::UserTimezone;
 
 use super::{Interaction, Message, round_to_tick};
 
+/// calculates `Rectangle` from given content, clamps it within bounds if needed
 pub fn calc_label_rect(
     y_pos: f32,
     content_amt: i16,
@@ -558,6 +559,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 highest,
                 text_size,
                 palette.background.base.text,
+                self.tick_size,
                 Some(self.decimals),
             );
 

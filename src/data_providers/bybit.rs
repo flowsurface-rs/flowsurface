@@ -429,8 +429,8 @@ pub fn connect_kline_stream(
                     }
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => {
-                        if msg.opcode == OpCode::Text {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
                             if let Ok(StreamData::Kline(ticker, de_kline_vec)) =
                                 feed_de(&msg.payload[..], None, market_type)
                             {
@@ -459,6 +459,13 @@ pub fn connect_kline_stream(
                                 }
                             }
                         }
+                        OpCode::Close => {
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected("Connection closed".to_string()))
+                                .await;
+                        }
+                        _ => {}
                     }
                     Err(e) => {
                         state = State::Disconnected;

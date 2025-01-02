@@ -205,6 +205,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
                 self.max,
                 text_size,
                 palette.background.base.text,
+                10.0,
                 None,
             );
 
