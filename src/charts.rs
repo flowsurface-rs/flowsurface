@@ -661,4 +661,52 @@ impl CommonChartData {
         // return incase consumer needs them
         (rounded_price, rounded_timestamp)
     }
+
+    pub fn check_kline_integrity<T: ContainsKey<i64>>(
+        &self,
+        earliest: i64,
+        latest: i64,
+        data_points: &T
+    ) -> Option<Vec<i64>> {
+        if self.already_fetching {
+            return None;
+        }
+    
+        let interval = self.timeframe as i64;
+        
+        let mut time = earliest;
+        let mut missing_count = 0;
+        while time < latest {
+            if !data_points.contains_key(&time) {
+                missing_count += 1;
+                break; 
+            }
+            time += interval;
+        }
+    
+        if missing_count > 0 {
+            let mut missing_keys = Vec::with_capacity(((latest - earliest) / interval) as usize);
+            let mut time = earliest;
+            while time < latest {
+                if !data_points.contains_key(&time) {
+                    missing_keys.push(time);
+                }
+                time += interval;
+            }
+            
+            log::warn!("Integrity check failed: missing {} klines", missing_keys.len());
+            return Some(missing_keys);
+        }
+
+        None
+    }
+}
+
+pub trait ContainsKey<K> {
+    fn contains_key(&self, key: &K) -> bool;
+}
+impl<K: Ord, V> ContainsKey<K> for std::collections::BTreeMap<K, V> {
+    fn contains_key(&self, key: &K) -> bool {
+        self.contains_key(key)
+    }
 }

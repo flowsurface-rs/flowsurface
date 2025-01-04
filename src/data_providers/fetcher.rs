@@ -33,7 +33,7 @@ impl RequestHandler {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
 
-        if let Some(r) = self.requests.values().find(|r| r.ends_same_with(&request)) {
+        if let Some(r) = self.requests.values().find(|r| r.same_with(&request)) {
             return match &r.status {
                 RequestStatus::Failed(error_msg) => Err(ReqError::Failed(error_msg.clone())),
                 RequestStatus::Completed(_) => Err(ReqError::Completed),
@@ -85,9 +85,11 @@ impl FetchRequest {
         }
     }
 
-    fn ends_same_with(&self, other: &FetchRequest) -> bool {
+    fn same_with(&self, other: &FetchRequest) -> bool {
         match (&self.fetch_type, &other.fetch_type) {
-            (FetchRange::Kline(_, e1), FetchRange::Kline(_, e2)) => e1 == e2,
+            (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => {
+                e1 == e2 && s1 == s2
+            },
             _ => false,
         }
     }

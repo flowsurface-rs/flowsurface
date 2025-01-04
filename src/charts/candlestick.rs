@@ -99,7 +99,6 @@ pub struct CandlestickChart {
     indicators: HashMap<CandlestickIndicator, IndicatorData>,
     request_handler: RequestHandler,
     fetching_oi: bool,
-    integrity: bool,
 }
 
 impl CandlestickChart {
@@ -167,7 +166,6 @@ impl CandlestickChart {
             },
             request_handler: RequestHandler::new(),
             fetching_oi: false,
-            integrity: false,
         }
     }
 
@@ -182,7 +180,7 @@ impl CandlestickChart {
 
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
         let mut task = None;
-        
+
         self.data_points.insert(kline.time as i64, *kline);
 
         if let Some(IndicatorData::Volume(_, data)) = 
@@ -258,62 +256,25 @@ impl CandlestickChart {
         };
 
         if task.is_none() {
-            if let Some(missing_keys) = self.check_data_integrity(kline_earliest, kline_latest) {
-                let (latest, earliest) = (
-                    missing_keys.iter().max().unwrap_or(&visible_latest) + self.chart.timeframe as i64,
-                    missing_keys.iter().min().unwrap_or(&visible_earliest) - self.chart.timeframe as i64,
-                );
-
-                self.request_handler = RequestHandler::new();
-
-                if let Some(fetch_task) = request_fetch(
-                    &mut self.request_handler, FetchRange::Kline(earliest, latest)
-                ) {
-                    self.get_common_data_mut().already_fetching = true;
-                    task = Some(fetch_task);
+            if let Some(missing_keys) = self.get_common_data()
+                .check_kline_integrity(kline_earliest, kline_latest, &self.data_points) {
+                    let (latest, earliest) = (
+                        missing_keys.iter()
+                            .max().unwrap_or(&visible_latest) + self.chart.timeframe as i64,
+                        missing_keys.iter()
+                            .min().unwrap_or(&visible_earliest) - self.chart.timeframe as i64,
+                    );
+    
+                    if let Some(fetch_task) = request_fetch(
+                        &mut self.request_handler, FetchRange::Kline(earliest, latest)
+                    ) {
+                        self.get_common_data_mut().already_fetching = true;
+                        task = Some(fetch_task);
+                    }
                 }
-            }
         }
 
         task
-    }
-
-    fn check_data_integrity(&mut self, earliest: i64, latest: i64) -> Option<Vec<i64>> {
-        if self.integrity || self.fetching_oi {
-            return None;
-        }
-        if self.get_common_data().already_fetching {
-            return None;
-        }
-    
-        let interval = self.get_common_data().timeframe as i64;
-        
-        let mut time = earliest;
-        let mut missing_count = 0;
-        while time < latest {
-            if !self.data_points.contains_key(&time) {
-                missing_count += 1;
-                break; 
-            }
-            time += interval;
-        }
-    
-        if missing_count > 0 {
-            let mut missing_keys = Vec::with_capacity(((latest - earliest) / interval) as usize);
-            let mut time = earliest;
-            while time < latest {
-                if !self.data_points.contains_key(&time) {
-                    missing_keys.push(time);
-                }
-                time += interval;
-            }
-            
-            log::warn!("Integrity check failed: missing {} klines", missing_keys.len());
-            Some(missing_keys)
-        } else {
-            self.integrity = true;
-            None
-        }
     }
 
     pub fn insert_new_klines(&mut self, req_id: uuid::Uuid, klines_raw: &Vec<Kline>) {
