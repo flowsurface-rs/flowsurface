@@ -6,6 +6,7 @@ mod window;
 mod layout;
 mod logger;
 mod screen;
+mod widget;
 mod tooltip;
 mod tickers_table;
 mod data_providers;

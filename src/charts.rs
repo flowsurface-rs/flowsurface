@@ -13,7 +13,7 @@ use crate::{
     data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo},
     screen::UserTimezone,
     style,
-    tooltip::{self, tooltip},
+    tooltip::{self, tooltip}, widget::hsplit::HSplit,
 };
 
 mod scales;
@@ -59,7 +59,6 @@ pub enum Interaction {
     None,
     Zoomin { last_position: Point },
     Panning { translation: Vector, start: Point },
-    ResizingCanvas { height: u16, start: Point },
 }
 
 impl Default for Interaction {
@@ -88,7 +87,6 @@ pub enum Message {
     YScaling(f32, f32, bool),
     XScaling(f32, f32, bool),
     BoundsChanged(Rectangle),
-    ResizingCanvas(u16),
     NewDataRange(Uuid, FetchRange),
 }
 
@@ -143,31 +141,13 @@ fn canvas_interaction<T: Chart>(
                 mouse::Event::ButtonPressed(button) => {
                     let message = match button {
                         mouse::Button::Left => {
-                            if cursor.is_over(Rectangle {
-                                x: bounds.x,
-                                y: bounds.y,
-                                width: bounds.width,
-                                height: bounds.height - 8.0,
-                            }) {
+                            if cursor.is_over(bounds) {
                                 *interaction = Interaction::Panning {
                                     translation: chart_state.translation,
                                     start: cursor_position,
                                 };
-                                None
-                            } else if cursor.is_over(Rectangle {
-                                x: bounds.x,
-                                y: bounds.y + bounds.height - 8.0,
-                                width: bounds.width,
-                                height: 8.0,
-                            }) {
-                                *interaction = Interaction::ResizingCanvas {
-                                    start: cursor_position,
-                                    height: chart_state.indicators_height,
-                                };
-                                None
-                            } else {
-                                None
                             }
+                            None
                         }
                         _ => None,
                     };
@@ -189,12 +169,6 @@ fn canvas_interaction<T: Chart>(
                             } else {
                                 None
                             }
-                        }
-                        Interaction::ResizingCanvas { start, height } => {
-                            let diff =
-                                ((cursor_position.y - start.y) / (bounds.height / 200.0)) as i16;
-                            let height = (height as i16 - diff).clamp(8, 60);
-                            Some(Message::ResizingCanvas(height as u16))
                         }
                         _ => None,
                     };
@@ -358,9 +332,6 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
         Message::BoundsChanged(bounds) => {
             chart_state.bounds = *bounds;
         }
-        Message::ResizingCanvas(y) => {
-            chart_state.indicators_height = *y;
-        }
         _ => {}
     }
 
@@ -456,15 +427,17 @@ fn view_chart<'a, T: Chart, I: Indicator>(
     }
 
     column![
-        row![
-            container(chart_canvas)
-                .width(Length::FillPortion(10))
-                .height(Length::FillPortion(120)),
-            container(axis_labels_y)
-                .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
-                .height(Length::FillPortion(120))
-        ],
-        indicators_row,
+        HSplit::new(
+            row![
+                container(chart_canvas)
+                    .width(Length::FillPortion(10))
+                    .height(Length::FillPortion(120)),
+                container(axis_labels_y)
+                    .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
+                    .height(Length::FillPortion(120))
+            ],
+            indicators_row,
+        ),    
         row![
             container(axis_labels_x)
                 .width(Length::FillPortion(10))

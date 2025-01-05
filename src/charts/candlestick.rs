@@ -607,27 +607,11 @@ impl canvas::Program<Message> for CandlestickChart {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None => {
-                if cursor.is_over(Rectangle {
-                    x: bounds.x,
-                    y: bounds.y,
-                    width: bounds.width,
-                    height: bounds.height - 8.0,
-                }) {
-                    if self.chart.crosshair {
-                        return mouse::Interaction::Crosshair;
-                    }
-                } else if cursor.is_over(Rectangle {
-                    x: bounds.x,
-                    y: bounds.y + bounds.height - 8.0,
-                    width: bounds.width,
-                    height: 8.0,
-                }) {
-                    return mouse::Interaction::ResizingVertically;
+                if cursor.is_over(bounds) && self.chart.crosshair {
+                    return mouse::Interaction::Crosshair;
                 }
-
                 mouse::Interaction::default()
             }
-            _ => mouse::Interaction::default(),
         }
     }
 }
