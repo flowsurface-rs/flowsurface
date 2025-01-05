@@ -19,6 +19,7 @@ struct State {
 pub struct HSplit<'a, Message, Theme, Renderer> {
     children: [Element<'a, Message, Theme, Renderer>; 3],
     starting_split_at: f32,
+    on_resize: Box<dyn Fn(f32) -> Message + 'a>,
 }
 
 impl<Message, Theme, Renderer> Debug for HSplit<'_, Message, Theme, Renderer> {
@@ -32,8 +33,9 @@ where
     Message: 'a,
 {
     pub fn new(
-        top: impl Into<Element<'a, Message, Theme, Renderer>>,
-        bottom: impl Into<Element<'a, Message, Theme, Renderer>>,
+        top: impl Into<Element<'a, Message>>,
+        bottom: impl Into<Element<'a, Message>>,
+        on_resize: impl Fn(f32) -> Message + 'a,
     ) -> Self {
         Self {
             children: [
@@ -57,6 +59,7 @@ where
                 bottom.into()
             ],
             starting_split_at: 0.8,
+            on_resize: Box::new(on_resize),
         }
     }
 
@@ -160,6 +163,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
                 }
                 iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) if state.dragging => {
                     state.dragging = false;
+                    shell.publish((self.on_resize)(state.split_at));
                 }
                 _ => {}
             }

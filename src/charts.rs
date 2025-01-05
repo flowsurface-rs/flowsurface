@@ -87,6 +87,7 @@ pub enum Message {
     YScaling(f32, f32, bool),
     XScaling(f32, f32, bool),
     BoundsChanged(Rectangle),
+    ResizingCanvas(f32),
     NewDataRange(Uuid, FetchRange),
 }
 
@@ -332,6 +333,9 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
         Message::BoundsChanged(bounds) => {
             chart_state.bounds = *bounds;
         }
+        Message::ResizingCanvas(split) => {
+            chart_state.indicators_split = *split;
+        }
         _ => {}
     }
 
@@ -437,7 +441,9 @@ fn view_chart<'a, T: Chart, I: Indicator>(
                     .height(Length::FillPortion(120))
             ],
             indicators_row,
-        ),    
+            Message::ResizingCanvas,
+        )
+        .split(chart_state.indicators_split),   
         row![
             container(axis_labels_x)
                 .width(Length::FillPortion(10))
@@ -505,7 +511,7 @@ pub struct CommonChartData {
     tick_size: f32,
     decimals: usize,
 
-    indicators_height: u16,
+    indicators_split: f32,
 
     already_fetching: bool,
 }
@@ -529,7 +535,7 @@ impl Default for CommonChartData {
             timeframe: 0,
             tick_size: 0.0,
             decimals: 0,
-            indicators_height: 0,
+            indicators_split: 0.8,
             already_fetching: false,
         }
     }

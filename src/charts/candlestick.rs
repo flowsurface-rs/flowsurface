@@ -140,7 +140,7 @@ impl CandlestickChart {
                 timeframe: timeframe.to_milliseconds(),
                 tick_size,
                 timezone,
-                indicators_height: 30,
+                indicators_split: 0.8,
                 decimals: count_decimals(tick_size),
                 ..Default::default()
             },
@@ -435,7 +435,7 @@ impl CandlestickChart {
         Some(
             container(indicators)
                 .width(Length::FillPortion(10))
-                .height(Length::FillPortion(chart_state.indicators_height))
+                .height(Length::Fill)
                 .into()
         )
     }

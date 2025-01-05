@@ -175,7 +175,7 @@ impl FootprintChart {
                 tick_size,
                 timezone,
                 decimals: count_decimals(tick_size),
-                indicators_height: 30,
+                indicators_split: 0.8,
                 ..Default::default()
             },
             data_points,
@@ -670,7 +670,7 @@ impl FootprintChart {
         Some(
             container(indicators)
                 .width(Length::FillPortion(10))
-                .height(Length::FillPortion(chart_state.indicators_height))
+                .height(Length::Fill)
                 .into()
         )
     }
