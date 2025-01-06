@@ -141,16 +141,6 @@ fn draw_borders(
 ) {
     frame.fill_rectangle(
         Point::new(0.0, 0.0),
-        Size::new(bounds.width, 1.0),
-        if palette.is_dark {
-            palette.background.weak.color.scale_alpha(0.2)
-        } else {
-            palette.background.strong.color.scale_alpha(0.2)
-        },
-    );
-
-    frame.fill_rectangle(
-        Point::new(0.0, 0.0),
         Size::new(1.0, bounds.height),
         if palette.is_dark {
             palette.background.weak.color.scale_alpha(0.4)

@@ -175,7 +175,7 @@ impl FootprintChart {
                 tick_size,
                 timezone,
                 decimals: count_decimals(tick_size),
-                indicators_split: 0.8,
+                indicators_split: Some(0.8),
                 ..Default::default()
             },
             data_points,

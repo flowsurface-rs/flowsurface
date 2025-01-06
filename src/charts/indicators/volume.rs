@@ -153,16 +153,6 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
             let region = self.visible_region(frame.size());
 
-            frame.fill_rectangle(
-                Point::new(region.x, 0.0),
-                Size::new(region.width, 1.0 / self.scaling),
-                if palette.is_dark {
-                    palette.background.weak.color.scale_alpha(0.2)
-                } else {
-                    palette.background.strong.color.scale_alpha(0.2)
-                },
-            );
-
             let (earliest, latest) = (
                 self.x_to_time(region.x) - i64::from(self.timeframe / 2),
                 self.x_to_time(region.x + region.width) + i64::from(self.timeframe / 2),

@@ -4,11 +4,13 @@ use iced::{
         renderer::Style,
         widget::{tree, Tree},
         Clipboard, Layout, Shell, Widget,
-    }, border::Radius, mouse::{Cursor, Interaction}, widget::Rule, Element, Length, Rectangle, Renderer, Size, Theme, Vector
+    }, 
+    border::Radius, mouse::{Cursor, Interaction}, 
+    widget::Rule, Element, Length, Rectangle, Renderer, Size, Theme, Vector
 };
 use std::fmt::{Debug, Formatter};
 
-const DRAG_SIZE: f32 = 4.0;
+const DRAG_SIZE: f32 = 1.0;
 
 struct State {
     split_at: f32,
@@ -116,7 +118,14 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
                 .layout(&mut tree.children[0], renderer, &top_limits),
             self.children[1]
                 .as_widget()
-                .layout(&mut tree.children[1], renderer, &Limits::new(Size::new(DRAG_SIZE, DRAG_SIZE), Size::new(max_limits.width, DRAG_SIZE)))
+                .layout(
+                    &mut tree.children[1], 
+                    renderer, 
+                    &Limits::new(
+                        Size::new(max_limits.width, 1.0), 
+                        Size::new(max_limits.width, DRAG_SIZE)
+                    )
+                )
                 .translate(Vector::new(0.0, top_height)),
             self.children[2]
                 .as_widget()
@@ -141,11 +150,19 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
 
+        let dragger_bounds = match layout.children().nth(1) {
+            Some(dragger) => dragger.bounds().expand(4.0),
+            None => {
+                log::error!("Failed to find dragger bounds in HSplit layout");
+                return;
+            }
+        };
+
         if let iced::Event::Mouse(event) = event {
             match event {
                 iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left) => {
                     if let Some(position) =
-                        cursor.position_in(layout.children().nth(1).unwrap().bounds())
+                        cursor.position_in(dragger_bounds)
                     {
                         state.offset = DRAG_SIZE.mul_add(-0.5, position.y);
                         state.dragging = true;
@@ -224,10 +241,18 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
         renderer: &Renderer,
     ) -> Interaction {
         let state = tree.state.downcast_ref::<State>();
-        if state.dragging
-            || cursor
-                .position_in(layout.children().nth(1).unwrap().bounds())
-                .is_some()
+
+        let dragger_bounds = match layout.children().nth(1) {
+            Some(dragger) => dragger.bounds().expand(4.0),
+            None => {
+                log::error!("Failed to find dragger bounds in HSplit layout");
+                return Interaction::default();
+            }
+        };
+
+        if state.dragging || cursor
+            .position_in(dragger_bounds)
+            .is_some()
         {
             Interaction::ResizingVertically
         } else {
