@@ -489,7 +489,7 @@ where
             )
         )
     } else {
-        underlay.into()
+        underlay
     };
 
     match state.modal {

@@ -11,12 +11,10 @@ fn calc_optimal_ticks(
     tick_size: f32
 ) -> (f32, f32) {
     let range = highest - lowest;
-    let labels = labels_can_fit as f32;
+    let labels = labels_can_fit.max(1) as f32;
 
-    // Find the order of magnitude of the range
     let base = 10.0f32.powf(range.log10().floor());
 
-    // Try steps of 1, 2, 5 times the base magnitude
     let step = if range / (0.1 * base) <= labels {
         0.1 * base
     } else if range / (0.2 * base) <= labels {
@@ -28,13 +26,14 @@ fn calc_optimal_ticks(
     } else if range / (2.0 * base) <= labels {
         2.0 * base
     } else {
-        5.0 * base
+        (range / labels).min(5.0 * base)
     };
 
-    let rounded_lowest = (lowest / step).floor() * step;
-    let rounded_lowest = (rounded_lowest / tick_size).round() * tick_size;
+    let rounded_highest = (highest / step).ceil() * step;
+    let rounded_highest = (rounded_highest / tick_size).round() * tick_size;
+    let rounded_highest = rounded_highest.min(highest + step);
 
-    (step, rounded_lowest)
+    (step, rounded_highest)
 }
 
 pub fn generate_labels(
@@ -46,14 +45,34 @@ pub fn generate_labels(
     tick_size: f32,
     decimals: Option<usize>,
 ) -> Vec<AxisLabel> {
-    let labels_can_fit = (bounds.height / (text_size * 4.0)) as i32;
+    let labels_can_fit = (bounds.height / (text_size * 2.8)) as i32;
 
-    let (step, min) = calc_optimal_ticks(highest, lowest, labels_can_fit, tick_size);
+    if labels_can_fit <= 1 {
+        let rounded = (highest / tick_size).round() * tick_size;
+        let label = Label {
+            content: if let Some(decimals) = decimals {
+                format!("{:.*}", decimals, rounded)
+            } else {
+                abbr_large_numbers(rounded)
+            },
+            background_color: None,
+            text_color,
+            text_size,
+        };
+
+        return vec![AxisLabel::Y(
+            calc_label_rect(0.0, 1, text_size, bounds),
+            label,
+            None,
+        )];
+    }
+
+    let (step, max) = calc_optimal_ticks(highest, lowest, labels_can_fit, tick_size);
     
     let mut labels = Vec::with_capacity((labels_can_fit + 2) as usize);
 
-    let mut value = min;
-    while value <= highest {
+    let mut value = max;
+    while value >= lowest {
         let label = Label {
             content: {
                 if let Some(decimals) = decimals {
@@ -75,8 +94,32 @@ pub fn generate_labels(
             None,
         ));
 
-        value += step;
+        value -= step;
     }
 
     labels
+}
+
+#[test]
+fn test_generate_labels() {
+    let bounds = iced::Rectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 10.0,
+    };
+    let lowest = 0.0;
+    let highest = 100.0;
+    let text_size = 12.0;
+    let text_color = iced::Color::BLACK;
+    let tick_size = 1.0;
+    let decimals = Some(2);
+
+    let labels = generate_labels(bounds, lowest, highest, text_size, text_color, tick_size, decimals);
+
+    for label in labels {
+        if let AxisLabel::Y(_, label, _) = label {
+            println!("{}", label.content);
+        }
+    }
 }

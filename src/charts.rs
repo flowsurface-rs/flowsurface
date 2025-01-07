@@ -10,7 +10,9 @@ use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use uuid::Uuid;
 
 use crate::{
-    data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo}, layout::SerializableChartData, screen::UserTimezone, style, tooltip::{self, tooltip}, widget::hsplit::HSplit
+    data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo}, 
+    layout::SerializableChartData, screen::UserTimezone, style, 
+    tooltip::{self, tooltip}, widget::hsplit::HSplit
 };
 
 mod scales;
@@ -20,48 +22,12 @@ pub mod heatmap;
 pub mod indicators;
 pub mod timeandsales;
 
-fn count_decimals(value: f32) -> usize {
-    let value_str = value.to_string();
-    if let Some(pos) = value_str.find('.') {
-        value_str.len() - pos - 1
-    } else {
-        0
-    }
-}
-
-fn round_to_tick(value: f32, tick_size: f32) -> f32 {
-    (value / tick_size).round() * tick_size
-}
-
-fn abbr_large_numbers(value: f32) -> String {
-    if value >= 1_000_000_000.0 {
-        format!("{:.2}b", value / 1_000_000_000.0)
-    } else if value >= 1_000_000.0 {
-        format!("{:.2}m", value / 1_000_000.0)
-    } else if value >= 1000.0 {
-        format!("{:.1}k", value / 1000.0)
-    } else if value >= 100.0 {
-        format!("{value:.0}")
-    } else if value >= 10.0 {
-        format!("{value:.1}")
-    } else if value >= 1.0 {
-        format!("{value:.2}")
-    } else {
-        format!("{value:.3}")
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub enum Interaction {
+    #[default]
     None,
     Zoomin { last_position: Point },
     Panning { translation: Vector, start: Point },
-}
-
-impl Default for Interaction {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 pub trait ChartConstants {
@@ -685,6 +651,16 @@ impl CommonChartData {
     }
 }
 
+pub trait ContainsKey<K> {
+    fn contains_key(&self, key: &K) -> bool;
+}
+
+impl<K: Ord, V> ContainsKey<K> for std::collections::BTreeMap<K, V> {
+    fn contains_key(&self, key: &K) -> bool {
+        self.contains_key(key)
+    }
+}
+
 fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task<Message>> {
     match handler.add_request(range) {
         Ok(req_id) => Some(Task::done(Message::NewDataRange(req_id, range))),
@@ -699,12 +675,33 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task
     }
 }
 
-pub trait ContainsKey<K> {
-    fn contains_key(&self, key: &K) -> bool;
+fn count_decimals(value: f32) -> usize {
+    let value_str = value.to_string();
+    if let Some(pos) = value_str.find('.') {
+        value_str.len() - pos - 1
+    } else {
+        0
+    }
 }
 
-impl<K: Ord, V> ContainsKey<K> for std::collections::BTreeMap<K, V> {
-    fn contains_key(&self, key: &K) -> bool {
-        self.contains_key(key)
+fn round_to_tick(value: f32, tick_size: f32) -> f32 {
+    (value / tick_size).round() * tick_size
+}
+
+fn abbr_large_numbers(value: f32) -> String {
+    if value >= 1_000_000_000.0 {
+        format!("{:.2}b", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
+        format!("{:.2}m", value / 1_000_000.0)
+    } else if value >= 1000.0 {
+        format!("{:.1}k", value / 1000.0)
+    } else if value >= 100.0 {
+        format!("{value:.0}")
+    } else if value >= 10.0 {
+        format!("{value:.1}")
+    } else if value >= 1.0 {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.3}")
     }
 }

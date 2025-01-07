@@ -46,4 +46,4 @@ version = "0.25"
 features = ["tokio-rustls-webpki-roots"]
 
 [patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "a687a837653a576cb0599f7bc8ecd9c6054213a9" }
+iced = { git = "https://github.com/iced-rs/iced", rev = "e722c4ee4f80833ba0b1013cadd546ebc3f490ce" }
