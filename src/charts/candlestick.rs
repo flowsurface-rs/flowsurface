@@ -6,6 +6,7 @@ use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme
 use iced::widget::{canvas::{self, Event, Geometry}, column};
 
 use crate::data_providers::TickerInfo;
+use crate::layout::SerializableChartData;
 use crate::screen::UserTimezone;
 use crate::data_providers::{
     fetcher::{FetchRange, RequestHandler},
@@ -103,6 +104,7 @@ pub struct CandlestickChart {
 
 impl CandlestickChart {
     pub fn new(
+        layout: SerializableChartData,
         klines_raw: Vec<Kline>,
         timeframe: Timeframe,
         tick_size: f32,
@@ -140,7 +142,8 @@ impl CandlestickChart {
                 timeframe: timeframe.to_milliseconds(),
                 tick_size,
                 timezone,
-                indicators_split: Some(0.8),
+                crosshair: layout.crosshair,
+                indicators_split: layout.indicators_split,
                 decimals: count_decimals(tick_size),
                 ..Default::default()
             },
@@ -362,6 +365,10 @@ impl CandlestickChart {
         self.indicators.iter_mut().for_each(|(_, data)| {
             data.clear_cache();
         });
+    }
+
+    pub fn get_chart_layout(&self) -> SerializableChartData {
+        self.chart.get_chart_layout()
     }
 
     pub fn toggle_indicator(&mut self, indicator: CandlestickIndicator) {

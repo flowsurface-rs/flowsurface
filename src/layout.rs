@@ -282,6 +282,12 @@ impl Default for SerializableDashboard {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SerializableChartData {
+    pub crosshair: bool,
+    pub indicators_split: Option<f32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum SerializablePane {
     Split {
         axis: Axis,
@@ -291,16 +297,19 @@ pub enum SerializablePane {
     },
     Starter,
     HeatmapChart {
+        layout: SerializableChartData,
         stream_type: Vec<StreamType>,
         settings: PaneSettings,
         indicators: Vec<HeatmapIndicator>,
     },
     FootprintChart {
+        layout: SerializableChartData,
         stream_type: Vec<StreamType>,
         settings: PaneSettings,
         indicators: Vec<FootprintIndicator>,
     },
     CandlestickChart {
+        layout: SerializableChartData,
         stream_type: Vec<StreamType>,
         settings: PaneSettings,
         indicators: Vec<CandlestickIndicator>,
@@ -317,17 +326,20 @@ impl From<&PaneState> for SerializablePane {
 
         match &pane.content {
             PaneContent::Starter => SerializablePane::Starter,
-            PaneContent::Heatmap(_, indicators) => SerializablePane::HeatmapChart {
+            PaneContent::Heatmap(chart, indicators) => SerializablePane::HeatmapChart {
+                layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Footprint(_, indicators) => SerializablePane::FootprintChart {
+            PaneContent::Footprint(chart, indicators) => SerializablePane::FootprintChart {
+                layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Candlestick(_, indicators) => SerializablePane::CandlestickChart {
+            PaneContent::Candlestick(chart, indicators) => SerializablePane::CandlestickChart {
+                layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
@@ -375,6 +387,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                         Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
                     }
                     SerializablePane::CandlestickChart {
+                        layout,
                         stream_type,
                         settings,
                         indicators,
@@ -384,6 +397,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                             Configuration::Pane(PaneState::from_config(
                                 PaneContent::Candlestick(
                                     CandlestickChart::new(
+                                        layout,
                                         vec![],
                                         timeframe,
                                         ticker_info.tick_size,
@@ -401,6 +415,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                         }
                     }
                     SerializablePane::FootprintChart {
+                        layout,
                         stream_type,
                         settings,
                         indicators,
@@ -413,6 +428,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                             Configuration::Pane(PaneState::from_config(
                                 PaneContent::Footprint(
                                     FootprintChart::new(
+                                        layout,
                                         timeframe,
                                         tick_size,
                                         vec![],
@@ -431,6 +447,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                         }
                     }
                     SerializablePane::HeatmapChart {
+                        layout,
                         stream_type,
                         settings,
                         indicators,
@@ -443,6 +460,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                             Configuration::Pane(PaneState::from_config(
                                 PaneContent::Heatmap(
                                     HeatmapChart::new(
+                                        layout,
                                         tick_size,
                                         100,
                                         UserTimezone::default(),

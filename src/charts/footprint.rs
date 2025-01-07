@@ -7,6 +7,7 @@ use iced::widget::{column, canvas::{self, Event, Geometry}};
 use ordered_float::OrderedFloat;
 
 use crate::data_providers::TickerInfo;
+use crate::layout::SerializableChartData;
 use crate::screen::UserTimezone;
 use crate::data_providers::{
     fetcher::{FetchRange, RequestHandler},
@@ -107,6 +108,7 @@ pub struct FootprintChart {
 
 impl FootprintChart {
     pub fn new(
+        layout: SerializableChartData,
         timeframe: Timeframe,
         tick_size: f32,
         klines_raw: Vec<Kline>,
@@ -175,7 +177,8 @@ impl FootprintChart {
                 tick_size,
                 timezone,
                 decimals: count_decimals(tick_size),
-                indicators_split: Some(0.8),
+                crosshair: layout.crosshair,
+                indicators_split: layout.indicators_split,
                 ..Default::default()
             },
             data_points,
@@ -387,6 +390,10 @@ impl FootprintChart {
 
     pub fn get_tick_size(&self) -> f32 {
         self.chart.tick_size
+    }
+
+    pub fn get_chart_layout(&self) -> SerializableChartData {
+        self.chart.get_chart_layout()
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {

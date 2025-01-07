@@ -10,14 +10,9 @@ use crate::{
         self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, 
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator}, 
         timeandsales::TimeAndSales
-    },
-    data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe},
-    screen::{
+    }, data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe}, layout::SerializableChartData, screen::{
         self, create_button, modal::{pane_menu, pane_notification}, DashboardError, InfoType, Notification, UserTimezone
-    },
-    style::{self, get_icon_text, Icon},
-    window::{self, Window},
-    StreamType,
+    }, style::{self, get_icon_text, Icon}, window::{self, Window}, StreamType
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
@@ -188,6 +183,10 @@ impl PaneState {
 
                 PaneContent::Heatmap(
                     HeatmapChart::new(
+                        SerializableChartData {
+                            crosshair: true,
+                            indicators_split: None,
+                        },
                         tick_size,
                         100,
                         timezone,
@@ -215,6 +214,10 @@ impl PaneState {
 
                 PaneContent::Footprint(
                     FootprintChart::new(
+                        SerializableChartData {
+                            crosshair: true,
+                            indicators_split: Some(0.8),
+                        },
                         timeframe,
                         tick_size,
                         vec![],
@@ -244,6 +247,10 @@ impl PaneState {
 
                 PaneContent::Candlestick(
                     CandlestickChart::new(
+                        SerializableChartData {
+                            crosshair: true,
+                            indicators_split: Some(0.8),
+                        },
                         vec![],
                         timeframe,
                         tick_size,
@@ -290,8 +297,10 @@ impl PaneState {
                     chart.insert_new_klines(id, klines);
                 } else {
                     let tick_size = chart.get_tick_size();
+                    let layout = chart.get_chart_layout();
 
                     *chart = CandlestickChart::new(
+                        layout,
                         klines.clone(), 
                         timeframe, 
                         tick_size, 
@@ -305,8 +314,10 @@ impl PaneState {
                     chart.insert_new_klines(id, klines);
                 } else {
                     let (raw_trades, tick_size) = (chart.get_raw_trades(), chart.get_tick_size());
+                    let layout = chart.get_chart_layout();
 
                     *chart = FootprintChart::new(
+                        layout,
                         timeframe,
                         tick_size,
                         klines.clone(),

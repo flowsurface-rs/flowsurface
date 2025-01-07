@@ -6,7 +6,7 @@ use iced::{
 };
 use iced::widget::canvas::{self, Event, Geometry, Path};
 
-use crate::data_providers::TickerInfo;
+use crate::{data_providers::TickerInfo, layout::SerializableChartData};
 use crate::{
     data_providers::{Depth, Trade},
     screen::UserTimezone,
@@ -240,7 +240,13 @@ pub struct HeatmapChart {
 }
 
 impl HeatmapChart {
-    pub fn new(tick_size: f32, aggr_time: i64, timezone: UserTimezone, enabled_indicators: &[HeatmapIndicator]) -> Self {
+    pub fn new(
+        layout: SerializableChartData, 
+        tick_size: f32, 
+        aggr_time: i64, 
+        timezone: UserTimezone, 
+        enabled_indicators: &[HeatmapIndicator]
+    ) -> Self {
         HeatmapChart {
             chart: CommonChartData {
                 cell_width: Self::DEFAULT_CELL_WIDTH,
@@ -249,6 +255,8 @@ impl HeatmapChart {
                 tick_size,
                 decimals: count_decimals(tick_size),
                 timezone,
+                crosshair: layout.crosshair,
+                indicators_split: layout.indicators_split,
                 ..Default::default()
             },
             indicators: {
@@ -378,6 +386,10 @@ impl HeatmapChart {
 
     pub fn get_size_filters(&self) -> (f32, f32) {
         (self.trade_size_filter, self.order_size_filter)
+    }
+
+    pub fn get_chart_layout(&self) -> SerializableChartData {
+        self.chart.get_chart_layout()
     }
 
     pub fn change_timezone(&mut self, timezone: UserTimezone) {

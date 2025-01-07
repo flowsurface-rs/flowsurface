@@ -574,6 +574,7 @@ impl Dashboard {
                                         PaneContent::Candlestick(chart, indicators) => {
                                             let tick_size = chart.get_tick_size();
                                             *chart = CandlestickChart::new(
+                                                chart.get_chart_layout(),
                                                 klines.clone(),
                                                 timeframe,
                                                 tick_size,
@@ -585,6 +586,7 @@ impl Dashboard {
                                             let (raw_trades, tick_size) =
                                                 (chart.get_raw_trades(), chart.get_tick_size());
                                             *chart = FootprintChart::new(
+                                                chart.get_chart_layout(),
                                                 timeframe,
                                                 tick_size,
                                                 klines.clone(),

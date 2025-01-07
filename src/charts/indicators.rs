@@ -3,7 +3,11 @@ pub mod open_interest;
 
 use std::{any::Any, fmt::{self, Debug, Display}};
 
-use iced::{mouse, theme::palette::Extended, widget::canvas::{self, Cache, Frame, Geometry}, Event, Point, Rectangle, Renderer, Size, Theme};
+use iced::{
+    mouse, theme::palette::Extended, 
+    widget::canvas::{self, Cache, Frame, Geometry}, 
+    Event, Point, Rectangle, Renderer, Size, Theme
+};
 use serde::{Deserialize, Serialize};
 
 use super::{abbr_large_numbers, round_to_tick, scales::linear};

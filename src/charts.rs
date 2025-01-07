@@ -10,10 +10,7 @@ use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use uuid::Uuid;
 
 use crate::{
-    data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo},
-    screen::UserTimezone,
-    style,
-    tooltip::{self, tooltip}, widget::hsplit::HSplit,
+    data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo}, layout::SerializableChartData, screen::UserTimezone, style, tooltip::{self, tooltip}, widget::hsplit::HSplit
 };
 
 mod scales;
@@ -132,7 +129,10 @@ fn canvas_interaction<T: Chart>(
         )));
     }
 
-    let cursor_position = cursor.position_in(bounds)?;
+    let cursor_position = cursor.position_in(
+        // padding for split draggers
+        bounds.shrink(4.0)
+    )?;
 
     match event {
         Event::Mouse(mouse_event) => {
@@ -433,25 +433,24 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         ];
 
         if let Some(split_at) = chart_state.indicators_split {
-            let mut indicators_row = row![];
             if !indicators.is_empty() {
-                indicators_row = indicators_row
+                let indicators_row = row![]
                     .push_maybe(
                         chart.view_indicator(indicators, ticker_info)
-                    )
-            }
+                    );
 
-            row![
-                HSplit::new(
-                    main_chart,
-                    indicators_row,
-                    Message::SplitDragged,
-                )
-                .split(split_at)
-            ]
-        } else {
-            main_chart
+                return row![
+                    HSplit::new(
+                        main_chart,
+                        indicators_row,
+                        Message::SplitDragged,
+                    )
+                    .split(split_at)
+                ].into();
+            }
         }
+
+        main_chart
     };
     
     column![
@@ -466,20 +465,6 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         ]
     ]
     .into()
-}
-
-fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task<Message>> {
-    match handler.add_request(range) {
-        Ok(req_id) => Some(Task::done(Message::NewDataRange(req_id, range))),
-        Err(e) => {
-            match e {
-                ReqError::Overlaps => log::warn!("Request overlaps with existing request"),
-                ReqError::Failed(msg) => log::warn!("Request already failed: {}", msg),
-                ReqError::Completed => log::warn!("Request already completed"),
-            }
-            None
-        }
-    }
 }
 
 #[derive(Default)]
@@ -691,11 +676,33 @@ impl CommonChartData {
 
         None
     }
+
+    fn get_chart_layout(&self) -> SerializableChartData {
+        SerializableChartData {
+            crosshair: self.crosshair,
+            indicators_split: self.indicators_split,
+        }
+    }
+}
+
+fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task<Message>> {
+    match handler.add_request(range) {
+        Ok(req_id) => Some(Task::done(Message::NewDataRange(req_id, range))),
+        Err(e) => {
+            match e {
+                ReqError::Overlaps => log::warn!("Request overlaps with existing request"),
+                ReqError::Failed(msg) => log::warn!("Request already failed: {}", msg),
+                ReqError::Completed => log::warn!("Request already completed"),
+            }
+            None
+        }
+    }
 }
 
 pub trait ContainsKey<K> {
     fn contains_key(&self, key: &K) -> bool;
 }
+
 impl<K: Ord, V> ContainsKey<K> for std::collections::BTreeMap<K, V> {
     fn contains_key(&self, key: &K) -> bool {
         self.contains_key(key)
