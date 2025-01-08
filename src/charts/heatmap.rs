@@ -284,6 +284,7 @@ impl HeatmapChart {
 
     pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: &Depth) {
         let chart = &mut self.chart;
+        chart.loading_chart = false;
 
         if self.data_points.len() > 2400 {
             self.data_points.drain(0..400);

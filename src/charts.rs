@@ -1,7 +1,7 @@
 use iced::{
     alignment,
     mouse::{self},
-    widget::{button, canvas::{LineDash, Path, Stroke}, column, container, row, text, Space},
+    widget::{button, canvas::{LineDash, Path, Stroke}, center, column, container, row, text, Space},
     Element, Length, Point, Rectangle, Size, Task, Theme, Vector,
 };
 use iced::widget::canvas::{self, Canvas, Event, Frame, Cache};
@@ -108,12 +108,10 @@ fn canvas_interaction<T: Chart>(
                 mouse::Event::ButtonPressed(button) => {
                     let message = match button {
                         mouse::Button::Left => {
-                            if cursor.is_over(bounds) {
-                                *interaction = Interaction::Panning {
-                                    translation: chart_state.translation,
-                                    start: cursor_position,
-                                };
-                            }
+                            *interaction = Interaction::Panning {
+                                translation: chart_state.translation,
+                                start: cursor_position,
+                            };
                             None
                         }
                         _ => None,
@@ -131,7 +129,7 @@ fn canvas_interaction<T: Chart>(
                             translation + (cursor_position - start) * (1.0 / chart_state.scaling),
                         )),
                         Interaction::None => {
-                            if chart_state.crosshair && cursor.is_over(bounds) {
+                            if chart_state.crosshair {
                                 Some(Message::CrosshairMoved)
                             } else {
                                 None
@@ -315,15 +313,8 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 ) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 
-    if chart_state.latest_x == 0 || chart_state.base_price_y == 0.0 {
-        return column![
-            Space::new(Length::Fill, Length::Fill),
-            text("Loading...").size(16).center(),
-            Space::new(Length::Fill, Length::Fill)
-        ]
-        .align_x(alignment::Horizontal::Center)
-        .padding(5)
-        .into();
+    if chart_state.loading_chart {
+        return center(text("Loading...").size(16)).into();
     }
 
     let chart_canvas = Canvas::new(chart)
@@ -399,22 +390,22 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
     let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
         (Some(split_at), false) => {
-            let indicators_row = row![].push_maybe(
-                chart.view_indicator(indicators, ticker_info)
-            );
-            
-            row![
-                HSplit::new(
-                    main_chart,
-                    indicators_row,
-                    Message::SplitDragged,
-                )
-                .split(split_at)
-            ]
+            if let Some(indicator) = chart.view_indicator(indicators, ticker_info) {
+                row![
+                    HSplit::new(
+                        main_chart,
+                        indicator,
+                        Message::SplitDragged,
+                    )
+                    .split(split_at),
+                ]
+            } else {
+                main_chart
+            }
         },
         _ => main_chart
     };
-    
+
     column![
         chart_content,
         row![
@@ -473,6 +464,7 @@ pub struct CommonChartData {
     indicators_split: Option<f32>,
 
     already_fetching: bool,
+    loading_chart: bool,
 }
 
 impl Default for CommonChartData {
@@ -496,6 +488,7 @@ impl Default for CommonChartData {
             decimals: 0,
             indicators_split: None,
             already_fetching: false,
+            loading_chart: true,
         }
     }
 }

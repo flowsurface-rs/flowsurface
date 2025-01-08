@@ -72,7 +72,7 @@ pub fn custom_theme() -> Custom {
             primary: Color::from_rgb8(200, 200, 200),
             success: Color::from_rgb8(81, 205, 160),
             danger: Color::from_rgb8(192, 80, 77),
-            //warning: Color::from_rgb8(238, 216, 139),
+            warning: Color::from_rgb8(238, 216, 139),
         },
     )
 }
@@ -682,5 +682,23 @@ pub fn scroll_bar(theme: &Theme, status: widget::scrollable::Status) -> widget::
         vertical_rail: rail,
         horizontal_rail: rail,
         gap: None,
+    }
+}
+
+// custom widgets
+pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
+    let palette = theme.extended_palette();
+
+    iced::widget::rule::Style {
+        color: {
+            if palette.is_dark {
+                palette.background.weak.color.scale_alpha(0.2)
+            } else {
+                palette.background.strong.color.scale_alpha(0.2)
+            }
+        },
+        width: 1,
+        radius: iced::border::Radius::default(),
+        fill_mode: iced::widget::rule::FillMode::Full,
     }
 }

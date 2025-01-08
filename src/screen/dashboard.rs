@@ -422,47 +422,35 @@ impl Dashboard {
                         return Task::batch(tasks);
                     }
                     pane::Message::TimeframeSelected(timeframe, pane) => {
-                        let mut tasks = vec![];
-
                         self.notification_manager.clear(&window, &pane);
 
                         match self.set_pane_timeframe(main_window.id, window, pane, timeframe) {
                             Ok(stream_type) => {
                                 if let StreamType::Kline { .. } = stream_type {
-                                    tasks.push(get_kline_fetch_task(
+                                    let task = get_kline_fetch_task(
                                         window,
                                         pane,
                                         *stream_type,
                                         None,
                                         None,
-                                    ).chain(
-                                        get_oi_fetch_task(
-                                            window,
-                                            pane,
-                                            *stream_type,
-                                            None,
-                                            None,
-                                        ),
-                                    ));
+                                    );
 
                                     self.notification_manager.push(
                                         window,
                                         pane,
                                         Notification::Info(InfoType::FetchingKlines),
                                     );
+
+                                    return Task::done(Message::RefreshStreams)
+                                        .chain(task);
                                 }
                             }
                             Err(err) => {
-                                tasks.push(Task::perform(
-                                    async { err },
-                                    move |err: DashboardError| {
-                                        Message::ErrorOccurred(window, Some(pane), err)
-                                    },
-                                ));
+                                return Task::done(
+                                    Message::ErrorOccurred(window, Some(pane), err)
+                                );
                             }
                         }
-
-                        return Task::done(Message::RefreshStreams).chain(Task::batch(tasks));
                     }
                     pane::Message::TicksizeSelected(tick_multiply, pane) => {
                         self.notification_manager.clear(&window, &pane);
@@ -501,13 +489,11 @@ impl Dashboard {
                         }
                     }
                     Err(err) => {
-                        return Task::perform(async { err }, move |err: String| {
-                            Message::ErrorOccurred(
-                                window,
-                                Some(pane_id),
-                                DashboardError::Fetch(err),
-                            )
-                        })
+                        return Task::done(Message::ErrorOccurred(
+                            window, 
+                            Some(pane_id), 
+                            DashboardError::Fetch(err)
+                        ));
                     }
                 }
             }
@@ -1162,8 +1148,13 @@ impl Dashboard {
                     *timeframe = new_timeframe;
                 }
 
-                match pane_state.content {
-                    PaneContent::Candlestick(_, _) | PaneContent::Footprint(_, _) => {
+                match &mut pane_state.content {
+                    PaneContent::Candlestick(chart, _) => {
+                        chart.set_loading_state(true);
+                        return Ok(stream_type);
+                    }
+                    PaneContent::Footprint(chart, _) => {
+                        chart.set_loading_state(true);
                         return Ok(stream_type);
                     }
                     _ => {}

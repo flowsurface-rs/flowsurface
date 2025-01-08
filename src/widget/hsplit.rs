@@ -4,10 +4,12 @@ use iced::{
         renderer::Style,
         widget::{tree, Tree},
         Clipboard, Layout, Shell, Widget,
-    }, border::Radius, mouse::{Cursor, Interaction}, 
+    }, mouse::{Cursor, Interaction}, 
     widget::Rule, Element, Length, Rectangle, Renderer, Size, Theme, Vector
 };
 use std::fmt::{Debug, Formatter};
+
+use crate::style;
 
 const DRAG_SIZE: f32 = 1.0;
 
@@ -42,20 +44,7 @@ where
             children: [
                 top.into(), 
                 Rule::horizontal(DRAG_SIZE)
-                    .style(move |theme: &Theme| iced::widget::rule::Style {
-                        color: {
-                            let palette = theme.extended_palette();
-
-                            if palette.is_dark {
-                                palette.background.weak.color.scale_alpha(0.2)
-                            } else {
-                                palette.background.strong.color.scale_alpha(0.2)
-                            }
-                        },
-                        width: 1,
-                        radius: Radius::default(),
-                        fill_mode: iced::widget::rule::FillMode::Full,
-                    })
+                    .style(style::split_ruler)
                     .into(),
                 bottom.into()
             ],
@@ -183,8 +172,6 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
                 }
                 _ => {}
             }
-
-            shell.request_redraw();
         }
         
         self.children
@@ -203,10 +190,6 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
                     viewport,
                 )
             });
-
-        if state.dragging {
-            shell.invalidate_layout();
-        }
     }
 
     fn draw(
