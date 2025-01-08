@@ -45,7 +45,7 @@ pub fn generate_labels(
     tick_size: f32,
     decimals: Option<usize>,
 ) -> Vec<AxisLabel> {
-    let labels_can_fit = (bounds.height / (text_size * 2.8)) as i32;
+    let labels_can_fit = (bounds.height / (text_size * 3.0)) as i32;
 
     if labels_can_fit <= 1 {
         let rounded = (highest / tick_size).round() * tick_size;

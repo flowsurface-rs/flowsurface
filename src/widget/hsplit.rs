@@ -4,8 +4,7 @@ use iced::{
         renderer::Style,
         widget::{tree, Tree},
         Clipboard, Layout, Shell, Widget,
-    }, 
-    border::Radius, mouse::{Cursor, Interaction}, 
+    }, border::Radius, mouse::{Cursor, Interaction}, 
     widget::Rule, Element, Length, Rectangle, Renderer, Size, Theme, Vector
 };
 use std::fmt::{Debug, Formatter};

@@ -393,6 +393,14 @@ impl CandlestickChart {
                     );
                 }
             }
+
+            if self.chart.indicators_split.is_none() {
+                self.chart.indicators_split = Some(0.8);
+            }
+        }
+
+        if self.indicators.is_empty() {
+            self.chart.indicators_split = None;
         }
     }
 

@@ -72,7 +72,7 @@ pub fn custom_theme() -> Custom {
             primary: Color::from_rgb8(200, 200, 200),
             success: Color::from_rgb8(81, 205, 160),
             danger: Color::from_rgb8(192, 80, 77),
-            warning: Color::from_rgb8(238, 216, 139),
+            //warning: Color::from_rgb8(238, 216, 139),
         },
     )
 }

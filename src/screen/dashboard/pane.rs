@@ -515,15 +515,13 @@ where
             padding::right(12).left(12),
             Alignment::End,
         ),
-        PaneModal::Settings => {
-            pane_menu(
-                base,
-                settings_view(),
-                Message::ToggleModal(pane, PaneModal::None),
-                padding::right(12).left(12),
-                Alignment::End,
-            )
-        },
+        PaneModal::Settings => pane_menu(
+            base,
+            settings_view(),
+            Message::ToggleModal(pane, PaneModal::None),
+            padding::right(12).left(12),
+            Alignment::End,
+        ),
         _ => base,
     }
 }
