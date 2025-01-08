@@ -388,35 +388,31 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         .padding(2)
     };
 
-    let chart_content = {
-        let main_chart = row![
-            container(chart_canvas)
-                .width(Length::FillPortion(10))
-                .height(Length::FillPortion(120)),
-            container(axis_labels_y)
-                .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
-                .height(Length::FillPortion(120))
-        ];
+    let main_chart = row![
+        container(chart_canvas)
+            .width(Length::FillPortion(10))
+            .height(Length::FillPortion(120)),
+        container(axis_labels_y)
+            .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
+            .height(Length::FillPortion(120))
+    ];
 
-        if let Some(split_at) = chart_state.indicators_split {
-            if !indicators.is_empty() {
-                let indicators_row = row![]
-                    .push_maybe(
-                        chart.view_indicator(indicators, ticker_info)
-                    );
-
-                return row![
-                    HSplit::new(
-                        main_chart,
-                        indicators_row,
-                        Message::SplitDragged,
-                    )
-                    .split(split_at)
-                ].into();
-            }
-        }
-
-        main_chart
+    let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
+        (Some(split_at), false) => {
+            let indicators_row = row![].push_maybe(
+                chart.view_indicator(indicators, ticker_info)
+            );
+            
+            row![
+                HSplit::new(
+                    main_chart,
+                    indicators_row,
+                    Message::SplitDragged,
+                )
+                .split(split_at)
+            ]
+        },
+        _ => main_chart
     };
     
     column![
