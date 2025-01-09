@@ -90,6 +90,9 @@ impl FetchRequest {
             (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => {
                 e1 == e2 && s1 == s2
             },
+            (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
+                e1 == e2 && s1 == s2
+            },
             _ => false,
         }
     }

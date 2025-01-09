@@ -83,7 +83,7 @@ impl PaneState {
             self.settings.tick_multiply = Some(multiplier);
             multiplier.multiply_with_min_tick_size(ticker_info)
         } else {
-            ticker_info.tick_size
+            ticker_info.min_ticksize
         }
     }
 
@@ -201,7 +201,7 @@ impl PaneState {
                 );
                 let timeframe = self.set_timeframe(Timeframe::M5);
                 let enabled_indicators = {
-                    if ticker_info.market_type == MarketType::LinearPerps {
+                    if ticker_info.get_market_type() == MarketType::LinearPerps {
                         vec![
                             FootprintIndicator::Volume,
                             FootprintIndicator::OpenInterest,
@@ -235,7 +235,7 @@ impl PaneState {
                 let timeframe = self.set_timeframe(Timeframe::M15);
 
                 let enabled_indicators = {
-                    if ticker_info.market_type == MarketType::LinearPerps {
+                    if ticker_info.get_market_type() == MarketType::LinearPerps {
                         vec![
                             CandlestickIndicator::Volume,
                             CandlestickIndicator::OpenInterest,
@@ -270,7 +270,11 @@ impl PaneState {
         Ok(())
     }
 
-    pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: Vec<OpenInterest>) {
+    pub fn insert_oi_vec(
+        &mut self, 
+        req_id: Option<uuid::Uuid>, 
+        oi: Vec<OpenInterest>
+    ) {
         match &mut self.content {
             PaneContent::Candlestick(chart, _) => {
                 chart.insert_open_interest(req_id, oi);
@@ -515,7 +519,8 @@ where
             base,
             indicators_view(
                 pane,
-                state.settings.ticker_info.map(|info| info.market_type),
+                state.settings.ticker_info
+                    .map(|info| info.get_market_type()),
                 indicators
             ),
             Message::ToggleModal(pane, PaneModal::None),

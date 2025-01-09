@@ -400,7 +400,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                                         layout,
                                         vec![],
                                         timeframe,
-                                        ticker_info.tick_size,
+                                        ticker_info.min_ticksize,
                                         UserTimezone::default(),
                                         &indicators,
                                     ),

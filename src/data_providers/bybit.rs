@@ -518,9 +518,15 @@ pub async fn fetch_historical_oi(
         let interval_ms = period.to_milliseconds() as i64;
         let num_intervals = ((end - start) / interval_ms).min(200);
 
-        url.push_str(&format!("&startTime={start}&endTime={end}&limit={num_intervals}"));
+        if num_intervals > 1 {
+            url.push_str(&format!(
+                "&startTime={start}&endTime={end}&limit={num_intervals}"
+            ));
+        } else {
+            url.push_str("&limit=200");
+        }
     } else {
-        url.push_str(&format!("&limit={}", 200));
+        url.push_str("&limit=200");
     }
 
     let response = reqwest::get(&url)
@@ -556,13 +562,17 @@ pub async fn fetch_historical_oi(
             StreamError::ParseError(format!("Failed to parse open interest: {e}"))
         })?;
 
-    let open_interest = bybit_oi
+    let open_interest: Vec<OpenInterest> = bybit_oi
         .into_iter()
         .map(|x| OpenInterest {
             time: x.timestamp,
             value: x.value,
         })
         .collect();
+
+    if open_interest.is_empty() {
+        log::warn!("No open interest data found for {}, from url: {}", ticker_str, url);
+    }
 
     Ok(open_interest)
 }
@@ -687,13 +697,15 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
             .as_object()
             .ok_or_else(|| StreamError::ParseError("Price filter not found".to_string()))?;
 
-        let tick_size = price_filter["tickSize"]
+        let min_ticksize = price_filter["tickSize"]
             .as_str()
             .ok_or_else(|| StreamError::ParseError("Tick size not found".to_string()))?
             .parse::<f32>()
             .map_err(|_| StreamError::ParseError("Failed to parse tick size".to_string()))?;
 
-        ticker_info_map.insert(Ticker::new(symbol, market_type), Some(TickerInfo { tick_size, market_type }));
+        let ticker = Ticker::new(symbol, market_type);
+
+        ticker_info_map.insert(ticker, Some(TickerInfo { min_ticksize, ticker }));
     }
 
     Ok(ticker_info_map)

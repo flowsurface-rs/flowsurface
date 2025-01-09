@@ -246,19 +246,15 @@ impl CandlestickChart {
                     let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
 
                     if visible_earliest < oi_earliest {
-                        let latest = oi_earliest;
-
                         if let Some(fetch_task) = request_fetch(
-                            &mut self.request_handler, FetchRange::OpenInterest(earliest, latest)
+                            &mut self.request_handler, FetchRange::OpenInterest(earliest, oi_earliest)
                         ) {
                             self.fetching_oi = true;
                             task = Some(fetch_task);
                         }
                     } else if oi_latest < kline_latest {
-                        let latest = visible_latest;
-
                         if let Some(fetch_task) = request_fetch(
-                            &mut self.request_handler, FetchRange::OpenInterest(oi_latest, latest)
+                            &mut self.request_handler, FetchRange::OpenInterest(oi_latest, kline_latest)
                         ) {
                             self.fetching_oi = true;
                             task = Some(fetch_task);
@@ -303,7 +299,7 @@ impl CandlestickChart {
                 data.extend(volume_data.clone());
             };
 
-        if klines_raw.len() > 1 {
+        if klines_raw.len() >= 1 {
             self.request_handler.mark_completed(req_id);
         } else {
             self.request_handler
@@ -317,15 +313,23 @@ impl CandlestickChart {
         self.render_start();
     }
 
-    pub fn insert_open_interest(&mut self, _req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
+    pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
+        if let Some(req_id) = req_id {
+            if oi_data.len() >= 1 {
+                self.request_handler.mark_completed(req_id);
+                self.fetching_oi = false; 
+            } else {
+                self.request_handler
+                    .mark_failed(req_id, "No data received".to_string());
+            }
+        }
+
         if let Some(IndicatorData::OpenInterest(_, data)) = 
             self.indicators.get_mut(&CandlestickIndicator::OpenInterest) {
                 data.extend(oi_data
                     .iter().map(|oi| (oi.time, oi.value))
                 );
             };
-    
-        self.fetching_oi = false;
     }
 
     fn get_kline_timerange(&self) -> (i64, i64) {
@@ -407,6 +411,7 @@ impl CandlestickChart {
                         indicator,
                         IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
                     );
+                    self.fetching_oi = false;
                 }
             }
 
@@ -440,7 +445,7 @@ impl CandlestickChart {
 
         for indicator in I::get_enabled(
             enabled, 
-            ticker_info.map(|info| info.market_type)
+            ticker_info.map(|info| info.get_market_type())
         ) {
             if let Some(candlestick_indicator) = indicator
                 .as_any()

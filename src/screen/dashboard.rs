@@ -505,13 +505,11 @@ impl Dashboard {
                             }
                         }
                         Err(err) => {
-                            return Task::perform(async { err }, move |err: String| {
-                                Message::ErrorOccurred(
-                                    window,
-                                    Some(pane_id),
-                                    DashboardError::Fetch(err),
-                                )
-                            })
+                            return Task::done(Message::ErrorOccurred(
+                                window,
+                                Some(pane_id),
+                                DashboardError::Fetch(err),
+                            ))
                         }
                     }
                 }

@@ -765,16 +765,15 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
     let re = Regex::new(r"^[a-zA-Z0-9]+$").unwrap();
 
     for symbol in symbols {
-        let ticker = symbol["symbol"]
+        let symbol_str = symbol["symbol"]
             .as_str()
-            .ok_or_else(|| StreamError::ParseError("Missing symbol".to_string()))?
-            .to_string();
+            .ok_or_else(|| StreamError::ParseError("Missing symbol".to_string()))?;
 
-        if !re.is_match(&ticker) {
+        if !re.is_match(&symbol_str) {
             continue;
         }
         
-        if !ticker.ends_with("USDT") {
+        if !symbol_str.ends_with("USDT") {
             continue;
         }
 
@@ -787,15 +786,17 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
             .find(|x| x["filterType"].as_str().unwrap_or_default() == "PRICE_FILTER");
 
         if let Some(price_filter) = price_filter {
-            let tick_size = price_filter["tickSize"]
+            let min_ticksize = price_filter["tickSize"]
                 .as_str()
                 .ok_or_else(|| StreamError::ParseError("tickSize not found".to_string()))?
                 .parse::<f32>()
                 .map_err(|e| StreamError::ParseError(format!("Failed to parse tickSize: {e}")))?;
 
-            ticker_info_map.insert(Ticker::new(ticker, market_type), Some(TickerInfo { tick_size, market_type }));
+            let ticker = Ticker::new(symbol_str, market_type);
+
+            ticker_info_map.insert(Ticker::new(symbol_str, market_type), Some(TickerInfo { min_ticksize, ticker }));
         } else {
-            ticker_info_map.insert(Ticker::new(ticker, market_type), None);
+            ticker_info_map.insert(Ticker::new(symbol_str, market_type), None);
         }
     }
 
@@ -1097,21 +1098,15 @@ pub async fn fetch_historical_oi(
         let interval_ms = period.to_milliseconds() as i64;
         let num_intervals = ((end - start) / interval_ms).min(500);
 
-        if num_intervals < 3 {
-            let new_start = start - (interval_ms * 5);
-            let new_end = end + (interval_ms * 5);
-            let num_intervals = ((new_end - new_start) / interval_ms).min(1000);
-            
-            url.push_str(&format!(
-                "&startTime={new_start}&endTime={new_end}&limit={num_intervals}"
-            ));
-        } else {
+        if num_intervals > 1 {
             url.push_str(&format!(
                 "&startTime={start}&endTime={end}&limit={num_intervals}"
             ));
-        }     
+        } else {
+            url.push_str("&limit=200");
+        }
     } else {
-        url.push_str(&format!("&limit={}", 200));
+        url.push_str("&limit=200");
     }
 
     let response = reqwest::get(&url)

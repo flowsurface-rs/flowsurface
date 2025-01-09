@@ -50,9 +50,15 @@ pub enum StreamError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct TickerInfo {
+    pub ticker: Ticker,
     #[serde(rename = "tickSize")]
-    pub tick_size: f32,
-    pub market_type: MarketType,
+    pub min_ticksize: f32,
+}
+
+impl TickerInfo {
+    pub fn get_market_type(&self) -> MarketType {
+        self.ticker.market_type
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -217,7 +223,7 @@ impl TickMultiplier {
     ///
     /// Usually used for price steps in chart scales
     pub fn multiply_with_min_tick_size(&self, ticker_info: TickerInfo) -> f32 {
-        let min_tick_size = ticker_info.tick_size;
+        let min_tick_size = ticker_info.min_ticksize;
 
         let multiplier = if let Some(m) = Decimal::from_f32(f32::from(self.0)) {
             m
