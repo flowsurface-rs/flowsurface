@@ -169,16 +169,15 @@ impl PaneState {
         &mut self, 
         ticker_info: TickerInfo,
         content_str: &str, 
-        timezone: UserTimezone
+        timezone: UserTimezone,
     ) -> Result<(), DashboardError> {
-        self.settings = PaneSettings::default();
-
         self.content = match content_str {
             "heatmap" => {
                 let tick_size = self.set_tickers_info(
                     Some(TickMultiplier(10)),
                     ticker_info,
                 );
+
                 let enabled_indicators = vec![HeatmapIndicator::Volume];
 
                 PaneContent::Heatmap(
@@ -234,6 +233,7 @@ impl PaneState {
                     ticker_info,
                 );
                 let timeframe = self.set_timeframe(Timeframe::M15);
+
                 let enabled_indicators = {
                     if ticker_info.market_type == MarketType::LinearPerps {
                         vec![
@@ -379,7 +379,7 @@ impl PaneState {
                     button(text(
                         self.settings
                             .tick_multiply
-                            .unwrap_or(TickMultiplier(1))
+                            .unwrap_or(TickMultiplier(5))
                             .to_string(),
                     ))
                     .style(move |theme, status| {
@@ -394,8 +394,8 @@ impl PaneState {
                 stream_info_element = stream_info_element.push(
                     button(text(format!(
                         "{} - {}",
-                        self.settings.selected_timeframe.unwrap_or(Timeframe::M1),
-                        self.settings.tick_multiply.unwrap_or(TickMultiplier(1)),
+                        self.settings.selected_timeframe.unwrap_or(Timeframe::M5),
+                        self.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
                     )))
                     .style(move |theme, status| {
                         style::button_modifier(theme, status, !is_stream_modifier)
@@ -410,7 +410,7 @@ impl PaneState {
                     button(text(
                         self.settings
                             .selected_timeframe
-                            .unwrap_or(Timeframe::M1)
+                            .unwrap_or(Timeframe::M15)
                             .to_string(),
                     ))
                     .style(move |theme, status| {
@@ -469,6 +469,13 @@ trait ChartView {
     ) -> Element<Message>;
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StreamModifier {
+    CandlestickChart(Timeframe),
+    FootprintChart(Timeframe, TickMultiplier),
+    HeatmapChart(TickMultiplier),
+}
+
 fn handle_chart_view<'a, F>(
     underlay: Element<'a, Message>,
     state: &'a PaneState,
@@ -476,6 +483,7 @@ fn handle_chart_view<'a, F>(
     indicators: &'a [impl Indicator],
     settings_view: F,
     notifications: Option<&'a Vec<screen::Notification>>,
+    stream_modifier: StreamModifier,
 ) -> Element<'a, Message>
 where
     F: FnOnce() -> Element<'a, Message>,
@@ -497,8 +505,7 @@ where
             base,
             stream_modifier_view(
                 pane,
-                state.settings.tick_multiply,
-                state.settings.selected_timeframe,
+                stream_modifier,
             ),
             Message::ToggleModal(pane, PaneModal::None),
             padding::left(36),
@@ -550,6 +557,9 @@ impl ChartView for HeatmapChart {
             indicators, 
             settings_view,
             notifications,
+            StreamModifier::HeatmapChart(
+                state.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
+            ),
         )
     }
 }
@@ -577,6 +587,10 @@ impl ChartView for FootprintChart {
             indicators, 
             settings_view,
             notifications,
+            StreamModifier::FootprintChart(
+                state.settings.selected_timeframe.unwrap_or(Timeframe::M5),
+                state.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
+            ),
         )
     }
 }
@@ -604,6 +618,9 @@ impl ChartView for CandlestickChart {
             indicators, 
             settings_view,
             notifications,
+            StreamModifier::CandlestickChart(
+                state.settings.selected_timeframe.unwrap_or(Timeframe::M15)
+            ),
         )
     }
 }
@@ -742,9 +759,14 @@ fn size_filter_view<'a>(
 
 fn stream_modifier_view<'a>(
     pane: pane_grid::Pane,
-    selected_ticksize: Option<TickMultiplier>,
-    selected_timeframe: Option<Timeframe>,
+    modifiers: StreamModifier,
 ) -> Element<'a, Message> {
+    let (selected_timeframe, selected_ticksize) = match modifiers {
+        StreamModifier::CandlestickChart(timeframe) => (Some(timeframe), None),
+        StreamModifier::FootprintChart(timeframe, ticksize) => (Some(timeframe), Some(ticksize)),
+        StreamModifier::HeatmapChart(ticksize) => (None, Some(ticksize)),
+    };
+
     let create_button = |content: String, msg: Option<Message>| {
         let btn = button(text(content))
             .width(Length::Fill)
@@ -895,9 +917,7 @@ fn view_chart<'a, C: ChartView, I: Indicator>(
     notifications: Option<&'a Vec<screen::Notification>>,
     indicators: &'a [I],
 ) -> Element<'a, Message> {
-    center(
-        content.view(pane, state, indicators, notifications)
-    ).into()
+    content.view(pane, state, indicators, notifications)
 }
 
 // Pane controls, title bar

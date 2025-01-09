@@ -395,8 +395,6 @@ impl Dashboard {
 
                         log::info!("{:?}", &self.pane_streams);
 
-                        let mut tasks = vec![];
-
                         // get fetch tasks for pane's content
                         if ["footprint", "candlestick", "heatmap"]
                             .contains(&content_str.as_str())
@@ -406,20 +404,13 @@ impl Dashboard {
                                     if ["candlestick", "footprint"]
                                         .contains(&content_str.as_str())
                                     {
-                                        tasks.push(
-                                            get_kline_fetch_task(
+                                        return get_kline_fetch_task(
                                             window, pane, *stream, None, None,
-                                            ).chain(
-                                            get_oi_fetch_task(
-                                            window, pane, *stream, None, None
-                                            ))
                                         );
                                     }
                                 }
                             }
                         }
-
-                        return Task::batch(tasks);
                     }
                     pane::Message::TimeframeSelected(timeframe, pane) => {
                         self.notification_manager.clear(&window, &pane);
