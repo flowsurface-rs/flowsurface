@@ -105,7 +105,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
     fn update(
         &self,
         interaction: &mut Interaction,
-        event: Event,
+        event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {

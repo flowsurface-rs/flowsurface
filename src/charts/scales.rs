@@ -187,7 +187,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
     fn update(
         &self,
         interaction: &mut Interaction,
-        event: Event,
+        event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
@@ -223,7 +223,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                 mouse::Event::WheelScrolled { delta } => match delta {
                     mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
                         let message = Message::XScaling(
-                            y,
+                            *y,
                             {
                                 if let Some(cursor_to_center) =
                                     cursor.position_from(bounds.center())
@@ -467,7 +467,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
     fn update(
         &self,
         interaction: &mut Interaction,
-        event: Event,
+        event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
@@ -503,7 +503,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 mouse::Event::WheelScrolled { delta } => match delta {
                     mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
                         let message = Message::YScaling(
-                            y,
+                            *y,
                             {
                                 if let Some(cursor_to_center) =
                                     cursor.position_from(bounds.center())

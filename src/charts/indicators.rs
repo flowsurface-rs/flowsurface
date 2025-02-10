@@ -168,7 +168,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
     fn update(
         &self,
         _state: &mut Self::State,
-        _event: Event,
+        _event: &Event,
         _bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {

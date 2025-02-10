@@ -127,7 +127,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
     fn update(
         &mut self,
         tree: &mut Tree,
-        event: iced::Event,
+        event: &iced::Event,
         layout: Layout<'_>,
         cursor: Cursor,
         renderer: &Renderer,
@@ -181,7 +181,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
             .for_each(|((child, tree), layout)| {
                 child.as_widget_mut().update(
                     tree,
-                    event.clone(),
+                    event,
                     layout,
                     cursor,
                     renderer,

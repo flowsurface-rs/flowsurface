@@ -34,11 +34,11 @@ impl Chart for HeatmapChart {
     fn canvas_interaction(
         &self,
         interaction: &mut Interaction,
-        event: Event,
+        event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        canvas_interaction(self, interaction, event, bounds, cursor)
+        canvas_interaction(self, interaction, &event, bounds, cursor)
     }
 
     fn view_indicator<I: Indicator>(
@@ -504,7 +504,7 @@ impl canvas::Program<Message> for HeatmapChart {
     fn update(
         &self,
         interaction: &mut Interaction,
-        event: Event,
+        event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
