@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     charts::{
-        self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, 
+        self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::{HeatmapChart, VisualConfig}, 
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator}, 
         timeandsales::TimeAndSales
-    }, data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe}, layout::SerializableChartData, screen::{
+    }, data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe}, 
+    layout::SerializableChartData, screen::{
         self, create_button, modal::{pane_menu, pane_notification}, DashboardError, InfoType, Notification, UserTimezone,
     }, style::{self, get_icon_text, Icon}, window::{self, Window}, StreamType
 };
@@ -45,6 +46,7 @@ pub enum Message {
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(pane_grid::Pane, charts::Message),
     SliderChanged(pane_grid::Pane, f32, bool),
+    VisualConfigChanged(pane_grid::Pane, VisualConfig),
     ToggleIndicator(pane_grid::Pane, String),
     HideNotification(pane_grid::Pane, Notification),
     Popout,
@@ -572,7 +574,15 @@ impl ChartView for HeatmapChart {
 
         let settings_view = || {
             let (trade_size_filter, order_size_filter) = self.get_size_filters();
-            size_filter_view(Some(trade_size_filter), Some(order_size_filter), pane)
+
+            let visual_config = self.get_visual_config();
+
+            size_filter_view(
+                Some(trade_size_filter), 
+                Some(order_size_filter), 
+                Some(visual_config),
+                pane,
+            )
         };
             
         handle_chart_view(
@@ -671,7 +681,12 @@ impl PanelView for TimeAndSales {
                 let trade_size_filter = self.get_size_filter();
                 pane_menu(
                     underlay,
-                    size_filter_view(Some(trade_size_filter), None, pane),
+                    size_filter_view(
+                        Some(trade_size_filter), 
+                        None,
+                        None,
+                        pane,
+                    ),
                     Message::ToggleModal(pane, PaneModal::None),
                     padding::right(12).left(12),
                     Alignment::End,
@@ -722,9 +737,10 @@ fn indicators_view<I: Indicator> (
 fn size_filter_view<'a>(
     trade_size_filter: Option<f32>,
     order_size_filter: Option<f32>,
+    visual_config: Option<VisualConfig>,
     pane: pane_grid::Pane,
 ) -> Element<'a, Message> {
-    container(
+    container(column![
         column![
             text("Size Filtering").size(14),
             if let Some(trade_filter) = trade_size_filter {
@@ -775,7 +791,59 @@ fn size_filter_view<'a>(
         .spacing(20)
         .padding(16)
         .align_x(Alignment::Center),
-    )
+        column![
+            if let Some(config) = visual_config {
+                column![
+                    text("Trade visualization").size(14),
+                    iced::widget::checkbox(
+                        "Dynamic circle sizing",
+                        config.dynamic_sized_trades,
+                    )
+                    .on_toggle(move |value| {
+                        Message::VisualConfigChanged(
+                            pane, 
+                            VisualConfig {
+                                dynamic_sized_trades: value,
+                                ..config
+                            },
+                        )
+                    }),
+                    {
+                        if config.dynamic_sized_trades {
+                            column![
+                                text("Circle size scaling"),
+                                column![
+                                    Slider::new(10..=200, config.trade_size_scale, move |value| {
+                                        Message::VisualConfigChanged(
+                                            pane, 
+                                            VisualConfig {
+                                                trade_size_scale: value,
+                                                ..config
+                                            },
+                                        )
+                                    })
+                                    .step(10),
+                                    text(format!("{}%", config.trade_size_scale)).size(13),
+                                ]
+                                .spacing(2)
+                                .align_x(Alignment::Center),
+                            ]
+                        } else {
+                            column![]
+                        }
+                    }
+                ]
+                .spacing(8)
+                .align_x(Alignment::Center)
+            } else {
+                column![]
+            }
+        ]
+        .spacing(20)
+        .padding(16)
+        .width(Length::Fill)
+        .align_x(Alignment::Center),
+    ].spacing(8))
     .width(Length::Shrink)
     .padding(16)
     .max_width(500)

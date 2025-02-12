@@ -328,6 +328,16 @@ impl Dashboard {
                             main_window.id,
                         );
                     }
+                    pane::Message::VisualConfigChanged(pane, visual_config) => {
+                        if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
+                            match pane.content {
+                                PaneContent::Heatmap(ref mut chart, _) => {
+                                    chart.set_visual_config(visual_config);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     pane::Message::InitPaneContent(
                         window, 
                         content_str, 

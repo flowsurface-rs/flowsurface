@@ -233,6 +233,7 @@ pub struct HeatmapChart {
     orderbook: Orderbook,
     trade_size_filter: f32,
     order_size_filter: f32,
+    visual_config: VisualConfig,
 }
 
 impl HeatmapChart {
@@ -275,6 +276,7 @@ impl HeatmapChart {
             data_points: Vec::new(),
             trade_size_filter: 0.0,
             order_size_filter: 0.0,
+            visual_config: VisualConfig::default(),
         }
     }
 
@@ -383,6 +385,14 @@ impl HeatmapChart {
 
     pub fn get_size_filters(&self) -> (f32, f32) {
         (self.trade_size_filter, self.order_size_filter)
+    }
+
+    pub fn get_visual_config(&self) -> VisualConfig {
+        self.visual_config.clone()
+    }
+
+    pub fn set_visual_config(&mut self, visual_config: VisualConfig) {
+        self.visual_config = visual_config;
     }
 
     pub fn get_chart_layout(&self) -> SerializableChartData {
@@ -667,8 +677,16 @@ impl canvas::Program<Message> for HeatmapChart {
                                     palette.success.base.color
                                 };
 
-                                let radius = 1.0 + (trade.qty / max_trade_qty) * (28.0 - 1.0);
-
+                                let radius = {
+                                    if !self.visual_config.dynamic_sized_trades {
+                                        cell_height / 2.0
+                                    } else {
+                                        // normalize range
+                                        let scale_factor = (self.visual_config.trade_size_scale as f32) / 100.0;
+                                        1.0 + (trade.qty / max_trade_qty) * (28.0 - 1.0) * scale_factor
+                                    }
+                                };
+                                
                                 frame.fill(
                                     &Path::circle(Point::new(x_position, y_position), radius),
                                     color,
@@ -753,6 +771,25 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
                 mouse::Interaction::default()
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisualConfig {
+    pub trade_size_filter: f32,
+    pub order_size_filter: f32,
+    pub dynamic_sized_trades: bool,
+    pub trade_size_scale: i32,
+}
+
+impl Default for VisualConfig {
+    fn default() -> Self {
+        VisualConfig {
+            trade_size_filter: 0.0,
+            order_size_filter: 0.0,
+            dynamic_sized_trades: true,
+            trade_size_scale: 100,
         }
     }
 }
