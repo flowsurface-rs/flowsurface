@@ -1,19 +1,20 @@
 use iced::{
     alignment::{Horizontal, Vertical}, padding, widget::{
-        button, center, column, container, pane_grid, row, scrollable, text, tooltip, Column, Slider
+        button, center, column, container, pane_grid, row, scrollable, text, tooltip, Column,
     }, Alignment, Element, Length, Renderer, Task, Theme,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     charts::{
-        self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::{HeatmapChart, VisualConfig}, 
+        self, candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, 
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator}, 
-        timeandsales::TimeAndSales
-    }, data_providers::{format_with_commas, Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe}, 
+        timeandsales::TimeAndSales, config::VisualConfig
+    }, data_providers::{Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe}, 
     layout::SerializableChartData, screen::{
         self, create_button, modal::{pane_menu, pane_notification}, DashboardError, InfoType, Notification, UserTimezone,
-    }, style::{self, get_icon_text, Icon}, window::{self, Window}, StreamType
+    }, style::{self, get_icon_text, Icon}, window::{self, Window}, StreamType,
+    charts::config,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
@@ -45,7 +46,6 @@ pub enum Message {
     InitPaneContent(window::Id, String, Option<pane_grid::Pane>, Vec<StreamType>, TickerInfo),
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(pane_grid::Pane, charts::Message),
-    SliderChanged(pane_grid::Pane, f32, bool),
     VisualConfigChanged(pane_grid::Pane, VisualConfig),
     ToggleIndicator(pane_grid::Pane, String),
     HideNotification(pane_grid::Pane, Notification),
@@ -573,14 +573,8 @@ impl ChartView for HeatmapChart {
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         let settings_view = || {
-            let (trade_size_filter, order_size_filter) = self.get_size_filters();
-
-            let visual_config = self.get_visual_config();
-
-            size_filter_view(
-                Some(trade_size_filter), 
-                Some(order_size_filter), 
-                Some(visual_config),
+            config::heatmap_cfg_view(
+                self.get_visual_config(),
                 pane,
             )
         };
@@ -678,13 +672,10 @@ impl PanelView for TimeAndSales {
 
         match state.modal {
             PaneModal::Settings => {
-                let trade_size_filter = self.get_size_filter();
                 pane_menu(
                     underlay,
-                    size_filter_view(
-                        Some(trade_size_filter), 
-                        None,
-                        None,
+                    config::timesales_cfg_view(
+                        self.get_config(), 
                         pane,
                     ),
                     Message::ToggleModal(pane, PaneModal::None),
@@ -732,123 +723,6 @@ fn indicators_view<I: Indicator> (
         .padding(16)
         .style(style::chart_modal)
         .into()
-}
-
-fn size_filter_view<'a>(
-    trade_size_filter: Option<f32>,
-    order_size_filter: Option<f32>,
-    visual_config: Option<VisualConfig>,
-    pane: pane_grid::Pane,
-) -> Element<'a, Message> {
-    container(column![
-        column![
-            text("Size Filtering").size(14),
-            if let Some(trade_filter) = trade_size_filter {
-                container(
-                    row![
-                        text("Trade size"),
-                        column![
-                            Slider::new(0.0..=50000.0, trade_filter, move |value| {
-                                Message::SliderChanged(pane, value, true)
-                            })
-                            .step(500.0),
-                            text(format!("${}", format_with_commas(trade_filter))).size(13),
-                        ]
-                        .spacing(2)
-                        .align_x(Alignment::Center),
-                    ]
-                    .align_y(Alignment::Center)
-                    .spacing(8)
-                    .padding(8),
-                )
-                .style(style::modal_container)
-            } else {
-                container(row![])
-            },
-            if let Some(order_filter) = order_size_filter {
-                container(
-                    row![
-                        text("Order size"),
-                        column![
-                            Slider::new(0.0..=500_000.0, order_filter, move |value| {
-                                Message::SliderChanged(pane, value, false)
-                            })
-                            .step(1000.0),
-                            text(format!("${}", format_with_commas(order_filter))).size(13),
-                        ]
-                        .spacing(2)
-                        .align_x(Alignment::Center),
-                    ]
-                    .align_y(Alignment::Center)
-                    .spacing(8)
-                    .padding(8),
-                )
-                .style(style::modal_container)
-            } else {
-                container(row![])
-            },
-        ]
-        .spacing(20)
-        .padding(16)
-        .align_x(Alignment::Center),
-        column![
-            if let Some(config) = visual_config {
-                column![
-                    text("Trade visualization").size(14),
-                    iced::widget::checkbox(
-                        "Dynamic circle sizing",
-                        config.dynamic_sized_trades,
-                    )
-                    .on_toggle(move |value| {
-                        Message::VisualConfigChanged(
-                            pane, 
-                            VisualConfig {
-                                dynamic_sized_trades: value,
-                                ..config
-                            },
-                        )
-                    }),
-                    {
-                        if config.dynamic_sized_trades {
-                            column![
-                                text("Circle size scaling"),
-                                column![
-                                    Slider::new(10..=200, config.trade_size_scale, move |value| {
-                                        Message::VisualConfigChanged(
-                                            pane, 
-                                            VisualConfig {
-                                                trade_size_scale: value,
-                                                ..config
-                                            },
-                                        )
-                                    })
-                                    .step(10),
-                                    text(format!("{}%", config.trade_size_scale)).size(13),
-                                ]
-                                .spacing(2)
-                                .align_x(Alignment::Center),
-                            ]
-                        } else {
-                            column![]
-                        }
-                    }
-                ]
-                .spacing(8)
-                .align_x(Alignment::Center)
-            } else {
-                column![]
-            }
-        ]
-        .spacing(20)
-        .padding(16)
-        .width(Length::Fill)
-        .align_x(Alignment::Center),
-    ].spacing(8))
-    .width(Length::Shrink)
-    .padding(16)
-    .max_width(500)
-    .style(style::chart_modal)
-    .into()
 }
 
 fn stream_modifier_view<'a>(

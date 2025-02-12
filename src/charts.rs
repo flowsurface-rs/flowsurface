@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod scales;
+pub mod config;
 pub mod candlestick;
 pub mod footprint;
 pub mod heatmap;

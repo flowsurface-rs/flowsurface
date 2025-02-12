@@ -5,7 +5,7 @@ pub use pane::{PaneState, PaneContent, PaneSettings};
 
 use crate::{
     charts::{
-        candlestick::CandlestickChart, footprint::FootprintChart, Message as ChartMessage
+        candlestick::CandlestickChart, config::VisualConfig, footprint::FootprintChart, Message as ChartMessage
     },
     data_providers::{
         self, binance, bybit, fetcher::FetchRange, Depth, Exchange, Kline, OpenInterest, 
@@ -319,20 +319,14 @@ impl Dashboard {
                             main_window.id,
                         );
                     }
-                    pane::Message::SliderChanged(pane, value, is_trade_filter) => {
-                        return self.set_pane_size_filter(
-                            window,
-                            pane,
-                            value,
-                            is_trade_filter,
-                            main_window.id,
-                        );
-                    }
                     pane::Message::VisualConfigChanged(pane, visual_config) => {
                         if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
-                            match pane.content {
-                                PaneContent::Heatmap(ref mut chart, _) => {
-                                    chart.set_visual_config(visual_config);
+                            match (&mut pane.content, visual_config) {
+                                (PaneContent::Heatmap(chart, _), VisualConfig::Heatmap(cfg)) => {
+                                    chart.set_visual_config(cfg);
+                                }
+                                (PaneContent::TimeAndSales(panel), VisualConfig::TimeAndSales(cfg)) => {
+                                    panel.set_config(cfg);
                                 }
                                 _ => {}
                             }
@@ -1129,42 +1123,6 @@ impl Dashboard {
         Err(DashboardError::Unknown(
             "Couldn't get the pane to change its timeframe".to_string(),
         ))
-    }
-
-    fn set_pane_size_filter(
-        &mut self,
-        window: window::Id,
-        pane: pane_grid::Pane,
-        new_size_filter: f32,
-        is_trade_filter: bool,
-        main_window: window::Id,
-    ) -> Task<Message> {
-        if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-            pane_state.settings.trade_size_filter = Some(new_size_filter);
-
-            match pane_state.content {
-                PaneContent::Heatmap(ref mut chart, _) => {
-                    chart.set_size_filter(new_size_filter, is_trade_filter);
-                }
-                PaneContent::TimeAndSales(ref mut chart) => {
-                    chart.set_size_filter(new_size_filter);
-                }
-                _ => {
-                    return Task::done(Message::ErrorOccurred(
-                        window,
-                        Some(pane),
-                        DashboardError::Unknown("No chart found to set size filter".to_string()),
-                    ));
-                }
-            }
-            Task::none()
-        } else {
-            Task::done(Message::ErrorOccurred(
-                window,
-                Some(pane),
-                DashboardError::Unknown("No pane found to set size filter".to_string()),
-            ))
-        }
     }
 
     pub fn init_pane_task(

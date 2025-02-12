@@ -14,7 +14,7 @@ struct ConvertedTrade {
 }
 pub struct TimeAndSales {
     recent_trades: Vec<ConvertedTrade>,
-    size_filter: f32,
+    config: Config,
     max_filtered_qty: f32,
     max_size: usize,
     target_size: usize,
@@ -24,22 +24,24 @@ impl TimeAndSales {
     pub fn new() -> Self {
         Self {
             recent_trades: Vec::new(),
-            size_filter: 0.0,
+            config: Config::default(),
             max_filtered_qty: 0.0,
             max_size: 900,
             target_size: 700,
         }
     }
 
-    pub fn set_size_filter(&mut self, value: f32) {
-        self.size_filter = value;
+    pub fn get_config(&self) -> Config {
+        self.config.clone()
     }
 
-    pub fn get_size_filter(&self) -> f32 {
-        self.size_filter
+    pub fn set_config(&mut self, cfg: Config) {
+        self.config = cfg;
     }
 
     pub fn update(&mut self, trades_buffer: &[Trade]) {
+        let size_filter = self.config.trade_size_filter;
+
         for trade in trades_buffer {
             if let Some(trade_time) =
                 DateTime::from_timestamp(trade.time / 1000, (trade.time % 1000) as u32 * 1_000_000)
@@ -51,7 +53,7 @@ impl TimeAndSales {
                     is_sell: trade.is_sell,
                 };
 
-                if (converted_trade.qty * converted_trade.price) >= self.size_filter {
+                if (converted_trade.qty * converted_trade.price) >= size_filter {
                     self.max_filtered_qty = self.max_filtered_qty.max(converted_trade.qty);
                 }
 
@@ -64,7 +66,7 @@ impl TimeAndSales {
 
             self.max_filtered_qty = self.recent_trades[drain_amount..]
                 .iter()
-                .filter(|t| (t.qty * t.price) >= self.size_filter)
+                .filter(|t| (t.qty * t.price) >= size_filter)
                 .map(|t| t.qty)
                 .fold(0.0, f32::max);
 
@@ -84,7 +86,7 @@ impl TimeAndSales {
             let filtered_trades_iter = self
                 .recent_trades
                 .iter()
-                .filter(|t| (t.qty * t.price) >= self.size_filter);
+                .filter(|t| (t.qty * t.price) >= self.config.trade_size_filter);
 
             for trade in filtered_trades_iter.rev().take(rows_can_fit as usize) {
                 column = column.push(container(Space::new(
@@ -109,5 +111,18 @@ impl TimeAndSales {
             column.into()
         })
         .into()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Config {
+    pub trade_size_filter: f32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            trade_size_filter: 0.0,
+        }
     }
 }
