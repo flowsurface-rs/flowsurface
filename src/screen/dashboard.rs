@@ -11,14 +11,14 @@ use crate::{
         self, binance, bybit, fetcher::FetchRange, Depth, Exchange, Kline, OpenInterest, 
         StreamConfig, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade
     },
-    screen::InfoType,
+    screen::{InfoType, notification_modal},
     style,
     window::{self, Window},
     StreamType,
 };
 
 use super::{
-    create_notis_column, modal::dashboard_notification, 
+    modal::dashboard_notification, 
     DashboardError, Notification,
     NotificationManager, UserTimezone,
 };
@@ -987,9 +987,9 @@ impl Dashboard {
         if !self.notification_manager.global_notifications.is_empty() {
             dashboard_notification(
                 base,
-                create_notis_column(
+                notification_modal(
                     &self.notification_manager.global_notifications, 
-                    Message::ClearLastGlobalNotification,
+                    move |_| Message::ClearLastGlobalNotification,
                 ),
             )
         } else {

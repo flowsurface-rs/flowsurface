@@ -1,6 +1,6 @@
 use iced::{
     alignment::{Horizontal, Vertical}, padding, widget::{
-        button, center, column, container, pane_grid, row, scrollable, text, tooltip, Column,
+        button, center, column, container, pane_grid, row, scrollable, text, tooltip,
     }, Alignment, Element, Length, Renderer, Task, Theme,
 };
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use crate::{
         timeandsales::TimeAndSales, config::VisualConfig
     }, data_providers::{Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe}, 
     layout::SerializableChartData, screen::{
-        self, create_button, modal::{pane_menu, pane_notification}, DashboardError, InfoType, Notification, UserTimezone,
+        self, create_button, modal::{pane_menu, pane_notification}, DashboardError, Notification, UserTimezone,
     }, style::{self, get_icon_text, Icon}, window::{self, Window}, StreamType,
     charts::config,
 };
@@ -84,7 +84,11 @@ impl PaneState {
     }
 
     /// sets the ticker info, tries to return multiplied tick size, otherwise returns the min tick size
-    pub fn set_tickers_info(&mut self, multiplier: Option<TickMultiplier>, ticker_info: TickerInfo) -> f32 {
+    pub fn set_tickers_info(
+        &mut self, 
+        multiplier: Option<TickMultiplier>, 
+        ticker_info: TickerInfo
+    ) -> f32 {
         self.settings.ticker_info = Some(ticker_info);
         
         if let Some(multiplier) = multiplier {
@@ -490,7 +494,7 @@ impl PaneState {
     }
 }
 
-/// Pane `view()` traits that includes a chart with a `Canvas`
+/// Pane `view()` traits that includes a chart with `Canvas`
 /// 
 /// e.g. panes for Heatmap, Footprint, Candlestick charts
 trait ChartView {
@@ -526,9 +530,9 @@ where
     let base = if let Some(notifications) = notifications {
         pane_notification(
             underlay, 
-            notification_modals(
-                pane,
-                notifications, 
+            screen::notification_modal(
+                notifications,
+                move |notification| Message::HideNotification(pane, notification),
             )
         )
     } else {
@@ -834,37 +838,6 @@ fn blank_settings_view<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn notification_modals(
-    pane: pane_grid::Pane,
-    notifications: &[Notification],
-) -> Column<Message> {
-    let mut notifications_column = column![].align_x(Alignment::End).spacing(6);
-
-    for notification in notifications.iter().rev().take(5) {
-        let notification_str = match notification {
-            Notification::Error(error) => error.to_string(),
-            Notification::Warn(warn) => warn.to_string(),
-            Notification::Info(info) => match info {
-                InfoType::FetchingKlines => "Fetching klines...".to_string(),
-                InfoType::FetchingTrades(total_fetched) => format!(
-                    "Fetching trades...\n({} fetched)",
-                    total_fetched
-                ),
-                InfoType::FetchingOI => "Fetching open interest...".to_string(),
-            },
-        };
-
-        notifications_column = notifications_column
-            .push(
-                button(container(text(notification_str)).padding(6))
-                    .on_press(Message::HideNotification(pane, notification.clone())),
-            )
-            .padding(12);
-    }
-
-    notifications_column
-}
-
 // Main pane content views, underlays
 fn view_panel<'a, C: PanelView>(
     pane: pane_grid::Pane,
@@ -878,9 +851,9 @@ fn view_panel<'a, C: PanelView>(
     if let Some(notifications) = notifications {
         pane_notification(
             base, 
-            notification_modals(
-                pane,
-                notifications, 
+            screen::notification_modal(
+                notifications,
+                move |notification| Message::HideNotification(pane, notification),
             )
         )
     } else {

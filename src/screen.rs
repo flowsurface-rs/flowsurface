@@ -273,11 +273,16 @@ impl NotificationManager {
     }
 }
 
-fn create_notis_column<'a, M: 'a + Clone>(
+fn notification_modal<'a, M>(
     notifications: &'a [Notification],
-    close_message: M,
-) -> Column<'a, M> {
-    let mut notifications_column = column![].align_x(Alignment::End).spacing(6);
+    make_message: impl Fn(Notification) -> M + 'a,
+) -> Column<'a, M> 
+where
+    M: Clone + 'a,
+{
+    let mut notifications_column = column![]
+        .align_x(Alignment::End)
+        .spacing(6);
 
     for notification in notifications.iter().rev().take(5) {
         let notification_str = match notification {
@@ -296,7 +301,7 @@ fn create_notis_column<'a, M: 'a + Clone>(
         notifications_column = notifications_column
             .push(
                 button(container(text(notification_str)).padding(6))
-                    .on_press(close_message.clone()),
+                    .on_press(make_message(notification.clone())),
             )
             .padding(12);
     }

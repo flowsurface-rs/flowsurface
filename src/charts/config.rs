@@ -212,7 +212,7 @@ fn sync_all_button<'a>(config: VisualConfig) -> Element<'a, Message> {
             button("Sync all")
                 .on_press(Message::VisualConfigChanged(None, config))
                 .padding(8),
-            Some("Apply current config to similar panes"),
+            Some("Apply configuration to similar panes"),
             tooltip::Position::Top,
         )
     )
