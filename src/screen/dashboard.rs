@@ -320,9 +320,17 @@ impl Dashboard {
                         );
                     }
                     pane::Message::VisualConfigChanged(pane, cfg) => {
-                        if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
-                            pane.settings.visual_config = Some(cfg);
-                            pane.content.change_visual_config(cfg);
+                        if let Some(pane) = pane {
+                            if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                                state.settings.visual_config = Some(cfg);
+                                state.content.change_visual_config(cfg);
+                            }
+                        } else {
+                            self.iter_all_panes_mut(main_window.id)
+                                .for_each(|(_, _, state)| {
+                                    state.settings.visual_config = Some(cfg);
+                                    state.content.change_visual_config(cfg);
+                                });
                         }
                     }
                     pane::Message::InitPaneContent(

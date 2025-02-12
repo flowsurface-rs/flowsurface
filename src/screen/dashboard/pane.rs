@@ -46,7 +46,7 @@ pub enum Message {
     InitPaneContent(window::Id, String, Option<pane_grid::Pane>, Vec<StreamType>, TickerInfo),
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(pane_grid::Pane, charts::Message),
-    VisualConfigChanged(pane_grid::Pane, VisualConfig),
+    VisualConfigChanged(Option<pane_grid::Pane>, VisualConfig),
     ToggleIndicator(pane_grid::Pane, String),
     HideNotification(pane_grid::Pane, Notification),
     Popout,

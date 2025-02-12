@@ -1,13 +1,13 @@
 use crate::{
     data_providers::format_with_commas, 
     screen::dashboard::pane::Message, 
-    style
+    style, tooltip
 };
 use super::{heatmap, timeandsales};
 
 use iced::{
     widget::{
-        column, container, pane_grid, row, text, Slider
+        button, column, container, pane_grid, row, text, Slider
     }, 
     Alignment, Element, Length
 };
@@ -51,7 +51,7 @@ pub fn heatmap_cfg_view<'a>(
                     column![
                         Slider::new(0.0..=50000.0, trade_filter, move |value| {
                             Message::VisualConfigChanged(
-                                pane, 
+                                Some(pane), 
                                 VisualConfig::Heatmap(heatmap::Config {
                                     trade_size_filter: value,
                                     ..cfg
@@ -75,7 +75,7 @@ pub fn heatmap_cfg_view<'a>(
                     column![
                         Slider::new(0.0..=500_000.0, order_filter, move |value| {
                             Message::VisualConfigChanged(
-                                pane, 
+                                Some(pane), 
                                 VisualConfig::Heatmap(heatmap::Config {
                                     order_size_filter: value,
                                     ..cfg
@@ -106,7 +106,7 @@ pub fn heatmap_cfg_view<'a>(
                 )
                 .on_toggle(move |value| {
                     Message::VisualConfigChanged(
-                        pane, 
+                        Some(pane), 
                         VisualConfig::Heatmap(heatmap::Config {
                             dynamic_sized_trades: value,
                             ..cfg
@@ -120,7 +120,7 @@ pub fn heatmap_cfg_view<'a>(
                             column![
                                 Slider::new(10..=200, cfg.trade_size_scale, move |value| {
                                     Message::VisualConfigChanged(
-                                        pane, 
+                                        Some(pane),
                                         VisualConfig::Heatmap(heatmap::Config {
                                             trade_size_scale: value,
                                             ..cfg
@@ -145,6 +145,19 @@ pub fn heatmap_cfg_view<'a>(
         .padding(16)
         .width(Length::Fill)
         .align_x(Alignment::Center),
+        container(
+            tooltip(
+                button("Sync all")
+                    .on_press(Message::VisualConfigChanged(
+                        None,
+                        VisualConfig::Heatmap(cfg),
+                    ))
+                    .padding(8),
+                Some("Apply current config to similar panes"),
+                tooltip::Position::Top,
+            ),
+        )
+        .padding(16),
     ].spacing(8))
     .width(Length::Shrink)
     .padding(16)
@@ -168,7 +181,7 @@ pub fn timesales_cfg_view<'a>(
                     column![
                         Slider::new(0.0..=50000.0, trade_filter, move |value| {
                             Message::VisualConfigChanged(
-                                pane, 
+                                Some(pane), 
                                 VisualConfig::TimeAndSales(timeandsales::Config {
                                     trade_size_filter: value,
                                     ..cfg
@@ -190,6 +203,19 @@ pub fn timesales_cfg_view<'a>(
         .spacing(20)
         .padding(16)
         .align_x(Alignment::Center),
+        container(
+            tooltip(
+                button("Sync all")
+                    .on_press(Message::VisualConfigChanged(
+                        None,
+                        VisualConfig::TimeAndSales(cfg),
+                    ))
+                    .padding(8),
+                Some("Apply current config to similar panes"),
+                tooltip::Position::Top,
+            )
+        )
+        .padding(16),
     ].spacing(8))
     .width(Length::Shrink)
     .padding(16)
