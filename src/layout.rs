@@ -490,6 +490,9 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                                 .unwrap_or(TickMultiplier(10))
                                 .multiply_with_min_tick_size(ticker_info);
 
+                            let config = settings.visual_config
+                                .map_or(None, |cfg| cfg.heatmap());
+
                             Configuration::Pane(PaneState::from_config(
                                 PaneContent::Heatmap(
                                     HeatmapChart::new(
@@ -498,6 +501,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                                         100,
                                         &indicators,
                                         settings.ticker_info,
+                                        config,
                                     ),
                                     indicators,
                                 ),
@@ -512,11 +516,16 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                     SerializablePane::TimeAndSales {
                         stream_type,
                         settings,
-                    } => Configuration::Pane(PaneState::from_config(
-                        PaneContent::TimeAndSales(TimeAndSales::new()),
-                        stream_type,
-                        settings,
-                    )),
+                    } => {
+                        let config = settings.visual_config
+                            .map_or(None, |cfg| cfg.time_and_sales());
+
+                        Configuration::Pane(PaneState::from_config(
+                            PaneContent::TimeAndSales(TimeAndSales::new(config)),
+                            stream_type,
+                            settings,
+                        ))
+                    },
                 }
             }
 

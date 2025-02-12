@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use iced::{alignment, padding, Element, Length};
 use iced::widget::{column, container, responsive, row, text, Space};
+use serde::{Deserialize, Serialize};
 use crate::screen::dashboard::pane::Message;
 use crate::screen::UserTimezone;
 use crate::style::ts_table_container;
@@ -21,10 +22,10 @@ pub struct TimeAndSales {
 }
 
 impl TimeAndSales {
-    pub fn new() -> Self {
+    pub fn new(config: Option<Config>) -> Self {
         Self {
             recent_trades: Vec::new(),
-            config: Config::default(),
+            config: config.unwrap_or_default(),
             max_filtered_qty: 0.0,
             max_size: 900,
             target_size: 700,
@@ -114,7 +115,7 @@ impl TimeAndSales {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub trade_size_filter: f32,
 }

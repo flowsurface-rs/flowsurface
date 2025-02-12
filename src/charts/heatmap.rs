@@ -5,6 +5,7 @@ use iced::{
     Point, Rectangle, Renderer, Size, Task, Theme, Vector
 };
 use iced::widget::canvas::{self, Event, Geometry, Path};
+use serde::{Deserialize, Serialize};
 
 use crate::{data_providers::TickerInfo, layout::SerializableChartData, screen::UserTimezone};
 use crate::data_providers::{Depth, Trade};
@@ -241,6 +242,7 @@ impl HeatmapChart {
         aggr_time: i64, 
         enabled_indicators: &[HeatmapIndicator],
         ticker_info: Option<TickerInfo>,
+        config: Option<Config>,
     ) -> Self {
         HeatmapChart {
             chart: CommonChartData {
@@ -272,7 +274,7 @@ impl HeatmapChart {
             },
             orderbook: Orderbook::new(tick_size, aggr_time),
             data_points: Vec::new(),
-            visual_config: Config::default(),
+            visual_config: config.unwrap_or_default(),
         }
     }
 
@@ -759,7 +761,7 @@ impl canvas::Program<Message> for HeatmapChart {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub trade_size_filter: f32,
     pub order_size_filter: f32,

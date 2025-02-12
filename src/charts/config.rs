@@ -11,11 +11,28 @@ use iced::{
     }, 
     Alignment, Element, Length
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum VisualConfig {
     Heatmap(heatmap::Config),
     TimeAndSales(timeandsales::Config),
+}
+
+impl VisualConfig {
+    pub fn heatmap(&self) -> Option<heatmap::Config> {
+        match self {
+            Self::Heatmap(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn time_and_sales(&self) -> Option<timeandsales::Config> {
+        match self {
+            Self::TimeAndSales(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
 }
 
 pub fn heatmap_cfg_view<'a>(

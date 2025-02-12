@@ -207,6 +207,9 @@ impl PaneState {
                     indicators_split: None,
                 });
 
+                let config = self.settings.visual_config
+                    .map_or(None, |cfg| cfg.heatmap());
+
                 PaneContent::Heatmap(
                     HeatmapChart::new(
                         layout,
@@ -214,6 +217,7 @@ impl PaneState {
                         100,
                         &enabled_indicators,
                         Some(ticker_info),
+                        config,
                     ),
                     enabled_indicators,
                 )
@@ -277,7 +281,12 @@ impl PaneState {
                     enabled_indicators,
                 )
             }
-            "time&sales" => PaneContent::TimeAndSales(TimeAndSales::new()),
+            "time&sales" => {
+                let config = self.settings.visual_config
+                    .map_or(None, |cfg| cfg.time_and_sales());
+
+                PaneContent::TimeAndSales(TimeAndSales::new(config))
+            },
             _ => {
                 log::error!("content not found: {}", content_str);
                 return Err(DashboardError::PaneSet("content not found: ".to_string() + content_str));
@@ -1038,12 +1047,24 @@ impl PaneContent {
             _ => {}
         }
     }
+
+    pub fn change_visual_config(&mut self, config: VisualConfig) {
+        match (self, config) {
+            (PaneContent::Heatmap(chart, _), VisualConfig::Heatmap(cfg)) => {
+                chart.set_visual_config(cfg);
+            }
+            (PaneContent::TimeAndSales(panel), VisualConfig::TimeAndSales(cfg)) => {
+                panel.set_config(cfg);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
 pub struct PaneSettings {
     pub ticker_info: Option<TickerInfo>,
-    pub trade_size_filter: Option<f32>,
     pub tick_multiply: Option<TickMultiplier>,
     pub selected_timeframe: Option<Timeframe>,
+    pub visual_config: Option<VisualConfig>,
 }

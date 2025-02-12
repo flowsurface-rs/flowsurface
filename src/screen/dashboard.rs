@@ -5,7 +5,7 @@ pub use pane::{PaneState, PaneContent, PaneSettings};
 
 use crate::{
     charts::{
-        candlestick::CandlestickChart, config::VisualConfig, footprint::FootprintChart, Message as ChartMessage
+        candlestick::CandlestickChart, footprint::FootprintChart, Message as ChartMessage
     },
     data_providers::{
         self, binance, bybit, fetcher::FetchRange, Depth, Exchange, Kline, OpenInterest, 
@@ -319,17 +319,10 @@ impl Dashboard {
                             main_window.id,
                         );
                     }
-                    pane::Message::VisualConfigChanged(pane, visual_config) => {
+                    pane::Message::VisualConfigChanged(pane, cfg) => {
                         if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
-                            match (&mut pane.content, visual_config) {
-                                (PaneContent::Heatmap(chart, _), VisualConfig::Heatmap(cfg)) => {
-                                    chart.set_visual_config(cfg);
-                                }
-                                (PaneContent::TimeAndSales(panel), VisualConfig::TimeAndSales(cfg)) => {
-                                    panel.set_config(cfg);
-                                }
-                                _ => {}
-                            }
+                            pane.settings.visual_config = Some(cfg);
+                            pane.content.change_visual_config(cfg);
                         }
                     }
                     pane::Message::InitPaneContent(
