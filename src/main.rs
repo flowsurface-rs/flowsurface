@@ -125,6 +125,8 @@ enum Message {
     ChangePresentMode(screen::PresentMode),
 
     ScaleFactorChanged(f64),
+
+    ManageLayouts(layout::Message),
 }
 
 struct State {
@@ -143,6 +145,7 @@ struct State {
     tickers_table: TickersTable,
     tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
     present_mode: screen::PresentMode,
+    new_layouts: layout::Layouts,
 }
 
 impl State {
@@ -186,6 +189,7 @@ impl State {
                 timezone: saved_state.timezone,
                 scale_factor: saved_state.scale_factor,
                 present_mode: saved_state.present_mode,
+                new_layouts: layout::Layouts::new(),
             },
             open_main_window
                 .then(|_| Task::none())
@@ -497,6 +501,11 @@ impl State {
             }
             Message::ScaleFactorChanged(value) => {
                 self.scale_factor = layout::ScaleFactor::from(value);
+            }
+            Message::ManageLayouts(msg) => {
+                return self.new_layouts
+                    .update(msg)
+                    .map(Message::ManageLayouts);
             }
         }
         Task::none()
@@ -844,7 +853,7 @@ impl State {
                         Some("Layouts and settings won't be saved if app exited abruptly"),
                         tooltip::Position::Top,
                     );
-    
+
                     // Pane management
                     let reset_pane_button = tooltip(
                         button(text("Reset").align_x(Alignment::Center))
@@ -877,6 +886,7 @@ impl State {
                         Some("Split selected pane horizontally"),
                         tooltip::Position::Top,
                     );
+
                     let manage_layout_modal = {
                         container(
                             column![
@@ -896,6 +906,9 @@ impl State {
                                 ]
                                 .align_x(Alignment::Center)
                                 .spacing(8),
+                                responsive(move |size| {
+                                    self.new_layouts.view(size).map(Message::ManageLayouts)
+                                }),
                             ]
                             .align_x(Alignment::Center)
                             .spacing(32),
