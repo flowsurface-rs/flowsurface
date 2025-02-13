@@ -23,18 +23,24 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub enum Message {
     SelectActive(Uuid),
-    RenameLayout(Uuid, String),
-    ToggleRenaming(Uuid),
+    SetLayoutName(Uuid, String),
     Renaming(String),
     AddLayout,
     RemoveLayout(Uuid),
     ToggleEditMode(Editing),
 }
 
+
+#[derive(Eq, Hash, Debug, Clone, PartialEq)]
+pub struct Layout {
+    pub id: Uuid,
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum Editing {
     Renaming(Uuid, String),
-    Deleting,
+    Preview,
     None,
 }
 
@@ -98,21 +104,22 @@ impl Layouts {
                     name: self.get_layout_name(&id).unwrap_or_default(),
                 };
             }
-            Message::ToggleEditMode(edit_mode) => {
-                match (&edit_mode, &self.edit_mode) {
-                    (Editing::Deleting, Editing::Deleting) => {
+            Message::ToggleEditMode(new_mode) => {
+                match (&new_mode, &self.edit_mode) {
+                    (
+                        Editing::Preview, Editing::Preview
+                    ) => {
+                        self.edit_mode = Editing::None;
+                    }
+                    (
+                        Editing::Renaming(id, _), Editing::Renaming(renaming_id, _)
+                    ) if id == renaming_id => {
                         self.edit_mode = Editing::None;
                     }
                     _ => {
-                        self.edit_mode = edit_mode;
+                        self.edit_mode = new_mode;
                     }
                 }
-            }
-            Message::ToggleRenaming(id) => {
-                self.edit_mode = match self.edit_mode {
-                    Editing::Renaming(renaming_id, _) if renaming_id == id => Editing::None,
-                    _ => Editing::Renaming(id, self.get_layout_name(&id).unwrap_or_default()),
-                };
             }
             Message::AddLayout => {
                 let new_layout = Layout {
@@ -124,31 +131,34 @@ impl Layouts {
             }
             Message::RemoveLayout(id) => {
                 self.remove_layout(&id);
-                self.edit_mode = Editing::None;
             }
-            Message::RenameLayout(id, new_name) => {
+            Message::SetLayoutName(id, new_name) => {
+                let truncated_name = new_name.chars().take(20).collect::<String>();
                 let updated_layout = Layout {
                     id,
-                    name: new_name,
+                    name: truncated_name,
                 };
                 
-                // Find the old layout and remove/insert with the new name
+                // find the old layout and remove/insert with the new name
                 if let Some(old_layout) = self.layouts.keys().find(|l| l.id == id).cloned() {
                     if let Some(dashboard) = self.layouts.remove(&old_layout) {
                         self.layouts.insert(updated_layout.clone(), dashboard);
                         
-                        // Update selected_layout if it was the renamed one
+                        // update selected_layout if it was the renamed one
                         if self.selected_layout.id == id {
                             self.selected_layout = updated_layout;
                         }
                     }
                 }
 
-                self.edit_mode = Editing::None;
+                self.edit_mode = Editing::Preview;
             }
-            Message::Renaming(renaming) => {
+            Message::Renaming(name) => {
                 self.edit_mode = match self.edit_mode {
-                    Editing::Renaming(id, _) => Editing::Renaming(id, renaming),
+                    Editing::Renaming(id, _) => {
+                        let truncated = name.chars().take(20).collect();
+                        Editing::Renaming(id, truncated)
+                    },
                     _ => Editing::None,
                 };
             }
@@ -164,9 +174,9 @@ impl Layouts {
             row![
                 text(&self.selected_layout.name).size(14),
                 Space::with_width(iced::Length::Fill),
-                button(text("-"))
+                button(text("Edit"))
                     .on_press(Message::ToggleEditMode(
-                        Editing::Deleting
+                        Editing::Preview
                     )),
                 button(text("+"))
                     .on_press(Message::AddLayout)
@@ -178,50 +188,52 @@ impl Layouts {
 
             match &self.edit_mode {
                 Editing::Renaming(id, name) if *id == layout.id => {
-                    let input = text_input(
+                    let input_box = text_input(
                         "New name",
                         &name,
                     )
-                    .on_submit(Message::RenameLayout(*id, name.clone())
-                    )
                     .on_input(|new_name| {
                         Message::Renaming(new_name.clone())
-                    });
+                    })
+                    .on_submit(Message::SetLayoutName(*id, name.clone()));
 
-                    buttons = buttons.push(input);
-
-                    let cancel_button = button(
+                    let cancel_btn = button(
                         text("X")
-                    ).on_press(Message::ToggleRenaming(layout.id));
-
+                    ).on_press(Message::ToggleEditMode(Editing::Preview));
+                    
                     buttons = buttons
-                        .push(cancel_button);
+                        .push(input_box)
+                        .push(cancel_btn);
                 }
-                Editing::Deleting => {
-                    let debug_button = button(
+                Editing::Preview => {
+                    let layout_btn = button(
                         text(layout.name.clone())
-                    ).on_press(Message::SelectActive(layout.id));
-        
-                    buttons = buttons.push(debug_button);
+                    );
 
-                    let delete_button = button(
+                    let rename_btn = button(
+                        text("Rename")
+                    ).on_press(Message::ToggleEditMode(
+                        Editing::Renaming(layout.id, layout.name.clone())
+                    ));
+
+                    let delete_btn = button(
                         text("Delete")
                     ).on_press(Message::RemoveLayout(layout.id));
 
-                    buttons = buttons.push(delete_button);
+        
+                    buttons = buttons
+                        .push(layout_btn)
+                        .push(Space::with_width(iced::Length::Fill))
+                        .push(rename_btn)
+                        .push(delete_btn);
                 }
                 _ => {
-                    let debug_button = button(
+                    let layout_btn = button(
                         text(layout.name.clone())
                     ).on_press(Message::SelectActive(layout.id));
         
-                    buttons = buttons.push(debug_button);
-
-                    let rename_button = button(
-                        text("Rename")
-                    ).on_press(Message::ToggleRenaming(layout.id));
-
-                    buttons = buttons.push(rename_button);
+                    buttons = buttons
+                        .push(layout_btn);
                 }
             }
 
@@ -230,12 +242,6 @@ impl Layouts {
 
         layouts.into()
     }
-}
-
-#[derive(Eq, Hash, Debug, Clone, PartialEq)]
-pub struct Layout {
-    pub id: Uuid,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
