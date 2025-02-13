@@ -256,11 +256,14 @@ impl FootprintChart {
         let (kline_earliest, kline_latest) = self.get_kline_timerange();
         let earliest = visible_earliest - (visible_latest - visible_earliest);
         
+        // priority 1, basic kline data fetch
         if visible_earliest < kline_earliest {
-            return request_fetch(
+            if let Some(task) = request_fetch(
                 &mut self.request_handler, 
                 FetchRange::Kline(earliest, kline_earliest)
-            );
+            ) {
+                return Some(task);
+            }
         }
 
         if !self.fetching_trades {
@@ -283,6 +286,7 @@ impl FootprintChart {
             }
         }
 
+        // priority 2, Open Interest data
         for data in self.indicators.values() {
             if let IndicatorData::OpenInterest(_, _) = data {
                 if self.chart.timeframe >= Timeframe::M5.to_milliseconds() 
@@ -291,22 +295,27 @@ impl FootprintChart {
                     let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
     
                     if visible_earliest < oi_earliest {
-                        return request_fetch(
+                        if let Some(task) = request_fetch(
                             &mut self.request_handler, 
                             FetchRange::OpenInterest(earliest, oi_earliest)
-                        );
+                        ) {
+                            return Some(task);
+                        }
                     } 
                     
                     if oi_latest < kline_latest {
-                        return request_fetch(
+                        if let Some(task) = request_fetch(
                             &mut self.request_handler,
                             FetchRange::OpenInterest(oi_latest, kline_latest)
-                        );
+                        ) {
+                            return Some(task);
+                        }
                     }
                 }
             }
         }
-
+    
+        // priority 3, missing klines & integrity check
         if let Some(missing_keys) = self.get_common_data()
             .check_kline_integrity(kline_earliest, kline_latest, &self.data_points) 
         {
@@ -315,10 +324,12 @@ impl FootprintChart {
             let earliest = missing_keys.iter()
                 .min().unwrap_or(&visible_earliest) - self.chart.timeframe as i64;
     
-            return request_fetch(
+            if let Some(task) = request_fetch(
                 &mut self.request_handler, 
                 FetchRange::Kline(earliest, latest)
-            );
+            ) {
+                return Some(task);
+            }
         }
 
         None
