@@ -39,7 +39,6 @@ use iced::{
 pub enum Message {
     Pane(window::Id, pane::Message),
     SavePopoutSpecs(HashMap<window::Id, (Point, Size)>),
-    ResetLayout,
     ErrorOccurred(window::Id, Option<pane_grid::Pane>, DashboardError),
     ClearLastNotification(window::Id, pane_grid::Pane),
     ClearLastGlobalNotification,
@@ -223,17 +222,8 @@ impl Dashboard {
         ]))
     }
 
-    pub fn reset_layout(&mut self) -> Task<Message> {
-        Task::done(Message::ResetLayout)
-    }
-
     pub fn update(&mut self, message: Message, main_window: &Window) -> Task<Message> {
         match message {
-            Message::ResetLayout => {
-                self.panes = pane_grid::State::with_configuration(Self::default_pane_config());
-                self.focus = None;
-                (self.popout, self.pane_streams) = (HashMap::new(), HashMap::new());
-            }
             Message::SavePopoutSpecs(specs) => {
                 for (window_id, (position, size)) in specs {
                     if let Some((_, specs)) = self.popout.get_mut(&window_id) {

@@ -29,6 +29,9 @@ pub enum Icon {
     Return,
     Popout,
     ChartOutline,
+    TrashBin,
+    Edit,
+    Checkmark,
 }
 
 impl From<Icon> for char {
@@ -53,6 +56,9 @@ impl From<Icon> for char {
             Icon::Return => '\u{E80C}',
             Icon::Popout => '\u{E80D}',
             Icon::ChartOutline => '\u{E80E}',
+            Icon::TrashBin => '\u{E80F}',
+            Icon::Edit => '\u{E811}',
+            Icon::Checkmark => '\u{E812}',
         }
     }
 }
@@ -108,6 +114,142 @@ pub fn tooltip(theme: &Theme) -> Style {
 }
 
 // Buttons
+pub fn button_confirm(
+    theme: &Theme,
+    status: Status,
+    is_active: bool,
+) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+
+    let color_alpha = if palette.is_dark { 0.2 } else { 0.6 };
+
+    match status {
+        Status::Active => iced::widget::button::Style {
+            background: None,
+            text_color: palette.success.base.color,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Pressed => iced::widget::button::Style {
+            text_color: palette.success.weak.color,
+            background: None,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Hovered => iced::widget::button::Style {
+            background: None,
+            text_color: palette.success.strong.color,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Disabled => iced::widget::button::Style {
+            background: if is_active {
+                None
+            } else {
+                Some(palette.success.weak.color.scale_alpha(color_alpha).into())
+            },
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    }
+}
+
+pub fn button_cancel(
+    theme: &Theme,
+    status: Status,
+    is_active: bool,
+) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+
+    let color_alpha = if palette.is_dark { 0.2 } else { 0.6 };
+
+    match status {
+        Status::Active => iced::widget::button::Style {
+            background: None,
+            text_color: palette.danger.base.color,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Pressed => iced::widget::button::Style {
+            text_color: palette.danger.weak.color,
+            background: None,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Hovered => iced::widget::button::Style {
+            background: None,
+            text_color: palette.danger.strong.color,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Disabled => iced::widget::button::Style {
+            background: if is_active {
+                None
+            } else {
+                Some(palette.danger.weak.color.scale_alpha(color_alpha).into())
+            },
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    }
+}
+
+pub fn button_layout_name(
+    theme: &Theme,
+    status: Status,
+) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+
+    match status {
+        Status::Active => iced::widget::button::Style {
+            background: None,
+            text_color: palette.primary.weak.color,
+            ..Default::default()
+        },
+        Status::Pressed => iced::widget::button::Style {
+            background: None,
+            text_color: palette.primary.base.color,
+            ..Default::default()
+        },
+        Status::Hovered => iced::widget::button::Style {
+            background: None,
+            text_color: palette.primary.strong.color,
+            ..Default::default()
+        },
+        Status::Disabled => iced::widget::button::Style {
+            background: None,
+            text_color: palette.primary.base.color,
+            ..Default::default()
+        },
+    }
+}
+
 pub fn button_transparent(
     theme: &Theme,
     status: Status,
@@ -577,6 +719,15 @@ pub fn ticker_card(theme: &Theme, _color_alpha: f32) -> Style {
             width: 1.0,
             ..Border::default()
         },
+        ..Default::default()
+    }
+}
+
+pub fn layout_card_bar(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        background: Some(palette.primary.strong.color.into()),
         ..Default::default()
     }
 }

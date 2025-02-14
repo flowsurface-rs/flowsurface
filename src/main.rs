@@ -105,7 +105,6 @@ enum Message {
     SaveAndExit(HashMap<window::Id, (Point, Size)>),
 
     ToggleLayoutLock,
-    ResetCurrentLayout,
     LayoutSelected(Layout),
     ThemeSelected(Theme),
     Dashboard(dashboard::Message),
@@ -263,10 +262,7 @@ impl State {
                     };
 
                     if window != main_window {
-                        dashboard
-                            .popout
-                            .remove(&window);
-
+                        dashboard.popout.remove(&window);
                         return window::close(window);
                     }
 
@@ -385,25 +381,6 @@ impl State {
             Message::ThemeSelected(theme) => {
                 self.theme = theme;
             }
-            Message::ResetCurrentLayout => {
-                if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    let active_popout_keys = dashboard.popout.keys().copied().collect::<Vec<_>>();
-
-                    let window_tasks = Task::batch(
-                        active_popout_keys
-                            .iter()
-                            .map(|&popout_id| window::close(popout_id))
-                            .collect::<Vec<_>>(),
-                    )
-                    .then(|_: Task<window::Id>| Task::none());
-
-                    return window_tasks.chain(
-                        dashboard
-                            .reset_layout()
-                            .map(Message::Dashboard)
-                        );
-                }
-            }
             Message::LayoutSelected(new_layout_id) => {
                 if let Some(dashboard) = self.get_active_dashboard() {
                     let active_popout_keys = dashboard
@@ -431,23 +408,17 @@ impl State {
             }
             Message::LoadLayout(layout) => {
                 self.layouts.active_layout = layout.clone();
-
-                let dashboard = match self.layouts.get_mut_dashboard(&layout.id) {
-                    Some(dashboard) => dashboard,
-                    None => {
-                        return Task::none();
-                    }
-                };
-
-                return dashboard
-                    .load_layout()
-                    .map(Message::Dashboard);
+                if let Some(dashboard) = self.get_active_dashboard_mut() {
+                    dashboard.focus = None;
+                    return dashboard.load_layout()
+                        .map(Message::Dashboard);
+                }
             }
             Message::Dashboard(message) => {
                 let main_window = self.main_window;
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    let command = dashboard.update(message, &main_window);
-                    return Task::batch(vec![command.map(Message::Dashboard)]);
+                    return dashboard.update(message, &main_window)
+                        .map(Message::Dashboard);
                 }
             }
             Message::ToggleTickersDashboard => {
@@ -497,8 +468,7 @@ impl State {
                         }
                     }
                 } else {
-                    return self.tickers_table
-                        .update(message)
+                    return self.tickers_table.update(message)
                         .map(Message::TickersTable);
                 }
             }
@@ -541,8 +511,7 @@ impl State {
                 if let layout::Message::SelectActive(layout) = msg {
                     return Task::done(Message::LayoutSelected(layout));
                 } else {
-                    return self.layouts
-                        .update(msg)
+                    return self.layouts.update(msg)
                         .map(Message::ManageLayouts);
                 }
             }
@@ -889,26 +858,6 @@ impl State {
                     }
                 }
                 SidebarModal::Layout => {
-                    //let layout_picklist = pick_list(
-                    //    &layout::LayoutId::ALL[..],
-                    //    Some(self.active_layout),
-                    //    move |layout: layout::LayoutId| Message::LayoutSelected(layout),
-                    //);
-                    let reset_layout_button = tooltip(
-                        button(text("Reset").align_x(Alignment::Center))
-                            .width(iced::Length::Fill)
-                            .on_press(Message::ResetCurrentLayout),
-                        Some("Reset current layout"),
-                        tooltip::Position::Top,
-                    );
-                    let info_text = tooltip(
-                        button(text("i")).style(move |theme, status| {
-                            style::button_transparent(theme, status, false)
-                        }),
-                        Some("Layouts and settings won't be saved if app exited abruptly"),
-                        tooltip::Position::Top,
-                    );
-
                     // Pane management
                     let reset_pane_button = tooltip(
                         button(text("Reset").align_x(Alignment::Center))
@@ -952,12 +901,6 @@ impl State {
                                     } else {
                                         row![text("No pane selected"),]
                                     },
-                                ]
-                                .align_x(Alignment::Center)
-                                .spacing(8),
-                                column![
-                                    text("Layouts").size(14),
-                                    row![info_text, reset_layout_button,].spacing(8),
                                 ]
                                 .align_x(Alignment::Center)
                                 .spacing(8),
