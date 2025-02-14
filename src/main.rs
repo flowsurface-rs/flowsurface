@@ -906,9 +906,7 @@ impl State {
                                 ]
                                 .align_x(Alignment::Center)
                                 .spacing(8),
-                                responsive(move |size| {
-                                    self.new_layouts.view(size).map(Message::ManageLayouts)
-                                }),
+                                self.new_layouts.view().map(Message::ManageLayouts),
                             ]
                             .align_x(Alignment::Center)
                             .spacing(32),

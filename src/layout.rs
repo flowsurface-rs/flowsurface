@@ -13,7 +13,7 @@ use crate::charts::timeandsales::TimeAndSales;
 use crate::charts::indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator};
 use crate::data_providers::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 use crate::screen::{UserTimezone, dashboard::{Dashboard, PaneContent, PaneSettings, PaneState}};
-use crate::{screen, style};
+use crate::{screen, style, tooltip};
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -30,7 +30,6 @@ pub enum Message {
     ToggleEditMode(Editing),
 }
 
-
 #[derive(Eq, Hash, Debug, Clone, PartialEq)]
 pub struct Layout {
     pub id: Uuid,
@@ -39,14 +38,16 @@ pub struct Layout {
 
 #[derive(Debug, Clone)]
 pub enum Editing {
+    ConfirmingDelete(Uuid),
     Renaming(Uuid, String),
     Preview,
     None,
 }
 
 pub struct Layouts {
-    pub layouts: HashMap<Layout, Dashboard>,
+    pub layouts: HashMap<Uuid, (Layout, Dashboard)>,
     pub selected_layout: Layout,
+    layout_order: Vec<Uuid>,
     edit_mode: Editing,
 }
 
@@ -59,41 +60,18 @@ impl Layouts {
             name: "TEST".to_string(),
         };
 
-        layouts.insert(layout1.clone(), Dashboard::default());
+        layouts.insert(layout1.id, (layout1.clone(), Dashboard::default()));
     
         Layouts { 
             layouts, 
-            selected_layout: layout1, 
+            selected_layout: layout1.clone(),
+            layout_order: vec![layout1.id],
             edit_mode: Editing::None, 
         }
     }
 
     pub fn get_layout_name(&self, id: &Uuid) -> Option<String> {
-        self.layouts
-            .iter()
-            .find(|(layout, _)| &layout.id == id)
-            .map(|(layout, _)| layout.name.clone())
-    }
-
-    pub fn remove_layout(&mut self, id: &Uuid) {
-        let layout = self.layouts.keys().find(|l| l.id == *id).cloned();
-        if let Some(layout) = layout {
-            self.layouts.remove(&layout);
-        }
-    }
-
-    pub fn get_dashboard(&self, id: &Uuid) -> Option<&Dashboard> {
-        self.layouts
-            .iter()
-            .find(|(layout, _)| &layout.id == id)
-            .map(|(_, dashboard)| dashboard)
-    }
-
-    pub fn get_mut_dashboard(&mut self, id: &Uuid) -> Option<&mut Dashboard> {
-        self.layouts
-            .iter_mut()
-            .find(|(layout, _)| &layout.id == id)
-            .map(|(_, dashboard)| dashboard)
+        self.layouts.get(&id).map(|(l, _)| l.name.clone())
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -124,13 +102,21 @@ impl Layouts {
             Message::AddLayout => {
                 let new_layout = Layout {
                     id: Uuid::new_v4(),
-                    name: "New layout".to_string(),
+                    name: format!("Layout {}", self.layouts.len() + 1),
                 };
-
-                self.layouts.insert(new_layout.clone(), Dashboard::default());
+                self.layout_order.push(new_layout.id);
+                self.layouts.insert(
+                    new_layout.id, 
+                    (new_layout.clone(), Dashboard::default())
+                );
             }
             Message::RemoveLayout(id) => {
-                self.remove_layout(&id);
+                if self.selected_layout.id == id {
+                    return Task::none();
+                } else {
+                    self.layouts.remove(&id);
+                    self.layout_order.retain(|&layout_id| layout_id != id);
+                }
             }
             Message::SetLayoutName(id, new_name) => {
                 let truncated_name = new_name.chars().take(20).collect::<String>();
@@ -140,15 +126,8 @@ impl Layouts {
                 };
                 
                 // find the old layout and remove/insert with the new name
-                if let Some(old_layout) = self.layouts.keys().find(|l| l.id == id).cloned() {
-                    if let Some(dashboard) = self.layouts.remove(&old_layout) {
-                        self.layouts.insert(updated_layout.clone(), dashboard);
-                        
-                        // update selected_layout if it was the renamed one
-                        if self.selected_layout.id == id {
-                            self.selected_layout = updated_layout;
-                        }
-                    }
+                if let Some((_, dashboard)) = self.layouts.remove(&id) {
+                    self.layouts.insert(updated_layout.id, (updated_layout, dashboard));
                 }
 
                 self.edit_mode = Editing::Preview;
@@ -167,10 +146,10 @@ impl Layouts {
         Task::none()
     }
 
-    pub fn view<'a>(&'a self, _bounds: iced::Size) -> Element<'a, Message> {
-        let mut layouts = column![].spacing(8);
+    pub fn view<'a>(&'a self) -> Element<'a, Message> {
+        let mut content = column![].spacing(8);
 
-        layouts = layouts.push(
+        content = content.push(
             row![
                 text(&self.selected_layout.name).size(14),
                 Space::with_width(iced::Length::Fill),
@@ -183,64 +162,98 @@ impl Layouts {
             ].spacing(4)
         );
 
-        for (layout, _) in &self.layouts {
-            let mut buttons = row![].spacing(4);
+        for id in &self.layout_order {
+            if let Some((layout, _)) = self.layouts.get(id) {
+                let mut layout_row = row![].spacing(4);
 
-            match &self.edit_mode {
-                Editing::Renaming(id, name) if *id == layout.id => {
-                    let input_box = text_input(
-                        "New name",
-                        &name,
-                    )
-                    .on_input(|new_name| {
-                        Message::Renaming(new_name.clone())
-                    })
-                    .on_submit(Message::SetLayoutName(*id, name.clone()));
+                match &self.edit_mode {
+                    Editing::ConfirmingDelete(delete_id) if *delete_id == layout.id => {
+                        let layout_btn = button(
+                            text(layout.name.clone())
+                        );
+                
+                        let confirm_btn = button(
+                            text("Confirm")
+                        ).on_press(Message::RemoveLayout(layout.id));
+                
+                        let cancel_btn = button(
+                            text("Cancel")
+                        ).on_press(Message::ToggleEditMode(Editing::Preview));
+                
+                        layout_row = layout_row
+                            .push(layout_btn)
+                            .push(Space::with_width(iced::Length::Fill))
+                            .push(confirm_btn)
+                            .push(cancel_btn);
+                    }
+                    Editing::Renaming(id, name) if *id == layout.id => {
+                        let input_box = text_input(
+                            "New name",
+                            &name,
+                        )
+                        .on_input(|new_name| {
+                            Message::Renaming(new_name.clone())
+                        })
+                        .on_submit(Message::SetLayoutName(*id, name.clone()));
 
-                    let cancel_btn = button(
-                        text("X")
-                    ).on_press(Message::ToggleEditMode(Editing::Preview));
-                    
-                    buttons = buttons
-                        .push(input_box)
-                        .push(cancel_btn);
+                        let cancel_btn = button(
+                            text("X")
+                        ).on_press(Message::ToggleEditMode(Editing::Preview));
+                        
+                        layout_row = layout_row
+                            .push(input_box)
+                            .push(cancel_btn);
+                    }
+                    Editing::Preview => {
+                        let layout_btn = button(
+                            text(layout.name.clone())
+                        );
+
+                        let rename_btn = button(
+                            text("Rename")
+                        ).on_press(Message::ToggleEditMode(
+                            Editing::Renaming(layout.id, layout.name.clone())
+                        ));
+
+                        layout_row = layout_row
+                            .push(layout_btn)
+                            .push(Space::with_width(iced::Length::Fill))
+                            .push(rename_btn);
+
+                        if self.selected_layout.id != layout.id {
+                            let delete_btn = button(
+                                text("Delete")
+                            ).on_press(Message::ToggleEditMode(
+                                Editing::ConfirmingDelete(layout.id)
+                            ));
+
+                            layout_row = layout_row.push(delete_btn);
+                        } else {
+                            let delete_btn = tooltip(
+                                button(
+                                    text("Delete")
+                                ),
+                                Some("Can't delete active layout"),
+                                tooltip::Position::Right,
+                            );
+
+                            layout_row = layout_row.push(delete_btn);
+                        }
+                    }
+                    _ => {
+                        let layout_btn = button(
+                            text(layout.name.clone())
+                        ).on_press(Message::SelectActive(layout.id));
+            
+                        layout_row = layout_row
+                            .push(layout_btn);
+                    }
                 }
-                Editing::Preview => {
-                    let layout_btn = button(
-                        text(layout.name.clone())
-                    );
-
-                    let rename_btn = button(
-                        text("Rename")
-                    ).on_press(Message::ToggleEditMode(
-                        Editing::Renaming(layout.id, layout.name.clone())
-                    ));
-
-                    let delete_btn = button(
-                        text("Delete")
-                    ).on_press(Message::RemoveLayout(layout.id));
-
-        
-                    buttons = buttons
-                        .push(layout_btn)
-                        .push(Space::with_width(iced::Length::Fill))
-                        .push(rename_btn)
-                        .push(delete_btn);
-                }
-                _ => {
-                    let layout_btn = button(
-                        text(layout.name.clone())
-                    ).on_press(Message::SelectActive(layout.id));
-        
-                    buttons = buttons
-                        .push(layout_btn);
-                }
+            content = content.push(layout_row);
             }
-
-            layouts = layouts.push(buttons);
         }
 
-        layouts.into()
+        content.into()
     }
 }
 
