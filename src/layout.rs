@@ -19,15 +19,46 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::fs::File;
 use std::path::PathBuf;
+use std::vec;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    SelectActive(Uuid),
+    SelectActive(Layout),
     SetLayoutName(Uuid, String),
     Renaming(String),
     AddLayout,
     RemoveLayout(Uuid),
     ToggleEditMode(Editing),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableLayout {
+    pub name: String,
+    pub dashboard: SerializableDashboard,
+}
+
+impl Default for SerializableLayout {
+    fn default() -> Self {
+        Self {
+            name: "Default".to_string(),
+            dashboard: SerializableDashboard::default(),
+        }
+    }
+}
+
+impl From<(Layout, Dashboard)> for SerializableLayout {
+    fn from((layout, dashboard): (Layout, Dashboard)) -> Self {
+        Self {
+            name: layout.name,
+            dashboard: SerializableDashboard::from(&dashboard),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableLayouts {
+    pub layouts: Vec<SerializableLayout>,
+    pub active_layout: SerializableLayout,
 }
 
 #[derive(Eq, Hash, Debug, Clone, PartialEq)]
@@ -44,43 +75,57 @@ pub enum Editing {
     None,
 }
 
-pub struct Layouts {
+pub struct LayoutManager {
     pub layouts: HashMap<Uuid, (Layout, Dashboard)>,
-    pub selected_layout: Layout,
+    pub active_layout: Layout,
     layout_order: Vec<Uuid>,
     edit_mode: Editing,
 }
 
-impl Layouts {
+impl LayoutManager {
     pub fn new() -> Self {
         let mut layouts = HashMap::new();
 
         let layout1 = Layout {
             id: Uuid::new_v4(),
-            name: "TEST".to_string(),
+            name: "Layout 1".to_string(),
         };
 
         layouts.insert(layout1.id, (layout1.clone(), Dashboard::default()));
     
-        Layouts { 
+        LayoutManager { 
             layouts, 
-            selected_layout: layout1.clone(),
+            active_layout: layout1.clone(),
             layout_order: vec![layout1.id],
             edit_mode: Editing::None, 
         }
     }
 
-    pub fn get_layout_name(&self, id: &Uuid) -> Option<String> {
-        self.layouts.get(&id).map(|(l, _)| l.name.clone())
+    pub fn iter_dashboards_mut(&mut self) -> impl Iterator<Item = &mut Dashboard> {
+        self.layouts.values_mut().map(|(_, d)| d)
+    }
+
+    pub fn get_mut_dashboard(&mut self, id: &Uuid) -> Option<&mut Dashboard> {
+        self.layouts.get_mut(id).map(|(_, d)| d)
+    }
+
+    pub fn get_dashboard(&self, id: &Uuid) -> Option<&Dashboard> {
+        self.layouts.get(id).map(|(_, d)| d)
+    }
+
+    pub fn get_active_dashboard(&self) -> Option<&Dashboard> {
+        self.get_dashboard(&self.active_layout.id)
+    }
+    
+    pub fn get_active_dashboard_mut(&mut self) -> Option<&mut Dashboard> {
+        let id = self.active_layout.id;
+        self.get_mut_dashboard(&id)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::SelectActive(id) => {
-                self.selected_layout = Layout {
-                    id,
-                    name: self.get_layout_name(&id).unwrap_or_default(),
-                };
+            Message::SelectActive(layout) => {
+                self.active_layout = layout;
             }
             Message::ToggleEditMode(new_mode) => {
                 match (&new_mode, &self.edit_mode) {
@@ -104,14 +149,17 @@ impl Layouts {
                     id: Uuid::new_v4(),
                     name: format!("Layout {}", self.layouts.len() + 1),
                 };
+        
                 self.layout_order.push(new_layout.id);
                 self.layouts.insert(
                     new_layout.id, 
                     (new_layout.clone(), Dashboard::default())
                 );
+
+                self.active_layout = new_layout;
             }
             Message::RemoveLayout(id) => {
-                if self.selected_layout.id == id {
+                if self.active_layout.id == id {
                     return Task::none();
                 } else {
                     self.layouts.remove(&id);
@@ -125,9 +173,15 @@ impl Layouts {
                     name: truncated_name,
                 };
                 
-                // find the old layout and remove/insert with the new name
                 if let Some((_, dashboard)) = self.layouts.remove(&id) {
-                    self.layouts.insert(updated_layout.id, (updated_layout, dashboard));
+                    self.layouts.insert(
+                        updated_layout.id, 
+                        (updated_layout.clone(), dashboard)
+                    );
+
+                    if self.active_layout.id == id {
+                        self.active_layout = updated_layout;
+                    }
                 }
 
                 self.edit_mode = Editing::Preview;
@@ -151,7 +205,7 @@ impl Layouts {
 
         content = content.push(
             row![
-                text(&self.selected_layout.name).size(14),
+                text(&self.active_layout.name).size(14),
                 Space::with_width(iced::Length::Fill),
                 button(text("Edit"))
                     .on_press(Message::ToggleEditMode(
@@ -220,7 +274,7 @@ impl Layouts {
                             .push(Space::with_width(iced::Length::Fill))
                             .push(rename_btn);
 
-                        if self.selected_layout.id != layout.id {
+                        if self.active_layout.id != layout.id {
                             let delete_btn = button(
                                 text("Delete")
                             ).on_press(Message::ToggleEditMode(
@@ -241,12 +295,17 @@ impl Layouts {
                         }
                     }
                     _ => {
-                        let layout_btn = button(
-                            text(layout.name.clone())
-                        ).on_press(Message::SelectActive(layout.id));
-            
-                        layout_row = layout_row
-                            .push(layout_btn);
+                        if self.active_layout.id == layout.id {                
+                            layout_row = layout_row.push(
+                                button(text(layout.name.clone()))
+                            );
+                        } else {                
+                            layout_row = layout_row.push(
+                                button(
+                                    text(layout.name.clone())
+                                ).on_press(Message::SelectActive(layout.clone()))
+                            );
+                        }
                     }
                 }
             content = content.push(layout_row);
@@ -255,34 +314,6 @@ impl Layouts {
 
         content.into()
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum LayoutId {
-    Layout1,
-    Layout2,
-    Layout3,
-    Layout4,
-}
-
-impl std::fmt::Display for LayoutId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LayoutId::Layout1 => write!(f, "Layout 1"),
-            LayoutId::Layout2 => write!(f, "Layout 2"),
-            LayoutId::Layout3 => write!(f, "Layout 3"),
-            LayoutId::Layout4 => write!(f, "Layout 4"),
-        }
-    }
-}
-
-impl LayoutId {
-    pub const ALL: [LayoutId; 4] = [
-        LayoutId::Layout1,
-        LayoutId::Layout2,
-        LayoutId::Layout3,
-        LayoutId::Layout4,
-    ];
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]
@@ -302,10 +333,9 @@ impl std::fmt::Display for Sidebar {
 }
 
 pub struct SavedState {
-    pub layouts: HashMap<LayoutId, Dashboard>,
+    pub layout_manager: LayoutManager,
     pub selected_theme: SerializableTheme,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
-    pub last_active_layout: LayoutId,
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
     pub timezone: UserTimezone,
@@ -316,17 +346,10 @@ pub struct SavedState {
 
 impl Default for SavedState {
     fn default() -> Self {
-        let mut layouts = HashMap::new();
-        layouts.insert(LayoutId::Layout1, Dashboard::default());
-        layouts.insert(LayoutId::Layout2, Dashboard::default());
-        layouts.insert(LayoutId::Layout3, Dashboard::default());
-        layouts.insert(LayoutId::Layout4, Dashboard::default());
-
         SavedState {
-            layouts,
+            layout_manager: LayoutManager::new(),
             selected_theme: SerializableTheme::default(),
             favorited_tickers: Vec::new(),
-            last_active_layout: LayoutId::Layout1,
             window_size: None,
             window_position: None,
             timezone: UserTimezone::default(),
@@ -422,10 +445,9 @@ impl<'de> Deserialize<'de> for SerializableTheme {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SerializableState {
-    pub layouts: HashMap<LayoutId, SerializableDashboard>,
+    pub layout_manager: SerializableLayouts,
     pub selected_theme: SerializableTheme,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
-    pub last_active_layout: LayoutId,
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
     pub timezone: UserTimezone,
@@ -436,10 +458,9 @@ pub struct SerializableState {
 
 impl SerializableState {
     pub fn from_parts(
-        layouts: HashMap<LayoutId, SerializableDashboard>,
+        layout_manager: SerializableLayouts,
         selected_theme: Theme,
         favorited_tickers: Vec<(Exchange, Ticker)>,
-        last_active_layout: LayoutId,
         size: Option<Size>,
         position: Option<Point>,
         timezone: UserTimezone,
@@ -448,12 +469,11 @@ impl SerializableState {
         scale_factor: ScaleFactor,
     ) -> Self {
         SerializableState {
-            layouts,
+            layout_manager,
             selected_theme: SerializableTheme {
                 theme: selected_theme,
             },
             favorited_tickers,
-            last_active_layout,
             window_size: size.map(|s| (s.width, s.height)),
             window_position: position.map(|p| (p.x, p.y)),
             timezone,
@@ -631,19 +651,6 @@ impl From<ScaleFactor> for f64 {
 pub fn load_saved_state(file_path: &str) -> SavedState {
     match read_from_file(file_path) {
         Ok(state) => {
-            let mut de_state = SavedState {
-                selected_theme: state.selected_theme,
-                layouts: HashMap::new(),
-                favorited_tickers: state.favorited_tickers,
-                last_active_layout: state.last_active_layout,
-                window_size: state.window_size,
-                window_position: state.window_position,
-                timezone: state.timezone,
-                sidebar: state.sidebar,
-                present_mode: state.present_mode,
-                scale_factor: state.scale_factor,
-            };
-
             fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                 match pane {
                     SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
@@ -768,11 +775,13 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                 }
             }
 
-            for (id, dashboard) in &state.layouts {
+            let mut de_layouts: Vec<(String, Dashboard)> = vec![];
+
+            for layout in &state.layout_manager.layouts {
                 let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> = Vec::new();
 
-                for (popout, pos, size) in &dashboard.popout {
-                    let configuration = configuration(popout.clone());
+                for (pane, pos, size) in &layout.dashboard.popout {
+                    let configuration = configuration(pane.clone());
                     popout_windows.push((
                         configuration,
                         (Point::new(pos.0, pos.1), Size::new(size.0, size.1)),
@@ -780,13 +789,63 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                 }
 
                 let dashboard = Dashboard::from_config(
-                    configuration(dashboard.pane.clone()), popout_windows, dashboard.trade_fetch_enabled
+                    configuration(layout.dashboard.pane.clone()), 
+                    popout_windows, 
+                    layout.dashboard.trade_fetch_enabled,
                 );
 
-                de_state.layouts.insert(*id, dashboard);
+                de_layouts.push((
+                    layout.name.clone(), 
+                    dashboard
+                ));
             }
 
-            de_state
+            let layout_manager: LayoutManager = {
+                let mut layouts = HashMap::new();
+
+                let active_layout = Layout {
+                    id: Uuid::new_v4(),
+                    name: state.layout_manager.active_layout.name.clone(),
+                };
+
+                let mut layout_order = vec![];
+
+                for (name, dashboard) in de_layouts {
+                    let layout = Layout {
+                        id: {
+                            if name == active_layout.name {
+                                active_layout.id
+                            } else {
+                                Uuid::new_v4()
+                            }
+                        },
+                        name,
+                    };
+
+                    layout_order.push(layout.id);
+
+                    layouts.insert(layout.id, (layout.clone(), dashboard));
+                }
+                
+                LayoutManager {
+                    layouts,
+                    active_layout,
+                    layout_order,
+                    edit_mode: Editing::None,
+                }
+            };
+            
+            SavedState {
+                selected_theme: state.selected_theme,
+                layout_manager,
+                favorited_tickers: state.favorited_tickers,
+                window_size: state.window_size,
+                window_position: state.window_position,
+                timezone: state.timezone,
+                sidebar: state.sidebar,
+                present_mode: state.present_mode,
+                scale_factor: state.scale_factor,
+            }
         }
         Err(e) => {
             log::error!(
