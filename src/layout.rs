@@ -226,9 +226,13 @@ impl LayoutManager {
             }
             Message::CloneLayout(id) => {
                 if let Some((layout, dashboard)) = self.layouts.get(&id) {
+                    let new_id = Uuid::new_v4();
                     let new_layout = Layout {
-                        id: Uuid::new_v4(),
-                        name: format!("{} (clone)", layout.name),
+                        id: new_id,
+                        name: self.ensure_unique_name(
+                            layout.name.clone(),
+                            new_id,
+                        ),
                     };
 
                     let ser_dashboard = SerializableDashboard::from(dashboard);
@@ -347,10 +351,15 @@ impl LayoutManager {
                         layout_row = layout_row
                             .push(layout_btn(layout, None))
                             .push(
-                                button(
-                                    get_icon_text(style::Icon::Clone, 12)
+                                tooltip(
+                                    button(
+                                        get_icon_text(style::Icon::Clone, 12)
+                                    )
+                                    .on_press(Message::CloneLayout(layout.id))
+                                    .style(move |t, s| style::button_transparent(t, s, true)), 
+                                    Some("Clone layout"), 
+                                    tooltip::Position::Top,
                                 )
-                                .on_press(Message::CloneLayout(layout.id))
                             )
                             .push(self.create_rename_button(layout));
 
