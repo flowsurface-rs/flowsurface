@@ -904,7 +904,12 @@ impl State {
                                 ]
                                 .align_x(Alignment::Center)
                                 .spacing(8),
-                                self.layouts.view().map(Message::ManageLayouts),
+                                column![
+                                    text("Layouts").size(14),
+                                    self.layouts.view().map(Message::ManageLayouts),
+                                ]
+                                .align_x(Alignment::Center)
+                                .spacing(8),
                             ]
                             .align_x(Alignment::Center)
                             .spacing(32),

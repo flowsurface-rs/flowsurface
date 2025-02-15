@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use regex::Regex;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ pub struct Layout {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Editing {
     ConfirmingDelete(Uuid),
     Renaming(Uuid, String),
@@ -227,12 +227,9 @@ impl LayoutManager {
 
         content = content.push(
             row![
-                text(&self.active_layout.name).size(14),
                 Space::with_width(iced::Length::Fill),
                 edit_btn,
-                button(text("+"))
-                    .on_press(Message::AddLayout)
-            ].spacing(4)
+            ]
         );
 
         for id in &self.layout_order {
@@ -253,21 +250,29 @@ impl LayoutManager {
                 }
 
                 match &self.edit_mode {
-                    Editing::ConfirmingDelete(delete_id) if *delete_id == layout.id => {
-                        let layout_btn = button(
-                            text(layout.name.clone())
-                        )
-                        .height(iced::Length::Fill)
-                        .width(iced::Length::Fill)
-                        .style(move |theme, status| style::button_layout_name(theme, status));
-                
-                        let (confirm_btn, cancel_btn) = self.create_confirm_delete_buttons(layout);
-                
-                        layout_row = layout_row
-                            .push(layout_btn)
-                            .push(Space::with_width(iced::Length::Fill))
-                            .push(confirm_btn)
-                            .push(cancel_btn);
+                    Editing::ConfirmingDelete(delete_id) => {
+                        if *delete_id == layout.id {
+                            let layout_btn = create_layout_button(
+                                layout,
+                                None,
+                            );
+                    
+                            let (confirm_btn, cancel_btn) = self.create_confirm_delete_buttons(layout);
+                    
+                            layout_row = layout_row
+                                .push(layout_btn)
+                                .push(Space::with_width(iced::Length::Fill))
+                                .push(confirm_btn)
+                                .push(cancel_btn);
+                        } else {
+                            let layout_btn = button(
+                                text(layout.name.clone())
+                            )
+                            .width(iced::Length::Fill)
+                            .style(move |theme, status| style::button_layout_name(theme, status));
+                    
+                            layout_row = layout_row.push(layout_btn);
+                        }
                     }
                     Editing::Renaming(id, name) => {
                         if *id == layout.id {
@@ -288,21 +293,19 @@ impl LayoutManager {
                                 )
                                 .push(cancel_btn);
                         } else {
-                            let layout_btn = button(
-                                text(layout.name.clone())
-                            )
-                            .width(iced::Length::Fill)
-                            .style(move |theme, status| style::button_layout_name(theme, status));
+                            let layout_btn = create_layout_button(
+                                layout,
+                                None,
+                            );
                     
                             layout_row = layout_row.push(layout_btn);
                         }
                     }
                     Editing::Preview => {
-                        let layout_btn = button(
-                            text(layout.name.clone())
-                        )
-                        .width(iced::Length::Fill)
-                        .style(move |theme, status| style::button_layout_name(theme, status));
+                        let layout_btn = create_layout_button(
+                            layout,
+                            None,
+                        );
 
                         layout_row = layout_row
                             .push(layout_btn)
@@ -313,32 +316,47 @@ impl LayoutManager {
                             layout_row = layout_row.push(self.create_delete_button(layout.id));
                         }
                     }
-                    _ => {
-                        if self.active_layout.id == layout.id {                
-                            layout_row = layout_row.push(
-                                button(text(layout.name.clone()))
-                                .width(iced::Length::Fill)
-                                .style(move |theme, status| style::button_layout_name(theme, status))
-                            );
-                        } else {                
-                            layout_row = layout_row.push(
-                                button(text(layout.name.clone()))
-                                .width(iced::Length::Fill)
-                                .style(move |theme, status| style::button_layout_name(theme, status))
-                                .on_press(Message::SelectActive(layout.clone()))
-                            );
-                        }
+                    _ => {            
+                        layout_row = layout_row.push(create_layout_button(
+                            layout,
+                            if self.active_layout.id != layout.id {
+                                Some(Message::SelectActive(layout.clone()))
+                            } else {
+                                None
+                            }
+                        ));           
                     }
                 }
                 
                 content = content.push(
                     container(layout_row)
-                        .style(style::chart_modal)
+                        .style(style::modal_container)
                 );
             }
         }
 
-        content.into()
+        if self.edit_mode != Editing::None {
+            content = content.push(
+                container(
+                    button(
+                        text("Add layout")
+                    )
+                    .style(move |t, s| style::button_transparent(t, s, false))
+                    .width(iced::Length::Fill)
+                    .on_press(Message::AddLayout)
+                )
+                .style(style::chart_modal)
+            )
+        };
+
+        scrollable::Scrollable::with_direction(
+            content.padding(padding::left(8).right(8)),
+            scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new().width(8).scroller_width(6),
+            )
+        )
+        .style(style::scroll_bar)
+        .into()
     }
 
     fn create_delete_button<'a>(&self, layout_id: Uuid) -> Element<'a, Message> {
@@ -394,6 +412,23 @@ impl LayoutManager {
     
         (confirm, cancel)
     }
+}
+
+fn create_layout_button<'a>(
+    layout: &Layout, 
+    on_press: Option<Message>, 
+) -> Element<'a, Message> {
+    let mut layout_btn = button(
+        text(layout.name.clone())
+    )
+    .width(iced::Length::Fill)
+    .style(move |theme, status| style::button_layout_name(theme, status));
+
+    if let Some(msg) = on_press {
+        layout_btn = layout_btn.on_press(msg);
+    }
+
+    layout_btn.into()
 }
 
 fn create_icon_button<'a>(
