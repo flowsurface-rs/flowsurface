@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, center, column, container, row, scrollable, text, text_input, Space};
 use regex::Regex;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ pub enum Message {
     AddLayout,
     RemoveLayout(Uuid),
     ToggleEditMode(Editing),
+    CloneLayout(Uuid),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +103,31 @@ impl LayoutManager {
         }
     }
 
+    fn generate_unique_layout_name(&self) -> String {
+        let mut counter = 1;
+        loop {
+            let candidate = format!("Layout {}", counter);
+            if !self.layouts.values().any(|(layout, _)| layout.name == candidate) {
+                return candidate;
+            }
+            counter += 1;
+        }
+    }
+
+    fn ensure_unique_name(&self, proposed_name: String, current_id: Uuid) -> String {
+        let mut counter = 2;
+        let mut final_name = proposed_name.clone();
+        
+        while self.layouts.values().any(|(layout, _)| 
+            layout.id != current_id && layout.name == final_name
+        ) {
+            final_name = format!("{} ({})", proposed_name, counter);
+            counter += 1;
+        }
+        
+        final_name.chars().take(20).collect()
+    }
+
     pub fn iter_dashboards_mut(&mut self) -> impl Iterator<Item = &mut Dashboard> {
         self.layouts.values_mut().map(|(_, d)| d)
     }
@@ -148,7 +174,7 @@ impl LayoutManager {
             Message::AddLayout => {
                 let new_layout = Layout {
                     id: Uuid::new_v4(),
-                    name: format!("Layout {}", self.layouts.len() + 1),
+                    name: self.generate_unique_layout_name(),
                 };
         
                 self.layout_order.push(new_layout.id);
@@ -170,10 +196,10 @@ impl LayoutManager {
                 self.edit_mode = Editing::Preview;
             }
             Message::SetLayoutName(id, new_name) => {
-                let truncated_name = new_name.chars().take(20).collect::<String>();
+                let unique_name = self.ensure_unique_name(new_name, id);
                 let updated_layout = Layout {
                     id,
-                    name: truncated_name,
+                    name: unique_name,
                 };
                 
                 if let Some((_, dashboard)) = self.layouts.remove(&id) {
@@ -197,6 +223,35 @@ impl LayoutManager {
                     },
                     _ => Editing::None,
                 };
+            }
+            Message::CloneLayout(id) => {
+                if let Some((layout, dashboard)) = self.layouts.get(&id) {
+                    let new_layout = Layout {
+                        id: Uuid::new_v4(),
+                        name: format!("{} (clone)", layout.name),
+                    };
+
+                    let ser_dashboard = SerializableDashboard::from(dashboard);
+
+                    let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> = Vec::new();
+
+                    for (pane, pos, size) in &ser_dashboard.popout {
+                        let configuration = configuration(pane.clone());
+                        popout_windows.push((
+                            configuration,
+                            (Point::new(pos.0, pos.1), Size::new(size.0, size.1)),
+                        ));
+                    }
+
+                    let dashboard = Dashboard::from_config(
+                        configuration(ser_dashboard.pane.clone()), 
+                        popout_windows, 
+                        ser_dashboard.trade_fetch_enabled,
+                    );
+
+                    self.layout_order.push(new_layout.id);
+                    self.layouts.insert(new_layout.id, (new_layout.clone(), dashboard));
+                }
             }
         }
 
@@ -232,6 +287,10 @@ impl LayoutManager {
             ]
         );
 
+        let layout_btn = |layout: &Layout, on_press: Option<Message>| {
+            create_layout_button(layout, on_press)
+        };
+
         for id in &self.layout_order {
             if let Some((layout, _)) = self.layouts.get(id) {
                 let mut layout_row = row![]
@@ -251,33 +310,21 @@ impl LayoutManager {
 
                 match &self.edit_mode {
                     Editing::ConfirmingDelete(delete_id) => {
-                        if *delete_id == layout.id {
-                            let layout_btn = create_layout_button(
-                                layout,
-                                None,
-                            );
-                    
+                        if *delete_id == layout.id {                    
                             let (confirm_btn, cancel_btn) = self.create_confirm_delete_buttons(layout);
                     
                             layout_row = layout_row
-                                .push(layout_btn)
-                                .push(Space::with_width(iced::Length::Fill))
+                                .push(layout_btn(layout, None))
                                 .push(confirm_btn)
                                 .push(cancel_btn);
                         } else {
-                            let layout_btn = button(
-                                text(layout.name.clone())
-                            )
-                            .width(iced::Length::Fill)
-                            .style(move |theme, status| style::button_layout_name(theme, status));
-                    
-                            layout_row = layout_row.push(layout_btn);
+                            layout_row = layout_row.push(layout_btn(layout, None));
                         }
                     }
                     Editing::Renaming(id, name) => {
                         if *id == layout.id {
                             let input_box = text_input(
-                                "New name",
+                                "New layout name",
                                 &name,
                             )
                             .on_input(|new_name| {
@@ -288,28 +335,23 @@ impl LayoutManager {
                             let (_, cancel_btn) = self.create_confirm_delete_buttons(layout);
                             
                             layout_row = layout_row
-                                .push(
-                                    container(input_box).padding(padding::left(4).right(4))
+                                .push(center(input_box)
+                                    .padding(padding::left(4))
                                 )
                                 .push(cancel_btn);
                         } else {
-                            let layout_btn = create_layout_button(
-                                layout,
-                                None,
-                            );
-                    
-                            layout_row = layout_row.push(layout_btn);
+                            layout_row = layout_row.push(layout_btn(layout, None));
                         }
                     }
                     Editing::Preview => {
-                        let layout_btn = create_layout_button(
-                            layout,
-                            None,
-                        );
-
                         layout_row = layout_row
-                            .push(layout_btn)
-                            .push(Space::with_width(iced::Length::Fill))
+                            .push(layout_btn(layout, None))
+                            .push(
+                                button(
+                                    get_icon_text(style::Icon::Clone, 12)
+                                )
+                                .on_press(Message::CloneLayout(layout.id))
+                            )
                             .push(self.create_rename_button(layout));
 
                         if self.active_layout.id != layout.id {
@@ -317,7 +359,7 @@ impl LayoutManager {
                         }
                     }
                     _ => {            
-                        layout_row = layout_row.push(create_layout_button(
+                        layout_row = layout_row.push(layout_btn(
                             layout,
                             if self.active_layout.id != layout.id {
                                 Some(Message::SelectActive(layout.clone()))
@@ -779,133 +821,133 @@ impl From<ScaleFactor> for f64 {
     }
 }
 
+fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
+    match pane {
+        SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
+            axis: match axis {
+                Axis::Horizontal => pane_grid::Axis::Horizontal,
+                Axis::Vertical => pane_grid::Axis::Vertical,
+            },
+            ratio,
+            a: Box::new(configuration(*a)),
+            b: Box::new(configuration(*b)),
+        },
+        SerializablePane::Starter => {
+            Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+        }
+        SerializablePane::CandlestickChart {
+            layout,
+            stream_type,
+            settings,
+            indicators,
+        } => {
+            if let Some(ticker_info) = settings.ticker_info {
+                let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
+                Configuration::Pane(PaneState::from_config(
+                    PaneContent::Candlestick(
+                        CandlestickChart::new(
+                            layout,
+                            vec![],
+                            timeframe,
+                            ticker_info.min_ticksize,
+                            &indicators,
+                            settings.ticker_info,
+                        ),
+                        indicators,
+                    ),
+                    stream_type,
+                    settings,
+                ))
+            } else {
+                log::info!("Skipping a CandlestickChart initialization due to missing ticker info");
+                Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+            }
+        }
+        SerializablePane::FootprintChart {
+            layout,
+            stream_type,
+            settings,
+            indicators,
+        } => {
+            if let Some(ticker_info) = settings.ticker_info {
+                let tick_size = settings.tick_multiply
+                    .unwrap_or(TickMultiplier(50))
+                    .multiply_with_min_tick_size(ticker_info);
+                let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
+                Configuration::Pane(PaneState::from_config(
+                    PaneContent::Footprint(
+                        FootprintChart::new(
+                            layout,
+                            timeframe,
+                            tick_size,
+                            vec![],
+                            vec![],
+                            &indicators,
+                            settings.ticker_info,
+                        ),
+                        indicators,
+                    ),
+                    stream_type,
+                    settings,
+                ))
+            } else {
+                log::info!("Skipping a FootprintChart initialization due to missing ticker info");
+                Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+            }
+        }
+        SerializablePane::HeatmapChart {
+            layout,
+            stream_type,
+            settings,
+            indicators,
+        } => {
+            if let Some(ticker_info) = settings.ticker_info {
+                let tick_size = settings.tick_multiply
+                    .unwrap_or(TickMultiplier(10))
+                    .multiply_with_min_tick_size(ticker_info);
+
+                let config = settings.visual_config
+                    .map_or(None, |cfg| cfg.heatmap());
+
+                Configuration::Pane(PaneState::from_config(
+                    PaneContent::Heatmap(
+                        HeatmapChart::new(
+                            layout,
+                            tick_size,
+                            100,
+                            &indicators,
+                            settings.ticker_info,
+                            config,
+                        ),
+                        indicators,
+                    ),
+                    stream_type,
+                    settings,
+                ))
+            } else {
+                log::info!("Skipping a HeatmapChart initialization due to missing ticker info");
+                Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+            }
+        }
+        SerializablePane::TimeAndSales {
+            stream_type,
+            settings,
+        } => {
+            let config = settings.visual_config
+                .map_or(None, |cfg| cfg.time_and_sales());
+
+            Configuration::Pane(PaneState::from_config(
+                PaneContent::TimeAndSales(TimeAndSales::new(config)),
+                stream_type,
+                settings,
+            ))
+        },
+    }
+}
+
 pub fn load_saved_state(file_path: &str) -> SavedState {
     match read_from_file(file_path) {
         Ok(state) => {
-            fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
-                match pane {
-                    SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
-                        axis: match axis {
-                            Axis::Horizontal => pane_grid::Axis::Horizontal,
-                            Axis::Vertical => pane_grid::Axis::Vertical,
-                        },
-                        ratio,
-                        a: Box::new(configuration(*a)),
-                        b: Box::new(configuration(*b)),
-                    },
-                    SerializablePane::Starter => {
-                        Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
-                    }
-                    SerializablePane::CandlestickChart {
-                        layout,
-                        stream_type,
-                        settings,
-                        indicators,
-                    } => {
-                        if let Some(ticker_info) = settings.ticker_info {
-                            let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
-                            Configuration::Pane(PaneState::from_config(
-                                PaneContent::Candlestick(
-                                    CandlestickChart::new(
-                                        layout,
-                                        vec![],
-                                        timeframe,
-                                        ticker_info.min_ticksize,
-                                        &indicators,
-                                        settings.ticker_info,
-                                    ),
-                                    indicators,
-                                ),
-                                stream_type,
-                                settings,
-                            ))
-                        } else {
-                            log::info!("Skipping a CandlestickChart initialization due to missing ticker info");
-                            Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
-                        }
-                    }
-                    SerializablePane::FootprintChart {
-                        layout,
-                        stream_type,
-                        settings,
-                        indicators,
-                    } => {
-                        if let Some(ticker_info) = settings.ticker_info {
-                            let tick_size = settings.tick_multiply
-                                .unwrap_or(TickMultiplier(50))
-                                .multiply_with_min_tick_size(ticker_info);
-                            let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
-                            Configuration::Pane(PaneState::from_config(
-                                PaneContent::Footprint(
-                                    FootprintChart::new(
-                                        layout,
-                                        timeframe,
-                                        tick_size,
-                                        vec![],
-                                        vec![],
-                                        &indicators,
-                                        settings.ticker_info,
-                                    ),
-                                    indicators,
-                                ),
-                                stream_type,
-                                settings,
-                            ))
-                        } else {
-                            log::info!("Skipping a FootprintChart initialization due to missing ticker info");
-                            Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
-                        }
-                    }
-                    SerializablePane::HeatmapChart {
-                        layout,
-                        stream_type,
-                        settings,
-                        indicators,
-                    } => {
-                        if let Some(ticker_info) = settings.ticker_info {
-                            let tick_size = settings.tick_multiply
-                                .unwrap_or(TickMultiplier(10))
-                                .multiply_with_min_tick_size(ticker_info);
-
-                            let config = settings.visual_config
-                                .map_or(None, |cfg| cfg.heatmap());
-
-                            Configuration::Pane(PaneState::from_config(
-                                PaneContent::Heatmap(
-                                    HeatmapChart::new(
-                                        layout,
-                                        tick_size,
-                                        100,
-                                        &indicators,
-                                        settings.ticker_info,
-                                        config,
-                                    ),
-                                    indicators,
-                                ),
-                                stream_type,
-                                settings,
-                            ))
-                        } else {
-                            log::info!("Skipping a HeatmapChart initialization due to missing ticker info");
-                            Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
-                        }
-                    }
-                    SerializablePane::TimeAndSales {
-                        stream_type,
-                        settings,
-                    } => {
-                        let config = settings.visual_config
-                            .map_or(None, |cfg| cfg.time_and_sales());
-
-                        Configuration::Pane(PaneState::from_config(
-                            PaneContent::TimeAndSales(TimeAndSales::new(config)),
-                            stream_type,
-                            settings,
-                        ))
-                    },
-                }
-            }
-
             let mut de_layouts: Vec<(String, Dashboard)> = vec![];
 
             for layout in &state.layout_manager.layouts {
@@ -988,7 +1030,6 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
         }
     }
 }
-
 
 pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
     let path = PathBuf::from(get_data_path(file_name));

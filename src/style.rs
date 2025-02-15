@@ -32,6 +32,7 @@ pub enum Icon {
     TrashBin,
     Edit,
     Checkmark,
+    Clone,
 }
 
 impl From<Icon> for char {
@@ -59,6 +60,7 @@ impl From<Icon> for char {
             Icon::TrashBin => '\u{E80F}',
             Icon::Edit => '\u{E811}',
             Icon::Checkmark => '\u{E812}',
+            Icon::Clone => '\u{F0C5}',
         }
     }
 }
