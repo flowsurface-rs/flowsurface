@@ -1,3 +1,8 @@
+// Modification of `VSplit` widget of [generic-daw] 
+// https://github.com/generic-daw/generic-daw/blob/main/generic_daw_gui/src/widget/vsplit.rs
+//
+// credits to authors of https://github.com/generic-daw/generic-daw/
+
 use iced::{
     advanced::{
         layout::{Limits, Node},

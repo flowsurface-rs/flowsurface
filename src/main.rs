@@ -13,7 +13,7 @@ mod data_providers;
 
 use tooltip::tooltip;
 use tickers_table::TickersTable;
-use layout::{Layout, LayoutManager, SerializableDashboard, SerializableLayout, Sidebar};
+use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
 use style::{get_icon_text, Icon, ICON_BYTES};
 use screen::{
     create_button, dashboard::{self, pane, Dashboard}, handle_error, 
@@ -294,43 +294,31 @@ impl State {
 
                 let mut ser_layouts = Vec::new();
 
-                for (_, (layout, dashboard)) in &self.layouts.layouts {
-                    let serialized_dashboard = SerializableDashboard::from(dashboard);
-                    
-                    ser_layouts.push(
-                        layout::SerializableLayout {
-                            name: layout.name.clone(),
-                            dashboard: serialized_dashboard,
-                        }
-                    );
+                for id in &self.layouts.layout_order {
+                    if let Some((layout, dashboard)) = self.layouts.layouts.get(id) {
+                        let serialized_dashboard = SerializableDashboard::from(dashboard);
+                        
+                        ser_layouts.push(
+                            layout::SerializableLayout {
+                                name: layout.name.clone(),
+                                dashboard: serialized_dashboard,
+                            }
+                        );
+                    }
                 }
 
-                let dashboard = match self.get_active_dashboard() {
-                    Some(dashboard) => dashboard,
-                    None => {
-                        return iced::exit();
-                    }
-                };
-
                 let layouts = layout::SerializableLayouts {
-                    active_layout: SerializableLayout {
-                        name: self.layouts.active_layout.name.clone(),
-                        dashboard: SerializableDashboard::from(dashboard),
-                    },
                     layouts: ser_layouts,
+                    active_layout: self.layouts.active_layout.name.clone(),
                 };
 
                 let favorited_tickers = self.tickers_table.get_favorited_tickers();
 
-                let size: Option<Size> = windows
+                let (size, position) = windows
                     .iter()
                     .find(|(id, _)| **id == self.main_window.id)
-                    .map(|(_, (_, size))| *size);
-
-                let position: Option<Point> = windows
-                    .iter()
-                    .find(|(id, _)| **id == self.main_window.id)
-                    .map(|(_, (position, _))| *position);
+                    .map(|(_, (position, size))| (*size, *position))
+                    .unzip();
 
                 let layout = layout::SerializableState::from_parts(
                     layouts,

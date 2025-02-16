@@ -22,16 +22,7 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::vec;
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    SelectActive(Layout),
-    SetLayoutName(Uuid, String),
-    Renaming(String),
-    AddLayout,
-    RemoveLayout(Uuid),
-    ToggleEditMode(Editing),
-    CloneLayout(Uuid),
-}
+use crate::widget::column_drag::{self, DragEvent, DropPosition};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableLayout {
@@ -60,7 +51,7 @@ impl From<(Layout, Dashboard)> for SerializableLayout {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableLayouts {
     pub layouts: Vec<SerializableLayout>,
-    pub active_layout: SerializableLayout,
+    pub active_layout: String,
 }
 
 #[derive(Eq, Hash, Debug, Clone, PartialEq)]
@@ -77,10 +68,22 @@ pub enum Editing {
     None,
 }
 
+#[derive(Debug, Clone)]
+pub enum Message {
+    SelectActive(Layout),
+    SetLayoutName(Uuid, String),
+    Renaming(String),
+    AddLayout,
+    RemoveLayout(Uuid),
+    ToggleEditMode(Editing),
+    CloneLayout(Uuid),
+    Reorder(DragEvent),
+}
+
 pub struct LayoutManager {
     pub layouts: HashMap<Uuid, (Layout, Dashboard)>,
     pub active_layout: Layout,
-    layout_order: Vec<Uuid>,
+    pub layout_order: Vec<Uuid>,
     edit_mode: Editing,
 }
 
@@ -190,7 +193,7 @@ impl LayoutManager {
                     return Task::none();
                 } else {
                     self.layouts.remove(&id);
-                    self.layout_order.retain(|&layout_id| layout_id != id);
+                    self.layout_order.retain(|layout_id| *layout_id != id);
                 }
 
                 self.edit_mode = Editing::Preview;
@@ -257,6 +260,40 @@ impl LayoutManager {
                     self.layouts.insert(new_layout.id, (new_layout.clone(), dashboard));
                 }
             }
+            Message::Reorder(event) => {
+                match event {
+                    DragEvent::Picked { .. } => {
+                    }
+                    DragEvent::Dropped {
+                        index,
+                        target_index,
+                        drop_position,
+                    } => {
+                        match drop_position {
+                            DropPosition::Before | DropPosition::After => {
+                                if target_index != index
+                                    && target_index != index + 1
+                                {
+                                    let item = self.layout_order.remove(index);
+                                    let insert_index = if index < target_index {
+                                        target_index - 1
+                                    } else {
+                                        target_index
+                                    };
+                                    self.layout_order.insert(insert_index, item);
+                                }
+                            }
+                            DropPosition::Swap => {
+                                if target_index != index {
+                                    self.layout_order.swap(index, target_index);
+                                }
+                            }
+                        }
+                    }
+                    DragEvent::Canceled { .. } => {
+                    }
+                }
+            }
         }
 
         Task::none()
@@ -295,8 +332,13 @@ impl LayoutManager {
             create_layout_button(layout, on_press)
         };
 
+        let mut layouts_column = column_drag::Column::new()
+            .deadband_zone(4.0)
+            .on_drag(Message::Reorder)
+            .spacing(4);
+
         for id in &self.layout_order {
-            if let Some((layout, _)) = self.layouts.get(id) {
+            if let Some((layout, _)) = self.layouts.get(&id) {
                 let mut layout_row = row![]
                     .padding(4)
                     .height(iced::Length::Fixed(34.0));
@@ -379,12 +421,14 @@ impl LayoutManager {
                     }
                 }
                 
-                content = content.push(
+                layouts_column = layouts_column.push(
                     container(layout_row)
                         .style(style::modal_container)
                 );
             }
         }
+
+        content = content.push(layouts_column);
 
         if self.edit_mode != Editing::None {
             content = content.push(
@@ -987,7 +1031,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
 
                 let active_layout = Layout {
                     id: Uuid::new_v4(),
-                    name: state.layout_manager.active_layout.name.clone(),
+                    name: state.layout_manager.active_layout.clone(),
                 };
 
                 let mut layout_order = vec![];
@@ -1005,10 +1049,9 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                     };
 
                     layout_order.push(layout.id);
-
                     layouts.insert(layout.id, (layout.clone(), dashboard));
                 }
-                
+
                 LayoutManager {
                     layouts,
                     active_layout,
