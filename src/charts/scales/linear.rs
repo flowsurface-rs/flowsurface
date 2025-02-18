@@ -45,6 +45,14 @@ pub fn generate_labels(
     tick_size: f32,
     decimals: Option<usize>,
 ) -> Vec<AxisLabel> {
+    if !lowest.is_finite() || !highest.is_finite() || !tick_size.is_finite() {
+        return Vec::new();
+    }
+    
+    if (highest - lowest).abs() < f32::EPSILON {
+        return Vec::new();
+    }
+
     let labels_can_fit = (bounds.height / (text_size * 3.0)) as i32;
 
     if labels_can_fit <= 1 {
@@ -71,8 +79,11 @@ pub fn generate_labels(
     
     let mut labels = Vec::with_capacity((labels_can_fit + 2) as usize);
 
+    let mut safety_counter = 0;
+    const MAX_ITERATIONS: usize = 1000;
+
     let mut value = max;
-    while value >= lowest {
+    while value >= lowest && safety_counter < MAX_ITERATIONS {
         let label = Label {
             content: {
                 if let Some(decimals) = decimals {
@@ -95,6 +106,7 @@ pub fn generate_labels(
         ));
 
         value -= step;
+        safety_counter += 1;
     }
 
     labels
