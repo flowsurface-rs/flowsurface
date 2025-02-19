@@ -324,7 +324,14 @@ impl LayoutManager {
         content = content.push(
             row![
                 Space::with_width(iced::Length::Fill),
-                edit_btn,
+                row![
+                    tooltip(
+                        button("i").style(move |theme, status| style::button_transparent(theme, status, true)),
+                        Some("- Drag&drop to reorder layouts\n- Layouts won't be saved if app exits abruptly"),
+                        tooltip::Position::Top,
+                    ),
+                    edit_btn,
+                ].spacing(4),
             ]
         );
 
@@ -360,7 +367,10 @@ impl LayoutManager {
                             let (confirm_btn, cancel_btn) = self.create_confirm_delete_buttons(layout);
                     
                             layout_row = layout_row
-                                .push(layout_btn(layout, None))
+                                .push(
+                                    center(text(format!("Delete {}?", layout.name))
+                                    .size(12))
+                                )
                                 .push(confirm_btn)
                                 .push(cancel_btn);
                         } else {
