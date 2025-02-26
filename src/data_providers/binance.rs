@@ -35,7 +35,7 @@ mod string_to_f32 {
 #[derive(Debug, Deserialize, Clone)]
 pub struct FetchedPerpDepth {
     #[serde(rename = "lastUpdateId")]
-    update_id: i64,
+    update_id: u64,
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "bids")]
@@ -47,7 +47,7 @@ pub struct FetchedPerpDepth {
 #[derive(Debug, Deserialize, Clone)]
 pub struct FetchedSpotDepth {
     #[serde(rename = "lastUpdateId")]
-    update_id: i64,
+    update_id: u64,
     #[serde(rename = "bids")]
     bids: Vec<Order>,
     #[serde(rename = "asks")]
@@ -609,7 +609,7 @@ pub fn connect_kline_stream(
 fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
     match depth {
         SonicDepth::Spot(de) => VecLocalDepthCache {
-            last_update_id: de.final_id as i64,
+            last_update_id: de.final_id,
             time: de.time,
             bids: de.bids.iter().map(|x| Order {
                 price: str_f32_parse(&x.price),
@@ -621,7 +621,7 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
             }).collect(),
         },
         SonicDepth::LinearPerp(de) => VecLocalDepthCache {
-            last_update_id: de.final_id as i64,
+            last_update_id: de.final_id,
             time: de.time,
             bids: de.bids.iter().map(|x| Order {
                 price: str_f32_parse(&x.price),

@@ -102,7 +102,7 @@ pub struct Depth {
 
 #[derive(Debug, Clone, Default)]
 struct VecLocalDepthCache {
-    last_update_id: i64,
+    last_update_id: u64,
     time: u64,
     bids: Vec<Order>,
     asks: Vec<Order>,
@@ -110,7 +110,7 @@ struct VecLocalDepthCache {
 
 #[derive(Debug, Clone, Default)]
 struct LocalDepthCache {
-    last_update_id: i64,
+    last_update_id: u64,
     time: u64,
     bids: BTreeMap<OrderedFloat<f32>, f32>,
     asks: BTreeMap<OrderedFloat<f32>, f32>,
@@ -167,7 +167,7 @@ impl LocalDepthCache {
         }
     }
 
-    fn get_fetch_id(&self) -> i64 {
+    fn get_fetch_id(&self) -> u64 {
         self.last_update_id
     }
 }

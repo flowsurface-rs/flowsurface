@@ -317,7 +317,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                     }
                                     StreamData::Depth(de_depth, data_type, time) => {
                                         let depth_update = VecLocalDepthCache {
-                                            last_update_id: de_depth.update_id as i64,
+                                            last_update_id: de_depth.update_id,
                                             time,
                                             bids: de_depth
                                                 .bids
