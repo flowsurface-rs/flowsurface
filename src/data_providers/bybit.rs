@@ -14,7 +14,7 @@ use iced_futures::stream;
 
 use super::{
     setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    str_f32_parse, deserialize_string_to_i64, deserialize_string_to_f32,
+    str_f32_parse, deserialize_string_to_u64, deserialize_string_to_f32,
     Connection, Event, Kline, LocalDepthCache, MarketType, Order, State, Exchange, OpenInterest,
     StreamError, TickerInfo, TickerStats, Trade, VecLocalDepthCache, StreamType, Ticker, Timeframe,
 };
@@ -70,7 +70,7 @@ pub struct SonicKline {
 #[derive(Debug)]
 enum StreamData {
     Trade(Vec<SonicTrade>),
-    Depth(SonicDepth, String, i64),
+    Depth(SonicDepth, String, u64),
     Kline(Ticker, Vec<SonicKline>),
 }
 
@@ -192,7 +192,7 @@ fn feed_de(
                     .as_u64()
                     .ok_or_else(|| StreamError::ParseError("Failed to parse u64".to_string()))?;
 
-                return Ok(StreamData::Depth(dw, data_type.to_string(), time as i64));
+                return Ok(StreamData::Depth(dw, data_type.to_string(), time));
             }
         }
     }
@@ -306,7 +306,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                     StreamData::Trade(de_trade_vec) => {
                                         for de_trade in &de_trade_vec {
                                             let trade = Trade {
-                                                time: de_trade.time as i64,
+                                                time: de_trade.time,
                                                 is_sell: de_trade.is_sell == "Sell",
                                                 price: str_f32_parse(&de_trade.price),
                                                 qty: str_f32_parse(&de_trade.qty),
@@ -492,13 +492,13 @@ fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
 struct DeOpenInterest {
     #[serde(rename = "openInterest", deserialize_with = "deserialize_string_to_f32")]
     pub value: f32,
-    #[serde(deserialize_with = "deserialize_string_to_i64")]
-    pub timestamp: i64,
+    #[serde(deserialize_with = "deserialize_string_to_u64")]
+    pub timestamp: u64,
 }
 
 pub async fn fetch_historical_oi(
     ticker: Ticker, 
-    range: Option<(i64, i64)>,
+    range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, StreamError> {
     let ticker_str = ticker.get_string().0.to_uppercase();
@@ -522,7 +522,7 @@ pub async fn fetch_historical_oi(
     );
 
     if let Some((start, end)) = range {
-        let interval_ms = period.to_milliseconds() as i64;
+        let interval_ms = period.to_milliseconds();
         let num_intervals = ((end - start) / interval_ms).min(200);
 
         url.push_str(&format!(
@@ -601,7 +601,7 @@ struct ApiResult {
 pub async fn fetch_klines(
     ticker: Ticker,
     timeframe: Timeframe,
-    range: Option<(i64, i64)>,
+    range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, StreamError> {
     let (symbol_str, market_type) = &ticker.get_string();
     let timeframe_str = timeframe.to_minutes().to_string();
@@ -626,7 +626,7 @@ pub async fn fetch_klines(
     );
 
     if let Some((start, end)) = range {
-        let interval_ms = timeframe.to_milliseconds() as i64;
+        let interval_ms = timeframe.to_milliseconds();
         let num_intervals = ((end - start) / interval_ms).min(1000);
 
         url.push_str(&format!("&start={start}&end={end}&limit={num_intervals}"));

@@ -53,13 +53,13 @@ impl Chart for FootprintChart {
         self.view_indicators(indicators)
     }
 
-    fn get_visible_timerange(&self) -> (i64, i64) {
+    fn get_visible_timerange(&self) -> (u64, u64) {
         let chart = self.get_common_data();
         let region = chart.visible_region(chart.bounds.size());
 
         let (earliest, latest) = (
-            chart.x_to_time(region.x) - (chart.timeframe / 2) as i64,
-            chart.x_to_time(region.x + region.width) + (chart.timeframe / 2) as i64,
+            chart.x_to_time(region.x) - (chart.timeframe / 2),
+            chart.x_to_time(region.x + region.width) + (chart.timeframe / 2),
         );
 
         (earliest, latest)
@@ -68,8 +68,8 @@ impl Chart for FootprintChart {
 
 #[allow(dead_code)]
 enum IndicatorData {
-    Volume(Caches, BTreeMap<i64, (f32, f32)>),
-    OpenInterest(Caches, BTreeMap<i64, f32>),
+    Volume(Caches, BTreeMap<u64, (f32, f32)>),
+    OpenInterest(Caches, BTreeMap<u64, f32>),
 }
 
 impl IndicatorData {
@@ -98,7 +98,7 @@ impl ChartConstants for FootprintChart {
 
 pub struct FootprintChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (HashMap<OrderedFloat<f32>, (f32, f32)>, Kline)>,
+    data_points: BTreeMap<u64, (HashMap<OrderedFloat<f32>, (f32, f32)>, Kline)>,
     raw_trades: Vec<Trade>,
     indicators: HashMap<FootprintIndicator, IndicatorData>,
     fetching_trades: bool,
@@ -122,9 +122,9 @@ impl FootprintChart {
 
         for kline in klines_raw {
             data_points
-                .entry(kline.time as i64)
+                .entry(kline.time)
                 .or_insert((HashMap::new(), kline));
-            volume_data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+            volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
         }
 
         let mut latest_x = 0;
@@ -140,7 +140,7 @@ impl FootprintChart {
                 latest_x = latest_x.max(*time);
             });
 
-        let aggregate_time = timeframe.to_milliseconds() as i64;
+        let aggregate_time = timeframe.to_milliseconds();
 
         for trade in &raw_trades {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
@@ -207,7 +207,7 @@ impl FootprintChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
-        if let Some((_, kline_value)) = self.data_points.get_mut(&(kline.time as i64)) {
+        if let Some((_, kline_value)) = self.data_points.get_mut(&kline.time) {
             kline_value.open = kline.open;
             kline_value.high = kline.high;
             kline_value.low = kline.low;
@@ -215,18 +215,18 @@ impl FootprintChart {
             kline_value.volume = kline.volume;
         } else {
             self.data_points
-                .insert(kline.time as i64, (HashMap::new(), *kline));
+                .insert(kline.time, (HashMap::new(), *kline));
         }
 
         if let Some(IndicatorData::Volume(_, data)) = 
             self.indicators.get_mut(&FootprintIndicator::Volume) {
-                data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+                data.insert(kline.time, (kline.volume.0, kline.volume.1));
             };
 
         let chart = self.get_common_data_mut();
 
-        if (kline.time as i64) > chart.latest_x {
-            chart.latest_x = kline.time as i64;
+        if (kline.time) > chart.latest_x {
+            chart.latest_x = kline.time;
         }
 
         chart.last_price = {
@@ -310,9 +310,9 @@ impl FootprintChart {
             .check_kline_integrity(kline_earliest, kline_latest, &self.data_points) 
         {
             let latest = missing_keys.iter()
-                .max().unwrap_or(&visible_latest) + self.chart.timeframe as i64;
+                .max().unwrap_or(&visible_latest) + self.chart.timeframe;
             let earliest = missing_keys.iter()
-                .min().unwrap_or(&visible_earliest) - self.chart.timeframe as i64;
+                .min().unwrap_or(&visible_earliest) - self.chart.timeframe;
     
             if let Some(task) = request_fetch(
                 &mut self.request_handler, 
@@ -342,7 +342,7 @@ impl FootprintChart {
         if clear_raw {
             self.raw_trades.clear();
         } else {
-            let aggregate_time = self.chart.timeframe as i64;
+            let aggregate_time = self.chart.timeframe;
             let tick_size = self.chart.tick_size;
 
             for trade in &self.raw_trades {
@@ -388,9 +388,9 @@ impl FootprintChart {
         self.clear_trades(false);
     }
 
-    fn get_kline_timerange(&self) -> (i64, i64) {
-        let mut from_time = i64::MAX;
-        let mut to_time = i64::MIN;
+    fn get_kline_timerange(&self) -> (u64, u64) {
+        let mut from_time = u64::MAX;
+        let mut to_time = u64::MIN;
 
         self.data_points.iter().for_each(|(time, _)| {
             from_time = from_time.min(*time);
@@ -400,9 +400,9 @@ impl FootprintChart {
         (from_time, to_time)
     }
 
-    fn get_oi_timerange(&self, latest_kline: i64) -> (i64, i64) {
+    fn get_oi_timerange(&self, latest_kline: u64) -> (u64, u64) {
         let mut from_time = latest_kline;
-        let mut to_time = i64::MIN;
+        let mut to_time = u64::MIN;
 
         if let Some(IndicatorData::OpenInterest(_, data)) = 
             self.indicators.get(&FootprintIndicator::OpenInterest) {
@@ -415,7 +415,7 @@ impl FootprintChart {
         (from_time, to_time)
     }
 
-    fn get_trades_timerange(&self, latest_kline: i64) -> (i64, i64) {
+    fn get_trades_timerange(&self, latest_kline: u64) -> (u64, u64) {
         let mut from_time = latest_kline;
         let mut to_time = 0;
 
@@ -430,10 +430,10 @@ impl FootprintChart {
         (from_time, to_time)
     }
 
-    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64) {
+    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64) {
         let (tick_size, aggregate_time) = {
             let chart = self.get_common_data();
-            (chart.tick_size, chart.timeframe as i64)
+            (chart.tick_size, chart.timeframe)
         };
 
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
@@ -463,7 +463,7 @@ impl FootprintChart {
     }
 
     pub fn insert_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
-        let aggregate_time = self.chart.timeframe as i64;
+        let aggregate_time = self.chart.timeframe;
         let tick_size = self.chart.tick_size;
 
         for trade in &raw_trades {
@@ -498,9 +498,9 @@ impl FootprintChart {
         let mut volume_data = BTreeMap::new();
 
         for kline in klines_raw {
-            volume_data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+            volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
             self.data_points
-                .entry(kline.time as i64)
+                .entry(kline.time)
                 .or_insert((HashMap::new(), *kline));
         }
 
@@ -539,8 +539,8 @@ impl FootprintChart {
 
     fn calc_qty_scales(
         &self,
-        earliest: i64,
-        latest: i64,
+        earliest: u64,
+        latest: u64,
         highest: f32,
         lowest: f32,
         tick_size: f32,
@@ -727,9 +727,14 @@ impl canvas::Program<Message> for FootprintChart {
                 let (cell_width, cell_height) = (chart.cell_width, chart.cell_height);
 
                 let (earliest, latest) = (
-                    chart.x_to_time(region.x) - (chart.timeframe / 2) as i64,
-                    chart.x_to_time(region.x + region.width) + (chart.timeframe / 2) as i64,
+                    chart.x_to_time(region.x) - (chart.timeframe / 2),
+                    chart.x_to_time(region.x + region.width) + (chart.timeframe / 2),
                 );
+
+                if latest < earliest {
+                    return;
+                }
+
                 let (highest, lowest) = (
                     chart.y_to_price(region.y),
                     chart.y_to_price(region.y + region.height),

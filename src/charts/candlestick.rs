@@ -52,7 +52,7 @@ impl Chart for CandlestickChart {
         self.view_indicators(indicators)
     }
 
-    fn get_visible_timerange(&self) -> (i64, i64) {
+    fn get_visible_timerange(&self) -> (u64, u64) {
         let chart = self.get_common_data();
 
         let visible_region = chart.visible_region(chart.bounds.size());
@@ -79,8 +79,8 @@ impl ChartConstants for CandlestickChart {
 
 #[allow(dead_code)]
 enum IndicatorData {
-    Volume(Caches, BTreeMap<i64, (f32, f32)>),
-    OpenInterest(Caches, BTreeMap<i64, f32>),
+    Volume(Caches, BTreeMap<u64, (f32, f32)>),
+    OpenInterest(Caches, BTreeMap<u64, f32>),
 }
 
 impl IndicatorData {
@@ -96,7 +96,7 @@ impl IndicatorData {
 
 pub struct CandlestickChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, Kline>,
+    data_points: BTreeMap<u64, Kline>,
     indicators: HashMap<CandlestickIndicator, IndicatorData>,
     request_handler: RequestHandler,
 }
@@ -116,8 +116,8 @@ impl CandlestickChart {
         let base_price_y = klines_raw.last().unwrap_or(&Kline::default()).close;
 
         for kline in klines_raw {
-            volume_data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
-            data_points.entry(kline.time as i64).or_insert(kline);
+            volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
+            data_points.entry(kline.time).or_insert(kline);
         }
 
         let mut latest_x = 0;
@@ -175,17 +175,17 @@ impl CandlestickChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
-        self.data_points.insert(kline.time as i64, *kline);
+        self.data_points.insert(kline.time, *kline);
 
         if let Some(IndicatorData::Volume(_, data)) = 
             self.indicators.get_mut(&CandlestickIndicator::Volume) {
-                data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
+                data.insert(kline.time, (kline.volume.0, kline.volume.1));
             };
 
         let chart = self.get_common_data_mut();
 
-        if (kline.time as i64) > chart.latest_x {
-            chart.latest_x = kline.time as i64;
+        if kline.time > chart.latest_x {
+            chart.latest_x = kline.time;
         }
 
         chart.last_price = if kline.close > kline.open {
@@ -247,9 +247,9 @@ impl CandlestickChart {
             .check_kline_integrity(kline_earliest, kline_latest, &self.data_points) 
         {
             let latest = missing_keys.iter()
-                .max().unwrap_or(&visible_latest) + self.chart.timeframe as i64;
+                .max().unwrap_or(&visible_latest) + self.chart.timeframe;
             let earliest = missing_keys.iter()
-                .min().unwrap_or(&visible_earliest) - self.chart.timeframe as i64;
+                .min().unwrap_or(&visible_earliest) - self.chart.timeframe;
     
             if let Some(task) = request_fetch(
                 &mut self.request_handler, 
@@ -266,8 +266,8 @@ impl CandlestickChart {
         let mut volume_data = BTreeMap::new();
 
         for kline in klines_raw {
-            volume_data.insert(kline.time as i64, (kline.volume.0, kline.volume.1));
-            self.data_points.entry(kline.time as i64).or_insert(*kline);
+            volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
+            self.data_points.entry(kline.time).or_insert(*kline);
         }
 
         if let Some(IndicatorData::Volume(_, data)) = 
@@ -303,9 +303,9 @@ impl CandlestickChart {
             };
     }
 
-    fn get_kline_timerange(&self) -> (i64, i64) {
-        let mut from_time = i64::MAX;
-        let mut to_time = i64::MIN;
+    fn get_kline_timerange(&self) -> (u64, u64) {
+        let mut from_time = u64::MAX;
+        let mut to_time = u64::MIN;
 
         self.data_points.iter().for_each(|(time, _)| {
             from_time = from_time.min(*time);
@@ -315,9 +315,9 @@ impl CandlestickChart {
         (from_time, to_time)
     }
 
-    fn get_oi_timerange(&self, latest_kline: i64) -> (i64, i64) {
+    fn get_oi_timerange(&self, latest_kline: u64) -> (u64, u64) {
         let mut from_time = latest_kline;
-        let mut to_time = i64::MIN;
+        let mut to_time = u64::MIN;
 
         if let Some(IndicatorData::OpenInterest(_, data)) = 
             self.indicators.get(&CandlestickIndicator::OpenInterest) {
@@ -496,6 +496,10 @@ impl canvas::Program<Message> for CandlestickChart {
                 let earliest = chart.x_to_time(region.x);
                 let latest = chart.x_to_time(region.x + region.width);
 
+                if latest < earliest {
+                    return;
+                }
+
                 let candle_width = chart.cell_width * 0.8;
 
                 self.data_points.range(earliest..=latest)
@@ -529,7 +533,7 @@ impl canvas::Program<Message> for CandlestickChart {
                             wick_color,
                         );
                     });
-
+                    
                 // last price line
                 if let Some(price) = &chart.last_price {
                     let (mut y_pos, line_color) = price.get_with_color(palette);
@@ -546,7 +550,7 @@ impl canvas::Program<Message> for CandlestickChart {
                         },
                         line_color.scale_alpha(0.5),
                     );
-    
+   
                     frame.stroke(
                         &Path::line(
                             Point::new(0.0, y_pos),

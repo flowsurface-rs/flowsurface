@@ -75,7 +75,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
         enabled: &[I], 
     ) -> Option<Element<Message>>;
 
-    fn get_visible_timerange(&self) -> (i64, i64);
+    fn get_visible_timerange(&self) -> (u64, u64);
 }
 
 fn canvas_interaction<T: Chart>(
@@ -327,7 +327,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         translation_x: chart_state.translation.x,
         max: chart_state.latest_x,
         crosshair: chart_state.crosshair,
-        timeframe: chart_state.timeframe as u32,
+        timeframe: chart_state.timeframe,
         cell_width: chart_state.cell_width,
         timezone,
         chart_bounds: chart_state.bounds,
@@ -454,7 +454,7 @@ pub struct CommonChartData {
     last_price: Option<PriceInfoLabel>,
 
     base_price_y: f32,
-    latest_x: i64,
+    latest_x: u64,
     timeframe: u64,
     tick_size: f32,
     decimals: usize,
@@ -500,12 +500,24 @@ impl CommonChartData {
         }
     }
 
-    fn time_to_x(&self, time: i64) -> f32 {
-        ((time - self.latest_x) as f32 / self.timeframe as f32) * self.cell_width
+    fn time_to_x(&self, time: u64) -> f32 {
+        if time <= self.latest_x {
+            let diff = self.latest_x - time;
+            -(diff as f32 / self.timeframe as f32) * self.cell_width
+        } else {
+            let diff = time - self.latest_x;
+            (diff as f32 / self.timeframe as f32) * self.cell_width
+        }
     }
-
-    fn x_to_time(&self, x: f32) -> i64 {
-        self.latest_x + ((x / self.cell_width) * self.timeframe as f32) as i64
+    
+    fn x_to_time(&self, x: f32) -> u64 {
+        if x <= 0.0 {
+            let diff = (-x / self.cell_width * self.timeframe as f32) as u64;
+            self.latest_x.saturating_sub(diff)
+        } else {
+            let diff = (x / self.cell_width * self.timeframe as f32) as u64;
+            self.latest_x.saturating_add(diff)
+        }
     }
 
     fn price_to_y(&self, price: f32) -> f32 {
@@ -522,7 +534,7 @@ impl CommonChartData {
         theme: &Theme,
         bounds: Size,
         cursor_position: Point,
-    ) -> (f32, i64) {
+    ) -> (f32, u64) {
         let region = self.visible_region(bounds);
 
         let palette = theme.extended_palette();
@@ -572,7 +584,7 @@ impl CommonChartData {
         let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
         let rounded_timestamp =
-            (crosshair_millis / (self.timeframe as f64)).round() as i64 * self.timeframe as i64;
+            (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe as u64;
         let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
         frame.stroke(
@@ -587,13 +599,13 @@ impl CommonChartData {
         (rounded_price, rounded_timestamp)
     }
 
-    pub fn check_kline_integrity<T: ContainsKey<i64>>(
+    pub fn check_kline_integrity<T: ContainsKey<u64>>(
         &self,
-        earliest: i64,
-        latest: i64,
+        earliest: u64,
+        latest: u64,
         data_points: &T
-    ) -> Option<Vec<i64>> {
-        let interval = self.timeframe as i64;
+    ) -> Option<Vec<u64>> {
+        let interval = self.timeframe as u64;
         
         let mut time = earliest;
         let mut missing_count = 0;

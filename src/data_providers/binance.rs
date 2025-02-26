@@ -37,7 +37,7 @@ pub struct FetchedPerpDepth {
     #[serde(rename = "lastUpdateId")]
     update_id: i64,
     #[serde(rename = "T")]
-    time: i64,
+    time: u64,
     #[serde(rename = "bids")]
     bids: Vec<Order>,
     #[serde(rename = "asks")]
@@ -356,7 +356,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                     match data {
                                         StreamData::Trade(de_trade) => {
                                             let trade = Trade {
-                                                time: de_trade.time as i64,
+                                                time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
                                                 price: str_f32_parse(&de_trade.price),
                                                 qty: str_f32_parse(&de_trade.qty),
@@ -398,8 +398,6 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
                                                     if (prev_id == 0) || (prev_id == de_depth.prev_final_id)
                                                     {
-                                                        let time = de_depth.time as i64;
-
                                                         orderbook.update_depth_cache(
                                                             &new_depth_cache(&depth_type)
                                                         );
@@ -407,7 +405,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         let _ = output
                                                             .send(Event::DepthReceived(
                                                                 StreamType::DepthAndTrades { exchange, ticker },
-                                                                time,
+                                                                de_depth.time,
                                                                 orderbook.get_depth(),
                                                                 std::mem::take(&mut trades_buffer).into_boxed_slice(),
                                                             ))
@@ -449,8 +447,6 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
                                                     if (prev_id == 0) || (prev_id == de_depth.first_id - 1)
                                                     {
-                                                        let time = de_depth.time as i64;
-
                                                         orderbook.update_depth_cache(
                                                             &new_depth_cache(&depth_type)
                                                         );
@@ -458,7 +454,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         let _ = output
                                                             .send(Event::DepthReceived(
                                                                 StreamType::DepthAndTrades { exchange, ticker },
-                                                                time,
+                                                                de_depth.time,
                                                                 orderbook.get_depth(),
                                                                 std::mem::take(&mut trades_buffer).into_boxed_slice(),
                                                             ))
@@ -614,7 +610,7 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
     match depth {
         SonicDepth::Spot(de) => VecLocalDepthCache {
             last_update_id: de.final_id as i64,
-            time: de.time as i64,
+            time: de.time,
             bids: de.bids.iter().map(|x| Order {
                 price: str_f32_parse(&x.price),
                 qty: str_f32_parse(&x.qty),
@@ -626,7 +622,7 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
         },
         SonicDepth::LinearPerp(de) => VecLocalDepthCache {
             last_update_id: de.final_id as i64,
-            time: de.time as i64,
+            time: de.time,
             bids: de.bids.iter().map(|x| Order {
                 price: str_f32_parse(&x.price),
                 qty: str_f32_parse(&x.qty),
@@ -663,7 +659,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
 
             let depth: VecLocalDepthCache = VecLocalDepthCache {
                 last_update_id: fetched_depth.update_id,
-                time: chrono::Utc::now().timestamp_millis(),
+                time: chrono::Utc::now().timestamp_millis() as u64,
                 bids: fetched_depth.bids,
                 asks: fetched_depth.asks,
             };
@@ -721,7 +717,7 @@ impl From<FetchedKlines> for Kline {
 pub async fn fetch_klines(
     ticker: Ticker,
     timeframe: Timeframe,
-    range: Option<(i64, i64)>,
+    range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, StreamError> {
     let (symbol_str, market_type) = ticker.get_string();
     let timeframe_str = timeframe.to_string();
@@ -736,7 +732,7 @@ pub async fn fetch_klines(
     );
 
     if let Some((start, end)) = range {
-        let interval_ms = timeframe.to_milliseconds() as i64;
+        let interval_ms = timeframe.to_milliseconds();
         let num_intervals = ((end - start) / interval_ms).min(1000);
 
         if num_intervals < 3 {
@@ -937,7 +933,7 @@ async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result
 
 pub async fn fetch_trades(
     ticker: Ticker, 
-    from_time: i64,
+    from_time: u64,
 ) -> Result<Vec<Trade>, StreamError> {
     let today_midnight = chrono::Utc::now()
         .date_naive()
@@ -945,11 +941,11 @@ pub async fn fetch_trades(
         .unwrap()
         .and_utc();
     
-    if from_time >= today_midnight.timestamp_millis() {
+    if from_time as i64 >= today_midnight.timestamp_millis() {
         return fetch_intraday_trades(ticker, from_time).await;
     }
 
-    let from_date = chrono::DateTime::from_timestamp_millis(from_time)
+    let from_date = chrono::DateTime::from_timestamp_millis(from_time as i64)
         .ok_or_else(|| StreamError::ParseError("Invalid timestamp".into()))?
         .date_naive();
 
@@ -964,7 +960,7 @@ pub async fn fetch_trades(
 
 pub async fn fetch_intraday_trades(
     ticker: Ticker,
-    from: i64,
+    from: u64,
 ) -> Result<Vec<Trade>, StreamError> {
     let (symbol_str, market_type) = ticker.get_string();
     let base_url = match market_type {
@@ -995,7 +991,7 @@ pub async fn fetch_intraday_trades(
             .map_err(|e| StreamError::ParseError(format!("Failed to parse trades: {e}")))?;
 
         de_trades.into_iter().map(|de_trade| Trade {
-            time: de_trade.time as i64,
+            time: de_trade.time,
             is_sell: de_trade.is_sell,
             price: str_f32_parse(&de_trade.price),
             qty: str_f32_parse(&de_trade.qty),
@@ -1083,13 +1079,13 @@ pub async fn get_hist_trades(
                         
                         Some(match market_type {
                             MarketType::Spot => Trade {
-                                time: time as i64,
+                                time,
                                 is_sell,
                                 price,
                                 qty,
                             },
                             MarketType::LinearPerps => Trade {
-                                time: time as i64,
+                                time,
                                 is_sell,
                                 price,
                                 qty,
@@ -1122,16 +1118,16 @@ pub async fn get_hist_trades(
 #[serde(rename_all = "camelCase")]
 struct DeOpenInterest {
     #[serde(rename = "timestamp")]
-    pub time: i64,
+    pub time: u64,
     #[serde(rename = "sumOpenInterest", deserialize_with = "deserialize_string_to_f32")]
     pub sum: f32,
 }
 
-const THIRTY_DAYS_MS: i64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 
 pub async fn fetch_historical_oi(
     ticker: Ticker, 
-    range: Option<(i64, i64)>,
+    range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, StreamError> {
     let ticker_str = ticker.get_string().0.to_uppercase();
@@ -1159,7 +1155,7 @@ pub async fn fetch_historical_oi(
         let thirty_days_ago = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("Could not get system time")
-            .as_millis() as i64 - THIRTY_DAYS_MS;
+            .as_millis() as u64 - THIRTY_DAYS_MS;
         
         if end < thirty_days_ago {
             let err_msg = format!(
@@ -1176,7 +1172,7 @@ pub async fn fetch_historical_oi(
             start
         };
 
-        let interval_ms = period.to_milliseconds() as i64;
+        let interval_ms = period.to_milliseconds();
         let num_intervals = ((end - adjusted_start) / interval_ms).min(500);
 
         url.push_str(&format!(

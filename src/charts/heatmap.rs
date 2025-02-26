@@ -49,7 +49,7 @@ impl Chart for HeatmapChart {
         self.view_indicators(indicators)
     }
 
-    fn get_visible_timerange(&self) -> (i64, i64) {
+    fn get_visible_timerange(&self) -> (u64, u64) {
         let chart = self.get_common_data();
 
         let visible_region = chart.visible_region(chart.bounds.size());
@@ -76,14 +76,14 @@ impl ChartConstants for HeatmapChart {
 
 #[derive(Default, Debug, Clone, PartialEq)]
 struct OrderRun {
-    start_time: i64,
-    until_time: i64,
+    start_time: u64,
+    until_time: u64,
     qty: OrderedFloat<f32>,
     is_bid: bool,
 }
 
 impl OrderRun {
-    fn get_visible_runs(&self, earliest: i64, latest: i64) -> Option<&OrderRun> {
+    fn get_visible_runs(&self, earliest: u64, latest: u64) -> Option<&OrderRun> {
         if self.start_time <= latest && self.until_time >= earliest {
             Some(self)
         } else {
@@ -95,12 +95,12 @@ impl OrderRun {
 #[derive(Default, Debug, Clone, PartialEq)]
 struct Orderbook {
     price_levels: BTreeMap<OrderedFloat<f32>, Vec<OrderRun>>,
-    aggr_time: i64,
+    aggr_time: u64,
     tick_size: f32,
 }
 
 impl Orderbook {
-    fn new(tick_size: f32, aggr_time: i64) -> Self {
+    fn new(tick_size: f32, aggr_time: u64) -> Self {
         Self {
             price_levels: BTreeMap::new(),
             aggr_time,
@@ -108,7 +108,7 @@ impl Orderbook {
         }
     }
 
-    fn insert_latest_depth(&mut self, depth: &Depth, time: i64) {
+    fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
         let tick_size = self.tick_size;
 
         self.process_side(&depth.bids, time, true, |price| {
@@ -122,7 +122,7 @@ impl Orderbook {
     fn process_side<F>(
         &mut self,
         side: &BTreeMap<OrderedFloat<f32>, f32>,
-        time: i64,
+        time: u64,
         is_bid: bool,
         round_price: F,
     ) where
@@ -150,34 +150,30 @@ impl Orderbook {
         }
     }
 
-    fn update_price_level(&mut self, time: i64, price: f32, qty: f32, is_bid: bool) {
-        let price_level = self.price_levels.entry(OrderedFloat(price)).or_default();
+    fn update_price_level(&mut self, time: u64, price: f32, qty: f32, is_bid: bool) {
+        let price_level = self.price_levels
+            .entry(OrderedFloat(price))
+            .or_default();
 
-        if let Some(last_run) = price_level.last_mut() {
-            if last_run.qty != OrderedFloat(qty) || last_run.is_bid != is_bid {
+        match price_level.last_mut() {
+            Some(last_run) if last_run.qty == OrderedFloat(qty) && last_run.is_bid == is_bid => {
+                last_run.until_time = time + self.aggr_time;
+            }
+            _ => {
                 price_level.push(OrderRun {
                     start_time: time,
                     until_time: time + self.aggr_time,
                     qty: OrderedFloat(qty),
                     is_bid,
                 });
-            } else {
-                last_run.until_time = time + self.aggr_time;
             }
-        } else {
-            price_level.push(OrderRun {
-                start_time: time,
-                until_time: time + self.aggr_time,
-                qty: OrderedFloat(qty),
-                is_bid,
-            });
         }
     }
 
     fn iter_time_filtered(
         &self,
-        earliest: i64,
-        latest: i64,
+        earliest: u64,
+        latest: u64,
         highest: f32,
         lowest: f32,
     ) -> impl Iterator<Item = (&OrderedFloat<f32>, &Vec<OrderRun>)> {
@@ -194,7 +190,7 @@ impl Orderbook {
         &self,
         highest: f32,
         lowest: f32,
-        latest_timestamp: i64,
+        latest_timestamp: u64,
     ) -> impl Iterator<Item = (&OrderedFloat<f32>, &OrderRun)> {
         self.price_levels.iter().filter_map(move |(price, runs)| {
             if **price <= *OrderedFloat(highest) && **price >= *OrderedFloat(lowest) {
@@ -229,7 +225,7 @@ enum IndicatorData {
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: Vec<(i64, Box<[GroupedTrade]>, (f32, f32))>,
+    data_points: Vec<(u64, Box<[GroupedTrade]>, (f32, f32))>,
     indicators: HashMap<HeatmapIndicator, IndicatorData>,
     orderbook: Orderbook,
     visual_config: Config,
@@ -239,7 +235,7 @@ impl HeatmapChart {
     pub fn new(
         layout: SerializableChartData, 
         tick_size: f32, 
-        aggr_time: i64, 
+        aggr_time: u64, 
         enabled_indicators: &[HeatmapIndicator],
         ticker_info: Option<TickerInfo>,
         config: Option<Config>,
@@ -278,7 +274,7 @@ impl HeatmapChart {
         }
     }
 
-    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: &Depth) {
+    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64, depth: &Depth) {
         let chart = &mut self.chart;
 
         if self.data_points.len() > 2400 {
@@ -294,7 +290,7 @@ impl HeatmapChart {
             }
         }
 
-        let aggregate_time = chart.timeframe as i64;
+        let aggregate_time = chart.timeframe;
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
 
         {
@@ -391,10 +387,12 @@ impl HeatmapChart {
         chart_state.tick_size = new_tick_size;
         chart_state.decimals = count_decimals(new_tick_size);
 
-        let aggr_time = self.chart.timeframe as i64;
-
         self.data_points.clear();
-        self.orderbook = Orderbook::new(new_tick_size, aggr_time);
+
+        self.orderbook = Orderbook::new(
+            new_tick_size, 
+            self.chart.timeframe
+        );
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
@@ -423,15 +421,15 @@ impl HeatmapChart {
 
     fn visible_data_iter(
         &self,
-        earliest: i64,
-        latest: i64,
-    ) -> impl Iterator<Item = &(i64, Box<[GroupedTrade]>, (f32, f32))> {
+        earliest: u64,
+        latest: u64,
+    ) -> impl Iterator<Item = &(u64, Box<[GroupedTrade]>, (f32, f32))> {
         self.data_points
             .iter()
             .filter(move |(time, _, _)| *time >= earliest && *time <= latest)
     }
 
-    fn calc_qty_scales(&self, earliest: i64, latest: i64, highest: f32, lowest: f32) -> QtyScale {
+    fn calc_qty_scales(&self, earliest: u64, latest: u64, highest: f32, lowest: f32) -> QtyScale {
         let (mut max_aggr_volume, mut max_trade_qty) = (0.0f32, 0.0f32);
         let mut max_depth_qty = 0.0f32;
 
@@ -542,6 +540,11 @@ impl canvas::Program<Message> for HeatmapChart {
                     chart.x_to_time(region.x),
                     chart.x_to_time(region.x + region.width),
                 );
+
+                if latest < earliest {
+                    return;
+                }
+
                 let (highest, lowest) = (
                     chart.y_to_price(region.y),
                     chart.y_to_price(region.y + region.height),

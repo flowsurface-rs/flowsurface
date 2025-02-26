@@ -68,8 +68,8 @@ pub enum Message {
     FetchTrades(
         window::Id,
         pane_grid::Pane,
-        i64,
-        i64,
+        u64,
+        u64,
         StreamType,
     ),
     DistributeFetchedTrades(
@@ -77,7 +77,7 @@ pub enum Message {
         pane_grid::Pane,
         Vec<Trade>,
         StreamType,
-        i64,
+        u64,
     ),
 }
 
@@ -1218,7 +1218,7 @@ impl Dashboard {
     pub fn update_depth_and_trades(
         &mut self,
         stream: &StreamType,
-        depth_update_t: i64,
+        depth_update_t: u64,
         depth: Depth,
         trades_buffer: Box<[Trade]>,
         main_window: window::Id,
@@ -1421,7 +1421,7 @@ fn get_oi_fetch_task(
     pane: pane_grid::Pane,
     stream: StreamType,
     req_id: Option<uuid::Uuid>,
-    from_to_time: Option<(i64, i64)>,
+    from_to_time: Option<(u64, u64)>,
 ) -> Task<Message> {
     match stream {
         StreamType::Kline {
@@ -1453,7 +1453,7 @@ fn get_kline_fetch_task(
     pane: pane_grid::Pane,
     stream: StreamType,
     req_id: Option<uuid::Uuid>,
-    range: Option<(i64, i64)>,
+    range: Option<(u64, u64)>,
 ) -> Task<Message> {
     match stream {
         StreamType::Kline {

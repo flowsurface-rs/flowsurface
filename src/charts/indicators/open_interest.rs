@@ -12,9 +12,9 @@ use crate::data_providers::format_with_commas;
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,
     cache: &'a Caches, 
-    data: &'a BTreeMap<i64, f32>,
-    earliest: i64,
-    latest: i64,
+    data: &'a BTreeMap<u64, f32>,
+    earliest: u64,
+    latest: u64,
 ) -> Element<'a, Message> {
     let indi_chart = Canvas::new(OpenInterest {
         indicator_cache: &cache.main,
@@ -23,7 +23,7 @@ pub fn create_indicator_elem<'a>(
         max: chart_state.latest_x,
         scaling: chart_state.scaling,
         translation_x: chart_state.translation.x,
-        timeframe: chart_state.timeframe as u32,
+        timeframe: chart_state.timeframe,
         cell_width: chart_state.cell_width,
         data_points: data,
         chart_bounds: chart_state.bounds,
@@ -65,12 +65,12 @@ pub struct OpenInterest<'a> {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
     pub crosshair: bool,
-    pub max: i64,
+    pub max: u64,
     pub scaling: f32,
     pub translation_x: f32,
-    pub timeframe: u32,
+    pub timeframe: u64,
     pub cell_width: f32,
-    pub data_points: &'a BTreeMap<i64, f32>,
+    pub data_points: &'a BTreeMap<u64, f32>,
     pub chart_bounds: Rectangle,
 }
 
@@ -87,15 +87,24 @@ impl OpenInterest<'_> {
         }
     }
 
-    fn x_to_time(&self, x: f32) -> i64 {
-        let time_per_cell = self.timeframe;
-        self.max + ((x / self.cell_width) * time_per_cell as f32) as i64
+    fn x_to_time(&self, x: f32) -> u64 {
+        if x <= 0.0 {
+            let diff = (-x / self.cell_width * self.timeframe as f32) as u64;
+            self.max.saturating_sub(diff)
+        } else {
+            let diff = (x / self.cell_width * self.timeframe as f32) as u64;
+            self.max.saturating_add(diff)
+        }
     }
 
-    fn time_to_x(&self, time: i64) -> f32 {
-        let time_per_cell = self.timeframe;
-        let x = (time - self.max) as f32 / time_per_cell as f32;
-        x * self.cell_width
+    fn time_to_x(&self, time: u64) -> f32 {
+        if time <= self.max {
+            let diff = self.max - time;
+            -(diff as f32 / self.timeframe as f32) * self.cell_width
+        } else {
+            let diff = time - self.max;
+            (diff as f32 / self.timeframe as f32) * self.cell_width
+        }
     }
 }
 
@@ -171,8 +180,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             );
 
             let (earliest, latest) = (
-                self.x_to_time(region.x) - i64::from(self.timeframe / 2),
-                self.x_to_time(region.x + region.width) + i64::from(self.timeframe / 2),
+                self.x_to_time(region.x) - u64::from(self.timeframe / 2),
+                self.x_to_time(region.x + region.width) + u64::from(self.timeframe / 2),
             );
 
             let mut max_value: f32 = f32::MIN;
@@ -259,7 +268,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
                     let rounded_timestamp =
-                        (crosshair_millis / (self.timeframe as f64)).round() as i64 * self.timeframe as i64;
+                        (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe as u64;
                     let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                     frame.stroke(
@@ -277,7 +286,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     {
                         let next_value = self
                             .data_points
-                            .range((rounded_timestamp + (self.timeframe as i64))..=i64::MAX)
+                            .range((rounded_timestamp + self.timeframe)..=u64::MAX)
                             .next()
                             .map(|(_, val)| *val);
 

@@ -45,7 +45,10 @@ impl TimeAndSales {
 
         for trade in trades_buffer {
             if let Some(trade_time) =
-                DateTime::from_timestamp(trade.time / 1000, (trade.time % 1000) as u32 * 1_000_000)
+                DateTime::from_timestamp(
+                    trade.time as i64 / 1000, 
+                    (trade.time % 1000) as u32 * 1_000_000
+                )
             {
                 let converted_trade = ConvertedTrade {
                     time_str: trade_time.format("%M:%S.%3f").to_string(),

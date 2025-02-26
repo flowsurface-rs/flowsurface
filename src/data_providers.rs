@@ -26,7 +26,7 @@ pub enum State {
 pub enum Event {
     Connected(Exchange, Connection),
     Disconnected(Exchange, String),
-    DepthReceived(StreamType, i64, Depth, Box<[Trade]>),
+    DepthReceived(StreamType, u64, Depth, Box<[Trade]>),
     KlineReceived(StreamType, Kline),
 }
 
@@ -103,7 +103,7 @@ pub struct Depth {
 #[derive(Debug, Clone, Default)]
 struct VecLocalDepthCache {
     last_update_id: i64,
-    time: i64,
+    time: u64,
     bids: Vec<Order>,
     asks: Vec<Order>,
 }
@@ -111,7 +111,7 @@ struct VecLocalDepthCache {
 #[derive(Debug, Clone, Default)]
 struct LocalDepthCache {
     last_update_id: i64,
-    time: i64,
+    time: u64,
     bids: BTreeMap<OrderedFloat<f32>, f32>,
     asks: BTreeMap<OrderedFloat<f32>, f32>,
 }
@@ -174,7 +174,7 @@ impl LocalDepthCache {
 
 #[derive(Default, Debug, Clone, Copy, Deserialize)]
 pub struct Trade {
-    pub time: i64,
+    pub time: u64,
     #[serde(deserialize_with = "bool_from_int")]
     pub is_sell: bool,
     pub price: f32,
@@ -484,17 +484,17 @@ where
     s.parse::<f32>().map_err(serde::de::Error::custom)
 }
 
-fn deserialize_string_to_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+fn deserialize_string_to_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let s: String = serde::Deserialize::deserialize(deserializer)?;
-    s.parse::<i64>().map_err(serde::de::Error::custom)
+    s.parse::<u64>().map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenInterest {
-    pub time: i64,
+    pub time: u64,
     pub value: f32,
 }
 

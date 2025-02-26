@@ -1,4 +1,4 @@
-const M1_TIME_STEPS: [i64; 9] = [
+const M1_TIME_STEPS: [u64; 9] = [
     1000 * 60 * 720, // 12 hour
     1000 * 60 * 180, // 3 hour
     1000 * 60 * 60,  // 1 hour
@@ -10,7 +10,7 @@ const M1_TIME_STEPS: [i64; 9] = [
     60 * 1000,       // 1 min
 ];
 
-const M3_TIME_STEPS: [i64; 9] = [
+const M3_TIME_STEPS: [u64; 9] = [
     1000 * 60 * 1440, // 24 hour
     1000 * 60 * 720,  // 12 hour
     1000 * 60 * 180,  // 6 hour
@@ -22,7 +22,7 @@ const M3_TIME_STEPS: [i64; 9] = [
     1000 * 60 * 3,    // 3 min
 ];
 
-const M5_TIME_STEPS: [i64; 9] = [
+const M5_TIME_STEPS: [u64; 9] = [
     1000 * 60 * 1440, // 24 hour
     1000 * 60 * 720,  // 12 hour
     1000 * 60 * 480,  // 8 hour
@@ -34,7 +34,7 @@ const M5_TIME_STEPS: [i64; 9] = [
     1000 * 60 * 5,    // 5 min
 ];
 
-const HOURLY_TIME_STEPS: [i64; 8] = [
+const HOURLY_TIME_STEPS: [u64; 8] = [
     1000 * 60 * 5760, // 96 hour
     1000 * 60 * 2880, // 48 hour
     1000 * 60 * 1440, // 24 hour
@@ -45,7 +45,7 @@ const HOURLY_TIME_STEPS: [i64; 8] = [
     1000 * 60 * 60,   // 1 hour
 ];
 
-const MS_TIME_STEPS: [i64; 8] = [
+const MS_TIME_STEPS: [u64; 8] = [
     1000 * 30,
     1000 * 10,
     1000 * 5,
@@ -56,11 +56,11 @@ const MS_TIME_STEPS: [i64; 8] = [
     100,
 ];
 
-pub fn calc_time_step(earliest: i64, latest: i64, labels_can_fit: i32, timeframe: u32) -> (i64, i64) {
+pub fn calc_time_step(earliest: u64, latest: u64, labels_can_fit: i32, timeframe: u64) -> (u64, u64) {
     let timeframe_in_min = timeframe / 60000;
 
-    let time_steps: &[i64] = match timeframe_in_min {
-        0_u32..1_u32 => &MS_TIME_STEPS,
+    let time_steps: &[u64] = match timeframe_in_min {
+        0_u64..1_u64 => &MS_TIME_STEPS,
         1..=30 => match timeframe_in_min {
             1 => &M1_TIME_STEPS,
             3 => &M3_TIME_STEPS,
@@ -76,7 +76,7 @@ pub fn calc_time_step(earliest: i64, latest: i64, labels_can_fit: i32, timeframe
     let mut selected_step = time_steps[0];
 
     for &step in time_steps {
-        if duration / step >= i64::from(labels_can_fit) {
+        if duration / step >= (labels_can_fit as u64) {
             selected_step = step;
             break;
         }
