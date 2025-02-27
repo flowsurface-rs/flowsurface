@@ -348,9 +348,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                             DateTime::from_timestamp_millis(crosshair_millis as i64)
                         {
                             let rounded_timestamp = (crosshair_time.timestamp_millis() as f64
-                                / (self.timeframe as f64))
-                            .round() as u64
-                                * u64::from(self.timeframe);
+                                / (self.timeframe as f64)).round() as u64 * self.timeframe;
 
                             if let Some(rounded_time) =
                                 DateTime::from_timestamp_millis(rounded_timestamp as i64)

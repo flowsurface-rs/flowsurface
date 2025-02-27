@@ -370,7 +370,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 continue;
                                             }
 
-                                            let last_update_id = orderbook.get_fetch_id() as u64;
+                                            let last_update_id = orderbook.get_fetch_id();
 
                                             match depth_type {
                                                 SonicDepth::LinearPerp(ref de_depth) => {

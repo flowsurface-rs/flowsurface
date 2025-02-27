@@ -584,7 +584,7 @@ impl CommonChartData {
         let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
         let rounded_timestamp =
-            (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe as u64;
+            (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe;
         let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
         frame.stroke(
@@ -605,7 +605,7 @@ impl CommonChartData {
         latest: u64,
         data_points: &T
     ) -> Option<Vec<u64>> {
-        let interval = self.timeframe as u64;
+        let interval = self.timeframe;
         
         let mut time = earliest;
         let mut missing_count = 0;

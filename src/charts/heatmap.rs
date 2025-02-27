@@ -244,7 +244,7 @@ impl HeatmapChart {
             chart: CommonChartData {
                 cell_width: Self::DEFAULT_CELL_WIDTH,
                 cell_height: 4.0,
-                timeframe: aggr_time as u64,
+                timeframe: aggr_time,
                 tick_size,
                 decimals: count_decimals(tick_size),
                 crosshair: layout.crosshair,

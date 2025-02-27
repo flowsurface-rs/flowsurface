@@ -180,8 +180,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             );
 
             let (earliest, latest) = (
-                self.x_to_time(region.x) - u64::from(self.timeframe / 2),
-                self.x_to_time(region.x + region.width) + u64::from(self.timeframe / 2),
+                self.x_to_time(region.x) - (self.timeframe / 2),
+                self.x_to_time(region.x + region.width) + (self.timeframe / 2),
             );
 
             let mut max_value: f32 = f32::MIN;
@@ -268,7 +268,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
                     let rounded_timestamp =
-                        (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe as u64;
+                        (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe;
                     let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                     frame.stroke(

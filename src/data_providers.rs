@@ -309,12 +309,6 @@ pub struct Ticker {
     market_type: MarketType,
 }
 
-impl Default for Ticker {
-    fn default() -> Self {
-        Ticker::new("", MarketType::Spot)
-    }
-}
-
 impl Ticker {
     pub fn new<S: AsRef<str>>(ticker: S, market_type: MarketType) -> Self {
         let ticker = ticker.as_ref();

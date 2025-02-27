@@ -117,7 +117,7 @@ fn feed_de(
     let mut depth_wrap: Option<SonicDepth> = None;
 
     let mut data_type = String::new();
-    let mut topic_ticker = Ticker::default();
+    let mut topic_ticker: Option<Ticker> = ticker;
 
     let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(slice) };
 
@@ -128,25 +128,22 @@ fn feed_de(
             if let Some(val) = v.as_str() {
                 let mut is_ticker = None;
 
-                if let Some(ticker) = ticker {
-                    is_ticker = Some(ticker);
+                if let Some(t) = ticker {
+                    is_ticker = Some(t);
                 }
 
                 match StreamName::from_topic(val, is_ticker, market_type) {
-                    StreamName::Depth(ticker) => {
+                    StreamName::Depth(t) => {
                         stream_type = Some(StreamWrapper::Depth);
-
-                        topic_ticker = ticker;
+                        topic_ticker = Some(t);
                     }
-                    StreamName::Trade(ticker) => {
+                    StreamName::Trade(t) => {
                         stream_type = Some(StreamWrapper::Trade);
-
-                        topic_ticker = ticker;
+                        topic_ticker = Some(t);
                     }
-                    StreamName::Kline(ticker) => {
+                    StreamName::Kline(t) => {
                         stream_type = Some(StreamWrapper::Kline);
-
-                        topic_ticker = ticker;
+                        topic_ticker = Some(t);
                     }
                     _ => {
                         log::error!("Unknown stream name");
@@ -180,7 +177,11 @@ fn feed_de(
                     let kline_wrap: Vec<SonicKline> = sonic_rs::from_str(&v.as_raw_faststr())
                         .map_err(|e| StreamError::ParseError(e.to_string()))?;
 
-                    return Ok(StreamData::Kline(topic_ticker, kline_wrap));
+                    if let Some(t) = topic_ticker {
+                        return Ok(StreamData::Kline(t, kline_wrap));
+                    } else {
+                        return Err(StreamError::ParseError("Missing ticker for kline data".to_string()));
+                    }
                 }
                 _ => {
                     log::error!("Unknown stream type");
