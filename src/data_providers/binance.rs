@@ -14,22 +14,10 @@ use iced_futures::stream;
 use crate::layout;
 
 use super::{
-    deserialize_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection, str_f32_parse, 
+    de_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection, str_f32_parse, 
     BidAsk, Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, 
     StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache
 };
-
-mod string_to_f32 {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: &str = <&str>::deserialize(deserializer)?;
-        s.parse::<f32>().map_err(serde::de::Error::custom)
-    }
-}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct FetchedPerpDepth {
@@ -677,15 +665,15 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKlines(
     u64,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_f32")] f32,
     u64,
     String,
     u32,
-    #[serde(with = "string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_f32")] f32,
     String,
     String,
 );
@@ -1110,7 +1098,7 @@ pub async fn get_hist_trades(
 struct DeOpenInterest {
     #[serde(rename = "timestamp")]
     pub time: u64,
-    #[serde(rename = "sumOpenInterest", deserialize_with = "deserialize_string_to_f32")]
+    #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_f32")]
     pub sum: f32,
 }
 

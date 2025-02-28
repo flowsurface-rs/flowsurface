@@ -14,7 +14,7 @@ use iced_futures::stream;
 
 use super::{
     setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    str_f32_parse, deserialize_string_to_u64, deserialize_string_to_f32, BidAsk,
+    str_f32_parse, de_string_to_f32, de_string_to_u64, BidAsk,
     Connection, Event, Kline, LocalDepthCache, MarketType, Order, State, Exchange, OpenInterest,
     StreamError, TickerInfo, TickerStats, Trade, VecLocalDepthCache, StreamType, Ticker, Timeframe,
 };
@@ -483,9 +483,9 @@ fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeOpenInterest {
-    #[serde(rename = "openInterest", deserialize_with = "deserialize_string_to_f32")]
+    #[serde(rename = "openInterest", deserialize_with = "de_string_to_f32")]
     pub value: f32,
-    #[serde(deserialize_with = "deserialize_string_to_u64")]
+    #[serde(deserialize_with = "de_string_to_u64")]
     pub timestamp: u64,
 }
 

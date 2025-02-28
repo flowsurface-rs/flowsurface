@@ -84,9 +84,9 @@ struct Order {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct BidAsk {
-    #[serde(rename = "0", deserialize_with = "deserialize_string_to_f32")]
+    #[serde(rename = "0", deserialize_with = "de_string_to_f32")]
     pub price: f32,
-    #[serde(rename = "1", deserialize_with = "deserialize_string_to_f32")]
+    #[serde(rename = "1", deserialize_with = "de_string_to_f32")]
     pub qty: f32,
 }
 
@@ -478,7 +478,7 @@ where
     }
 }
 
-fn deserialize_string_to_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
+fn de_string_to_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -486,7 +486,7 @@ where
     s.parse::<f32>().map_err(serde::de::Error::custom)
 }
 
-fn deserialize_string_to_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+fn de_string_to_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
