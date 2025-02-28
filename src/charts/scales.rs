@@ -269,6 +269,10 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
             let earliest_in_millis = self.x_to_time(region.x);
             let latest_in_millis = self.x_to_time(region.x + region.width);
 
+            if earliest_in_millis >= latest_in_millis {
+                return;
+            }
+
             let x_labels_can_fit = (bounds.width / 192.0) as i32;
 
             let mut all_labels: Vec<AxisLabel> = Vec::with_capacity(x_labels_can_fit as usize + 1); // +1 for crosshair
@@ -283,9 +287,12 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
             let mut time: u64 = rounded_earliest;
 
             while time <= latest_in_millis {
-                let x_position = ((time - earliest_in_millis) as f64
-                    / (latest_in_millis - earliest_in_millis) as f64)
-                    * f64::from(bounds.width);
+                let x_position = if time >= earliest_in_millis {
+                    ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64)
+                        * f64::from(bounds.width)
+                } else {
+                    0.0
+                };
 
                 if x_position >= 0.0 && x_position <= f64::from(bounds.width) {
                     if let Some(time_as_datetime) = DateTime::from_timestamp((time / 1000) as i64, 0) {

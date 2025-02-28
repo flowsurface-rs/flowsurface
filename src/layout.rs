@@ -326,7 +326,7 @@ impl LayoutManager {
                 Space::with_width(iced::Length::Fill),
                 row![
                     tooltip(
-                        button("i").style(move |theme, status| style::button_transparent(theme, status, true)),
+                        button("i").style(move |theme, status| style::button_modifier(theme, status, true)),
                         Some("- Drag&drop to reorder layouts\n- Layouts won't be saved if app exits abruptly"),
                         tooltip::Position::Top,
                     ),

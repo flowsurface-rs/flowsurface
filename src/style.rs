@@ -130,7 +130,7 @@ pub fn button_confirm(
             background: None,
             text_color: palette.success.base.color,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -139,7 +139,7 @@ pub fn button_confirm(
             text_color: palette.success.weak.color,
             background: None,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -148,7 +148,7 @@ pub fn button_confirm(
             background: None,
             text_color: palette.success.strong.color,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -161,7 +161,7 @@ pub fn button_confirm(
             },
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -183,7 +183,7 @@ pub fn button_cancel(
             background: None,
             text_color: palette.danger.base.color,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -192,7 +192,7 @@ pub fn button_cancel(
             text_color: palette.danger.weak.color,
             background: None,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -201,7 +201,7 @@ pub fn button_cancel(
             background: None,
             text_color: palette.danger.strong.color,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -214,7 +214,7 @@ pub fn button_cancel(
             },
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -259,60 +259,47 @@ pub fn button_transparent(
 ) -> iced::widget::button::Style {
     let palette = theme.extended_palette();
 
-    let color_alpha = if palette.is_dark { 0.2 } else { 0.6 };
-
     match status {
         Status::Active => iced::widget::button::Style {
             background: if is_active {
-                Some(palette.secondary.weak.color.scale_alpha(color_alpha).into())
+                Some(palette.background.weak.color.into())
             } else {
                 None
             },
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
         },
         Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.background.strong.color.into()),
             text_color: palette.background.base.text,
-            background: Some(
-                palette
-                    .background
-                    .strong
-                    .color
-                    .scale_alpha(color_alpha)
-                    .into(),
-            ),
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
         },
         Status::Hovered => iced::widget::button::Style {
-            background: if palette.is_dark {
-                Some(palette.background.weak.color.into())
-            } else {
-                Some(palette.background.strong.color.into())
-            },
+            background: Some(palette.background.strongest.color.into()),
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
         },
         Status::Disabled => iced::widget::button::Style {
             background: if is_active {
-                None
+                Some(palette.background.weakest.color.into())
             } else {
-                Some(palette.secondary.weak.color.scale_alpha(color_alpha).into())
+                Some(palette.background.strongest.color.into())
             },
-            text_color: palette.background.base.text,
+            text_color: palette.secondary.strong.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -379,7 +366,7 @@ pub fn button_modifier(
                     .into(),
             ),
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -392,7 +379,7 @@ pub fn button_modifier(
             },
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -405,7 +392,7 @@ pub fn button_modifier(
             },
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
