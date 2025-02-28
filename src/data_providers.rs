@@ -76,30 +76,12 @@ pub enum StreamType {
 }
 
 // data types
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 struct Order {
-    price: f32,
-    qty: f32,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BidAsk {
     #[serde(rename = "0", deserialize_with = "de_string_to_f32")]
     pub price: f32,
     #[serde(rename = "1", deserialize_with = "de_string_to_f32")]
     pub qty: f32,
-}
-
-impl<'de> Deserialize<'de> for Order {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let arr: Vec<&str> = Vec::<&str>::deserialize(deserializer)?;
-        let price: f32 = arr[0].parse::<f32>().map_err(serde::de::Error::custom)?;
-        let qty: f32 = arr[1].parse::<f32>().map_err(serde::de::Error::custom)?;
-        Ok(Order { price, qty })
-    }
 }
 
 #[derive(Debug, Clone, Default)]

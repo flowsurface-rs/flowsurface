@@ -14,7 +14,7 @@ use iced_futures::stream;
 
 use super::{
     setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    str_f32_parse, de_string_to_f32, de_string_to_u64, BidAsk,
+    de_string_to_f32, de_string_to_u64,
     Connection, Event, Kline, LocalDepthCache, MarketType, Order, State, Exchange, OpenInterest,
     StreamError, TickerInfo, TickerStats, Trade, VecLocalDepthCache, StreamType, Ticker, Timeframe,
 };
@@ -24,19 +24,19 @@ struct SonicDepth {
     #[serde(rename = "u")]
     pub update_id: u64,
     #[serde(rename = "b")]
-    pub bids: Vec<BidAsk>,
+    pub bids: Vec<Order>,
     #[serde(rename = "a")]
-    pub asks: Vec<BidAsk>,
+    pub asks: Vec<Order>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct SonicTrade {
     #[serde(rename = "T")]
     pub time: u64,
-    #[serde(rename = "p")]
-    pub price: String,
-    #[serde(rename = "v")]
-    pub qty: String,
+    #[serde(rename = "p", deserialize_with = "de_string_to_f32")]
+    pub price: f32,
+    #[serde(rename = "v", deserialize_with = "de_string_to_f32")]
+    pub qty: f32,
     #[serde(rename = "S")]
     pub is_sell: String,
 }
@@ -45,16 +45,16 @@ struct SonicTrade {
 pub struct SonicKline {
     #[serde(rename = "start")]
     pub time: u64,
-    #[serde(rename = "open")]
-    pub open: String,
-    #[serde(rename = "high")]
-    pub high: String,
-    #[serde(rename = "low")]
-    pub low: String,
-    #[serde(rename = "close")]
-    pub close: String,
-    #[serde(rename = "volume")]
-    pub volume: String,
+    #[serde(rename = "open", deserialize_with = "de_string_to_f32")]
+    pub open: f32,
+    #[serde(rename = "high", deserialize_with = "de_string_to_f32")]
+    pub high: f32,
+    #[serde(rename = "low", deserialize_with = "de_string_to_f32")]
+    pub low: f32,
+    #[serde(rename = "close", deserialize_with = "de_string_to_f32")]
+    pub close: f32,
+    #[serde(rename = "volume", deserialize_with = "de_string_to_f32")]
+    pub volume: f32,
     #[serde(rename = "interval")]
     pub interval: String,
 }
@@ -73,6 +73,7 @@ enum StreamName {
     Kline(Ticker),
     Unknown,
 }
+
 impl StreamName {
     fn from_topic(topic: &str, is_ticker: Option<Ticker>, market_type: MarketType) -> Self {
         let parts: Vec<&str> = topic.split('.').collect();
@@ -301,8 +302,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                             let trade = Trade {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell == "Sell",
-                                                price: str_f32_parse(&de_trade.price),
-                                                qty: str_f32_parse(&de_trade.qty),
+                                                price: de_trade.price,
+                                                qty: de_trade.qty,
                                             };
 
                                             trades_buffer.push(trade);
@@ -422,11 +423,11 @@ pub fn connect_kline_stream(
                                 for de_kline in &de_kline_vec {
                                     let kline = Kline {
                                         time: de_kline.time,
-                                        open: str_f32_parse(&de_kline.open),
-                                        high: str_f32_parse(&de_kline.high),
-                                        low: str_f32_parse(&de_kline.low),
-                                        close: str_f32_parse(&de_kline.close),
-                                        volume: (-1.0, str_f32_parse(&de_kline.volume)),
+                                        open: de_kline.open,
+                                        high: de_kline.high,
+                                        low: de_kline.low,
+                                        close: de_kline.close,
+                                        volume: (-1.0, de_kline.volume),
                                     };
 
                                     if let Some(timeframe) = string_to_timeframe(&de_kline.interval)

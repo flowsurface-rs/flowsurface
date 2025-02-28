@@ -15,7 +15,7 @@ use crate::layout;
 
 use super::{
     de_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection, str_f32_parse, 
-    BidAsk, Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, 
+    Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, 
     StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache
 };
 
@@ -45,18 +45,18 @@ pub struct FetchedSpotDepth {
 struct SonicKline {
     #[serde(rename = "t")]
     time: u64,
-    #[serde(rename = "o")]
-    open: String,
-    #[serde(rename = "h")]
-    high: String,
-    #[serde(rename = "l")]
-    low: String,
-    #[serde(rename = "c")]
-    close: String,
-    #[serde(rename = "v")]
-    volume: String,
-    #[serde(rename = "V")]
-    taker_buy_base_asset_volume: String,
+    #[serde(rename = "o", deserialize_with = "de_string_to_f32")]
+    open: f32,
+    #[serde(rename = "h", deserialize_with = "de_string_to_f32")]
+    high: f32,
+    #[serde(rename = "l", deserialize_with = "de_string_to_f32")]
+    low: f32,
+    #[serde(rename = "c", deserialize_with = "de_string_to_f32")]
+    close: f32,
+    #[serde(rename = "v", deserialize_with = "de_string_to_f32")]
+    volume: f32,
+    #[serde(rename = "V", deserialize_with = "de_string_to_f32")]
+    taker_buy_base_asset_volume: f32,
     #[serde(rename = "i")]
     interval: String,
 }
@@ -73,10 +73,10 @@ struct SonicKlineWrap {
 struct SonicTrade {
     #[serde(rename = "T")]
     time: u64,
-    #[serde(rename = "p")]
-    price: String,
-    #[serde(rename = "q")]
-    qty: String,
+    #[serde(rename = "p", deserialize_with = "de_string_to_f32")]
+    price: f32,
+    #[serde(rename = "q", deserialize_with = "de_string_to_f32")]
+    qty: f32,
     #[serde(rename = "m")]
     is_sell: bool,
 }
@@ -96,9 +96,9 @@ struct SpotDepth {
     #[serde(rename = "u")]
     final_id: u64,
     #[serde(rename = "b")]
-    bids: Vec<BidAsk>,
+    bids: Vec<Order>,
     #[serde(rename = "a")]
-    asks: Vec<BidAsk>,
+    asks: Vec<Order>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -112,9 +112,9 @@ struct LinearPerpDepth {
     #[serde(rename = "pu")]
     prev_final_id: u64,
     #[serde(rename = "b")]
-    bids: Vec<BidAsk>,
+    bids: Vec<Order>,
     #[serde(rename = "a")]
-    asks: Vec<BidAsk>,
+    asks: Vec<Order>,
 }
 
 #[derive(Debug)]
@@ -337,8 +337,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                             let trade = Trade {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
-                                                price: str_f32_parse(&de_trade.price),
-                                                qty: str_f32_parse(&de_trade.qty),
+                                                price: de_trade.price,
+                                                qty: de_trade.qty,
                                             };
 
                                             trades_buffer.push(trade);
@@ -533,16 +533,15 @@ pub fn connect_kline_stream(
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(&msg.payload[..], market) {
-                                let buy_volume =
-                                    str_f32_parse(&de_kline.taker_buy_base_asset_volume);
-                                let sell_volume = str_f32_parse(&de_kline.volume) - buy_volume;
+                                let buy_volume = de_kline.taker_buy_base_asset_volume;
+                                let sell_volume = de_kline.volume - buy_volume;
 
                                 let kline = Kline {
                                     time: de_kline.time,
-                                    open: str_f32_parse(&de_kline.open),
-                                    high: str_f32_parse(&de_kline.high),
-                                    low: str_f32_parse(&de_kline.low),
-                                    close: str_f32_parse(&de_kline.close),
+                                    open: de_kline.open,
+                                    high: de_kline.high,
+                                    low: de_kline.low,
+                                    close: de_kline.close,
                                     volume: (buy_volume, sell_volume),
                                 };
 
@@ -972,8 +971,8 @@ pub async fn fetch_intraday_trades(
         de_trades.into_iter().map(|de_trade| Trade {
             time: de_trade.time,
             is_sell: de_trade.is_sell,
-            price: str_f32_parse(&de_trade.price),
-            qty: str_f32_parse(&de_trade.qty),
+            price: de_trade.price,
+            qty: de_trade.qty,
         }).collect()
     };
 
