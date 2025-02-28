@@ -231,22 +231,22 @@ pub fn button_layout_name(
     match status {
         Status::Active => iced::widget::button::Style {
             background: None,
-            text_color: palette.primary.weak.color,
+            text_color: palette.background.base.text,
             ..Default::default()
         },
         Status::Pressed => iced::widget::button::Style {
             background: None,
-            text_color: palette.primary.base.color,
+            text_color: palette.background.weak.text,
             ..Default::default()
         },
         Status::Hovered => iced::widget::button::Style {
             background: None,
-            text_color: palette.primary.strong.color,
+            text_color: palette.background.strong.text,
             ..Default::default()
         },
         Status::Disabled => iced::widget::button::Style {
             background: None,
-            text_color: palette.primary.base.color,
+            text_color: palette.background.weakest.text,
             ..Default::default()
         },
     }
@@ -293,11 +293,11 @@ pub fn button_transparent(
         },
         Status::Disabled => iced::widget::button::Style {
             background: if is_active {
-                Some(palette.background.weakest.color.into())
+                Some(palette.background.weak.color.into())
             } else {
-                Some(palette.background.strongest.color.into())
+                Some(palette.background.strong.color.into())
             },
-            text_color: palette.secondary.strong.text,
+            text_color: palette.background.base.text,
             border: Border {
                 radius: 3.0.into(),
                 ..Default::default()
@@ -314,57 +314,23 @@ pub fn button_modifier(
 ) -> iced::widget::button::Style {
     let palette = theme.extended_palette();
 
-    let color_alpha = if palette.is_dark { 0.2 } else { 0.6 };
-
     match status {
         Status::Active => iced::widget::button::Style {
             background: if disabled {
-                if palette.is_dark {
-                    Some(
-                        palette
-                            .background
-                            .weak
-                            .color
-                            .scale_alpha(color_alpha)
-                            .into(),
-                    )
-                } else {
-                    Some(
-                        palette
-                            .background
-                            .base
-                            .color
-                            .scale_alpha(color_alpha)
-                            .into(),
-                    )
-                }
+                Some(palette.background.weak.color.into())
             } else {
-                Some(
-                    palette
-                        .background
-                        .strong
-                        .color
-                        .scale_alpha(color_alpha)
-                        .into(),
-                )
+                Some(palette.background.base.color.into())
             },
             text_color: palette.background.base.text,
             border: Border {
-                radius: 2.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
         },
         Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.background.strong.color.into()),
             text_color: palette.background.base.text,
-            background: Some(
-                palette
-                    .background
-                    .strong
-                    .color
-                    .scale_alpha(color_alpha)
-                    .into(),
-            ),
             border: Border {
                 radius: 3.0.into(),
                 ..Default::default()
@@ -372,11 +338,7 @@ pub fn button_modifier(
             ..Default::default()
         },
         Status::Hovered => iced::widget::button::Style {
-            background: if palette.is_dark {
-                Some(palette.background.weak.color.into())
-            } else {
-                Some(palette.background.strong.color.into())
-            },
+            background: Some(palette.background.strongest.color.into()),
             text_color: palette.background.base.text,
             border: Border {
                 radius: 3.0.into(),
@@ -388,7 +350,7 @@ pub fn button_modifier(
             background: if disabled {
                 None
             } else {
-                Some(palette.secondary.weak.color.scale_alpha(color_alpha).into())
+                Some(palette.secondary.weak.color.into())
             },
             text_color: palette.background.base.text,
             border: Border {
@@ -559,11 +521,36 @@ pub fn modal_container(theme: &Theme) -> Style {
     }
 }
 
+pub fn layout_row_container(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.weakest.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.weak.color,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 2.0,
+            color: Color::BLACK.scale_alpha(
+                if palette.is_dark {
+                    0.8
+                } else {
+                    0.2
+                }
+            ),
+        },
+    }
+}
+
 pub fn layout_card_bar(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
-        background: Some(palette.background.strongest.color.into()),
+        background: Some(palette.secondary.weak.color.into()),
         ..Default::default()
     }
 }
@@ -670,13 +657,14 @@ pub fn ticker_card(theme: &Theme) -> Style {
         background: Some(
             palette
                 .background
-                .weak
+                .weakest
                 .color
                 .into(),
         ),
         border: Border {
             radius: 4.0.into(),
             width: 1.0,
+            color: palette.background.strong.color,
             ..Border::default()
         },
         ..Default::default()
@@ -699,7 +687,7 @@ pub fn ticker_card_button(theme: &Theme, status: Status) -> iced::widget::button
         },
         Status::Pressed => iced::widget::button::Style {
             text_color: palette.background.base.text,
-            background: Some(palette.background.weak.color.into()),
+            background: Some(palette.background.weakest.color.into()),
             border: Border {
                 radius: 2.0.into(),
                 width: 1.0,
