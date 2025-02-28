@@ -82,6 +82,14 @@ struct Order {
     qty: f32,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct BidAsk {
+    #[serde(rename = "0", deserialize_with = "deserialize_string_to_f32")]
+    pub price: f32,
+    #[serde(rename = "1", deserialize_with = "deserialize_string_to_f32")]
+    pub qty: f32,
+}
+
 impl<'de> Deserialize<'de> for Order {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

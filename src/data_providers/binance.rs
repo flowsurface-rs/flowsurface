@@ -14,10 +14,9 @@ use iced_futures::stream;
 use crate::layout;
 
 use super::{
-    setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    str_f32_parse, deserialize_string_to_f32,
-    Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, 
-    State, StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache
+    deserialize_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection, str_f32_parse, 
+    BidAsk, Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, 
+    StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache
 };
 
 mod string_to_f32 {
@@ -80,14 +79,6 @@ struct SonicKlineWrap {
     symbol: String,
     #[serde(rename = "k")]
     kline: SonicKline,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BidAsk {
-    #[serde(rename = "0")]
-    price: String,
-    #[serde(rename = "1")]
-    qty: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -612,24 +603,24 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
             last_update_id: de.final_id,
             time: de.time,
             bids: de.bids.iter().map(|x| Order {
-                price: str_f32_parse(&x.price),
-                qty: str_f32_parse(&x.qty),
+                price: x.price,
+                qty: x.qty,
             }).collect(),
             asks: de.asks.iter().map(|x| Order {
-                price: str_f32_parse(&x.price),
-                qty: str_f32_parse(&x.qty),
+                price: x.price,
+                qty: x.qty,
             }).collect(),
         },
         SonicDepth::LinearPerp(de) => VecLocalDepthCache {
             last_update_id: de.final_id,
             time: de.time,
             bids: de.bids.iter().map(|x| Order {
-                price: str_f32_parse(&x.price),
-                qty: str_f32_parse(&x.qty),
+                price: x.price,
+                qty: x.qty,
             }).collect(),
             asks: de.asks.iter().map(|x| Order {
-                price: str_f32_parse(&x.price),
-                qty: str_f32_parse(&x.qty),
+                price: x.price,
+                qty: x.qty,
             }).collect(),
         }
     }

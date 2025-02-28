@@ -14,7 +14,7 @@ use iced_futures::stream;
 
 use super::{
     setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    str_f32_parse, deserialize_string_to_u64, deserialize_string_to_f32,
+    str_f32_parse, deserialize_string_to_u64, deserialize_string_to_f32, BidAsk,
     Connection, Event, Kline, LocalDepthCache, MarketType, Order, State, Exchange, OpenInterest,
     StreamError, TickerInfo, TickerStats, Trade, VecLocalDepthCache, StreamType, Ticker, Timeframe,
 };
@@ -27,14 +27,6 @@ struct SonicDepth {
     pub bids: Vec<BidAsk>,
     #[serde(rename = "a")]
     pub asks: Vec<BidAsk>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BidAsk {
-    #[serde(rename = "0")]
-    pub price: String,
-    #[serde(rename = "1")]
-    pub qty: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -324,16 +316,16 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 .bids
                                                 .iter()
                                                 .map(|x| Order {
-                                                    price: str_f32_parse(&x.price),
-                                                    qty: str_f32_parse(&x.qty),
+                                                    price: x.price,
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                             asks: de_depth
                                                 .asks
                                                 .iter()
                                                 .map(|x| Order {
-                                                    price: str_f32_parse(&x.price),
-                                                    qty: str_f32_parse(&x.qty),
+                                                    price: x.price,
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                         };
