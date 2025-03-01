@@ -119,35 +119,38 @@ impl LocalDepthCache {
     fn fetched(&mut self, new_depth: &VecLocalDepthCache) {
         self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
-
-        self.bids.clear();
-        new_depth.bids.iter().for_each(|order| {
-            self.bids.insert(OrderedFloat(order.price), order.qty);
-        });
-        self.asks.clear();
-        new_depth.asks.iter().for_each(|order| {
-            self.asks.insert(OrderedFloat(order.price), order.qty);
-        });
+    
+        self.bids = new_depth.bids.iter()
+            .map(|order| (OrderedFloat(order.price), order.qty))
+            .collect();
+        self.asks = new_depth.asks.iter()
+            .map(|order| (OrderedFloat(order.price), order.qty))
+            .collect();
     }
 
     fn update_depth_cache(&mut self, new_depth: &VecLocalDepthCache) {
         self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
 
-        new_depth.bids.iter().for_each(|order| {
+        Self::update_price_levels(&mut self.bids, &new_depth.bids);
+        Self::update_price_levels(&mut self.asks, &new_depth.asks);
+    }
+
+    fn update_price_levels(
+        price_map: &mut BTreeMap<OrderedFloat<f32>, f32>, 
+        orders: &[Order]
+    ) {
+        orders.iter().for_each(|order| {
             if order.qty == 0.0 {
-                self.bids.remove((&order.price).into());
+                price_map.remove(&OrderedFloat(order.price));
             } else {
-                self.bids.insert(OrderedFloat(order.price), order.qty);
+                price_map.insert(OrderedFloat(order.price), order.qty);
             }
         });
-        new_depth.asks.iter().for_each(|order| {
-            if order.qty == 0.0 {
-                self.asks.remove((&order.price).into());
-            } else {
-                self.asks.insert(OrderedFloat(order.price), order.qty);
-            }
-        });
+    }
+
+    fn get_fetch_id(&self) -> u64 {
+        self.last_update_id
     }
 
     fn get_depth(&self) -> Depth {
@@ -155,10 +158,6 @@ impl LocalDepthCache {
             bids: self.bids.clone(),
             asks: self.asks.clone(),
         }
-    }
-
-    fn get_fetch_id(&self) -> u64 {
-        self.last_update_id
     }
 }
 

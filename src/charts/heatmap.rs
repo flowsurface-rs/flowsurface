@@ -131,7 +131,7 @@ impl Orderbook {
         let mut current_price = None;
         let mut current_qty = 0.0;
 
-        for (price, qty) in side {
+        side.iter().for_each(|(price, qty)| {
             let rounded_price = round_price(price.into_inner());
 
             if Some(rounded_price) == current_price {
@@ -143,7 +143,7 @@ impl Orderbook {
                 current_price = Some(rounded_price);
                 current_qty = *qty;
             }
-        }
+        });
 
         if let Some(price) = current_price {
             self.update_price_level(time, price, current_qty, is_bid);
@@ -298,7 +298,7 @@ impl HeatmapChart {
 
             let mut grouped_trades: Vec<GroupedTrade> = Vec::with_capacity(trades_buffer.len());
 
-            for trade in trades_buffer {
+            trades_buffer.iter().for_each(|trade| {
                 if trade.is_sell {
                     sell_volume += trade.qty;
                 } else {
@@ -331,7 +331,7 @@ impl HeatmapChart {
                         },
                     ),
                 }
-            }
+            });
 
             self.data_points.push((
                 rounded_depth_update,
