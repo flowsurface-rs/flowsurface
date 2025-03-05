@@ -26,7 +26,7 @@ pub fn create_indicator_elem<'a>(
         translation_x: chart_state.translation.x,
         timeframe: chart_state.timeframe as u32,
         cell_width: chart_state.cell_width,
-        data_points: data,
+        timeseries: data,
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
@@ -63,7 +63,7 @@ pub struct VolumeIndicator<'a> {
     pub translation_x: f32,
     pub timeframe: u32,
     pub cell_width: f32,
-    pub data_points: &'a BTreeMap<u64, (f32, f32)>,
+    pub timeseries: &'a BTreeMap<u64, (f32, f32)>,
     pub chart_bounds: Rectangle,
 }
 
@@ -144,7 +144,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.data_points.is_empty() {
+        if self.timeseries.is_empty() {
             return vec![];
         }
 
@@ -169,13 +169,13 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
             let mut max_volume: f32 = 0.0;
 
-            self.data_points
+            self.timeseries
                 .range(earliest..=latest)
                 .for_each(|(_, (buy_volume, sell_volume))| {
                     max_volume = max_volume.max(buy_volume.max(*sell_volume));
                 });
 
-            self.data_points.range(earliest..=latest).for_each(
+            self.timeseries.range(earliest..=latest).for_each(
                 |(timestamp, (buy_volume, sell_volume))| {
                     let x_position = self.time_to_x(*timestamp);
 
@@ -266,7 +266,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     );
 
                     if let Some((_, (buy_v, sell_v))) = self
-                        .data_points
+                        .timeseries
                         .iter()
                         .find(|(time, _)| **time == rounded_timestamp)
                     {

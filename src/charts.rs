@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use iced::{
     alignment,
     mouse::{self},
@@ -6,6 +8,7 @@ use iced::{
 };
 use iced::widget::canvas::{self, Canvas, Event, Frame, Cache};
 use indicators::Indicator;
+use ordered_float::OrderedFloat;
 use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use uuid::Uuid;
 
@@ -16,12 +19,15 @@ use crate::{
 };
 
 mod scales;
+pub mod ticks;
 pub mod config;
 pub mod candlestick;
 pub mod footprint;
 pub mod heatmap;
 pub mod indicators;
 pub mod timeandsales;
+
+type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum Interaction {
@@ -446,6 +452,11 @@ impl Caches {
     }
 }
 
+pub enum ChartBasis {
+    Time(u64),
+    Tick(usize),
+}
+
 pub struct CommonChartData {
     cache: Caches,
 
@@ -507,6 +518,15 @@ impl CommonChartData {
             width,
             height,
         }
+    }
+
+    fn tick_to_x(&self, tick: u64) -> f32 {
+        -((tick as f32) * self.cell_width)
+    }
+    
+    fn x_to_tick(&self, x: f32) -> u64 {
+        let tick = -(x / self.cell_width);
+        tick.round() as u64
     }
 
     fn time_to_x(&self, time: u64) -> f32 {
@@ -612,14 +632,14 @@ impl CommonChartData {
         &self,
         earliest: u64,
         latest: u64,
-        data_points: &T
+        timeseries: &T
     ) -> Option<Vec<u64>> {
         let interval = self.timeframe;
         
         let mut time = earliest;
         let mut missing_count = 0;
         while time < latest {
-            if !data_points.contains_key(&time) {
+            if !timeseries.contains_key(&time) {
                 missing_count += 1;
                 break; 
             }
@@ -630,7 +650,7 @@ impl CommonChartData {
             let mut missing_keys = Vec::with_capacity(((latest - earliest) / interval) as usize);
             let mut time = earliest;
             while time < latest {
-                if !data_points.contains_key(&time) {
+                if !timeseries.contains_key(&time) {
                     missing_keys.push(time);
                 }
                 time += interval;

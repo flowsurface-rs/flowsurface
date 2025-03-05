@@ -225,7 +225,7 @@ enum IndicatorData {
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: Vec<(u64, Box<[GroupedTrade]>, (f32, f32))>,
+    timeseries: Vec<(u64, Box<[GroupedTrade]>, (f32, f32))>,
     indicators: HashMap<HeatmapIndicator, IndicatorData>,
     orderbook: Orderbook,
     visual_config: Config,
@@ -269,7 +269,7 @@ impl HeatmapChart {
                 indicators
             },
             orderbook: Orderbook::new(tick_size, aggr_time),
-            data_points: Vec::new(),
+            timeseries: Vec::new(),
             visual_config: config.unwrap_or_default(),
         }
     }
@@ -277,10 +277,10 @@ impl HeatmapChart {
     pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64, depth: &Depth) {
         let chart = &mut self.chart;
 
-        if self.data_points.len() > 2400 {
-            self.data_points.drain(0..400);
+        if self.timeseries.len() > 2400 {
+            self.timeseries.drain(0..400);
 
-            if let Some(oldest_time) = self.data_points.first().map(|(time, _, _)| *time) {
+            if let Some(oldest_time) = self.timeseries.first().map(|(time, _, _)| *time) {
                 self.orderbook
                     .price_levels
                     .iter_mut()
@@ -333,7 +333,7 @@ impl HeatmapChart {
                 }
             });
 
-            self.data_points.push((
+            self.timeseries.push((
                 rounded_depth_update,
                 grouped_trades.into_boxed_slice(),
                 (buy_volume, sell_volume),
@@ -387,7 +387,7 @@ impl HeatmapChart {
         chart_state.tick_size = new_tick_size;
         chart_state.decimals = count_decimals(new_tick_size);
 
-        self.data_points.clear();
+        self.timeseries.clear();
 
         self.orderbook = Orderbook::new(
             new_tick_size, 
@@ -424,7 +424,7 @@ impl HeatmapChart {
         earliest: u64,
         latest: u64,
     ) -> impl Iterator<Item = &(u64, Box<[GroupedTrade]>, (f32, f32))> {
-        self.data_points
+        self.timeseries
             .iter()
             .filter(move |(time, _, _)| *time >= earliest && *time <= latest)
     }
@@ -512,7 +512,7 @@ impl canvas::Program<Message> for HeatmapChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.data_points.is_empty() {
+        if self.timeseries.is_empty() {
             return vec![];
         }
 
@@ -611,7 +611,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             });
                     });
 
-                if let Some((latest_timestamp, _, _)) = self.data_points.last() {
+                if let Some((latest_timestamp, _, _)) = self.timeseries.last() {
                     let max_qty = self
                         .orderbook
                         .latest_order_runs(highest, lowest, *latest_timestamp)
@@ -731,7 +731,7 @@ impl canvas::Program<Message> for HeatmapChart {
             });
         });
 
-        if chart.crosshair & !self.data_points.is_empty() {
+        if chart.crosshair & !self.timeseries.is_empty() {
             let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position);

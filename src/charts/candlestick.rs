@@ -96,7 +96,7 @@ impl IndicatorData {
 
 pub struct CandlestickChart {
     chart: CommonChartData,
-    data_points: BTreeMap<u64, Kline>,
+    timeseries: BTreeMap<u64, Kline>,
     indicators: HashMap<CandlestickIndicator, IndicatorData>,
     request_handler: RequestHandler,
 }
@@ -110,19 +110,19 @@ impl CandlestickChart {
         enabled_indicators: &[CandlestickIndicator],
         ticker_info: Option<TickerInfo>,
     ) -> CandlestickChart {
-        let mut data_points = BTreeMap::new();
+        let mut timeseries = BTreeMap::new();
         let mut volume_data = BTreeMap::new();
 
         let base_price_y = klines_raw.last().unwrap_or(&Kline::default()).close;
 
         for kline in klines_raw {
             volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
-            data_points.entry(kline.time).or_insert(kline);
+            timeseries.entry(kline.time).or_insert(kline);
         }
 
         let mut latest_x = 0;
         let (mut scale_high, mut scale_low) = (0.0f32, f32::MAX);
-        data_points.iter().rev().for_each(|(time, kline)| {
+        timeseries.iter().rev().for_each(|(time, kline)| {
             scale_high = scale_high.max(kline.high);
             scale_low = scale_low.min(kline.low);
 
@@ -146,7 +146,7 @@ impl CandlestickChart {
                 ticker_info,
                 ..Default::default()
             },
-            data_points,
+            timeseries,
             indicators: {
                 let mut indicators = HashMap::new();
 
@@ -175,7 +175,7 @@ impl CandlestickChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
-        self.data_points.insert(kline.time, *kline);
+        self.timeseries.insert(kline.time, *kline);
 
         if let Some(IndicatorData::Volume(_, data)) = 
             self.indicators.get_mut(&CandlestickIndicator::Volume) {
@@ -244,7 +244,7 @@ impl CandlestickChart {
     
         // priority 3, missing klines & integrity check
         if let Some(missing_keys) = self.get_common_data()
-            .check_kline_integrity(kline_earliest, kline_latest, &self.data_points) 
+            .check_kline_integrity(kline_earliest, kline_latest, &self.timeseries) 
         {
             let latest = missing_keys.iter()
                 .max().unwrap_or(&visible_latest) + self.chart.timeframe;
@@ -267,7 +267,7 @@ impl CandlestickChart {
 
         for kline in klines_raw {
             volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
-            self.data_points.entry(kline.time).or_insert(*kline);
+            self.timeseries.entry(kline.time).or_insert(*kline);
         }
 
         if let Some(IndicatorData::Volume(_, data)) = 
@@ -307,7 +307,7 @@ impl CandlestickChart {
         let mut from_time = u64::MAX;
         let mut to_time = u64::MIN;
 
-        self.data_points.iter().for_each(|(time, _)| {
+        self.timeseries.iter().for_each(|(time, _)| {
             from_time = from_time.min(*time);
             to_time = to_time.max(*time);
         });
@@ -336,7 +336,7 @@ impl CandlestickChart {
         if chart_state.autoscale {
             chart_state.translation = Vector::new(
                 0.5 * (chart_state.bounds.width / chart_state.scaling) - (8.0 * chart_state.cell_width / chart_state.scaling),
-                if let Some((_, kline)) = self.data_points.last_key_value() {
+                if let Some((_, kline)) = self.timeseries.last_key_value() {
                     let y_low = chart_state.price_to_y(kline.low);
                     let y_high = chart_state.price_to_y(kline.high);
 
@@ -366,7 +366,7 @@ impl CandlestickChart {
             Entry::Vacant(entry) => {
                 let data = match indicator {
                     CandlestickIndicator::Volume => {
-                        let volume_data = self.data_points.iter()
+                        let volume_data = self.timeseries.iter()
                             .map(|(time, kline)| (*time, (kline.volume.0, kline.volume.1)))
                             .collect();
                         IndicatorData::Volume(Caches::default(), volume_data)
@@ -474,7 +474,7 @@ impl canvas::Program<Message> for CandlestickChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.data_points.is_empty() {
+        if self.timeseries.is_empty() {
             return vec![];
         }
 
@@ -502,7 +502,7 @@ impl canvas::Program<Message> for CandlestickChart {
 
                 let candle_width = chart.cell_width * 0.8;
 
-                self.data_points.range(earliest..=latest)
+                self.timeseries.range(earliest..=latest)
                     .for_each(|(timestamp, kline)| {
                         let x_position = chart.time_to_x(*timestamp);
 
@@ -569,7 +569,7 @@ impl canvas::Program<Message> for CandlestickChart {
                         chart.draw_crosshair(frame, theme, bounds_size, cursor_position);
 
                     if let Some((_, kline)) = self
-                        .data_points
+                        .timeseries
                         .iter()
                         .find(|(time, _)| **time == rounded_timestamp)
                     {

@@ -25,7 +25,7 @@ pub fn create_indicator_elem<'a>(
         translation_x: chart_state.translation.x,
         timeframe: chart_state.timeframe,
         cell_width: chart_state.cell_width,
-        data_points: data,
+        timeseries: data,
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
@@ -70,7 +70,7 @@ pub struct OpenInterest<'a> {
     pub translation_x: f32,
     pub timeframe: u64,
     pub cell_width: f32,
-    pub data_points: &'a BTreeMap<u64, f32>,
+    pub timeseries: &'a BTreeMap<u64, f32>,
     pub chart_bounds: Rectangle,
 }
 
@@ -151,7 +151,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.data_points.is_empty() {
+        if self.timeseries.is_empty() {
             return vec![];
         }
 
@@ -187,7 +187,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             let mut max_value: f32 = f32::MIN;
             let mut min_value: f32 = f32::MAX;
 
-            self.data_points
+            self.timeseries
                 .range(earliest..=latest)
                 .for_each(|(_, value)| {
                     max_value = max_value.max(*value);
@@ -198,7 +198,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             max_value += padding;
             min_value -= padding;
 
-            let points: Vec<Point> = self.data_points
+            let points: Vec<Point> = self.timeseries
                 .range(earliest..=latest)
                 .map(|(timestamp, value)| {
                     let x_position = self.time_to_x(*timestamp);
@@ -280,12 +280,12 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     );
 
                     if let Some((_, oi_value)) = self
-                        .data_points
+                        .timeseries
                         .iter()
                         .find(|(time, _)| **time == rounded_timestamp)
                     {
                         let next_value = self
-                            .data_points
+                            .timeseries
                             .range((rounded_timestamp + self.timeframe)..=u64::MAX)
                             .next()
                             .map(|(_, val)| *val);
