@@ -11,6 +11,7 @@ use crate::charts::footprint::FootprintChart;
 use crate::charts::heatmap::HeatmapChart;
 use crate::charts::timeandsales::TimeAndSales;
 use crate::charts::indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator};
+use crate::charts::ChartBasis;
 use crate::data_providers::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 use crate::screen::{UserTimezone, dashboard::{Dashboard, PaneContent, PaneSettings, PaneState}};
 use crate::style::get_icon_text;
@@ -934,12 +935,13 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                 let tick_size = settings.tick_multiply
                     .unwrap_or(TickMultiplier(50))
                     .multiply_with_min_tick_size(ticker_info);
-                let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M5);
+                let basis = settings.selected_basis
+                    .unwrap_or(ChartBasis::TimeSeries(Timeframe::M5));
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Footprint(
                         FootprintChart::new(
                             layout,
-                            timeframe,
+                            basis,
                             tick_size,
                             vec![],
                             vec![],

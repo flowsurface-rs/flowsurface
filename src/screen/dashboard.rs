@@ -5,13 +5,13 @@ pub use pane::{PaneState, PaneContent, PaneSettings};
 
 use crate::{
     charts::{
-        candlestick::CandlestickChart, footprint::FootprintChart, Message as ChartMessage
+        candlestick::CandlestickChart, footprint::FootprintChart, ChartBasis, Message as ChartMessage
     },
     data_providers::{
         self, binance, bybit, fetcher::FetchRange, Depth, Exchange, Kline, OpenInterest, 
         StreamConfig, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade
     },
-    screen::{InfoType, notification_modal},
+    screen::{notification_modal, InfoType},
     style,
     window::{self, Window},
     StreamType,
@@ -428,6 +428,54 @@ impl Dashboard {
 
                         return self.set_pane_ticksize(main_window.id, window, pane, tick_multiply);
                     }
+                    pane::Message::ChartBasisSelected(basis, pane) => {
+                        self.notification_manager.clear(&window, &pane);
+
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            pane_state.settings.selected_basis = Some(basis);
+                        }
+
+                        match basis {
+                            ChartBasis::TimeSeries(timeframe) => {
+                                match self.set_pane_timeframe(main_window.id, window, pane, timeframe) {
+                                    Ok(stream_type) => {
+                                        if let StreamType::Kline { .. } = stream_type {
+                                            let task = get_kline_fetch_task(
+                                                window,
+                                                pane,
+                                                *stream_type,
+                                                None,
+                                                None,
+                                            );
+
+                                            self.notification_manager.push(
+                                                window,
+                                                pane,
+                                                Notification::Info(InfoType::FetchingKlines),
+                                            );
+
+                                            return Task::done(Message::RefreshStreams)
+                                                .chain(task);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        return Task::done(
+                                            Message::ErrorOccurred(window, Some(pane), err)
+                                        );
+                                    }
+                                }
+                            },
+                            ChartBasis::Tick(size) => {
+                                if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                                    pane_state.settings.selected_basis = Some(basis);
+
+                                    if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
+                                        chart.set_tick_basis(size.into());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     pane::Message::Popout => return self.popout_pane(main_window),
                     pane::Message::Merge => return self.merge_pane(main_window),
                     pane::Message::ToggleIndicator(pane, indicator_str) => {
@@ -538,7 +586,7 @@ impl Dashboard {
                                                 (chart.get_raw_trades(), chart.get_tick_size());
                                             *chart = FootprintChart::new(
                                                 chart.get_chart_layout(),
-                                                timeframe,
+                                                ChartBasis::TimeSeries(timeframe),
                                                 tick_size,
                                                 klines.clone(),
                                                 raw_trades,

@@ -19,7 +19,7 @@ use crate::screen::UserTimezone;
 use super::scales::PriceInfoLabel;
 use super::indicators::{self, FootprintIndicator, Indicator};
 use super::ticks::TickAggr;
-use super::{Caches, Chart, ChartConstants, CommonChartData, FootprintTrades, Interaction, Message};
+use super::{Caches, Chart, ChartBasis, ChartConstants, CommonChartData, FootprintTrades, Interaction, Message};
 use super::{canvas_interaction, view_chart, update_chart, count_decimals, request_fetch, abbr_large_numbers, round_to_tick};
 
 impl Chart for FootprintChart {
@@ -116,104 +116,153 @@ pub struct FootprintChart {
 impl FootprintChart {
     pub fn new(
         layout: SerializableChartData,
-        timeframe: Timeframe,
+        basis: ChartBasis,
         tick_size: f32,
         klines_raw: Vec<Kline>,
         raw_trades: Vec<Trade>,
         enabled_indicators: &[FootprintIndicator],
         ticker_info: Option<TickerInfo>,
     ) -> Self {
-        let mut timeseries = BTreeMap::new();
-        let mut volume_data = BTreeMap::new();
+        match basis {
+            ChartBasis::TimeSeries(timeframe) => {
+                let mut timeseries = BTreeMap::new();
+                let mut volume_data = BTreeMap::new();
 
-        let base_price_y = klines_raw.last().unwrap_or(&Kline::default()).close;
+                let base_price_y = klines_raw.last().unwrap_or(&Kline::default()).close;
 
-        for kline in klines_raw {
-            timeseries
-                .entry(kline.time)
-                .or_insert((HashMap::new(), kline));
-            volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
-        }
-
-        let mut latest_x = 0;
-        let (mut scale_high, mut scale_low) = (0.0f32, f32::MAX);
-        timeseries
-            .iter()
-            .rev()
-            .take(12)
-            .for_each(|(time, (_, kline))| {
-                scale_high = scale_high.max(kline.high);
-                scale_low = scale_low.min(kline.low);
-
-                latest_x = latest_x.max(*time);
-            });
-
-        let aggregate_time = timeframe.to_milliseconds();
-
-        for trade in &raw_trades {
-            let rounded_time = (trade.time / aggregate_time) * aggregate_time;
-            let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
-
-            let entry = timeseries
-                .entry(rounded_time)
-                .or_insert((HashMap::new(), Kline::default()));
-
-            if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
-                if trade.is_sell {
-                    *sell_qty += trade.qty;
-                } else {
-                    *buy_qty += trade.qty;
+                for kline in klines_raw {
+                    timeseries
+                        .entry(kline.time)
+                        .or_insert((HashMap::new(), kline));
+                    volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
                 }
-            } else if trade.is_sell {
-                entry.0.insert(price_level, (0.0, trade.qty));
-            } else {
-                entry.0.insert(price_level, (trade.qty, 0.0));
-            }
-        }
 
-        let y_ticks = (scale_high - scale_low) / tick_size;
+                let mut latest_x = 0;
+                let (mut scale_high, mut scale_low) = (0.0f32, f32::MAX);
+                timeseries
+                    .iter()
+                    .rev()
+                    .take(12)
+                    .for_each(|(time, (_, kline))| {
+                        scale_high = scale_high.max(kline.high);
+                        scale_low = scale_low.min(kline.low);
 
-        FootprintChart {
-            chart: CommonChartData {
-                cell_width: Self::DEFAULT_CELL_WIDTH,
-                cell_height: 800.0 / y_ticks,
-                base_range: 400.0 / y_ticks,
-                base_price_y,
-                latest_x,
-                timeframe: timeframe.to_milliseconds(),
-                tick_size,
-                decimals: count_decimals(tick_size),
-                crosshair: layout.crosshair,
-                indicators_split: layout.indicators_split,
-                ticker_info,
-                ..Default::default()
-            },
-            data_source: ChartData::TickBased(
-                TickAggr::new(100, tick_size)
-            ),
-            timeseries,
-            raw_trades,
-            indicators: {
-                let mut indicators = HashMap::new();
+                        latest_x = latest_x.max(*time);
+                    });
 
-                for indicator in enabled_indicators {
-                    indicators.insert(
-                        *indicator,
-                        match indicator {
-                            FootprintIndicator::Volume => {
-                                IndicatorData::Volume(Caches::default(), volume_data.clone())
-                            },
-                            FootprintIndicator::OpenInterest => {
-                                IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
-                            }
+                let aggregate_time = timeframe.to_milliseconds();
+
+                for trade in &raw_trades {
+                    let rounded_time = (trade.time / aggregate_time) * aggregate_time;
+                    let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+
+                    let entry = timeseries
+                        .entry(rounded_time)
+                        .or_insert((HashMap::new(), Kline::default()));
+
+                    if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
+                        if trade.is_sell {
+                            *sell_qty += trade.qty;
+                        } else {
+                            *buy_qty += trade.qty;
                         }
-                    );
+                    } else if trade.is_sell {
+                        entry.0.insert(price_level, (0.0, trade.qty));
+                    } else {
+                        entry.0.insert(price_level, (trade.qty, 0.0));
+                    }
                 }
 
-                indicators
+                let y_ticks = (scale_high - scale_low) / tick_size;
+
+                FootprintChart {
+                    chart: CommonChartData {
+                        cell_width: Self::DEFAULT_CELL_WIDTH,
+                        cell_height: 800.0 / y_ticks,
+                        base_range: 400.0 / y_ticks,
+                        base_price_y,
+                        latest_x,
+                        timeframe: timeframe.to_milliseconds(),
+                        tick_size,
+                        decimals: count_decimals(tick_size),
+                        crosshair: layout.crosshair,
+                        indicators_split: layout.indicators_split,
+                        ticker_info,
+                        ..Default::default()
+                    },
+                    data_source: ChartData::TimeSeries(timeseries.clone()),
+                    timeseries,
+                    raw_trades,
+                    indicators: {
+                        let mut indicators = HashMap::new();
+        
+                        for indicator in enabled_indicators {
+                            indicators.insert(
+                                *indicator,
+                                match indicator {
+                                    FootprintIndicator::Volume => {
+                                        IndicatorData::Volume(Caches::default(), volume_data.clone())
+                                    },
+                                    FootprintIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
+                                    }
+                                }
+                            );
+                        }
+        
+                        indicators
+                    },
+                    fetching_trades: false,
+                    request_handler: RequestHandler::new(),
+                }
             },
-            fetching_trades: false,
-            request_handler: RequestHandler::new(),
+            ChartBasis::Tick(interval) => {
+                let timeseries = BTreeMap::new();
+
+                FootprintChart {
+                    chart: CommonChartData {
+                        cell_width: Self::DEFAULT_CELL_WIDTH,
+                        cell_height: 400.0,
+                        base_range: 200.0,
+                        tick_size,
+                        decimals: count_decimals(tick_size),
+                        crosshair: layout.crosshair,
+                        indicators_split: layout.indicators_split,
+                        ticker_info,
+                        ..Default::default()
+                    },
+                    data_source: ChartData::TickBased(
+                        TickAggr::new(
+                            interval.into(), 
+                            tick_size, 
+                            &raw_trades,
+                        )
+                    ),
+                    timeseries,
+                    raw_trades,
+                    indicators: {
+                        let mut indicators = HashMap::new();
+        
+                        for indicator in enabled_indicators {
+                            indicators.insert(
+                                *indicator,
+                                match indicator {
+                                    FootprintIndicator::Volume => {
+                                        IndicatorData::Volume(Caches::default(), BTreeMap::new())
+                                    },
+                                    FootprintIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
+                                    }
+                                }
+                            );
+                        }
+        
+                        indicators
+                    },
+                    fetching_trades: false,
+                    request_handler: RequestHandler::new(),
+                }
+            }
         }
     }
 
@@ -396,7 +445,24 @@ impl FootprintChart {
 
         chart.tick_size = new_tick_size;
 
+        match self.data_source {
+            ChartData::TickBased(ref mut tick_aggr) => {
+                tick_aggr.change_tick_size(new_tick_size, &self.raw_trades);
+            }
+            _ => {}
+        }
+
         self.clear_trades(false);
+    }
+
+    pub fn set_tick_basis(&mut self, tick_basis: u64) {
+        self.data_source = ChartData::TickBased(
+            TickAggr::new(
+                tick_basis, 
+                self.chart.tick_size, 
+                &self.raw_trades
+            )
+        );
     }
 
     fn get_kline_timerange(&self) -> (u64, u64) {
