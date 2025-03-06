@@ -936,7 +936,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                     .unwrap_or(TickMultiplier(50))
                     .multiply_with_min_tick_size(ticker_info);
                 let basis = settings.selected_basis
-                    .unwrap_or(ChartBasis::TimeSeries(Timeframe::M5));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5));
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Footprint(
                         FootprintChart::new(

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use crate::data_providers::Trade;
+
 use super::round_to_tick;
 
 type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
@@ -104,10 +105,6 @@ impl TickAccumulation {
         }
         max_qty
     }
-
-    pub fn get_volume(&self) -> (f32, f32) {
-        (self.volume_buy, self.volume_sell)
-    }
 }
 
 pub struct TickAggr {
@@ -135,17 +132,6 @@ impl TickAggr {
             };
             tick_aggr.insert_trades(all_raw_trades);
             tick_aggr
-        }
-    }
-
-    pub fn set_aggr_interval(&mut self, interval: u64, all_raw_trades: &[Trade]) {
-        self.aggr_interval = interval;
-
-        self.data_points.clear();
-        self.next_buffer.clear();
-
-        if !all_raw_trades.is_empty() {
-            self.insert_trades(all_raw_trades);
         }
     }
 

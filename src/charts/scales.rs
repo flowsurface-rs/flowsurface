@@ -536,35 +536,39 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
             // Last price (priority 2)
             if let Some(label) = self.last_price {
                 let candle_close_label = {
-                    let current_time = chrono::Utc::now().timestamp_millis();
-                    let next_kline_open =
-                        (current_time / i64::from(self.timeframe) + 1) * i64::from(self.timeframe);
-
-                    let remaining_seconds = (next_kline_open - current_time) / 1000;
-                    
-                    if remaining_seconds > 0 {
-                        let hours = remaining_seconds / 3600;
-                        let minutes = (remaining_seconds % 3600) / 60;
-                        let seconds = remaining_seconds % 60;
-
-                        let time_format = if hours > 0 {
-                            format!("{hours:02}:{minutes:02}:{seconds:02}")
-                        } else {
-                            format!("{minutes:02}:{seconds:02}")
-                        };
-
-                        Some(Label {
-                            content: time_format,
-                            background_color: Some(palette.background.strong.color),
-                            text_color: if palette.is_dark {
-                                Color::BLACK.scale_alpha(0.8)
-                            } else {
-                                Color::WHITE.scale_alpha(0.8)
-                            },
-                            text_size: 11.0,
-                        })
-                    } else {
+                    if self.timeframe == 0 {
                         None
+                    } else {
+                        let current_time = chrono::Utc::now().timestamp_millis();
+                        let next_kline_open =
+                            (current_time / i64::from(self.timeframe) + 1) * i64::from(self.timeframe);
+                
+                        let remaining_seconds = (next_kline_open - current_time) / 1000;
+                        
+                        if remaining_seconds > 0 {
+                            let hours = remaining_seconds / 3600;
+                            let minutes = (remaining_seconds % 3600) / 60;
+                            let seconds = remaining_seconds % 60;
+                
+                            let time_format = if hours > 0 {
+                                format!("{hours:02}:{minutes:02}:{seconds:02}")
+                            } else {
+                                format!("{minutes:02}:{seconds:02}")
+                            };
+                
+                            Some(Label {
+                                content: time_format,
+                                background_color: Some(palette.background.strong.color),
+                                text_color: if palette.is_dark {
+                                    Color::BLACK.scale_alpha(0.8)
+                                } else {
+                                    Color::WHITE.scale_alpha(0.8)
+                                },
+                                text_size: 11.0,
+                            })
+                        } else {
+                            None
+                        }
                     }
                 };
 

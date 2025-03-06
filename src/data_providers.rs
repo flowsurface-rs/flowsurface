@@ -15,6 +15,7 @@ use serde_json::Value;
 pub mod binance;
 pub mod bybit;
 pub mod fetcher;
+pub mod aggr;
 
 #[allow(clippy::large_enum_variant)]
 pub enum State {

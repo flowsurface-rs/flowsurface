@@ -18,7 +18,7 @@ use crate::{
 
 use super::{Interaction, Message};
 
-pub trait Indicator: PartialEq + Display + ToString + Debug + 'static  {
+pub trait Indicator: PartialEq + Display + Debug + 'static  {
     fn get_available(market_type: Option<MarketType>) -> &'static [Self] where Self: Sized;
     
     fn get_enabled(indicators: &[Self], market_type: Option<MarketType>) -> impl Iterator<Item = &Self> 

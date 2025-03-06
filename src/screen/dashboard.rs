@@ -436,7 +436,7 @@ impl Dashboard {
                         }
 
                         match basis {
-                            ChartBasis::TimeSeries(timeframe) => {
+                            ChartBasis::Time(timeframe) => {
                                 match self.set_pane_timeframe(main_window.id, window, pane, timeframe) {
                                     Ok(stream_type) => {
                                         if let StreamType::Kline { .. } = stream_type {
@@ -586,7 +586,8 @@ impl Dashboard {
                                                 (chart.get_raw_trades(), chart.get_tick_size());
                                             *chart = FootprintChart::new(
                                                 chart.get_chart_layout(),
-                                                ChartBasis::TimeSeries(timeframe),
+                                                state.settings.selected_basis
+                                                    .unwrap_or(ChartBasis::Time(timeframe)),
                                                 tick_size,
                                                 klines.clone(),
                                                 raw_trades,

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Display};
+use std::collections::HashMap;
 
 use iced::{
     alignment,
@@ -11,17 +11,19 @@ use indicators::Indicator;
 use ordered_float::OrderedFloat;
 use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use serde::{Deserialize, Serialize};
-use ticks::TickCount;
 use uuid::Uuid;
 
 use crate::{
-    data_providers::{fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo, Timeframe}, 
+    data_providers::{
+        fetcher::{FetchRange, ReqError, RequestHandler}, 
+        aggr::ticks::TickCount,
+        TickerInfo, Timeframe,
+    }, 
     layout::SerializableChartData, screen::UserTimezone, style, 
     tooltip::{self, tooltip}, widget::hsplit::HSplit
 };
 
 mod scales;
-pub mod ticks;
 pub mod config;
 pub mod candlestick;
 pub mod footprint;
@@ -456,20 +458,20 @@ impl Caches {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ChartBasis {
-    TimeSeries(Timeframe),
+    Time(Timeframe),
     Tick(TickCount),
 }
 
 impl From<Timeframe> for ChartBasis {
     fn from(timeframe: Timeframe) -> Self {
-        ChartBasis::TimeSeries(timeframe)
+        ChartBasis::Time(timeframe)
     }
 }
 
 impl std::fmt::Display for ChartBasis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ChartBasis::TimeSeries(timeframe) => write!(f, "{}", timeframe),
+            ChartBasis::Time(timeframe) => write!(f, "{}", timeframe),
             ChartBasis::Tick(tick_count) => write!(f, "{}", tick_count),
         }
     }
