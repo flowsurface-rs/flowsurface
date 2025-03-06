@@ -253,20 +253,10 @@ impl HeatmapChart {
                 ..Default::default()
             },
             indicators: {
-                let mut indicators = HashMap::new();
-
-                for indicator in enabled_indicators {
-                    indicators.insert(
-                        *indicator,
-                        match indicator {
-                            HeatmapIndicator::Volume => {
-                                IndicatorData::Volume
-                            },
-                        }
-                    );
-                }
-
-                indicators
+                enabled_indicators
+                    .iter()
+                    .map(|&indicator| (indicator, IndicatorData::Volume))
+                    .collect()
             },
             orderbook: Orderbook::new(tick_size, aggr_time),
             timeseries: Vec::new(),

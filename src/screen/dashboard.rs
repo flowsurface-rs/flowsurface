@@ -1183,7 +1183,7 @@ impl Dashboard {
                 ),
                 |pane_state| match &mut pane_state.content {
                     PaneContent::Footprint(chart, _) => {
-                        chart.insert_trades(trades.to_owned(), is_batches_done);
+                        chart.insert_raw_trades(trades.to_owned(), is_batches_done);
                         Ok(())
                     }
                     _ => Err(
@@ -1249,7 +1249,7 @@ impl Dashboard {
                             chart.insert_datapoint(&trades_buffer, depth_update_t, &depth);
                         }
                         PaneContent::Footprint(chart, _) => {
-                            chart.insert_datapoint(&trades_buffer, depth_update_t);
+                            chart.insert_trades_buffer(&trades_buffer, depth_update_t);
                         }
                         PaneContent::TimeAndSales(chart) => {
                             chart.update(&trades_buffer);

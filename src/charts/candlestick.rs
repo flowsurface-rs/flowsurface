@@ -144,27 +144,23 @@ impl CandlestickChart {
                 indicators_split: layout.indicators_split,
                 decimals: count_decimals(tick_size),
                 ticker_info,
+                basis: super::ChartBasis::Time(timeframe),
                 ..Default::default()
             },
             timeseries,
             indicators: {
-                let mut indicators = HashMap::new();
-
-                for indicator in enabled_indicators {
-                    indicators.insert(
-                        *indicator,
-                        match indicator {
+                enabled_indicators.iter()
+                    .map(|indicator| {
+                        (*indicator, match indicator {
                             CandlestickIndicator::Volume => {
                                 IndicatorData::Volume(Caches::default(), volume_data.clone())
                             },
                             CandlestickIndicator::OpenInterest => {
                                 IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
                             }
-                        }
-                    );
-                }
-
-                indicators
+                        })
+                    })
+                    .collect()
             },
             request_handler: RequestHandler::new(),
         }

@@ -152,28 +152,24 @@ impl FootprintChart {
                         crosshair: layout.crosshair,
                         indicators_split: layout.indicators_split,
                         ticker_info,
+                        basis,
                         ..Default::default()
                     },
                     data_source: ChartData::TimeBased(timeseries),
                     raw_trades,
                     indicators: {
-                        let mut indicators = HashMap::new();
-        
-                        for indicator in enabled_indicators {
-                            indicators.insert(
-                                *indicator,
-                                match indicator {
+                        enabled_indicators.iter()
+                            .map(|indicator| {
+                                (*indicator, match indicator {
                                     FootprintIndicator::Volume => {
                                         IndicatorData::Volume(Caches::default(), volume_data.clone())
                                     },
                                     FootprintIndicator::OpenInterest => {
                                         IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
                                     }
-                                }
-                            );
-                        }
-        
-                        indicators
+                                })
+                            })
+                            .collect()
                     },
                     fetching_trades: false,
                     request_handler: RequestHandler::new(),
@@ -183,13 +179,14 @@ impl FootprintChart {
                 FootprintChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
-                        cell_height: 400.0,
-                        base_range: 200.0,
+                        cell_height: 80.0 / tick_size,
+                        base_range: 40.0 / tick_size,
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,
                         indicators_split: layout.indicators_split,
                         ticker_info,
+                        basis,
                         ..Default::default()
                     },
                     data_source: ChartData::TickBased(
@@ -201,23 +198,18 @@ impl FootprintChart {
                     ),
                     raw_trades,
                     indicators: {
-                        let mut indicators = HashMap::new();
-        
-                        for indicator in enabled_indicators {
-                            indicators.insert(
-                                *indicator,
-                                match indicator {
+                        enabled_indicators.iter()
+                            .map(|indicator| {
+                                (*indicator, match indicator {
                                     FootprintIndicator::Volume => {
                                         IndicatorData::Volume(Caches::default(), BTreeMap::new())
                                     },
                                     FootprintIndicator::OpenInterest => {
                                         IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
                                     }
-                                }
-                            );
-                        }
-        
-                        indicators
+                                })
+                            })
+                            .collect()
                     },
                     fetching_trades: false,
                     request_handler: RequestHandler::new(),
@@ -389,11 +381,8 @@ impl FootprintChart {
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
         let chart = self.get_common_data_mut();
-        let old_tick_size = chart.tick_size;
 
-        chart.base_range *= new_tick_size / old_tick_size;
-        chart.cell_height *= new_tick_size / old_tick_size;
-
+        chart.cell_height *= new_tick_size / chart.tick_size;
         chart.tick_size = new_tick_size;
 
         match self.data_source {
@@ -409,6 +398,8 @@ impl FootprintChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
+        self.chart.timeframe = 0;
+
         self.data_source = ChartData::TickBased(
             TickAggr::new(
                 tick_basis, 
@@ -484,20 +475,33 @@ impl FootprintChart {
         (from_time, to_time)
     }
 
-    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64) {
+    pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade], depth_update: u64) {
+        self.raw_trades.extend_from_slice(trades_buffer);
+        
         match self.data_source {
             ChartData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&trades_buffer);
+                
+                self.chart.last_price = {
+                    tick_aggr.data_points.last()
+                        .map(|tick_kline| {
+                            if tick_kline.close_price > tick_kline.open_price {
+                                Some(PriceInfoLabel::Up(tick_kline.close_price))
+                            } else {
+                                Some(PriceInfoLabel::Down(tick_kline.close_price))
+                            }
+                        }).unwrap_or(None)
+                };
+
+                //self.render_start();
             }
             ChartData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades(trades_buffer, Some(depth_update));
             }
         }
-
-        self.raw_trades.extend_from_slice(trades_buffer);
     }
 
-    pub fn insert_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {     
+    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {     
         match self.data_source {
             ChartData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&raw_trades);
@@ -811,8 +815,6 @@ impl canvas::Program<Message> for FootprintChart {
                     }
                 };
 
-                //println!("earliest: {}, latest: {}", earliest, latest);
-
                 let (highest, lowest) = (
                     chart.y_to_price(region.y),
                     chart.y_to_price(region.y + region.height),
@@ -830,12 +832,15 @@ impl canvas::Program<Message> for FootprintChart {
 
                 let price_to_y = |price: f32| chart.price_to_y(price);
 
+                //println!("\nscaling: {}, translation_x: {}, translation_y: {}, cell_width: {}, cell_height: {}, earliest: {}, latest: {}",
+                //    chart.scaling, chart.translation.x, chart.translation.y, cell_width, cell_height, earliest, latest);
+
                 match &self.data_source {
-                    ChartData::TickBased(data) => {
+                    ChartData::TickBased(tick_aggr) => {
                         let earliest = earliest as usize;
                         let latest = latest as usize;
 
-                        data.data_points.iter()
+                        tick_aggr.data_points.iter()
                             .rev()
                             .enumerate()
                             .filter(|(index, _)| *index <= earliest && *index >= latest)

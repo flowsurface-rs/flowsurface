@@ -202,11 +202,18 @@ fn canvas_interaction<T: Chart>(
 
                         let translation = {
                             let factor = scaling - old_scaling;
-                            let vector_diff = Vector::new(
-                                cursor_to_center.x * factor / (old_scaling * old_scaling),
-                                cursor_to_center.y * factor / (old_scaling * old_scaling),
-                            );
-
+                            let denominator = old_scaling * old_scaling;
+                            
+                            // safeguard against division by very small numbers
+                            let vector_diff = if denominator > 0.0001 {
+                                Vector::new(
+                                    cursor_to_center.x * factor / denominator,
+                                    cursor_to_center.y * factor / denominator,
+                                )
+                            } else {
+                                Vector::new(0.0, 0.0)
+                            };
+                        
                             chart_state.translation - vector_diff
                         };
 
@@ -263,14 +270,27 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 
                 let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
 
-                let cursor_time = chart_state.x_to_time(cursor_chart_x);
+                match chart_state.basis {
+                    ChartBasis::Time(_) => {
+                        let cursor_time = chart_state.x_to_time(cursor_chart_x);
+                        chart_state.cell_width = new_width;
+                        let new_cursor_x = chart_state.time_to_x(cursor_time);
 
-                chart_state.cell_width = new_width;
+                        if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
+                            chart_state.translation.x -= new_cursor_x - cursor_chart_x;
+                        }
+                    }
+                    ChartBasis::Tick(_) => {
+                        let cursor_tick = chart_state.x_to_tick(cursor_chart_x);
+                        chart_state.cell_width = new_width;
+                        let new_cursor_x = chart_state.tick_to_x(cursor_tick);
 
-                let new_cursor_x = chart_state.time_to_x(cursor_time);
-
-                chart_state.translation.x -= new_cursor_x - cursor_chart_x;
-
+                        if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
+                            chart_state.translation.x -= new_cursor_x - cursor_chart_x;
+                        }
+                    }
+                }
+            
                 chart_state.autoscale = false;
             }
         }
@@ -489,6 +509,7 @@ pub struct CommonChartData {
     scaling: f32,
     cell_width: f32,
     cell_height: f32,
+    basis: ChartBasis,
 
     base_range: f32,
     last_price: Option<PriceInfoLabel>,
@@ -510,6 +531,7 @@ impl Default for CommonChartData {
             crosshair: true,
             translation: Vector::default(),
             bounds: Rectangle::default(),
+            basis: ChartBasis::Time(Timeframe::M5),
             last_price: None,
             base_range: 1.0,
             scaling: 1.0,
