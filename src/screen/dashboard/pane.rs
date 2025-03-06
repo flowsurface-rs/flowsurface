@@ -5,8 +5,8 @@ use crate::{
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator}, 
     }, 
     data_providers::{
-        Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-        aggr::ticks::TickCount,
+        Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo,
+        aggr::{ticks::TickCount, time::Timeframe},
     }, 
     layout::SerializableChartData, 
     screen::{
@@ -45,7 +45,6 @@ pub enum Message {
     MaximizePane(pane_grid::Pane),
     Restore,
     TicksizeSelected(TickMultiplier, pane_grid::Pane),
-    TimeframeSelected(Timeframe, pane_grid::Pane),
     ChartBasisSelected(ChartBasis, pane_grid::Pane),
     ToggleModal(pane_grid::Pane, PaneModal),
     InitPaneContent(window::Id, String, Option<pane_grid::Pane>, Vec<StreamType>, TickerInfo),
@@ -804,7 +803,9 @@ fn stream_modifier_view<'a>(
                     let msg = if *timeframe == selected_timeframe {
                         None
                     } else {
-                        Some(Message::TimeframeSelected(*timeframe, pane))
+                        Some(Message::ChartBasisSelected(
+                            ChartBasis::Time(*timeframe), pane
+                        ))
                     };
                     timeframes_column = timeframes_column.push(
                         create_button(timeframe.to_string(), msg)

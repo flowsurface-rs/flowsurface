@@ -10,7 +10,7 @@ use crate::data_providers::{MarketType, TickerInfo};
 use crate::layout::SerializableChartData;
 use crate::data_providers::{
     fetcher::{FetchRange, RequestHandler},
-    Kline, OpenInterest as OIData, Timeframe
+    Kline, OpenInterest as OIData, aggr::time::Timeframe,
 };
 use crate::screen::UserTimezone;
 

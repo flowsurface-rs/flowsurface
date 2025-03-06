@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::{
     data_providers::{
         fetcher::{FetchRange, ReqError, RequestHandler}, 
-        aggr::ticks::TickCount,
-        TickerInfo, Timeframe,
+        aggr::{ticks::TickCount, time::Timeframe},
+        TickerInfo,
     }, 
     layout::SerializableChartData, screen::UserTimezone, style, 
     tooltip::{self, tooltip}, widget::hsplit::HSplit

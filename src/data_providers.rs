@@ -1,9 +1,9 @@
-use std::{
-    collections::BTreeMap,
-    fmt::{self, Write},
-    hash::Hash,
-};
+pub mod binance;
+pub mod bybit;
+pub mod fetcher;
+pub mod aggr;
 
+use aggr::time::Timeframe;
 use ordered_float::OrderedFloat;
 use rust_decimal::{
     prelude::{FromPrimitive, ToPrimitive},
@@ -11,11 +11,11 @@ use rust_decimal::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-
-pub mod binance;
-pub mod bybit;
-pub mod fetcher;
-pub mod aggr;
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Write},
+    hash::Hash,
+};
 
 #[allow(clippy::large_enum_variant)]
 pub enum State {
@@ -386,65 +386,6 @@ impl<I> StreamConfig<I> {
         };
 
         Self { id, market_type }
-    }
-}
-
-impl std::fmt::Display for Timeframe {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Timeframe::M1 => "1m",
-                Timeframe::M3 => "3m",
-                Timeframe::M5 => "5m",
-                Timeframe::M15 => "15m",
-                Timeframe::M30 => "30m",
-                Timeframe::H1 => "1h",
-                Timeframe::H2 => "2h",
-                Timeframe::H4 => "4h",
-            }
-        )
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum Timeframe {
-    M1,
-    M3,
-    M5,
-    M15,
-    M30,
-    H1,
-    H2,
-    H4,
-}
-impl Timeframe {
-    pub const ALL: [Timeframe; 8] = [
-        Timeframe::M1,
-        Timeframe::M3,
-        Timeframe::M5,
-        Timeframe::M15,
-        Timeframe::M30,
-        Timeframe::H1,
-        Timeframe::H2,
-        Timeframe::H4,
-    ];
-
-    pub fn to_minutes(self) -> u16 {
-        match self {
-            Timeframe::M1 => 1,
-            Timeframe::M3 => 3,
-            Timeframe::M5 => 5,
-            Timeframe::M15 => 15,
-            Timeframe::M30 => 30,
-            Timeframe::H1 => 60,
-            Timeframe::H2 => 120,
-            Timeframe::H4 => 240,
-        }
-    }
-
-    pub fn to_milliseconds(self) -> u64 {
-        u64::from(self.to_minutes()) * 60_000
     }
 }
 

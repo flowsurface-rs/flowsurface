@@ -9,7 +9,7 @@ use crate::{
     },
     data_providers::{
         self, binance, bybit, fetcher::FetchRange, Depth, Exchange, Kline, OpenInterest, 
-        StreamConfig, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade
+        StreamConfig, TickMultiplier, Ticker, TickerInfo, Trade, aggr::time::Timeframe,
     },
     screen::{notification_modal, InfoType},
     style,
@@ -392,37 +392,6 @@ impl Dashboard {
                             }
                         }
                     }
-                    pane::Message::TimeframeSelected(timeframe, pane) => {
-                        self.notification_manager.clear(&window, &pane);
-
-                        match self.set_pane_timeframe(main_window.id, window, pane, timeframe) {
-                            Ok(stream_type) => {
-                                if let StreamType::Kline { .. } = stream_type {
-                                    let task = get_kline_fetch_task(
-                                        window,
-                                        pane,
-                                        *stream_type,
-                                        None,
-                                        None,
-                                    );
-
-                                    self.notification_manager.push(
-                                        window,
-                                        pane,
-                                        Notification::Info(InfoType::FetchingKlines),
-                                    );
-
-                                    return Task::done(Message::RefreshStreams)
-                                        .chain(task);
-                                }
-                            }
-                            Err(err) => {
-                                return Task::done(
-                                    Message::ErrorOccurred(window, Some(pane), err)
-                                );
-                            }
-                        }
-                    }
                     pane::Message::TicksizeSelected(tick_multiply, pane) => {
                         self.notification_manager.clear(&window, &pane);
 
@@ -467,8 +436,6 @@ impl Dashboard {
                             },
                             ChartBasis::Tick(size) => {
                                 if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                                    pane_state.settings.selected_basis = Some(basis);
-
                                     if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
                                         chart.set_tick_basis(size.into());
                                     }
