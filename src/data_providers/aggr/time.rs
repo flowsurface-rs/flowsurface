@@ -133,10 +133,14 @@ impl TimeSeries {
             .unwrap_or(0.0)
     }
     
-    pub fn get_latest_timestamp(&self) -> u64 {
-        self.data_points.keys().last().copied().unwrap_or(0)
+    pub fn get_latest_timestamp(&self) -> Option<u64> {
+        self.data_points.keys().last().copied()
     }
     
+    pub fn get_latest_kline(&self) -> Option<&Kline> {
+        self.data_points.values().last().map(|dp| &dp.kline)
+    }
+
     pub fn get_price_scale(&self, lookback: usize) -> (f32, f32) {
         let mut scale_high = 0.0f32;
         let mut scale_low = f32::MAX;
@@ -157,6 +161,15 @@ impl TimeSeries {
             volume_data.insert(*time, data_point.kline.volume);
         }
         volume_data
+    }
+
+    pub fn get_kline_timerange(&self) -> (u64, u64) {
+        let earliest = self.data_points.keys().next().copied()
+            .unwrap_or(0);
+        let latest = self.data_points.keys().last().copied()
+            .unwrap_or(0);
+
+        (earliest, latest)
     }
 
     pub fn change_tick_size(&mut self, tick_size: f32, all_raw_trades: &[Trade]) {

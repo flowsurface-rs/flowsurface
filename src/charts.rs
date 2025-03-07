@@ -482,6 +482,29 @@ enum ChartData {
     TickBased(TickAggr),
 }
 
+impl ChartData {
+    pub fn get_latest_price_range_y_midpoint(&self, chart_state: &CommonChartData) -> f32 {
+        match self {
+            ChartData::TimeBased(timeseries) => {
+                timeseries.get_latest_kline().map(|kline| {
+                    let y_low = chart_state.price_to_y(kline.low);
+                    let y_high = chart_state.price_to_y(kline.high);
+                    -(y_low + y_high) / 2.0
+                })
+                .unwrap_or(0.0)
+            },
+            ChartData::TickBased(tick_aggr) => {
+                tick_aggr.get_latest_data_point().map(|dp| {
+                    let y_low = chart_state.price_to_y(dp.low_price);
+                    let y_high = chart_state.price_to_y(dp.high_price);
+                    -(y_low + y_high) / 2.0
+                })
+                .unwrap_or(0.0)
+            }
+        }
+    }
+}
+
 impl From<Timeframe> for ChartBasis {
     fn from(timeframe: Timeframe) -> Self {
         ChartBasis::Time(timeframe)

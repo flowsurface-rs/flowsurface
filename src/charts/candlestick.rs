@@ -122,8 +122,8 @@ impl CandlestickChart {
                 );
                 
                 let base_price_y = timeseries.get_base_price();
-                let latest_x = timeseries.get_latest_timestamp();
-                let (scale_high, scale_low) = timeseries.get_price_scale(12);
+                let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
+                let (scale_high, scale_low) = timeseries.get_price_scale(60);
                 let volume_data = timeseries.get_volume_data();
                 
                 let y_ticks = (scale_high - scale_low) / tick_size;
@@ -360,15 +360,7 @@ impl CandlestickChart {
     fn get_kline_timerange(&self) -> (u64, u64) {
         match &self.data_source {
             ChartData::TimeBased(source) => {
-                let mut from_time = u64::MAX;
-                let mut to_time = u64::MIN;
-
-                source.data_points.iter().for_each(|(time, _)| {
-                    from_time = from_time.min(*time);
-                    to_time = to_time.max(*time);
-                });
-
-                (from_time, to_time)
+                source.get_kline_timerange()
             },
             ChartData::TickBased(_) => {
                 // TODO: implement
@@ -399,32 +391,7 @@ impl CandlestickChart {
             chart_state.translation = Vector::new(
                 0.5 * (chart_state.bounds.width / chart_state.scaling) 
                     - (chart_state.cell_width / chart_state.scaling),
-                match &self.data_source {
-                    ChartData::TimeBased(timeseries) => {
-                        if let Some((_, dp)) = timeseries.data_points.last_key_value() {
-                            let y_low = chart_state.price_to_y(dp.kline.low);
-                            let y_high = chart_state.price_to_y(dp.kline.high);
-    
-                            -(y_low + y_high) / 2.0
-                        } else {
-                            0.0
-                        }
-                    },
-                    ChartData::TickBased(tick_aggr) => {
-                        let (y_low, y_high) = tick_aggr.data_points.last()
-                            .map(|tick_kline| {
-                                let y_low = tick_kline.low_price;
-                                let y_high = tick_kline.high_price;
-
-                                (y_low, y_high)
-                            }).unwrap_or((0.0, 0.0));
-
-                        let y_low = chart_state.price_to_y(y_low);
-                        let y_high = chart_state.price_to_y(y_high);
-
-                        -(y_low + y_high) / 2.0
-                    }
-                }   
+                self.data_source.get_latest_price_range_y_midpoint(chart_state),
             );
         }
 

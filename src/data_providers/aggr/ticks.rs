@@ -146,6 +146,10 @@ impl TickAggr {
         }
     }
     
+    pub fn get_latest_data_point(&self) -> Option<&TickAccumulation> {
+        self.data_points.last()
+    }
+
     pub fn insert_trades(&mut self, buffer: &[Trade]) {
         if buffer.is_empty() && self.next_buffer.is_empty() {
             return;
