@@ -902,13 +902,15 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
             indicators,
         } => {
             if let Some(ticker_info) = settings.ticker_info {
-                let timeframe = settings.selected_timeframe.unwrap_or(Timeframe::M15);
+                let basis = settings.selected_basis
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15));
+
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Candlestick(
                         CandlestickChart::new(
                             layout,
+                            basis,
                             vec![],
-                            timeframe,
                             ticker_info.min_ticksize,
                             &indicators,
                             settings.ticker_info,

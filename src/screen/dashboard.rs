@@ -541,8 +541,9 @@ impl Dashboard {
                                             let tick_size = chart.get_tick_size();
                                             *chart = CandlestickChart::new(
                                                 chart.get_chart_layout(),
+                                                state.settings.selected_basis
+                                                    .unwrap_or(ChartBasis::Time(timeframe)),
                                                 klines.clone(),
-                                                timeframe,
                                                 tick_size,
                                                 indicators,
                                                 state.settings.ticker_info,

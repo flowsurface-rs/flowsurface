@@ -280,8 +280,8 @@ impl PaneState {
                 PaneContent::Candlestick(
                     CandlestickChart::new(
                         layout,
+                        ChartBasis::Time(timeframe),
                         vec![],
-                        timeframe,
                         tick_size,
                         &enabled_indicators,
                         Some(ticker_info),
@@ -339,8 +339,8 @@ impl PaneState {
 
                     *chart = CandlestickChart::new(
                         layout,
+                        ChartBasis::Time(timeframe),
                         klines.clone(), 
-                        timeframe, 
                         tick_size, 
                         indicators,
                         ticker_info,

@@ -20,7 +20,7 @@ use crate::screen::UserTimezone;
 
 use super::scales::PriceInfoLabel;
 use super::indicators::{self, FootprintIndicator, Indicator};
-use super::{Caches, Chart, ChartBasis, ChartConstants, CommonChartData, FootprintTrades, Interaction, Message};
+use super::{Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, FootprintTrades, Interaction, Message};
 use super::{canvas_interaction, view_chart, update_chart, count_decimals, request_fetch, abbr_large_numbers, round_to_tick};
 
 impl Chart for FootprintChart {
@@ -97,11 +97,6 @@ impl ChartConstants for FootprintChart {
     const MIN_CELL_HEIGHT: f32 = 1.0;
 
     const DEFAULT_CELL_WIDTH: f32 = 80.0;
-}
-
-enum ChartData {
-    TimeBased(TimeSeries),
-    TickBased(TickAggr),
 }
 
 pub struct FootprintChart {
