@@ -143,7 +143,6 @@ impl FootprintChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
                         cell_height: 800.0 / y_ticks,
-                        base_range: 400.0 / y_ticks,
                         base_price_y,
                         latest_x,
                         timeframe: timeframe.to_milliseconds(),
@@ -180,7 +179,6 @@ impl FootprintChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
                         cell_height: 80.0 / tick_size,
-                        base_range: 40.0 / tick_size,
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,

@@ -72,7 +72,7 @@ impl ChartConstants for CandlestickChart {
     const MIN_CELL_WIDTH: f32 = 1.0;
 
     const MAX_CELL_HEIGHT: f32 = 8.0;
-    const MIN_CELL_HEIGHT: f32 = 1.0;
+    const MIN_CELL_HEIGHT: f32 = 0.001;
 
     const DEFAULT_CELL_WIDTH: f32 = 4.0;
 }
@@ -135,7 +135,6 @@ impl CandlestickChart {
             chart: CommonChartData {
                 cell_width: Self::DEFAULT_CELL_WIDTH,
                 cell_height: 200.0 / y_ticks,
-                base_range: 100.0 / y_ticks,
                 base_price_y,
                 latest_x,
                 timeframe: timeframe.to_milliseconds(),

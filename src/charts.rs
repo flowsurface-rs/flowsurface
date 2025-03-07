@@ -295,11 +295,8 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
             }
         }
         Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
-            let max_scaled_height = chart_state.base_range * T::MAX_CELL_HEIGHT;
-            let min_scaled_height = chart_state.base_range * T::MIN_CELL_HEIGHT;
-
-            if *delta < 0.0 && chart_state.cell_height > min_scaled_height
-                || *delta > 0.0 && chart_state.cell_height < max_scaled_height
+            if *delta < 0.0 && chart_state.cell_height > T::MIN_CELL_HEIGHT
+                || *delta > 0.0 && chart_state.cell_height < T::MAX_CELL_HEIGHT
             {
                 let (old_scaling, old_translation_y) =
                     { (chart_state.scaling, chart_state.translation.y) };
@@ -307,7 +304,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
                 let zoom_factor = if *is_wheel_scroll { 30.0 } else { 90.0 };
 
                 let new_height = (chart_state.cell_height * (1.0 + delta / zoom_factor))
-                    .clamp(min_scaled_height, max_scaled_height);
+                    .clamp(T::MIN_CELL_HEIGHT, T::MAX_CELL_HEIGHT);
 
                 let cursor_chart_y = cursor_to_center_y / old_scaling - old_translation_y;
 
@@ -511,7 +508,6 @@ pub struct CommonChartData {
     cell_height: f32,
     basis: ChartBasis,
 
-    base_range: f32,
     last_price: Option<PriceInfoLabel>,
 
     base_price_y: f32,
@@ -533,7 +529,6 @@ impl Default for CommonChartData {
             bounds: Rectangle::default(),
             basis: ChartBasis::Time(Timeframe::M5),
             last_price: None,
-            base_range: 1.0,
             scaling: 1.0,
             autoscale: true,
             cell_width: 40.0,
