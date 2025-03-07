@@ -381,8 +381,6 @@ impl Dashboard {
                                 );
                             }
                         }
-
-                        dbg!(pane_stream);
                     }
                     pane::Message::TicksizeSelected(tick_multiply, pane) => {
                         self.notification_manager.clear(&window, &pane);

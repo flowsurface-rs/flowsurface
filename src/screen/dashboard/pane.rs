@@ -103,15 +103,6 @@ impl PaneState {
         }
     }
 
-    /// gets the basis if exists, otherwise sets basis w given
-    pub fn set_basis(&mut self, basis: ChartBasis) -> ChartBasis {
-        if self.settings.selected_basis.is_none() {
-            self.settings.selected_basis = Some(basis);
-        }
-
-        basis
-    }
-
     pub fn get_ticker_exchange(&self) -> Option<(Exchange, Ticker)> {
         for stream in &self.stream {
             match stream {
@@ -257,7 +248,9 @@ impl PaneState {
                     Some(TickMultiplier(50)),
                     ticker_info,
                 );
-                let basis = self.set_basis(ChartBasis::Time(Timeframe::M5));
+
+                let basis = self.settings.selected_basis
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Footprint(indicators)) => indicators,
@@ -287,7 +280,9 @@ impl PaneState {
                     None,
                     ticker_info,
                 );
-                let basis = self.set_basis(ChartBasis::Time(Timeframe::M15));
+
+                let basis = self.settings.selected_basis
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Candlestick(indicators)) => indicators,
@@ -778,10 +773,13 @@ fn stream_modifier_view<'a>(
         StreamModifier::HeatmapChart(ticksize) => (None, Some(ticksize)),
     };
 
-    let create_button = |content: String, msg: Option<Message>| {
-        let btn = button(text(content))
-            .width(Length::Fill)
-            .style(move |theme, status| style::button_transparent(theme, status, false));
+    let create_button = |content: String, msg: Option<Message>, active: bool| {
+        let btn = button(
+            container(text(content))
+                .align_x(Horizontal::Center)
+        )
+        .width(Length::Fill)
+        .style(move |theme, status| style::button_transparent(theme, status, active));
             
         if let Some(msg) = msg {
             btn.on_press(msg)
@@ -808,20 +806,22 @@ fn stream_modifier_view<'a>(
                 timeframes_column =
                     timeframes_column.push(
                         row![
-                            text("Timeframes"),
-                            button(
-                                text("Ticks")
-                            )
-                            .on_press(Message::ChartBasisSelected(
-                                ChartBasis::Tick(TickCount::T200), pane
-                            ))
-                            .style(
-                                move |theme, status| style::button_transparent(theme, status, false)
-                            )
+                            create_button(
+                                "Timeframe".to_string(),
+                                None,
+                                false,
+                            ),
+                            create_button(
+                                "Ticks".to_string(),
+                                Some(Message::ChartBasisSelected(
+                                    ChartBasis::Tick(TickCount::T200), pane,
+                                )),
+                                true,
+                            ),
                         ]
+                        .padding(padding::bottom(8))
                         .spacing(4)
-                    )
-                    .padding(padding::bottom(8));
+                    );
 
                 for timeframe in &Timeframe::ALL {
                     let msg = if *timeframe == selected_timeframe {
@@ -832,30 +832,34 @@ fn stream_modifier_view<'a>(
                         ))
                     };
                     timeframes_column = timeframes_column.push(
-                        create_button(timeframe.to_string(), msg)
+                        create_button(timeframe.to_string(), msg, false)
                     );
                 }
 
-                content_row = content_row.push(timeframes_column);
+                content_row = content_row.push(
+                    container(timeframes_column).style(style::modal_container)
+                );
             },
             ChartBasis::Tick(selected_tick) => {
                 tick_basis_column =
                     tick_basis_column.push(
                         row![
-                            text("Ticks"),
-                            button(
-                                text("Timeframes")
-                            )
-                            .on_press(Message::ChartBasisSelected(
-                                ChartBasis::Time(Timeframe::M15), pane
-                            ))
-                            .style(
-                                move |theme, status| style::button_transparent(theme, status, false)
-                            )
+                            create_button(
+                                "Timeframe".to_string(),
+                                Some(Message::ChartBasisSelected(
+                                    ChartBasis::Time(Timeframe::M5), pane
+                                )),
+                                true,
+                            ),
+                            create_button(
+                                "Ticks".to_string(),
+                                None,
+                                false,
+                            ),
                         ]
+                        .padding(padding::bottom(8))
                         .spacing(4)
-                    )
-                    .padding(padding::bottom(8));
+                    );
 
                 for tick_count in &TickCount::ALL {
                     let msg = if *tick_count == selected_tick {
@@ -866,11 +870,13 @@ fn stream_modifier_view<'a>(
                         ))
                     };
                     tick_basis_column = tick_basis_column.push(
-                        create_button(tick_count.to_string(), msg)
+                        create_button(tick_count.to_string(), msg, false)
                     );
                 }
 
-                content_row = content_row.push(tick_basis_column);
+                content_row = content_row.push(
+                    container(tick_basis_column).style(style::modal_container)
+                );
             }
         }
     }
@@ -881,8 +887,10 @@ fn stream_modifier_view<'a>(
 
     if selected_ticksize.is_some() {
         ticksizes_column =
-            ticksizes_column.push(container(text("Ticksize Mltp."))
-                .padding(padding::bottom(8)));
+            ticksizes_column.push(
+                container(text("Ticksize Mltp."))
+                    .padding(padding::bottom(8))
+            );
 
         for ticksize in &TickMultiplier::ALL {
             let msg = if selected_ticksize == Some(*ticksize) {
@@ -891,11 +899,13 @@ fn stream_modifier_view<'a>(
                 Some(Message::TicksizeSelected(*ticksize, pane))
             };
             ticksizes_column = ticksizes_column.push(
-                create_button(ticksize.to_string(), msg)
+                create_button(ticksize.to_string(), msg, false)
             );
         }
 
-        content_row = content_row.push(ticksizes_column);
+        content_row = content_row.push(
+            container(ticksizes_column).style(style::modal_container)
+        );
     }
 
     container(
@@ -908,9 +918,11 @@ fn stream_modifier_view<'a>(
         .padding(16)
         .max_width(
             if selected_ticksize.is_some() && selected_basis.is_some() {
-                280
+                380
+            } else if selected_basis.is_some() {
+                200
             } else {
-                140
+                120
             },
         )
         .style(style::chart_modal)
