@@ -911,6 +911,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                             layout,
                             basis,
                             vec![],
+                            vec![],
                             ticker_info.min_ticksize,
                             &indicators,
                             settings.ticker_info,
@@ -937,6 +938,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                     .multiply_with_min_tick_size(ticker_info);
                 let basis = settings.selected_basis
                     .unwrap_or(ChartBasis::Time(Timeframe::M5));
+                
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Footprint(
                         FootprintChart::new(

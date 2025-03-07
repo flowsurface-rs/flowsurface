@@ -151,7 +151,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.timeseries.is_empty() {
+        if self.timeseries.is_empty() || self.timeframe == 0 {
             return vec![];
         }
 

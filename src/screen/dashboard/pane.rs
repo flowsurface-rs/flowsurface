@@ -103,13 +103,13 @@ impl PaneState {
         }
     }
 
-    /// gets the timeframe if exists, otherwise sets timeframe w given
-    pub fn set_timeframe(&mut self, timeframe: Timeframe) -> Timeframe {
-        if self.settings.selected_timeframe.is_none() {
-            self.settings.selected_timeframe = Some(timeframe);
+    /// gets the basis if exists, otherwise sets basis w given
+    pub fn set_basis(&mut self, basis: ChartBasis) -> ChartBasis {
+        if self.settings.selected_basis.is_none() {
+            self.settings.selected_basis = Some(basis);
         }
 
-        timeframe
+        basis
     }
 
     pub fn get_ticker_exchange(&self) -> Option<(Exchange, Ticker)> {
@@ -139,34 +139,56 @@ impl PaneState {
     ) -> Task<Message> {
         let streams = match content {
             "heatmap" | "time&sales" => {
-                vec![StreamType::DepthAndTrades { exchange, ticker: ticker.0 }]
-            }
-            "footprint" => {
-                let timeframe = self
-                    .settings
-                    .selected_timeframe
-                    .unwrap_or(Timeframe::M5);
-
                 vec![
                     StreamType::DepthAndTrades { exchange, ticker: ticker.0 },
-                    StreamType::Kline {
-                        exchange,
-                        ticker: ticker.0,
-                        timeframe,
-                    },
                 ]
             }
-            "candlestick" => {
-                let timeframe = self
+            "footprint" => {
+                let basis = self
                     .settings
-                    .selected_timeframe
-                    .unwrap_or(Timeframe::M15);
+                    .selected_basis
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5));
 
-                vec![StreamType::Kline {
-                    exchange,
-                    ticker: ticker.0,
-                    timeframe,
-                }]
+                match basis {
+                    ChartBasis::Time(timeframe) => {
+                        vec![
+                            StreamType::DepthAndTrades { exchange, ticker: ticker.0 },
+                            StreamType::Kline {
+                                exchange,
+                                ticker: ticker.0,
+                                timeframe,
+                            },
+                        ]
+                    }
+                    ChartBasis::Tick(_) => {
+                        vec![
+                            StreamType::DepthAndTrades { exchange, ticker: ticker.0 },
+                        ]
+                    }
+                }
+            }
+            "candlestick" => {
+                let basis = self
+                    .settings
+                    .selected_basis
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15));
+
+                match basis {
+                    ChartBasis::Time(timeframe) => {
+                        vec![
+                            StreamType::Kline {
+                                exchange,
+                                ticker: ticker.0,
+                                timeframe,
+                            },
+                        ]
+                    }
+                    ChartBasis::Tick(_) => {
+                        vec![
+                            StreamType::DepthAndTrades { exchange, ticker: ticker.0 },
+                        ]
+                    }
+                }
             }
             _ => vec![],
         };
@@ -235,7 +257,7 @@ impl PaneState {
                     Some(TickMultiplier(50)),
                     ticker_info,
                 );
-                let timeframe = self.set_timeframe(Timeframe::M5);
+                let basis = self.set_basis(ChartBasis::Time(Timeframe::M5));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Footprint(indicators)) => indicators,
@@ -250,7 +272,7 @@ impl PaneState {
                 PaneContent::Footprint(
                     FootprintChart::new(
                         layout,
-                        ChartBasis::Time(timeframe),
+                        basis,
                         tick_size,
                         vec![],
                         vec![],
@@ -265,7 +287,7 @@ impl PaneState {
                     None,
                     ticker_info,
                 );
-                let timeframe = self.set_timeframe(Timeframe::M15);
+                let basis = self.set_basis(ChartBasis::Time(Timeframe::M15));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Candlestick(indicators)) => indicators,
@@ -280,7 +302,8 @@ impl PaneState {
                 PaneContent::Candlestick(
                     CandlestickChart::new(
                         layout,
-                        ChartBasis::Time(timeframe),
+                        basis,
+                        vec![],
                         vec![],
                         tick_size,
                         &enabled_indicators,
@@ -333,7 +356,7 @@ impl PaneState {
                 if let Some(id) = req_id {
                     chart.insert_new_klines(id, klines);
                 } else {
-                    let tick_size = chart.get_tick_size();
+                    let (raw_trades, tick_size) = (chart.get_raw_trades(), chart.get_tick_size());
                     let layout = chart.get_chart_layout();
                     let ticker_info = self.settings.ticker_info;
 
@@ -341,6 +364,7 @@ impl PaneState {
                         layout,
                         ChartBasis::Time(timeframe),
                         klines.clone(), 
+                        raw_trades,
                         tick_size, 
                         indicators,
                         ticker_info,
@@ -1103,7 +1127,6 @@ impl PaneContent {
 pub struct PaneSettings {
     pub ticker_info: Option<TickerInfo>,
     pub tick_multiply: Option<TickMultiplier>,
-    pub selected_timeframe: Option<Timeframe>,
     pub visual_config: Option<VisualConfig>,
     pub selected_basis: Option<ChartBasis>,
 }

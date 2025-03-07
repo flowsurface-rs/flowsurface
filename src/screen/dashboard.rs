@@ -373,24 +373,16 @@ impl Dashboard {
                             }
                         }
 
-                        log::info!("{:?}", &self.pane_streams);
-
                         // get fetch tasks for pane's content
-                        if ["footprint", "candlestick", "heatmap"]
-                            .contains(&content_str.as_str())
-                        {
-                            for stream in &pane_stream {
-                                if let StreamType::Kline { .. } = stream {
-                                    if ["candlestick", "footprint"]
-                                        .contains(&content_str.as_str())
-                                    {
-                                        return get_kline_fetch_task(
-                                            window, pane, *stream, None, None,
-                                        );
-                                    }
-                                }
+                        for stream in &pane_stream {
+                            if let StreamType::Kline { .. } = stream {
+                                return get_kline_fetch_task(
+                                    window, pane, *stream, None, None,
+                                );
                             }
                         }
+
+                        dbg!(pane_stream);
                     }
                     pane::Message::TicksizeSelected(tick_multiply, pane) => {
                         self.notification_manager.clear(&window, &pane);
@@ -400,8 +392,51 @@ impl Dashboard {
                     pane::Message::ChartBasisSelected(basis, pane) => {
                         self.notification_manager.clear(&window, &pane);
 
-                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            pane_state.settings.selected_basis = Some(basis);
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            state.settings.selected_basis = Some(basis);
+
+                            if let Some((exchange, ticker)) = state.get_ticker_exchange() {
+                                match &state.content {
+                                    PaneContent::Candlestick(_, _) => {
+                                        match basis {
+                                            ChartBasis::Time(timeframe) => {
+                                                state.stream = vec![
+                                                    StreamType::Kline {
+                                                        exchange,
+                                                        ticker,
+                                                        timeframe,
+                                                    },
+                                                ];
+                                            }
+                                            ChartBasis::Tick(_) => {
+                                                state.stream = vec![
+                                                    StreamType::DepthAndTrades { exchange, ticker },
+                                                ];
+                                            }
+                                        }
+                                    }
+                                    PaneContent::Footprint(_, _) => {
+                                        match basis {
+                                            ChartBasis::Time(timeframe) => {
+                                                state.stream = vec![
+                                                    StreamType::Kline {
+                                                        exchange,
+                                                        ticker,
+                                                        timeframe,
+                                                    },
+                                                    StreamType::DepthAndTrades { exchange, ticker },
+                                                ];
+                                            }
+                                            ChartBasis::Tick(_) => {
+                                                state.stream = vec![
+                                                    StreamType::DepthAndTrades { exchange, ticker },
+                                                ];
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
 
                         match basis {
@@ -436,12 +471,20 @@ impl Dashboard {
                             },
                             ChartBasis::Tick(size) => {
                                 if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                                    if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
-                                        chart.set_tick_basis(size.into());
+                                    match &mut pane_state.content {
+                                        PaneContent::Footprint(chart, _) => {
+                                            chart.set_tick_basis(size.into());
+                                        },
+                                        PaneContent::Candlestick(chart, _) => {
+                                            chart.set_tick_basis(size.into());
+                                        },
+                                        _ => {}
                                     }
                                 }
                             }
                         }
+
+                        return Task::done(Message::RefreshStreams);
                     }
                     pane::Message::Popout => return self.popout_pane(main_window),
                     pane::Message::Merge => return self.merge_pane(main_window),
@@ -538,12 +581,15 @@ impl Dashboard {
                                 if let StreamType::Kline { timeframe, .. } = stream_type {
                                     match &mut state.content {
                                         PaneContent::Candlestick(chart, indicators) => {
-                                            let tick_size = chart.get_tick_size();
+                                            let (raw_trades, tick_size) =
+                                                (chart.get_raw_trades(), chart.get_tick_size());
+
                                             *chart = CandlestickChart::new(
                                                 chart.get_chart_layout(),
                                                 state.settings.selected_basis
                                                     .unwrap_or(ChartBasis::Time(timeframe)),
                                                 klines.clone(),
+                                                raw_trades,
                                                 tick_size,
                                                 indicators,
                                                 state.settings.ticker_info,
@@ -552,6 +598,7 @@ impl Dashboard {
                                         PaneContent::Footprint(chart, indicators) => {
                                             let (raw_trades, tick_size) =
                                                 (chart.get_raw_trades(), chart.get_tick_size());
+
                                             *chart = FootprintChart::new(
                                                 chart.get_chart_layout(),
                                                 state.settings.selected_basis
@@ -1104,7 +1151,7 @@ impl Dashboard {
         new_timeframe: Timeframe,
     ) -> Result<&StreamType, DashboardError> {
         if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-            pane_state.settings.selected_timeframe = Some(new_timeframe);
+            pane_state.settings.selected_basis = Some(ChartBasis::Time(new_timeframe));
 
             if let Some(stream_type) = pane_state
                 .stream
@@ -1254,6 +1301,9 @@ impl Dashboard {
                         }
                         PaneContent::TimeAndSales(chart) => {
                             chart.update(&trades_buffer);
+                        }
+                        PaneContent::Candlestick(chart, _) => {
+                            chart.insert_trades_buffer(&trades_buffer);
                         }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");
