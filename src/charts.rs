@@ -668,27 +668,55 @@ impl CommonChartData {
             dashed_line,
         );
 
-        // Vertical time line
-        let earliest = self.x_to_time(region.x) as f64;
-        let latest = self.x_to_time(region.x + region.width) as f64;
+        // Vertical time/tick line
+        match self.basis {
+            ChartBasis::Time(_) => {
+                let earliest = self.x_to_time(region.x) as f64;
+                let latest = self.x_to_time(region.x + region.width) as f64;
 
-        let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
-        let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
+                let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
+                let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
-        let rounded_timestamp =
-            (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe;
-        let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
+                let rounded_timestamp =
+                    (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe;
+                let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
-        frame.stroke(
-            &Path::line(
-                Point::new(snap_ratio * bounds.width, 0.0),
-                Point::new(snap_ratio * bounds.width, bounds.height),
-            ),
-            dashed_line,
-        );
+                frame.stroke(
+                    &Path::line(
+                        Point::new(snap_ratio * bounds.width, 0.0),
+                        Point::new(snap_ratio * bounds.width, bounds.height),
+                    ),
+                    dashed_line,
+                );
 
-        // return incase consumer needs them
-        (rounded_price, rounded_timestamp)
+                (rounded_price, rounded_timestamp)
+            },
+            ChartBasis::Tick(aggregation) => {
+                let crosshair_ratio = cursor_position.x / bounds.width;
+
+                let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
+                let crosshair_pos = chart_x_min + crosshair_ratio * region.width;
+                
+                let cell_index = (crosshair_pos / self.cell_width).round();
+                
+                let snapped_crosshair = cell_index * self.cell_width;
+                
+                let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
+                
+                let aggregation: u64 = aggregation.into();
+                let rounded_tick = (-cell_index as u64) * aggregation;
+                
+                frame.stroke(
+                    &Path::line(
+                        Point::new(snap_ratio * bounds.width, 0.0),
+                        Point::new(snap_ratio * bounds.width, bounds.height),
+                    ),
+                    dashed_line,
+                );
+            
+                (rounded_price, rounded_tick)
+            }
+        }
     }
 
     fn get_chart_layout(&self) -> SerializableChartData {
