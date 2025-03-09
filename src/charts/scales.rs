@@ -160,6 +160,7 @@ pub struct AxisLabelsX<'a> {
     pub cell_width: f32,
     pub timezone: &'a UserTimezone,
     pub chart_bounds: Rectangle,
+    pub interval_keys: Vec<u64>,
 }
 
 impl AxisLabelsX<'_> {
@@ -175,7 +176,7 @@ impl AxisLabelsX<'_> {
         }
     }
 
-    fn x_to_value(&self, x: f32) -> u64 {
+    fn x_to_interval(&self, x: f32) -> u64 {
         match self.basis {
             ChartBasis::Time(interval) => {
                 if x <= 0.0 {
@@ -187,7 +188,8 @@ impl AxisLabelsX<'_> {
                 }
             },
             ChartBasis::Tick(_) => {
-                unimplemented!()
+                let tick = -(x / self.cell_width);
+                tick.round() as u64
             }
         }      
     }
@@ -278,14 +280,135 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
 
             match self.basis {
                 ChartBasis::Tick(interval) => {
-                    let x_min = self.x_to_value(region.x);
-                    let x_max = self.x_to_value(region.x + region.width);
+                    let x_min = self.x_to_interval(region.x);
+                    let x_max = self.x_to_interval(region.x + region.width);
+            
+                    if x_min == x_max {
+                        return;
+                    }
 
-                    return;
+                    if !self.interval_keys.is_empty() {
+                        let last_index = self.interval_keys.len() - 1;
+                        
+                        let step_size = (self.interval_keys.len() as f32 / x_labels_can_fit as f32).ceil() as usize;
+                        
+                        let min_cell = (region.x / self.cell_width).floor() as i32;
+                        let max_cell = ((region.x + region.width) / self.cell_width).ceil() as i32;
+                        
+                        let max_cell = max_cell.min(0);
+                        let min_cell = min_cell.max(-((last_index + 1) as i32));
+                        
+                        for cell_index in (min_cell..=max_cell).step_by(step_size.max(1)) {
+                            let offset = (-cell_index as i64) as usize;
+                            if offset > last_index {
+                                continue;
+                            }
+                            
+                            let array_index = last_index - offset;
+                            
+                            let snapped_position = cell_index as f32 * self.cell_width;
+                            let chart_x_min = region.x;
+                            let chart_x_max = region.x + region.width;
+                            
+                            if snapped_position < chart_x_min || snapped_position > chart_x_max {
+                                continue;
+                            }
+                            
+                            let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
+                            let snap_x = snap_ratio as f64 * f64::from(bounds.width);
+                            
+                            if snap_x.is_nan() || snap_x < 0.0 || snap_x > f64::from(bounds.width) {
+                                continue;
+                            }
+                            
+                            if let Some(timestamp) = self.interval_keys.get(array_index) {
+                                let label_text = self.timezone.format_timestamp((*timestamp / 1000) as i64, interval);
+                                
+                                let content_width = label_text.len() as f32 * (text_size / 3.0);
+                                
+                                let rect = Rectangle {
+                                    x: (snap_x as f32) - content_width,
+                                    y: 4.0,
+                                    width: 2.0 * content_width,
+                                    height: bounds.height - 8.0,
+                                };
+                                
+                                let label = Label {
+                                    content: label_text,
+                                    background_color: None,
+                                    text_color: palette.background.base.text,
+                                    text_size: 12.0,
+                                };
+                                
+                                all_labels.push(AxisLabel::X(rect, label));
+                            }
+                        }
+                    }
+
+                    if self.crosshair {
+                        if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
+                            let crosshair_ratio = f64::from(crosshair_pos.x) / f64::from(self.chart_bounds.width);
+                            
+                            let chart_x_min = region.x;
+                            let chart_x_max = region.x + region.width;
+                            let crosshair_pos = chart_x_min + crosshair_ratio as f32 * region.width;
+                            
+                            let cell_index = (crosshair_pos / self.cell_width).round();
+                            
+                            let aggregation: u64 = interval.into();
+                            let rounded_tick = (-cell_index as i64) * (aggregation as i64);
+                            
+                            // Cell 0 (latest) maps to last element, Cell -1 to second-to-last, etc.
+                            let array_index = if !self.interval_keys.is_empty() {
+                                let last_index = self.interval_keys.len() - 1;
+                                let offset = (-cell_index as i64) as usize;
+                                if offset <= last_index {
+                                    Some(last_index - offset)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            
+                            let snapped_crosshair = cell_index * self.cell_width;
+                            let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
+                            let snap_x = snap_ratio as f64 * f64::from(bounds.width);
+                            
+                            if !snap_x.is_nan() && snap_x >= 0.0 && snap_x <= f64::from(bounds.width) {
+                                if let Some(index) = array_index {
+                                    if let Some(timestamp) = self.interval_keys.get(index) {
+                                        let label_text = self.timezone.format_crosshair_timestamp(*timestamp as i64, interval);
+                                        let text_content = format!("{} (#{}.{})", label_text, rounded_tick, interval);
+                                        
+                                        let content_width = text_content.len() as f32 * (text_size / 3.0);
+                                        
+                                        let rect = Rectangle {
+                                            x: (snap_x as f32) - content_width,
+                                            y: 4.0,
+                                            width: 2.0 * content_width,
+                                            height: bounds.height - 8.0,
+                                        };
+                                        
+                                        let label = Label {
+                                            content: text_content,
+                                            background_color: Some(palette.secondary.base.color),
+                                            text_color: palette.secondary.base.text,
+                                            text_size: 12.0,
+                                        };
+                                        
+                                        all_labels.push(AxisLabel::X(rect, label));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    AxisLabel::filter_and_draw(&all_labels, frame);
                 },
                 ChartBasis::Time(timeframe) => {
-                    let earliest_in_millis = self.x_to_value(region.x);
-                    let latest_in_millis = self.x_to_value(region.x + region.width);
+                    let earliest_in_millis = self.x_to_interval(region.x);
+                    let latest_in_millis = self.x_to_interval(region.x + region.width);
 
                     if earliest_in_millis >= latest_in_millis {
                         return;

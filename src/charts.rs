@@ -85,6 +85,8 @@ trait Chart: ChartConstants + canvas::Program<Message> {
     ) -> Option<Element<Message>>;
 
     fn get_visible_timerange(&self) -> (u64, u64);
+
+    fn get_interval_keys(&self) -> Vec<u64>;
 }
 
 fn canvas_interaction<T: Chart>(
@@ -269,9 +271,9 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 
                 let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
 
-                let cursor_time = chart_state.x_to_value(cursor_chart_x);
+                let cursor_time = chart_state.x_to_interval(cursor_chart_x);
                 chart_state.cell_width = new_width;
-                let new_cursor_x = chart_state.value_to_x(cursor_time);
+                let new_cursor_x = chart_state.interval_to_x(cursor_time);
 
                 if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
                     chart_state.translation.x -= new_cursor_x - cursor_chart_x;
@@ -349,7 +351,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         cell_width: chart_state.cell_width,
         timezone,
         chart_bounds: chart_state.bounds,
-        //data_keys: chart_state.get_visible_keys(),
+        interval_keys: chart.get_interval_keys(),
     })
     .width(Length::Fill)
     .height(Length::Fill);
@@ -576,7 +578,7 @@ impl CommonChartData {
         }
     }
 
-    fn value_to_x(&self, value: u64) -> f32 {
+    fn interval_to_x(&self, value: u64) -> f32 {
         match self.basis {
             ChartBasis::Time(timeframe) => {
                 if value <= self.latest_x {
@@ -593,7 +595,7 @@ impl CommonChartData {
         }
     }
     
-    fn x_to_value(&self, x: f32) -> u64 {
+    fn x_to_interval(&self, x: f32) -> u64 {
         match self.basis {
             ChartBasis::Time(interval) => {
                 if x <= 0.0 {
@@ -670,8 +672,8 @@ impl CommonChartData {
         // Vertical time/tick line
         match self.basis {
             ChartBasis::Time(timeframe) => {
-                let earliest = self.x_to_value(region.x) as f64;
-                let latest = self.x_to_value(region.x + region.width) as f64;
+                let earliest = self.x_to_interval(region.x) as f64;
+                let latest = self.x_to_interval(region.x + region.width) as f64;
 
                 let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
                 let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);

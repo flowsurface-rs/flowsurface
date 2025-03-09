@@ -60,10 +60,23 @@ impl Chart for CandlestickChart {
 
         let visible_region = chart.visible_region(chart.bounds.size());
 
-        let earliest = chart.x_to_value(visible_region.x);
-        let latest = chart.x_to_value(visible_region.x + visible_region.width);
+        let earliest = chart.x_to_interval(visible_region.x);
+        let latest = chart.x_to_interval(visible_region.x + visible_region.width);
 
         (earliest, latest)
+    }
+
+    fn get_interval_keys(&self) -> Vec<u64> {
+        match &self.data_source {
+            ChartData::TimeBased(timeseries) => {
+                timeseries.data_points.keys().cloned().collect()
+            },
+            ChartData::TickBased(tick_aggr) => {
+                tick_aggr.data_points.iter()
+                    .map(|dp| dp.start_timestamp)
+                    .collect()
+            }
+        }
     }
 }
 
@@ -495,8 +508,8 @@ impl CandlestickChart {
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
 
         let (earliest, latest) = (
-            chart_state.x_to_value(visible_region.x),
-            chart_state.x_to_value(visible_region.x + visible_region.width),
+            chart_state.x_to_interval(visible_region.x),
+            chart_state.x_to_interval(visible_region.x + visible_region.width),
         );
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
@@ -588,8 +601,8 @@ impl canvas::Program<Message> for CandlestickChart {
                 let region = chart.visible_region(frame.size());
 
                 let (earliest, latest) = (
-                    chart.x_to_value(region.x),
-                    chart.x_to_value(region.x + region.width),
+                    chart.x_to_interval(region.x),
+                    chart.x_to_interval(region.x + region.width),
                 );
 
                 let candle_width = chart.cell_width * 0.8;
@@ -606,7 +619,7 @@ impl canvas::Program<Message> for CandlestickChart {
                             .enumerate()
                             .filter(|(index, _)| *index <= earliest && *index >= latest)
                             .for_each(|(index, tick_aggr)| {
-                                let x_position = chart.value_to_x(index as u64);
+                                let x_position = chart.interval_to_x(index as u64);
 
                                 let kline = Kline {
                                     time: tick_aggr.start_timestamp,
@@ -635,7 +648,7 @@ impl canvas::Program<Message> for CandlestickChart {
                         timeseries.data_points
                             .range(earliest..=latest)
                             .for_each(|(timestamp, dp)| {
-                                let x_position = chart.value_to_x(*timestamp);
+                                let x_position = chart.interval_to_x(*timestamp);
 
                                 draw_data_point(
                                     frame,
