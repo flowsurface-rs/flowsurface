@@ -51,12 +51,11 @@ impl Chart for HeatmapChart {
 
     fn get_visible_timerange(&self) -> (u64, u64) {
         let chart = self.get_common_data();
-
         let visible_region = chart.visible_region(chart.bounds.size());
 
         (
-            chart.x_to_time(visible_region.x),
-            chart.x_to_time(visible_region.x + visible_region.width),
+            chart.x_to_value(visible_region.x),
+            chart.x_to_value(visible_region.x + visible_region.width),
         )
     }
 }
@@ -546,8 +545,8 @@ impl canvas::Program<Message> for HeatmapChart {
                 let cell_height_scaled = cell_height * chart.scaling;
 
                 let (earliest, latest) = (
-                    chart.x_to_time(region.x),
-                    chart.x_to_time(region.x + region.width),
+                    chart.x_to_value(region.x),
+                    chart.x_to_value(region.x + region.width),
                 );
 
                 if latest < earliest {
@@ -573,8 +572,8 @@ impl canvas::Program<Message> for HeatmapChart {
                         runs.iter()
                             .filter(|run| **price * run.qty.0 > self.visual_config.order_size_filter)
                             .for_each(|run| {
-                                let start_x = chart.time_to_x(run.start_time.max(earliest));
-                                let end_x = chart.time_to_x(run.until_time.min(latest)).min(0.0);
+                                let start_x = chart.value_to_x(run.start_time.max(earliest));
+                                let end_x = chart.value_to_x(run.until_time.min(latest)).min(0.0);
 
                                 let width = end_x - start_x;
 
@@ -662,7 +661,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 self.visible_data_iter(earliest, latest).for_each(
                     |(time, trades, (buy_volume, sell_volume))| {
-                        let x_position = chart.time_to_x(*time);
+                        let x_position = chart.value_to_x(*time);
 
                         trades.iter().for_each(|trade| {
                             let y_position = chart.price_to_y(trade.price);

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use iced::{
     alignment,
     mouse::{self},
-    widget::{button, canvas::{LineDash, Path, Stroke}, center, column, container, row, text, Space},
+    widget::{button, canvas::{LineDash, Path, Stroke}, column, container, row, text, Space},
     Element, Length, Point, Rectangle, Size, Task, Theme, Vector,
 };
 use iced::widget::canvas::{self, Canvas, Event, Frame, Cache};
@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::{
     data_providers::{
-        aggr::{ticks::{TickAggr, TickCount}, time::{TimeSeries, Timeframe}}, fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo
+        aggr::{ticks::TickAggr, time::{TimeSeries, Timeframe}}, 
+        fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo
     }, 
     layout::SerializableChartData, screen::UserTimezone, style, 
     tooltip::{self, tooltip}, widget::hsplit::HSplit
@@ -268,25 +269,12 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 
                 let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
 
-                match chart_state.basis {
-                    ChartBasis::Time(_) => {
-                        let cursor_time = chart_state.x_to_time(cursor_chart_x);
-                        chart_state.cell_width = new_width;
-                        let new_cursor_x = chart_state.time_to_x(cursor_time);
+                let cursor_time = chart_state.x_to_value(cursor_chart_x);
+                chart_state.cell_width = new_width;
+                let new_cursor_x = chart_state.value_to_x(cursor_time);
 
-                        if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
-                            chart_state.translation.x -= new_cursor_x - cursor_chart_x;
-                        }
-                    }
-                    ChartBasis::Tick(_) => {
-                        let cursor_tick = chart_state.x_to_tick(cursor_chart_x);
-                        chart_state.cell_width = new_width;
-                        let new_cursor_x = chart_state.tick_to_x(cursor_tick);
-
-                        if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
-                            chart_state.translation.x -= new_cursor_x - cursor_chart_x;
-                        }
-                    }
+                if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
+                    chart_state.translation.x -= new_cursor_x - cursor_chart_x;
                 }
             
                 chart_state.autoscale = false;
@@ -347,10 +335,6 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 ) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 
-    if chart_state.ticker_info.is_none() {
-        return center(text("Loading...").size(16)).into();
-    }
-
     let chart_canvas = Canvas::new(chart)
         .width(Length::Fill)
         .height(Length::Fill);
@@ -365,6 +349,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         cell_width: chart_state.cell_width,
         timezone,
         chart_bounds: chart_state.bounds,
+        //data_keys: chart_state.get_visible_keys(),
     })
     .width(Length::Fill)
     .height(Length::Fill);
@@ -474,7 +459,7 @@ impl Caches {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ChartBasis {
     Time(u64),
-    Tick(TickCount),
+    Tick(u64),
 }
 
 impl std::fmt::Display for ChartBasis {
@@ -495,7 +480,7 @@ impl std::fmt::Display for ChartBasis {
             },
             ChartBasis::Tick(count) => {
                 match *count {
-                    _ => write!(f, "{}", count),
+                    _ => write!(f, "T{}", count),
                 }
             }
         }
@@ -591,46 +576,37 @@ impl CommonChartData {
         }
     }
 
-    fn tick_to_x(&self, tick: u64) -> f32 {
-        -((tick as f32) * self.cell_width)
-    }
-    
-    fn x_to_tick(&self, x: f32) -> u64 {
-        let tick = -(x / self.cell_width);
-        tick.round() as u64
-    }
-
-    fn time_to_x(&self, time: u64) -> f32 {
+    fn value_to_x(&self, value: u64) -> f32 {
         match self.basis {
             ChartBasis::Time(timeframe) => {
-                if time <= self.latest_x {
-                    let diff = self.latest_x - time;
+                if value <= self.latest_x {
+                    let diff = self.latest_x - value;
                     -(diff as f32 / timeframe as f32) * self.cell_width
                 } else {
-                    let diff = time - self.latest_x;
+                    let diff = value - self.latest_x;
                     (diff as f32 / timeframe as f32) * self.cell_width
                 }
             },
             ChartBasis::Tick(_) => {
-                unimplemented!()
+                -((value as f32) * self.cell_width)
             }
         }
-            
     }
     
-    fn x_to_time(&self, x: f32) -> u64 {
+    fn x_to_value(&self, x: f32) -> u64 {
         match self.basis {
-            ChartBasis::Time(timeframe) => {
+            ChartBasis::Time(interval) => {
                 if x <= 0.0 {
-                    let diff = (-x / self.cell_width * timeframe as f32) as u64;
+                    let diff = (-x / self.cell_width * interval as f32) as u64;
                     self.latest_x.saturating_sub(diff)
                 } else {
-                    let diff = (x / self.cell_width * timeframe as f32) as u64;
+                    let diff = (x / self.cell_width * interval as f32) as u64;
                     self.latest_x.saturating_add(diff)
                 }
             },
             ChartBasis::Tick(_) => {
-                unimplemented!()
+                let tick = -(x / self.cell_width);
+                tick.round() as u64
             }
         }
     }
@@ -694,8 +670,8 @@ impl CommonChartData {
         // Vertical time/tick line
         match self.basis {
             ChartBasis::Time(timeframe) => {
-                let earliest = self.x_to_time(region.x) as f64;
-                let latest = self.x_to_time(region.x + region.width) as f64;
+                let earliest = self.x_to_value(region.x) as f64;
+                let latest = self.x_to_value(region.x + region.width) as f64;
 
                 let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
                 let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);

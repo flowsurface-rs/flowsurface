@@ -175,7 +175,7 @@ impl AxisLabelsX<'_> {
         }
     }
 
-    fn x_to_time(&self, x: f32) -> u64 {
+    fn x_to_value(&self, x: f32) -> u64 {
         match self.basis {
             ChartBasis::Time(interval) => {
                 if x <= 0.0 {
@@ -270,132 +270,131 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
 
         let palette = theme.extended_palette();
 
-        let timeframe: u64 = match self.basis {
-            ChartBasis::Time(timeframe) => {
-                timeframe
-            },
-            ChartBasis::Tick(_) => {
-                // TODO: implement
-                return vec![]
-            }
-        };
-
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());
 
-            let earliest_in_millis = self.x_to_time(region.x);
-            let latest_in_millis = self.x_to_time(region.x + region.width);
-
-            if earliest_in_millis >= latest_in_millis {
-                return;
-            }
-
             let x_labels_can_fit = (bounds.width / 192.0) as i32;
-
             let mut all_labels: Vec<AxisLabel> = Vec::with_capacity(x_labels_can_fit as usize + 1); // +1 for crosshair
 
-            // Regular time labels (priority 1)
-            let (time_step, rounded_earliest) = timeseries::calc_time_step(
-                earliest_in_millis,
-                latest_in_millis,
-                x_labels_can_fit,
-                timeframe,
-            );
-            let mut time: u64 = rounded_earliest;
+            match self.basis {
+                ChartBasis::Tick(interval) => {
+                    let x_min = self.x_to_value(region.x);
+                    let x_max = self.x_to_value(region.x + region.width);
 
-            while time <= latest_in_millis {
-                let x_position = if time >= earliest_in_millis {
-                    ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64)
-                        * f64::from(bounds.width)
-                } else {
-                    0.0
-                };
+                    return;
+                },
+                ChartBasis::Time(timeframe) => {
+                    let earliest_in_millis = self.x_to_value(region.x);
+                    let latest_in_millis = self.x_to_value(region.x + region.width);
 
-                if x_position > 0.0 && x_position <= f64::from(bounds.width) {
-                    let text_content = self.timezone
-                        .format_timestamp(
-                            (time / 1000) as i64, 
-                            timeframe,
-                        );
-
-                    let content_width = text_content.len() as f32 * (text_size / 3.0);
-
-                    let rect = Rectangle {
-                        x: (x_position as f32) - content_width,
-                        y: 4.0,
-                        width: 2.0 * content_width,
-                        height: bounds.height - 8.0,
-                    };
-
-                    let label = Label {
-                        content: text_content,
-                        background_color: None,
-                        text_color: palette.background.base.text,
-                        text_size: 12.0,
-                    };
-
-                    all_labels.push(AxisLabel::X(rect, label));
-                }
-                time += time_step;
-            }
-
-            // Crosshair label (priority 2)
-            if self.crosshair {
-                if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
-                    let crosshair_ratio = f64::from(crosshair_pos.x) / f64::from(bounds.width);
-                    let crosshair_millis = earliest_in_millis as f64
-                        + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
-
-                    let (snap_ratio, text_content) = {
-                        if let Some(crosshair_time) =
-                            DateTime::from_timestamp_millis(crosshair_millis as i64)
-                        {
-                            let rounded_timestamp = (crosshair_time.timestamp_millis() as f64
-                                / (timeframe as f64)).round() as u64 * timeframe;
-
-                            let snap_ratio = (rounded_timestamp as f64 - earliest_in_millis as f64)
-                                / (latest_in_millis as f64 - earliest_in_millis as f64);
-                            
-                            (
-                                snap_ratio, 
-                                self.timezone
-                                    .format_crosshair_timestamp(
-                                        rounded_timestamp as i64, 
-                                        timeframe,
-                                    ),
-                            )
-                        } else {
-                            (0.0, String::new())
-                        }
-                    };
-
-                    let snap_x = snap_ratio * f64::from(bounds.width);
-
-                    if snap_x.is_nan() {
+                    if earliest_in_millis >= latest_in_millis {
                         return;
                     }
 
-                    let content_width = text_content.len() as f32 * (text_size / 3.0);
+                    // Regular time labels (priority 1)
+                    let (time_step, rounded_earliest) = timeseries::calc_time_step(
+                        earliest_in_millis,
+                        latest_in_millis,
+                        x_labels_can_fit,
+                        timeframe,
+                    );
+                    let mut time: u64 = rounded_earliest;
 
-                    let rect = Rectangle {
-                        x: (snap_x as f32) - content_width,
-                        y: 4.0,
-                        width: 2.0 * (content_width),
-                        height: bounds.height - 8.0,
-                    };
+                    while time <= latest_in_millis {
+                        let x_position = if time >= earliest_in_millis {
+                            ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64)
+                                * f64::from(bounds.width)
+                        } else {
+                            0.0
+                        };
 
-                    let label = Label {
-                        content: text_content,
-                        background_color: Some(palette.secondary.base.color),
-                        text_color: palette.secondary.base.text,
-                        text_size: 12.0,
-                    };
+                        if x_position > 0.0 && x_position <= f64::from(bounds.width) {
+                            let text_content = self.timezone
+                                .format_timestamp(
+                                    (time / 1000) as i64, 
+                                    timeframe,
+                                );
 
-                    all_labels.push(AxisLabel::X(rect, label));
+                            let content_width = text_content.len() as f32 * (text_size / 3.0);
+
+                            let rect = Rectangle {
+                                x: (x_position as f32) - content_width,
+                                y: 4.0,
+                                width: 2.0 * content_width,
+                                height: bounds.height - 8.0,
+                            };
+
+                            let label = Label {
+                                content: text_content,
+                                background_color: None,
+                                text_color: palette.background.base.text,
+                                text_size: 12.0,
+                            };
+
+                            all_labels.push(AxisLabel::X(rect, label));
+                        }
+                        time += time_step;
+                    }
+
+                    // Crosshair label (priority 2)
+                    if self.crosshair {
+                        if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
+                            let crosshair_ratio = f64::from(crosshair_pos.x) / f64::from(bounds.width);
+                            let crosshair_millis = earliest_in_millis as f64
+                                + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
+
+                            let (snap_ratio, text_content) = {
+                                if let Some(crosshair_time) =
+                                    DateTime::from_timestamp_millis(crosshair_millis as i64)
+                                {
+                                    let rounded_timestamp = (crosshair_time.timestamp_millis() as f64
+                                        / (timeframe as f64)).round() as u64 * timeframe;
+
+                                    let snap_ratio = (rounded_timestamp as f64 - earliest_in_millis as f64)
+                                        / (latest_in_millis as f64 - earliest_in_millis as f64);
+                                    
+                                    (
+                                        snap_ratio, 
+                                        self.timezone
+                                            .format_crosshair_timestamp(
+                                                rounded_timestamp as i64, 
+                                                timeframe,
+                                            ),
+                                    )
+                                } else {
+                                    (0.0, String::new())
+                                }
+                            };
+
+                            let snap_x = snap_ratio * f64::from(bounds.width);
+
+                            if snap_x.is_nan() {
+                                return;
+                            }
+
+                            let content_width = text_content.len() as f32 * (text_size / 3.0);
+
+                            let rect = Rectangle {
+                                x: (snap_x as f32) - content_width,
+                                y: 4.0,
+                                width: 2.0 * (content_width),
+                                height: bounds.height - 8.0,
+                            };
+
+                            let label = Label {
+                                content: text_content,
+                                background_color: Some(palette.secondary.base.color),
+                                text_color: palette.secondary.base.text,
+                                text_size: 12.0,
+                            };
+
+                            all_labels.push(AxisLabel::X(rect, label));
+                        }
+                    }
+
+                    AxisLabel::filter_and_draw(&all_labels, frame);
                 }
             }
-
-            AxisLabel::filter_and_draw(&all_labels, frame);
         });
 
         vec![labels]
@@ -523,18 +522,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let text_size = 12.0;
-
         let palette = theme.extended_palette();
-
-        let timeframe: u64 = match self.basis {
-            ChartBasis::Time(interval) => {
-                interval
-            },
-            ChartBasis::Tick(_) => {
-                // TODO: implement
-                return vec![]
-            }
-        };
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());
@@ -562,35 +550,40 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
 
             // Last price (priority 2)
             if let Some(label) = self.last_price {
-                let candle_close_label = {
-                    let current_time = chrono::Utc::now().timestamp_millis() as u64;
-                    let next_kline_open =
-                        (current_time / timeframe + 1) * timeframe;
-            
-                    let remaining_seconds = (next_kline_open - current_time) / 1000;
-                    
-                    if remaining_seconds > 0 {
-                        let hours = remaining_seconds / 3600;
-                        let minutes = (remaining_seconds % 3600) / 60;
-                        let seconds = remaining_seconds % 60;
-            
-                        let time_format = if hours > 0 {
-                            format!("{hours:02}:{minutes:02}:{seconds:02}")
-                        } else {
-                            format!("{minutes:02}:{seconds:02}")
-                        };
-            
-                        Some(Label {
-                            content: time_format,
-                            background_color: Some(palette.background.strong.color),
-                            text_color: if palette.is_dark {
-                                Color::BLACK.scale_alpha(0.8)
+                let candle_close_label = match self.basis {
+                    ChartBasis::Time(timeframe) => {
+                        let current_time = chrono::Utc::now().timestamp_millis() as u64;
+                        let next_kline_open =
+                            (current_time / timeframe + 1) * timeframe;
+                
+                        let remaining_seconds = (next_kline_open - current_time) / 1000;
+                        
+                        if remaining_seconds > 0 {
+                            let hours = remaining_seconds / 3600;
+                            let minutes = (remaining_seconds % 3600) / 60;
+                            let seconds = remaining_seconds % 60;
+                
+                            let time_format = if hours > 0 {
+                                format!("{hours:02}:{minutes:02}:{seconds:02}")
                             } else {
-                                Color::WHITE.scale_alpha(0.8)
-                            },
-                            text_size: 11.0,
-                        })
-                    } else {
+                                format!("{minutes:02}:{seconds:02}")
+                            };
+                
+                            Some(Label {
+                                content: time_format,
+                                background_color: Some(palette.background.strong.color),
+                                text_color: if palette.is_dark {
+                                    Color::BLACK.scale_alpha(0.8)
+                                } else {
+                                    Color::WHITE.scale_alpha(0.8)
+                                },
+                                text_size: 11.0,
+                            })
+                        } else {
+                            None
+                        }
+                    },
+                    ChartBasis::Tick(_) => {
                         None
                     }
                 };

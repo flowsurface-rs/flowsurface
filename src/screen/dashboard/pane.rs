@@ -814,7 +814,7 @@ fn stream_modifier_view<'a>(
                             create_button(
                                 "Ticks".to_string(),
                                 Some(Message::ChartBasisSelected(
-                                    ChartBasis::Tick(TickCount::T200), pane,
+                                    ChartBasis::Tick(200), pane,
                                 )),
                                 true,
                             ),
@@ -862,11 +862,11 @@ fn stream_modifier_view<'a>(
                     );
 
                 for tick_count in &TickCount::ALL {
-                    let msg = if *tick_count == selected_tick {
+                    let msg = if *tick_count == selected_tick.into() {
                         None
                     } else {
                         Some(Message::ChartBasisSelected(
-                            ChartBasis::Tick(*tick_count), pane
+                            ChartBasis::Tick(u64::from(*tick_count)), pane
                         ))
                     };
                     tick_basis_column = tick_basis_column.push(

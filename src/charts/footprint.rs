@@ -63,8 +63,8 @@ impl Chart for FootprintChart {
         match &chart.basis {
             ChartBasis::Time(interval) => {
                 let (earliest, latest) = (
-                    chart.x_to_time(region.x) - (interval / 2),
-                    chart.x_to_time(region.x + region.width) + (interval / 2),
+                    chart.x_to_value(region.x) - (interval / 2),
+                    chart.x_to_value(region.x + region.width) + (interval / 2),
                 );
 
                 (earliest, latest)
@@ -681,20 +681,10 @@ impl FootprintChart {
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
 
-        let (earliest, latest) = match chart_state.basis {
-            ChartBasis::Time(_) => {
-                (
-                    chart_state.x_to_time(visible_region.x),
-                    chart_state.x_to_time(visible_region.x + visible_region.width),
-                )
-            }
-            ChartBasis::Tick(_) => {
-                (
-                    chart_state.x_to_tick(visible_region.x),
-                    chart_state.x_to_tick(visible_region.x + visible_region.width)
-                )
-            }
-        };
+        let (earliest, latest) = (
+            chart_state.x_to_value(visible_region.x),
+            chart_state.x_to_value(visible_region.x + visible_region.width)
+        );
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
 
@@ -791,14 +781,14 @@ impl canvas::Program<Message> for FootprintChart {
                         let timeframe = timeseries.interval.to_milliseconds();
 
                         (
-                            chart.x_to_time(region.x) - (timeframe / 2),
-                            chart.x_to_time(region.x + region.width) + (timeframe / 2)
+                            chart.x_to_value(region.x) - (timeframe / 2),
+                            chart.x_to_value(region.x + region.width) + (timeframe / 2)
                         )
                     }
                     ChartData::TickBased(_) => {
                         (
-                            chart.x_to_tick(region.x),
-                            chart.x_to_tick(region.x + region.width)
+                            chart.x_to_value(region.x),
+                            chart.x_to_value(region.x + region.width)
                         )
                     }
                 };
@@ -820,9 +810,6 @@ impl canvas::Program<Message> for FootprintChart {
 
                 let price_to_y = |price: f32| chart.price_to_y(price);
 
-                //println!("\nscaling: {}, translation_x: {}, translation_y: {}, cell_width: {}, cell_height: {}, earliest: {}, latest: {}",
-                //    chart.scaling, chart.translation.x, chart.translation.y, cell_width, cell_height, earliest, latest);
-
                 match &self.data_source {
                     ChartData::TickBased(tick_aggr) => {
                         let earliest = earliest as usize;
@@ -833,7 +820,7 @@ impl canvas::Program<Message> for FootprintChart {
                             .enumerate()
                             .filter(|(index, _)| *index <= earliest && *index >= latest)
                             .for_each(|(index, tick_aggr)| {
-                                let x_position = chart.tick_to_x(index as u64);
+                                let x_position = chart.value_to_x(index as u64);
 
                                 let kline = Kline {
                                     time: tick_aggr.start_timestamp,
@@ -869,7 +856,7 @@ impl canvas::Program<Message> for FootprintChart {
                         timeseries.data_points
                             .range(earliest..=latest)
                             .for_each(|(timestamp, dp)| {
-                                let x_position = chart.time_to_x(*timestamp);
+                                let x_position = chart.value_to_x(*timestamp);
 
                                 draw_data_point(
                                     frame, 
