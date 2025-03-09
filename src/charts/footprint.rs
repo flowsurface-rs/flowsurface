@@ -60,12 +60,19 @@ impl Chart for FootprintChart {
         let chart = self.get_common_data();
         let region = chart.visible_region(chart.bounds.size());
 
-        let (earliest, latest) = (
-            chart.x_to_time(region.x) - (chart.timeframe / 2),
-            chart.x_to_time(region.x + region.width) + (chart.timeframe / 2),
-        );
+        match &chart.basis {
+            ChartBasis::Time(interval) => {
+                let (earliest, latest) = (
+                    chart.x_to_time(region.x) - (interval / 2),
+                    chart.x_to_time(region.x + region.width) + (interval / 2),
+                );
 
-        (earliest, latest)
+                (earliest, latest)
+            },
+            ChartBasis::Tick(_) => {
+                unimplemented!()
+            }
+        }
     }
 }
 
@@ -119,9 +126,9 @@ impl FootprintChart {
         ticker_info: Option<TickerInfo>,
     ) -> Self {
         match basis {
-            ChartBasis::Time(timeframe) => {
+            ChartBasis::Time(interval) => {
                 let timeseries = TimeSeries::new(
-                    timeframe, 
+                    interval.into(),
                     tick_size, 
                     &raw_trades, 
                     &klines_raw
@@ -140,7 +147,6 @@ impl FootprintChart {
                         cell_height: 800.0 / y_ticks,
                         base_price_y,
                         latest_x,
-                        timeframe: timeframe.to_milliseconds(),
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,
@@ -248,6 +254,8 @@ impl FootprintChart {
     fn get_missing_data_task(&mut self) -> Option<Task<Message>> {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
+                let timeframe = timeseries.interval.to_milliseconds();
+
                 let (visible_earliest, visible_latest) = self.get_visible_timerange();
                 let (kline_earliest, kline_latest) = self.get_kline_timerange();
                 let earliest = visible_earliest - (visible_latest - visible_earliest);
@@ -285,7 +293,7 @@ impl FootprintChart {
                 // priority 2, Open Interest data
                 for data in self.indicators.values() {
                     if let IndicatorData::OpenInterest(_, _) = data {
-                        if self.chart.timeframe >= Timeframe::M5.to_milliseconds() 
+                        if timeframe >= Timeframe::M5.to_milliseconds() 
                             && self.chart.ticker_info.is_some_and(|info| info.get_market_type() == MarketType::LinearPerps)
                         {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
@@ -315,12 +323,12 @@ impl FootprintChart {
                 if let Some(missing_keys) = timeseries.check_integrity(
                     kline_earliest, 
                     kline_latest, 
-                    self.chart.timeframe
+                    timeframe,
                 ) {
                     let latest = missing_keys.iter()
-                        .max().unwrap_or(&visible_latest) + self.chart.timeframe;
+                        .max().unwrap_or(&visible_latest) + timeframe;
                     let earliest = missing_keys.iter()
-                        .min().unwrap_or(&visible_earliest) - self.chart.timeframe;
+                        .min().unwrap_or(&visible_earliest) - timeframe;
             
                     if let Some(task) = request_fetch(
                         &mut self.request_handler, 
@@ -391,7 +399,7 @@ impl FootprintChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.timeframe = 0;
+        self.chart.basis = ChartBasis::Tick(tick_basis.into());
 
         self.data_source = ChartData::TickBased(
             TickAggr::new(
@@ -671,12 +679,24 @@ impl FootprintChart {
     ) -> Option<Element<Message>> {
         let chart_state: &CommonChartData = self.get_common_data();
 
-        let mut indicators: iced::widget::Column<'_, Message> = column![];
-
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
 
-        let earliest = chart_state.x_to_time(visible_region.x);
-        let latest = chart_state.x_to_time(visible_region.x + visible_region.width);
+        let (earliest, latest) = match chart_state.basis {
+            ChartBasis::Time(_) => {
+                (
+                    chart_state.x_to_time(visible_region.x),
+                    chart_state.x_to_time(visible_region.x + visible_region.width),
+                )
+            }
+            ChartBasis::Tick(_) => {
+                (
+                    chart_state.x_to_tick(visible_region.x),
+                    chart_state.x_to_tick(visible_region.x + visible_region.width)
+                )
+            }
+        };
+
+        let mut indicators: iced::widget::Column<'_, Message> = column![];
 
         for indicator in I::get_enabled(
             enabled, 
@@ -766,11 +786,13 @@ impl canvas::Program<Message> for FootprintChart {
 
                 let (cell_width, cell_height) = (chart.cell_width, chart.cell_height);
 
-                let (earliest, latest) = match self.data_source {
-                    ChartData::TimeBased(_) => {
+                let (earliest, latest) = match &self.data_source {
+                    ChartData::TimeBased(timeseries) => {
+                        let timeframe = timeseries.interval.to_milliseconds();
+
                         (
-                            chart.x_to_time(region.x) - (chart.timeframe / 2),
-                            chart.x_to_time(region.x + region.width) + (chart.timeframe / 2)
+                            chart.x_to_time(region.x) - (timeframe / 2),
+                            chart.x_to_time(region.x + region.width) + (timeframe / 2)
                         )
                     }
                     ChartData::TickBased(_) => {

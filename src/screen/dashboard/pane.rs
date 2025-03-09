@@ -138,16 +138,16 @@ impl PaneState {
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
 
                 match basis {
-                    ChartBasis::Time(timeframe) => {
+                    ChartBasis::Time(interval) => {
                         vec![
                             StreamType::DepthAndTrades { exchange, ticker: ticker.0 },
                             StreamType::Kline {
                                 exchange,
                                 ticker: ticker.0,
-                                timeframe,
+                                timeframe: interval.into(),
                             },
                         ]
                     }
@@ -162,15 +162,15 @@ impl PaneState {
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
 
                 match basis {
-                    ChartBasis::Time(timeframe) => {
+                    ChartBasis::Time(interval) => {
                         vec![
                             StreamType::Kline {
                                 exchange,
                                 ticker: ticker.0,
-                                timeframe,
+                                timeframe: interval.into(),
                             },
                         ]
                     }
@@ -250,7 +250,7 @@ impl PaneState {
                 );
 
                 let basis = self.settings.selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Footprint(indicators)) => indicators,
@@ -282,7 +282,7 @@ impl PaneState {
                 );
 
                 let basis = self.settings.selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Candlestick(indicators)) => indicators,
@@ -357,7 +357,7 @@ impl PaneState {
 
                     *chart = CandlestickChart::new(
                         layout,
-                        ChartBasis::Time(timeframe),
+                        ChartBasis::Time(timeframe.into()),
                         klines.clone(), 
                         raw_trades,
                         tick_size, 
@@ -376,7 +376,7 @@ impl PaneState {
 
                     *chart = FootprintChart::new(
                         layout,
-                        ChartBasis::Time(timeframe),
+                        ChartBasis::Time(timeframe.into()),
                         tick_size,
                         klines.clone(),
                         raw_trades,
@@ -454,7 +454,7 @@ impl PaneState {
                     button(text(format!(
                         "{} - {}",
                         self.settings.selected_basis
-                            .unwrap_or(ChartBasis::Time(Timeframe::M5)),
+                            .unwrap_or(ChartBasis::Time(Timeframe::M5.into())),
                         self.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
                     )))
                     .style(move |theme, status| {
@@ -469,7 +469,7 @@ impl PaneState {
                 stream_info_element = stream_info_element.push(
                     button(text(
                         self.settings.selected_basis
-                            .unwrap_or(ChartBasis::Time(Timeframe::M15))
+                            .unwrap_or(ChartBasis::Time(Timeframe::M15.into()))
                             .to_string(),
                     ))
                     .style(move |theme, status| {
@@ -654,7 +654,7 @@ impl ChartView for FootprintChart {
             notifications,
             StreamModifier::FootprintChart(
                 state.settings.selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5)),
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into())),
                 state.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
             ),
         )
@@ -686,7 +686,7 @@ impl ChartView for CandlestickChart {
             notifications,
             StreamModifier::CandlestickChart(
                 state.settings.selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15)),
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into())),
             ),
         )
     }
@@ -824,11 +824,11 @@ fn stream_modifier_view<'a>(
                     );
 
                 for timeframe in &Timeframe::ALL {
-                    let msg = if *timeframe == selected_timeframe {
+                    let msg = if *timeframe == selected_timeframe.into() {
                         None
                     } else {
                         Some(Message::ChartBasisSelected(
-                            ChartBasis::Time(*timeframe), pane
+                            ChartBasis::Time(u64::from(*timeframe)), pane
                         ))
                     };
                     timeframes_column = timeframes_column.push(
@@ -847,7 +847,7 @@ fn stream_modifier_view<'a>(
                             create_button(
                                 "Timeframe".to_string(),
                                 Some(Message::ChartBasisSelected(
-                                    ChartBasis::Time(Timeframe::M5), pane
+                                    ChartBasis::Time(Timeframe::M5.into()), pane
                                 )),
                                 true,
                             ),

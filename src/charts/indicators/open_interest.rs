@@ -5,7 +5,7 @@ use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vect
 use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
 
 use crate::charts::{
-    round_to_tick, Caches, CommonChartData, Interaction, Message
+    round_to_tick, Caches, ChartBasis, CommonChartData, Interaction, Message
 };
 use crate::data_providers::format_with_commas;
 
@@ -23,13 +23,19 @@ pub fn create_indicator_elem<'a>(
         max: chart_state.latest_x,
         scaling: chart_state.scaling,
         translation_x: chart_state.translation.x,
-        timeframe: chart_state.timeframe,
+        basis: chart_state.basis,
         cell_width: chart_state.cell_width,
         timeseries: data,
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
     .width(Length::Fill);
+
+    if earliest > latest {
+        return row![
+            indi_chart,
+        ].into()
+    }
 
     let mut max_value: f32 = f32::MIN;
     let mut min_value: f32 = f32::MAX;
@@ -68,7 +74,7 @@ pub struct OpenInterest<'a> {
     pub max: u64,
     pub scaling: f32,
     pub translation_x: f32,
-    pub timeframe: u64,
+    pub basis: ChartBasis,
     pub cell_width: f32,
     pub timeseries: &'a BTreeMap<u64, f32>,
     pub chart_bounds: Rectangle,
@@ -88,22 +94,36 @@ impl OpenInterest<'_> {
     }
 
     fn x_to_time(&self, x: f32) -> u64 {
-        if x <= 0.0 {
-            let diff = (-x / self.cell_width * self.timeframe as f32) as u64;
-            self.max.saturating_sub(diff)
-        } else {
-            let diff = (x / self.cell_width * self.timeframe as f32) as u64;
-            self.max.saturating_add(diff)
+        match self.basis {
+            ChartBasis::Time(interval) => {
+                if x <= 0.0 {
+                    let diff = (-x / self.cell_width * interval as f32) as u64;
+                    self.max.saturating_sub(diff)
+                } else {
+                    let diff = (x / self.cell_width * interval as f32) as u64;
+                    self.max.saturating_add(diff)
+                }
+            }
+            ChartBasis::Tick(_) => {
+                unimplemented!()
+            }
         }
     }
 
     fn time_to_x(&self, time: u64) -> f32 {
-        if time <= self.max {
-            let diff = self.max - time;
-            -(diff as f32 / self.timeframe as f32) * self.cell_width
-        } else {
-            let diff = time - self.max;
-            (diff as f32 / self.timeframe as f32) * self.cell_width
+        match self.basis {
+            ChartBasis::Time(interval) => {
+                if time <= self.max {
+                    let diff = self.max - time;
+                    -(diff as f32 / interval as f32) * self.cell_width
+                } else {
+                    let diff = time - self.max;
+                    (diff as f32 / interval as f32) * self.cell_width
+                }
+            },
+            ChartBasis::Tick(_) => {
+                unimplemented!()
+            }
         }
     }
 }
@@ -151,13 +171,19 @@ impl canvas::Program<Message> for OpenInterest<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.timeseries.is_empty() || self.timeframe == 0 {
-            return vec![];
-        }
-
         let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
 
         let palette = theme.extended_palette();
+
+        let timeframe: u64 = match self.basis {
+            ChartBasis::Time(interval) => {
+                interval
+            },
+            ChartBasis::Tick(_) => {
+                // TODO: implement
+                return vec![]
+            }
+        };
 
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
             frame.translate(center);
@@ -180,8 +206,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             );
 
             let (earliest, latest) = (
-                self.x_to_time(region.x) - (self.timeframe / 2),
-                self.x_to_time(region.x + region.width) + (self.timeframe / 2),
+                self.x_to_time(region.x) - (timeframe / 2),
+                self.x_to_time(region.x + region.width) + (timeframe / 2),
             );
 
             let mut max_value: f32 = f32::MIN;
@@ -268,7 +294,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
                     let rounded_timestamp =
-                        (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe;
+                        (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
                     let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                     frame.stroke(
@@ -286,7 +312,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     {
                         let next_value = self
                             .timeseries
-                            .range((rounded_timestamp + self.timeframe)..=u64::MAX)
+                            .range((rounded_timestamp + timeframe)..=u64::MAX)
                             .next()
                             .map(|(_, val)| *val);
 

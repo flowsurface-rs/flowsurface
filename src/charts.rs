@@ -361,7 +361,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         translation_x: chart_state.translation.x,
         max: chart_state.latest_x,
         crosshair: chart_state.crosshair,
-        timeframe: chart_state.timeframe,
+        basis: chart_state.basis,
         cell_width: chart_state.cell_width,
         timezone,
         chart_bounds: chart_state.bounds,
@@ -379,7 +379,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         crosshair: chart_state.crosshair,
         tick_size: chart_state.tick_size,
         cell_height: chart_state.cell_height,
-        timeframe: chart_state.timeframe as u32,
+        basis: chart_state.basis,
         chart_bounds: chart_state.bounds,
     })
     .width(Length::Fill)
@@ -424,7 +424,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
     let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
         (Some(split_at), false) => {
-            if let Some(indicator) = chart.view_indicator(indicators) {
+            if let Some(indicator) = chart.view_indicator(indicators) {                
                 row![
                     HSplit::new(
                         main_chart,
@@ -473,8 +473,33 @@ impl Caches {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ChartBasis {
-    Time(Timeframe),
+    Time(u64),
     Tick(TickCount),
+}
+
+impl std::fmt::Display for ChartBasis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChartBasis::Time(millis) => {
+                match *millis {
+                    60_000 => write!(f, "1m"),
+                    180_000 => write!(f, "3m"),
+                    300_000 => write!(f, "5m"),
+                    900_000 => write!(f, "15m"),
+                    1_800_000 => write!(f, "30m"),
+                    3_600_000 => write!(f, "1h"),
+                    7_200_000 => write!(f, "2h"),
+                    14_400_000 => write!(f, "4h"),
+                    _ => write!(f, "{}ms", millis),
+                }
+            },
+            ChartBasis::Tick(count) => {
+                match *count {
+                    _ => write!(f, "{}", count),
+                }
+            }
+        }
+    }
 }
 
 enum ChartData {
@@ -505,21 +530,6 @@ impl ChartData {
     }
 }
 
-impl From<Timeframe> for ChartBasis {
-    fn from(timeframe: Timeframe) -> Self {
-        ChartBasis::Time(timeframe)
-    }
-}
-
-impl std::fmt::Display for ChartBasis {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChartBasis::Time(timeframe) => write!(f, "{}", timeframe),
-            ChartBasis::Tick(tick_count) => write!(f, "{}", tick_count),
-        }
-    }
-}
-
 pub struct CommonChartData {
     cache: Caches,
 
@@ -538,7 +548,6 @@ pub struct CommonChartData {
 
     base_price_y: f32,
     latest_x: u64,
-    timeframe: u64,
     tick_size: f32,
     decimals: usize,
     ticker_info: Option<TickerInfo>,
@@ -553,7 +562,7 @@ impl Default for CommonChartData {
             crosshair: true,
             translation: Vector::default(),
             bounds: Rectangle::default(),
-            basis: ChartBasis::Time(Timeframe::M5),
+            basis: ChartBasis::Time(Timeframe::M5.to_milliseconds()),
             last_price: None,
             scaling: 1.0,
             autoscale: true,
@@ -561,7 +570,6 @@ impl Default for CommonChartData {
             cell_height: 30.0,
             base_price_y: 0.0,
             latest_x: 0,
-            timeframe: 0,
             tick_size: 0.0,
             decimals: 0,
             indicators_split: None,
@@ -593,22 +601,37 @@ impl CommonChartData {
     }
 
     fn time_to_x(&self, time: u64) -> f32 {
-        if time <= self.latest_x {
-            let diff = self.latest_x - time;
-            -(diff as f32 / self.timeframe as f32) * self.cell_width
-        } else {
-            let diff = time - self.latest_x;
-            (diff as f32 / self.timeframe as f32) * self.cell_width
+        match self.basis {
+            ChartBasis::Time(timeframe) => {
+                if time <= self.latest_x {
+                    let diff = self.latest_x - time;
+                    -(diff as f32 / timeframe as f32) * self.cell_width
+                } else {
+                    let diff = time - self.latest_x;
+                    (diff as f32 / timeframe as f32) * self.cell_width
+                }
+            },
+            ChartBasis::Tick(_) => {
+                unimplemented!()
+            }
         }
+            
     }
     
     fn x_to_time(&self, x: f32) -> u64 {
-        if x <= 0.0 {
-            let diff = (-x / self.cell_width * self.timeframe as f32) as u64;
-            self.latest_x.saturating_sub(diff)
-        } else {
-            let diff = (x / self.cell_width * self.timeframe as f32) as u64;
-            self.latest_x.saturating_add(diff)
+        match self.basis {
+            ChartBasis::Time(timeframe) => {
+                if x <= 0.0 {
+                    let diff = (-x / self.cell_width * timeframe as f32) as u64;
+                    self.latest_x.saturating_sub(diff)
+                } else {
+                    let diff = (x / self.cell_width * timeframe as f32) as u64;
+                    self.latest_x.saturating_add(diff)
+                }
+            },
+            ChartBasis::Tick(_) => {
+                unimplemented!()
+            }
         }
     }
 
@@ -670,7 +693,7 @@ impl CommonChartData {
 
         // Vertical time/tick line
         match self.basis {
-            ChartBasis::Time(_) => {
+            ChartBasis::Time(timeframe) => {
                 let earliest = self.x_to_time(region.x) as f64;
                 let latest = self.x_to_time(region.x + region.width) as f64;
 
@@ -678,7 +701,7 @@ impl CommonChartData {
                 let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
                 let rounded_timestamp =
-                    (crosshair_millis / (self.timeframe as f64)).round() as u64 * self.timeframe;
+                    (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
                 let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                 frame.stroke(

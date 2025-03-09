@@ -903,7 +903,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
         } => {
             if let Some(ticker_info) = settings.ticker_info {
                 let basis = settings.selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
 
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Candlestick(
@@ -937,7 +937,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                     .unwrap_or(TickMultiplier(50))
                     .multiply_with_min_tick_size(ticker_info);
                 let basis = settings.selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5));
+                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
                 
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Footprint(

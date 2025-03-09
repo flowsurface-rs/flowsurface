@@ -68,6 +68,34 @@ impl Timeframe {
     }
 }
 
+impl From<Timeframe> for f32 {
+    fn from(timeframe: Timeframe) -> f32 {
+        timeframe.to_milliseconds() as f32
+    }
+}
+
+impl From<Timeframe> for u64 {
+    fn from(timeframe: Timeframe) -> u64 {
+        timeframe.to_milliseconds()
+    }
+}
+
+impl From<u64> for Timeframe {
+    fn from(milliseconds: u64) -> Timeframe {
+        match milliseconds {
+            60_000 => Timeframe::M1,
+            180_000 => Timeframe::M3,
+            300_000 => Timeframe::M5,
+            900_000 => Timeframe::M15,
+            1_800_000 => Timeframe::M30,
+            3_600_000 => Timeframe::H1,
+            7_200_000 => Timeframe::H2,
+            14_400_000 => Timeframe::H4,
+            _ => panic!("Invalid timeframe: {}", milliseconds),
+        }
+    }
+}
+
 type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 pub struct DataPoint {

@@ -63,6 +63,22 @@ impl From<TickCount> for u64 {
     }
 }
 
+impl From<u64> for TickCount {
+    fn from(value: u64) -> Self {
+        match value {
+            50 => TickCount::T50,
+            100 => TickCount::T100,
+            200 => TickCount::T200,
+            500 => TickCount::T500,
+            1000 => TickCount::T1000,
+            2000 => TickCount::T2000,
+            5000 => TickCount::T5000,
+            10000 => TickCount::T10000,
+            _ => panic!("Invalid tick count value"),
+        }
+    }
+}
+
 impl std::fmt::Display for TickCount {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {

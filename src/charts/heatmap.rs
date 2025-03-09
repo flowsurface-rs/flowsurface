@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{data_providers::TickerInfo, layout::SerializableChartData, screen::UserTimezone};
 use crate::data_providers::{Depth, Trade};
 
-use super::{indicators::{HeatmapIndicator, Indicator}, scales::PriceInfoLabel};
+use super::{indicators::{HeatmapIndicator, Indicator}, scales::PriceInfoLabel, ChartBasis};
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{canvas_interaction, view_chart, update_chart, abbr_large_numbers, count_decimals};
 
@@ -244,12 +244,12 @@ impl HeatmapChart {
             chart: CommonChartData {
                 cell_width: Self::DEFAULT_CELL_WIDTH,
                 cell_height: 4.0,
-                timeframe: aggr_time,
                 tick_size,
                 decimals: count_decimals(tick_size),
                 crosshair: layout.crosshair,
                 indicators_split: layout.indicators_split,
                 ticker_info,
+                basis: ChartBasis::Time(aggr_time),
                 ..Default::default()
             },
             indicators: {
@@ -280,7 +280,16 @@ impl HeatmapChart {
             }
         }
 
-        let aggregate_time = chart.timeframe;
+        let aggregate_time: u64 = match chart.basis {
+            ChartBasis::Time(interval) => {
+                interval
+            },
+            ChartBasis::Tick(_) => {
+                // TODO: implement
+                unimplemented!()
+            }
+        };
+
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
 
         {
@@ -373,15 +382,25 @@ impl HeatmapChart {
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
         let chart_state = self.get_common_data_mut();
 
+        let aggregate_time: u64 = match chart_state.basis {
+            ChartBasis::Time(interval) => {
+                interval
+            },
+            ChartBasis::Tick(_) => {
+                // TODO: implement
+                unimplemented!()
+            }
+        };
+
         chart_state.cell_height = 4.0;
         chart_state.tick_size = new_tick_size;
         chart_state.decimals = count_decimals(new_tick_size);
 
         self.timeseries.clear();
-
+        
         self.orderbook = Orderbook::new(
             new_tick_size, 
-            self.chart.timeframe
+            aggregate_time,
         );
     }
 

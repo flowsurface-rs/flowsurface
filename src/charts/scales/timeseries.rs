@@ -56,7 +56,12 @@ const MS_TIME_STEPS: [u64; 8] = [
     100,
 ];
 
-pub fn calc_time_step(earliest: u64, latest: u64, labels_can_fit: i32, timeframe: u64) -> (u64, u64) {
+pub fn calc_time_step(
+    earliest: u64, 
+    latest: u64, 
+    labels_can_fit: i32, 
+    timeframe: u64,
+) -> (u64, u64) {
     let timeframe_in_min = timeframe / 60000;
 
     let time_steps: &[u64] = match timeframe_in_min {

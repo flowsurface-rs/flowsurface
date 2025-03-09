@@ -116,9 +116,9 @@ impl CandlestickChart {
         ticker_info: Option<TickerInfo>,
     ) -> CandlestickChart {
         match basis {
-            ChartBasis::Time(timeframe) => {
+            ChartBasis::Time(interval) => {
                 let timeseries = TimeSeries::new(
-                    timeframe, 
+                    interval.into(), 
                     tick_size, 
                     &vec![], 
                     &klines_raw
@@ -137,13 +137,12 @@ impl CandlestickChart {
                         cell_height: 200.0 / y_ticks,
                         base_price_y,
                         latest_x,
-                        timeframe: timeframe.to_milliseconds(),
                         tick_size,
                         crosshair: layout.crosshair,
                         indicators_split: layout.indicators_split,
                         decimals: count_decimals(tick_size),
                         ticker_info,
-                        basis: super::ChartBasis::Time(timeframe),
+                        basis: super::ChartBasis::Time(interval),
                         ..Default::default()
                     },
                     data_source: ChartData::TimeBased(timeseries),
@@ -244,6 +243,8 @@ impl CandlestickChart {
     fn get_missing_data_task(&mut self) -> Option<Task<Message>> {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
+                let timeframe = timeseries.interval.to_milliseconds();
+            
                 let (visible_earliest, visible_latest) = self.get_visible_timerange();
                 let (kline_earliest, kline_latest) = self.get_kline_timerange();
                 let earliest = visible_earliest - (visible_latest - visible_earliest);
@@ -261,7 +262,7 @@ impl CandlestickChart {
                 // priority 2, Open Interest data
                 for data in self.indicators.values() {
                     if let IndicatorData::OpenInterest(_, _) = data {
-                        if self.chart.timeframe >= Timeframe::M5.to_milliseconds() 
+                        if timeframe >= Timeframe::M5.to_milliseconds() 
                             && self.chart.ticker_info.is_some_and(|info| info.get_market_type() == MarketType::LinearPerps)
                         {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
@@ -291,12 +292,12 @@ impl CandlestickChart {
                 if let Some(missing_keys) = timeseries.check_integrity(
                     kline_earliest, 
                     kline_latest, 
-                    self.chart.timeframe
+                    timeframe,
                 ) {
                     let latest = missing_keys.iter()
-                        .max().unwrap_or(&visible_latest) + self.chart.timeframe;
+                        .max().unwrap_or(&visible_latest) + timeframe;
                     let earliest = missing_keys.iter()
-                        .min().unwrap_or(&visible_earliest) - self.chart.timeframe;
+                        .min().unwrap_or(&visible_earliest) - timeframe;
             
                     if let Some(task) = request_fetch(
                         &mut self.request_handler, 
@@ -412,7 +413,7 @@ impl CandlestickChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.timeframe = 0;
+        self.chart.basis = ChartBasis::Tick(tick_basis.into());
 
         self.data_source = ChartData::TickBased(
             TickAggr::new(
@@ -493,8 +494,20 @@ impl CandlestickChart {
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
 
-        let earliest = chart_state.x_to_time(visible_region.x);
-        let latest = chart_state.x_to_time(visible_region.x + visible_region.width);
+        let (earliest, latest) = match chart_state.basis {
+            ChartBasis::Time(_) => {
+                (
+                    chart_state.x_to_time(visible_region.x),
+                    chart_state.x_to_time(visible_region.x + visible_region.width),
+                )
+            }
+            ChartBasis::Tick(_) => {
+                (
+                    chart_state.x_to_tick(visible_region.x),
+                    chart_state.x_to_tick(visible_region.x + visible_region.width)
+                )
+            }
+        };
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
 
@@ -516,14 +529,12 @@ impl CandlestickChart {
                             }
                     },
                     CandlestickIndicator::OpenInterest => {
-                        if chart_state.timeframe >= Timeframe::M5.to_milliseconds() {
-                            if let Some(IndicatorData::OpenInterest(cache, data)) = self.indicators
-                                .get(&CandlestickIndicator::OpenInterest) {
-                                    indicators = indicators.push(
-                                        indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                                    );
-                                }
-                        }
+                        if let Some(IndicatorData::OpenInterest(cache, data)) = self.indicators
+                            .get(&CandlestickIndicator::OpenInterest) {
+                                indicators = indicators.push(
+                                    indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
+                                );
+                            }
                     }
                 }
             }

@@ -397,12 +397,12 @@ impl Dashboard {
                                 match &state.content {
                                     PaneContent::Candlestick(_, _) => {
                                         match basis {
-                                            ChartBasis::Time(timeframe) => {
+                                            ChartBasis::Time(interval) => {
                                                 state.stream = vec![
                                                     StreamType::Kline {
                                                         exchange,
                                                         ticker,
-                                                        timeframe,
+                                                        timeframe: interval.into(),
                                                     },
                                                 ];
                                             }
@@ -415,12 +415,12 @@ impl Dashboard {
                                     }
                                     PaneContent::Footprint(_, _) => {
                                         match basis {
-                                            ChartBasis::Time(timeframe) => {
+                                            ChartBasis::Time(interval) => {
                                                 state.stream = vec![
                                                     StreamType::Kline {
                                                         exchange,
                                                         ticker,
-                                                        timeframe,
+                                                        timeframe: interval.into(),
                                                     },
                                                     StreamType::DepthAndTrades { exchange, ticker },
                                                 ];
@@ -439,7 +439,7 @@ impl Dashboard {
 
                         match basis {
                             ChartBasis::Time(timeframe) => {
-                                match self.set_pane_timeframe(main_window.id, window, pane, timeframe) {
+                                match self.set_pane_timeframe(main_window.id, window, pane, timeframe.into()) {
                                     Ok(stream_type) => {
                                         if let StreamType::Kline { .. } = stream_type {
                                             let task = get_kline_fetch_task(
@@ -585,7 +585,7 @@ impl Dashboard {
                                             *chart = CandlestickChart::new(
                                                 chart.get_chart_layout(),
                                                 state.settings.selected_basis
-                                                    .unwrap_or(ChartBasis::Time(timeframe)),
+                                                    .unwrap_or(ChartBasis::Time(timeframe.to_milliseconds())),
                                                 klines.clone(),
                                                 raw_trades,
                                                 tick_size,
@@ -600,7 +600,7 @@ impl Dashboard {
                                             *chart = FootprintChart::new(
                                                 chart.get_chart_layout(),
                                                 state.settings.selected_basis
-                                                    .unwrap_or(ChartBasis::Time(timeframe)),
+                                                    .unwrap_or(ChartBasis::Time(timeframe.to_milliseconds())),
                                                 tick_size,
                                                 klines.clone(),
                                                 raw_trades,
@@ -1149,7 +1149,9 @@ impl Dashboard {
         new_timeframe: Timeframe,
     ) -> Result<&StreamType, DashboardError> {
         if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-            pane_state.settings.selected_basis = Some(ChartBasis::Time(new_timeframe));
+            pane_state.settings.selected_basis = Some(ChartBasis::Time(
+                new_timeframe.to_milliseconds())
+            );
 
             if let Some(stream_type) = pane_state
                 .stream
