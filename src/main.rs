@@ -1,37 +1,37 @@
 #![windows_subsystem = "windows"]
 
-mod style;
 mod charts;
-mod window;
+mod data_providers;
 mod layout;
 mod logger;
 mod screen;
-mod widget;
-mod tooltip;
+mod style;
 mod tickers_table;
-mod data_providers;
+mod tooltip;
+mod widget;
+mod window;
 
-use tooltip::tooltip;
-use tickers_table::TickersTable;
-use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
-use style::{get_icon_text, Icon, ICON_BYTES};
-use screen::{
-    create_button, dashboard::{self, pane, Dashboard}, handle_error, 
-    modal::{confirmation_modal, dashboard_modal}, 
-    Notification, UserTimezone
-};
-use data_providers::{
-    binance, bybit, Exchange, StreamType, Ticker, TickerInfo, TickerStats,
-};
-use window::{window_events, Window, WindowEvent};
+use data_providers::{Exchange, StreamType, Ticker, TickerInfo, TickerStats, binance, bybit};
+use futures::TryFutureExt;
 use iced::{
-    widget::{button, center, column, container, pane_grid, pick_list, responsive, row, text, Space}, 
     Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,
+    widget::{
+        Space, button, center, column, container, pane_grid, pick_list, responsive, row, text,
+    },
 };
 use iced_futures::MaybeSend;
-use futures::TryFutureExt;
-use std::{collections::HashMap, vec, future::Future};
-
+use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
+use screen::{
+    Notification, UserTimezone, create_button,
+    dashboard::{self, Dashboard, pane},
+    handle_error,
+    modal::{confirmation_modal, dashboard_modal},
+};
+use std::{collections::HashMap, future::Future, vec};
+use style::{ICON_BYTES, Icon, get_icon_text};
+use tickers_table::TickersTable;
+use tooltip::tooltip;
+use window::{Window, WindowEvent, window_events};
 
 fn main() {
     logger::setup(false, false).expect("Failed to initialize logger");
@@ -41,11 +41,10 @@ fn main() {
     if let Err(e) = set_present_mode(&saved_state.present_mode) {
         log::warn!("Failed to set ICED_PRESENT_MODE: {}", e);
     }
-    
+
     std::thread::spawn(layout::cleanup_old_data);
 
-    let main_window_size = saved_state.window_size
-        .unwrap_or((1600.0, 900.0));
+    let main_window_size = saved_state.window_size.unwrap_or((1600.0, 900.0));
 
     let window_settings = window::Settings {
         size: iced::Size::new(main_window_size.0, main_window_size.1),
@@ -155,15 +154,14 @@ impl State {
         let active_layout = saved_state.layout_manager.active_layout.clone();
 
         let exchange_fetch_tasks = {
-            Exchange::MARKET_TYPES.iter()
-                .map(|(exchange, market_type)| {                    
-                    match exchange {
-                        Exchange::BinanceFutures | Exchange::BinanceSpot => {
-                            fetch_ticker_info(*exchange, binance::fetch_ticksize(*market_type))
-                        }
-                        Exchange::BybitLinear | Exchange::BybitSpot => {
-                            fetch_ticker_info(*exchange, bybit::fetch_ticksize(*market_type))
-                        }
+            Exchange::MARKET_TYPES
+                .iter()
+                .map(|(exchange, market_type)| match exchange {
+                    Exchange::BinanceFutures | Exchange::BinanceSpot => {
+                        fetch_ticker_info(*exchange, binance::fetch_ticksize(*market_type))
+                    }
+                    Exchange::BybitLinear | Exchange::BybitSpot => {
+                        fetch_ticker_info(*exchange, bybit::fetch_ticksize(*market_type))
                     }
                 })
                 .collect::<Vec<Task<Message>>>()
@@ -200,7 +198,10 @@ impl State {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SetTickersInfo(exchange, tickers_info) => {
-                log::info!("Received tickers info for {exchange}, len: {}", tickers_info.len());
+                log::info!(
+                    "Received tickers info for {exchange}, len: {}",
+                    tickers_info.len()
+                );
                 self.tickers_info.insert(exchange, tickers_info);
             }
             Message::MarketWsEvent(event) => {
@@ -229,20 +230,13 @@ impl State {
                                 )
                                 .map(Message::Dashboard);
                         }
-                        data_providers::Event::KlineReceived(
-                            stream,
-                            kline, 
-                        ) => {
+                        data_providers::Event::KlineReceived(stream, kline) => {
                             return dashboard
-                                .update_latest_klines(
-                                    &stream,
-                                    &kline,
-                                    main_window_id,
-                                )
+                                .update_latest_klines(&stream, &kline, main_window_id)
                                 .map(Message::Dashboard);
                         }
                     }
-                }                
+                }
             }
             Message::ToggleLayoutLock => {
                 self.layout_locked = !self.layout_locked;
@@ -257,7 +251,7 @@ impl State {
                     let dashboard = match self.get_active_dashboard_mut() {
                         Some(dashboard) => dashboard,
                         None => {
-                            return iced::exit(); 
+                            return iced::exit();
                         }
                     };
 
@@ -266,24 +260,21 @@ impl State {
                         return window::close(window);
                     }
 
-                    let mut opened_windows: Vec<window::Id> = dashboard
-                        .popout
-                        .keys()
-                        .copied()
-                        .collect::<Vec<_>>();
+                    let mut opened_windows: Vec<window::Id> =
+                        dashboard.popout.keys().copied().collect::<Vec<_>>();
 
                     opened_windows.push(self.main_window.id);
 
-                    return window::collect_window_specs(
-                        opened_windows, 
-                        Message::SaveAndExit
-                    );
+                    return window::collect_window_specs(opened_windows, Message::SaveAndExit);
                 }
-            }
+            },
             Message::SaveAndExit(windows) => {
-                let dashboard = self.get_active_dashboard_mut().expect("No active dashboard");
+                let dashboard = self
+                    .get_active_dashboard_mut()
+                    .expect("No active dashboard");
 
-                dashboard.popout
+                dashboard
+                    .popout
                     .iter_mut()
                     .for_each(|(id, (_, (pos, size)))| {
                         if let Some((new_pos, new_size)) = windows.get(id) {
@@ -297,13 +288,11 @@ impl State {
                 for id in &self.layouts.layout_order {
                     if let Some((layout, dashboard)) = self.layouts.layouts.get(id) {
                         let serialized_dashboard = SerializableDashboard::from(dashboard);
-                        
-                        ser_layouts.push(
-                            layout::SerializableLayout {
-                                name: layout.name.clone(),
-                                dashboard: serialized_dashboard,
-                            }
-                        );
+
+                        ser_layouts.push(layout::SerializableLayout {
+                            name: layout.name.clone(),
+                            dashboard: serialized_dashboard,
+                        });
                     }
                 }
 
@@ -359,11 +348,9 @@ impl State {
             }
             Message::ErrorOccurred(err) => {
                 return match err {
-                    InternalError::Fetch(err) => handle_error(
-                        &err, 
-                        "Failed to fetch data",
-                        Message::Notification,
-                    ),
+                    InternalError::Fetch(err) => {
+                        handle_error(&err, "Failed to fetch data", Message::Notification)
+                    }
                 };
             }
             Message::ThemeSelected(theme) => {
@@ -371,11 +358,7 @@ impl State {
             }
             Message::LayoutSelected(new_layout_id) => {
                 if let Some(dashboard) = self.get_active_dashboard() {
-                    let active_popout_keys = dashboard
-                        .popout
-                        .keys()
-                        .copied()
-                        .collect::<Vec<_>>();
+                    let active_popout_keys = dashboard.popout.keys().copied().collect::<Vec<_>>();
 
                     let window_tasks = Task::batch(
                         active_popout_keys
@@ -398,14 +381,14 @@ impl State {
                 self.layouts.active_layout = layout.clone();
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     dashboard.focus = None;
-                    return dashboard.load_layout()
-                        .map(Message::Dashboard);
+                    return dashboard.load_layout().map(Message::Dashboard);
                 }
             }
             Message::Dashboard(message) => {
                 let main_window = self.main_window;
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    return dashboard.update(message, &main_window)
+                    return dashboard
+                        .update(message, &main_window)
                         .map(Message::Dashboard);
                 }
             }
@@ -417,34 +400,42 @@ impl State {
             }
             Message::FetchAndUpdateTickersTable => {
                 let fetch_tasks = {
-                    Exchange::MARKET_TYPES.iter()
-                        .map(|(exchange, market_type)| {                    
-                            match exchange {
-                                Exchange::BinanceFutures | Exchange::BinanceSpot => {
-                                    fetch_ticker_prices(*exchange, binance::fetch_ticker_prices(*market_type))
-                                }
-                                Exchange::BybitLinear | Exchange::BybitSpot => {
-                                    fetch_ticker_prices(*exchange, bybit::fetch_ticker_prices(*market_type))
-                                }
+                    Exchange::MARKET_TYPES
+                        .iter()
+                        .map(|(exchange, market_type)| match exchange {
+                            Exchange::BinanceFutures | Exchange::BinanceSpot => {
+                                fetch_ticker_prices(
+                                    *exchange,
+                                    binance::fetch_ticker_prices(*market_type),
+                                )
                             }
+                            Exchange::BybitLinear | Exchange::BybitSpot => fetch_ticker_prices(
+                                *exchange,
+                                bybit::fetch_ticker_prices(*market_type),
+                            ),
                         })
                         .collect::<Vec<Task<Message>>>()
                 };
 
-                return Task::batch(fetch_tasks)
+                return Task::batch(fetch_tasks);
             }
             Message::TickersTable(message) => {
                 if let tickers_table::Message::TickerSelected(ticker, exchange, content) = message {
                     let main_window_id = self.main_window.id;
 
-                    let ticker_info = self.tickers_info.get(&exchange).and_then(|info| {
-                        info.get(&ticker).cloned().flatten()
-                    });
+                    let ticker_info = self
+                        .tickers_info
+                        .get(&exchange)
+                        .and_then(|info| info.get(&ticker).cloned().flatten());
 
                     if let Some(dashboard) = self.get_active_dashboard_mut() {
                         if let Some(ticker_info) = ticker_info {
-                            let task = dashboard
-                                .init_pane_task(main_window_id, (ticker, ticker_info), exchange, &content);
+                            let task = dashboard.init_pane_task(
+                                main_window_id,
+                                (ticker, ticker_info),
+                                exchange,
+                                &content,
+                            );
 
                             return task.map(Message::Dashboard);
                         } else {
@@ -456,7 +447,9 @@ impl State {
                         }
                     }
                 } else {
-                    return self.tickers_table.update(message)
+                    return self
+                        .tickers_table
+                        .update(message)
                         .map(Message::TickersTable);
                 }
             }
@@ -470,7 +463,7 @@ impl State {
                 self.layouts.iter_dashboards_mut().for_each(|dashboard| {
                     dashboard.toggle_trade_fetch(checked, &self.main_window);
                 });
-                    
+
                 if checked {
                     self.confirmation_dialog = None;
                 }
@@ -480,12 +473,10 @@ impl State {
             }
             Message::PresentModeSelected(mode) => {
                 if mode != self.present_mode {
-                    return Task::done(Message::ToggleDialogModal(
-                        Some((
-                            "This will take effect after restarting the app".to_string(),
-                            Box::new(Message::ChangePresentMode(mode)),
-                        )),
-                    ));
+                    return Task::done(Message::ToggleDialogModal(Some((
+                        "This will take effect after restarting the app".to_string(),
+                        Box::new(Message::ChangePresentMode(mode)),
+                    ))));
                 }
             }
             Message::ChangePresentMode(mode) => {
@@ -499,8 +490,7 @@ impl State {
                 if let layout::Message::SelectActive(layout) = msg {
                     return Task::done(Message::LayoutSelected(layout));
                 } else {
-                    return self.layouts.update(msg)
-                        .map(Message::ManageLayouts);
+                    return self.layouts.update(msg).map(Message::ManageLayouts);
                 }
             }
         }
@@ -515,27 +505,20 @@ impl State {
                     column![
                         text("No dashboard available").size(20),
                         button("Add new dashboard")
-                            .on_press(Message::ManageLayouts(
-                                layout::Message::AddLayout)
-                            )
+                            .on_press(Message::ManageLayouts(layout::Message::AddLayout))
                     ]
                     .align_x(Alignment::Center)
-                    .spacing(8)
+                    .spacing(8),
                 )
                 .into();
-            }    
+            }
         };
 
         if id != self.main_window.id {
             container(
                 dashboard
-                .view_window(
-                    id, 
-                    &self.main_window, 
-                    self.layout_locked,
-                    &self.timezone,
-                )
-                .map(Message::Dashboard)
+                    .view_window(id, &self.main_window, self.layout_locked, &self.timezone)
+                    .map(Message::Dashboard),
             )
             .padding(padding::top(if cfg!(target_os = "macos") { 20 } else { 0 }))
             .into()
@@ -545,7 +528,7 @@ impl State {
             } else {
                 tooltip::Position::Left
             };
-            
+
             let sidebar = {
                 let nav_buttons = {
                     let layout_lock_button = {
@@ -555,14 +538,17 @@ impl State {
                                     Icon::Locked
                                 } else {
                                     Icon::Unlocked
-                                }, 
+                                },
                                 14,
-                            ).width(24).align_x(Alignment::Center),
+                            )
+                            .width(24)
+                            .align_x(Alignment::Center),
                             Message::ToggleLayoutLock,
                             Some("Layout Lock"),
                             tooltip_position,
-                            |theme: &Theme, status: button::Status| 
-                                style::button_transparent(theme, status, false),
+                            |theme: &Theme, status: button::Status| {
+                                style::button_transparent(theme, status, false)
+                            },
                         )
                     };
                     let settings_modal_button = {
@@ -586,7 +572,7 @@ impl State {
                     };
                     let layout_modal_button = {
                         let is_active = matches!(self.active_modal, SidebarModal::Layout);
-                
+
                         create_button(
                             get_icon_text(Icon::Layout, 14)
                                 .width(24)
@@ -605,7 +591,7 @@ impl State {
                     };
                     let ticker_search_button = {
                         let is_active = self.show_tickers_dashboard;
-                
+
                         create_button(
                             get_icon_text(Icon::Search, 14)
                                 .width(24)
@@ -632,11 +618,9 @@ impl State {
 
                 let tickers_table = {
                     if self.show_tickers_dashboard {
-                        column![
-                            responsive(move |size| {
-                                self.tickers_table.view(size).map(Message::TickersTable)
-                            })
-                        ]
+                        column![responsive(move |size| {
+                            self.tickers_table.view(size).map(Message::TickersTable)
+                        })]
                         .width(200)
                     } else {
                         column![]
@@ -645,61 +629,45 @@ impl State {
 
                 match self.sidebar_location {
                     Sidebar::Left => {
-                        row![
-                            nav_buttons,
-                            tickers_table,
-                        ]
+                        row![nav_buttons, tickers_table,]
                     }
                     Sidebar::Right => {
-                        row![
-                            tickers_table,
-                            nav_buttons,
-                        ]
+                        row![tickers_table, nav_buttons,]
                     }
                 }
                 .spacing(4)
             };
 
             let dashboard_view = dashboard
-                .view(
-                    &self.main_window, 
-                    self.layout_locked,
-                    &self.timezone,
-                )
+                .view(&self.main_window, self.layout_locked, &self.timezone)
                 .map(Message::Dashboard);
 
             let base = column![
                 {
-                    #[cfg(target_os = "macos")] {
+                    #[cfg(target_os = "macos")]
+                    {
                         iced::widget::center(
                             text("FLOWSURFACE")
-                                .font(
-                                    iced::Font {
-                                        weight: iced::font::Weight::Bold,
-                                        ..Default::default()
-                                    }
-                                )
+                                .font(iced::Font {
+                                    weight: iced::font::Weight::Bold,
+                                    ..Default::default()
+                                })
                                 .size(16)
                                 .style(style::branding_text)
-                                .align_x(Alignment::Center)
-                            )
+                                .align_x(Alignment::Center),
+                        )
                         .height(20)
                         .align_y(Alignment::Center)
                         .padding(padding::right(8).top(4))
                     }
-                    #[cfg(not(target_os = "macos"))] {
+                    #[cfg(not(target_os = "macos"))]
+                    {
                         column![]
                     }
                 },
                 match self.sidebar_location {
-                    Sidebar::Left => row![
-                        sidebar,
-                        dashboard_view,
-                    ],
-                    Sidebar::Right => row![
-                        dashboard_view,
-                        sidebar
-                    ],
+                    Sidebar::Left => row![sidebar, dashboard_view,],
+                    Sidebar::Right => row![dashboard_view, sidebar],
                 }
                 .spacing(4)
                 .padding(8),
@@ -713,23 +681,23 @@ impl State {
 
                         let trade_fetch_checkbox = {
                             let is_active = dashboard.trade_fetch_enabled;
-                    
-                            let checkbox = iced::widget::checkbox("Fetch trades (Binance)", is_active)
-                                .on_toggle(|checked| {
-                                        if checked {
-                                            Message::ToggleDialogModal(
-                                                Some((
-                                                    "This might be unreliable and take some time to complete"
-                                                    .to_string(),
-                                                    Box::new(Message::ToggleTradeFetch(true)),
-                                                )),
-                                            )
-                                        } else {
-                                            Message::ToggleTradeFetch(false)
-                                        }
-                                    }
-                                );
-                    
+
+                            let checkbox = iced::widget::checkbox(
+                                "Fetch trades (Binance)",
+                                is_active,
+                            )
+                            .on_toggle(|checked| {
+                                if checked {
+                                    Message::ToggleDialogModal(Some((
+                                        "This might be unreliable and take some time to complete"
+                                            .to_string(),
+                                        Box::new(Message::ToggleTradeFetch(true)),
+                                    )))
+                                } else {
+                                    Message::ToggleTradeFetch(false)
+                                }
+                            });
+
                             tooltip(
                                 checkbox,
                                 Some("Try to fetch trades for footprint charts"),
@@ -743,12 +711,9 @@ impl State {
                             Message::PresentModeSelected,
                         );
 
-                        let theme_picklist = pick_list(
-                            all_themes, 
-                            Some(self.theme.clone()), 
-                            Message::ThemeSelected,
-                        );
-        
+                        let theme_picklist =
+                            pick_list(all_themes, Some(self.theme.clone()), Message::ThemeSelected);
+
                         let timezone_picklist = pick_list(
                             [UserTimezone::Utc, UserTimezone::Local],
                             Some(self.timezone),
@@ -763,27 +728,25 @@ impl State {
 
                         let scale_factor = {
                             let current_value: f64 = self.scale_factor.into();
-                        
+
                             let decrease_btn = if current_value > 0.8 {
-                                button(text("-")).on_press(Message::ScaleFactorChanged(current_value - 0.1))
+                                button(text("-"))
+                                    .on_press(Message::ScaleFactorChanged(current_value - 0.1))
                             } else {
                                 button(text("-"))
                             };
-                        
+
                             let increase_btn = if current_value < 1.8 {
-                                button(text("+")).on_press(Message::ScaleFactorChanged(current_value + 0.1))
+                                button(text("+"))
+                                    .on_press(Message::ScaleFactorChanged(current_value + 0.1))
                             } else {
                                 button(text("+"))
                             };
-                        
+
                             container(
                                 row![
                                     decrease_btn,
-                                    text(format!(
-                                        "{:.0}%", 
-                                        current_value * 100.0)
-                                    )
-                                    .size(14),
+                                    text(format!("{:.0}%", current_value * 100.0)).size(14),
                                     increase_btn,
                                 ]
                                 .align_y(Alignment::Center)
@@ -795,10 +758,7 @@ impl State {
 
                         container(
                             column![
-                                column![
-                                    text("Sidebar").size(14),
-                                    sidebar_pos,
-                                ].spacing(8),
+                                column![text("Sidebar").size(14), sidebar_pos,].spacing(8),
                                 column![text("Time zone").size(14), timezone_picklist,].spacing(8),
                                 column![text("Theme").size(14), theme_picklist,].spacing(8),
                                 column![text("Interface scale").size(14), scale_factor,].spacing(8),
@@ -806,7 +766,8 @@ impl State {
                                     text("Experimental").size(14),
                                     trade_fetch_checkbox,
                                     present_mode_picklist,
-                                ].spacing(8),
+                                ]
+                                .spacing(8),
                             ]
                             .spacing(20),
                         )
@@ -831,15 +792,12 @@ impl State {
                     );
 
                     if let Some((dialog, message)) = &self.confirmation_dialog {
-                        let dialog_content = self.confirm_dialog(
-                            dialog,
-                            *message.to_owned(),
-                        );
-    
+                        let dialog_content = self.confirm_dialog(dialog, *message.to_owned());
+
                         confirmation_modal(
-                            base_content, 
-                            dialog_content, 
-                            Message::ToggleDialogModal(None)
+                            base_content,
+                            dialog_content,
+                            Message::ToggleDialogModal(None),
                         )
                     } else {
                         base_content
@@ -911,7 +869,7 @@ impl State {
                         Sidebar::Left => (Alignment::Start, padding::left(48).top(40)),
                         Sidebar::Right => (Alignment::End, padding::right(48).top(40)),
                     };
-    
+
                     dashboard_modal(
                         base,
                         manage_layout_modal,
@@ -926,11 +884,7 @@ impl State {
         }
     }
 
-    fn confirm_dialog<'a>(
-        &'a self, 
-        dialog: &'a str, 
-        on_confirm: Message,
-    ) -> Element<'a, Message> {
+    fn confirm_dialog<'a>(&'a self, dialog: &'a str, on_confirm: Message) -> Element<'a, Message> {
         let dialog_content = container(
             column![
                 text(dialog).size(14),
@@ -938,8 +892,7 @@ impl State {
                     button(text("Cancel"))
                         .style(|theme, status| style::button_transparent(theme, status, false))
                         .on_press(Message::ToggleDialogModal(None)),
-                    button(text("Confirm"))
-                        .on_press(on_confirm),
+                    button(text("Confirm")).on_press(on_confirm),
                 ]
                 .spacing(8),
             ]
@@ -968,21 +921,16 @@ impl State {
             None => {
                 return window_events;
             }
-        }; 
+        };
 
-        let exchange_streams = dashboard
-            .get_market_subscriptions(Message::MarketWsEvent);
-        
+        let exchange_streams = dashboard.get_market_subscriptions(Message::MarketWsEvent);
+
         let tickers_table_fetch = iced::time::every(std::time::Duration::from_secs(
             if self.show_tickers_dashboard { 25 } else { 300 },
         ))
         .map(|_| Message::FetchAndUpdateTickersTable);
-        
-        Subscription::batch(vec![
-            exchange_streams,
-            tickers_table_fetch,
-            window_events,
-        ])
+
+        Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
     }
 
     fn get_active_dashboard(&self) -> Option<&Dashboard> {

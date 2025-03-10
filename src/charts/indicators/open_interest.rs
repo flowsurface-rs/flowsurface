@@ -1,17 +1,15 @@
 use std::collections::BTreeMap;
 
-use iced::widget::{container, row, Canvas};
-use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
 use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
+use iced::widget::{Canvas, container, row};
+use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
-use crate::charts::{
-    round_to_tick, Caches, ChartBasis, CommonChartData, Interaction, Message
-};
+use crate::charts::{Caches, ChartBasis, CommonChartData, Interaction, Message, round_to_tick};
 use crate::data_providers::format_with_commas;
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,
-    cache: &'a Caches, 
+    cache: &'a Caches,
     data: &'a BTreeMap<u64, f32>,
     earliest: u64,
     latest: u64,
@@ -32,19 +30,16 @@ pub fn create_indicator_elem<'a>(
     .width(Length::Fill);
 
     if earliest > latest {
-        return row![
-            indi_chart,
-        ].into()
+        return row![indi_chart,].into();
     }
 
     let mut max_value: f32 = f32::MIN;
     let mut min_value: f32 = f32::MAX;
 
-    data.range(earliest..=latest)
-        .for_each(|(_, value)| {
-            max_value = max_value.max(*value);
-            min_value = min_value.min(*value);
-        });
+    data.range(earliest..=latest).for_each(|(_, value)| {
+        max_value = max_value.max(*value);
+        min_value = min_value.min(*value);
+    });
 
     let value_range = max_value - min_value;
     let padding = value_range * 0.01;
@@ -61,10 +56,7 @@ pub fn create_indicator_elem<'a>(
     .height(Length::Fill)
     .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)));
 
-    row![
-        indi_chart,
-        container(indi_labels),
-    ].into()
+    row![indi_chart, container(indi_labels),].into()
 }
 
 pub struct OpenInterest<'a> {
@@ -120,7 +112,7 @@ impl OpenInterest<'_> {
                     let diff = time - self.max;
                     (diff as f32 / interval as f32) * self.cell_width
                 }
-            },
+            }
             ChartBasis::Tick(_) => {
                 unimplemented!()
             }
@@ -176,12 +168,10 @@ impl canvas::Program<Message> for OpenInterest<'_> {
         let palette = theme.extended_palette();
 
         let timeframe: u64 = match self.basis {
-            ChartBasis::Time(interval) => {
-                interval
-            },
+            ChartBasis::Time(interval) => interval,
             ChartBasis::Tick(_) => {
                 // TODO: implement
-                return vec![]
+                return vec![];
             }
         };
 
@@ -224,7 +214,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             max_value += padding;
             min_value -= padding;
 
-            let points: Vec<Point> = self.timeseries
+            let points: Vec<Point> = self
+                .timeseries
                 .range(earliest..=latest)
                 .map(|(timestamp, value)| {
                     let x_position = self.time_to_x(*timestamp);
@@ -233,9 +224,9 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     } else {
                         0.0
                     };
-                    let y_position = (bounds.height / self.scaling) - 
-                        (normalized_height * (bounds.height / self.scaling));
-                    
+                    let y_position = (bounds.height / self.scaling)
+                        - (normalized_height * (bounds.height / self.scaling));
+
                     Point::new(x_position - (self.cell_width / 2.0), y_position)
                 })
                 .collect();
@@ -247,8 +238,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                         ..Stroke::default()
                     };
                     frame.stroke(
-                        &Path::line(points[0], points[1]), 
-                        Stroke::with_color(stroke, palette.secondary.strong.color)
+                        &Path::line(points[0], points[1]),
+                        Stroke::with_color(stroke, palette.secondary.strong.color),
                     )
                 }
             }
@@ -273,19 +264,16 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                         },
                         ..Default::default()
                     },
-                    palette.secondary.strong.color
-                        .scale_alpha(
-                            if palette.is_dark {
-                                0.6
-                            } else {
-                                1.0
-                            },
-                        ),
+                    palette
+                        .secondary
+                        .strong
+                        .color
+                        .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
                 );
 
                 if let Some(cursor_position) = cursor.position_in(self.chart_bounds) {
                     let region = self.visible_region(frame.size());
-                    
+
                     // Vertical time line
                     let earliest = self.x_to_time(region.x) as f64;
                     let latest = self.x_to_time(region.x + region.width) as f64;
@@ -295,7 +283,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
 
                     let rounded_timestamp =
                         (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
-                    let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
+                    let snap_ratio =
+                        ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                     frame.stroke(
                         &Path::line(

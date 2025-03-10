@@ -1,6 +1,8 @@
 use chrono::Local;
 use std::{
-    fs::{self, File}, path::PathBuf, process
+    fs::{self, File},
+    path::PathBuf,
+    process,
 };
 
 use crate::layout;

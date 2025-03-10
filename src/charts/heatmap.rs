@@ -1,18 +1,25 @@
-use std::{cmp::Ordering, collections::{hash_map::Entry, BTreeMap, HashMap}};
-
-use iced::{
-    mouse, theme::palette::Extended, Alignment, Color, Element, 
-    Point, Rectangle, Renderer, Size, Task, Theme, Vector
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap, hash_map::Entry},
 };
+
 use iced::widget::canvas::{self, Event, Geometry, Path};
+use iced::{
+    Alignment, Color, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse,
+    theme::palette::Extended,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::{data_providers::TickerInfo, layout::SerializableChartData, screen::UserTimezone};
 use crate::data_providers::{Depth, Trade};
+use crate::{data_providers::TickerInfo, layout::SerializableChartData, screen::UserTimezone};
 
-use super::{indicators::{HeatmapIndicator, Indicator}, scales::PriceInfoLabel, ChartBasis};
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
-use super::{canvas_interaction, view_chart, update_chart, abbr_large_numbers, count_decimals};
+use super::{
+    ChartBasis,
+    indicators::{HeatmapIndicator, Indicator},
+    scales::PriceInfoLabel,
+};
+use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart, view_chart};
 
 use ordered_float::OrderedFloat;
 
@@ -42,10 +49,7 @@ impl Chart for HeatmapChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicator<I: Indicator>(
-        &self, 
-        indicators: &[I], 
-    ) -> Option<Element<Message>> {
+    fn view_indicator<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
         self.view_indicators(indicators)
     }
 
@@ -155,9 +159,7 @@ impl Orderbook {
     }
 
     fn update_price_level(&mut self, time: u64, price: f32, qty: f32, is_bid: bool) {
-        let price_level = self.price_levels
-            .entry(OrderedFloat(price))
-            .or_default();
+        let price_level = self.price_levels.entry(OrderedFloat(price)).or_default();
 
         match price_level.last_mut() {
             Some(last_run) if last_run.qty == OrderedFloat(qty) && last_run.is_bid == is_bid => {
@@ -237,9 +239,9 @@ pub struct HeatmapChart {
 
 impl HeatmapChart {
     pub fn new(
-        layout: SerializableChartData, 
-        tick_size: f32, 
-        aggr_time: u64, 
+        layout: SerializableChartData,
+        tick_size: f32,
+        aggr_time: u64,
         enabled_indicators: &[HeatmapIndicator],
         ticker_info: Option<TickerInfo>,
         config: Option<Config>,
@@ -285,9 +287,7 @@ impl HeatmapChart {
         }
 
         let aggregate_time: u64 = match chart.basis {
-            ChartBasis::Time(interval) => {
-                interval
-            },
+            ChartBasis::Time(interval) => interval,
             ChartBasis::Tick(_) => {
                 // TODO: implement
                 unimplemented!()
@@ -348,19 +348,14 @@ impl HeatmapChart {
 
         chart.latest_x = rounded_depth_update;
 
-        let mid_price = match (
-            depth.asks.first_key_value(),
-            depth.bids.last_key_value()
-        ) {
+        let mid_price = match (depth.asks.first_key_value(), depth.bids.last_key_value()) {
             (Some((ask_price, _)), Some((bid_price, _))) => {
                 (ask_price.into_inner() + bid_price.into_inner()) / 2.0
             }
-            _ => chart.base_price_y
+            _ => chart.base_price_y,
         };
 
-        chart.last_price = Some(
-            PriceInfoLabel::Neutral(mid_price)
-        );
+        chart.last_price = Some(PriceInfoLabel::Neutral(mid_price));
 
         if !(chart.translation.x * chart.scaling > chart.bounds.width / 2.0) {
             chart.base_price_y = (mid_price / (chart.tick_size)).round() * (chart.tick_size)
@@ -387,9 +382,7 @@ impl HeatmapChart {
         let chart_state = self.get_common_data_mut();
 
         let aggregate_time: u64 = match chart_state.basis {
-            ChartBasis::Time(interval) => {
-                interval
-            },
+            ChartBasis::Time(interval) => interval,
             ChartBasis::Tick(_) => {
                 // TODO: implement
                 unimplemented!()
@@ -401,11 +394,8 @@ impl HeatmapChart {
         chart_state.decimals = count_decimals(new_tick_size);
 
         self.timeseries.clear();
-        
-        self.orderbook = Orderbook::new(
-            new_tick_size, 
-            aggregate_time,
-        );
+
+        self.orderbook = Orderbook::new(new_tick_size, aggregate_time);
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
@@ -424,7 +414,8 @@ impl HeatmapChart {
 
         if chart_state.autoscale {
             chart_state.translation = Vector::new(
-                0.5 * (chart_state.bounds.width / chart_state.scaling) - (90.0 / chart_state.scaling),
+                0.5 * (chart_state.bounds.width / chart_state.scaling)
+                    - (90.0 / chart_state.scaling),
                 0.0,
             );
         }
@@ -496,8 +487,8 @@ impl HeatmapChart {
     }
 
     pub fn view<'a, I: Indicator>(
-        &'a self, 
-        indicators: &'a [I], 
+        &'a self,
+        indicators: &'a [I],
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
         view_chart(self, indicators, timezone)
@@ -535,7 +526,7 @@ impl canvas::Program<Message> for HeatmapChart {
         let bounds_size = bounds.size();
 
         let palette = theme.extended_palette();
-        
+
         let volume_indicator = self.indicators.contains_key(&HeatmapIndicator::Volume);
 
         let heatmap = chart.cache.main.draw(renderer, bounds_size, |frame| {
@@ -568,10 +559,13 @@ impl canvas::Program<Message> for HeatmapChart {
                         let y_position = chart.price_to_y(price.0);
 
                         runs.iter()
-                            .filter(|run| **price * run.qty.0 > self.visual_config.order_size_filter)
+                            .filter(|run| {
+                                **price * run.qty.0 > self.visual_config.order_size_filter
+                            })
                             .for_each(|run| {
                                 let start_x = chart.interval_to_x(run.start_time.max(earliest));
-                                let end_x = chart.interval_to_x(run.until_time.min(latest)).min(0.0);
+                                let end_x =
+                                    chart.interval_to_x(run.until_time.min(latest)).min(0.0);
 
                                 let width = end_x - start_x;
 
@@ -676,8 +670,11 @@ impl canvas::Program<Message> for HeatmapChart {
                                         cell_height / 2.0
                                     } else {
                                         // normalize range
-                                        let scale_factor = (self.visual_config.trade_size_scale as f32) / 100.0;
-                                        1.0 + (trade.qty / max_trade_qty) * (28.0 - 1.0) * scale_factor
+                                        let scale_factor =
+                                            (self.visual_config.trade_size_scale as f32) / 100.0;
+                                        1.0 + (trade.qty / max_trade_qty)
+                                            * (28.0 - 1.0)
+                                            * scale_factor
                                     }
                                 };
 
@@ -691,10 +688,12 @@ impl canvas::Program<Message> for HeatmapChart {
                         if volume_indicator {
                             let bar_width = (chart.cell_width / 2.0) * 0.9;
 
-                            let buy_bar_height =
-                                (buy_volume / max_aggr_volume) * (bounds.height / chart.scaling) * 0.1;
-                            let sell_bar_height =
-                                (sell_volume / max_aggr_volume) * (bounds.height / chart.scaling) * 0.1;
+                            let buy_bar_height = (buy_volume / max_aggr_volume)
+                                * (bounds.height / chart.scaling)
+                                * 0.1;
+                            let sell_bar_height = (sell_volume / max_aggr_volume)
+                                * (bounds.height / chart.scaling)
+                                * 0.1;
 
                             frame.fill_rectangle(
                                 Point::new(x_position, (region.y + region.height) - buy_bar_height),

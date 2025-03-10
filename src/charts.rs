@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
+use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
 use iced::{
-    alignment,
+    Element, Length, Point, Rectangle, Size, Task, Theme, Vector, alignment,
     mouse::{self},
-    widget::{button, canvas::{LineDash, Path, Stroke}, column, container, row, text, Space},
-    Element, Length, Point, Rectangle, Size, Task, Theme, Vector,
+    widget::{
+        Space, button,
+        canvas::{LineDash, Path, Stroke},
+        column, container, row, text,
+    },
 };
-use iced::widget::canvas::{self, Canvas, Event, Frame, Cache};
 use indicators::Indicator;
 use ordered_float::OrderedFloat;
 use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
@@ -15,19 +18,26 @@ use uuid::Uuid;
 
 use crate::{
     data_providers::{
-        aggr::{ticks::TickAggr, time::{TimeSeries, Timeframe}}, 
-        fetcher::{FetchRange, ReqError, RequestHandler}, TickerInfo
-    }, 
-    layout::SerializableChartData, screen::UserTimezone, style, 
-    tooltip::{self, tooltip}, widget::hsplit::HSplit
+        TickerInfo,
+        aggr::{
+            ticks::TickAggr,
+            time::{TimeSeries, Timeframe},
+        },
+        fetcher::{FetchRange, ReqError, RequestHandler},
+    },
+    layout::SerializableChartData,
+    screen::UserTimezone,
+    style,
+    tooltip::{self, tooltip},
+    widget::hsplit::HSplit,
 };
 
-mod scales;
-pub mod config;
 pub mod candlestick;
+pub mod config;
 pub mod footprint;
 pub mod heatmap;
 pub mod indicators;
+mod scales;
 pub mod timeandsales;
 
 type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
@@ -36,8 +46,13 @@ type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 pub enum Interaction {
     #[default]
     None,
-    Zoomin { last_position: Point },
-    Panning { translation: Vector, start: Point },
+    Zoomin {
+        last_position: Point,
+    },
+    Panning {
+        translation: Vector,
+        start: Point,
+    },
 }
 
 pub trait ChartConstants {
@@ -79,10 +94,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>>;
 
-    fn view_indicator<I: Indicator>(
-        &self, 
-        enabled: &[I], 
-    ) -> Option<Element<Message>>;
+    fn view_indicator<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>>;
 
     fn get_visible_timerange(&self) -> (u64, u64);
 
@@ -101,14 +113,12 @@ fn canvas_interaction<T: Chart>(
     }
 
     if chart.get_common_data().bounds != bounds {
-        return Some(canvas::Action::publish(Message::BoundsChanged(
-            bounds,
-        )));
+        return Some(canvas::Action::publish(Message::BoundsChanged(bounds)));
     }
 
     let cursor_position = cursor.position_in(
         // padding for split draggers
-        bounds.shrink(4.0)
+        bounds.shrink(4.0),
     )?;
 
     match event {
@@ -204,7 +214,7 @@ fn canvas_interaction<T: Chart>(
                         let translation = {
                             let factor = scaling - old_scaling;
                             let denominator = old_scaling * old_scaling;
-                            
+
                             // safeguard against division by very small numbers
                             let vector_diff = if denominator > 0.0001 {
                                 Vector::new(
@@ -214,7 +224,7 @@ fn canvas_interaction<T: Chart>(
                             } else {
                                 Vector::new(0.0, 0.0)
                             };
-                        
+
                             chart_state.translation - vector_diff
                         };
 
@@ -278,7 +288,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
                 if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
                     chart_state.translation.x -= new_cursor_x - cursor_chart_x;
                 }
-            
+
                 chart_state.autoscale = false;
             }
         }
@@ -314,9 +324,9 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
             let old_center_x = chart_state.bounds.width / 2.0;
             let new_center_x = bounds.width / 2.0;
             let center_delta_x = (new_center_x - old_center_x) / chart_state.scaling;
-            
+
             chart_state.bounds = *bounds;
-            
+
             if !chart_state.autoscale {
                 chart_state.translation.x += center_delta_x;
             }
@@ -331,15 +341,13 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 }
 
 fn view_chart<'a, T: Chart, I: Indicator>(
-    chart: &'a T, 
-    indicators: &'a [I], 
+    chart: &'a T,
+    indicators: &'a [I],
     timezone: &'a UserTimezone,
 ) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 
-    let chart_canvas = Canvas::new(chart)
-        .width(Length::Fill)
-        .height(Length::Fill);
+    let chart_canvas = Canvas::new(chart).width(Length::Fill).height(Length::Fill);
 
     let axis_labels_x = Canvas::new(AxisLabelsX {
         labels_cache: &chart_state.cache.x_labels,
@@ -411,20 +419,13 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
     let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
         (Some(split_at), false) => {
-            if let Some(indicator) = chart.view_indicator(indicators) {                
-                row![
-                    HSplit::new(
-                        main_chart,
-                        indicator,
-                        Message::SplitDragged,
-                    )
-                    .split(split_at),
-                ]
+            if let Some(indicator) = chart.view_indicator(indicators) {
+                row![HSplit::new(main_chart, indicator, Message::SplitDragged,).split(split_at),]
             } else {
                 main_chart
             }
-        },
-        _ => main_chart
+        }
+        _ => main_chart,
     };
 
     column![
@@ -473,24 +474,20 @@ impl ChartBasis {
 impl std::fmt::Display for ChartBasis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ChartBasis::Time(millis) => {
-                match *millis {
-                    60_000 => write!(f, "1m"),
-                    180_000 => write!(f, "3m"),
-                    300_000 => write!(f, "5m"),
-                    900_000 => write!(f, "15m"),
-                    1_800_000 => write!(f, "30m"),
-                    3_600_000 => write!(f, "1h"),
-                    7_200_000 => write!(f, "2h"),
-                    14_400_000 => write!(f, "4h"),
-                    _ => write!(f, "{}ms", millis),
-                }
+            ChartBasis::Time(millis) => match *millis {
+                60_000 => write!(f, "1m"),
+                180_000 => write!(f, "3m"),
+                300_000 => write!(f, "5m"),
+                900_000 => write!(f, "15m"),
+                1_800_000 => write!(f, "30m"),
+                3_600_000 => write!(f, "1h"),
+                7_200_000 => write!(f, "2h"),
+                14_400_000 => write!(f, "4h"),
+                _ => write!(f, "{}ms", millis),
             },
-            ChartBasis::Tick(count) => {
-                match *count {
-                    _ => write!(f, "T{}", count),
-                }
-            }
+            ChartBasis::Tick(count) => match *count {
+                _ => write!(f, "T{}", count),
+            },
         }
     }
 }
@@ -503,22 +500,22 @@ enum ChartData {
 impl ChartData {
     pub fn get_latest_price_range_y_midpoint(&self, chart_state: &CommonChartData) -> f32 {
         match self {
-            ChartData::TimeBased(timeseries) => {
-                timeseries.get_latest_kline().map(|kline| {
+            ChartData::TimeBased(timeseries) => timeseries
+                .get_latest_kline()
+                .map(|kline| {
                     let y_low = chart_state.price_to_y(kline.low);
                     let y_high = chart_state.price_to_y(kline.high);
                     -(y_low + y_high) / 2.0
                 })
-                .unwrap_or(0.0)
-            },
-            ChartData::TickBased(tick_aggr) => {
-                tick_aggr.get_latest_data_point().map(|dp| {
+                .unwrap_or(0.0),
+            ChartData::TickBased(tick_aggr) => tick_aggr
+                .get_latest_data_point()
+                .map(|dp| {
                     let y_low = chart_state.price_to_y(dp.low_price);
                     let y_high = chart_state.price_to_y(dp.high_price);
                     -(y_low + y_high) / 2.0
                 })
-                .unwrap_or(0.0)
-            }
+                .unwrap_or(0.0),
         }
     }
 }
@@ -614,13 +611,11 @@ impl CommonChartData {
                     let diff = value - self.latest_x;
                     (diff as f32 / timeframe as f32) * self.cell_width
                 }
-            },
-            ChartBasis::Tick(_) => {
-                -((value as f32) * self.cell_width)
             }
+            ChartBasis::Tick(_) => -((value as f32) * self.cell_width),
         }
     }
-    
+
     fn x_to_interval(&self, x: f32) -> u64 {
         match self.basis {
             ChartBasis::Time(interval) => {
@@ -631,7 +626,7 @@ impl CommonChartData {
                     let diff = (x / self.cell_width * interval as f32) as u64;
                     self.latest_x.saturating_add(diff)
                 }
-            },
+            }
             ChartBasis::Tick(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
@@ -667,14 +662,11 @@ impl CommonChartData {
                 },
                 ..Default::default()
             },
-            palette.secondary.strong.color
-                .scale_alpha(
-                    if palette.is_dark {
-                        0.6
-                    } else {
-                        1.0
-                    },
-                ),
+            palette
+                .secondary
+                .strong
+                .color
+                .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
         );
 
         // Horizontal price line
@@ -706,7 +698,8 @@ impl CommonChartData {
 
                 let rounded_timestamp =
                     (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
-                let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
+                let snap_ratio =
+                    ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                 frame.stroke(
                     &Path::line(
@@ -717,22 +710,22 @@ impl CommonChartData {
                 );
 
                 (rounded_price, rounded_timestamp)
-            },
+            }
             ChartBasis::Tick(aggregation) => {
                 let crosshair_ratio = cursor_position.x / bounds.width;
 
                 let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
                 let crosshair_pos = chart_x_min + crosshair_ratio * region.width;
-                
+
                 let cell_index = (crosshair_pos / self.cell_width).round();
-                
+
                 let snapped_crosshair = cell_index * self.cell_width;
-                
+
                 let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
-                
+
                 let aggregation: u64 = aggregation.into();
                 let rounded_tick = (-cell_index as u64) * aggregation;
-                
+
                 frame.stroke(
                     &Path::line(
                         Point::new(snap_ratio * bounds.width, 0.0),
@@ -740,7 +733,7 @@ impl CommonChartData {
                     ),
                     dashed_line,
                 );
-            
+
                 (rounded_price, rounded_tick)
             }
         }
@@ -756,9 +749,7 @@ impl CommonChartData {
 
 fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task<Message>> {
     match handler.add_request(range) {
-        Ok(req_id) => Some(Task::done(
-            Message::NewDataRange(req_id, range)
-        )),
+        Ok(req_id) => Some(Task::done(Message::NewDataRange(req_id, range))),
         Err(e) => {
             match e {
                 ReqError::Overlaps => log::debug!("Request overlaps with existing request"),

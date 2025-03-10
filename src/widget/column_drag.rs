@@ -9,14 +9,13 @@
 // credits to https://github.com/airstrike/dragking/
 
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{tree, Operation, Tree, Widget};
-use iced::advanced::{overlay, renderer, Clipboard, Shell};
+use iced::advanced::widget::{Operation, Tree, Widget, tree};
+use iced::advanced::{Clipboard, Shell, overlay, renderer};
 use iced::alignment::{self, Alignment};
 use iced::event::Event;
 use iced::mouse;
 use iced::{
-    Background, Border, Element, Length, Padding, Pixels, Point,
-    Rectangle, Size, Theme, Vector,
+    Background, Border, Element, Length, Padding, Pixels, Point, Rectangle, Size, Theme, Vector,
 };
 
 #[derive(Debug, Clone)]
@@ -106,9 +105,7 @@ where
     ///
     /// If any of the children have a [`Length::Fill`] strategy, you will need to
     /// call [`Column::width`] or [`Column::height`] accordingly.
-    pub fn from_vec(
-        children: Vec<Element<'a, Message, Theme, Renderer>>,
-    ) -> Self {
+    pub fn from_vec(children: Vec<Element<'a, Message, Theme, Renderer>>) -> Self {
         Self {
             spacing: 0.0,
             padding: Padding::ZERO,
@@ -178,10 +175,7 @@ where
     }
 
     /// Adds an element to the [`Column`].
-    pub fn push(
-        mut self,
-        child: impl Into<Element<'a, Message, Theme, Renderer>>,
-    ) -> Self {
+    pub fn push(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         let child = child.into();
         let child_size = child.as_widget().size_hint();
 
@@ -230,10 +224,7 @@ where
     }
 
     /// The message produced by the [`Column`] when a child is dragged.
-    pub fn on_drag(
-        mut self,
-        on_reorder: impl Fn(DragEvent) -> Message + 'a,
-    ) -> Self {
+    pub fn on_drag(mut self, on_reorder: impl Fn(DragEvent) -> Message + 'a) -> Self {
         self.on_drag = Some(Box::new(on_reorder));
         self
     }
@@ -294,16 +285,11 @@ where
 }
 
 impl<'a, Message, Theme, Renderer: renderer::Renderer>
-    FromIterator<Element<'a, Message, Theme, Renderer>>
-    for Column<'a, Message, Theme, Renderer>
+    FromIterator<Element<'a, Message, Theme, Renderer>> for Column<'a, Message, Theme, Renderer>
 where
     Theme: Catalog,
 {
-    fn from_iter<
-        T: IntoIterator<Item = Element<'a, Message, Theme, Renderer>>,
-    >(
-        iter: T,
-    ) -> Self {
+    fn from_iter<T: IntoIterator<Item = Element<'a, Message, Theme, Renderer>>>(iter: T) -> Self {
         Self::with_children(iter)
     }
 }
@@ -389,14 +375,12 @@ where
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    )  {
+    ) {
         let action = tree.state.downcast_mut::<Action>();
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if let Some(cursor_position) =
-                    cursor.position_over(layout.bounds())
-                {
+                if let Some(cursor_position) = cursor.position_over(layout.bounds()) {
                     for (index, child_layout) in layout.children().enumerate() {
                         if child_layout.bounds().contains(cursor_position) {
                             *action = Action::Picking {
@@ -412,9 +396,7 @@ where
                 match *action {
                     Action::Picking { index, origin } => {
                         if let Some(cursor_position) = cursor.position() {
-                            if (cursor_position.y - origin.y).abs()
-                                > self.deadband_zone
-                            {
+                            if (cursor_position.y - origin.y).abs() > self.deadband_zone {
                                 // Start dragging
                                 *action = Action::Dragging {
                                     index,
@@ -422,9 +404,7 @@ where
                                     last_cursor: cursor_position,
                                 };
                                 if let Some(on_reorder) = &self.on_drag {
-                                    shell.publish(on_reorder(
-                                        DragEvent::Picked { index },
-                                    ));
+                                    shell.publish(on_reorder(DragEvent::Picked { index }));
                                 }
                             }
                         }
@@ -449,26 +429,18 @@ where
                         if let Some(cursor_position) = cursor.position() {
                             let bounds = layout.bounds();
                             if bounds.contains(cursor_position) {
-                                let (target_index, drop_position) = self
-                                    .compute_target_index(
-                                        cursor_position,
-                                        layout,
-                                        index,
-                                    );
+                                let (target_index, drop_position) =
+                                    self.compute_target_index(cursor_position, layout, index);
 
                                 if let Some(on_reorder) = &self.on_drag {
-                                    shell.publish(on_reorder(
-                                        DragEvent::Dropped {
-                                            index,
-                                            target_index,
-                                            drop_position,
-                                        },
-                                    ));
+                                    shell.publish(on_reorder(DragEvent::Dropped {
+                                        index,
+                                        target_index,
+                                        drop_position,
+                                    }));
                                 }
                             } else if let Some(on_reorder) = &self.on_drag {
-                                shell.publish(on_reorder(
-                                    DragEvent::Canceled { index },
-                                ));
+                                shell.publish(on_reorder(DragEvent::Canceled { index }));
                             }
                         }
                         *action = Action::Idle;
@@ -489,14 +461,7 @@ where
             .zip(layout.children())
             .for_each(|((child, tree), layout)| {
                 child.as_widget_mut().update(
-                    tree,
-                    event,
-                    layout,
-                    cursor,
-                    renderer,
-                    clipboard,
-                    shell,
-                    viewport,
+                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
                 )
             });
     }
@@ -520,9 +485,9 @@ where
             .zip(&tree.children)
             .zip(layout.children())
             .map(|((child, state), layout)| {
-                child.as_widget().mouse_interaction(
-                    state, layout, cursor, viewport, renderer,
-                )
+                child
+                    .as_widget()
+                    .mouse_interaction(state, layout, cursor, viewport, renderer)
             })
             .max()
             .unwrap_or_default()
@@ -552,16 +517,14 @@ where
 
                 // Determine the target index based on cursor position
                 let target_index = if cursor.position().is_some() {
-                    let (target_index, _) =
-                        self.compute_target_index(*last_cursor, layout, *index);
+                    let (target_index, _) = self.compute_target_index(*last_cursor, layout, *index);
                     target_index.min(child_count - 1)
                 } else {
                     *index
                 };
 
                 // Store the width of the dragged item
-                let drag_bounds =
-                    layout.children().nth(*index).unwrap().bounds();
+                let drag_bounds = layout.children().nth(*index).unwrap().bounds();
                 let drag_height = drag_bounds.height + self.spacing;
 
                 // Draw all children except the one being dragged
@@ -576,10 +539,13 @@ where
                     // floating effect
                     if i == *index {
                         let translation_y = last_cursor.y - origin.y;
-                        renderer.with_translation(Vector { x: 0.0, y: translation_y }, |renderer| {
-                            renderer.with_layer(
-                                child_layout.bounds(),
-                                |renderer| {
+                        renderer.with_translation(
+                            Vector {
+                                x: 0.0,
+                                y: translation_y,
+                            },
+                            |renderer| {
+                                renderer.with_layer(child_layout.bounds(), |renderer| {
                                     child.as_widget().draw(
                                         state,
                                         renderer,
@@ -589,26 +555,17 @@ where
                                         cursor,
                                         viewport,
                                     );
-                                },
-                            );
-                        });
+                                });
+                            },
+                        );
                     } else {
                         let offset: i32 = match target_index.cmp(index) {
-                            std::cmp::Ordering::Less
-                                if i >= target_index && i < *index =>
-                            {
-                                1
-                            }
-                            std::cmp::Ordering::Greater
-                                if i > *index && i <= target_index =>
-                            {
-                                -1
-                            }
+                            std::cmp::Ordering::Less if i >= target_index && i < *index => 1,
+                            std::cmp::Ordering::Greater if i > *index && i <= target_index => -1,
                             _ => 0,
                         };
 
-                        let translation =
-                            Vector::new(0.0, offset as f32 * drag_height);
+                        let translation = Vector::new(0.0, offset as f32 * drag_height);
                         renderer.with_translation(translation, |renderer| {
                             child.as_widget().draw(
                                 state,
@@ -625,8 +582,7 @@ where
                             if offset != 0 {
                                 // Keep track of the total translation so we can
                                 // draw the "ghost" of the dragged item later
-                                translations -= (child_layout.bounds().height
-                                    + self.spacing)
+                                translations -= (child_layout.bounds().height + self.spacing)
                                     * offset.signum() as f32;
                             }
                         });
@@ -653,10 +609,9 @@ where
                     .zip(&tree.children)
                     .zip(layout.children())
                 {
-                    child.as_widget().draw(
-                        state, renderer, theme, defaults, layout, cursor,
-                        viewport,
-                    );
+                    child
+                        .as_widget()
+                        .draw(state, renderer, theme, defaults, layout, cursor, viewport);
                 }
             }
         }
@@ -669,13 +624,7 @@ where
         renderer: &Renderer,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        overlay::from_children(
-            &mut self.children,
-            tree,
-            layout,
-            renderer,
-            translation,
-        )
+        overlay::from_children(&mut self.children, tree, layout, renderer, translation)
     }
 }
 

@@ -4,24 +4,35 @@ use std::collections::{BTreeMap, HashMap};
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
-use iced::{mouse, Alignment, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
-use iced::widget::{column, canvas::{self, Event, Geometry}};
+use iced::widget::{
+    canvas::{self, Event, Geometry},
+    column,
+};
+use iced::{
+    Alignment, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse,
+};
 use ordered_float::OrderedFloat;
 
 use crate::data_providers::aggr::time::Timeframe;
+use crate::data_providers::{
+    Kline, OpenInterest as OIData, Trade,
+    aggr::{ticks::TickAggr, time::TimeSeries},
+    fetcher::{FetchRange, RequestHandler},
+};
 use crate::data_providers::{MarketType, TickerInfo};
 use crate::layout::SerializableChartData;
-use crate::data_providers::{
-    fetcher::{FetchRange, RequestHandler},
-    aggr::{ticks::TickAggr, time::TimeSeries},
-    Kline, Trade, OpenInterest as OIData,
-};
 use crate::screen::UserTimezone;
 
-use super::scales::PriceInfoLabel;
 use super::indicators::{self, FootprintIndicator, Indicator};
-use super::{Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, FootprintTrades, Interaction, Message};
-use super::{canvas_interaction, view_chart, update_chart, count_decimals, request_fetch, abbr_large_numbers, round_to_tick};
+use super::scales::PriceInfoLabel;
+use super::{
+    Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, FootprintTrades,
+    Interaction, Message,
+};
+use super::{
+    abbr_large_numbers, canvas_interaction, count_decimals, request_fetch, round_to_tick,
+    update_chart, view_chart,
+};
 
 impl Chart for FootprintChart {
     fn get_common_data(&self) -> &CommonChartData {
@@ -49,10 +60,7 @@ impl Chart for FootprintChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicator<I: Indicator>(
-        &self, 
-        indicators: &[I],
-    ) -> Option<Element<Message>> {
+    fn view_indicator<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
         self.view_indicators(indicators)
     }
 
@@ -68,7 +76,7 @@ impl Chart for FootprintChart {
                 );
 
                 (earliest, latest)
-            },
+            }
             ChartBasis::Tick(_) => {
                 unimplemented!()
             }
@@ -80,12 +88,12 @@ impl Chart for FootprintChart {
             ChartData::TimeBased(_) => {
                 //timeseries.data_points.keys().cloned().collect()
                 vec![]
-            },
-            ChartData::TickBased(tick_aggr) => {
-                tick_aggr.data_points.iter()
-                    .map(|dp| dp.start_timestamp)
-                    .collect()
             }
+            ChartData::TickBased(tick_aggr) => tick_aggr
+                .data_points
+                .iter()
+                .map(|dp| dp.start_timestamp)
+                .collect(),
         }
     }
 }
@@ -99,8 +107,7 @@ enum IndicatorData {
 impl IndicatorData {
     fn clear_cache(&mut self) {
         match self {
-            IndicatorData::Volume(caches, _) 
-            | IndicatorData::OpenInterest(caches, _) => {
+            IndicatorData::Volume(caches, _) | IndicatorData::OpenInterest(caches, _) => {
                 caches.clear_all();
             }
         }
@@ -141,20 +148,16 @@ impl FootprintChart {
     ) -> Self {
         match basis {
             ChartBasis::Time(interval) => {
-                let timeseries = TimeSeries::new(
-                    interval.into(),
-                    tick_size, 
-                    &raw_trades, 
-                    &klines_raw
-                );
-                
+                let timeseries =
+                    TimeSeries::new(interval.into(), tick_size, &raw_trades, &klines_raw);
+
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
                 let (scale_high, scale_low) = timeseries.get_price_scale(12);
                 let volume_data = timeseries.get_volume_data();
-                
+
                 let y_ticks = (scale_high - scale_low) / tick_size;
-                
+
                 FootprintChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
@@ -172,55 +175,24 @@ impl FootprintChart {
                     data_source: ChartData::TimeBased(timeseries),
                     raw_trades,
                     indicators: {
-                        enabled_indicators.iter()
+                        enabled_indicators
+                            .iter()
                             .map(|indicator| {
-                                (*indicator, match indicator {
-                                    FootprintIndicator::Volume => {
-                                        IndicatorData::Volume(Caches::default(), volume_data.clone())
+                                (
+                                    *indicator,
+                                    match indicator {
+                                        FootprintIndicator::Volume => IndicatorData::Volume(
+                                            Caches::default(),
+                                            volume_data.clone(),
+                                        ),
+                                        FootprintIndicator::OpenInterest => {
+                                            IndicatorData::OpenInterest(
+                                                Caches::default(),
+                                                BTreeMap::new(),
+                                            )
+                                        }
                                     },
-                                    FootprintIndicator::OpenInterest => {
-                                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
-                                    }
-                                })
-                            })
-                            .collect()
-                    },
-                    fetching_trades: false,
-                    request_handler: RequestHandler::new(),
-                }
-            },
-            ChartBasis::Tick(interval) => {
-                FootprintChart {
-                    chart: CommonChartData {
-                        cell_width: Self::DEFAULT_CELL_WIDTH,
-                        cell_height: 80.0 / tick_size,
-                        tick_size,
-                        decimals: count_decimals(tick_size),
-                        crosshair: layout.crosshair,
-                        indicators_split: layout.indicators_split,
-                        ticker_info,
-                        basis,
-                        ..Default::default()
-                    },
-                    data_source: ChartData::TickBased(
-                        TickAggr::new(
-                            interval.into(), 
-                            tick_size, 
-                            &raw_trades,
-                        )
-                    ),
-                    raw_trades,
-                    indicators: {
-                        enabled_indicators.iter()
-                            .map(|indicator| {
-                                (*indicator, match indicator {
-                                    FootprintIndicator::Volume => {
-                                        IndicatorData::Volume(Caches::default(), BTreeMap::new())
-                                    },
-                                    FootprintIndicator::OpenInterest => {
-                                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
-                                    }
-                                })
+                                )
                             })
                             .collect()
                     },
@@ -228,6 +200,48 @@ impl FootprintChart {
                     request_handler: RequestHandler::new(),
                 }
             }
+            ChartBasis::Tick(interval) => FootprintChart {
+                chart: CommonChartData {
+                    cell_width: Self::DEFAULT_CELL_WIDTH,
+                    cell_height: 80.0 / tick_size,
+                    tick_size,
+                    decimals: count_decimals(tick_size),
+                    crosshair: layout.crosshair,
+                    indicators_split: layout.indicators_split,
+                    ticker_info,
+                    basis,
+                    ..Default::default()
+                },
+                data_source: ChartData::TickBased(TickAggr::new(
+                    interval.into(),
+                    tick_size,
+                    &raw_trades,
+                )),
+                raw_trades,
+                indicators: {
+                    enabled_indicators
+                        .iter()
+                        .map(|indicator| {
+                            (
+                                *indicator,
+                                match indicator {
+                                    FootprintIndicator::Volume => {
+                                        IndicatorData::Volume(Caches::default(), BTreeMap::new())
+                                    }
+                                    FootprintIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(
+                                            Caches::default(),
+                                            BTreeMap::new(),
+                                        )
+                                    }
+                                },
+                            )
+                        })
+                        .collect()
+                },
+                fetching_trades: false,
+                request_handler: RequestHandler::new(),
+            },
         }
     }
 
@@ -235,18 +249,19 @@ impl FootprintChart {
         match self.data_source {
             ChartData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&vec![kline.to_owned()]);
-    
-                if let Some(IndicatorData::Volume(_, data)) = 
-                    self.indicators.get_mut(&FootprintIndicator::Volume) {
-                        data.insert(kline.time, (kline.volume.0, kline.volume.1));
-                    };
-    
+
+                if let Some(IndicatorData::Volume(_, data)) =
+                    self.indicators.get_mut(&FootprintIndicator::Volume)
+                {
+                    data.insert(kline.time, (kline.volume.0, kline.volume.1));
+                };
+
                 let chart = self.get_common_data_mut();
-    
+
                 if (kline.time) > chart.latest_x {
                     chart.latest_x = kline.time;
                 }
-    
+
                 chart.last_price = {
                     if kline.close > kline.open {
                         Some(PriceInfoLabel::Up(kline.close))
@@ -257,7 +272,7 @@ impl FootprintChart {
 
                 self.render_start();
                 self.get_missing_data_task().unwrap_or(Task::none())
-            },
+            }
             ChartData::TickBased(_) => {
                 self.render_start();
                 Task::none()
@@ -273,12 +288,12 @@ impl FootprintChart {
                 let (visible_earliest, visible_latest) = self.get_visible_timerange();
                 let (kline_earliest, kline_latest) = self.get_kline_timerange();
                 let earliest = visible_earliest - (visible_latest - visible_earliest);
-                
+
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
                     if let Some(task) = request_fetch(
-                        &mut self.request_handler, 
-                        FetchRange::Kline(earliest, kline_earliest)
+                        &mut self.request_handler,
+                        FetchRange::Kline(earliest, kline_earliest),
                     ) {
                         return Some(task);
                     }
@@ -288,14 +303,17 @@ impl FootprintChart {
                     let (kline_earliest, _) = self.get_trades_timerange(kline_latest);
 
                     if visible_earliest < kline_earliest {
-                        let trade_earliest = self.raw_trades.iter()
+                        let trade_earliest = self
+                            .raw_trades
+                            .iter()
                             .filter(|trade| trade.time >= kline_earliest)
                             .map(|trade| trade.time)
                             .min();
-                    
+
                         if let Some(earliest) = trade_earliest {
                             if let Some(fetch_task) = request_fetch(
-                                &mut self.request_handler, FetchRange::Trades(visible_earliest, earliest)
+                                &mut self.request_handler,
+                                FetchRange::Trades(visible_earliest, earliest),
                             ) {
                                 self.fetching_trades = true;
                                 return Some(fetch_task);
@@ -307,24 +325,26 @@ impl FootprintChart {
                 // priority 2, Open Interest data
                 for data in self.indicators.values() {
                     if let IndicatorData::OpenInterest(_, _) = data {
-                        if timeframe >= Timeframe::M5.to_milliseconds() 
-                            && self.chart.ticker_info.is_some_and(|info| info.get_market_type() == MarketType::LinearPerps)
+                        if timeframe >= Timeframe::M5.to_milliseconds()
+                            && self.chart.ticker_info.is_some_and(|info| {
+                                info.get_market_type() == MarketType::LinearPerps
+                            })
                         {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
-            
+
                             if visible_earliest < oi_earliest {
                                 if let Some(task) = request_fetch(
-                                    &mut self.request_handler, 
-                                    FetchRange::OpenInterest(earliest, oi_earliest)
+                                    &mut self.request_handler,
+                                    FetchRange::OpenInterest(earliest, oi_earliest),
                                 ) {
                                     return Some(task);
                                 }
-                            } 
-                            
+                            }
+
                             if oi_latest < kline_latest {
                                 if let Some(task) = request_fetch(
                                     &mut self.request_handler,
-                                    FetchRange::OpenInterest(oi_latest, kline_latest)
+                                    FetchRange::OpenInterest(oi_latest, kline_latest),
                                 ) {
                                     return Some(task);
                                 }
@@ -332,26 +352,23 @@ impl FootprintChart {
                         }
                     }
                 }
-            
+
                 // priority 3, missing klines & integrity check
-                if let Some(missing_keys) = timeseries.check_integrity(
-                    kline_earliest, 
-                    kline_latest, 
-                    timeframe,
-                ) {
-                    let latest = missing_keys.iter()
-                        .max().unwrap_or(&visible_latest) + timeframe;
-                    let earliest = missing_keys.iter()
-                        .min().unwrap_or(&visible_earliest) - timeframe;
-            
+                if let Some(missing_keys) =
+                    timeseries.check_integrity(kline_earliest, kline_latest, timeframe)
+                {
+                    let latest = missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe;
+                    let earliest =
+                        missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe;
+
                     if let Some(task) = request_fetch(
-                        &mut self.request_handler, 
-                        FetchRange::Kline(earliest, latest)
+                        &mut self.request_handler,
+                        FetchRange::Kline(earliest, latest),
                     ) {
                         return Some(task);
                     }
                 }
-            },
+            }
             ChartData::TickBased(_) => {
                 // TODO: implement trade fetch
             }
@@ -379,7 +396,7 @@ impl FootprintChart {
                 } else {
                     source.insert_trades(&self.raw_trades, None);
                 }
-            },
+            }
             ChartData::TickBased(_) => {
                 // TODO: implement
             }
@@ -415,17 +432,11 @@ impl FootprintChart {
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
         self.chart.basis = ChartBasis::Tick(tick_basis.into());
 
-        let new_tick_aggr = TickAggr::new(
-            tick_basis.into(), 
-            self.chart.tick_size, 
-            &self.raw_trades
-        );
+        let new_tick_aggr =
+            TickAggr::new(tick_basis.into(), self.chart.tick_size, &self.raw_trades);
 
         if let Some(indicator) = self.indicators.get_mut(&FootprintIndicator::Volume) {
-            *indicator = IndicatorData::Volume(
-                Caches::default(),
-                new_tick_aggr.get_volume_data(),
-            );
+            *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
         }
 
         self.data_source = ChartData::TickBased(new_tick_aggr);
@@ -435,9 +446,7 @@ impl FootprintChart {
 
     fn get_kline_timerange(&self) -> (u64, u64) {
         match &self.data_source {
-            ChartData::TimeBased(source) => {
-                source.get_kline_timerange()
-            },
+            ChartData::TimeBased(source) => source.get_kline_timerange(),
             ChartData::TickBased(_) => {
                 // TODO: implement
                 (0, 0)
@@ -449,13 +458,14 @@ impl FootprintChart {
         let mut from_time = latest_kline;
         let mut to_time = u64::MIN;
 
-        if let Some(IndicatorData::OpenInterest(_, data)) = 
-            self.indicators.get(&FootprintIndicator::OpenInterest) {
-                data.iter().for_each(|(time, _)| {
-                    from_time = from_time.min(*time);
-                    to_time = to_time.max(*time);
-                });
-            };
+        if let Some(IndicatorData::OpenInterest(_, data)) =
+            self.indicators.get(&FootprintIndicator::OpenInterest)
+        {
+            data.iter().for_each(|(time, _)| {
+                from_time = from_time.min(*time);
+                to_time = to_time.max(*time);
+            });
+        };
 
         (from_time, to_time)
     }
@@ -466,16 +476,19 @@ impl FootprintChart {
 
         match &self.data_source {
             ChartData::TimeBased(source) => {
-                source.data_points
+                source
+                    .data_points
                     .iter()
                     .filter(|(_, dp)| !dp.trades.is_empty())
                     .for_each(|(time, _)| {
                         from_time = from_time.min(*time);
                         to_time = to_time.max(*time);
                     });
-            },
+            }
             ChartData::TickBased(tick_aggr) => {
-                let earliest = tick_aggr.data_points.iter()
+                let earliest = tick_aggr
+                    .data_points
+                    .iter()
                     .rev()
                     .enumerate()
                     .find(|(_, tick_kline)| !tick_kline.trades.is_empty())
@@ -487,26 +500,27 @@ impl FootprintChart {
                 }
             }
         }
-    
+
         (from_time, to_time)
     }
 
     pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade], depth_update: u64) {
         self.raw_trades.extend_from_slice(trades_buffer);
-        
+
         match self.data_source {
             ChartData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&trades_buffer);
-                
+
                 if let Some(tick_kline) = tick_aggr.data_points.last() {
-                    if let Some(IndicatorData::Volume(_, data)) = 
-                        self.indicators.get_mut(&FootprintIndicator::Volume) {
+                    if let Some(IndicatorData::Volume(_, data)) =
+                        self.indicators.get_mut(&FootprintIndicator::Volume)
+                    {
                         data.insert(
-                            tick_kline.start_timestamp, 
-                            (tick_kline.volume_buy, tick_kline.volume_sell)
+                            tick_kline.start_timestamp,
+                            (tick_kline.volume_buy, tick_kline.volume_sell),
                         );
                     }
-        
+
                     self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
                         Some(PriceInfoLabel::Up(tick_kline.close_price))
                     } else {
@@ -524,11 +538,11 @@ impl FootprintChart {
         }
     }
 
-    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {     
+    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
         match self.data_source {
             ChartData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&raw_trades);
-            },
+            }
             ChartData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades(&raw_trades, None);
             }
@@ -552,10 +566,11 @@ impl FootprintChart {
                     volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
                 }
 
-                if let Some(IndicatorData::Volume(_, data)) = 
-                    self.indicators.get_mut(&FootprintIndicator::Volume) {
-                        data.extend(volume_data.clone());
-                    };
+                if let Some(IndicatorData::Volume(_, data)) =
+                    self.indicators.get_mut(&FootprintIndicator::Volume)
+                {
+                    data.extend(volume_data.clone());
+                };
 
                 if !klines_raw.is_empty() {
                     self.request_handler.mark_completed(req_id);
@@ -563,7 +578,7 @@ impl FootprintChart {
                     self.request_handler
                         .mark_failed(req_id, "No data received".to_string());
                 }
-            },
+            }
             ChartData::TickBased(_) => {}
         }
 
@@ -580,12 +595,11 @@ impl FootprintChart {
             }
         }
 
-        if let Some(IndicatorData::OpenInterest(_, data)) = 
-            self.indicators.get_mut(&FootprintIndicator::OpenInterest) {
-                data.extend(oi_data
-                    .iter().map(|oi| (oi.time, oi.value))
-                );
-            };
+        if let Some(IndicatorData::OpenInterest(_, data)) =
+            self.indicators.get_mut(&FootprintIndicator::OpenInterest)
+        {
+            data.extend(oi_data.iter().map(|oi| (oi.time, oi.value)));
+        };
     }
 
     fn calc_qty_scales(
@@ -599,49 +613,38 @@ impl FootprintChart {
         let mut max_trade_qty: f32 = 0.0;
         let mut max_volume: f32 = 0.0;
 
-        let rounded_highest = OrderedFloat(
-            round_to_tick(highest + tick_size, tick_size)
-        );
-        let rounded_lowest = OrderedFloat(
-            round_to_tick(lowest - tick_size, tick_size)
-        );
+        let rounded_highest = OrderedFloat(round_to_tick(highest + tick_size, tick_size));
+        let rounded_lowest = OrderedFloat(round_to_tick(lowest - tick_size, tick_size));
 
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => {     
-                timeseries.data_points
+            ChartData::TimeBased(timeseries) => {
+                timeseries
+                    .data_points
                     .range(earliest..=latest)
                     .for_each(|(_, dp)| {
-                        max_trade_qty = max_trade_qty.max(
-                            dp.get_max_trade_qty(
-                                rounded_highest, 
-                                rounded_lowest,
-                            )
-                        );
+                        max_trade_qty = max_trade_qty
+                            .max(dp.get_max_trade_qty(rounded_highest, rounded_lowest));
 
-                        max_volume = max_volume.max(
-                            dp.kline.volume.0.max(dp.kline.volume.1)
-                        );
+                        max_volume = max_volume.max(dp.kline.volume.0.max(dp.kline.volume.1));
                     });
-            },
+            }
             ChartData::TickBased(tick_aggr) => {
                 let earliest = earliest as usize;
                 let latest = latest as usize;
 
-                tick_aggr.data_points.iter()
+                tick_aggr
+                    .data_points
+                    .iter()
                     .rev()
                     .enumerate()
                     .filter(|(index, _)| *index <= earliest && *index >= latest)
                     .for_each(|(_, dp)| {
-                        max_trade_qty = max_trade_qty.max(
-                            dp.get_max_trade_qty(
-                                rounded_highest, 
-                                rounded_lowest,
-                            )
-                        );
+                        max_trade_qty = max_trade_qty
+                            .max(dp.get_max_trade_qty(rounded_highest, rounded_lowest));
                     });
             }
         }
-       
+
         (max_trade_qty, max_volume)
     }
 
@@ -650,9 +653,10 @@ impl FootprintChart {
 
         if chart_state.autoscale {
             chart_state.translation = Vector::new(
-                0.5 * (chart_state.bounds.width / chart_state.scaling) 
+                0.5 * (chart_state.bounds.width / chart_state.scaling)
                     - (chart_state.cell_width / chart_state.scaling),
-                self.data_source.get_latest_price_range_y_midpoint(chart_state),
+                self.data_source
+                    .get_latest_price_range_y_midpoint(chart_state),
             );
         }
 
@@ -663,83 +667,91 @@ impl FootprintChart {
         });
     }
 
-    pub fn toggle_indicator(&mut self, indicator: FootprintIndicator) {    
+    pub fn toggle_indicator(&mut self, indicator: FootprintIndicator) {
         match self.indicators.entry(indicator) {
             Entry::Occupied(entry) => {
                 entry.remove();
             }
             Entry::Vacant(entry) => {
                 let data = match indicator {
-                    FootprintIndicator::Volume => {
-                        match &self.data_source {
-                            ChartData::TimeBased(timeseries) => {
-                                let volume_data = timeseries.data_points.iter()
-                                    .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
-                                    .collect();
-                            
-                                IndicatorData::Volume(Caches::default(), volume_data)
-                            }
-                            ChartData::TickBased(_) => {
-                                IndicatorData::Volume(Caches::default(), BTreeMap::new())
-                            }
-                        }        
+                    FootprintIndicator::Volume => match &self.data_source {
+                        ChartData::TimeBased(timeseries) => {
+                            let volume_data = timeseries
+                                .data_points
+                                .iter()
+                                .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
+                                .collect();
+
+                            IndicatorData::Volume(Caches::default(), volume_data)
+                        }
+                        ChartData::TickBased(_) => {
+                            IndicatorData::Volume(Caches::default(), BTreeMap::new())
+                        }
                     },
                     FootprintIndicator::OpenInterest => {
                         IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
                     }
                 };
                 entry.insert(data);
-    
+
                 if self.chart.indicators_split.is_none() {
                     self.chart.indicators_split = Some(0.8);
                 }
             }
         }
-    
+
         if self.indicators.is_empty() {
             self.chart.indicators_split = None;
         }
     }
 
-    pub fn view_indicators<I: Indicator>(
-        &self, 
-        enabled: &[I], 
-    ) -> Option<Element<Message>> {
+    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>> {
         let chart_state: &CommonChartData = self.get_common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
 
         let (earliest, latest) = (
             chart_state.x_to_interval(visible_region.x),
-            chart_state.x_to_interval(visible_region.x + visible_region.width)
+            chart_state.x_to_interval(visible_region.x + visible_region.width),
         );
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
 
         for indicator in I::get_enabled(
-            enabled, 
-            chart_state.ticker_info.map(|info| info.get_market_type())
+            enabled,
+            chart_state.ticker_info.map(|info| info.get_market_type()),
         ) {
-            if let Some(candlestick_indicator) = indicator
-                .as_any()
-                .downcast_ref::<FootprintIndicator>() 
+            if let Some(candlestick_indicator) =
+                indicator.as_any().downcast_ref::<FootprintIndicator>()
             {
                 match candlestick_indicator {
                     FootprintIndicator::Volume => {
-                        if let Some(IndicatorData::Volume(cache, data)) = 
-                            self.indicators.get(&FootprintIndicator::Volume) {
-                                indicators = indicators.push(
-                                    indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                                );
-                            }
-                    },
+                        if let Some(IndicatorData::Volume(cache, data)) =
+                            self.indicators.get(&FootprintIndicator::Volume)
+                        {
+                            indicators =
+                                indicators.push(indicators::volume::create_indicator_elem(
+                                    chart_state,
+                                    cache,
+                                    data,
+                                    earliest,
+                                    latest,
+                                ));
+                        }
+                    }
                     FootprintIndicator::OpenInterest => {
-                        if let Some(IndicatorData::OpenInterest(cache, data)) = 
-                            self.indicators.get(&FootprintIndicator::OpenInterest) {
-                                indicators = indicators.push(
-                                    indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                                );
-                            }
+                        if let Some(IndicatorData::OpenInterest(cache, data)) =
+                            self.indicators.get(&FootprintIndicator::OpenInterest)
+                        {
+                            indicators =
+                                indicators.push(indicators::open_interest::create_indicator_elem(
+                                    chart_state,
+                                    cache,
+                                    data,
+                                    earliest,
+                                    latest,
+                                ));
+                        }
                     }
                 }
             }
@@ -749,7 +761,7 @@ impl FootprintChart {
             container(indicators)
                 .width(Length::FillPortion(10))
                 .height(Length::Fill)
-                .into()
+                .into(),
         )
     }
 
@@ -758,8 +770,8 @@ impl FootprintChart {
     }
 
     pub fn view<'a, I: Indicator>(
-        &'a self, 
-        indicators: &'a [I], 
+        &'a self,
+        indicators: &'a [I],
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
         view_chart(self, indicators, timezone)
@@ -824,7 +836,9 @@ impl canvas::Program<Message> for FootprintChart {
                         let earliest = earliest as usize;
                         let latest = latest as usize;
 
-                        tick_aggr.data_points.iter()
+                        tick_aggr
+                            .data_points
+                            .iter()
                             .rev()
                             .enumerate()
                             .filter(|(index, _)| *index <= earliest && *index >= latest)
@@ -841,49 +855,49 @@ impl canvas::Program<Message> for FootprintChart {
                                 };
 
                                 draw_data_point(
-                                    frame, 
+                                    frame,
                                     price_to_y,
-                                    cell_width, 
-                                    cell_height, 
-                                    candle_width, 
-                                    cell_height_unscaled, 
-                                    cell_width_unscaled, 
-                                    max_trade_qty, 
-                                    palette, 
-                                    text_size, 
-                                    x_position, 
-                                    &kline, 
+                                    cell_width,
+                                    cell_height,
+                                    candle_width,
+                                    cell_height_unscaled,
+                                    cell_width_unscaled,
+                                    max_trade_qty,
+                                    palette,
+                                    text_size,
+                                    x_position,
+                                    &kline,
                                     &tick_aggr.trades,
                                 );
                             });
-                    },
+                    }
                     ChartData::TimeBased(timeseries) => {
                         if latest < earliest {
                             return;
                         }
-                        
-                        timeseries.data_points
-                            .range(earliest..=latest)
-                            .for_each(|(timestamp, dp)| {
+
+                        timeseries.data_points.range(earliest..=latest).for_each(
+                            |(timestamp, dp)| {
                                 let x_position = chart.interval_to_x(*timestamp);
 
                                 draw_data_point(
-                                    frame, 
-                                    price_to_y, 
-                                    cell_width, 
-                                    cell_height, 
-                                    candle_width, 
-                                    cell_height_unscaled, 
-                                    cell_width_unscaled, 
-                                    max_trade_qty, 
-                                    palette, 
-                                    text_size, 
-                                    x_position, 
-                                    &dp.kline, 
+                                    frame,
+                                    price_to_y,
+                                    cell_width,
+                                    cell_height,
+                                    candle_width,
+                                    cell_height_unscaled,
+                                    cell_width_unscaled,
+                                    max_trade_qty,
+                                    palette,
+                                    text_size,
+                                    x_position,
+                                    &dp.kline,
                                     &dp.trades,
                                 );
-                            });
-                    },
+                            },
+                        );
+                    }
                 }
 
                 // last price line
@@ -902,7 +916,7 @@ impl canvas::Program<Message> for FootprintChart {
                         },
                         line_color.scale_alpha(0.5),
                     );
-    
+
                     frame.stroke(
                         &Path::line(
                             Point::new(0.0, y_pos),
@@ -922,16 +936,14 @@ impl canvas::Program<Message> for FootprintChart {
 
                     match &self.data_source {
                         ChartData::TimeBased(timeseries) => {
-                            if let Some((_, dp)) = timeseries.data_points
+                            if let Some((_, dp)) = timeseries
+                                .data_points
                                 .iter()
                                 .find(|(time, _)| **time == rounded_aggregation)
                             {
                                 let tooltip_text = format!(
                                     "O: {}   H: {}   L: {}   C: {}",
-                                    dp.kline.open,
-                                    dp.kline.high,
-                                    dp.kline.low,
-                                    dp.kline.close,
+                                    dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close,
                                 );
 
                                 let text = canvas::Text {
@@ -943,21 +955,19 @@ impl canvas::Program<Message> for FootprintChart {
                                 };
                                 frame.fill_text(text);
                             }
-                        },
+                        }
                         ChartData::TickBased(tick_aggr) => {
                             let index = (rounded_aggregation / tick_aggr.aggr_interval) as usize;
-                            
+
                             if index < tick_aggr.data_points.len() {
-                                let dp = &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
-                                
+                                let dp =
+                                    &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
+
                                 let tooltip_text = format!(
                                     "O: {}   H: {}   L: {}   C: {}",
-                                    dp.open_price,
-                                    dp.high_price,
-                                    dp.low_price, 
-                                    dp.close_price
+                                    dp.open_price, dp.high_price, dp.low_price, dp.close_price
                                 );
-                                
+
                                 let text = canvas::Text {
                                     content: tooltip_text,
                                     position: Point::new(8.0, 8.0),
@@ -1058,12 +1068,11 @@ fn draw_data_point(
 
         let mut bar_color_alpha = 1.0;
 
-        if trade.1 .0 > 0.0 {
+        if trade.1.0 > 0.0 {
             if cell_height_unscaled > 12.0 && cell_width_unscaled > 108.0 {
-                let text_content = abbr_large_numbers(trade.1 .0);
+                let text_content = abbr_large_numbers(trade.1.0);
 
-                let text_position =
-                    Point::new(x_position + (candle_width / 4.0), y_position);
+                let text_position = Point::new(x_position + (candle_width / 4.0), y_position);
 
                 frame.fill_text(canvas::Text {
                     content: text_content,
@@ -1078,7 +1087,7 @@ fn draw_data_point(
                 bar_color_alpha = 0.6;
             }
 
-            let bar_width = (trade.1 .0 / max_trade_qty) * (cell_width * 0.4);
+            let bar_width = (trade.1.0 / max_trade_qty) * (cell_width * 0.4);
 
             frame.fill_rectangle(
                 Point::new(
@@ -1089,12 +1098,11 @@ fn draw_data_point(
                 palette.success.base.color.scale_alpha(bar_color_alpha),
             );
         }
-        if trade.1 .1 > 0.0 {
+        if trade.1.1 > 0.0 {
             if cell_height_unscaled > 12.0 && cell_width_unscaled > 108.0 {
-                let text_content = abbr_large_numbers(trade.1 .1);
+                let text_content = abbr_large_numbers(trade.1.1);
 
-                let text_position =
-                    Point::new(x_position - (candle_width / 4.0), y_position);
+                let text_position = Point::new(x_position - (candle_width / 4.0), y_position);
 
                 frame.fill_text(canvas::Text {
                     content: text_content,
@@ -1109,7 +1117,7 @@ fn draw_data_point(
                 bar_color_alpha = 0.6;
             }
 
-            let bar_width = -(trade.1 .1 / max_trade_qty) * (cell_width * 0.4);
+            let bar_width = -(trade.1.1 / max_trade_qty) * (cell_width * 0.4);
 
             frame.fill_rectangle(
                 Point::new(

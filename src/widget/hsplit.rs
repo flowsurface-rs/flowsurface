@@ -1,16 +1,18 @@
-// Modification of `VSplit` widget of [generic-daw] 
+// Modification of `VSplit` widget of [generic-daw]
 // https://github.com/generic-daw/generic-daw/blob/main/generic_daw_gui/src/widget/vsplit.rs
 //
 // credits to authors of https://github.com/generic-daw/generic-daw/
 
 use iced::{
+    Element, Length, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
+        Clipboard, Layout, Shell, Widget,
         layout::{Limits, Node},
         renderer::Style,
-        widget::{tree, Tree},
-        Clipboard, Layout, Shell, Widget,
-    }, mouse::{Cursor, Interaction}, 
-    widget::Rule, Element, Length, Rectangle, Renderer, Size, Theme, Vector
+        widget::{Tree, tree},
+    },
+    mouse::{Cursor, Interaction},
+    widget::Rule,
 };
 use std::fmt::{Debug, Formatter};
 
@@ -47,11 +49,9 @@ where
     ) -> Self {
         Self {
             children: [
-                top.into(), 
-                Rule::horizontal(DRAG_SIZE)
-                    .style(style::split_ruler)
-                    .into(),
-                bottom.into()
+                top.into(),
+                Rule::horizontal(DRAG_SIZE).style(style::split_ruler).into(),
+                bottom.into(),
             ],
             starting_split_at: 0.8,
             on_resize: Box::new(on_resize),
@@ -93,11 +93,10 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
         let state = tree.state.downcast_ref::<State>();
         let max_limits = limits.max();
 
-        let top_height = max_limits.height.mul_add(state.split_at, -(DRAG_SIZE * 0.5));
-        let top_limits = Limits::new(
-            Size::new(0.0, 0.0),
-            Size::new(max_limits.width, top_height),
-        );
+        let top_height = max_limits
+            .height
+            .mul_add(state.split_at, -(DRAG_SIZE * 0.5));
+        let top_limits = Limits::new(Size::new(0.0, 0.0), Size::new(max_limits.width, top_height));
 
         let bottom_height = max_limits.height - top_height - DRAG_SIZE;
         let bottom_limits = Limits::new(
@@ -112,12 +111,12 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
             self.children[1]
                 .as_widget()
                 .layout(
-                    &mut tree.children[1], 
-                    renderer, 
+                    &mut tree.children[1],
+                    renderer,
                     &Limits::new(
-                        Size::new(max_limits.width, 1.0), 
-                        Size::new(max_limits.width, DRAG_SIZE)
-                    )
+                        Size::new(max_limits.width, 1.0),
+                        Size::new(max_limits.width, DRAG_SIZE),
+                    ),
                 )
                 .translate(Vector::new(0.0, top_height)),
             self.children[2]
@@ -154,9 +153,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
         if let iced::Event::Mouse(event) = event {
             match event {
                 iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left) => {
-                    if let Some(position) =
-                        cursor.position_in(dragger_bounds)
-                    {
+                    if let Some(position) = cursor.position_in(dragger_bounds) {
                         state.offset = DRAG_SIZE.mul_add(-0.5, position.y);
                         state.dragging = true;
                     }
@@ -178,21 +175,14 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
                 _ => {}
             }
         }
-        
+
         self.children
             .iter_mut()
             .zip(&mut tree.children)
             .zip(layout.children())
             .for_each(|((child, tree), layout)| {
                 child.as_widget_mut().update(
-                    tree,
-                    event,
-                    layout,
-                    cursor,
-                    renderer,
-                    clipboard,
-                    shell,
-                    viewport,
+                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
                 )
             });
     }
@@ -237,10 +227,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
             }
         };
 
-        if state.dragging || cursor
-            .position_in(dragger_bounds)
-            .is_some()
-        {
+        if state.dragging || cursor.position_in(dragger_bounds).is_some() {
             Interaction::ResizingVertically
         } else {
             self.children

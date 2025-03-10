@@ -1,27 +1,35 @@
-pub mod volume;
 pub mod open_interest;
+pub mod volume;
 
-use std::{any::Any, fmt::{self, Debug, Display}};
+use std::{
+    any::Any,
+    fmt::{self, Debug, Display},
+};
 
 use iced::{
-    mouse, theme::palette::Extended, 
-    widget::canvas::{self, Cache, Frame, Geometry}, 
-    Event, Point, Rectangle, Renderer, Size, Theme
+    Event, Point, Rectangle, Renderer, Size, Theme, mouse,
+    theme::palette::Extended,
+    widget::canvas::{self, Cache, Frame, Geometry},
 };
 use serde::{Deserialize, Serialize};
 
 use super::{abbr_large_numbers, round_to_tick, scales::linear};
 use crate::{
-    charts::scales::{calc_label_rect, AxisLabel, Label}, 
+    charts::scales::{AxisLabel, Label, calc_label_rect},
     data_providers::MarketType,
 };
 
 use super::{Interaction, Message};
 
-pub trait Indicator: PartialEq + Display + Debug + 'static  {
-    fn get_available(market_type: Option<MarketType>) -> &'static [Self] where Self: Sized;
-    
-    fn get_enabled(indicators: &[Self], market_type: Option<MarketType>) -> impl Iterator<Item = &Self> 
+pub trait Indicator: PartialEq + Display + Debug + 'static {
+    fn get_available(market_type: Option<MarketType>) -> &'static [Self]
+    where
+        Self: Sized;
+
+    fn get_enabled(
+        indicators: &[Self],
+        market_type: Option<MarketType>,
+    ) -> impl Iterator<Item = &Self>
     where
         Self: Sized,
     {
@@ -54,9 +62,15 @@ impl Indicator for CandlestickIndicator {
 }
 
 impl CandlestickIndicator {
-    const ALL: [CandlestickIndicator; 2] = [CandlestickIndicator::Volume, CandlestickIndicator::OpenInterest];
+    const ALL: [CandlestickIndicator; 2] = [
+        CandlestickIndicator::Volume,
+        CandlestickIndicator::OpenInterest,
+    ];
     const SPOT: [CandlestickIndicator; 1] = [CandlestickIndicator::Volume];
-    const PERPS: [CandlestickIndicator; 2] = [CandlestickIndicator::Volume, CandlestickIndicator::OpenInterest];
+    const PERPS: [CandlestickIndicator; 2] = [
+        CandlestickIndicator::Volume,
+        CandlestickIndicator::OpenInterest,
+    ];
 }
 
 impl Display for CandlestickIndicator {
@@ -124,9 +138,11 @@ impl Indicator for FootprintIndicator {
 }
 
 impl FootprintIndicator {
-    const ALL: [FootprintIndicator; 2] = [FootprintIndicator::Volume, FootprintIndicator::OpenInterest];
+    const ALL: [FootprintIndicator; 2] =
+        [FootprintIndicator::Volume, FootprintIndicator::OpenInterest];
     const SPOT: [FootprintIndicator; 1] = [FootprintIndicator::Volume];
-    const PERPS: [FootprintIndicator; 2] = [FootprintIndicator::Volume, FootprintIndicator::OpenInterest];
+    const PERPS: [FootprintIndicator; 2] =
+        [FootprintIndicator::Volume, FootprintIndicator::OpenInterest];
 }
 
 impl Display for FootprintIndicator {
@@ -138,11 +154,7 @@ impl Display for FootprintIndicator {
     }
 }
 
-fn draw_borders(
-    frame: &mut Frame,
-    bounds: Rectangle,
-    palette: &Extended,
-) {
+fn draw_borders(frame: &mut Frame, bounds: Rectangle, palette: &Extended) {
     frame.fill_rectangle(
         Point::new(0.0, 0.0),
         Size::new(1.0, bounds.height),
@@ -187,7 +199,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
 
         let (highest, lowest) = (self.max, self.min);
         let range = highest - lowest;
-        
+
         let text_size = 12.0;
 
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
@@ -213,8 +225,8 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
 
                 if let Some(crosshair_pos) = cursor.position_in(common_bounds) {
                     let rounded_value = round_to_tick(
-                        lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height), 
-                        10.0
+                        lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height),
+                        10.0,
                     );
 
                     let label = Label {
@@ -227,13 +239,11 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
                     let y_position =
                         bounds.height - ((rounded_value - lowest) / range * bounds.height);
 
-                    all_labels.push(
-                        AxisLabel::Y(
-                            calc_label_rect(y_position, 1, text_size, bounds),
-                            label, 
-                            None,
-                        )
-                    );
+                    all_labels.push(AxisLabel::Y(
+                        calc_label_rect(y_position, 1, text_size, bounds),
+                        label,
+                        None,
+                    ));
                 }
             }
 

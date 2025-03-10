@@ -1,38 +1,37 @@
 pub mod pane;
 
 use futures::TryFutureExt;
-pub use pane::{PaneState, PaneContent, PaneSettings};
+pub use pane::{PaneContent, PaneSettings, PaneState};
 
 use crate::{
+    StreamType,
     charts::{
-        candlestick::CandlestickChart, footprint::FootprintChart, ChartBasis, Message as ChartMessage
+        ChartBasis, Message as ChartMessage, candlestick::CandlestickChart,
+        footprint::FootprintChart,
     },
     data_providers::{
-        self, binance, bybit, fetcher::FetchRange, Depth, Exchange, Kline, OpenInterest, 
-        StreamConfig, TickMultiplier, Ticker, TickerInfo, Trade, aggr::time::Timeframe,
+        self, Depth, Exchange, Kline, OpenInterest, StreamConfig, TickMultiplier, Ticker,
+        TickerInfo, Trade, aggr::time::Timeframe, binance, bybit, fetcher::FetchRange,
     },
-    screen::{notification_modal, InfoType},
+    screen::{InfoType, notification_modal},
     style,
     window::{self, Window},
-    StreamType,
 };
 
 use super::{
-    modal::dashboard_notification, 
-    DashboardError, Notification,
-    NotificationManager, UserTimezone,
+    DashboardError, Notification, NotificationManager, UserTimezone, modal::dashboard_notification,
 };
 
+use iced::{
+    Element, Length, Point, Size, Subscription, Task, Vector,
+    widget::{
+        PaneGrid, center, container,
+        pane_grid::{self, Configuration},
+    },
+};
 use std::{
     collections::{HashMap, HashSet},
     vec,
-};
-use iced::{
-    widget::{
-        center, container,
-        pane_grid::{self, Configuration},
-        PaneGrid,
-    }, Element, Length, Point, Size, Subscription, Task, Vector
 };
 
 #[derive(Debug, Clone)]
@@ -65,20 +64,8 @@ pub enum Message {
     ChartMessage(pane_grid::Pane, window::Id, ChartMessage),
 
     // Batched trade fetching
-    FetchTrades(
-        window::Id,
-        pane_grid::Pane,
-        u64,
-        u64,
-        StreamType,
-    ),
-    DistributeFetchedTrades(
-        window::Id,
-        pane_grid::Pane,
-        Vec<Trade>,
-        StreamType,
-        u64,
-    ),
+    FetchTrades(window::Id, pane_grid::Pane, u64, u64, StreamType),
+    DistributeFetchedTrades(window::Id, pane_grid::Pane, Vec<Trade>, StreamType, u64),
 }
 
 pub struct Dashboard {
@@ -324,10 +311,10 @@ impl Dashboard {
                         }
                     }
                     pane::Message::InitPaneContent(
-                        window, 
-                        content_str, 
-                        is_pane, 
-                        pane_stream, 
+                        window,
+                        content_str,
+                        is_pane,
+                        pane_stream,
                         ticker_info,
                     ) => {
                         let pane;
@@ -337,21 +324,17 @@ impl Dashboard {
                             pane = self.panes.iter().next().map(|(pane, _)| *pane).unwrap();
                         }
 
-                        let err_occurred = |err| {
-                            Task::done(Message::ErrorOccurred(window, Some(pane), err))
-                        };
+                        let err_occurred =
+                            |err| Task::done(Message::ErrorOccurred(window, Some(pane), err));
 
                         // set pane's stream and content identifiers
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            if let Err(err) = pane_state.set_content(
-                                ticker_info,
-                                &content_str, 
-                            ) {
+                            if let Err(err) = pane_state.set_content(ticker_info, &content_str) {
                                 return err_occurred(err);
                             }
                         } else {
                             return err_occurred(DashboardError::PaneSet(
-                                "No pane found".to_string()
+                                "No pane found".to_string(),
                             ));
                         }
 
@@ -376,9 +359,7 @@ impl Dashboard {
                         // get fetch tasks for pane's content
                         for stream in &pane_stream {
                             if let StreamType::Kline { .. } = stream {
-                                return get_kline_fetch_task(
-                                    window, pane, *stream, None, None,
-                                );
+                                return get_kline_fetch_task(window, pane, *stream, None, None);
                             }
                         }
                     }
@@ -395,43 +376,39 @@ impl Dashboard {
 
                             if let Some((exchange, ticker)) = state.get_ticker_exchange() {
                                 match &state.content {
-                                    PaneContent::Candlestick(_, _) => {
-                                        match basis {
-                                            ChartBasis::Time(interval) => {
-                                                state.stream = vec![
-                                                    StreamType::Kline {
-                                                        exchange,
-                                                        ticker,
-                                                        timeframe: interval.into(),
-                                                    },
-                                                ];
-                                            }
-                                            ChartBasis::Tick(_) => {
-                                                state.stream = vec![
-                                                    StreamType::DepthAndTrades { exchange, ticker },
-                                                ];
-                                            }
+                                    PaneContent::Candlestick(_, _) => match basis {
+                                        ChartBasis::Time(interval) => {
+                                            state.stream = vec![StreamType::Kline {
+                                                exchange,
+                                                ticker,
+                                                timeframe: interval.into(),
+                                            }];
                                         }
-                                    }
-                                    PaneContent::Footprint(_, _) => {
-                                        match basis {
-                                            ChartBasis::Time(interval) => {
-                                                state.stream = vec![
-                                                    StreamType::Kline {
-                                                        exchange,
-                                                        ticker,
-                                                        timeframe: interval.into(),
-                                                    },
-                                                    StreamType::DepthAndTrades { exchange, ticker },
-                                                ];
-                                            }
-                                            ChartBasis::Tick(_) => {
-                                                state.stream = vec![
-                                                    StreamType::DepthAndTrades { exchange, ticker },
-                                                ];
-                                            }
+                                        ChartBasis::Tick(_) => {
+                                            state.stream = vec![StreamType::DepthAndTrades {
+                                                exchange,
+                                                ticker,
+                                            }];
                                         }
-                                    }
+                                    },
+                                    PaneContent::Footprint(_, _) => match basis {
+                                        ChartBasis::Time(interval) => {
+                                            state.stream = vec![
+                                                StreamType::Kline {
+                                                    exchange,
+                                                    ticker,
+                                                    timeframe: interval.into(),
+                                                },
+                                                StreamType::DepthAndTrades { exchange, ticker },
+                                            ];
+                                        }
+                                        ChartBasis::Tick(_) => {
+                                            state.stream = vec![StreamType::DepthAndTrades {
+                                                exchange,
+                                                ticker,
+                                            }];
+                                        }
+                                    },
                                     _ => {}
                                 }
                             }
@@ -439,7 +416,12 @@ impl Dashboard {
 
                         match basis {
                             ChartBasis::Time(timeframe) => {
-                                match self.set_pane_timeframe(main_window.id, window, pane, timeframe.into()) {
+                                match self.set_pane_timeframe(
+                                    main_window.id,
+                                    window,
+                                    pane,
+                                    timeframe.into(),
+                                ) {
                                     Ok(stream_type) => {
                                         if let StreamType::Kline { .. } = stream_type {
                                             let task = get_kline_fetch_task(
@@ -456,26 +438,29 @@ impl Dashboard {
                                                 Notification::Info(InfoType::FetchingKlines),
                                             );
 
-                                            return Task::done(Message::RefreshStreams)
-                                                .chain(task);
+                                            return Task::done(Message::RefreshStreams).chain(task);
                                         }
                                     }
                                     Err(err) => {
-                                        return Task::done(
-                                            Message::ErrorOccurred(window, Some(pane), err)
-                                        );
+                                        return Task::done(Message::ErrorOccurred(
+                                            window,
+                                            Some(pane),
+                                            err,
+                                        ));
                                     }
                                 }
-                            },
+                            }
                             ChartBasis::Tick(size) => {
-                                if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                                if let Some(pane_state) =
+                                    self.get_mut_pane(main_window.id, window, pane)
+                                {
                                     match &mut pane_state.content {
                                         PaneContent::Footprint(chart, _) => {
                                             chart.set_tick_basis(size.into());
-                                        },
+                                        }
                                         PaneContent::Candlestick(chart, _) => {
                                             chart.set_tick_basis(size.into());
-                                        },
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -492,7 +477,8 @@ impl Dashboard {
                         }
                     }
                     pane::Message::HideNotification(pane, notification) => {
-                        self.notification_manager.find_and_remove(window, pane, notification);
+                        self.notification_manager
+                            .find_and_remove(window, pane, notification);
                     }
                 }
             }
@@ -515,23 +501,18 @@ impl Dashboard {
                     }
                     Err(err) => {
                         return Task::done(Message::ErrorOccurred(
-                            window, 
-                            Some(pane_id), 
-                            DashboardError::Fetch(err)
+                            window,
+                            Some(pane_id),
+                            DashboardError::Fetch(err),
                         ));
                     }
                 }
             }
             Message::OIFetchEvent(req_id, oi, pane_stream, pane_id, window) => {
-                self.notification_manager.remove_info_type(
-                    window,
-                    &pane_id,
-                    &InfoType::FetchingOI,
-                );
+                self.notification_manager
+                    .remove_info_type(window, &pane_id, &InfoType::FetchingOI);
 
-                if let Some(pane_state) =
-                    self.get_mut_pane(main_window.id, window, pane_id)
-                {
+                if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane_id) {
                     match oi {
                         Ok(oi) => {
                             if let StreamType::Kline { .. } = pane_stream {
@@ -543,7 +524,7 @@ impl Dashboard {
                                 window,
                                 Some(pane_id),
                                 DashboardError::Fetch(err),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -554,7 +535,11 @@ impl Dashboard {
                 self.iter_all_panes(main_window.id)
                     .for_each(|(window, pane, pane_state)| match pane_state.content {
                         PaneContent::Candlestick(_, _) | PaneContent::Footprint(_, _) => {
-                            if pane_state.settings.selected_basis.is_some_and(|basis| basis.is_time()) {
+                            if pane_state
+                                .settings
+                                .selected_basis
+                                .is_some_and(|basis| basis.is_time())
+                            {
                                 fetched_panes.push((window, pane));
                             }
                         }
@@ -586,8 +571,9 @@ impl Dashboard {
 
                                             *chart = CandlestickChart::new(
                                                 chart.get_chart_layout(),
-                                                state.settings.selected_basis
-                                                    .unwrap_or(ChartBasis::Time(timeframe.to_milliseconds())),
+                                                state.settings.selected_basis.unwrap_or(
+                                                    ChartBasis::Time(timeframe.to_milliseconds()),
+                                                ),
                                                 klines.clone(),
                                                 raw_trades,
                                                 tick_size,
@@ -601,8 +587,9 @@ impl Dashboard {
 
                                             *chart = FootprintChart::new(
                                                 chart.get_chart_layout(),
-                                                state.settings.selected_basis
-                                                    .unwrap_or(ChartBasis::Time(timeframe.to_milliseconds())),
+                                                state.settings.selected_basis.unwrap_or(
+                                                    ChartBasis::Time(timeframe.to_milliseconds()),
+                                                ),
                                                 tick_size,
                                                 klines.clone(),
                                                 raw_trades,
@@ -629,14 +616,8 @@ impl Dashboard {
                 Err(err) => {
                     log::error!("{err}");
                 }
-            }
-            Message::FetchTrades(
-                window_id,
-                pane,
-                from_time,
-                to_time,
-                stream_type,
-            ) => {
+            },
+            Message::FetchTrades(window_id, pane, from_time, to_time, stream_type) => {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
                     if exchange == Exchange::BinanceFutures || exchange == Exchange::BinanceSpot {
                         return Task::perform(
@@ -673,21 +654,11 @@ impl Dashboard {
                     }
                 }
             }
-            Message::DistributeFetchedTrades(
-                window_id,
-                pane,
-                trades,
-                stream_type,
-                to_time,
-            ) => {
-                let last_trade_time = trades.last()
-                    .map_or(0, |trade| trade.time);
+            Message::DistributeFetchedTrades(window_id, pane, trades, stream_type, to_time) => {
+                let last_trade_time = trades.last().map_or(0, |trade| trade.time);
 
-                self.notification_manager.increment_fetching_trades(
-                    window_id,
-                    &pane,
-                    trades.len(),
-                );
+                self.notification_manager
+                    .increment_fetching_trades(window_id, &pane, trades.len());
 
                 if last_trade_time < to_time {
                     match self.insert_fetched_trades(
@@ -713,9 +684,7 @@ impl Dashboard {
                                 &InfoType::FetchingTrades(0),
                             );
 
-                            return Task::done(
-                                Message::ErrorOccurred(window_id, Some(pane), err)
-                            );
+                            return Task::done(Message::ErrorOccurred(window_id, Some(pane), err));
                         }
                     }
                 } else {
@@ -725,18 +694,11 @@ impl Dashboard {
                         &InfoType::FetchingTrades(0),
                     );
 
-                    match self.insert_fetched_trades(
-                        main_window.id,
-                        window_id,
-                        pane,
-                        &trades,
-                        true,
-                    ) {
+                    match self.insert_fetched_trades(main_window.id, window_id, pane, &trades, true)
+                    {
                         Ok(_) => {}
                         Err(err) => {
-                            return Task::done(
-                                Message::ErrorOccurred(window_id, Some(pane), err)
-                            );
+                            return Task::done(Message::ErrorOccurred(window_id, Some(pane), err));
                         }
                     }
                 }
@@ -783,23 +745,23 @@ impl Dashboard {
                                         .find(|stream| matches!(stream, StreamType::Kline { .. }))
                                 });
 
-                                if let Some(stream) = kline_stream {    
-                                    let stream = *stream;
+                            if let Some(stream) = kline_stream {
+                                let stream = *stream;
 
-                                    self.notification_manager.push(
-                                        window,
-                                        pane,
-                                        Notification::Info(InfoType::FetchingOI),
-                                    );
-            
-                                    return get_oi_fetch_task(
-                                        window,
-                                        pane,
-                                        stream,
-                                        Some(req_id),
-                                        Some((from, to)),
-                                    );
-                                }
+                                self.notification_manager.push(
+                                    window,
+                                    pane,
+                                    Notification::Info(InfoType::FetchingOI),
+                                );
+
+                                return get_oi_fetch_task(
+                                    window,
+                                    pane,
+                                    stream,
+                                    Some(req_id),
+                                    Some((from, to)),
+                                );
+                            }
                         }
                         FetchRange::Trades(from, to) => {
                             if !self.trade_fetch_enabled {
@@ -824,11 +786,7 @@ impl Dashboard {
                                 );
 
                                 return Task::done(Message::FetchTrades(
-                                    window,
-                                    pane,
-                                    from,
-                                    to,
-                                    stream,
+                                    window, pane, from, to, stream,
                                 ));
                             }
                         }
@@ -1005,8 +963,8 @@ impl Dashboard {
     }
 
     pub fn view<'a>(
-        &'a self, 
-        main_window: &'a Window, 
+        &'a self,
+        main_window: &'a Window,
         layout_locked: bool,
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
@@ -1041,10 +999,9 @@ impl Dashboard {
         if !self.notification_manager.global_notifications.is_empty() {
             dashboard_notification(
                 base,
-                notification_modal(
-                    &self.notification_manager.global_notifications, 
-                    move |_| Message::ClearLastGlobalNotification,
-                ),
+                notification_modal(&self.notification_manager.global_notifications, move |_| {
+                    Message::ClearLastGlobalNotification
+                }),
             )
         } else {
             base.into()
@@ -1083,8 +1040,7 @@ impl Dashboard {
             .height(Length::Fill)
             .padding(8);
 
-            Element::new(content)
-                .map(move |message| Message::Pane(window, message))
+            Element::new(content).map(move |message| Message::Pane(window, message))
         } else {
             Element::new(center("No pane found for window"))
                 .map(move |message| Message::Pane(window, message))
@@ -1151,9 +1107,8 @@ impl Dashboard {
         new_timeframe: Timeframe,
     ) -> Result<&StreamType, DashboardError> {
         if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-            pane_state.settings.selected_basis = Some(ChartBasis::Time(
-                new_timeframe.to_milliseconds())
-            );
+            pane_state.settings.selected_basis =
+                Some(ChartBasis::Time(new_timeframe.to_milliseconds()));
 
             if let Some(stream_type) = pane_state
                 .stream
@@ -1226,21 +1181,22 @@ impl Dashboard {
         trades: &[Trade],
         is_batches_done: bool,
     ) -> Result<(), DashboardError> {
-        self.get_mut_pane(main_window, window, pane)
-            .map_or_else(
-                || Err(
-                    DashboardError::Unknown("Couldnt get the pane for fetched trades".to_string())
-                ),
-                |pane_state| match &mut pane_state.content {
-                    PaneContent::Footprint(chart, _) => {
-                        chart.insert_raw_trades(trades.to_owned(), is_batches_done);
-                        Ok(())
-                    }
-                    _ => Err(
-                        DashboardError::Unknown("No matching chart found for fetched trades".to_string())
-                    ),
+        self.get_mut_pane(main_window, window, pane).map_or_else(
+            || {
+                Err(DashboardError::Unknown(
+                    "Couldnt get the pane for fetched trades".to_string(),
+                ))
+            },
+            |pane_state| match &mut pane_state.content {
+                PaneContent::Footprint(chart, _) => {
+                    chart.insert_raw_trades(trades.to_owned(), is_batches_done);
+                    Ok(())
                 }
-            )
+                _ => Err(DashboardError::Unknown(
+                    "No matching chart found for fetched trades".to_string(),
+                )),
+            },
+        )
     }
 
     pub fn update_latest_klines(
@@ -1358,82 +1314,87 @@ impl Dashboard {
 
     pub fn get_market_subscriptions<M>(
         &self,
-        market_msg: impl Fn(data_providers::Event) -> M + Clone + Send + 'static
-    ) -> Subscription<M> 
+        market_msg: impl Fn(data_providers::Event) -> M + Clone + Send + 'static,
+    ) -> Subscription<M>
     where
         M: 'static,
     {
         let mut market_subscriptions = Vec::with_capacity(
-            self.pane_streams.len() * 2 // worst case: both kline and depth per exchange
+            self.pane_streams.len() * 2, // worst case: both kline and depth per exchange
         );
-    
+
         self.pane_streams.iter().for_each(|(exchange, stream)| {
-            let (depth_count, kline_count) = stream.values()
+            let (depth_count, kline_count) = stream
+                .values()
                 .flat_map(|stream_types| stream_types.iter())
                 .fold((0, 0), |(depths, klines), stream_type| match stream_type {
                     StreamType::DepthAndTrades { .. } => (depths + 1, klines),
                     StreamType::Kline { .. } => (depths, klines + 1),
                     StreamType::None => (depths, klines),
                 });
-    
+
             if depth_count > 0 {
                 let mut depth_streams = Vec::with_capacity(depth_count);
-    
-                stream.values()
+
+                stream
+                    .values()
                     .flat_map(|stream_types| stream_types.iter())
                     .filter_map(|stream_type| match stream_type {
                         StreamType::DepthAndTrades { ticker, .. } => {
                             let config = StreamConfig::new(*ticker, *exchange);
                             Some(match exchange {
                                 Exchange::BinanceSpot | Exchange::BinanceFutures => {
-                                    Subscription::run_with(
-                                        config,
-                                        move |cfg| binance::connect_market_stream(cfg.id)
-                                    ).map(market_msg.clone())
+                                    Subscription::run_with(config, move |cfg| {
+                                        binance::connect_market_stream(cfg.id)
+                                    })
+                                    .map(market_msg.clone())
                                 }
                                 Exchange::BybitSpot | Exchange::BybitLinear => {
-                                    Subscription::run_with(
-                                        config,
-                                        move |cfg| bybit::connect_market_stream(cfg.id)
-                                    ).map(market_msg.clone())
+                                    Subscription::run_with(config, move |cfg| {
+                                        bybit::connect_market_stream(cfg.id)
+                                    })
+                                    .map(market_msg.clone())
                                 }
                             })
-                        },
+                        }
                         _ => None,
                     })
                     .for_each(|stream| depth_streams.push(stream));
-    
+
                 market_subscriptions.push(Subscription::batch(depth_streams));
             }
-    
+
             if kline_count > 0 {
-                let kline_streams: Vec<_> = stream.values()
+                let kline_streams: Vec<_> = stream
+                    .values()
                     .flat_map(|stream_types| stream_types.iter())
                     .filter_map(|stream_type| match stream_type {
-                        StreamType::Kline { ticker, timeframe, .. } => Some((*ticker, *timeframe)),
+                        StreamType::Kline {
+                            ticker, timeframe, ..
+                        } => Some((*ticker, *timeframe)),
                         _ => None,
                     })
                     .collect();
-    
+
                 let config = StreamConfig::new(kline_streams, *exchange);
 
                 market_subscriptions.push(match exchange {
                     Exchange::BinanceSpot | Exchange::BinanceFutures => {
-                        Subscription::run_with(
-                            config,
-                            move |cfg| binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-                        ).map(market_msg.clone())
+                        Subscription::run_with(config, move |cfg| {
+                            binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+                        })
+                        .map(market_msg.clone())
                     }
                     Exchange::BybitSpot | Exchange::BybitLinear => {
-                        Subscription::run_with(
-                            config,
-                            move |cfg| bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-                        ).map(market_msg.clone())
+                        Subscription::run_with(config, move |cfg| {
+                            bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+                        })
+                        .map(market_msg.clone())
                     }
                 });
             }
         });
-    
+
         Subscription::batch(market_subscriptions)
     }
 
@@ -1511,7 +1472,7 @@ fn get_oi_fetch_task(
             _ => {
                 log::error!("No OI fetch support for {exchange:?}");
                 Task::none()
-            },
+            }
         },
         _ => Task::none(),
     }
@@ -1531,13 +1492,11 @@ fn get_kline_fetch_task(
             timeframe,
         } => match exchange {
             Exchange::BinanceFutures | Exchange::BinanceSpot => Task::perform(
-                binance::fetch_klines(ticker, timeframe, range)
-                    .map_err(|err| format!("{err}")),
+                binance::fetch_klines(ticker, timeframe, range).map_err(|err| format!("{err}")),
                 move |klines| Message::FetchEvent(req_id, klines, stream, pane, window_id),
             ),
             Exchange::BybitLinear | Exchange::BybitSpot => Task::perform(
-                bybit::fetch_klines(ticker, timeframe, range)
-                    .map_err(|err| format!("{err}")),
+                bybit::fetch_klines(ticker, timeframe, range).map_err(|err| format!("{err}")),
                 move |klines| Message::FetchEvent(req_id, klines, stream, pane, window_id),
             ),
         },

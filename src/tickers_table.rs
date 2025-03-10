@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 
+use crate::{
+    data_providers::{Exchange, MarketType, Ticker, TickerStats},
+    style::{self, ICON_FONT, Icon, get_icon_text},
+};
 use iced::{
+    Element, Length, Renderer, Size, Task, Theme,
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
-        button, column, container, row,
+        Button, Column, Container, Space, Text, button, column, container, row,
         scrollable::{self, AbsoluteOffset},
-        text, text_input, Button, Column, Container, Space, Text,
+        text, text_input,
     },
-    Element, Length, Renderer, Size, Task, Theme,
-};
-use crate::{
-    data_providers::{Exchange, MarketType, Ticker, TickerStats}, style::{self, get_icon_text, Icon, ICON_FONT}
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -368,53 +369,57 @@ impl TickersTable {
             .align_y(Vertical::Center)
             .spacing(4),
             if self.show_sort_options {
-                container(column![
-                    row![
-                        Space::new(Length::FillPortion(2), Length::Shrink),
-                        match self.selected_sort_option {
-                            SortOptions::VolumeAsc | SortOptions::VolumeDesc => volume_sort_button
-                                .style(move |theme, status| style::button_transparent(
-                                    theme, status, true
-                                )),
-                            _ => volume_sort_button.style(move |theme, status| {
-                                style::button_transparent(theme, status, false)
-                            }),
-                        },
-                        Space::new(Length::FillPortion(1), Length::Shrink),
-                        match self.selected_sort_option {
-                            SortOptions::ChangeAsc | SortOptions::ChangeDesc => change_sort_button
-                                .style(move |theme, status| style::button_transparent(
-                                    theme, status, true
-                                )),
-                            _ => change_sort_button.style(move |theme, status| {
-                                style::button_transparent(theme, status, false)
-                            }),
-                        },
-                        Space::new(Length::FillPortion(2), Length::Shrink),
-                    ],
-                    row![
-                        Space::new(Length::FillPortion(1), Length::Shrink),
-                        match self.selected_market {
-                            Some(MarketType::Spot) => spot_market_button.style(move |theme, status| {
-                                style::button_transparent(theme, status, true)
-                            }),
-                            _ => spot_market_button.style(move |theme, status| {
-                                style::button_transparent(theme, status, false)
-                            }),
-                        },
-                        Space::new(Length::FillPortion(1), Length::Shrink),
-                        match self.selected_market {
-                            Some(MarketType::LinearPerps) => perp_market_button.style(move |theme, status| {
-                                style::button_transparent(theme, status, true)
-                            }),
-                            _ => perp_market_button.style(move |theme, status| {
-                                style::button_transparent(theme, status, false)
-                            }),
-                        },
-                        Space::new(Length::FillPortion(1), Length::Shrink),
-                    ],
-                ]
-                .spacing(4))
+                container(
+                    column![
+                        row![
+                            Space::new(Length::FillPortion(2), Length::Shrink),
+                            match self.selected_sort_option {
+                                SortOptions::VolumeAsc | SortOptions::VolumeDesc =>
+                                    volume_sort_button.style(move |theme, status| {
+                                        style::button_transparent(theme, status, true)
+                                    }),
+                                _ => volume_sort_button.style(move |theme, status| {
+                                    style::button_transparent(theme, status, false)
+                                }),
+                            },
+                            Space::new(Length::FillPortion(1), Length::Shrink),
+                            match self.selected_sort_option {
+                                SortOptions::ChangeAsc | SortOptions::ChangeDesc =>
+                                    change_sort_button.style(move |theme, status| {
+                                        style::button_transparent(theme, status, true)
+                                    }),
+                                _ => change_sort_button.style(move |theme, status| {
+                                    style::button_transparent(theme, status, false)
+                                }),
+                            },
+                            Space::new(Length::FillPortion(2), Length::Shrink),
+                        ],
+                        row![
+                            Space::new(Length::FillPortion(1), Length::Shrink),
+                            match self.selected_market {
+                                Some(MarketType::Spot) =>
+                                    spot_market_button.style(move |theme, status| {
+                                        style::button_transparent(theme, status, true)
+                                    }),
+                                _ => spot_market_button.style(move |theme, status| {
+                                    style::button_transparent(theme, status, false)
+                                }),
+                            },
+                            Space::new(Length::FillPortion(1), Length::Shrink),
+                            match self.selected_market {
+                                Some(MarketType::LinearPerps) =>
+                                    perp_market_button.style(move |theme, status| {
+                                        style::button_transparent(theme, status, true)
+                                    }),
+                                _ => perp_market_button.style(move |theme, status| {
+                                    style::button_transparent(theme, status, false)
+                                }),
+                            },
+                            Space::new(Length::FillPortion(1), Length::Shrink),
+                        ],
+                    ]
+                    .spacing(4),
+                )
                 .padding(4)
                 .style(style::sorter_container)
             } else {
@@ -442,10 +447,11 @@ impl TickersTable {
                         .iter()
                         .filter(|(_, ticker, _, _)| {
                             let (ticker, market) = ticker.get_string();
-                            ticker.contains(&self.search_query) && match self.selected_market {
-                                Some(market_type) => market == market_type,
-                                None => true,
-                            }
+                            ticker.contains(&self.search_query)
+                                && match self.selected_market {
+                                    Some(market_type) => market == market_type,
+                                    None => true,
+                                }
                         })
                         .enumerate()
                         .fold(
@@ -459,28 +465,28 @@ impl TickersTable {
                         );
             }
             TickerTab::Favorites => {
-                content = self
-                    .combined_tickers
-                    .iter()
-                    .filter(|(_, ticker, _, is_fav)| {
-                        let (ticker, market) = ticker.get_string();
-                        *is_fav && ticker.contains(&self.search_query) && match self.selected_market {
-                            Some(market_type) => market == market_type,
-                            None => true,
-                        }
-                    })
-                    .enumerate()
-                    .fold(
-                        content,
-                        |content, (index, (exchange, ticker, _, is_fav))| {
-                            let is_visible = self.is_container_visible(index, bounds);
-                            content.push(
-                                self.create_ticker_container(
+                content =
+                    self.combined_tickers
+                        .iter()
+                        .filter(|(_, ticker, _, is_fav)| {
+                            let (ticker, market) = ticker.get_string();
+                            *is_fav
+                                && ticker.contains(&self.search_query)
+                                && match self.selected_market {
+                                    Some(market_type) => market == market_type,
+                                    None => true,
+                                }
+                        })
+                        .enumerate()
+                        .fold(
+                            content,
+                            |content, (index, (exchange, ticker, _, is_fav))| {
+                                let is_visible = self.is_container_visible(index, bounds);
+                                content.push(self.create_ticker_container(
                                     is_visible, *exchange, ticker, *is_fav,
-                                ),
-                            )
-                        },
-                    );
+                                ))
+                            },
+                        );
             }
             _ => {
                 content = self
@@ -498,9 +504,7 @@ impl TickersTable {
                     .enumerate()
                     .fold(content, |content, (index, (ex, ticker, _, is_fav))| {
                         let is_visible = self.is_container_visible(index, bounds);
-                        content.push(
-                            self.create_ticker_container(is_visible, *ex, ticker, *is_fav),
-                        )
+                        content.push(self.create_ticker_container(is_visible, *ex, ticker, *is_fav))
                     });
             }
         }
@@ -509,7 +513,7 @@ impl TickersTable {
             content,
             scrollable::Direction::Vertical(
                 scrollable::Scrollbar::new().width(8).scroller_width(6),
-            )
+            ),
         )
         .on_scroll(Message::Scrolled)
         .style(style::scroll_bar)
@@ -527,36 +531,40 @@ fn create_ticker_card<'a>(
         .width(Length::Fixed(2.0))
         .style(move |theme| style::ticker_card_bar(theme, display_data.card_color_alpha));
 
-    column![button(row![
-        color_column,
-        column![
-            row![
+    column![
+        button(row![
+            color_column,
+            column![
                 row![
-                    match exchange {
-                        Exchange::BybitLinear | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 12),
-                        Exchange::BinanceFutures | Exchange::BinanceSpot => get_icon_text(Icon::BinanceLogo, 12),
-                    },
-                    text(&display_data.display_ticker),
+                    row![
+                        match exchange {
+                            Exchange::BybitLinear | Exchange::BybitSpot =>
+                                get_icon_text(Icon::BybitLogo, 12),
+                            Exchange::BinanceFutures | Exchange::BinanceSpot =>
+                                get_icon_text(Icon::BinanceLogo, 12),
+                        },
+                        text(&display_data.display_ticker),
+                    ]
+                    .spacing(2)
+                    .align_y(alignment::Vertical::Center),
+                    Space::new(Length::Fill, Length::Shrink),
+                    text(&display_data.price_change_display),
                 ]
-                .spacing(2)
+                .spacing(4)
                 .align_y(alignment::Vertical::Center),
-                Space::new(Length::Fill, Length::Shrink),
-                text(&display_data.price_change_display),
+                row![
+                    text(&display_data.mark_price_display),
+                    Space::new(Length::Fill, Length::Shrink),
+                    text(&display_data.volume_display),
+                ]
+                .spacing(4),
             ]
-            .spacing(4)
-            .align_y(alignment::Vertical::Center),
-            row![
-                text(&display_data.mark_price_display),
-                Space::new(Length::Fill, Length::Shrink),
-                text(&display_data.volume_display),
-            ]
+            .padding(8)
             .spacing(4),
-        ]
-        .padding(8)
-        .spacing(4),
-    ])
-    .style(style::ticker_card_button)
-    .on_press(Message::ExpandTickerCard(Some((*ticker, *exchange))))]
+        ])
+        .style(style::ticker_card_button)
+        .on_press(Message::ExpandTickerCard(Some((*ticker, *exchange))))
+    ]
     .height(Length::Fixed(60.0))
 }
 
@@ -585,14 +593,17 @@ fn create_expanded_ticker_card<'a>(
         row![
             match exchange {
                 Exchange::BybitLinear | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 12),
-                Exchange::BinanceFutures | Exchange::BinanceSpot => get_icon_text(Icon::BinanceLogo, 12),
+                Exchange::BinanceFutures | Exchange::BinanceSpot =>
+                    get_icon_text(Icon::BinanceLogo, 12),
             },
-            text(ticker_str + {
-                match market {
-                    MarketType::Spot => "",
-                    MarketType::LinearPerps => " Perp",
+            text(
+                ticker_str + {
+                    match market {
+                        MarketType::Spot => "",
+                        MarketType::LinearPerps => " Perp",
+                    }
                 }
-            }),
+            ),
         ]
         .spacing(2),
         column![

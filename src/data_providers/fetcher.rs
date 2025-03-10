@@ -1,5 +1,5 @@
-use uuid::Uuid;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ReqError {
@@ -32,25 +32,29 @@ impl RequestHandler {
     pub fn add_request(&mut self, fetch: FetchRange) -> Result<Uuid, ReqError> {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
-    
-        if let Some((existing_id, existing_req)) = self.requests.iter()
-            .find_map(|(k, v)| if v.same_with(&request) { Some((*k, v)) } else { None }) 
-        {
+
+        if let Some((existing_id, existing_req)) = self.requests.iter().find_map(|(k, v)| {
+            if v.same_with(&request) {
+                Some((*k, v))
+            } else {
+                None
+            }
+        }) {
             return match &existing_req.status {
                 RequestStatus::Failed(error_msg) => Err(ReqError::Failed(error_msg.clone())),
                 RequestStatus::Completed(ts) => {
                     // retry completed requests after a cooldown
-                    // to handle data source failures or outdated results gracefully       
+                    // to handle data source failures or outdated results gracefully
                     if chrono::Utc::now().timestamp_millis() as u64 - ts > 30_000 {
                         Ok(existing_id)
                     } else {
                         Err(ReqError::Completed)
                     }
-                },
+                }
                 RequestStatus::Pending => Err(ReqError::Overlaps),
             };
         }
-    
+
         self.requests.insert(id, request);
         Ok(id)
     }
@@ -96,12 +100,10 @@ impl FetchRequest {
 
     fn same_with(&self, other: &FetchRequest) -> bool {
         match (&self.fetch_type, &other.fetch_type) {
-            (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => {
-                e1 == e2 && s1 == s2
-            },
+            (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => e1 == e2 && s1 == s2,
             (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
                 e1 == e2 && s1 == s2
-            },
+            }
             _ => false,
         }
     }

@@ -1,11 +1,11 @@
-use chrono::DateTime;
-use iced::{alignment, padding, Element, Length};
-use iced::widget::{column, container, responsive, row, text, Space};
-use serde::{Deserialize, Serialize};
-use crate::screen::dashboard::pane::Message;
-use crate::screen::UserTimezone;
-use crate::style::ts_table_container;
 use crate::data_providers::Trade;
+use crate::screen::UserTimezone;
+use crate::screen::dashboard::pane::Message;
+use crate::style::ts_table_container;
+use chrono::DateTime;
+use iced::widget::{Space, column, container, responsive, row, text};
+use iced::{Element, Length, alignment, padding};
+use serde::{Deserialize, Serialize};
 
 struct ConvertedTrade {
     time_str: String,
@@ -44,12 +44,10 @@ impl TimeAndSales {
         let size_filter = self.config.trade_size_filter;
 
         for trade in trades_buffer {
-            if let Some(trade_time) =
-                DateTime::from_timestamp(
-                    trade.time as i64 / 1000, 
-                    (trade.time % 1000) as u32 * 1_000_000
-                )
-            {
+            if let Some(trade_time) = DateTime::from_timestamp(
+                trade.time as i64 / 1000,
+                (trade.time % 1000) as u32 * 1_000_000,
+            ) {
                 let converted_trade = ConvertedTrade {
                     time_str: trade_time.format("%M:%S.%3f").to_string(),
                     price: trade.price,

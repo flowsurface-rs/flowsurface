@@ -1,22 +1,46 @@
 use std::collections::BTreeMap;
 
-use iced::widget::{container, row, Canvas};
-use iced::{Element, Length};
-use iced::{mouse, Point, Rectangle, Renderer, Size, Theme, Vector};
 use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
+use iced::widget::{Canvas, container, row};
+use iced::{Element, Length};
+use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
-use crate::charts::{
-    round_to_tick, Caches, ChartBasis, CommonChartData, Interaction, Message
-};
+use crate::charts::{Caches, ChartBasis, CommonChartData, Interaction, Message, round_to_tick};
 use crate::data_providers::format_with_commas;
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,
-    cache: &'a Caches, 
+    cache: &'a Caches,
     data_points: &'a BTreeMap<u64, (f32, f32)>,
     earliest: u64,
     latest: u64,
 ) -> Element<'a, Message> {
+    let max_volume = {
+        match chart_state.basis {
+            ChartBasis::Time(_) => data_points
+                .range(earliest..=latest)
+                .map(|(_, (buy, sell))| buy.max(*sell))
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(0.0),
+            ChartBasis::Tick(_) => {
+                let mut max_volume: f32 = 0.0;
+                let earliest = earliest as usize;
+                let latest = latest as usize;
+
+                data_points
+                    .iter()
+                    .rev()
+                    .enumerate()
+                    .filter(|(index, _)| *index <= latest && *index >= earliest)
+                    .for_each(|(_, (_, (buy_volume, sell_volume)))| {
+                        max_volume = max_volume.max(buy_volume.max(*sell_volume));
+                    });
+
+                max_volume
+            }
+        }
+    };
+
     let indi_chart = Canvas::new(VolumeIndicator {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
@@ -28,42 +52,14 @@ pub fn create_indicator_elem<'a>(
         cell_width: chart_state.cell_width,
         data_points,
         chart_bounds: chart_state.bounds,
+        max_volume,
     })
     .height(Length::Fill)
     .width(Length::Fill);
 
     if earliest == latest {
-        return row![
-            indi_chart,
-        ].into()
+        return row![indi_chart,].into();
     }
-
-    let max_volume = {
-        match chart_state.basis {
-            ChartBasis::Time(_) => {
-                data_points
-                    .range(earliest..=latest)
-                    .map(|(_, (buy, sell))| buy.max(*sell))
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap_or(0.0)
-            },
-            ChartBasis::Tick(_) => {
-                let mut max_volume: f32 = 0.0;
-                let earliest = earliest as usize;
-                let latest = latest as usize;
-
-                data_points.iter()
-                    .rev()
-                    .enumerate()
-                    .filter(|(index, _)| *index <= latest && *index >= earliest)
-                    .for_each(|(_, (_, (buy_volume, sell_volume)))| {
-                        max_volume = max_volume.max(buy_volume.max(*sell_volume));
-                    });
-
-                max_volume
-            }
-        }  
-    };
 
     let indi_labels = Canvas::new(super::IndicatorLabel {
         label_cache: &cache.y_labels,
@@ -75,10 +71,7 @@ pub fn create_indicator_elem<'a>(
     .height(Length::Fill)
     .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)));
 
-    row![
-        indi_chart,
-        container(indi_labels),
-    ].into()
+    row![indi_chart, container(indi_labels),].into()
 }
 
 pub struct VolumeIndicator<'a> {
@@ -86,6 +79,7 @@ pub struct VolumeIndicator<'a> {
     pub crosshair_cache: &'a Cache,
     pub crosshair: bool,
     pub max: u64,
+    pub max_volume: f32,
     pub scaling: f32,
     pub translation_x: f32,
     pub basis: ChartBasis,
@@ -117,12 +111,12 @@ impl VolumeIndicator<'_> {
                     let diff = (x / self.cell_width * interval as f32) as u64;
                     self.max.saturating_add(diff)
                 }
-            },
+            }
             ChartBasis::Tick(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
-        }      
+        }
     }
 
     fn interval_to_x(&self, value: u64) -> f32 {
@@ -135,11 +129,9 @@ impl VolumeIndicator<'_> {
                     let diff = value - self.max;
                     (diff as f32 / interval as f32) * self.cell_width
                 }
-            },
-            ChartBasis::Tick(_) => {
-                -((value as f32) * self.cell_width)
             }
-        }   
+            ChartBasis::Tick(_) => -((value as f32) * self.cell_width),
+        }
     }
 }
 
@@ -191,13 +183,11 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
         let palette = theme.extended_palette();
 
         let timeframe: u64 = match self.basis {
-            ChartBasis::Time(interval) => {
-                interval
-            },
-            ChartBasis::Tick(_) => {
-                0
-            }
+            ChartBasis::Time(interval) => interval,
+            ChartBasis::Tick(_) => 0,
         };
+
+        let max_volume = self.max_volume;
 
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
             frame.translate(center);
@@ -214,19 +204,11 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                 self.x_to_interval(region.x + region.width),
             );
 
-            let mut max_volume: f32 = 0.0;
-
             match self.basis {
                 ChartBasis::Time(_) => {
                     if latest < earliest {
                         return;
                     }
-
-                    self.data_points
-                        .range(earliest..=latest)
-                        .for_each(|(_, (buy_volume, sell_volume))| {
-                            max_volume = max_volume.max(buy_volume.max(*sell_volume));
-                        });
 
                     self.data_points.range(earliest..=latest).for_each(
                         |(timestamp, (buy_volume, sell_volume))| {
@@ -251,7 +233,10 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                                     );
 
                                     frame.fill_rectangle(
-                                        Point::new(x_position, (region.y + region.height) - buy_bar_height),
+                                        Point::new(
+                                            x_position,
+                                            (region.y + region.height) - buy_bar_height,
+                                        ),
                                         Size::new(bar_width, buy_bar_height),
                                         palette.success.base.color,
                                     );
@@ -278,15 +263,8 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     let earliest = earliest as usize;
                     let latest = latest as usize;
 
-                    self.data_points.iter()
-                        .rev()
-                        .enumerate()
-                        .filter(|(index, _)| *index <= earliest && *index >= latest)
-                        .for_each(|(_, (_, (buy_volume, sell_volume)))| {
-                            max_volume = max_volume.max(buy_volume.max(*sell_volume));
-                        });
-
-                    self.data_points.iter()
+                    self.data_points
+                        .iter()
                         .rev()
                         .enumerate()
                         .filter(|(index, _)| *index <= earliest && *index >= latest)
@@ -311,7 +289,10 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                                 );
 
                                 frame.fill_rectangle(
-                                    Point::new(x_position, (region.y + region.height) - buy_bar_height),
+                                    Point::new(
+                                        x_position,
+                                        (region.y + region.height) - buy_bar_height,
+                                    ),
                                     Size::new(bar_width, buy_bar_height),
                                     palette.success.base.color,
                                 );
@@ -332,14 +313,11 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         },
                         ..Default::default()
                     },
-                    palette.secondary.strong.color
-                        .scale_alpha(
-                            if palette.is_dark {
-                                0.6
-                            } else {
-                                1.0
-                            },
-                        ),
+                    palette
+                        .secondary
+                        .strong
+                        .color
+                        .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
                 );
 
                 if let Some(cursor_position) = cursor.position_in(self.chart_bounds) {
@@ -354,7 +332,8 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
                     let rounded_timestamp =
                         (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
-                    let snap_ratio = ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
+                    let snap_ratio =
+                        ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
 
                     frame.stroke(
                         &Path::line(
@@ -380,10 +359,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         } else {
                             tooltip_bg_height = 14.0;
 
-                            format!(
-                                "Volume: {}",
-                                format_with_commas(*sell_v),
-                            )
+                            format!("Volume: {}", format_with_commas(*sell_v),)
                         };
 
                         let text = canvas::Text {

@@ -1,11 +1,11 @@
-use std::collections::HashMap;
 use regex::Regex;
-use serde_json::json;
 use serde_json::Value;
-use sonic_rs::{JsonValueTrait, Deserialize, Serialize};
+use serde_json::json;
 use sonic_rs::to_object_iter_unchecked;
+use sonic_rs::{Deserialize, JsonValueTrait, Serialize};
+use std::collections::HashMap;
 
-use fastwebsockets::{Frame, FragmentCollector, OpCode};
+use fastwebsockets::{FragmentCollector, Frame, OpCode};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 
@@ -13,10 +13,10 @@ use futures::{SinkExt, Stream};
 use iced_futures::stream;
 
 use super::{
-    setup_tcp_connection, setup_tls_connection, setup_websocket_connection, 
-    de_string_to_f32, de_string_to_u64,
-    Connection, Event, Kline, LocalDepthCache, MarketType, Order, State, Exchange, OpenInterest,
-    StreamError, TickerInfo, TickerStats, Trade, VecLocalDepthCache, StreamType, Ticker, Timeframe,
+    Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State,
+    StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache,
+    de_string_to_f32, de_string_to_u64, setup_tcp_connection, setup_tls_connection,
+    setup_websocket_connection,
 };
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -102,9 +102,9 @@ enum StreamWrapper {
 
 #[allow(unused_assignments)]
 fn feed_de(
-    slice: &[u8], 
-    ticker: Option<Ticker>, 
-    market_type: MarketType
+    slice: &[u8],
+    ticker: Option<Ticker>,
+    market_type: MarketType,
 ) -> Result<StreamData, StreamError> {
     let mut stream_type: Option<StreamWrapper> = None;
     let mut depth_wrap: Option<SonicDepth> = None;
@@ -116,7 +116,7 @@ fn feed_de(
 
     for elem in iter {
         let (k, v) = elem.map_err(|e| StreamError::ParseError(e.to_string()))?;
-        
+
         if k == "topic" {
             if let Some(val) = v.as_str() {
                 let mut is_ticker = None;
@@ -173,7 +173,9 @@ fn feed_de(
                     if let Some(t) = topic_ticker {
                         return Ok(StreamData::Kline(t, kline_wrap));
                     } else {
-                        return Err(StreamError::ParseError("Missing ticker for kline data".to_string()));
+                        return Err(StreamError::ParseError(
+                            "Missing ticker for kline data".to_string(),
+                        ));
                     }
                 }
                 _ => {
@@ -195,8 +197,8 @@ fn feed_de(
 }
 
 async fn connect(
-    domain: &str, 
-    market_type: MarketType
+    domain: &str,
+    market_type: MarketType,
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, StreamError> {
     let tcp_stream = setup_tcp_connection(domain).await?;
     let tls_stream = setup_tls_connection(domain, tcp_stream).await?;
@@ -231,7 +233,7 @@ async fn try_connect(
                 let _ = output
                     .send(Event::Disconnected(
                         exchange,
-                        format!("Failed subscribing: {e}")
+                        format!("Failed subscribing: {e}"),
                     ))
                     .await;
                 return State::Disconnected;
@@ -246,7 +248,7 @@ async fn try_connect(
             let _ = output
                 .send(Event::Disconnected(
                     exchange,
-                    format!("Failed to connect: {err}")
+                    format!("Failed to connect: {err}"),
                 ))
                 .await;
             State::Disconnected
@@ -286,11 +288,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         loop {
             match &mut state {
                 State::Disconnected => {
-                    state = try_connect(
-                        &subscribe_message, 
-                        market_type,
-                        &mut output
-                    ).await;
+                    state = try_connect(&subscribe_message, market_type, &mut output).await;
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
                     Ok(msg) => match msg.opcode {
@@ -343,7 +341,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                     StreamType::DepthAndTrades { exchange, ticker },
                                                     time,
                                                     orderbook.get_depth(),
-                                                    std::mem::take(&mut trades_buffer).into_boxed_slice(),
+                                                    std::mem::take(&mut trades_buffer)
+                                                        .into_boxed_slice(),
                                                 ))
                                                 .await;
                                         }
@@ -359,7 +358,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string()
+                                    "Connection closed".to_string(),
                                 ))
                                 .await;
                         }
@@ -381,8 +380,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 }
 
 pub fn connect_kline_stream(
-    streams: Vec<(Ticker, Timeframe)>, 
-    market_type: MarketType
+    streams: Vec<(Ticker, Timeframe)>,
+    market_type: MarketType,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
@@ -399,7 +398,7 @@ pub fn connect_kline_stream(
                 format!("kline.{timeframe_str}.{}", ticker.get_string().0)
             })
             .collect::<Vec<String>>();
-    
+
         let subscribe_message = serde_json::json!({
             "op": "subscribe",
             "args": stream_str
@@ -408,11 +407,7 @@ pub fn connect_kline_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    state = try_connect(
-                        &subscribe_message, 
-                        market_type,
-                        &mut output
-                    ).await;
+                    state = try_connect(&subscribe_message, market_type, &mut output).await;
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
                     Ok(msg) => match msg.opcode {
@@ -434,8 +429,12 @@ pub fn connect_kline_stream(
                                     {
                                         let _ = output
                                             .send(Event::KlineReceived(
-                                                StreamType::Kline { exchange, ticker, timeframe },
-                                                kline, 
+                                                StreamType::Kline {
+                                                    exchange,
+                                                    ticker,
+                                                    timeframe,
+                                                },
+                                                kline,
                                             ))
                                             .await;
                                     } else {
@@ -453,12 +452,12 @@ pub fn connect_kline_stream(
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string()
+                                    "Connection closed".to_string(),
                                 ))
                                 .await;
                         }
                         _ => {}
-                    }
+                    },
                     Err(e) => {
                         state = State::Disconnected;
                         let _ = output
@@ -491,7 +490,7 @@ struct DeOpenInterest {
 }
 
 pub async fn fetch_historical_oi(
-    ticker: Ticker, 
+    ticker: Ticker,
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, StreamError> {
@@ -526,36 +525,38 @@ pub async fn fetch_historical_oi(
         url.push_str("&limit=200");
     }
 
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| {
-            log::error!("Failed to fetch from {}: {}", url, e);
-            StreamError::FetchError(e)
-        })?;
-        
-    let text = response.text()
-        .await
-        .map_err(|e| {
-            log::error!("Failed to get response text from {}: {}", url, e);
-            StreamError::FetchError(e)
-        })?;
+    let response = reqwest::get(&url).await.map_err(|e| {
+        log::error!("Failed to fetch from {}: {}", url, e);
+        StreamError::FetchError(e)
+    })?;
 
-    let content: Value = sonic_rs::from_str(&text)
-        .map_err(|e| {
-            log::error!("Failed to parse JSON from {}: {}\nResponse: {}", url, e, text);
-            StreamError::ParseError(e.to_string())
-        })?;
+    let text = response.text().await.map_err(|e| {
+        log::error!("Failed to get response text from {}: {}", url, e);
+        StreamError::FetchError(e)
+    })?;
 
-    let result_list = content["result"]["list"]
-        .as_array()
-        .ok_or_else(|| {
-            log::error!("Result list is not an array in response: {}", text);
-            StreamError::ParseError("Result list is not an array".to_string())
-        })?;
-    
-    let bybit_oi: Vec<DeOpenInterest> = serde_json::from_value(json!(result_list))
-        .map_err(|e| {
-            log::error!("Failed to parse open interest array: {}\nResponse: {}", e, text);
+    let content: Value = sonic_rs::from_str(&text).map_err(|e| {
+        log::error!(
+            "Failed to parse JSON from {}: {}\nResponse: {}",
+            url,
+            e,
+            text
+        );
+        StreamError::ParseError(e.to_string())
+    })?;
+
+    let result_list = content["result"]["list"].as_array().ok_or_else(|| {
+        log::error!("Result list is not an array in response: {}", text);
+        StreamError::ParseError("Result list is not an array".to_string())
+    })?;
+
+    let bybit_oi: Vec<DeOpenInterest> =
+        serde_json::from_value(json!(result_list)).map_err(|e| {
+            log::error!(
+                "Failed to parse open interest array: {}\nResponse: {}",
+                e,
+                text
+            );
             StreamError::ParseError(format!("Failed to parse open interest: {e}"))
         })?;
 
@@ -568,7 +569,11 @@ pub async fn fetch_historical_oi(
         .collect();
 
     if open_interest.is_empty() {
-        log::warn!("No open interest data found for {}, from url: {}", ticker_str, url);
+        log::warn!(
+            "No open interest data found for {}, from url: {}",
+            ticker_str,
+            url
+        );
     }
 
     Ok(open_interest)
@@ -616,7 +621,9 @@ pub async fn fetch_klines(
 
     let mut url = format!(
         "https://api.bybit.com/v5/market/kline?category={}&symbol={}&interval={}",
-        market, symbol_str.to_uppercase(), timeframe_str
+        market,
+        symbol_str.to_uppercase(),
+        timeframe_str
     );
 
     if let Some((start, end)) = range {
@@ -660,7 +667,9 @@ pub async fn fetch_klines(
     klines
 }
 
-pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
+pub async fn fetch_ticksize(
+    market_type: MarketType,
+) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
     let market = match market_type {
         MarketType::Spot => "spot",
         MarketType::LinearPerps => "linear",
@@ -706,7 +715,13 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
 
         let ticker = Ticker::new(symbol, market_type);
 
-        ticker_info_map.insert(ticker, Some(TickerInfo { min_ticksize, ticker }));
+        ticker_info_map.insert(
+            ticker,
+            Some(TickerInfo {
+                min_ticksize,
+                ticker,
+            }),
+        );
     }
 
     Ok(ticker_info_map)
@@ -715,7 +730,9 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
 const PERP_FILTER_VOLUME: f32 = 12_000_000.0;
 const SPOT_FILTER_VOLUME: f32 = 4_000_000.0;
 
-pub async fn fetch_ticker_prices(market_type: MarketType) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
+pub async fn fetch_ticker_prices(
+    market_type: MarketType,
+) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
     let (market, volume_threshold) = match market_type {
         MarketType::Spot => ("spot", SPOT_FILTER_VOLUME),
         MarketType::LinearPerps => ("linear", PERP_FILTER_VOLUME),

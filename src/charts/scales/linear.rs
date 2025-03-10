@@ -1,14 +1,10 @@
-use super::{
-    AxisLabel, Label, 
-    super::abbr_large_numbers,
-    calc_label_rect,
-};
+use super::{super::abbr_large_numbers, AxisLabel, Label, calc_label_rect};
 
 fn calc_optimal_ticks(
-    highest: f32, 
-    lowest: f32, 
-    labels_can_fit: i32, 
-    tick_size: f32
+    highest: f32,
+    lowest: f32,
+    labels_can_fit: i32,
+    tick_size: f32,
 ) -> (f32, f32) {
     let range = highest - lowest;
     let labels = labels_can_fit.max(1) as f32;
@@ -48,7 +44,7 @@ pub fn generate_labels(
     if !lowest.is_finite() || !highest.is_finite() || !tick_size.is_finite() {
         return Vec::new();
     }
-    
+
     if (highest - lowest).abs() < f32::EPSILON {
         return Vec::new();
     }
@@ -76,7 +72,7 @@ pub fn generate_labels(
     }
 
     let (step, max) = calc_optimal_ticks(highest, lowest, labels_can_fit, tick_size);
-    
+
     let mut labels = Vec::with_capacity((labels_can_fit + 2) as usize);
 
     let mut safety_counter = 0;
@@ -127,7 +123,9 @@ fn test_generate_labels() {
     let tick_size = 1.0;
     let decimals = Some(2);
 
-    let labels = generate_labels(bounds, lowest, highest, text_size, text_color, tick_size, decimals);
+    let labels = generate_labels(
+        bounds, lowest, highest, text_size, text_color, tick_size, decimals,
+    );
 
     for label in labels {
         if let AxisLabel::Y(_, label, _) = label {

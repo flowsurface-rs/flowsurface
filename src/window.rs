@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use iced::{window, Point, Size, Subscription, Task};
+use iced::{Point, Size, Subscription, Task, window};
 
-pub use iced::window::{close, open, Id, Position, Settings};
+pub use iced::window::{Id, Position, Settings, close, open};
 use iced_futures::MaybeSend;
 
 #[allow(dead_code)]

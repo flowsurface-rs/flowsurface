@@ -1,13 +1,13 @@
+pub mod aggr;
 pub mod binance;
 pub mod bybit;
 pub mod fetcher;
-pub mod aggr;
 
 use aggr::time::Timeframe;
 use ordered_float::OrderedFloat;
 use rust_decimal::{
-    prelude::{FromPrimitive, ToPrimitive},
     Decimal,
+    prelude::{FromPrimitive, ToPrimitive},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -120,11 +120,15 @@ impl LocalDepthCache {
     fn fetched(&mut self, new_depth: &VecLocalDepthCache) {
         self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
-    
-        self.bids = new_depth.bids.iter()
+
+        self.bids = new_depth
+            .bids
+            .iter()
             .map(|order| (OrderedFloat(order.price), order.qty))
             .collect();
-        self.asks = new_depth.asks.iter()
+        self.asks = new_depth
+            .asks
+            .iter()
             .map(|order| (OrderedFloat(order.price), order.qty))
             .collect();
     }
@@ -137,10 +141,7 @@ impl LocalDepthCache {
         Self::update_price_levels(&mut self.asks, &new_depth.asks);
     }
 
-    fn update_price_levels(
-        price_map: &mut BTreeMap<OrderedFloat<f32>, f32>, 
-        orders: &[Order]
-    ) {
+    fn update_price_levels(price_map: &mut BTreeMap<OrderedFloat<f32>, f32>, orders: &[Order]) {
         orders.iter().for_each(|order| {
             if order.qty == 0.0 {
                 price_map.remove(&OrderedFloat(order.price));
@@ -303,7 +304,7 @@ impl Ticker {
     pub fn new<S: AsRef<str>>(ticker: S, market_type: MarketType) -> Self {
         let ticker = ticker.as_ref();
         let base_len = ticker.len();
-        
+
         assert!(base_len <= 20, "Ticker too long");
         assert!(
             ticker.chars().all(|c| c.is_ascii_alphanumeric()),
@@ -324,7 +325,11 @@ impl Ticker {
             len += 1;
         }
 
-        Ticker { data, len, market_type }
+        Ticker {
+            data,
+            len,
+            market_type,
+        }
     }
 
     pub fn get_string(&self) -> (String, MarketType) {
@@ -426,19 +431,19 @@ pub struct OpenInterest {
 // other helpers
 pub fn format_with_commas(num: f32) -> String {
     let s = format!("{num:.0}");
-    
+
     // Handle special case for small numbers
     if s.len() <= 4 && s.starts_with('-') {
-        return s;  // Return as-is if it's a small negative number
+        return s; // Return as-is if it's a small negative number
     }
-    
+
     let mut result = String::with_capacity(s.len() + (s.len() - 1) / 3);
     let (sign, digits) = if s.starts_with('-') {
-        ("-", &s[1..])  // Split into sign and digits
+        ("-", &s[1..]) // Split into sign and digits
     } else {
         ("", &s[..])
     };
-    
+
     let mut i = digits.len();
     while i > 0 {
         if !result.is_empty() {
@@ -448,29 +453,29 @@ pub fn format_with_commas(num: f32) -> String {
         result.insert_str(0, &digits[start..i]);
         i = start;
     }
-    
+
     // Add sign at the start if negative
     if !sign.is_empty() {
         result.insert_str(0, sign);
     }
-    
+
     result
 }
 
 // websocket
 use bytes::Bytes;
-use tokio::net::TcpStream;
-use http_body_util::Empty;
-use hyper_util::rt::TokioIo;
 use fastwebsockets::FragmentCollector;
+use http_body_util::Empty;
 use hyper::{
+    Request,
     header::{CONNECTION, UPGRADE},
     upgrade::Upgraded,
-    Request,
 };
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpStream;
 use tokio_rustls::{
-    rustls::{ClientConfig, OwnedTrustAnchor},
     TlsConnector,
+    rustls::{ClientConfig, OwnedTrustAnchor},
 };
 
 struct SpawnExecutor;

@@ -2,7 +2,9 @@ use std::{collections::HashMap, fmt};
 
 use chrono::DateTime;
 use iced::{
-    widget::{button, column, container, pane_grid, text, Column}, window, Alignment, Element, Task, Theme
+    Alignment, Element, Task, Theme,
+    widget::{Column, button, column, container, pane_grid, text},
+    window,
 };
 use iced_futures::MaybeSend;
 use serde::{Deserialize, Serialize};
@@ -19,10 +21,8 @@ pub fn create_button<'a, M: Clone + 'a>(
     tooltip_pos: tooltip::Position,
     style_fn: impl Fn(&Theme, button::Status) -> button::Style + 'static,
 ) -> Element<'a, M> {
-    let btn = button(content)
-        .style(style_fn)
-        .on_press(message);
-        
+    let btn = button(content).style(style_fn).on_press(message);
+
     if let Some(text) = tooltip_text {
         tooltip(btn, Some(text), tooltip_pos)
     } else {
@@ -45,7 +45,7 @@ impl UserTimezone {
                 UserTimezone::Local => {
                     let time_with_zone = datetime.with_timezone(&chrono::Local);
                     Self::format_by_timeframe(time_with_zone, timeframe)
-                },
+                }
                 UserTimezone::Utc => {
                     let time_with_zone = datetime.with_timezone(&chrono::Utc);
                     Self::format_by_timeframe(time_with_zone, timeframe)
@@ -55,9 +55,9 @@ impl UserTimezone {
             String::new()
         }
     }
-    
+
     /// Formats a DateTime with appropriate format based on timeframe
-    fn format_by_timeframe<Tz: chrono::TimeZone>(datetime: DateTime<Tz>, timeframe: u64) -> String 
+    fn format_by_timeframe<Tz: chrono::TimeZone>(datetime: DateTime<Tz>, timeframe: u64) -> String
     where
         Tz::Offset: std::fmt::Display,
     {
@@ -69,21 +69,23 @@ impl UserTimezone {
             datetime.format("%H:%M").to_string()
         }
     }
-    
+
     /// Formats a DateTime with detailed format for crosshair display
     pub fn format_crosshair_timestamp(&self, timestamp_millis: i64, timeframe: u64) -> String {
         if let Some(datetime) = DateTime::from_timestamp_millis(timestamp_millis) {
             if timeframe < 10000 {
                 return datetime.format("%M:%S:%3f").to_string().replace('.', "");
             }
-            
+
             match self {
-                UserTimezone::Local => {
-                    datetime.with_timezone(&chrono::Local).format("%a %b %-d  %H:%M").to_string()
-                },
-                UserTimezone::Utc => {
-                    datetime.with_timezone(&chrono::Utc).format("%a %b %-d  %H:%M").to_string()
-                }
+                UserTimezone::Local => datetime
+                    .with_timezone(&chrono::Local)
+                    .format("%a %b %-d  %H:%M")
+                    .to_string(),
+                UserTimezone::Utc => datetime
+                    .with_timezone(&chrono::Utc)
+                    .format("%a %b %-d  %H:%M")
+                    .to_string(),
             }
         } else {
             String::new()
@@ -145,16 +147,14 @@ pub enum Notification {
     Warn(String),
 }
 
-pub fn handle_error<M, F>(err: &str, report: &str, message: F) -> Task<M> 
+pub fn handle_error<M, F>(err: &str, report: &str, message: F) -> Task<M>
 where
     F: Fn(Notification) -> M + Send + 'static,
     M: MaybeSend + 'static,
 {
     log::error!("{err}: {report}");
 
-    Task::done(message(
-        Notification::Error(report.to_string())
-    ))
+    Task::done(message(Notification::Error(report.to_string())))
 }
 
 #[derive(Default)]
@@ -213,19 +213,31 @@ impl NotificationManager {
                 });
 
                 if !found {
-                    notification_list.push(Notification::Info(InfoType::FetchingTrades(increment_by)));
+                    notification_list
+                        .push(Notification::Info(InfoType::FetchingTrades(increment_by)));
                 }
             } else {
-                window_map.insert(*pane, vec![Notification::Info(InfoType::FetchingTrades(increment_by))]);
+                window_map.insert(
+                    *pane,
+                    vec![Notification::Info(InfoType::FetchingTrades(increment_by))],
+                );
             }
         } else {
             let mut pane_map = HashMap::new();
-            pane_map.insert(*pane, vec![Notification::Info(InfoType::FetchingTrades(increment_by))]);
+            pane_map.insert(
+                *pane,
+                vec![Notification::Info(InfoType::FetchingTrades(increment_by))],
+            );
             self.notifications.insert(window, pane_map);
         }
     }
 
-    pub fn find_and_remove(&mut self, window: window::Id, pane: pane_grid::Pane, notification: Notification) {
+    pub fn find_and_remove(
+        &mut self,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        notification: Notification,
+    ) {
         if let Some(window_map) = self.notifications.get_mut(&window) {
             if let Some(notification_list) = window_map.get_mut(&pane) {
                 notification_list.retain(|n| n != &notification);
@@ -280,10 +292,7 @@ impl NotificationManager {
         // If it's a fetch error, remove any pending fetch notifications
         if matches!(err, DashboardError::Fetch(_)) {
             notification_list.retain(|notification| {
-                !matches!(
-                    notification,
-                    Notification::Info(InfoType::FetchingKlines)
-                )
+                !matches!(notification, Notification::Info(InfoType::FetchingKlines))
             });
         }
     }
@@ -331,13 +340,11 @@ impl NotificationManager {
 fn notification_modal<'a, M>(
     notifications: &'a [Notification],
     make_message: impl Fn(Notification) -> M + 'a,
-) -> Column<'a, M> 
+) -> Column<'a, M>
 where
     M: Clone + 'a,
 {
-    let mut notifications_column = column![]
-        .align_x(Alignment::End)
-        .spacing(6);
+    let mut notifications_column = column![].align_x(Alignment::End).spacing(6);
 
     for notification in notifications.iter().rev().take(5) {
         let notification_str = match notification {
@@ -345,10 +352,9 @@ where
             Notification::Warn(warn) => warn.to_string(),
             Notification::Info(info) => match info {
                 InfoType::FetchingKlines => "Fetching klines...".to_string(),
-                InfoType::FetchingTrades(total_fetched) => format!(
-                    "Fetching trades...\n({} fetched)",
-                    total_fetched
-                ),
+                InfoType::FetchingTrades(total_fetched) => {
+                    format!("Fetching trades...\n({} fetched)", total_fetched)
+                }
                 InfoType::FetchingOI => "Fetching open interest...".to_string(),
             },
         };
@@ -391,10 +397,7 @@ impl std::fmt::Display for PresentMode {
 }
 
 impl PresentMode {
-    pub const ALL: [PresentMode; 2] = [
-        PresentMode::AutoVsync,
-        PresentMode::AutoNoVsync,
-    ];
+    pub const ALL: [PresentMode; 2] = [PresentMode::AutoVsync, PresentMode::AutoNoVsync];
 
     pub fn get_env_name(&self) -> &'static str {
         match self {

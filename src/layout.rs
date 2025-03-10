@@ -1,27 +1,32 @@
 use crate::charts::{
-    candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart,
-    timeandsales::TimeAndSales,
-    indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
     ChartBasis,
+    candlestick::CandlestickChart,
+    footprint::FootprintChart,
+    heatmap::HeatmapChart,
+    indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
+    timeandsales::TimeAndSales,
 };
 use crate::data_providers::{Exchange, StreamType, TickMultiplier, Ticker, aggr::time::Timeframe};
-use crate::screen::{UserTimezone, dashboard::{Dashboard, PaneContent, PaneSettings, PaneState}};
+use crate::screen::{
+    UserTimezone,
+    dashboard::{Dashboard, PaneContent, PaneSettings, PaneState},
+};
 use crate::style::get_icon_text;
-use crate::{screen, style, tooltip};
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
+use crate::{screen, style, tooltip};
 
-use iced::widget::{button, center, column, container, row, scrollable, text, text_input, Space};
-use regex::Regex;
 use chrono::NaiveDate;
-use serde::{Deserialize, Serialize};
 use iced::widget::pane_grid::{self, Configuration};
-use iced::{padding, Element, Point, Size, Task, Theme};
-use uuid::Uuid;
+use iced::widget::{Space, button, center, column, container, row, scrollable, text, text_input};
+use iced::{Element, Point, Size, Task, Theme, padding};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::fs::File;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::vec;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableLayout {
@@ -96,12 +101,12 @@ impl LayoutManager {
         };
 
         layouts.insert(layout1.id, (layout1.clone(), Dashboard::default()));
-    
-        LayoutManager { 
-            layouts, 
+
+        LayoutManager {
+            layouts,
             active_layout: layout1.clone(),
             layout_order: vec![layout1.id],
-            edit_mode: Editing::None, 
+            edit_mode: Editing::None,
         }
     }
 
@@ -109,7 +114,11 @@ impl LayoutManager {
         let mut counter = 1;
         loop {
             let candidate = format!("Layout {}", counter);
-            if !self.layouts.values().any(|(layout, _)| layout.name == candidate) {
+            if !self
+                .layouts
+                .values()
+                .any(|(layout, _)| layout.name == candidate)
+            {
                 return candidate;
             }
             counter += 1;
@@ -119,14 +128,16 @@ impl LayoutManager {
     fn ensure_unique_name(&self, proposed_name: String, current_id: Uuid) -> String {
         let mut counter = 2;
         let mut final_name = proposed_name.clone();
-        
-        while self.layouts.values().any(|(layout, _)| 
-            layout.id != current_id && layout.name == final_name
-        ) {
+
+        while self
+            .layouts
+            .values()
+            .any(|(layout, _)| layout.id != current_id && layout.name == final_name)
+        {
             final_name = format!("{} ({})", proposed_name, counter);
             counter += 1;
         }
-        
+
         final_name.chars().take(20).collect()
     }
 
@@ -145,7 +156,7 @@ impl LayoutManager {
     pub fn get_active_dashboard(&self) -> Option<&Dashboard> {
         self.get_dashboard(&self.active_layout.id)
     }
-    
+
     pub fn get_active_dashboard_mut(&mut self) -> Option<&mut Dashboard> {
         let id = self.active_layout.id;
         self.get_mut_dashboard(&id)
@@ -156,34 +167,28 @@ impl LayoutManager {
             Message::SelectActive(layout) => {
                 self.active_layout = layout;
             }
-            Message::ToggleEditMode(new_mode) => {
-                match (&new_mode, &self.edit_mode) {
-                    (
-                        Editing::Preview, Editing::Preview
-                    ) => {
-                        self.edit_mode = Editing::None;
-                    }
-                    (
-                        Editing::Renaming(id, _), Editing::Renaming(renaming_id, _)
-                    ) if id == renaming_id => {
-                        self.edit_mode = Editing::None;
-                    }
-                    _ => {
-                        self.edit_mode = new_mode;
-                    }
+            Message::ToggleEditMode(new_mode) => match (&new_mode, &self.edit_mode) {
+                (Editing::Preview, Editing::Preview) => {
+                    self.edit_mode = Editing::None;
                 }
-            }
+                (Editing::Renaming(id, _), Editing::Renaming(renaming_id, _))
+                    if id == renaming_id =>
+                {
+                    self.edit_mode = Editing::None;
+                }
+                _ => {
+                    self.edit_mode = new_mode;
+                }
+            },
             Message::AddLayout => {
                 let new_layout = Layout {
                     id: Uuid::new_v4(),
                     name: self.generate_unique_layout_name(),
                 };
-        
+
                 self.layout_order.push(new_layout.id);
-                self.layouts.insert(
-                    new_layout.id, 
-                    (new_layout.clone(), Dashboard::default())
-                );
+                self.layouts
+                    .insert(new_layout.id, (new_layout.clone(), Dashboard::default()));
 
                 self.active_layout = new_layout;
             }
@@ -203,12 +208,10 @@ impl LayoutManager {
                     id,
                     name: unique_name,
                 };
-                
+
                 if let Some((_, dashboard)) = self.layouts.remove(&id) {
-                    self.layouts.insert(
-                        updated_layout.id, 
-                        (updated_layout.clone(), dashboard)
-                    );
+                    self.layouts
+                        .insert(updated_layout.id, (updated_layout.clone(), dashboard));
 
                     if self.active_layout.id == id {
                         self.active_layout = updated_layout;
@@ -222,7 +225,7 @@ impl LayoutManager {
                     Editing::Renaming(id, _) => {
                         let truncated = name.chars().take(20).collect();
                         Editing::Renaming(id, truncated)
-                    },
+                    }
                     _ => Editing::None,
                 };
             }
@@ -231,15 +234,13 @@ impl LayoutManager {
                     let new_id = Uuid::new_v4();
                     let new_layout = Layout {
                         id: new_id,
-                        name: self.ensure_unique_name(
-                            layout.name.clone(),
-                            new_id,
-                        ),
+                        name: self.ensure_unique_name(layout.name.clone(), new_id),
                     };
 
                     let ser_dashboard = SerializableDashboard::from(dashboard);
 
-                    let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> = Vec::new();
+                    let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> =
+                        Vec::new();
 
                     for (pane, pos, size) in &ser_dashboard.popout {
                         let configuration = configuration(pane.clone());
@@ -250,49 +251,42 @@ impl LayoutManager {
                     }
 
                     let dashboard = Dashboard::from_config(
-                        configuration(ser_dashboard.pane.clone()), 
-                        popout_windows, 
+                        configuration(ser_dashboard.pane.clone()),
+                        popout_windows,
                         ser_dashboard.trade_fetch_enabled,
                     );
 
                     self.layout_order.push(new_layout.id);
-                    self.layouts.insert(new_layout.id, (new_layout.clone(), dashboard));
+                    self.layouts
+                        .insert(new_layout.id, (new_layout.clone(), dashboard));
                 }
             }
-            Message::Reorder(event) => {
-                match event {
-                    DragEvent::Picked { .. } => {
-                    }
-                    DragEvent::Dropped {
-                        index,
-                        target_index,
-                        drop_position,
-                    } => {
-                        match drop_position {
-                            DropPosition::Before | DropPosition::After => {
-                                if target_index != index
-                                    && target_index != index + 1
-                                {
-                                    let item = self.layout_order.remove(index);
-                                    let insert_index = if index < target_index {
-                                        target_index - 1
-                                    } else {
-                                        target_index
-                                    };
-                                    self.layout_order.insert(insert_index, item);
-                                }
-                            }
-                            DropPosition::Swap => {
-                                if target_index != index {
-                                    self.layout_order.swap(index, target_index);
-                                }
-                            }
+            Message::Reorder(event) => match event {
+                DragEvent::Picked { .. } => {}
+                DragEvent::Dropped {
+                    index,
+                    target_index,
+                    drop_position,
+                } => match drop_position {
+                    DropPosition::Before | DropPosition::After => {
+                        if target_index != index && target_index != index + 1 {
+                            let item = self.layout_order.remove(index);
+                            let insert_index = if index < target_index {
+                                target_index - 1
+                            } else {
+                                target_index
+                            };
+                            self.layout_order.insert(insert_index, item);
                         }
                     }
-                    DragEvent::Canceled { .. } => {
+                    DropPosition::Swap => {
+                        if target_index != index {
+                            self.layout_order.swap(index, target_index);
+                        }
                     }
-                }
-            }
+                },
+                DragEvent::Canceled { .. } => {}
+            },
         }
 
         Task::none()
@@ -304,19 +298,10 @@ impl LayoutManager {
         let edit_btn = {
             match &self.edit_mode {
                 Editing::None => {
-                    button(
-                        text("Edit")
-                    )
-                    .on_press(Message::ToggleEditMode(Editing::Preview))
+                    button(text("Edit")).on_press(Message::ToggleEditMode(Editing::Preview))
                 }
-                _ => {
-                    button(
-                        get_icon_text(style::Icon::Return, 12)
-                    )
-                    .on_press(Message::ToggleEditMode(
-                        Editing::Preview
-                    ))
-                }
+                _ => button(get_icon_text(style::Icon::Return, 12))
+                    .on_press(Message::ToggleEditMode(Editing::Preview)),
             }
         };
 
@@ -334,9 +319,8 @@ impl LayoutManager {
             ]
         );
 
-        let layout_btn = |layout: &Layout, on_press: Option<Message>| {
-            create_layout_button(layout, on_press)
-        };
+        let layout_btn =
+            |layout: &Layout, on_press: Option<Message>| create_layout_button(layout, on_press);
 
         let mut layouts_column = column_drag::Column::new()
             .on_drag(Message::Reorder)
@@ -344,9 +328,7 @@ impl LayoutManager {
 
         for id in &self.layout_order {
             if let Some((layout, _)) = self.layouts.get(id) {
-                let mut layout_row = row![]
-                    .padding(4)
-                    .height(iced::Length::Fixed(34.0));
+                let mut layout_row = row![].padding(4).height(iced::Length::Fixed(34.0));
 
                 if self.active_layout.id == layout.id {
                     let color_column = container(column![])
@@ -355,20 +337,17 @@ impl LayoutManager {
                         .style(style::layout_card_bar);
 
                     layout_row = layout_row
-                        .push(container(color_column)
-                            .padding(padding::left(8).bottom(4).top(4)));
+                        .push(container(color_column).padding(padding::left(8).bottom(4).top(4)));
                 }
 
                 match &self.edit_mode {
                     Editing::ConfirmingDelete(delete_id) => {
-                        if *delete_id == layout.id {                    
-                            let (confirm_btn, cancel_btn) = self.create_confirm_delete_buttons(layout);
-                    
+                        if *delete_id == layout.id {
+                            let (confirm_btn, cancel_btn) =
+                                self.create_confirm_delete_buttons(layout);
+
                             layout_row = layout_row
-                                .push(
-                                    center(text(format!("Delete {}?", layout.name))
-                                    .size(12))
-                                )
+                                .push(center(text(format!("Delete {}?", layout.name)).size(12)))
                                 .push(confirm_btn)
                                 .push(cancel_btn);
                         } else {
@@ -377,21 +356,14 @@ impl LayoutManager {
                     }
                     Editing::Renaming(id, name) => {
                         if *id == layout.id {
-                            let input_box = text_input(
-                                "New layout name",
-                                name,
-                            )
-                            .on_input(|new_name| {
-                                Message::Renaming(new_name.clone())
-                            })
-                            .on_submit(Message::SetLayoutName(*id, name.clone()));
-                    
+                            let input_box = text_input("New layout name", name)
+                                .on_input(|new_name| Message::Renaming(new_name.clone()))
+                                .on_submit(Message::SetLayoutName(*id, name.clone()));
+
                             let (_, cancel_btn) = self.create_confirm_delete_buttons(layout);
-                            
+
                             layout_row = layout_row
-                                .push(center(input_box)
-                                    .padding(padding::left(4))
-                                )
+                                .push(center(input_box).padding(padding::left(4)))
                                 .push(cancel_btn);
                         } else {
                             layout_row = layout_row.push(layout_btn(layout, None));
@@ -400,39 +372,33 @@ impl LayoutManager {
                     Editing::Preview => {
                         layout_row = layout_row
                             .push(layout_btn(layout, None))
-                            .push(
-                                tooltip(
-                                    button(
-                                        get_icon_text(style::Icon::Clone, 12)
-                                    )
+                            .push(tooltip(
+                                button(get_icon_text(style::Icon::Clone, 12))
                                     .on_press(Message::CloneLayout(layout.id))
-                                    .style(move |t, s| style::button_transparent(t, s, true)), 
-                                    Some("Clone layout"), 
-                                    tooltip::Position::Top,
-                                )
-                            )
+                                    .style(move |t, s| style::button_transparent(t, s, true)),
+                                Some("Clone layout"),
+                                tooltip::Position::Top,
+                            ))
                             .push(self.create_rename_button(layout));
 
                         if self.active_layout.id != layout.id {
                             layout_row = layout_row.push(self.create_delete_button(layout.id));
                         }
                     }
-                    _ => {            
+                    _ => {
                         layout_row = layout_row.push(layout_btn(
                             layout,
                             if self.active_layout.id != layout.id {
                                 Some(Message::SelectActive(layout.clone()))
                             } else {
                                 None
-                            }
-                        ));           
+                            },
+                        ));
                     }
                 }
-                
-                layouts_column = layouts_column.push(
-                    container(layout_row)
-                        .style(style::layout_row_container)
-                );
+
+                layouts_column =
+                    layouts_column.push(container(layout_row).style(style::layout_row_container));
             }
         }
 
@@ -441,14 +407,12 @@ impl LayoutManager {
         if self.edit_mode != Editing::None {
             content = content.push(
                 container(
-                    button(
-                        text("Add layout")
-                    )
-                    .style(move |t, s| style::button_transparent(t, s, false))
-                    .width(iced::Length::Fill)
-                    .on_press(Message::AddLayout)
+                    button(text("Add layout"))
+                        .style(move |t, s| style::button_transparent(t, s, false))
+                        .width(iced::Length::Fill)
+                        .on_press(Message::AddLayout),
                 )
-                .style(style::chart_modal)
+                .style(style::chart_modal),
             )
         };
 
@@ -456,7 +420,7 @@ impl LayoutManager {
             content.padding(padding::left(8).right(8)),
             scrollable::Direction::Vertical(
                 scrollable::Scrollbar::new().width(8).scroller_width(6),
-            )
+            ),
         )
         .into()
     }
@@ -467,8 +431,11 @@ impl LayoutManager {
                 style::Icon::TrashBin,
                 12,
                 |theme, status| style::button_layout_name(theme, *status),
-                Some(Message::ToggleEditMode(Editing::ConfirmingDelete(layout_id))),
-            ).into()
+                Some(Message::ToggleEditMode(Editing::ConfirmingDelete(
+                    layout_id,
+                ))),
+            )
+            .into()
         } else {
             tooltip(
                 create_icon_button(
@@ -482,18 +449,19 @@ impl LayoutManager {
             )
         }
     }
-    
+
     fn create_rename_button<'a>(&self, layout: &Layout) -> button::Button<'a, Message> {
         create_icon_button(
             style::Icon::Edit,
             12,
             |theme, status| style::button_layout_name(theme, *status),
-            Some(Message::ToggleEditMode(
-                Editing::Renaming(layout.id, layout.name.clone())
-            ))
+            Some(Message::ToggleEditMode(Editing::Renaming(
+                layout.id,
+                layout.name.clone(),
+            ))),
         )
     }
-    
+
     fn create_confirm_delete_buttons<'a>(
         &'a self,
         layout: &Layout,
@@ -502,29 +470,24 @@ impl LayoutManager {
             style::Icon::Checkmark,
             12,
             |theme, status| style::button_confirm(theme, *status, true),
-            Some(Message::RemoveLayout(layout.id))
+            Some(Message::RemoveLayout(layout.id)),
         );
-    
+
         let cancel = create_icon_button(
             style::Icon::Close,
             12,
             |theme, status| style::button_cancel(theme, *status, true),
-            Some(Message::ToggleEditMode(Editing::Preview))
+            Some(Message::ToggleEditMode(Editing::Preview)),
         );
-    
+
         (confirm, cancel)
     }
 }
 
-fn create_layout_button<'a>(
-    layout: &Layout, 
-    on_press: Option<Message>, 
-) -> Element<'a, Message> {
-    let mut layout_btn = button(
-        text(layout.name.clone())
-    )
-    .width(iced::Length::Fill)
-    .style(style::button_layout_name);
+fn create_layout_button<'a>(layout: &Layout, on_press: Option<Message>) -> Element<'a, Message> {
+    let mut layout_btn = button(text(layout.name.clone()))
+        .width(iced::Length::Fill)
+        .style(style::button_layout_name);
 
     if let Some(msg) = on_press {
         layout_btn = layout_btn.on_press(msg);
@@ -539,13 +502,13 @@ fn create_icon_button<'a>(
     style_fn: impl Fn(&Theme, &button::Status) -> button::Style + 'static,
     on_press: Option<Message>,
 ) -> button::Button<'a, Message> {
-    let mut btn = button(get_icon_text(icon, size))
-        .style(move |theme, status| style_fn(theme, &status));
-    
+    let mut btn =
+        button(get_icon_text(icon, size)).style(move |theme, status| style_fn(theme, &status));
+
     if let Some(msg) = on_press {
         btn = btn.on_press(msg);
     }
-    
+
     btn
 }
 
@@ -902,7 +865,8 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
             indicators,
         } => {
             if let Some(ticker_info) = settings.ticker_info {
-                let basis = settings.selected_basis
+                let basis = settings
+                    .selected_basis
                     .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
 
                 Configuration::Pane(PaneState::from_config(
@@ -933,12 +897,14 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
             indicators,
         } => {
             if let Some(ticker_info) = settings.ticker_info {
-                let tick_size = settings.tick_multiply
+                let tick_size = settings
+                    .tick_multiply
                     .unwrap_or(TickMultiplier(50))
                     .multiply_with_min_tick_size(ticker_info);
-                let basis = settings.selected_basis
+                let basis = settings
+                    .selected_basis
                     .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
-                
+
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Footprint(
                         FootprintChart::new(
@@ -967,12 +933,12 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
             indicators,
         } => {
             if let Some(ticker_info) = settings.ticker_info {
-                let tick_size = settings.tick_multiply
+                let tick_size = settings
+                    .tick_multiply
                     .unwrap_or(TickMultiplier(10))
                     .multiply_with_min_tick_size(ticker_info);
 
-                let config = settings.visual_config
-                    .and_then(|cfg| cfg.heatmap());
+                let config = settings.visual_config.and_then(|cfg| cfg.heatmap());
 
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Heatmap(
@@ -998,15 +964,14 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
             stream_type,
             settings,
         } => {
-            let config = settings.visual_config
-                .and_then(|cfg| cfg.time_and_sales());
+            let config = settings.visual_config.and_then(|cfg| cfg.time_and_sales());
 
             Configuration::Pane(PaneState::from_config(
                 PaneContent::TimeAndSales(TimeAndSales::new(config)),
                 stream_type,
                 settings,
             ))
-        },
+        }
     }
 }
 
@@ -1027,15 +992,12 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                 }
 
                 let dashboard = Dashboard::from_config(
-                    configuration(layout.dashboard.pane.clone()), 
-                    popout_windows, 
+                    configuration(layout.dashboard.pane.clone()),
+                    popout_windows,
                     layout.dashboard.trade_fetch_enabled,
                 );
 
-                de_layouts.push((
-                    layout.name.clone(), 
-                    dashboard
-                ));
+                de_layouts.push((layout.name.clone(), dashboard));
             }
 
             let layout_manager: LayoutManager = {
@@ -1071,7 +1033,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                     edit_mode: Editing::None,
                 }
             };
-            
+
             SavedState {
                 selected_theme: state.selected_theme,
                 layout_manager,
@@ -1121,17 +1083,14 @@ pub fn get_data_path(path_name: &str) -> PathBuf {
 }
 
 pub fn cleanup_old_data() -> usize {
-    let data_path = get_data_path(
-        "market_data/binance/data/futures/um/daily/aggTrades"
-    );
+    let data_path = get_data_path("market_data/binance/data/futures/um/daily/aggTrades");
 
     if !data_path.exists() {
         log::warn!("Data path {:?} does not exist, skipping cleanup", data_path);
         return 0;
     }
 
-    let re = Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$")
-        .expect("Cleanup regex pattern is valid");
+    let re = Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$").expect("Cleanup regex pattern is valid");
     let today = chrono::Local::now().date_naive();
     let mut deleted_files = Vec::new();
 
@@ -1174,7 +1133,10 @@ pub fn cleanup_old_data() -> usize {
             }
         }
     }
-    
-    log::info!("File cleanup completed. Deleted {} files", deleted_files.len());
+
+    log::info!(
+        "File cleanup completed. Deleted {} files",
+        deleted_files.len()
+    );
     deleted_files.len()
 }

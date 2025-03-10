@@ -4,23 +4,29 @@ use std::collections::{BTreeMap, HashMap};
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
-use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
-use iced::widget::{canvas::{self, Event, Geometry}, column};
+use iced::widget::{
+    canvas::{self, Event, Geometry},
+    column,
+};
+use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse};
 
 use crate::data_providers::aggr::ticks::TickAggr;
 use crate::data_providers::aggr::time::TimeSeries;
+use crate::data_providers::{
+    Kline, OpenInterest as OIData,
+    aggr::time::Timeframe,
+    fetcher::{FetchRange, RequestHandler},
+};
 use crate::data_providers::{MarketType, TickerInfo, Trade};
 use crate::layout::SerializableChartData;
-use crate::data_providers::{
-    fetcher::{FetchRange, RequestHandler},
-    Kline, OpenInterest as OIData, aggr::time::Timeframe,
-};
 use crate::screen::UserTimezone;
 
-use super::scales::PriceInfoLabel;
 use super::indicators::{self, CandlestickIndicator, Indicator};
-use super::{Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message};
-use super::{canvas_interaction, view_chart, update_chart, count_decimals, request_fetch};
+use super::scales::PriceInfoLabel;
+use super::{
+    Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+};
+use super::{canvas_interaction, count_decimals, request_fetch, update_chart, view_chart};
 
 impl Chart for CandlestickChart {
     fn get_common_data(&self) -> &CommonChartData {
@@ -48,10 +54,7 @@ impl Chart for CandlestickChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicator<I: Indicator>(
-        &self, 
-        indicators: &[I], 
-    ) -> Option<Element<Message>> {
+    fn view_indicator<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
         self.view_indicators(indicators)
     }
 
@@ -75,12 +78,12 @@ impl Chart for CandlestickChart {
                 // `TimeBased` match arms on this trait method exists just for modularity
                 // timeseries.data_points.keys().cloned().collect()
                 vec![]
-            },
-            ChartData::TickBased(tick_aggr) => {
-                tick_aggr.data_points.iter()
-                    .map(|dp| dp.start_timestamp)
-                    .collect()
             }
+            ChartData::TickBased(tick_aggr) => tick_aggr
+                .data_points
+                .iter()
+                .map(|dp| dp.start_timestamp)
+                .collect(),
         }
     }
 }
@@ -107,8 +110,7 @@ enum IndicatorData {
 impl IndicatorData {
     fn clear_cache(&mut self) {
         match self {
-            IndicatorData::Volume(caches, _) 
-            | IndicatorData::OpenInterest(caches, _) => {
+            IndicatorData::Volume(caches, _) | IndicatorData::OpenInterest(caches, _) => {
                 caches.clear_all();
             }
         }
@@ -135,20 +137,15 @@ impl CandlestickChart {
     ) -> CandlestickChart {
         match basis {
             ChartBasis::Time(interval) => {
-                let timeseries = TimeSeries::new(
-                    interval.into(), 
-                    tick_size, 
-                    &vec![], 
-                    &klines_raw
-                );
-                
+                let timeseries = TimeSeries::new(interval.into(), tick_size, &vec![], &klines_raw);
+
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
                 let (scale_high, scale_low) = timeseries.get_price_scale(60);
                 let volume_data = timeseries.get_volume_data();
-                
+
                 let y_ticks = (scale_high - scale_low) / tick_size;
-                
+
                 CandlestickChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
@@ -165,54 +162,24 @@ impl CandlestickChart {
                     },
                     data_source: ChartData::TimeBased(timeseries),
                     indicators: {
-                        enabled_indicators.iter()
+                        enabled_indicators
+                            .iter()
                             .map(|indicator| {
-                                (*indicator, match indicator {
-                                    CandlestickIndicator::Volume => {
-                                        IndicatorData::Volume(Caches::default(), volume_data.clone())
+                                (
+                                    *indicator,
+                                    match indicator {
+                                        CandlestickIndicator::Volume => IndicatorData::Volume(
+                                            Caches::default(),
+                                            volume_data.clone(),
+                                        ),
+                                        CandlestickIndicator::OpenInterest => {
+                                            IndicatorData::OpenInterest(
+                                                Caches::default(),
+                                                BTreeMap::new(),
+                                            )
+                                        }
                                     },
-                                    CandlestickIndicator::OpenInterest => {
-                                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
-                                    }
-                                })
-                            })
-                            .collect()
-                    },
-                    raw_trades,
-                    request_handler: RequestHandler::new(),
-                }
-            },
-            ChartBasis::Tick(interval) => {
-                CandlestickChart {
-                    chart: CommonChartData {
-                        cell_width: Self::DEFAULT_CELL_WIDTH,
-                        cell_height: 80.0 / tick_size,
-                        tick_size,
-                        decimals: count_decimals(tick_size),
-                        crosshair: layout.crosshair,
-                        indicators_split: layout.indicators_split,
-                        ticker_info,
-                        basis,
-                        ..Default::default()
-                    },
-                    data_source: ChartData::TickBased(
-                        TickAggr::new(
-                            interval.into(), 
-                            tick_size, 
-                            &raw_trades,
-                        )
-                    ),
-                    indicators: {
-                        enabled_indicators.iter()
-                            .map(|indicator| {
-                                (*indicator, match indicator {
-                                    CandlestickIndicator::Volume => {
-                                        IndicatorData::Volume(Caches::default(), BTreeMap::new())
-                                    },
-                                    CandlestickIndicator::OpenInterest => {
-                                        IndicatorData::OpenInterest(Caches::default(), BTreeMap::new())
-                                    }
-                                })
+                                )
                             })
                             .collect()
                     },
@@ -220,6 +187,47 @@ impl CandlestickChart {
                     request_handler: RequestHandler::new(),
                 }
             }
+            ChartBasis::Tick(interval) => CandlestickChart {
+                chart: CommonChartData {
+                    cell_width: Self::DEFAULT_CELL_WIDTH,
+                    cell_height: 80.0 / tick_size,
+                    tick_size,
+                    decimals: count_decimals(tick_size),
+                    crosshair: layout.crosshair,
+                    indicators_split: layout.indicators_split,
+                    ticker_info,
+                    basis,
+                    ..Default::default()
+                },
+                data_source: ChartData::TickBased(TickAggr::new(
+                    interval.into(),
+                    tick_size,
+                    &raw_trades,
+                )),
+                indicators: {
+                    enabled_indicators
+                        .iter()
+                        .map(|indicator| {
+                            (
+                                *indicator,
+                                match indicator {
+                                    CandlestickIndicator::Volume => {
+                                        IndicatorData::Volume(Caches::default(), BTreeMap::new())
+                                    }
+                                    CandlestickIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(
+                                            Caches::default(),
+                                            BTreeMap::new(),
+                                        )
+                                    }
+                                },
+                            )
+                        })
+                        .collect()
+                },
+                raw_trades,
+                request_handler: RequestHandler::new(),
+            },
         }
     }
 
@@ -231,10 +239,11 @@ impl CandlestickChart {
         if let ChartData::TimeBased(ref mut timeseries) = self.data_source {
             timeseries.insert_klines(&vec![kline.to_owned()]);
 
-            if let Some(IndicatorData::Volume(_, data)) = 
-                self.indicators.get_mut(&CandlestickIndicator::Volume) {
-                    data.insert(kline.time, (kline.volume.0, kline.volume.1));
-                };
+            if let Some(IndicatorData::Volume(_, data)) =
+                self.indicators.get_mut(&CandlestickIndicator::Volume)
+            {
+                data.insert(kline.time, (kline.volume.0, kline.volume.1));
+            };
 
             let chart = self.get_common_data_mut();
 
@@ -251,8 +260,7 @@ impl CandlestickChart {
             };
 
             self.render_start();
-            return self.get_missing_data_task()
-                .unwrap_or(Task::none());
+            return self.get_missing_data_task().unwrap_or(Task::none());
         }
 
         Task::none()
@@ -262,42 +270,44 @@ impl CandlestickChart {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
-            
+
                 let (visible_earliest, visible_latest) = self.get_visible_timerange();
                 let (kline_earliest, kline_latest) = self.get_kline_timerange();
                 let earliest = visible_earliest - (visible_latest - visible_earliest);
-                
+
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
                     if let Some(task) = request_fetch(
-                        &mut self.request_handler, 
-                        FetchRange::Kline(earliest, kline_earliest)
+                        &mut self.request_handler,
+                        FetchRange::Kline(earliest, kline_earliest),
                     ) {
                         return Some(task);
                     }
                 }
-            
+
                 // priority 2, Open Interest data
                 for data in self.indicators.values() {
                     if let IndicatorData::OpenInterest(_, _) = data {
-                        if timeframe >= Timeframe::M5.to_milliseconds() 
-                            && self.chart.ticker_info.is_some_and(|info| info.get_market_type() == MarketType::LinearPerps)
+                        if timeframe >= Timeframe::M5.to_milliseconds()
+                            && self.chart.ticker_info.is_some_and(|info| {
+                                info.get_market_type() == MarketType::LinearPerps
+                            })
                         {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
-            
+
                             if visible_earliest < oi_earliest {
                                 if let Some(task) = request_fetch(
-                                    &mut self.request_handler, 
-                                    FetchRange::OpenInterest(earliest, oi_earliest)
+                                    &mut self.request_handler,
+                                    FetchRange::OpenInterest(earliest, oi_earliest),
                                 ) {
                                     return Some(task);
                                 }
-                            } 
-                            
+                            }
+
                             if oi_latest < kline_latest {
                                 if let Some(task) = request_fetch(
                                     &mut self.request_handler,
-                                    FetchRange::OpenInterest(oi_latest, kline_latest)
+                                    FetchRange::OpenInterest(oi_latest, kline_latest),
                                 ) {
                                     return Some(task);
                                 }
@@ -305,21 +315,18 @@ impl CandlestickChart {
                         }
                     }
                 }
-            
+
                 // priority 3, missing klines & integrity check
-                if let Some(missing_keys) = timeseries.check_integrity(
-                    kline_earliest, 
-                    kline_latest, 
-                    timeframe,
-                ) {
-                    let latest = missing_keys.iter()
-                        .max().unwrap_or(&visible_latest) + timeframe;
-                    let earliest = missing_keys.iter()
-                        .min().unwrap_or(&visible_earliest) - timeframe;
-            
+                if let Some(missing_keys) =
+                    timeseries.check_integrity(kline_earliest, kline_latest, timeframe)
+                {
+                    let latest = missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe;
+                    let earliest =
+                        missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe;
+
                     if let Some(task) = request_fetch(
-                        &mut self.request_handler, 
-                        FetchRange::Kline(earliest, latest)
+                        &mut self.request_handler,
+                        FetchRange::Kline(earliest, latest),
                     ) {
                         return Some(task);
                     }
@@ -327,7 +334,7 @@ impl CandlestickChart {
             }
             ChartData::TickBased(_) => {}
         }
-    
+
         None
     }
 
@@ -342,10 +349,11 @@ impl CandlestickChart {
                     volume_data.insert(kline.time, (kline.volume.0, kline.volume.1));
                 }
 
-                if let Some(IndicatorData::Volume(_, data)) = 
-                    self.indicators.get_mut(&CandlestickIndicator::Volume) {
-                        data.extend(volume_data.clone());
-                    };
+                if let Some(IndicatorData::Volume(_, data)) =
+                    self.indicators.get_mut(&CandlestickIndicator::Volume)
+                {
+                    data.extend(volume_data.clone());
+                };
 
                 if !klines_raw.is_empty() {
                     self.request_handler.mark_completed(req_id);
@@ -353,7 +361,7 @@ impl CandlestickChart {
                     self.request_handler
                         .mark_failed(req_id, "No data received".to_string());
                 }
-            },
+            }
             ChartData::TickBased(_) => {}
         }
 
@@ -370,29 +378,29 @@ impl CandlestickChart {
             }
         }
 
-        if let Some(IndicatorData::OpenInterest(_, data)) = 
-            self.indicators.get_mut(&CandlestickIndicator::OpenInterest) {
-                data.extend(oi_data
-                    .iter().map(|oi| (oi.time, oi.value))
-                );
-            };
+        if let Some(IndicatorData::OpenInterest(_, data)) =
+            self.indicators.get_mut(&CandlestickIndicator::OpenInterest)
+        {
+            data.extend(oi_data.iter().map(|oi| (oi.time, oi.value)));
+        };
     }
 
     pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade]) {
         self.raw_trades.extend_from_slice(trades_buffer);
-        
+
         if let ChartData::TickBased(ref mut tick_aggr) = self.data_source {
             tick_aggr.insert_trades(&trades_buffer);
-            
+
             if let Some(tick_kline) = tick_aggr.data_points.last() {
-                if let Some(IndicatorData::Volume(_, data)) = 
-                    self.indicators.get_mut(&CandlestickIndicator::Volume) {
+                if let Some(IndicatorData::Volume(_, data)) =
+                    self.indicators.get_mut(&CandlestickIndicator::Volume)
+                {
                     data.insert(
-                        tick_kline.start_timestamp, 
-                        (tick_kline.volume_buy, tick_kline.volume_sell)
+                        tick_kline.start_timestamp,
+                        (tick_kline.volume_buy, tick_kline.volume_sell),
                     );
                 }
-    
+
                 self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
                     Some(PriceInfoLabel::Up(tick_kline.close_price))
                 } else {
@@ -401,7 +409,7 @@ impl CandlestickChart {
             } else {
                 self.chart.last_price = None;
             }
-    
+
             self.render_start();
         }
     }
@@ -412,9 +420,7 @@ impl CandlestickChart {
 
     fn get_kline_timerange(&self) -> (u64, u64) {
         match &self.data_source {
-            ChartData::TimeBased(source) => {
-                source.get_kline_timerange()
-            },
+            ChartData::TimeBased(source) => source.get_kline_timerange(),
             ChartData::TickBased(_) => {
                 // TODO: implement
                 (0, 0)
@@ -426,13 +432,14 @@ impl CandlestickChart {
         let mut from_time = latest_kline;
         let mut to_time = u64::MIN;
 
-        if let Some(IndicatorData::OpenInterest(_, data)) = 
-            self.indicators.get(&CandlestickIndicator::OpenInterest) {
-                data.iter().for_each(|(time, _)| {
-                    from_time = from_time.min(*time);
-                    to_time = to_time.max(*time);
-                });
-            };
+        if let Some(IndicatorData::OpenInterest(_, data)) =
+            self.indicators.get(&CandlestickIndicator::OpenInterest)
+        {
+            data.iter().for_each(|(time, _)| {
+                from_time = from_time.min(*time);
+                to_time = to_time.max(*time);
+            });
+        };
 
         (from_time, to_time)
     }
@@ -440,17 +447,11 @@ impl CandlestickChart {
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
         self.chart.basis = ChartBasis::Tick(tick_basis.into());
 
-        let new_tick_aggr = TickAggr::new(
-            tick_basis.into(), 
-            self.chart.tick_size, 
-            &self.raw_trades
-        );
+        let new_tick_aggr =
+            TickAggr::new(tick_basis.into(), self.chart.tick_size, &self.raw_trades);
 
         if let Some(indicator) = self.indicators.get_mut(&CandlestickIndicator::Volume) {
-            *indicator = IndicatorData::Volume(
-                Caches::default(),
-                new_tick_aggr.get_volume_data(),
-            );
+            *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
         }
 
         self.data_source = ChartData::TickBased(new_tick_aggr);
@@ -463,9 +464,10 @@ impl CandlestickChart {
 
         if chart_state.autoscale {
             chart_state.translation = Vector::new(
-                0.5 * (chart_state.bounds.width / chart_state.scaling) 
+                0.5 * (chart_state.bounds.width / chart_state.scaling)
                     - (8.0 * chart_state.cell_width / chart_state.scaling),
-                self.data_source.get_latest_price_range_y_midpoint(chart_state),
+                self.data_source
+                    .get_latest_price_range_y_midpoint(chart_state),
             );
         }
 
@@ -480,25 +482,25 @@ impl CandlestickChart {
         self.chart.get_chart_layout()
     }
 
-    pub fn toggle_indicator(&mut self, indicator: CandlestickIndicator) {    
+    pub fn toggle_indicator(&mut self, indicator: CandlestickIndicator) {
         match self.indicators.entry(indicator) {
             Entry::Occupied(entry) => {
                 entry.remove();
             }
             Entry::Vacant(entry) => {
                 let data = match indicator {
-                    CandlestickIndicator::Volume => {
-                        match &self.data_source {
-                            ChartData::TimeBased(timeseries) => {
-                                let volume_data = timeseries.data_points.iter()
-                                    .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
-                                    .collect();
-                            
-                                IndicatorData::Volume(Caches::default(), volume_data)
-                            }
-                            ChartData::TickBased(_) => {
-                                IndicatorData::Volume(Caches::default(), BTreeMap::new())
-                            }
+                    CandlestickIndicator::Volume => match &self.data_source {
+                        ChartData::TimeBased(timeseries) => {
+                            let volume_data = timeseries
+                                .data_points
+                                .iter()
+                                .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
+                                .collect();
+
+                            IndicatorData::Volume(Caches::default(), volume_data)
+                        }
+                        ChartData::TickBased(_) => {
+                            IndicatorData::Volume(Caches::default(), BTreeMap::new())
                         }
                     },
                     CandlestickIndicator::OpenInterest => {
@@ -506,22 +508,19 @@ impl CandlestickChart {
                     }
                 };
                 entry.insert(data);
-    
+
                 if self.chart.indicators_split.is_none() {
                     self.chart.indicators_split = Some(0.8);
                 }
             }
         }
-    
+
         if self.indicators.is_empty() {
             self.chart.indicators_split = None;
         }
     }
 
-    pub fn view_indicators<I: Indicator>(
-        &self, 
-        enabled: &[I],
-    ) -> Option<Element<Message>> {
+    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>> {
         let chart_state = self.get_common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
@@ -530,39 +529,50 @@ impl CandlestickChart {
         let mut indicators: iced::widget::Column<'_, Message> = column![];
 
         for indicator in I::get_enabled(
-            enabled, 
-            chart_state.ticker_info.map(|info| info.get_market_type())
+            enabled,
+            chart_state.ticker_info.map(|info| info.get_market_type()),
         ) {
-            if let Some(candlestick_indicator) = indicator
-                .as_any()
-                .downcast_ref::<CandlestickIndicator>() 
+            if let Some(candlestick_indicator) =
+                indicator.as_any().downcast_ref::<CandlestickIndicator>()
             {
                 match candlestick_indicator {
                     CandlestickIndicator::Volume => {
-                        if let Some(IndicatorData::Volume(cache, data)) = self.indicators
-                            .get(&CandlestickIndicator::Volume) {
-                                indicators = indicators.push(
-                                    indicators::volume::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                                );
-                            }
-                    },
+                        if let Some(IndicatorData::Volume(cache, data)) =
+                            self.indicators.get(&CandlestickIndicator::Volume)
+                        {
+                            indicators =
+                                indicators.push(indicators::volume::create_indicator_elem(
+                                    chart_state,
+                                    cache,
+                                    data,
+                                    earliest,
+                                    latest,
+                                ));
+                        }
+                    }
                     CandlestickIndicator::OpenInterest => {
-                        if let Some(IndicatorData::OpenInterest(cache, data)) = self.indicators
-                            .get(&CandlestickIndicator::OpenInterest) {
-                                indicators = indicators.push(
-                                    indicators::open_interest::create_indicator_elem(chart_state, cache, data, earliest, latest)
-                                );
-                            }
+                        if let Some(IndicatorData::OpenInterest(cache, data)) =
+                            self.indicators.get(&CandlestickIndicator::OpenInterest)
+                        {
+                            indicators =
+                                indicators.push(indicators::open_interest::create_indicator_elem(
+                                    chart_state,
+                                    cache,
+                                    data,
+                                    earliest,
+                                    latest,
+                                ));
+                        }
                     }
                 }
             }
         }
-        
+
         Some(
             container(indicators)
                 .width(Length::FillPortion(10))
                 .height(Length::Fill)
-                .into()
+                .into(),
         )
     }
 
@@ -571,8 +581,8 @@ impl CandlestickChart {
     }
 
     pub fn view<'a, I: Indicator>(
-        &'a self, 
-        indicators: &'a [I], 
+        &'a self,
+        indicators: &'a [I],
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
         view_chart(self, indicators, timezone)
@@ -625,7 +635,9 @@ impl canvas::Program<Message> for CandlestickChart {
                         let earliest = earliest as usize;
                         let latest = latest as usize;
 
-                        tick_aggr.data_points.iter()
+                        tick_aggr
+                            .data_points
+                            .iter()
                             .rev()
                             .enumerate()
                             .filter(|(index, _)| *index <= latest && *index >= earliest)
@@ -650,15 +662,14 @@ impl canvas::Program<Message> for CandlestickChart {
                                     &kline,
                                 );
                             });
-                    },
+                    }
                     ChartData::TimeBased(timeseries) => {
                         if latest < earliest {
                             return;
                         }
 
-                        timeseries.data_points
-                            .range(earliest..=latest)
-                            .for_each(|(timestamp, dp)| {
+                        timeseries.data_points.range(earliest..=latest).for_each(
+                            |(timestamp, dp)| {
                                 let x_position = chart.interval_to_x(*timestamp);
 
                                 draw_data_point(
@@ -669,10 +680,11 @@ impl canvas::Program<Message> for CandlestickChart {
                                     x_position,
                                     &dp.kline,
                                 );
-                            });
+                            },
+                        );
                     }
-                }    
-                
+                }
+
                 // last price line
                 if let Some(price) = &chart.last_price {
                     let (mut y_pos, line_color) = price.get_with_color(palette);
@@ -689,7 +701,7 @@ impl canvas::Program<Message> for CandlestickChart {
                         },
                         line_color.scale_alpha(0.5),
                     );
-   
+
                     frame.stroke(
                         &Path::line(
                             Point::new(0.0, y_pos),
@@ -709,16 +721,14 @@ impl canvas::Program<Message> for CandlestickChart {
 
                     match &self.data_source {
                         ChartData::TimeBased(timeseries) => {
-                            if let Some((_, dp)) = timeseries.data_points
+                            if let Some((_, dp)) = timeseries
+                                .data_points
                                 .iter()
                                 .find(|(time, _)| **time == rounded_aggregation)
                             {
                                 let tooltip_text = format!(
                                     "O: {}   H: {}   L: {}   C: {}",
-                                    dp.kline.open,
-                                    dp.kline.high,
-                                    dp.kline.low,
-                                    dp.kline.close,
+                                    dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close,
                                 );
 
                                 let text = canvas::Text {
@@ -730,21 +740,19 @@ impl canvas::Program<Message> for CandlestickChart {
                                 };
                                 frame.fill_text(text);
                             }
-                        },
+                        }
                         ChartData::TickBased(tick_aggr) => {
                             let index = (rounded_aggregation / tick_aggr.aggr_interval) as usize;
-                            
+
                             if index < tick_aggr.data_points.len() {
-                                let dp = &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
-                                
+                                let dp =
+                                    &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
+
                                 let tooltip_text = format!(
                                     "O: {}   H: {}   L: {}   C: {}",
-                                    dp.open_price,
-                                    dp.high_price,
-                                    dp.low_price, 
-                                    dp.close_price
+                                    dp.open_price, dp.high_price, dp.low_price, dp.close_price
                                 );
-                                
+
                                 let text = canvas::Text {
                                     content: tooltip_text,
                                     position: Point::new(8.0, 8.0),

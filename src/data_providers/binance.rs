@@ -1,12 +1,12 @@
-use std::{collections::HashMap, io::BufReader};
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, io::BufReader};
 
-use sonic_rs::{to_object_iter_unchecked, FastStr};
 use fastwebsockets::{FragmentCollector, OpCode};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use sonic_rs::{FastStr, to_object_iter_unchecked};
 
 use futures::{SinkExt, Stream};
 use iced_futures::stream;
@@ -14,9 +14,10 @@ use iced_futures::stream;
 use crate::layout;
 
 use super::{
-    de_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection, str_f32_parse, 
-    Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State, 
-    StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache
+    Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State,
+    StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache,
+    de_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection,
+    str_f32_parse,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -132,14 +133,15 @@ enum StreamWrapper {
 
 impl StreamWrapper {
     fn from_stream_type(stream_type: &FastStr) -> Option<Self> {
-        stream_type.split('@').nth(1).and_then(|after_at| {
-            match after_at {
+        stream_type
+            .split('@')
+            .nth(1)
+            .and_then(|after_at| match after_at {
                 s if s.starts_with("de") => Some(StreamWrapper::Depth),
                 s if s.starts_with("ag") => Some(StreamWrapper::Trade),
                 s if s.starts_with("kl") => Some(StreamWrapper::Kline),
                 _ => None,
-            }
-        })
+            })
     }
 }
 
@@ -148,8 +150,7 @@ fn feed_de(slice: &[u8], market: MarketType) -> Result<StreamData, StreamError> 
     let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(slice) };
 
     for elem in iter {
-        let (k, v) = elem
-            .map_err(|e| StreamError::ParseError(e.to_string()))?;
+        let (k, v) = elem.map_err(|e| StreamError::ParseError(e.to_string()))?;
 
         if k == "stream" {
             if let Some(s) = StreamWrapper::from_stream_type(&v.as_raw_faststr()) {
@@ -163,22 +164,20 @@ fn feed_de(slice: &[u8], market: MarketType) -> Result<StreamData, StreamError> 
 
                     return Ok(StreamData::Trade(trade));
                 }
-                Some(StreamWrapper::Depth) => {
-                    match market {
-                        MarketType::Spot => {
-                            let depth: SpotDepth = sonic_rs::from_str(&v.as_raw_faststr())
-                                .map_err(|e| StreamError::ParseError(e.to_string()))?;
+                Some(StreamWrapper::Depth) => match market {
+                    MarketType::Spot => {
+                        let depth: SpotDepth = sonic_rs::from_str(&v.as_raw_faststr())
+                            .map_err(|e| StreamError::ParseError(e.to_string()))?;
 
-                            return Ok(StreamData::Depth(SonicDepth::Spot(depth)));
-                        }
-                        MarketType::LinearPerps => {
-                            let depth: LinearPerpDepth = sonic_rs::from_str(&v.as_raw_faststr())
-                                .map_err(|e| StreamError::ParseError(e.to_string()))?;
-
-                            return Ok(StreamData::Depth(SonicDepth::LinearPerp(depth)));
-                        }
+                        return Ok(StreamData::Depth(SonicDepth::Spot(depth)));
                     }
-                }
+                    MarketType::LinearPerps => {
+                        let depth: LinearPerpDepth = sonic_rs::from_str(&v.as_raw_faststr())
+                            .map_err(|e| StreamError::ParseError(e.to_string()))?;
+
+                        return Ok(StreamData::Depth(SonicDepth::LinearPerp(depth)));
+                    }
+                },
                 Some(StreamWrapper::Kline) => {
                     let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())
                         .map_err(|e| StreamError::ParseError(e.to_string()))?;
@@ -227,7 +226,7 @@ async fn try_resync(
         let result = fetch_depth(&ticker).await;
         let _ = tx.send(result);
     });
-    
+
     match rx.await {
         Ok(Ok(depth)) => {
             orderbook.fetched(&depth);
@@ -236,16 +235,17 @@ async fn try_resync(
             let _ = output
                 .send(Event::Disconnected(
                     exchange,
-                    format!("Depth fetch failed: {}", e)
-                )).await;
+                    format!("Depth fetch failed: {}", e),
+                ))
+                .await;
         }
         Err(e) => {
             *state = State::Disconnected;
-            
+
             output
                 .send(Event::Disconnected(
                     exchange,
-                    format!("Failed to send fetched depth for {ticker}, error: {e}")
+                    format!("Failed to send fetched depth for {ticker}, error: {e}"),
                 ))
                 .await
                 .expect("Trying to send disconnect event...");
@@ -260,12 +260,12 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let mut state = State::Disconnected;
 
         let (symbol_str, market) = ticker.get_string();
-        
+
         let exchange = match market {
             MarketType::Spot => Exchange::BinanceSpot,
             MarketType::LinearPerps => Exchange::BinanceFutures,
         };
-    
+
         let stream_1 = format!("{}@aggTrade", symbol_str.to_lowercase());
         let stream_2 = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
@@ -298,22 +298,23 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
                                 state = State::Connected(websocket);
 
-                                let _ = output
-                                    .send(Event::Connected(exchange, Connection)).await;
+                                let _ = output.send(Event::Connected(exchange, Connection)).await;
                             }
                             Ok(Err(e)) => {
                                 let _ = output
                                     .send(Event::Disconnected(
                                         exchange,
-                                        format!("Depth fetch failed: {}", e)
-                                    )).await;
+                                        format!("Depth fetch failed: {}", e),
+                                    ))
+                                    .await;
                             }
                             Err(e) => {
                                 let _ = output
                                     .send(Event::Disconnected(
                                         exchange,
-                                        format!("Channel error: {}", e)
-                                    )).await;
+                                        format!("Channel error: {}", e),
+                                    ))
+                                    .await;
                             }
                         }
                     } else {
@@ -331,7 +332,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                     match ws.read_frame().await {
                         Ok(msg) => match msg.opcode {
                             OpCode::Text => {
-                                if let Ok(data) = feed_de(&msg.payload[..], market) {            
+                                if let Ok(data) = feed_de(&msg.payload[..], market) {
                                     match data {
                                         StreamData::Trade(de_trade) => {
                                             let trade = Trade {
@@ -363,30 +364,38 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         && (de_depth.first_id > last_update_id + 1)
                                                         || (last_update_id + 1 > de_depth.final_id)
                                                     {
-                                                        log::warn!("Out of sync at first event. Trying to resync...\n");
+                                                        log::warn!(
+                                                            "Out of sync at first event. Trying to resync...\n"
+                                                        );
 
                                                         try_resync(
                                                             exchange,
-                                                            ticker, 
-                                                            &mut orderbook, 
-                                                            &mut state, 
-                                                            &mut output, 
-                                                            &mut already_fetching
-                                                        ).await;
+                                                            ticker,
+                                                            &mut orderbook,
+                                                            &mut state,
+                                                            &mut output,
+                                                            &mut already_fetching,
+                                                        )
+                                                        .await;
                                                     }
 
-                                                    if (prev_id == 0) || (prev_id == de_depth.prev_final_id)
+                                                    if (prev_id == 0)
+                                                        || (prev_id == de_depth.prev_final_id)
                                                     {
                                                         orderbook.update_depth_cache(
-                                                            &new_depth_cache(&depth_type)
+                                                            &new_depth_cache(&depth_type),
                                                         );
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
-                                                                StreamType::DepthAndTrades { exchange, ticker },
+                                                                StreamType::DepthAndTrades {
+                                                                    exchange,
+                                                                    ticker,
+                                                                },
                                                                 de_depth.time,
                                                                 orderbook.get_depth(),
-                                                                std::mem::take(&mut trades_buffer).into_boxed_slice(),
+                                                                std::mem::take(&mut trades_buffer)
+                                                                    .into_boxed_slice(),
                                                             ))
                                                             .await;
 
@@ -412,30 +421,38 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         && (de_depth.first_id > last_update_id + 1)
                                                         || (last_update_id + 1 > de_depth.final_id)
                                                     {
-                                                        log::warn!("Out of sync at first event. Trying to resync...\n");
+                                                        log::warn!(
+                                                            "Out of sync at first event. Trying to resync...\n"
+                                                        );
 
                                                         try_resync(
                                                             exchange,
-                                                            ticker, 
-                                                            &mut orderbook, 
-                                                            &mut state, 
-                                                            &mut output, 
-                                                            &mut already_fetching
-                                                        ).await;
+                                                            ticker,
+                                                            &mut orderbook,
+                                                            &mut state,
+                                                            &mut output,
+                                                            &mut already_fetching,
+                                                        )
+                                                        .await;
                                                     }
 
-                                                    if (prev_id == 0) || (prev_id == de_depth.first_id - 1)
+                                                    if (prev_id == 0)
+                                                        || (prev_id == de_depth.first_id - 1)
                                                     {
                                                         orderbook.update_depth_cache(
-                                                            &new_depth_cache(&depth_type)
+                                                            &new_depth_cache(&depth_type),
                                                         );
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
-                                                                StreamType::DepthAndTrades { exchange, ticker },
+                                                                StreamType::DepthAndTrades {
+                                                                    exchange,
+                                                                    ticker,
+                                                                },
                                                                 de_depth.time,
                                                                 orderbook.get_depth(),
-                                                                std::mem::take(&mut trades_buffer).into_boxed_slice(),
+                                                                std::mem::take(&mut trades_buffer)
+                                                                    .into_boxed_slice(),
                                                             ))
                                                             .await;
 
@@ -461,7 +478,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                 let _ = output
                                     .send(Event::Disconnected(
                                         exchange,
-                                        "Connection closed".to_string()
+                                        "Connection closed".to_string(),
                                     ))
                                     .await;
                             }
@@ -532,7 +549,9 @@ pub fn connect_kline_stream(
                 State::Connected(ws) => match ws.read_frame().await {
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => {
-                            if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(&msg.payload[..], market) {
+                            if let Ok(StreamData::Kline(ticker, de_kline)) =
+                                feed_de(&msg.payload[..], market)
+                            {
                                 let buy_volume = de_kline.taker_buy_base_asset_volume;
                                 let sell_volume = de_kline.volume - buy_volume;
 
@@ -551,8 +570,12 @@ pub fn connect_kline_stream(
                                 {
                                     let _ = output
                                         .send(Event::KlineReceived(
-                                            StreamType::Kline { exchange, ticker, timeframe: timeframe.1 },
-                                            kline, 
+                                            StreamType::Kline {
+                                                exchange,
+                                                ticker,
+                                                timeframe: timeframe.1,
+                                            },
+                                            kline,
                                         ))
                                         .await;
                                 }
@@ -563,7 +586,7 @@ pub fn connect_kline_stream(
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string()
+                                    "Connection closed".to_string(),
                                 ))
                                 .await;
                         }
@@ -589,27 +612,43 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
         SonicDepth::Spot(de) => VecLocalDepthCache {
             last_update_id: de.final_id,
             time: de.time,
-            bids: de.bids.iter().map(|x| Order {
-                price: x.price,
-                qty: x.qty,
-            }).collect(),
-            asks: de.asks.iter().map(|x| Order {
-                price: x.price,
-                qty: x.qty,
-            }).collect(),
+            bids: de
+                .bids
+                .iter()
+                .map(|x| Order {
+                    price: x.price,
+                    qty: x.qty,
+                })
+                .collect(),
+            asks: de
+                .asks
+                .iter()
+                .map(|x| Order {
+                    price: x.price,
+                    qty: x.qty,
+                })
+                .collect(),
         },
         SonicDepth::LinearPerp(de) => VecLocalDepthCache {
             last_update_id: de.final_id,
             time: de.time,
-            bids: de.bids.iter().map(|x| Order {
-                price: x.price,
-                qty: x.qty,
-            }).collect(),
-            asks: de.asks.iter().map(|x| Order {
-                price: x.price,
-                qty: x.qty,
-            }).collect(),
-        }
+            bids: de
+                .bids
+                .iter()
+                .map(|x| Order {
+                    price: x.price,
+                    qty: x.qty,
+                })
+                .collect(),
+            asks: de
+                .asks
+                .iter()
+                .map(|x| Order {
+                    price: x.price,
+                    qty: x.qty,
+                })
+                .collect(),
+        },
     }
 }
 
@@ -622,7 +661,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
     };
 
     let url = format!(
-        "{}?symbol={}&limit=1000", 
+        "{}?symbol={}&limit=1000",
         base_url,
         symbol_str.to_uppercase()
     );
@@ -632,8 +671,8 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
 
     match market_type {
         MarketType::Spot => {
-            let fetched_depth: FetchedSpotDepth = serde_json::from_str(&text)
-                .map_err(|e| StreamError::ParseError(e.to_string()))?;
+            let fetched_depth: FetchedSpotDepth =
+                serde_json::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
             let depth: VecLocalDepthCache = VecLocalDepthCache {
                 last_update_id: fetched_depth.update_id,
@@ -645,8 +684,8 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
             Ok(depth)
         }
         MarketType::LinearPerps => {
-            let fetched_depth: FetchedPerpDepth = serde_json::from_str(&text)
-                .map_err(|e| StreamError::ParseError(e.to_string()))?;
+            let fetched_depth: FetchedPerpDepth =
+                serde_json::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
             let depth: VecLocalDepthCache = VecLocalDepthCache {
                 last_update_id: fetched_depth.update_id,
@@ -705,9 +744,7 @@ pub async fn fetch_klines(
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/klines",
     };
 
-    let mut url = format!(
-        "{base_url}?symbol={symbol_str}&interval={timeframe_str}"
-    );
+    let mut url = format!("{base_url}?symbol={symbol_str}&interval={timeframe_str}");
 
     if let Some((start, end)) = range {
         let interval_ms = timeframe.to_milliseconds();
@@ -725,7 +762,7 @@ pub async fn fetch_klines(
             url.push_str(&format!(
                 "&startTime={start}&endTime={end}&limit={num_intervals}"
             ));
-        }     
+        }
     } else {
         url.push_str("&limit=400");
     }
@@ -741,7 +778,9 @@ pub async fn fetch_klines(
     Ok(klines)
 }
 
-pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
+pub async fn fetch_ticksize(
+    market_type: MarketType,
+) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
     let url = match market_type {
         MarketType::Spot => "https://api.binance.com/api/v3/exchangeInfo".to_string(),
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string(),
@@ -763,7 +802,7 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
         .ok_or_else(|| StreamError::ParseError("Missing request weight limit".to_string()))?;
 
     log::info!(
-        "Binance req. weight limit per minute {}: {:?}", 
+        "Binance req. weight limit per minute {}: {:?}",
         match market_type {
             MarketType::Spot => "Spot",
             MarketType::LinearPerps => "Linear Perps",
@@ -787,7 +826,7 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
         if !re.is_match(symbol_str) {
             continue;
         }
-        
+
         if !symbol_str.ends_with("USDT") {
             continue;
         }
@@ -809,7 +848,13 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
 
             let ticker = Ticker::new(symbol_str, market_type);
 
-            ticker_info_map.insert(Ticker::new(symbol_str, market_type), Some(TickerInfo { min_ticksize, ticker }));
+            ticker_info_map.insert(
+                Ticker::new(symbol_str, market_type),
+                Some(TickerInfo {
+                    min_ticksize,
+                    ticker,
+                }),
+            );
         } else {
             ticker_info_map.insert(Ticker::new(symbol_str, market_type), None);
         }
@@ -821,7 +866,9 @@ pub async fn fetch_ticksize(market_type: MarketType) -> Result<HashMap<Ticker, O
 const PERP_FILTER_VOLUME: f32 = 32_000_000.0;
 const SPOT_FILTER_VOLUME: f32 = 9_000_000.0;
 
-pub async fn fetch_ticker_prices(market: MarketType) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
+pub async fn fetch_ticker_prices(
+    market: MarketType,
+) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
     let url = match market {
         MarketType::Spot => "https://api.binance.com/api/v3/ticker/24hr".to_string(),
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/ticker/24hr".to_string(),
@@ -909,16 +956,13 @@ async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result
     Ok(())
 }
 
-pub async fn fetch_trades(
-    ticker: Ticker, 
-    from_time: u64,
-) -> Result<Vec<Trade>, StreamError> {
+pub async fn fetch_trades(ticker: Ticker, from_time: u64) -> Result<Vec<Trade>, StreamError> {
     let today_midnight = chrono::Utc::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
         .unwrap()
         .and_utc();
-    
+
     if from_time as i64 >= today_midnight.timestamp_millis() {
         return fetch_intraday_trades(ticker, from_time).await;
     }
@@ -930,37 +974,36 @@ pub async fn fetch_trades(
     match get_hist_trades(ticker, from_date).await {
         Ok(trades) => Ok(trades),
         Err(e) => {
-            log::warn!("Historical trades fetch failed: {}, falling back to intraday fetch", e);
+            log::warn!(
+                "Historical trades fetch failed: {}, falling back to intraday fetch",
+                e
+            );
             fetch_intraday_trades(ticker, from_time).await
         }
     }
 }
 
-pub async fn fetch_intraday_trades(
-    ticker: Ticker,
-    from: u64,
-) -> Result<Vec<Trade>, StreamError> {
+pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trade>, StreamError> {
     let (symbol_str, market_type) = ticker.get_string();
     let base_url = match market_type {
         MarketType::Spot => "https://api.binance.com/api/v3/aggTrades",
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/aggTrades",
     };
 
-    let mut url = format!(
-        "{base_url}?symbol={symbol_str}&limit=1000",
-    );
+    let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000",);
 
     url.push_str(&format!("&startTime={}", from));
 
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
 
     handle_rate_limit(
-        response.headers(), 
+        response.headers(),
         match market_type {
             MarketType::Spot => 6000.0,
             MarketType::LinearPerps => 2400.0,
         },
-    ).await?;
+    )
+    .await?;
 
     let text = response.text().await.map_err(StreamError::FetchError)?;
 
@@ -968,12 +1011,15 @@ pub async fn fetch_intraday_trades(
         let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)
             .map_err(|e| StreamError::ParseError(format!("Failed to parse trades: {e}")))?;
 
-        de_trades.into_iter().map(|de_trade| Trade {
-            time: de_trade.time,
-            is_sell: de_trade.is_sell,
-            price: de_trade.price,
-            qty: de_trade.qty,
-        }).collect()
+        de_trades
+            .into_iter()
+            .map(|de_trade| Trade {
+                time: de_trade.time,
+                is_sell: de_trade.is_sell,
+                price: de_trade.price,
+                qty: de_trade.qty,
+            })
+            .collect()
     };
 
     Ok(trades)
@@ -982,7 +1028,7 @@ pub async fn fetch_intraday_trades(
 pub async fn get_hist_trades(
     ticker: Ticker,
     date: chrono::NaiveDate,
-) -> Result<Vec<Trade>, StreamError> {    
+) -> Result<Vec<Trade>, StreamError> {
     let (symbol, market_type) = ticker.get_string();
 
     let market_subpath = match market_type {
@@ -996,19 +1042,12 @@ pub async fn get_hist_trades(
         date.format("%Y-%m-%d"),
     );
 
-    let base_path = layout::get_data_path(&format!(
-        "market_data/binance/{}",
-        market_subpath,
-    ));
+    let base_path = layout::get_data_path(&format!("market_data/binance/{}", market_subpath,));
 
     std::fs::create_dir_all(&base_path)
         .map_err(|e| StreamError::ParseError(format!("Failed to create directories: {e}")))?;
 
-    let zip_path = format!(
-        "{}/{}",
-        market_subpath,
-        zip_file_name,
-    );
+    let zip_path = format!("{}/{}", market_subpath, zip_file_name,);
     let base_zip_path = base_path.join(&zip_file_name);
 
     if std::fs::metadata(&base_zip_path).is_ok() {
@@ -1017,21 +1056,22 @@ pub async fn get_hist_trades(
         let url = format!("https://data.binance.vision/{zip_path}");
 
         log::info!("Downloading from {}", url);
-        
+
         let resp = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
-        
+
         if !resp.status().is_success() {
-            return Err(StreamError::InvalidRequest(
-                format!("Failed to fetch from {}: {}", url, resp.status())
-            ));
+            return Err(StreamError::InvalidRequest(format!(
+                "Failed to fetch from {}: {}",
+                url,
+                resp.status()
+            )));
         }
 
         let body = resp.bytes().await.map_err(StreamError::FetchError)?;
-        
-        std::fs::write(&base_zip_path, &body)
-            .map_err(|e| StreamError::ParseError(
-                format!("Failed to write zip file: {e}, {base_zip_path:?}"))
-            )?;
+
+        std::fs::write(&base_zip_path, &body).map_err(|e| {
+            StreamError::ParseError(format!("Failed to write zip file: {e}, {base_zip_path:?}"))
+        })?;
     }
 
     match std::fs::File::open(&base_zip_path) {
@@ -1041,7 +1081,8 @@ pub async fn get_hist_trades(
 
             let mut trades = Vec::new();
             for i in 0..archive.len() {
-                let csv_file = archive.by_index(i)
+                let csv_file = archive
+                    .by_index(i)
                     .map_err(|e| StreamError::ParseError(format!("Failed to read csv: {e}")))?;
 
                 let mut csv_reader = ReaderBuilder::new()
@@ -1054,7 +1095,7 @@ pub async fn get_hist_trades(
                         let is_sell = record[6].parse::<bool>().ok()?;
                         let price = str_f32_parse(&record[1]);
                         let qty = str_f32_parse(&record[2]);
-                        
+
                         Some(match market_type {
                             MarketType::Spot => Trade {
                                 time,
@@ -1067,12 +1108,12 @@ pub async fn get_hist_trades(
                                 is_sell,
                                 price,
                                 qty,
-                            }
+                            },
                         })
                     })
                 }));
             }
-            
+
             if let Some(latest_trade) = trades.last() {
                 match fetch_intraday_trades(ticker, latest_trade.time).await {
                     Ok(intraday_trades) => {
@@ -1086,9 +1127,9 @@ pub async fn get_hist_trades(
 
             Ok(trades)
         }
-        Err(e) => Err(
-            StreamError::ParseError(format!("Failed to open compressed file: {e}"))
-        ),
+        Err(e) => Err(StreamError::ParseError(format!(
+            "Failed to open compressed file: {e}"
+        ))),
     }
 }
 
@@ -1104,7 +1145,7 @@ struct DeOpenInterest {
 const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 
 pub async fn fetch_historical_oi(
-    ticker: Ticker, 
+    ticker: Ticker,
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, StreamError> {
@@ -1133,18 +1174,24 @@ pub async fn fetch_historical_oi(
         let thirty_days_ago = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("Could not get system time")
-            .as_millis() as u64 - THIRTY_DAYS_MS;
-        
+            .as_millis() as u64
+            - THIRTY_DAYS_MS;
+
         if end < thirty_days_ago {
             let err_msg = format!(
-                "Requested end time {} is before available data (30 days is the API limit)", end
+                "Requested end time {} is before available data (30 days is the API limit)",
+                end
             );
             log::error!("{}", err_msg);
             return Err(StreamError::UnknownError(err_msg));
         }
 
         let adjusted_start = if start < thirty_days_ago {
-            log::warn!("Adjusting start time from {} to {} (30 days limit)", start, thirty_days_ago);
+            log::warn!(
+                "Adjusting start time from {} to {} (30 days limit)",
+                start,
+                thirty_days_ago
+            );
             thirty_days_ago
         } else {
             start
@@ -1160,25 +1207,25 @@ pub async fn fetch_historical_oi(
         url.push_str("&limit=400");
     }
 
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| {
-            log::error!("Failed to fetch from {}: {}", url, e);
-            StreamError::FetchError(e)
-        })?;
-        
-    let text = response.text()
-        .await
-        .map_err(|e| {
-            log::error!("Failed to get response text from {}: {}", url, e);
-            StreamError::FetchError(e)
-        })?;
+    let response = reqwest::get(&url).await.map_err(|e| {
+        log::error!("Failed to fetch from {}: {}", url, e);
+        StreamError::FetchError(e)
+    })?;
 
-    let binance_oi: Vec<DeOpenInterest> = serde_json::from_str(&text)
-        .map_err(|e| {
-            log::error!("Failed to parse response from {}: {}\nResponse: {}", url, e, text);
-            StreamError::ParseError(format!("Failed to parse open interest: {e}"))
-        })?;
+    let text = response.text().await.map_err(|e| {
+        log::error!("Failed to get response text from {}: {}", url, e);
+        StreamError::FetchError(e)
+    })?;
+
+    let binance_oi: Vec<DeOpenInterest> = serde_json::from_str(&text).map_err(|e| {
+        log::error!(
+            "Failed to parse response from {}: {}\nResponse: {}",
+            url,
+            e,
+            text
+        );
+        StreamError::ParseError(format!("Failed to parse open interest: {e}"))
+    })?;
 
     let open_interest = binance_oi
         .iter()
