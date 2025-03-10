@@ -60,7 +60,8 @@ impl Chart for HeatmapChart {
     }
 
     fn get_interval_keys(&self) -> Vec<u64> {
-        self.timeseries.iter().map(|(time, _, _)| *time).collect()
+        vec![]
+        //self.timeseries.iter().map(|(time, _, _)| *time).collect()
     }
 }
 

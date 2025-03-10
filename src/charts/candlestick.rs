@@ -66,10 +66,15 @@ impl Chart for CandlestickChart {
         (earliest, latest)
     }
 
+    /// used for x-axis label generation
     fn get_interval_keys(&self) -> Vec<u64> {
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => {
-                timeseries.data_points.keys().cloned().collect()
+            ChartData::TimeBased(_) => {
+                // timeseries data keys are already ordered unlike tick based data,
+                // currently we can just guesstimate them from the visible range instead
+                // `TimeBased` match arms on this trait method exists just for modularity
+                // timeseries.data_points.keys().cloned().collect()
+                vec![]
             },
             ChartData::TickBased(tick_aggr) => {
                 tick_aggr.data_points.iter()

@@ -200,28 +200,6 @@ impl AxisLabelsX<'_> {
         AxisLabel::X(rect, label)
     }
 
-    fn calc_crosshair_pos(
-        &self, 
-        cursor_pos: Point,
-        region: Rectangle,
-        bounds: Rectangle
-    ) -> Option<(f32, f32)> {
-        let crosshair_ratio = f64::from(cursor_pos.x) / f64::from(self.chart_bounds.width);
-        let chart_x_min = region.x;
-        let chart_x_max = region.x + region.width;
-        let crosshair_pos = chart_x_min + crosshair_ratio as f32 * region.width;
-
-        let snapped_position = (crosshair_pos / self.cell_width).round() * self.cell_width;
-        let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
-        let snap_x = snap_ratio as f64 * f64::from(bounds.width);
-
-        if snap_x.is_nan() || snap_x < 0.0 || snap_x > f64::from(bounds.width) {
-            None
-        } else {
-            Some((snapped_position, snap_x as f32))
-        }
-    }
-
     fn generate_tick_labels(
         &self,
         region: Rectangle,
@@ -232,17 +210,22 @@ impl AxisLabelsX<'_> {
         if self.interval_keys.is_empty() {
             return Vec::new();
         }
+
+        let chart_x_min = region.x;
+        let chart_x_max = region.x + region.width;
         
         let last_index = self.interval_keys.len() - 1;
         let step_size = (self.interval_keys.len() as f32 / x_labels_can_fit as f32).ceil() as usize;
         
-        let min_cell = (region.x / self.cell_width).floor() as i32;
-        let max_cell = ((region.x + region.width) / self.cell_width).ceil() as i32;
+        let min_cell = (chart_x_min / self.cell_width).floor() as i32;
+        let max_cell = ((chart_x_max) / self.cell_width).ceil() as i32;
         
-        let max_cell = max_cell.min(0);
+        let max_cell: i32 = max_cell.min(0);
         let min_cell = min_cell.max(-((last_index + 1) as i32));
         
-        let mut labels = Vec::new();
+        let mut labels = Vec::with_capacity(
+            self.interval_keys.len().min(x_labels_can_fit as usize)
+        );
         for cell_index in (min_cell..=max_cell).step_by(step_size.max(1)) {
             let offset = (-cell_index as i64) as usize;
             if offset > last_index {
@@ -251,22 +234,23 @@ impl AxisLabelsX<'_> {
             
             let array_index = last_index - offset;
             let snapped_position = cell_index as f32 * self.cell_width;
+
+            let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
+            let snap_x = snap_ratio * bounds.width;
             
-            if let Some(snap_x) = self.calculate_snap_x(snapped_position, region, bounds) {
-                if let Some(timestamp) = self.interval_keys.get(array_index) {
-                    let label_text = self.timezone.format_timestamp(
-                        (*timestamp / 1000) as i64, 
-                        100,
-                    );
-                    
-                    labels.push(self.create_label(
-                        snap_x,
-                        label_text,
-                        bounds,
-                        false,
-                        palette
-                    ));
-                }
+            if let Some(timestamp) = self.interval_keys.get(array_index) {
+                let label_text = self.timezone.format_timestamp(
+                    (*timestamp / 1000) as i64, 
+                    100,
+                );
+                
+                labels.push(self.create_label(
+                    snap_x,
+                    label_text,
+                    bounds,
+                    false,
+                    palette
+                ));
             }
         }
         
@@ -323,8 +307,17 @@ impl AxisLabelsX<'_> {
         
         labels
     }
+
+    fn calc_crosshair_pos(&self, cursor_pos: Point, region: Rectangle) -> (f32, f32, i32) {
+        let crosshair_ratio = f64::from(cursor_pos.x) / f64::from(self.chart_bounds.width);
+        let chart_x_min = region.x;
+        let crosshair_pos = chart_x_min + crosshair_ratio as f32 * region.width;
+        let cell_index = (crosshair_pos / self.cell_width).round();
+        
+        (crosshair_pos, crosshair_ratio as f32, cell_index as i32)
+    }
     
-    fn generate_tick_crosshair(
+    fn generate_crosshair(
         &self,
         cursor_pos: Point,
         region: Rectangle,
@@ -334,116 +327,84 @@ impl AxisLabelsX<'_> {
         if !self.crosshair {
             return None;
         }
+    
+        match self.basis {
+            ChartBasis::Tick(interval) => {
+                if self.interval_keys.is_empty() {
+                    return None;
+                }
 
-        let crosshair_ratio = f64::from(cursor_pos.x) / f64::from(self.chart_bounds.width);
-        let crosshair_pos = region.x + crosshair_ratio as f32 * region.width;
-        let cell_index = (crosshair_pos / self.cell_width).round();
-        
-        let (_, snap_x) = self.calc_crosshair_pos(cursor_pos, region, bounds)?;
-        
-        if snap_x.is_nan() || snap_x < 0.0 || snap_x > bounds.width {
-            return None;
+                let (crosshair_pos, _, cell_index) = self.calc_crosshair_pos(cursor_pos, region);
+                
+                let chart_x_min = region.x;
+                let chart_x_max = region.x + region.width;
+                
+                let snapped_position = (crosshair_pos / self.cell_width).round() * self.cell_width;
+                let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
+                let snap_x = snap_ratio * bounds.width;
+                
+                if snap_x.is_nan() || snap_x < 0.0 || snap_x > bounds.width {
+                    return None;
+                }
+                
+                let last_index = self.interval_keys.len() - 1;
+                let offset = (-cell_index as i64) as usize;
+                if offset > last_index {
+                    return None;
+                }
+                
+                let array_index = last_index - offset;
+                
+                if let Some(timestamp) = self.interval_keys.get(array_index) {
+                    let text_content = self.timezone
+                        .format_crosshair_timestamp(*timestamp as i64, interval);
+
+                    return Some(self.create_label(
+                        snap_x,
+                        text_content,
+                        bounds,
+                        true,
+                        palette
+                    ));
+                }
+            },
+            ChartBasis::Time(timeframe) => {
+                let (_, crosshair_ratio, _) = self.calc_crosshair_pos(cursor_pos, region);
+                
+                let x_min = self.x_to_interval(region.x);
+                let x_max = self.x_to_interval(region.x + region.width);
+                
+                let crosshair_millis = x_min as f64 + 
+                    crosshair_ratio as f64 * (x_max as f64 - x_min as f64);
+                
+                let crosshair_time = DateTime::from_timestamp_millis(crosshair_millis as i64)?;
+                let rounded_timestamp = (crosshair_time.timestamp_millis() as f64 
+                    / (timeframe as f64)).round() as u64 * timeframe;
+                
+                let snap_ratio = (rounded_timestamp as f64 - x_min as f64) 
+                    / (x_max as f64 - x_min as f64);
+                
+                let snap_x = snap_ratio * f64::from(bounds.width);
+                if snap_x.is_nan() || snap_x < 0.0 || snap_x > f64::from(bounds.width) {
+                    return None;
+                }
+    
+                let text_content = self.timezone
+                    .format_crosshair_timestamp(rounded_timestamp as i64, timeframe);
+                
+                return Some(self.create_label(
+                    snap_x as f32,
+                    text_content,
+                    bounds,
+                    true,
+                    palette
+                ));
+            }
         }
-        
-        // Cell 0 (latest) maps to last element, Cell -1 to second-to-last, etc.
-        if self.interval_keys.is_empty() {
-            return None;
-        }
-        
-        let last_index = self.interval_keys.len() - 1;
-        let offset = (-cell_index as i64) as usize;
-        if offset > last_index {
-            return None;
-        }
-        
-        let array_index = last_index - offset;
-        let interval = match self.basis {
-            ChartBasis::Tick(interval) => interval,
-            _ => return None,
-        };
-        
-        let aggregation: u64 = interval.into();
-        let rounded_tick = (-cell_index as i64) * (aggregation as i64);
-        
-        if let Some(timestamp) = self.interval_keys.get(array_index) {
-            let label_text = self.timezone
-                .format_crosshair_timestamp(*timestamp as i64, interval);
-            let text_content = format!("{} (#{}.{})", label_text, rounded_tick, interval);
-            
-            return Some(self.create_label(
-                snap_x,
-                text_content,
-                bounds,
-                true,
-                palette
-            ));
-        }
-        
+    
         None
     }
-    
-    fn generate_time_crosshair(
-        &self,
-        cursor_pos: Point,
-        bounds: Rectangle,
-        x_min: u64,
-        x_max: u64,
-        palette: &Extended
-    ) -> Option<AxisLabel> {
-        if !self.crosshair {
-            return None;
-        }
-
-        let timeframe = match self.basis {
-            ChartBasis::Time(tf) => tf,
-            _ => return None,
-        };
-
-        let crosshair_ratio = f64::from(cursor_pos.x) / f64::from(bounds.width);
-        let crosshair_millis = x_min as f64
-            + crosshair_ratio * (x_max - x_min) as f64;
         
-        let crosshair_time = DateTime::from_timestamp_millis(crosshair_millis as i64)?;
-        let rounded_timestamp = (crosshair_time.timestamp_millis() as f64
-            / (timeframe as f64)).round() as u64 * timeframe;
-        
-        let snap_ratio = (rounded_timestamp as f64 - x_min as f64)
-            / (x_max as f64 - x_min as f64);
-        let text_content = self.timezone
-            .format_crosshair_timestamp(rounded_timestamp as i64, timeframe);
-        
-        let snap_x = snap_ratio * f64::from(bounds.width);
-        if snap_x.is_nan() {
-            return None;
-        }
-        
-        Some(self.create_label(
-            snap_x as f32,
-            text_content,
-            bounds,
-            true,
-            palette
-        ))
-    }
-    
-    fn calculate_snap_x(&self, position: f32, region: Rectangle, bounds: Rectangle) -> Option<f32> {
-        let chart_x_min = region.x;
-        let chart_x_max = region.x + region.width;
-        
-        if position < chart_x_min || position > chart_x_max {
-            return None;
-        }
-        
-        let snap_ratio = (position - chart_x_min) / (chart_x_max - chart_x_min);
-        let snap_x = snap_ratio as f64 * f64::from(bounds.width);
-        
-        if snap_x.is_nan() || snap_x < 0.0 || snap_x > f64::from(bounds.width) {
-            None
-        } else {
-            Some(snap_x as f32)
-        }
-    }
-
     fn visible_region(&self, size: Size) -> Rectangle {
         let width = size.width / self.scaling;
         let height = size.height / self.scaling;
@@ -565,7 +526,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                     ));
         
                     if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
-                        if let Some(label) = self.generate_tick_crosshair(
+                        if let Some(label) = self.generate_crosshair(
                             cursor_pos, region, bounds, palette
                         ) {
                             all_labels.push(label);
@@ -578,8 +539,8 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                     ));
         
                     if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
-                        if let Some(label) = self.generate_time_crosshair(
-                            cursor_pos, bounds, x_min, x_max, palette,
+                        if let Some(label) = self.generate_crosshair(
+                            cursor_pos, region, bounds, palette
                         ) {
                             all_labels.push(label);
                         }

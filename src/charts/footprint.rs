@@ -77,8 +77,9 @@ impl Chart for FootprintChart {
 
     fn get_interval_keys(&self) -> Vec<u64> {
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => {
-                timeseries.data_points.keys().cloned().collect()
+            ChartData::TimeBased(_) => {
+                //timeseries.data_points.keys().cloned().collect()
+                vec![]
             },
             ChartData::TickBased(tick_aggr) => {
                 tick_aggr.data_points.iter()
