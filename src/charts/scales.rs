@@ -215,18 +215,23 @@ impl AxisLabelsX<'_> {
         let chart_x_max = region.x + region.width;
         
         let last_index = self.interval_keys.len() - 1;
-        let step_size = (self.interval_keys.len() as f32 / x_labels_can_fit as f32).ceil() as usize;
         
         let min_cell = (chart_x_min / self.cell_width).floor() as i32;
         let max_cell = ((chart_x_max) / self.cell_width).ceil() as i32;
         
-        let max_cell: i32 = max_cell.min(0);
         let min_cell = min_cell.max(-((last_index + 1) as i32));
+
+        let visible_cell_count = (max_cell - min_cell + 1).max(1) as f32;
+        let step_size = (visible_cell_count / x_labels_can_fit as f32).ceil() as usize;
         
         let mut labels = Vec::with_capacity(
             self.interval_keys.len().min(x_labels_can_fit as usize)
         );
         for cell_index in (min_cell..=max_cell).step_by(step_size.max(1)) {
+            if cell_index > 0 {
+                continue;
+            }
+
             let offset = (-cell_index as i64) as usize;
             if offset > last_index {
                 continue;
@@ -277,7 +282,7 @@ impl AxisLabelsX<'_> {
             timeframe,
         );
         
-        let mut labels = Vec::new();
+        let mut labels = Vec::with_capacity(x_labels_can_fit as usize);
         let mut time = rounded_earliest;
         
         while time <= x_max {
@@ -524,27 +529,19 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                     all_labels.extend(self.generate_tick_labels(
                         region, bounds, palette, x_labels_can_fit,
                     ));
-        
-                    if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
-                        if let Some(label) = self.generate_crosshair(
-                            cursor_pos, region, bounds, palette
-                        ) {
-                            all_labels.push(label);
-                        }
-                    }
                 },
                 ChartBasis::Time(_) => {
                     all_labels.extend(self.generate_time_labels(
                         bounds, x_min, x_max, palette, x_labels_can_fit,
                     ));
-        
-                    if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
-                        if let Some(label) = self.generate_crosshair(
-                            cursor_pos, region, bounds, palette
-                        ) {
-                            all_labels.push(label);
-                        }
-                    }
+                }
+            }
+
+            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
+                if let Some(label) = self.generate_crosshair(
+                    cursor_pos, region, bounds, palette
+                ) {
+                    all_labels.push(label);
                 }
             }
             

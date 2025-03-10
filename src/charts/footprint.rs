@@ -415,13 +415,20 @@ impl FootprintChart {
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
         self.chart.basis = ChartBasis::Tick(tick_basis.into());
 
-        self.data_source = ChartData::TickBased(
-            TickAggr::new(
-                tick_basis, 
-                self.chart.tick_size, 
-                &self.raw_trades
-            )
+        let new_tick_aggr = TickAggr::new(
+            tick_basis.into(), 
+            self.chart.tick_size, 
+            &self.raw_trades
         );
+
+        if let Some(indicator) = self.indicators.get_mut(&FootprintIndicator::Volume) {
+            *indicator = IndicatorData::Volume(
+                Caches::default(),
+                new_tick_aggr.get_volume_data(),
+            );
+        }
+
+        self.data_source = ChartData::TickBased(new_tick_aggr);
 
         self.render_start();
     }
@@ -494,6 +501,14 @@ impl FootprintChart {
                 self.chart.last_price = {
                     tick_aggr.data_points.last()
                         .map(|tick_kline| {
+                            if let Some(IndicatorData::Volume(_, data)) = 
+                                self.indicators.get_mut(&FootprintIndicator::Volume) {
+                                    data.insert(
+                                        tick_kline.start_timestamp, 
+                                        (tick_kline.volume_buy, tick_kline.volume_sell)
+                                    );
+                                };
+
                             if tick_kline.close_price > tick_kline.open_price {
                                 Some(PriceInfoLabel::Up(tick_kline.close_price))
                             } else {

@@ -578,6 +578,21 @@ impl CommonChartData {
         }
     }
 
+    fn get_visible_interval_range(&self) -> (u64, u64) {
+        let region = self.visible_region(self.bounds.size());
+
+        match self.basis {
+            ChartBasis::Tick(_) => (
+                self.x_to_interval(region.x + region.width),
+                self.x_to_interval(region.x)
+            ),
+            ChartBasis::Time(_) => (
+                self.x_to_interval(region.x),
+                self.x_to_interval(region.x + region.width)
+            ),
+        }
+    }
+
     fn interval_to_x(&self, value: u64) -> f32 {
         match self.basis {
             ChartBasis::Time(timeframe) => {

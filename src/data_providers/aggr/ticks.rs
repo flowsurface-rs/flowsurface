@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use crate::data_providers::Trade;
@@ -164,6 +164,13 @@ impl TickAggr {
     
     pub fn get_latest_data_point(&self) -> Option<&TickAccumulation> {
         self.data_points.last()
+    }
+    
+    pub fn get_volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
+        self.data_points.iter().map(|data_point| {
+            (data_point.start_timestamp, (data_point.volume_buy, data_point.volume_sell))
+        })
+        .collect()
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade]) {
