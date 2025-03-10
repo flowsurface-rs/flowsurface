@@ -464,6 +464,12 @@ pub enum ChartBasis {
     Tick(u64),
 }
 
+impl ChartBasis {
+    pub fn is_time(&self) -> bool {
+        matches!(self, ChartBasis::Time(_))
+    }
+}
+
 impl std::fmt::Display for ChartBasis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -578,19 +584,24 @@ impl CommonChartData {
         }
     }
 
-    fn get_visible_interval_range(&self) -> (u64, u64) {
-        let region = self.visible_region(self.bounds.size());
-
+    fn get_interval_range(&self, region: Rectangle) -> (u64, u64) {
         match self.basis {
             ChartBasis::Tick(_) => (
                 self.x_to_interval(region.x + region.width),
-                self.x_to_interval(region.x)
-            ),
-            ChartBasis::Time(_) => (
                 self.x_to_interval(region.x),
-                self.x_to_interval(region.x + region.width)
+            ),
+            ChartBasis::Time(interval) => (
+                self.x_to_interval(region.x) - (interval / 2),
+                self.x_to_interval(region.x + region.width) + (interval / 2),
             ),
         }
+    }
+
+    fn get_price_range(&self, region: Rectangle) -> (f32, f32) {
+        let highest = self.y_to_price(region.y);
+        let lowest = self.y_to_price(region.y + region.height);
+
+        (highest, lowest)
     }
 
     fn interval_to_x(&self, value: u64) -> f32 {

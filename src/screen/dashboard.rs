@@ -554,7 +554,9 @@ impl Dashboard {
                 self.iter_all_panes(main_window.id)
                     .for_each(|(window, pane, pane_state)| match pane_state.content {
                         PaneContent::Candlestick(_, _) | PaneContent::Footprint(_, _) => {
-                            fetched_panes.push((window, pane));
+                            if pane_state.settings.selected_basis.is_some_and(|basis| basis.is_time()) {
+                                fetched_panes.push((window, pane));
+                            }
                         }
                         _ => {}
                     });

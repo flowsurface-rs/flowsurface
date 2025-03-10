@@ -546,22 +546,15 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 let region = chart.visible_region(frame.size());
 
-                let cell_height = chart.cell_height;
-                let cell_height_scaled = cell_height * chart.scaling;
-
-                let (earliest, latest) = (
-                    chart.x_to_interval(region.x),
-                    chart.x_to_interval(region.x + region.width),
-                );
+                let (earliest, latest) = chart.get_interval_range(region);
+                let (highest, lowest) = chart.get_price_range(region);
 
                 if latest < earliest {
                     return;
                 }
 
-                let (highest, lowest) = (
-                    chart.y_to_price(region.y),
-                    chart.y_to_price(region.y + region.height),
-                );
+                let cell_height = chart.cell_height;
+                let cell_height_scaled = cell_height * chart.scaling;
 
                 let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
 

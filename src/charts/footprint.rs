@@ -498,24 +498,23 @@ impl FootprintChart {
             ChartData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&trades_buffer);
                 
-                self.chart.last_price = {
-                    tick_aggr.data_points.last()
-                        .map(|tick_kline| {
-                            if let Some(IndicatorData::Volume(_, data)) = 
-                                self.indicators.get_mut(&FootprintIndicator::Volume) {
-                                    data.insert(
-                                        tick_kline.start_timestamp, 
-                                        (tick_kline.volume_buy, tick_kline.volume_sell)
-                                    );
-                                };
-
-                            if tick_kline.close_price > tick_kline.open_price {
-                                Some(PriceInfoLabel::Up(tick_kline.close_price))
-                            } else {
-                                Some(PriceInfoLabel::Down(tick_kline.close_price))
-                            }
-                        }).unwrap_or(None)
-                };
+                if let Some(tick_kline) = tick_aggr.data_points.last() {
+                    if let Some(IndicatorData::Volume(_, data)) = 
+                        self.indicators.get_mut(&FootprintIndicator::Volume) {
+                        data.insert(
+                            tick_kline.start_timestamp, 
+                            (tick_kline.volume_buy, tick_kline.volume_sell)
+                        );
+                    }
+        
+                    self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
+                        Some(PriceInfoLabel::Up(tick_kline.close_price))
+                    } else {
+                        Some(PriceInfoLabel::Down(tick_kline.close_price))
+                    };
+                } else {
+                    self.chart.last_price = None;
+                }
 
                 self.render_start();
             }
@@ -805,27 +804,8 @@ impl canvas::Program<Message> for FootprintChart {
 
                 let (cell_width, cell_height) = (chart.cell_width, chart.cell_height);
 
-                let (earliest, latest) = match &self.data_source {
-                    ChartData::TimeBased(timeseries) => {
-                        let timeframe = timeseries.interval.to_milliseconds();
-
-                        (
-                            chart.x_to_interval(region.x) - (timeframe / 2),
-                            chart.x_to_interval(region.x + region.width) + (timeframe / 2)
-                        )
-                    }
-                    ChartData::TickBased(_) => {
-                        (
-                            chart.x_to_interval(region.x),
-                            chart.x_to_interval(region.x + region.width)
-                        )
-                    }
-                };
-
-                let (highest, lowest) = (
-                    chart.y_to_price(region.y),
-                    chart.y_to_price(region.y + region.height),
-                );
+                let (earliest, latest) = chart.get_interval_range(region);
+                let (highest, lowest) = chart.get_price_range(region);
 
                 let (max_trade_qty, _) =
                     self.calc_qty_scales(earliest, latest, highest, lowest, chart.tick_size);

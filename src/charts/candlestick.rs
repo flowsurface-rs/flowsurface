@@ -384,25 +384,24 @@ impl CandlestickChart {
         if let ChartData::TickBased(ref mut tick_aggr) = self.data_source {
             tick_aggr.insert_trades(&trades_buffer);
             
-            self.chart.last_price = {
-                tick_aggr.data_points.last()
-                    .map(|tick_kline| {
-                        if let Some(IndicatorData::Volume(_, data)) = 
-                            self.indicators.get_mut(&CandlestickIndicator::Volume) {
-                                data.insert(
-                                    tick_kline.start_timestamp, 
-                                    (tick_kline.volume_buy, tick_kline.volume_sell)
-                                );
-                            };
-
-                        if tick_kline.close_price > tick_kline.open_price {
-                            Some(PriceInfoLabel::Up(tick_kline.close_price))
-                        } else {
-                            Some(PriceInfoLabel::Down(tick_kline.close_price))
-                        }
-                    }).unwrap_or(None)
-            };
-
+            if let Some(tick_kline) = tick_aggr.data_points.last() {
+                if let Some(IndicatorData::Volume(_, data)) = 
+                    self.indicators.get_mut(&CandlestickIndicator::Volume) {
+                    data.insert(
+                        tick_kline.start_timestamp, 
+                        (tick_kline.volume_buy, tick_kline.volume_sell)
+                    );
+                }
+    
+                self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
+                    Some(PriceInfoLabel::Up(tick_kline.close_price))
+                } else {
+                    Some(PriceInfoLabel::Down(tick_kline.close_price))
+                };
+            } else {
+                self.chart.last_price = None;
+            }
+    
             self.render_start();
         }
     }
@@ -525,7 +524,8 @@ impl CandlestickChart {
     ) -> Option<Element<Message>> {
         let chart_state = self.get_common_data();
 
-        let (earliest, latest) = chart_state.get_visible_interval_range();
+        let visible_region = chart_state.visible_region(chart_state.bounds.size());
+        let (earliest, latest) = chart_state.get_interval_range(visible_region);
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
 
@@ -605,6 +605,8 @@ impl canvas::Program<Message> for CandlestickChart {
         let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
         let bounds_size = bounds.size();
 
+        let candle_width = chart.cell_width * 0.8;
+
         let palette = theme.extended_palette();
 
         let candlesticks = chart.cache.main.draw(renderer, bounds_size, |frame| {
@@ -615,13 +617,7 @@ impl canvas::Program<Message> for CandlestickChart {
 
                 let region = chart.visible_region(frame.size());
 
-                let (earliest, latest) = (
-                    chart.x_to_interval(region.x),
-                    chart.x_to_interval(region.x + region.width),
-                );
-
-                let candle_width = chart.cell_width * 0.8;
-
+                let (earliest, latest) = chart.get_interval_range(region);
                 let price_to_y = |price: f32| chart.price_to_y(price);
 
                 match &self.data_source {
@@ -632,7 +628,7 @@ impl canvas::Program<Message> for CandlestickChart {
                         tick_aggr.data_points.iter()
                             .rev()
                             .enumerate()
-                            .filter(|(index, _)| *index <= earliest && *index >= latest)
+                            .filter(|(index, _)| *index <= latest && *index >= earliest)
                             .for_each(|(index, tick_aggr)| {
                                 let x_position = chart.interval_to_x(index as u64);
 
