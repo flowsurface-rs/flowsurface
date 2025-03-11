@@ -682,21 +682,19 @@ impl State {
                         let trade_fetch_checkbox = {
                             let is_active = dashboard.trade_fetch_enabled;
 
-                            let checkbox = iced::widget::checkbox(
-                                "Fetch trades (Binance)",
-                                is_active,
-                            )
-                            .on_toggle(|checked| {
-                                if checked {
-                                    Message::ToggleDialogModal(Some((
+                            let checkbox =
+                                iced::widget::checkbox("Fetch trades (Binance)", is_active)
+                                    .on_toggle(|checked| {
+                                        if checked {
+                                            Message::ToggleDialogModal(Some((
                                         "This might be unreliable and take some time to complete"
                                             .to_string(),
                                         Box::new(Message::ToggleTradeFetch(true)),
                                     )))
-                                } else {
-                                    Message::ToggleTradeFetch(false)
-                                }
-                            });
+                                        } else {
+                                            Message::ToggleTradeFetch(false)
+                                        }
+                                    });
 
                             tooltip(
                                 checkbox,
