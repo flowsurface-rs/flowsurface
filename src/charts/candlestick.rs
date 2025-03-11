@@ -391,14 +391,11 @@ impl CandlestickChart {
         if let ChartData::TickBased(ref mut tick_aggr) = self.data_source {
             tick_aggr.insert_trades(&trades_buffer);
 
-            if let Some(tick_kline) = tick_aggr.data_points.last() {
+            if let Some((tick_kline, idx)) = tick_aggr.get_latest_dp() {
                 if let Some(IndicatorData::Volume(_, data)) =
                     self.indicators.get_mut(&CandlestickIndicator::Volume)
                 {
-                    data.insert(
-                        tick_kline.start_timestamp,
-                        (tick_kline.volume_buy, tick_kline.volume_sell),
-                    );
+                    data.insert(idx as u64, (tick_kline.volume_buy, tick_kline.volume_sell));
                 }
 
                 self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
@@ -412,6 +409,21 @@ impl CandlestickChart {
 
             self.render_start();
         }
+    }
+
+    pub fn set_tick_basis(&mut self, tick_basis: u64) {
+        self.chart.basis = ChartBasis::Tick(tick_basis.into());
+
+        let new_tick_aggr =
+            TickAggr::new(tick_basis.into(), self.chart.tick_size, &self.raw_trades);
+
+        if let Some(indicator) = self.indicators.get_mut(&CandlestickIndicator::Volume) {
+            *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
+        }
+
+        self.data_source = ChartData::TickBased(new_tick_aggr);
+
+        self.render_start();
     }
 
     pub fn get_raw_trades(&self) -> Vec<Trade> {
@@ -442,21 +454,6 @@ impl CandlestickChart {
         };
 
         (from_time, to_time)
-    }
-
-    pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.basis = ChartBasis::Tick(tick_basis.into());
-
-        let new_tick_aggr =
-            TickAggr::new(tick_basis.into(), self.chart.tick_size, &self.raw_trades);
-
-        if let Some(indicator) = self.indicators.get_mut(&CandlestickIndicator::Volume) {
-            *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
-        }
-
-        self.data_source = ChartData::TickBased(new_tick_aggr);
-
-        self.render_start();
     }
 
     fn render_start(&mut self) {

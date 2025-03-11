@@ -509,8 +509,8 @@ impl ChartData {
                 })
                 .unwrap_or(0.0),
             ChartData::TickBased(tick_aggr) => tick_aggr
-                .get_latest_data_point()
-                .map(|dp| {
+                .get_latest_dp()
+                .map(|(dp, _)| {
                     let y_low = chart_state.price_to_y(dp.low_price);
                     let y_high = chart_state.price_to_y(dp.high_price);
                     -(y_low + y_high) / 2.0

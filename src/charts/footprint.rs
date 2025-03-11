@@ -511,14 +511,11 @@ impl FootprintChart {
             ChartData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&trades_buffer);
 
-                if let Some(tick_kline) = tick_aggr.data_points.last() {
+                if let Some((tick_kline, idx)) = tick_aggr.get_latest_dp() {
                     if let Some(IndicatorData::Volume(_, data)) =
                         self.indicators.get_mut(&FootprintIndicator::Volume)
                     {
-                        data.insert(
-                            tick_kline.start_timestamp,
-                            (tick_kline.volume_buy, tick_kline.volume_sell),
-                        );
+                        data.insert(idx as u64, (tick_kline.volume_buy, tick_kline.volume_sell));
                     }
 
                     self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
@@ -637,7 +634,7 @@ impl FootprintChart {
                     .iter()
                     .rev()
                     .enumerate()
-                    .filter(|(index, _)| *index <= earliest && *index >= latest)
+                    .filter(|(index, _)| *index <= latest && *index >= earliest)
                     .for_each(|(_, dp)| {
                         max_trade_qty = max_trade_qty
                             .max(dp.get_max_trade_qty(rounded_highest, rounded_lowest));
@@ -709,11 +706,7 @@ impl FootprintChart {
         let chart_state: &CommonChartData = self.get_common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
-
-        let (earliest, latest) = (
-            chart_state.x_to_interval(visible_region.x),
-            chart_state.x_to_interval(visible_region.x + visible_region.width),
-        );
+        let (earliest, latest) = chart_state.get_interval_range(visible_region);
 
         let mut indicators: iced::widget::Column<'_, Message> = column![];
 
@@ -841,7 +834,7 @@ impl canvas::Program<Message> for FootprintChart {
                             .iter()
                             .rev()
                             .enumerate()
-                            .filter(|(index, _)| *index <= earliest && *index >= latest)
+                            .filter(|(index, _)| *index <= latest && *index >= earliest)
                             .for_each(|(index, tick_aggr)| {
                                 let x_position = chart.interval_to_x(index as u64);
 
