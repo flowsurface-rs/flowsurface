@@ -182,11 +182,6 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
         let palette = theme.extended_palette();
 
-        let timeframe: u64 = match self.basis {
-            ChartBasis::Time(interval) => interval,
-            ChartBasis::Tick(_) => 0,
-        };
-
         let max_volume = self.max_volume;
 
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
@@ -328,12 +323,36 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     let latest = self.x_to_interval(region.x + region.width) as f64;
 
                     let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
-                    let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
-                    let rounded_timestamp =
-                        (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
-                    let snap_ratio =
-                        ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32;
+                    let (rounded_interval, snap_ratio) = match self.basis {
+                        ChartBasis::Time(timeframe) => {
+                            let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
+
+                            let rounded_timestamp =
+                                (crosshair_millis / (timeframe as f64)).round() as u64 * timeframe;
+                            let snap_ratio = ((rounded_timestamp as f64 - earliest)
+                                / (latest - earliest))
+                                as f32;
+
+                            (rounded_timestamp, snap_ratio)
+                        }
+                        ChartBasis::Tick(_) => {
+                            let chart_x_min = region.x;
+                            let chart_x_max = region.x + region.width;
+
+                            let crosshair_pos = chart_x_min + crosshair_ratio as f32 * region.width;
+
+                            let cell_index = (crosshair_pos / self.cell_width).round() as i32;
+                            let snapped_position = cell_index as f32 * self.cell_width;
+
+                            let snap_ratio =
+                                (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
+
+                            let tick_value = self.x_to_interval(snapped_position);
+
+                            (tick_value, snap_ratio)
+                        }
+                    };
 
                     frame.stroke(
                         &Path::line(
@@ -343,11 +362,21 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         dashed_line,
                     );
 
-                    if let Some((_, (buy_v, sell_v))) = self
-                        .data_points
-                        .iter()
-                        .find(|(time, _)| **time == rounded_timestamp)
-                    {
+                    if let Some((_, (buy_v, sell_v))) = match self.basis {
+                        ChartBasis::Time(_) => self
+                            .data_points
+                            .iter()
+                            .find(|(interval, _)| **interval == rounded_interval),
+                        ChartBasis::Tick(_) => {
+                            let index_from_end = rounded_interval as usize;
+
+                            if index_from_end < self.data_points.len() {
+                                self.data_points.iter().rev().nth(index_from_end)
+                            } else {
+                                None
+                            }
+                        }
+                    } {
                         let mut tooltip_bg_height = 28.0;
 
                         let tooltip_text: String = if *buy_v != -1.0 {
