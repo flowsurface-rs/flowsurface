@@ -67,6 +67,10 @@ impl Chart for HeatmapChart {
         vec![]
         //self.timeseries.iter().map(|(time, _, _)| *time).collect()
     }
+
+    fn is_empty(&self) -> bool {
+        self.timeseries.is_empty()
+    }
 }
 
 impl ChartConstants for HeatmapChart {

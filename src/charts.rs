@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
+use iced::widget::center;
 use iced::{
     Element, Length, Point, Rectangle, Size, Task, Theme, Vector, alignment,
     mouse::{self},
@@ -99,6 +100,8 @@ trait Chart: ChartConstants + canvas::Program<Message> {
     fn get_visible_timerange(&self) -> (u64, u64);
 
     fn get_interval_keys(&self) -> Vec<u64>;
+
+    fn is_empty(&self) -> bool;
 }
 
 fn canvas_interaction<T: Chart>(
@@ -362,7 +365,9 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 ) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 
-    let chart_canvas = Canvas::new(chart).width(Length::Fill).height(Length::Fill);
+    if chart.is_empty() {
+        return center(text("Waiting for data...").size(16)).into();
+    }
 
     let axis_labels_x = Canvas::new(AxisLabelsX {
         labels_cache: &chart_state.cache.x_labels,
@@ -422,6 +427,8 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         )
         .padding(2)
     };
+
+    let chart_canvas = Canvas::new(chart).width(Length::Fill).height(Length::Fill);
 
     let main_chart = row![
         container(chart_canvas)

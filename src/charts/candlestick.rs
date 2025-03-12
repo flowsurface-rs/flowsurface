@@ -86,6 +86,13 @@ impl Chart for CandlestickChart {
                 .collect(),
         }
     }
+
+    fn is_empty(&self) -> bool {
+        match &self.data_source {
+            ChartData::TimeBased(timeseries) => timeseries.data_points.is_empty(),
+            ChartData::TickBased(tick_aggr) => tick_aggr.data_points.is_empty(),
+        }
+    }
 }
 
 impl ChartConstants for CandlestickChart {
