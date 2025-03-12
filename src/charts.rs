@@ -442,7 +442,12 @@ fn view_chart<'a, T: Chart, I: Indicator>(
     let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
         (Some(split_at), false) => {
             if let Some(indicator) = chart.view_indicator(indicators) {
-                row![HSplit::new(main_chart, indicator, Message::SplitDragged,).split(split_at),]
+                row![HSplit::new(
+                    main_chart,
+                    indicator,
+                    split_at,
+                    Message::SplitDragged,
+                )]
             } else {
                 main_chart
             }

@@ -2,16 +2,16 @@
 // https://github.com/generic-daw/generic-daw/blob/main/generic_daw_gui/src/widget/vsplit.rs
 //
 // credits to authors of https://github.com/generic-daw/generic-daw/
-
 use iced::{
-    Element, Length, Rectangle, Renderer, Size, Theme, Vector,
+    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget,
         layout::{Limits, Node},
+        overlay,
         renderer::Style,
-        widget::{Tree, tree},
+        widget::{Operation, Tree, tree},
     },
-    mouse::{Cursor, Interaction},
+    mouse::{self, Cursor, Interaction},
     widget::Rule,
 };
 use std::fmt::{Debug, Formatter};
@@ -20,32 +20,35 @@ use crate::style;
 
 const DRAG_SIZE: f32 = 1.0;
 
+#[derive(Default)]
 struct State {
-    split_at: f32,
     dragging: bool,
-    offset: f32,
+    hovering: bool,
 }
 
-pub struct HSplit<'a, Message, Theme, Renderer> {
-    children: [Element<'a, Message, Theme, Renderer>; 3],
-    starting_split_at: f32,
-    on_resize: Box<dyn Fn(f32) -> Message + 'a>,
+pub struct HSplit<'a, Message> {
+    children: [Element<'a, Message>; 3],
+    split_at: f32,
+    resize: fn(f32) -> Message,
 }
 
-impl<Message, Theme, Renderer> Debug for HSplit<'_, Message, Theme, Renderer> {
+impl<Message> Debug for HSplit<'_, Message> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HSplit").finish_non_exhaustive()
+        f.debug_struct("HSplit")
+            .field("split_at", &self.split_at)
+            .finish_non_exhaustive()
     }
 }
 
-impl<'a, Message> HSplit<'a, Message, Theme, Renderer>
+impl<'a, Message> HSplit<'a, Message>
 where
     Message: 'a,
 {
     pub fn new(
         top: impl Into<Element<'a, Message>>,
         bottom: impl Into<Element<'a, Message>>,
-        on_resize: impl Fn(f32) -> Message + 'a,
+        split_at: f32,
+        resize: fn(f32) -> Message,
     ) -> Self {
         Self {
             children: [
@@ -53,26 +56,13 @@ where
                 Rule::horizontal(DRAG_SIZE).style(style::split_ruler).into(),
                 bottom.into(),
             ],
-            starting_split_at: 0.8,
-            on_resize: Box::new(on_resize),
-        }
-    }
-
-    pub fn split(mut self, split_at: f32) -> Self {
-        self.starting_split_at = split_at;
-        self
-    }
-
-    fn new_state(&self) -> State {
-        State {
-            split_at: self.starting_split_at,
-            dragging: false,
-            offset: 0.0,
+            split_at,
+            resize,
         }
     }
 }
 
-impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Renderer> {
+impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message> {
     fn children(&self) -> Vec<Tree> {
         self.children.iter().map(Tree::new).collect()
     }
@@ -86,16 +76,20 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(self.new_state())
+        tree::State::new(State::default())
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&self.children);
     }
 
     fn layout(&self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
-        let state = tree.state.downcast_ref::<State>();
         let max_limits = limits.max();
 
         let top_height = max_limits
             .height
-            .mul_add(state.split_at, -(DRAG_SIZE * 0.5));
+            .mul_add(self.split_at, -(DRAG_SIZE * 0.5))
+            .floor();
         let top_limits = Limits::new(Size::new(0.0, 0.0), Size::new(max_limits.width, top_height));
 
         let bottom_height = max_limits.height - top_height - DRAG_SIZE;
@@ -110,14 +104,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
                 .layout(&mut tree.children[0], renderer, &top_limits),
             self.children[1]
                 .as_widget()
-                .layout(
-                    &mut tree.children[1],
-                    renderer,
-                    &Limits::new(
-                        Size::new(max_limits.width, 1.0),
-                        Size::new(max_limits.width, DRAG_SIZE),
-                    ),
-                )
+                .layout(&mut tree.children[1], renderer, limits)
                 .translate(Vector::new(0.0, top_height)),
             self.children[2]
                 .as_widget()
@@ -131,7 +118,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
     fn update(
         &mut self,
         tree: &mut Tree,
-        event: &iced::Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: Cursor,
         renderer: &Renderer,
@@ -139,6 +126,20 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        self.children
+            .iter_mut()
+            .zip(&mut tree.children)
+            .zip(layout.children())
+            .for_each(|((child, tree), layout)| {
+                child.as_widget_mut().update(
+                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+                );
+            });
+
+        if shell.is_event_captured() {
+            return;
+        }
+
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
 
@@ -150,41 +151,34 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
             }
         };
 
-        if let iced::Event::Mouse(event) = event {
+        if let Event::Mouse(event) = event {
             match event {
-                iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left) => {
-                    if let Some(position) = cursor.position_in(dragger_bounds) {
-                        state.offset = DRAG_SIZE.mul_add(-0.5, position.y);
+                mouse::Event::ButtonPressed(iced::mouse::Button::Left) => {
+                    if cursor.is_over(dragger_bounds) {
                         state.dragging = true;
+                        shell.capture_event();
                     }
                 }
-                iced::mouse::Event::CursorMoved { .. } if state.dragging => {
-                    if let Some(position) = cursor.position() {
-                        state.split_at = (DRAG_SIZE
-                            .mul_add(-0.5, position.y - bounds.position().y - state.offset)
-                            / (bounds.height - DRAG_SIZE))
-                            .clamp(0.0, 1.0);
-                    } else {
-                        state.dragging = false;
+                mouse::Event::CursorMoved {
+                    position: Point { y, .. },
+                    ..
+                } => {
+                    if state.dragging {
+                        let split_at = ((y - bounds.y) / bounds.height).clamp(0.0, 1.0);
+                        shell.publish((self.resize)(split_at));
+                        shell.capture_event();
+                    } else if state.hovering != cursor.is_over(dragger_bounds) {
+                        state.hovering ^= true;
+                        shell.request_redraw();
                     }
                 }
-                iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) if state.dragging => {
+                mouse::Event::ButtonReleased(mouse::Button::Left) if state.dragging => {
                     state.dragging = false;
-                    shell.publish((self.on_resize)(state.split_at));
+                    shell.capture_event();
                 }
                 _ => {}
             }
         }
-
-        self.children
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-            .for_each(|((child, tree), layout)| {
-                child.as_widget_mut().update(
-                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-                )
-            });
     }
 
     fn draw(
@@ -218,38 +212,59 @@ impl<Message> Widget<Message, Theme, Renderer> for HSplit<'_, Message, Theme, Re
         renderer: &Renderer,
     ) -> Interaction {
         let state = tree.state.downcast_ref::<State>();
-
-        let dragger_bounds = match layout.children().nth(1) {
-            Some(dragger) => dragger.bounds().expand(4.0),
-            None => {
-                log::error!("Failed to find dragger bounds in HSplit layout");
-                return Interaction::default();
-            }
-        };
-
-        if state.dragging || cursor.position_in(dragger_bounds).is_some() {
+        if state.dragging || state.hovering {
             Interaction::ResizingVertically
         } else {
             self.children
                 .iter()
                 .zip(&tree.children)
                 .zip(layout.children())
-                .find(|(_, layout)| cursor.position_in(layout.bounds()).is_some())
-                .map_or_else(Interaction::default, |((child, tree), layout)| {
+                .map(|((child, tree), layout)| {
                     child
                         .as_widget()
                         .mouse_interaction(tree, layout, cursor, viewport, renderer)
                 })
+                .max()
+                .unwrap_or_default()
         }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        overlay::from_children(&mut self.children, tree, layout, renderer, translation)
+    }
+
+    fn operate(
+        &self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        operation.container(None, layout.bounds(), &mut |operation| {
+            self.children
+                .iter()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+                .for_each(|((child, state), layout)| {
+                    child
+                        .as_widget()
+                        .operate(state, layout, renderer, operation);
+                });
+        });
     }
 }
 
-impl<'a, Message> From<HSplit<'a, Message, Theme, Renderer>>
-    for Element<'a, Message, Theme, Renderer>
+impl<'a, Message> From<HSplit<'a, Message>> for Element<'a, Message>
 where
     Message: 'a,
 {
-    fn from(vsplit: HSplit<'a, Message, Theme, Renderer>) -> Self {
-        Self::new(vsplit)
+    fn from(widget: HSplit<'a, Message>) -> Self {
+        Self::new(widget)
     }
 }

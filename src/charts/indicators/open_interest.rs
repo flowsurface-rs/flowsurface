@@ -1,19 +1,43 @@
 use std::collections::BTreeMap;
 
 use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
-use iced::widget::{Canvas, container, row};
+use iced::widget::{Canvas, center, container, row, text};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::charts::{Caches, ChartBasis, CommonChartData, Interaction, Message, round_to_tick};
+use crate::data_providers::aggr::time::Timeframe;
 use crate::data_providers::format_with_commas;
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,
     cache: &'a Caches,
-    data: &'a BTreeMap<u64, f32>,
+    data_points: &'a BTreeMap<u64, f32>,
     earliest: u64,
     latest: u64,
 ) -> Element<'a, Message> {
+    let (mut max_value, mut min_value) = {
+        match chart_state.basis {
+            ChartBasis::Time(interval) => {
+                if interval < Timeframe::M5.to_milliseconds() {
+                    return center(text(
+                        "WIP: Open Interest is not available with intervals less than 5 minutes.",
+                    ))
+                    .into();
+                } else {
+                    data_points
+                        .iter()
+                        .filter(|(timestamp, _)| **timestamp >= earliest && **timestamp <= latest)
+                        .fold((f32::MIN, f32::MAX), |(max, min), (_, value)| {
+                            (max.max(*value), min.min(*value))
+                        })
+                }
+            }
+            ChartBasis::Tick(_) => {
+                return center(text("WIP: Open Interest is not available for tick charts.")).into();
+            }
+        }
+    };
+
     let indi_chart = Canvas::new(OpenInterest {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
@@ -23,23 +47,11 @@ pub fn create_indicator_elem<'a>(
         translation_x: chart_state.translation.x,
         basis: chart_state.basis,
         cell_width: chart_state.cell_width,
-        timeseries: data,
+        timeseries: data_points,
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
     .width(Length::Fill);
-
-    if earliest > latest {
-        return row![indi_chart,].into();
-    }
-
-    let mut max_value: f32 = f32::MIN;
-    let mut min_value: f32 = f32::MAX;
-
-    data.range(earliest..=latest).for_each(|(_, value)| {
-        max_value = max_value.max(*value);
-        min_value = min_value.min(*value);
-    });
 
     let value_range = max_value - min_value;
     let padding = value_range * 0.01;
