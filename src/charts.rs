@@ -168,6 +168,10 @@ fn canvas_interaction<T: Chart>(
                     })
                 }
                 mouse::Event::WheelScrolled { delta } => {
+                    if matches!(interaction, Interaction::Panning { .. }) {
+                        return Some(canvas::Action::capture());
+                    }
+
                     let cursor_to_center = cursor.position_from(bounds.center())?;
 
                     let y = match delta {
@@ -175,7 +179,7 @@ fn canvas_interaction<T: Chart>(
                         | mouse::ScrollDelta::Pixels { y, .. } => y,
                     };
 
-                    // max scaling case
+                    // at max scaling, but the cell width can still be increased
                     if (*y > 0.0 && chart_state.scaling == T::MAX_SCALING)
                         && (chart_state.cell_width < T::MAX_CELL_WIDTH)
                     {
@@ -189,7 +193,7 @@ fn canvas_interaction<T: Chart>(
                         );
                     }
 
-                    // min scaling case
+                    // at min scaling, but the cell width can still be decreased
                     if (*y < 0.0 && chart_state.scaling == T::MIN_SCALING)
                         && (chart_state.cell_width > T::MIN_CELL_WIDTH)
                     {
@@ -281,9 +285,20 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 
                 let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
 
-                let cursor_time = chart_state.x_to_interval(cursor_chart_x);
-                chart_state.cell_width = new_width;
-                let new_cursor_x = chart_state.interval_to_x(cursor_time);
+                let new_cursor_x = match chart_state.basis {
+                    ChartBasis::Time(_) => {
+                        let cursor_time = chart_state.x_to_interval(cursor_chart_x);
+                        chart_state.cell_width = new_width;
+
+                        chart_state.interval_to_x(cursor_time)
+                    }
+                    ChartBasis::Tick(_) => {
+                        let tick_index = cursor_chart_x / chart_state.cell_width;
+                        chart_state.cell_width = new_width;
+
+                        tick_index * chart_state.cell_width
+                    }
+                };
 
                 if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
                     chart_state.translation.x -= new_cursor_x - cursor_chart_x;
