@@ -512,9 +512,7 @@ impl std::fmt::Display for ChartBasis {
                 14_400_000 => write!(f, "4h"),
                 _ => write!(f, "{}ms", millis),
             },
-            ChartBasis::Tick(count) => match *count {
-                _ => write!(f, "T{}", count),
-            },
+            ChartBasis::Tick(count) => write!(f, "T{}", count),
         }
     }
 }
@@ -750,7 +748,6 @@ impl CommonChartData {
 
                 let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
 
-                let aggregation: u64 = aggregation.into();
                 let rounded_tick = (-cell_index as u64) * aggregation;
 
                 frame.stroke(

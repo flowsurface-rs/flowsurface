@@ -265,7 +265,7 @@ impl TimeSeries {
     }
 
     pub fn clear_trades(&mut self) {
-        for (_, data_point) in &mut self.data_points {
+        for data_point in self.data_points.values_mut() {
             data_point.trades.clear();
         }
     }

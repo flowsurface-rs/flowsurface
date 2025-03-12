@@ -456,10 +456,10 @@ impl Dashboard {
                                 {
                                     match &mut pane_state.content {
                                         PaneContent::Footprint(chart, _) => {
-                                            chart.set_tick_basis(size.into());
+                                            chart.set_tick_basis(size);
                                         }
                                         PaneContent::Candlestick(chart, _) => {
-                                            chart.set_tick_basis(size.into());
+                                            chart.set_tick_basis(size);
                                         }
                                         _ => {}
                                     }

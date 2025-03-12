@@ -129,12 +129,12 @@ pub struct TickAggr {
 impl TickAggr {
     pub fn new(aggr_interval: u64, tick_size: f32, all_raw_trades: &[Trade]) -> Self {
         if all_raw_trades.is_empty() {
-            return Self {
+            Self {
                 data_points: Vec::new(),
                 next_buffer: Vec::new(),
                 aggr_interval,
                 tick_size,
-            };
+            }
         } else {
             let mut tick_aggr = Self {
                 data_points: Vec::new(),

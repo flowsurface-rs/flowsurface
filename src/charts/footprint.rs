@@ -208,7 +208,7 @@ impl FootprintChart {
                 }
             }
             ChartBasis::Tick(interval) => {
-                let tick_aggr = TickAggr::new(interval.into(), tick_size, &raw_trades);
+                let tick_aggr = TickAggr::new(interval, tick_size, &raw_trades);
                 let volume_data = tick_aggr.get_volume_data();
 
                 FootprintChart {
@@ -224,7 +224,7 @@ impl FootprintChart {
                         ..Default::default()
                     },
                     data_source: ChartData::TickBased(TickAggr::new(
-                        interval.into(),
+                        interval,
                         tick_size,
                         &raw_trades,
                     )),
@@ -261,7 +261,7 @@ impl FootprintChart {
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
         match self.data_source {
             ChartData::TimeBased(ref mut timeseries) => {
-                timeseries.insert_klines(&vec![kline.to_owned()]);
+                timeseries.insert_klines(&[kline.to_owned()]);
 
                 if let Some(IndicatorData::Volume(_, data)) =
                     self.indicators.get_mut(&FootprintIndicator::Volume)
@@ -443,10 +443,9 @@ impl FootprintChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.basis = ChartBasis::Tick(tick_basis.into());
+        self.chart.basis = ChartBasis::Tick(tick_basis);
 
-        let new_tick_aggr =
-            TickAggr::new(tick_basis.into(), self.chart.tick_size, &self.raw_trades);
+        let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
 
         if let Some(indicator) = self.indicators.get_mut(&FootprintIndicator::Volume) {
             *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
@@ -522,7 +521,7 @@ impl FootprintChart {
 
         match self.data_source {
             ChartData::TickBased(ref mut tick_aggr) => {
-                tick_aggr.insert_trades(&trades_buffer);
+                tick_aggr.insert_trades(trades_buffer);
 
                 if let Some((tick_kline, idx)) = tick_aggr.get_latest_dp() {
                     if let Some(IndicatorData::Volume(_, data)) =

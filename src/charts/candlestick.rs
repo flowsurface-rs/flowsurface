@@ -144,7 +144,7 @@ impl CandlestickChart {
     ) -> CandlestickChart {
         match basis {
             ChartBasis::Time(interval) => {
-                let timeseries = TimeSeries::new(interval.into(), tick_size, &vec![], &klines_raw);
+                let timeseries = TimeSeries::new(interval.into(), tick_size, &[], &klines_raw);
 
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
@@ -195,7 +195,7 @@ impl CandlestickChart {
                 }
             }
             ChartBasis::Tick(interval) => {
-                let tick_aggr = TickAggr::new(interval.into(), tick_size, &raw_trades);
+                let tick_aggr = TickAggr::new(interval, tick_size, &raw_trades);
                 let volume_data = tick_aggr.get_volume_data();
 
                 CandlestickChart {
@@ -246,7 +246,7 @@ impl CandlestickChart {
 
     pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
         if let ChartData::TimeBased(ref mut timeseries) = self.data_source {
-            timeseries.insert_klines(&vec![kline.to_owned()]);
+            timeseries.insert_klines(&[kline.to_owned()]);
 
             if let Some(IndicatorData::Volume(_, data)) =
                 self.indicators.get_mut(&CandlestickIndicator::Volume)
@@ -398,7 +398,7 @@ impl CandlestickChart {
         self.raw_trades.extend_from_slice(trades_buffer);
 
         if let ChartData::TickBased(ref mut tick_aggr) = self.data_source {
-            tick_aggr.insert_trades(&trades_buffer);
+            tick_aggr.insert_trades(trades_buffer);
 
             if let Some((tick_kline, idx)) = tick_aggr.get_latest_dp() {
                 if let Some(IndicatorData::Volume(_, data)) =
@@ -421,10 +421,9 @@ impl CandlestickChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.basis = ChartBasis::Tick(tick_basis.into());
+        self.chart.basis = ChartBasis::Tick(tick_basis);
 
-        let new_tick_aggr =
-            TickAggr::new(tick_basis.into(), self.chart.tick_size, &self.raw_trades);
+        let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
 
         if let Some(indicator) = self.indicators.get_mut(&CandlestickIndicator::Volume) {
             *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
