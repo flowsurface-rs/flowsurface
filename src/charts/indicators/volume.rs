@@ -57,10 +57,6 @@ pub fn create_indicator_elem<'a>(
     .height(Length::Fill)
     .width(Length::Fill);
 
-    if earliest == latest {
-        return row![indi_chart,].into();
-    }
-
     let indi_labels = Canvas::new(super::IndicatorLabel {
         label_cache: &cache.y_labels,
         max: max_volume,
@@ -98,6 +94,19 @@ impl VolumeIndicator<'_> {
             y: 0.0,
             width,
             height,
+        }
+    }
+
+    fn get_interval_range(&self, region: Rectangle) -> (u64, u64) {
+        match self.basis {
+            ChartBasis::Tick(_) => (
+                self.x_to_interval(region.x + region.width),
+                self.x_to_interval(region.x),
+            ),
+            ChartBasis::Time(interval) => (
+                self.x_to_interval(region.x) - (interval / 2),
+                self.x_to_interval(region.x + region.width) + (interval / 2),
+            ),
         }
     }
 
@@ -194,10 +203,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
             let region = self.visible_region(frame.size());
 
-            let (earliest, latest) = (
-                self.x_to_interval(region.x),
-                self.x_to_interval(region.x + region.width),
-            );
+            let (earliest, latest) = self.get_interval_range(region);
 
             match self.basis {
                 ChartBasis::Time(_) => {
@@ -262,7 +268,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         .iter()
                         .rev()
                         .enumerate()
-                        .filter(|(index, _)| *index <= earliest && *index >= latest)
+                        .filter(|(index, _)| *index <= latest && *index >= earliest)
                         .for_each(|(index, (_, (buy_volume, sell_volume)))| {
                             let x_position = self.interval_to_x(index as u64);
 

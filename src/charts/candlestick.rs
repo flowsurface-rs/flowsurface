@@ -194,47 +194,49 @@ impl CandlestickChart {
                     request_handler: RequestHandler::new(),
                 }
             }
-            ChartBasis::Tick(interval) => CandlestickChart {
-                chart: CommonChartData {
-                    cell_width: Self::DEFAULT_CELL_WIDTH,
-                    cell_height: 80.0 / tick_size,
-                    tick_size,
-                    decimals: count_decimals(tick_size),
-                    crosshair: layout.crosshair,
-                    indicators_split: layout.indicators_split,
-                    ticker_info,
-                    basis,
-                    ..Default::default()
-                },
-                data_source: ChartData::TickBased(TickAggr::new(
-                    interval.into(),
-                    tick_size,
-                    &raw_trades,
-                )),
-                indicators: {
-                    enabled_indicators
-                        .iter()
-                        .map(|indicator| {
-                            (
-                                *indicator,
-                                match indicator {
-                                    CandlestickIndicator::Volume => {
-                                        IndicatorData::Volume(Caches::default(), BTreeMap::new())
-                                    }
-                                    CandlestickIndicator::OpenInterest => {
-                                        IndicatorData::OpenInterest(
+            ChartBasis::Tick(interval) => {
+                let tick_aggr = TickAggr::new(interval.into(), tick_size, &raw_trades);
+                let volume_data = tick_aggr.get_volume_data();
+
+                CandlestickChart {
+                    chart: CommonChartData {
+                        cell_width: Self::DEFAULT_CELL_WIDTH,
+                        cell_height: 80.0 / tick_size,
+                        tick_size,
+                        decimals: count_decimals(tick_size),
+                        crosshair: layout.crosshair,
+                        indicators_split: layout.indicators_split,
+                        ticker_info,
+                        basis,
+                        ..Default::default()
+                    },
+                    data_source: ChartData::TickBased(tick_aggr),
+                    indicators: {
+                        enabled_indicators
+                            .iter()
+                            .map(|indicator| {
+                                (
+                                    *indicator,
+                                    match indicator {
+                                        CandlestickIndicator::Volume => IndicatorData::Volume(
                                             Caches::default(),
-                                            BTreeMap::new(),
-                                        )
-                                    }
-                                },
-                            )
-                        })
-                        .collect()
-                },
-                raw_trades,
-                request_handler: RequestHandler::new(),
-            },
+                                            volume_data.clone(),
+                                        ),
+                                        CandlestickIndicator::OpenInterest => {
+                                            IndicatorData::OpenInterest(
+                                                Caches::default(),
+                                                BTreeMap::new(),
+                                            )
+                                        }
+                                    },
+                                )
+                            })
+                            .collect()
+                    },
+                    raw_trades,
+                    request_handler: RequestHandler::new(),
+                }
+            }
         }
     }
 
