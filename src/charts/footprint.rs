@@ -26,8 +26,7 @@ use crate::screen::UserTimezone;
 use super::indicators::{self, FootprintIndicator, Indicator};
 use super::scales::PriceInfoLabel;
 use super::{
-    Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, FootprintTrades,
-    Interaction, Message,
+    Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message,
 };
 use super::{
     abbr_large_numbers, canvas_interaction, count_decimals, request_fetch, round_to_tick,
@@ -120,6 +119,8 @@ impl IndicatorData {
         }
     }
 }
+
+type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 impl ChartConstants for FootprintChart {
     const MIN_SCALING: f32 = 0.4;
@@ -962,7 +963,7 @@ impl canvas::Program<Message> for FootprintChart {
                             }
                         }
                         ChartData::TickBased(tick_aggr) => {
-                            let index = (rounded_aggregation / tick_aggr.aggr_interval) as usize;
+                            let index = (rounded_aggregation / tick_aggr.interval) as usize;
 
                             if index < tick_aggr.data_points.len() {
                                 let dp =

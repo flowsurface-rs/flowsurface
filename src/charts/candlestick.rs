@@ -747,7 +747,7 @@ impl canvas::Program<Message> for CandlestickChart {
                             }
                         }
                         ChartData::TickBased(tick_aggr) => {
-                            let index = (rounded_aggregation / tick_aggr.aggr_interval) as usize;
+                            let index = (rounded_aggregation / tick_aggr.interval) as usize;
 
                             if index < tick_aggr.data_points.len() {
                                 let dp =

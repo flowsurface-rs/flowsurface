@@ -81,16 +81,7 @@ impl From<u64> for TickCount {
 
 impl std::fmt::Display for TickCount {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            TickCount::T50 => write!(f, "T50"),
-            TickCount::T100 => write!(f, "T100"),
-            TickCount::T200 => write!(f, "T200"),
-            TickCount::T500 => write!(f, "T500"),
-            TickCount::T1000 => write!(f, "T1000"),
-            TickCount::T2000 => write!(f, "T2000"),
-            TickCount::T5000 => write!(f, "T5000"),
-            TickCount::T10000 => write!(f, "T10000"),
-        }
+        write!(f, "{}T", u64::from(*self))
     }
 }
 
@@ -122,27 +113,27 @@ impl TickAccumulation {
 pub struct TickAggr {
     pub data_points: Vec<TickAccumulation>,
     next_buffer: Vec<Trade>,
-    pub aggr_interval: u64,
+    pub interval: u64,
     pub tick_size: f32,
 }
 
 impl TickAggr {
-    pub fn new(aggr_interval: u64, tick_size: f32, all_raw_trades: &[Trade]) -> Self {
-        if all_raw_trades.is_empty() {
+    pub fn new(interval: u64, tick_size: f32, raw_trades: &[Trade]) -> Self {
+        if raw_trades.is_empty() {
             Self {
                 data_points: Vec::new(),
                 next_buffer: Vec::new(),
-                aggr_interval,
+                interval,
                 tick_size,
             }
         } else {
             let mut tick_aggr = Self {
                 data_points: Vec::new(),
                 next_buffer: Vec::new(),
-                aggr_interval,
+                interval,
                 tick_size,
             };
-            tick_aggr.insert_trades(all_raw_trades);
+            tick_aggr.insert_trades(raw_trades);
             tick_aggr
         }
     }
@@ -185,7 +176,7 @@ impl TickAggr {
 
         for trade in all_trades {
             if self.data_points.is_empty()
-                || self.data_points.last().unwrap().tick_count >= self.aggr_interval as usize
+                || self.data_points.last().unwrap().tick_count >= self.interval as usize
             {
                 self.data_points.push(TickAccumulation {
                     tick_count: 1,

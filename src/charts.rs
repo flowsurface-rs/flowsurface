@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
 use iced::widget::center;
 use iced::{
@@ -12,7 +10,6 @@ use iced::{
     },
 };
 use indicators::Indicator;
-use ordered_float::OrderedFloat;
 use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -40,8 +37,6 @@ pub mod heatmap;
 pub mod indicators;
 mod scales;
 pub mod timeandsales;
-
-type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum Interaction {
@@ -486,9 +481,21 @@ impl Caches {
     }
 }
 
+/// Defines how chart data is aggregated and displayed along the x-axis.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ChartBasis {
+    /// Time-based aggregation where each datapoint represents a fixed time interval.
+    ///
+    /// The u64 value represents milliseconds. Common values include:
+    /// - 60_000 (1 minute)
+    /// - 300_000 (5 minutes)
+    /// - 3_600_000 (1 hour)
     Time(u64),
+
+    /// Trade-based aggregation where each datapoint represents a fixed number of trades.
+    ///
+    /// The u64 value represents the number of trades per aggregation unit.
+    /// Common values include 100, 500, or 1000 trades per bar/candle.
     Tick(u64),
 }
 
@@ -512,7 +519,7 @@ impl std::fmt::Display for ChartBasis {
                 14_400_000 => write!(f, "4h"),
                 _ => write!(f, "{}ms", millis),
             },
-            ChartBasis::Tick(count) => write!(f, "T{}", count),
+            ChartBasis::Tick(count) => write!(f, "{}T", count),
         }
     }
 }

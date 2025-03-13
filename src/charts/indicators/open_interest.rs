@@ -42,7 +42,7 @@ pub fn create_indicator_elem<'a>(
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
         crosshair: chart_state.crosshair,
-        max: chart_state.latest_x,
+        x_max: chart_state.latest_x,
         scaling: chart_state.scaling,
         translation_x: chart_state.translation.x,
         basis: chart_state.basis,
@@ -75,7 +75,7 @@ pub struct OpenInterest<'a> {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
     pub crosshair: bool,
-    pub max: u64,
+    pub x_max: u64,
     pub scaling: f32,
     pub translation_x: f32,
     pub basis: ChartBasis,
@@ -102,10 +102,10 @@ impl OpenInterest<'_> {
             ChartBasis::Time(interval) => {
                 if x <= 0.0 {
                     let diff = (-x / self.cell_width * interval as f32) as u64;
-                    self.max.saturating_sub(diff)
+                    self.x_max.saturating_sub(diff)
                 } else {
                     let diff = (x / self.cell_width * interval as f32) as u64;
-                    self.max.saturating_add(diff)
+                    self.x_max.saturating_add(diff)
                 }
             }
             ChartBasis::Tick(_) => {
@@ -117,11 +117,11 @@ impl OpenInterest<'_> {
     fn time_to_x(&self, time: u64) -> f32 {
         match self.basis {
             ChartBasis::Time(interval) => {
-                if time <= self.max {
-                    let diff = self.max - time;
+                if time <= self.x_max {
+                    let diff = self.x_max - time;
                     -(diff as f32 / interval as f32) * self.cell_width
                 } else {
-                    let diff = time - self.max;
+                    let diff = time - self.x_max;
                     (diff as f32 / interval as f32) * self.cell_width
                 }
             }
@@ -348,7 +348,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     }
                 } else if let Some(cursor_position) = cursor.position_in(bounds) {
                     // Horizontal price line
-                    let highest = self.max as f32;
+                    let highest = self.x_max as f32;
                     let lowest = 0.0;
 
                     let crosshair_ratio = cursor_position.y / bounds.height;
