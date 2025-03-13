@@ -208,8 +208,9 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             );
 
             let (earliest, latest) = (
-                self.x_to_time(region.x) - (timeframe / 2),
-                self.x_to_time(region.x + region.width) + (timeframe / 2),
+                self.x_to_time(region.x).saturating_sub(timeframe / 2),
+                self.x_to_time(region.x + region.width)
+                    .saturating_add(timeframe / 2),
             );
 
             let mut max_value: f32 = f32::MIN;

@@ -104,8 +104,9 @@ impl VolumeIndicator<'_> {
                 self.x_to_interval(region.x),
             ),
             ChartBasis::Time(interval) => (
-                self.x_to_interval(region.x) - (interval / 2),
-                self.x_to_interval(region.x + region.width) + (interval / 2),
+                self.x_to_interval(region.x).saturating_sub(interval / 2),
+                self.x_to_interval(region.x + region.width)
+                    .saturating_add(interval / 2),
             ),
         }
     }

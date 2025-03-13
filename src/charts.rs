@@ -1,5 +1,5 @@
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
-use iced::widget::center;
+use iced::widget::{center, mouse_area};
 use iced::{
     Element, Length, Point, Rectangle, Size, Task, Theme, Vector, alignment,
     mouse::{self},
@@ -51,6 +51,12 @@ pub enum Interaction {
     },
 }
 
+#[derive(Debug, Clone)]
+pub enum AxisScaleClicked {
+    X,
+    Y,
+}
+
 pub trait ChartConstants {
     const MIN_SCALING: f32;
     const MAX_SCALING: f32;
@@ -73,6 +79,7 @@ pub enum Message {
     BoundsChanged(Rectangle),
     SplitDragged(f32),
     NewDataRange(Uuid, FetchRange),
+    DoubleClick(AxisScaleClicked),
 }
 
 trait Chart: ChartConstants + canvas::Program<Message> {
@@ -249,6 +256,14 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
     let chart_state = chart.get_common_data_mut();
 
     match message {
+        Message::DoubleClick(scale) => match scale {
+            AxisScaleClicked::X => {
+                chart_state.cell_width = T::DEFAULT_CELL_WIDTH;
+            }
+            AxisScaleClicked::Y => {
+                chart_state.autoscale = true;
+            }
+        },
         Message::Translated(translation) => {
             chart_state.translation = *translation;
             chart_state.autoscale = false;
@@ -263,7 +278,6 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
             chart_state.autoscale = !chart_state.autoscale;
             if chart_state.autoscale {
                 chart_state.scaling = 1.0;
-                chart_state.cell_width = T::DEFAULT_CELL_WIDTH;
             }
         }
         Message::CrosshairToggle => {
@@ -281,7 +295,16 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
                 let new_width = (chart_state.cell_width * (1.0 + delta / zoom_factor))
                     .clamp(T::MIN_CELL_WIDTH, T::MAX_CELL_WIDTH);
 
-                let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
+                let latest_x = chart_state.interval_to_x(chart_state.latest_x);
+                let is_interval_x_visible = chart_state.is_interval_x_visible(latest_x);
+
+                let cursor_chart_x = {
+                    if *is_wheel_scroll || !is_interval_x_visible {
+                        cursor_to_center_x / old_scaling - old_translation_x
+                    } else {
+                        latest_x / old_scaling - old_translation_x
+                    }
+                };
 
                 let new_cursor_x = match chart_state.basis {
                     ChartBasis::Time(_) => {
@@ -298,11 +321,13 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
                     }
                 };
 
-                if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
-                    chart_state.translation.x -= new_cursor_x - cursor_chart_x;
-                }
+                if *is_wheel_scroll || !is_interval_x_visible {
+                    if !new_cursor_x.is_nan() && !cursor_chart_x.is_nan() {
+                        chart_state.translation.x -= new_cursor_x - cursor_chart_x;
+                    }
 
-                chart_state.autoscale = false;
+                    chart_state.autoscale = false;
+                }
             }
         }
         Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
@@ -429,9 +454,11 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         container(chart_canvas)
             .width(Length::FillPortion(10))
             .height(Length::FillPortion(120)),
-        container(axis_labels_y)
-            .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
-            .height(Length::FillPortion(120))
+        container(
+            mouse_area(axis_labels_y).on_double_click(Message::DoubleClick(AxisScaleClicked::Y))
+        )
+        .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
+        .height(Length::FillPortion(120))
     ];
 
     let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
@@ -453,9 +480,12 @@ fn view_chart<'a, T: Chart, I: Indicator>(
     column![
         chart_content,
         row![
-            container(axis_labels_x)
-                .width(Length::FillPortion(10))
-                .height(Length::Fixed(26.0)),
+            container(
+                mouse_area(axis_labels_x)
+                    .on_double_click(Message::DoubleClick(AxisScaleClicked::X))
+            )
+            .width(Length::FillPortion(10))
+            .height(Length::Fixed(26.0)),
             chart_controls
                 .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
                 .height(Length::Fixed(26.0))
@@ -613,6 +643,12 @@ impl CommonChartData {
         }
     }
 
+    fn is_interval_x_visible(&self, interval_x: f32) -> bool {
+        let region = self.visible_region(self.bounds.size());
+
+        interval_x >= region.x && interval_x <= region.x + region.width
+    }
+
     fn get_interval_range(&self, region: Rectangle) -> (u64, u64) {
         match self.basis {
             ChartBasis::Tick(_) => (
@@ -620,8 +656,9 @@ impl CommonChartData {
                 self.x_to_interval(region.x),
             ),
             ChartBasis::Time(interval) => (
-                self.x_to_interval(region.x) - (interval / 2),
-                self.x_to_interval(region.x + region.width) + (interval / 2),
+                self.x_to_interval(region.x).saturating_sub(interval / 2),
+                self.x_to_interval(region.x + region.width)
+                    .saturating_add(interval / 2),
             ),
         }
     }
