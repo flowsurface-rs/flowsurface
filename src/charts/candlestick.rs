@@ -201,7 +201,7 @@ impl CandlestickChart {
                 CandlestickChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
-                        cell_height: 80.0 / tick_size,
+                        cell_height: Self::MAX_CELL_HEIGHT,
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,
