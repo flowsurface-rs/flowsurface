@@ -94,6 +94,62 @@ pub struct TickAccumulation {
 }
 
 impl TickAccumulation {
+    pub fn new(trade: &Trade, tick_size: f32) -> Self {
+        let mut trades = HashMap::new();
+        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+
+        if trade.is_sell {
+            trades.insert(price_level, (0.0, trade.qty));
+        } else {
+            trades.insert(price_level, (trade.qty, 0.0));
+        }
+
+        Self {
+            tick_count: 1,
+            open_price: trade.price,
+            high_price: trade.price,
+            low_price: trade.price,
+            close_price: trade.price,
+            volume_buy: if trade.is_sell { 0.0 } else { trade.qty },
+            volume_sell: if trade.is_sell { trade.qty } else { 0.0 },
+            trades,
+            start_timestamp: trade.time,
+        }
+    }
+
+    pub fn update_with_trade(&mut self, trade: &Trade, tick_size: f32) {
+        self.tick_count += 1;
+        self.high_price = self.high_price.max(trade.price);
+        self.low_price = self.low_price.min(trade.price);
+        self.close_price = trade.price;
+
+        if trade.is_sell {
+            self.volume_sell += trade.qty;
+        } else {
+            self.volume_buy += trade.qty;
+        }
+
+        self.add_trade_at_price_level(trade, tick_size);
+    }
+
+    fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
+        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+
+        if let Some((buy_qty, sell_qty)) = self.trades.get_mut(&price_level) {
+            if trade.is_sell {
+                *sell_qty += trade.qty;
+            } else {
+                *buy_qty += trade.qty;
+            }
+        } else {
+            if trade.is_sell {
+                self.trades.insert(price_level, (0.0, trade.qty));
+            } else {
+                self.trades.insert(price_level, (trade.qty, 0.0));
+            }
+        }
+    }
+
     pub fn get_max_trade_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
         let mut max_qty: f32 = 0.0;
         for (price, (buy_qty, sell_qty)) in &self.trades {
@@ -103,44 +159,40 @@ impl TickAccumulation {
         }
         max_qty
     }
+
+    pub fn is_full(&self, interval: u64) -> bool {
+        self.tick_count >= interval as usize
+    }
 }
 
 pub struct TickAggr {
     pub data_points: Vec<TickAccumulation>,
-    next_buffer: Vec<Trade>,
     pub interval: u64,
     pub tick_size: f32,
 }
 
 impl TickAggr {
     pub fn new(interval: u64, tick_size: f32, raw_trades: &[Trade]) -> Self {
-        if raw_trades.is_empty() {
-            Self {
-                data_points: Vec::new(),
-                next_buffer: Vec::new(),
-                interval,
-                tick_size,
-            }
-        } else {
-            let mut tick_aggr = Self {
-                data_points: Vec::new(),
-                next_buffer: Vec::new(),
-                interval,
-                tick_size,
-            };
+        let mut tick_aggr = Self {
+            data_points: Vec::new(),
+            interval,
+            tick_size,
+        };
+
+        if !raw_trades.is_empty() {
             tick_aggr.insert_trades(raw_trades);
-            tick_aggr
         }
+
+        tick_aggr
     }
 
-    pub fn change_tick_size(&mut self, tick_size: f32, all_raw_trades: &[Trade]) {
+    pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
         self.tick_size = tick_size;
 
         self.data_points.clear();
-        self.next_buffer.clear();
 
-        if !all_raw_trades.is_empty() {
-            self.insert_trades(all_raw_trades);
+        if !raw_trades.is_empty() {
+            self.insert_trades(raw_trades);
         }
     }
 
@@ -160,72 +212,18 @@ impl TickAggr {
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade]) {
-        if buffer.is_empty() && self.next_buffer.is_empty() {
-            return;
-        }
+        for trade in buffer {
+            if self.data_points.is_empty() {
+                self.data_points
+                    .push(TickAccumulation::new(trade, self.tick_size));
+            } else {
+                let last_idx = self.data_points.len() - 1;
 
-        // Prepare all trades to be processed (next_buffer first, then the new buffer)
-        let mut all_trades = Vec::with_capacity(self.next_buffer.len() + buffer.len());
-        all_trades.append(&mut self.next_buffer); // Move from next_buffer
-        all_trades.extend_from_slice(buffer); // Add the new buffer
-
-        for trade in all_trades {
-            if self.data_points.is_empty()
-                || self.data_points.last().unwrap().tick_count >= self.interval as usize
-            {
-                self.data_points.push(TickAccumulation {
-                    tick_count: 1,
-                    open_price: trade.price,
-                    high_price: trade.price,
-                    low_price: trade.price,
-                    close_price: trade.price,
-                    volume_buy: if trade.is_sell { 0.0 } else { trade.qty },
-                    volume_sell: if trade.is_sell { trade.qty } else { 0.0 },
-                    trades: {
-                        let mut trades = HashMap::new();
-                        let price_level = OrderedFloat(round_to_tick(trade.price, self.tick_size));
-                        if trade.is_sell {
-                            trades.insert(price_level, (0.0, trade.qty));
-                        } else {
-                            trades.insert(price_level, (trade.qty, 0.0));
-                        }
-                        trades
-                    },
-                    start_timestamp: trade.time,
-                });
-                continue;
-            }
-
-            if let Some(current_accumulation) = self.data_points.last_mut() {
-                current_accumulation.tick_count += 1;
-
-                current_accumulation.high_price = current_accumulation.high_price.max(trade.price);
-                current_accumulation.low_price = current_accumulation.low_price.min(trade.price);
-
-                current_accumulation.close_price = trade.price;
-
-                if trade.is_sell {
-                    current_accumulation.volume_sell += trade.qty;
+                if self.data_points[last_idx].is_full(self.interval) {
+                    self.data_points
+                        .push(TickAccumulation::new(trade, self.tick_size));
                 } else {
-                    current_accumulation.volume_buy += trade.qty;
-                }
-
-                let price_level = OrderedFloat(round_to_tick(trade.price, self.tick_size));
-                if let Some((buy_qty, sell_qty)) = current_accumulation.trades.get_mut(&price_level)
-                {
-                    if trade.is_sell {
-                        *sell_qty += trade.qty;
-                    } else {
-                        *buy_qty += trade.qty;
-                    }
-                } else if trade.is_sell {
-                    current_accumulation
-                        .trades
-                        .insert(price_level, (0.0, trade.qty));
-                } else {
-                    current_accumulation
-                        .trades
-                        .insert(price_level, (trade.qty, 0.0));
+                    self.data_points[last_idx].update_with_trade(trade, self.tick_size);
                 }
             }
         }
