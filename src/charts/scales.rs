@@ -804,6 +804,14 @@ pub enum PriceInfoLabel {
 }
 
 impl PriceInfoLabel {
+    pub fn new(close_price: f32, open_price: f32) -> Self {
+        if close_price >= open_price {
+            PriceInfoLabel::Up(close_price)
+        } else {
+            PriceInfoLabel::Down(close_price)
+        }
+    }
+
     pub fn get_with_color(&self, palette: &Extended) -> (f32, iced::Color) {
         match self {
             PriceInfoLabel::Up(p) => (*p, palette.success.base.color),

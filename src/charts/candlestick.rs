@@ -260,13 +260,7 @@ impl CandlestickChart {
                 chart.latest_x = kline.time;
             }
 
-            chart.last_price = {
-                if kline.close > kline.open {
-                    Some(PriceInfoLabel::Up(kline.close))
-                } else {
-                    Some(PriceInfoLabel::Down(kline.close))
-                }
-            };
+            chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
 
             self.render_start();
             return self.get_missing_data_task().unwrap_or(Task::none());
@@ -398,20 +392,22 @@ impl CandlestickChart {
         self.raw_trades.extend_from_slice(trades_buffer);
 
         if let ChartData::TickBased(ref mut tick_aggr) = self.data_source {
+            let old_dp_len = tick_aggr.data_points.len();
+
             tick_aggr.insert_trades(trades_buffer);
 
-            if let Some((tick_kline, idx)) = tick_aggr.get_latest_dp() {
-                if let Some(IndicatorData::Volume(_, data)) =
-                    self.indicators.get_mut(&CandlestickIndicator::Volume)
-                {
-                    data.insert(idx as u64, (tick_kline.volume_buy, tick_kline.volume_sell));
+            if let Some(IndicatorData::Volume(_, data)) =
+                self.indicators.get_mut(&CandlestickIndicator::Volume)
+            {
+                let start_idx = old_dp_len.saturating_sub(1);
+                for (idx, dp) in tick_aggr.data_points.iter().enumerate().skip(start_idx) {
+                    data.insert(idx as u64, (dp.volume_buy, dp.volume_sell));
                 }
+            }
 
-                self.chart.last_price = if tick_kline.close_price >= tick_kline.open_price {
-                    Some(PriceInfoLabel::Up(tick_kline.close_price))
-                } else {
-                    Some(PriceInfoLabel::Down(tick_kline.close_price))
-                };
+            if let Some(last_dp) = tick_aggr.data_points.last() {
+                self.chart.last_price =
+                    Some(PriceInfoLabel::new(last_dp.close_price, last_dp.open_price));
             } else {
                 self.chart.last_price = None;
             }
