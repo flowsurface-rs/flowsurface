@@ -44,14 +44,8 @@ pub fn create_indicator_elem<'a>(
     let indi_chart = Canvas::new(VolumeIndicator {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
-        crosshair: chart_state.crosshair,
-        x_max: chart_state.latest_x,
-        scaling: chart_state.scaling,
-        translation_x: chart_state.translation.x,
-        basis: chart_state.basis,
-        cell_width: chart_state.cell_width,
+        chart_state,
         data_points,
-        chart_bounds: chart_state.bounds,
         max_volume,
     })
     .height(Length::Fill)
@@ -73,74 +67,21 @@ pub fn create_indicator_elem<'a>(
 pub struct VolumeIndicator<'a> {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
-    pub crosshair: bool,
-    pub x_max: u64,
     pub max_volume: f32,
-    pub scaling: f32,
-    pub translation_x: f32,
-    pub basis: ChartBasis,
-    pub cell_width: f32,
     pub data_points: &'a BTreeMap<u64, (f32, f32)>,
-    pub chart_bounds: Rectangle,
+    pub chart_state: &'a CommonChartData,
 }
 
 impl VolumeIndicator<'_> {
     fn visible_region(&self, size: Size) -> Rectangle {
-        let width = size.width / self.scaling;
-        let height = size.height / self.scaling;
+        let width = size.width / self.chart_state.scaling;
+        let height = size.height / self.chart_state.scaling;
 
         Rectangle {
-            x: -self.translation_x - width / 2.0,
+            x: -self.chart_state.translation.x - width / 2.0,
             y: 0.0,
             width,
             height,
-        }
-    }
-
-    fn get_interval_range(&self, region: Rectangle) -> (u64, u64) {
-        match self.basis {
-            ChartBasis::Tick(_) => (
-                self.x_to_interval(region.x + region.width),
-                self.x_to_interval(region.x),
-            ),
-            ChartBasis::Time(interval) => (
-                self.x_to_interval(region.x).saturating_sub(interval / 2),
-                self.x_to_interval(region.x + region.width)
-                    .saturating_add(interval / 2),
-            ),
-        }
-    }
-
-    fn x_to_interval(&self, x: f32) -> u64 {
-        match self.basis {
-            ChartBasis::Time(interval) => {
-                if x <= 0.0 {
-                    let diff = (-x / self.cell_width * interval as f32) as u64;
-                    self.x_max.saturating_sub(diff)
-                } else {
-                    let diff = (x / self.cell_width * interval as f32) as u64;
-                    self.x_max.saturating_add(diff)
-                }
-            }
-            ChartBasis::Tick(_) => {
-                let tick = -(x / self.cell_width);
-                tick.round() as u64
-            }
-        }
-    }
-
-    fn interval_to_x(&self, value: u64) -> f32 {
-        match self.basis {
-            ChartBasis::Time(interval) => {
-                if value <= self.x_max {
-                    let diff = self.x_max - value;
-                    -(diff as f32 / interval as f32) * self.cell_width
-                } else {
-                    let diff = value - self.x_max;
-                    (diff as f32 / interval as f32) * self.cell_width
-                }
-            }
-            ChartBasis::Tick(_) => -((value as f32) * self.cell_width),
         }
     }
 }
@@ -159,7 +100,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let message = match *interaction {
                     Interaction::None => {
-                        if self.crosshair && cursor.is_over(bounds) {
+                        if self.chart_state.crosshair && cursor.is_over(bounds) {
                             Some(Message::CrosshairMoved)
                         } else {
                             None
@@ -192,21 +133,26 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
         let palette = theme.extended_palette();
 
+        let chart_state = self.chart_state;
         let max_volume = self.max_volume;
+
+        if max_volume == 0.0 {
+            return vec![];
+        }
 
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
             frame.translate(center);
-            frame.scale(self.scaling);
+            frame.scale(chart_state.scaling);
             frame.translate(Vector::new(
-                self.translation_x,
-                (-bounds.height / self.scaling) / 2.0,
+                chart_state.translation.x,
+                (-bounds.height / chart_state.scaling) / 2.0,
             ));
 
             let region = self.visible_region(frame.size());
 
-            let (earliest, latest) = self.get_interval_range(region);
+            let (earliest, latest) = chart_state.get_interval_range(region);
 
-            match self.basis {
+            match chart_state.basis {
                 ChartBasis::Time(_) => {
                     if latest < earliest {
                         return;
@@ -214,49 +160,47 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
                     self.data_points.range(earliest..=latest).for_each(
                         |(timestamp, (buy_volume, sell_volume))| {
-                            let x_position = self.interval_to_x(*timestamp);
+                            let x_position = chart_state.interval_to_x(*timestamp);
 
-                            if max_volume > 0.0 {
-                                if *buy_volume != -1.0 {
-                                    let buy_bar_height =
-                                        (buy_volume / max_volume) * (bounds.height / self.scaling);
-                                    let sell_bar_height =
-                                        (sell_volume / max_volume) * (bounds.height / self.scaling);
+                            if *buy_volume != -1.0 {
+                                let buy_bar_height = (buy_volume / max_volume)
+                                    * (bounds.height / chart_state.scaling);
+                                let sell_bar_height = (sell_volume / max_volume)
+                                    * (bounds.height / chart_state.scaling);
 
-                                    let bar_width = (self.cell_width / 2.0) * 0.9;
+                                let bar_width = (chart_state.cell_width / 2.0) * 0.9;
 
-                                    frame.fill_rectangle(
-                                        Point::new(
-                                            x_position - bar_width,
-                                            (region.y + region.height) - sell_bar_height,
-                                        ),
-                                        Size::new(bar_width, sell_bar_height),
-                                        palette.danger.base.color,
-                                    );
+                                frame.fill_rectangle(
+                                    Point::new(
+                                        x_position - bar_width,
+                                        (region.y + region.height) - sell_bar_height,
+                                    ),
+                                    Size::new(bar_width, sell_bar_height),
+                                    palette.danger.base.color,
+                                );
 
-                                    frame.fill_rectangle(
-                                        Point::new(
-                                            x_position,
-                                            (region.y + region.height) - buy_bar_height,
-                                        ),
-                                        Size::new(bar_width, buy_bar_height),
-                                        palette.success.base.color,
-                                    );
-                                } else {
-                                    let bar_height =
-                                        (sell_volume / max_volume) * (bounds.height / self.scaling);
+                                frame.fill_rectangle(
+                                    Point::new(
+                                        x_position,
+                                        (region.y + region.height) - buy_bar_height,
+                                    ),
+                                    Size::new(bar_width, buy_bar_height),
+                                    palette.success.base.color,
+                                );
+                            } else {
+                                let bar_height = (sell_volume / max_volume)
+                                    * (bounds.height / chart_state.scaling);
 
-                                    let bar_width = self.cell_width * 0.9;
+                                let bar_width = chart_state.cell_width * 0.9;
 
-                                    frame.fill_rectangle(
-                                        Point::new(
-                                            x_position - (bar_width / 2.0),
-                                            (bounds.height / self.scaling) - bar_height,
-                                        ),
-                                        Size::new(bar_width, bar_height),
-                                        palette.secondary.strong.color,
-                                    );
-                                }
+                                frame.fill_rectangle(
+                                    Point::new(
+                                        x_position - (bar_width / 2.0),
+                                        (bounds.height / chart_state.scaling) - bar_height,
+                                    ),
+                                    Size::new(bar_width, bar_height),
+                                    palette.secondary.strong.color,
+                                );
                             }
                         },
                     );
@@ -271,15 +215,15 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         .enumerate()
                         .filter(|(index, _)| *index <= latest && *index >= earliest)
                         .for_each(|(index, (_, (buy_volume, sell_volume)))| {
-                            let x_position = self.interval_to_x(index as u64);
+                            let x_position = chart_state.interval_to_x(index as u64);
 
                             if max_volume > 0.0 {
-                                let buy_bar_height =
-                                    (buy_volume / max_volume) * (bounds.height / self.scaling);
-                                let sell_bar_height =
-                                    (sell_volume / max_volume) * (bounds.height / self.scaling);
+                                let buy_bar_height = (buy_volume / max_volume)
+                                    * (bounds.height / chart_state.scaling);
+                                let sell_bar_height = (sell_volume / max_volume)
+                                    * (bounds.height / chart_state.scaling);
 
-                                let bar_width = (self.cell_width / 2.0) * 0.9;
+                                let bar_width = (chart_state.cell_width / 2.0) * 0.9;
 
                                 frame.fill_rectangle(
                                     Point::new(
@@ -304,7 +248,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             }
         });
 
-        if self.crosshair {
+        if chart_state.crosshair {
             let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
                 let dashed_line = Stroke::with_color(
                     Stroke {
@@ -322,16 +266,16 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
                 );
 
-                if let Some(cursor_position) = cursor.position_in(self.chart_bounds) {
+                if let Some(cursor_position) = cursor.position_in(chart_state.bounds) {
                     let region = self.visible_region(frame.size());
 
                     // Vertical time line
-                    let earliest = self.x_to_interval(region.x) as f64;
-                    let latest = self.x_to_interval(region.x + region.width) as f64;
+                    let earliest = chart_state.x_to_interval(region.x) as f64;
+                    let latest = chart_state.x_to_interval(region.x + region.width) as f64;
 
                     let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
 
-                    let (rounded_interval, snap_ratio) = match self.basis {
+                    let (rounded_interval, snap_ratio) = match chart_state.basis {
                         ChartBasis::Time(timeframe) => {
                             let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
@@ -349,13 +293,14 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
                             let crosshair_pos = chart_x_min + crosshair_ratio as f32 * region.width;
 
-                            let cell_index = (crosshair_pos / self.cell_width).round() as i32;
-                            let snapped_position = cell_index as f32 * self.cell_width;
+                            let cell_index =
+                                (crosshair_pos / chart_state.cell_width).round() as i32;
+                            let snapped_position = cell_index as f32 * chart_state.cell_width;
 
                             let snap_ratio =
                                 (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
 
-                            let tick_value = self.x_to_interval(snapped_position);
+                            let tick_value = chart_state.x_to_interval(snapped_position);
 
                             (tick_value, snap_ratio)
                         }
@@ -369,7 +314,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         dashed_line,
                     );
 
-                    if let Some((_, (buy_v, sell_v))) = match self.basis {
+                    if let Some((_, (buy_v, sell_v))) = match chart_state.basis {
                         ChartBasis::Time(_) => self
                             .data_points
                             .iter()
@@ -450,7 +395,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None if cursor.is_over(bounds) => {
-                if self.crosshair {
+                if self.chart_state.crosshair {
                     mouse::Interaction::Crosshair
                 } else {
                     mouse::Interaction::default()

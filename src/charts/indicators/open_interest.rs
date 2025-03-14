@@ -38,25 +38,20 @@ pub fn create_indicator_elem<'a>(
         }
     };
 
-    let indi_chart = Canvas::new(OpenInterest {
-        indicator_cache: &cache.main,
-        crosshair_cache: &cache.crosshair,
-        crosshair: chart_state.crosshair,
-        x_max: chart_state.latest_x,
-        scaling: chart_state.scaling,
-        translation_x: chart_state.translation.x,
-        basis: chart_state.basis,
-        cell_width: chart_state.cell_width,
-        timeseries: data_points,
-        chart_bounds: chart_state.bounds,
-    })
-    .height(Length::Fill)
-    .width(Length::Fill);
-
     let value_range = max_value - min_value;
     let padding = value_range * 0.01;
     max_value += padding;
     min_value -= padding;
+
+    let indi_chart = Canvas::new(OpenInterest {
+        indicator_cache: &cache.main,
+        crosshair_cache: &cache.crosshair,
+        chart_state,
+        max_value,
+        timeseries: data_points,
+    })
+    .height(Length::Fill)
+    .width(Length::Fill);
 
     let indi_labels = Canvas::new(super::IndicatorLabel {
         label_cache: &cache.y_labels,
@@ -74,60 +69,21 @@ pub fn create_indicator_elem<'a>(
 pub struct OpenInterest<'a> {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
-    pub crosshair: bool,
-    pub x_max: u64,
-    pub scaling: f32,
-    pub translation_x: f32,
-    pub basis: ChartBasis,
-    pub cell_width: f32,
+    pub chart_state: &'a CommonChartData,
+    pub max_value: f32,
     pub timeseries: &'a BTreeMap<u64, f32>,
-    pub chart_bounds: Rectangle,
 }
 
 impl OpenInterest<'_> {
     fn visible_region(&self, size: Size) -> Rectangle {
-        let width = size.width / self.scaling;
-        let height = size.height / self.scaling;
+        let width = size.width / self.chart_state.scaling;
+        let height = size.height / self.chart_state.scaling;
 
         Rectangle {
-            x: -self.translation_x - width / 2.0,
+            x: -self.chart_state.translation.x - width / 2.0,
             y: 0.0,
             width,
             height,
-        }
-    }
-
-    fn x_to_time(&self, x: f32) -> u64 {
-        match self.basis {
-            ChartBasis::Time(interval) => {
-                if x <= 0.0 {
-                    let diff = (-x / self.cell_width * interval as f32) as u64;
-                    self.x_max.saturating_sub(diff)
-                } else {
-                    let diff = (x / self.cell_width * interval as f32) as u64;
-                    self.x_max.saturating_add(diff)
-                }
-            }
-            ChartBasis::Tick(_) => {
-                unimplemented!()
-            }
-        }
-    }
-
-    fn time_to_x(&self, time: u64) -> f32 {
-        match self.basis {
-            ChartBasis::Time(interval) => {
-                if time <= self.x_max {
-                    let diff = self.x_max - time;
-                    -(diff as f32 / interval as f32) * self.cell_width
-                } else {
-                    let diff = time - self.x_max;
-                    (diff as f32 / interval as f32) * self.cell_width
-                }
-            }
-            ChartBasis::Tick(_) => {
-                unimplemented!()
-            }
         }
     }
 }
@@ -146,7 +102,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let message = match *interaction {
                     Interaction::None => {
-                        if self.crosshair && cursor.is_over(bounds) {
+                        if self.chart_state.crosshair && cursor.is_over(bounds) {
                             Some(Message::CrosshairMoved)
                         } else {
                             None
@@ -179,7 +135,9 @@ impl canvas::Program<Message> for OpenInterest<'_> {
 
         let palette = theme.extended_palette();
 
-        let timeframe: u64 = match self.basis {
+        let chart_state = self.chart_state;
+
+        let timeframe: u64 = match chart_state.basis {
             ChartBasis::Time(interval) => interval,
             ChartBasis::Tick(_) => {
                 // TODO: implement
@@ -187,19 +145,23 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             }
         };
 
+        if self.max_value == 0.0 {
+            return vec![];
+        }
+
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
             frame.translate(center);
-            frame.scale(self.scaling);
+            frame.scale(chart_state.scaling);
             frame.translate(Vector::new(
-                self.translation_x,
-                (-bounds.height / self.scaling) / 2.0,
+                chart_state.translation.x,
+                (-bounds.height / chart_state.scaling) / 2.0,
             ));
 
             let region = self.visible_region(frame.size());
 
             frame.fill_rectangle(
                 Point::new(region.x, 0.0),
-                Size::new(region.width, 1.0 / self.scaling),
+                Size::new(region.width, 1.0 / chart_state.scaling),
                 if palette.is_dark {
                     palette.background.weak.color.scale_alpha(0.2)
                 } else {
@@ -207,11 +169,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                 },
             );
 
-            let (earliest, latest) = (
-                self.x_to_time(region.x).saturating_sub(timeframe / 2),
-                self.x_to_time(region.x + region.width)
-                    .saturating_add(timeframe / 2),
-            );
+            let (earliest, latest) = chart_state.get_interval_range(region);
 
             let mut max_value: f32 = f32::MIN;
             let mut min_value: f32 = f32::MAX;
@@ -231,16 +189,16 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                 .timeseries
                 .range(earliest..=latest)
                 .map(|(timestamp, value)| {
-                    let x_position = self.time_to_x(*timestamp);
+                    let x_position = chart_state.interval_to_x(*timestamp);
                     let normalized_height = if max_value > min_value {
                         (value - min_value) / (max_value - min_value)
                     } else {
                         0.0
                     };
-                    let y_position = (bounds.height / self.scaling)
-                        - (normalized_height * (bounds.height / self.scaling));
+                    let y_position = (bounds.height / chart_state.scaling)
+                        - (normalized_height * (bounds.height / chart_state.scaling));
 
-                    Point::new(x_position - (self.cell_width / 2.0), y_position)
+                    Point::new(x_position - (chart_state.cell_width / 2.0), y_position)
                 })
                 .collect();
 
@@ -257,7 +215,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                 }
             }
 
-            let radius = (self.cell_width * 0.2).min(5.0);
+            let radius = (chart_state.cell_width * 0.2).min(5.0);
             for point in points {
                 frame.fill(
                     &Path::circle(Point::new(point.x, point.y), radius),
@@ -266,7 +224,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             }
         });
 
-        if self.crosshair {
+        if chart_state.crosshair {
             let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
                 let dashed_line = Stroke::with_color(
                     Stroke {
@@ -284,12 +242,12 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                         .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
                 );
 
-                if let Some(cursor_position) = cursor.position_in(self.chart_bounds) {
+                if let Some(cursor_position) = cursor.position_in(chart_state.bounds) {
                     let region = self.visible_region(frame.size());
 
                     // Vertical time line
-                    let earliest = self.x_to_time(region.x) as f64;
-                    let latest = self.x_to_time(region.x + region.width) as f64;
+                    let earliest = chart_state.x_to_interval(region.x) as f64;
+                    let latest = chart_state.x_to_interval(region.x + region.width) as f64;
 
                     let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
                     let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
@@ -349,7 +307,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     }
                 } else if let Some(cursor_position) = cursor.position_in(bounds) {
                     // Horizontal price line
-                    let highest = self.x_max as f32;
+                    let highest = self.max_value;
                     let lowest = 0.0;
 
                     let crosshair_ratio = cursor_position.y / bounds.height;
@@ -384,7 +342,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None if cursor.is_over(bounds) => {
-                if self.crosshair {
+                if self.chart_state.crosshair {
                     mouse::Interaction::Crosshair
                 } else {
                     mouse::Interaction::default()
