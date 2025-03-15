@@ -6,6 +6,7 @@ use std::{
     fmt::{self, Debug, Display},
 };
 
+use exchanges::MarketType;
 use iced::{
     Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,
@@ -14,10 +15,7 @@ use iced::{
 use serde::{Deserialize, Serialize};
 
 use super::{abbr_large_numbers, round_to_tick, scales::linear};
-use crate::{
-    charts::scales::{AxisLabel, Label, calc_label_rect},
-    data_providers::exchanges::MarketType,
-};
+use crate::charts::scales::{AxisLabel, Label, calc_label_rect};
 
 use super::{Interaction, Message};
 

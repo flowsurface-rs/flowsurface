@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use crate::{
-    data_providers::exchanges::{Exchange, MarketType, Ticker, TickerStats},
-    style::{self, ICON_FONT, Icon, get_icon_text},
-};
+use crate::style::{self, ICON_FONT, Icon, get_icon_text};
+use exchanges::{Exchange, MarketType, Ticker, TickerStats};
 use iced::{
     Element, Length, Renderer, Size, Task, Theme,
     alignment::{self, Horizontal, Vertical},

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use exchanges::Timeframe;
 use ordered_float::OrderedFloat;
 
-use crate::data_providers::exchanges::{Kline, Trade};
+use exchanges::{Kline, Trade};
 
 use super::round_to_tick;
 

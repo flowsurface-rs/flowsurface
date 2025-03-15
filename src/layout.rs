@@ -6,7 +6,6 @@ use crate::charts::{
     indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
     timeandsales::TimeAndSales,
 };
-use crate::data_providers::exchanges::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 use crate::screen::{
     UserTimezone,
     dashboard::{Dashboard, PaneContent, PaneSettings, PaneState},
@@ -14,6 +13,7 @@ use crate::screen::{
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{screen, style, tooltip};
+use exchanges::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 
 use chrono::NaiveDate;
 use iced::widget::pane_grid::{self, Configuration};

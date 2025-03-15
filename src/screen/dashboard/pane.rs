@@ -1,5 +1,6 @@
 use crate::{
     StreamType,
+    aggr::ticks::TickCount,
     charts::{
         self, ChartBasis,
         candlestick::CandlestickChart,
@@ -9,10 +10,6 @@ use crate::{
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
         timeandsales::TimeAndSales,
     },
-    data_providers::aggr::ticks::TickCount,
-    data_providers::exchanges::{
-        Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-    },
     layout::SerializableChartData,
     screen::{
         self, DashboardError, Notification, UserTimezone, create_button,
@@ -20,6 +17,9 @@ use crate::{
     },
     style::{self, Icon, get_icon_text},
     window::{self, Window},
+};
+use exchanges::{
+    Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Task, Theme,

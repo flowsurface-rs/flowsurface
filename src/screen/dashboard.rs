@@ -9,17 +9,16 @@ use crate::{
         ChartBasis, Message as ChartMessage, candlestick::CandlestickChart,
         footprint::FootprintChart,
     },
-    data_providers::{
-        exchanges::{
-            Depth, Event as ExchangeEvent, Exchange, Kline, OpenInterest, StreamConfig,
-            TickMultiplier, Ticker, TickerInfo, Timeframe, Trade, binance, bybit,
-        },
-        fetcher::FetchRange,
-    },
+    fetcher::FetchRange,
     layout::get_data_path,
     screen::{InfoType, notification_modal},
     style,
     window::{self, Window},
+};
+
+use exchanges::{
+    Depth, Event as ExchangeEvent, Exchange, Kline, OpenInterest, StreamConfig, TickMultiplier,
+    Ticker, TickerInfo, Timeframe, Trade, binance, bybit,
 };
 
 use super::{

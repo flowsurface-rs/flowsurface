@@ -4,9 +4,9 @@ use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke}
 use iced::widget::{Canvas, center, container, row, text};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
+use crate::aggr::format_with_commas;
 use crate::charts::{Caches, ChartBasis, CommonChartData, Interaction, Message, round_to_tick};
-use crate::data_providers::aggr::format_with_commas;
-use crate::data_providers::exchanges::Timeframe;
+use exchanges::Timeframe;
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,

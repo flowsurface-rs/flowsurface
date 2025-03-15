@@ -1,7 +1,8 @@
 #![windows_subsystem = "windows"]
 
+mod aggr;
 mod charts;
-mod data_providers;
+mod fetcher;
 mod layout;
 mod logger;
 mod screen;
@@ -11,10 +12,10 @@ mod tooltip;
 mod widget;
 mod window;
 
-use data_providers::exchanges::{
-    Event as ExchangeEvent, Exchange, StreamType, Ticker, TickerInfo, TickerStats, binance, bybit,
+use exchanges::{
+    Event as ExchangeEvent, Exchange, StreamError, StreamType, Ticker, TickerInfo, TickerStats,
+    binance, bybit,
 };
-use exchanges::StreamError;
 use futures::TryFutureExt;
 use iced::{
     Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,

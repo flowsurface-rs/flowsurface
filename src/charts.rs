@@ -15,15 +15,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    data_providers::aggr::{ticks::TickAggr, time::TimeSeries},
-    data_providers::exchanges::{TickerInfo, Timeframe},
-    data_providers::fetcher::{FetchRange, ReqError, RequestHandler},
+    aggr::{ticks::TickAggr, time::TimeSeries},
+    fetcher::{FetchRange, ReqError, RequestHandler},
     layout::SerializableChartData,
     screen::UserTimezone,
     style,
     tooltip::{self, tooltip},
     widget::hsplit::HSplit,
 };
+use exchanges::{TickerInfo, Timeframe};
 
 pub mod candlestick;
 pub mod config;
