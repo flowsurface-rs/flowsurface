@@ -3,13 +3,15 @@ use std::{collections::HashMap, fmt};
 use chrono::DateTime;
 use iced::{
     Alignment, Element, Task, Theme,
-    widget::{Column, button, column, container, pane_grid, text},
+    widget::{
+        Column, button, column, container, pane_grid, text, tooltip::Position as TooltipPosition,
+    },
     window,
 };
 use iced_futures::MaybeSend;
 use serde::{Deserialize, Serialize};
 
-use crate::tooltip;
+use crate::widget::tooltip;
 
 pub mod dashboard;
 pub mod modal;
@@ -18,7 +20,7 @@ pub fn create_button<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,
     message: M,
     tooltip_text: Option<&'a str>,
-    tooltip_pos: tooltip::Position,
+    tooltip_pos: TooltipPosition,
     style_fn: impl Fn(&Theme, button::Status) -> button::Style + 'static,
 ) -> Element<'a, M> {
     let btn = button(content).style(style_fn).on_press(message);

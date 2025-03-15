@@ -1,4 +1,5 @@
 pub mod pane;
+pub mod tickers_table;
 
 pub use pane::{PaneContent, PaneSettings, PaneState};
 

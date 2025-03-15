@@ -7,11 +7,10 @@ mod layout;
 mod logger;
 mod screen;
 mod style;
-mod tickers_table;
-mod tooltip;
 mod widget;
 mod window;
 
+use crate::widget::tooltip;
 use exchanges::{
     Event as ExchangeEvent, Exchange, StreamError, StreamType, Ticker, TickerInfo, TickerStats,
     binance, bybit,
@@ -20,20 +19,22 @@ use iced::{
     Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,
     widget::{
         Space, button, center, column, container, pane_grid, pick_list, responsive, row, text,
+        tooltip::Position as TooltipPosition,
     },
 };
 use iced_futures::{MaybeSend, futures::TryFutureExt};
 use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
 use screen::{
     Notification, UserTimezone, create_button,
-    dashboard::{self, Dashboard, pane},
+    dashboard::{
+        self, Dashboard, pane,
+        tickers_table::{self, TickersTable},
+    },
     handle_error,
     modal::{confirmation_modal, dashboard_modal},
 };
 use std::{collections::HashMap, future::Future, vec};
 use style::{ICON_BYTES, Icon, get_icon_text};
-use tickers_table::TickersTable;
-use tooltip::tooltip;
 use window::{Window, WindowEvent, window_events};
 
 fn main() {
@@ -519,9 +520,9 @@ impl State {
 
         if id == self.main_window.id {
             let tooltip_position = if self.sidebar_location == Sidebar::Left {
-                tooltip::Position::Right
+                TooltipPosition::Right
             } else {
-                tooltip::Position::Left
+                TooltipPosition::Left
             };
 
             let sidebar = {
@@ -694,7 +695,7 @@ impl State {
                             tooltip(
                                 checkbox,
                                 Some("Try to fetch trades for footprint charts"),
-                                tooltip::Position::Top,
+                                TooltipPosition::Top,
                             )
                         };
 
@@ -810,7 +811,7 @@ impl State {
                                 }),
                             ))),
                         Some("Reset selected pane"),
-                        tooltip::Position::Top,
+                        TooltipPosition::Top,
                     );
                     let split_pane_button = tooltip(
                         button(text("Split").align_x(Alignment::Center))
@@ -827,7 +828,7 @@ impl State {
                                 ),
                             ))),
                         Some("Split selected pane horizontally"),
-                        tooltip::Position::Top,
+                        TooltipPosition::Top,
                     );
 
                     let manage_layout_modal = {

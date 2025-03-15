@@ -17,7 +17,10 @@ use exchanges::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 
 use chrono::NaiveDate;
 use iced::widget::pane_grid::{self, Configuration};
-use iced::widget::{Space, button, center, column, container, row, scrollable, text, text_input};
+use iced::widget::{
+    Space, button, center, column, container, row, scrollable, text, text_input,
+    tooltip::Position as TooltipPosition,
+};
 use iced::{Element, Point, Size, Task, Theme, padding};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -312,7 +315,7 @@ impl LayoutManager {
                     tooltip(
                         button("i").style(move |theme, status| style::button_modifier(theme, status, true)),
                         Some("- Drag & drop to reorder layouts\n- Layouts won't be saved if app exits abruptly"),
-                        tooltip::Position::Top,
+                        TooltipPosition::Top,
                     ),
                     edit_btn,
                 ].spacing(4),
@@ -377,7 +380,7 @@ impl LayoutManager {
                                     .on_press(Message::CloneLayout(layout.id))
                                     .style(move |t, s| style::button_transparent(t, s, true)),
                                 Some("Clone layout"),
-                                tooltip::Position::Top,
+                                TooltipPosition::Top,
                             ))
                             .push(self.create_rename_button(layout));
 
@@ -435,7 +438,7 @@ impl LayoutManager {
                     None,
                 ),
                 Some("Can't delete active layout"),
-                tooltip::Position::Right,
+                TooltipPosition::Right,
             )
         } else {
             create_icon_button(

@@ -3,7 +3,10 @@ use crate::{screen::dashboard::pane::Message, style, tooltip};
 
 use iced::{
     Alignment, Element, Length,
-    widget::{Slider, Text, button, column, container, pane_grid, row, text},
+    widget::{
+        Slider, Text, button, column, container, pane_grid, row, text,
+        tooltip::Position as TooltipPosition,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -200,7 +203,7 @@ fn sync_all_button<'a>(config: VisualConfig) -> Element<'a, Message> {
             .on_press(Message::VisualConfigChanged(None, config))
             .padding(8),
         Some("Apply configuration to similar panes"),
-        tooltip::Position::Top,
+        TooltipPosition::Top,
     ))
     .padding(16)
     .into()

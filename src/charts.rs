@@ -7,6 +7,7 @@ use iced::{
         Space, button,
         canvas::{LineDash, Path, Stroke},
         column, container, row, text,
+        tooltip::Position as TooltipPosition,
     },
 };
 use indicators::Indicator;
@@ -20,8 +21,8 @@ use crate::{
     layout::SerializableChartData,
     screen::UserTimezone,
     style,
-    tooltip::{self, tooltip},
     widget::hsplit::HSplit,
+    widget::tooltip,
 };
 use exchanges::{TickerInfo, Timeframe};
 
@@ -435,8 +436,8 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         container(
             row![
                 Space::new(Length::Fill, Length::Fill),
-                tooltip(center_button, Some("Center Latest"), tooltip::Position::Top),
-                tooltip(crosshair_button, Some("Crosshair"), tooltip::Position::Top),
+                tooltip(center_button, Some("Center Latest"), TooltipPosition::Top),
+                tooltip(crosshair_button, Some("Crosshair"), TooltipPosition::Top),
             ]
             .spacing(2),
         )
