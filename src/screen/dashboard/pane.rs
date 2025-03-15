@@ -1,6 +1,6 @@
 use crate::{
     StreamType,
-    aggr::ticks::TickCount,
+    aggr::{TickMultiplier, ticks::TickCount},
     charts::{
         self, ChartBasis,
         candlestick::CandlestickChart,
@@ -18,9 +18,7 @@ use crate::{
     style::{self, Icon, get_icon_text},
     window::{self, Window},
 };
-use exchanges::{
-    Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-};
+use exchanges::{Exchange, Kline, MarketType, OpenInterest, Ticker, TickerInfo, Timeframe};
 use iced::{
     Alignment, Element, Length, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},

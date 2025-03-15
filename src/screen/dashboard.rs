@@ -5,6 +5,7 @@ pub use pane::{PaneContent, PaneSettings, PaneState};
 
 use crate::{
     StreamType,
+    aggr::TickMultiplier,
     charts::{
         ChartBasis, Message as ChartMessage, candlestick::CandlestickChart,
         footprint::FootprintChart,
@@ -17,8 +18,8 @@ use crate::{
 };
 
 use exchanges::{
-    Depth, Event as ExchangeEvent, Exchange, Kline, OpenInterest, StreamConfig, TickMultiplier,
-    Ticker, TickerInfo, Timeframe, Trade, binance, bybit,
+    Depth, Event as ExchangeEvent, Exchange, Kline, OpenInterest, StreamConfig, Ticker, TickerInfo,
+    Timeframe, Trade, binance, bybit,
 };
 
 use super::{

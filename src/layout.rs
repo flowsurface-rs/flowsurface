@@ -1,3 +1,4 @@
+use crate::aggr::TickMultiplier;
 use crate::charts::{
     ChartBasis,
     candlestick::CandlestickChart,
@@ -13,7 +14,7 @@ use crate::screen::{
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{screen, style, tooltip};
-use exchanges::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
+use exchanges::{Exchange, StreamType, Ticker, Timeframe};
 
 use chrono::NaiveDate;
 use iced::widget::pane_grid::{self, Configuration};

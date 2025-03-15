@@ -30,6 +30,7 @@ thiserror.workspace = true
 ordered-float.workspace = true
 regex.workspace = true
 log.workspace = true
+rust_decimal = "1.36.0"
 fern = "0.6.2"
 dirs-next = "2.0.0"
 uuid = { version = "1.11.0", features = ["v4"] }
