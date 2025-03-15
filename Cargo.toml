@@ -13,7 +13,6 @@ members = ["exchanges"]
 [workspace.dependencies]
 iced_futures = "0.13.2"
 chrono = "0.4.38"
-futures = "0.3.31"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.132"
 log = "0.4.22"
@@ -25,7 +24,6 @@ regex = "1.11.1"
 iced = { version = "0.14.0-dev", default-features = false, features = ["wgpu", "canvas", "tokio", "advanced", "lazy"] }
 iced_futures.workspace = true
 chrono.workspace = true
-futures.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 thiserror.workspace = true

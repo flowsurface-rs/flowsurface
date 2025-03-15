@@ -16,14 +16,13 @@ use exchanges::{
     Event as ExchangeEvent, Exchange, StreamError, StreamType, Ticker, TickerInfo, TickerStats,
     binance, bybit,
 };
-use futures::TryFutureExt;
 use iced::{
     Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,
     widget::{
         Space, button, center, column, container, pane_grid, pick_list, responsive, row, text,
     },
 };
-use iced_futures::MaybeSend;
+use iced_futures::{MaybeSend, futures::TryFutureExt};
 use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
 use screen::{
     Notification, UserTimezone, create_button,

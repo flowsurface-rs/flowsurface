@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 iced_futures.workspace = true
 chrono.workspace = true
-futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true

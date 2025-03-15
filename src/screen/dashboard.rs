@@ -1,6 +1,5 @@
 pub mod pane;
 
-use futures::TryFutureExt;
 pub use pane::{PaneContent, PaneSettings, PaneState};
 
 use crate::{
@@ -32,6 +31,7 @@ use iced::{
         pane_grid::{self, Configuration},
     },
 };
+use iced_futures::futures::TryFutureExt;
 use std::{
     collections::{HashMap, HashSet},
     vec,

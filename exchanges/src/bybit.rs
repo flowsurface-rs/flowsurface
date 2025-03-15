@@ -9,8 +9,10 @@ use fastwebsockets::{FragmentCollector, Frame, OpCode};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 
-use futures::{SinkExt, Stream};
-use iced_futures::stream;
+use iced_futures::{
+    futures::{SinkExt, Stream, channel::mpsc},
+    stream,
+};
 
 use super::{
     Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State,
@@ -215,7 +217,7 @@ async fn connect(
 async fn try_connect(
     streams: &Value,
     market_type: MarketType,
-    output: &mut futures::channel::mpsc::Sender<Event>,
+    output: &mut mpsc::Sender<Event>,
 ) -> State {
     let exchange = match market_type {
         MarketType::Spot => Exchange::BybitSpot,

@@ -8,8 +8,10 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use sonic_rs::{FastStr, to_object_iter_unchecked};
 
-use futures::{SinkExt, Stream};
-use iced_futures::stream;
+use iced_futures::{
+    futures::{SinkExt, Stream, channel::mpsc},
+    stream,
+};
 
 use super::{
     Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State,
@@ -214,7 +216,7 @@ async fn try_resync(
     ticker: Ticker,
     orderbook: &mut LocalDepthCache,
     state: &mut State,
-    output: &mut futures::channel::mpsc::Sender<Event>,
+    output: &mut mpsc::Sender<Event>,
     already_fetching: &mut bool,
 ) {
     let (tx, rx) = tokio::sync::oneshot::channel();
