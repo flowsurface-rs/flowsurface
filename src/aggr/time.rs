@@ -5,7 +5,7 @@ use ordered_float::OrderedFloat;
 
 use exchanges::{Kline, Trade};
 
-use super::round_to_tick;
+use crate::charts::round_to_tick;
 
 type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 

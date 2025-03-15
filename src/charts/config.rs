@@ -1,5 +1,5 @@
-use super::{heatmap, timeandsales};
-use crate::{aggr::format_with_commas, screen::dashboard::pane::Message, style, tooltip};
+use super::{format_with_commas, heatmap, timeandsales};
+use crate::{screen::dashboard::pane::Message, style, tooltip};
 
 use iced::{
     Alignment, Element, Length,

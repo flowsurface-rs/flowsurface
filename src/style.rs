@@ -6,7 +6,7 @@ use iced::widget::scrollable::{Rail, Scroller};
 use iced::widget::{Text, text};
 use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
 
-pub const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
+pub const ICON_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
 pub const ICON_FONT: Font = Font::with_name("icons");
 
 pub enum Icon {
