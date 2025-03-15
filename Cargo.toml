@@ -7,25 +7,36 @@ license = "GPL-3.0-or-later"
 categories = ["finance", "visualization", "gui"]
 repository = "https://github.com/akenshaw/flowsurface"
 
-[dependencies]
-iced = { version = "0.14.0-dev", features = ["canvas", "tokio", "image", "advanced", "lazy"] }
+[workspace]
+members = ["exchanges"]
+
+[workspace.dependencies]
 iced_futures = "0.13.2"
 chrono = "0.4.38"
 futures = "0.3.31"
-serde_json = "1.0.132"
 serde = { version = "1.0", features = ["derive"] }
-fern = "0.6.2"
+serde_json = "1.0.132"
 log = "0.4.22"
 thiserror = "1.0.68"
 ordered-float = "4.5.0"
 regex = "1.11.1"
-uuid = { version = "1.11.0", features = ["v4"] }
+
+[dependencies]
+iced = { version = "0.14.0-dev", default-features = false, features = ["wgpu", "canvas", "tokio", "advanced", "lazy"] }
+iced_futures.workspace = true
+chrono.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+ordered-float.workspace = true
+regex.workspace = true
+log.workspace = true
+fern = "0.6.2"
 dirs-next = "2.0.0"
+uuid = { version = "1.11.0", features = ["v4"] }
 
 exchanges = { version = "0.1.0", path = "exchanges" }
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "beddf49c76f3b43e7b33452831e1293cad28fd89" }
-
-[workspace]
-members = ["exchanges"]
