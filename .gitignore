@@ -1,6 +1,5 @@
 .DS_Store
 /target
 /.vscode
-*.json
 *.log
 /data
