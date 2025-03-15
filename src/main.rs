@@ -11,7 +11,10 @@ mod tooltip;
 mod widget;
 mod window;
 
-use data_providers::{Exchange, StreamType, Ticker, TickerInfo, TickerStats, binance, bybit};
+use data_providers::exchanges::{
+    Event as ExchangeEvent, Exchange, StreamType, Ticker, TickerInfo, TickerStats, binance, bybit,
+};
+use exchanges::StreamError;
 use futures::TryFutureExt;
 use iced::{
     Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,
@@ -97,7 +100,7 @@ enum Message {
 
     ToggleModal(SidebarModal),
 
-    MarketWsEvent(data_providers::Event),
+    MarketWsEvent(ExchangeEvent),
     ToggleTradeFetch(bool),
 
     WindowEvent(WindowEvent),
@@ -208,13 +211,13 @@ impl State {
                 let main_window_id = self.main_window.id;
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     match event {
-                        data_providers::Event::Connected(exchange, _) => {
+                        ExchangeEvent::Connected(exchange, _) => {
                             log::info!("a stream connected to {exchange} WS");
                         }
-                        data_providers::Event::Disconnected(exchange, reason) => {
+                        ExchangeEvent::Disconnected(exchange, reason) => {
                             log::info!("a stream disconnected from {exchange} WS: {reason:?}");
                         }
-                        data_providers::Event::DepthReceived(
+                        ExchangeEvent::DepthReceived(
                             stream,
                             depth_update_t,
                             depth,
@@ -230,7 +233,7 @@ impl State {
                                 )
                                 .map(Message::Dashboard);
                         }
-                        data_providers::Event::KlineReceived(stream, kline) => {
+                        ExchangeEvent::KlineReceived(stream, kline) => {
                             return dashboard
                                 .update_latest_klines(&stream, &kline, main_window_id)
                                 .map(Message::Dashboard);
@@ -955,12 +958,8 @@ enum SidebarModal {
 
 fn fetch_ticker_info<F>(exchange: Exchange, fetch_fn: F) -> Task<Message>
 where
-    F: Future<
-            Output = Result<
-                HashMap<Ticker, Option<data_providers::TickerInfo>>,
-                data_providers::StreamError,
-            >,
-        > + MaybeSend
+    F: Future<Output = Result<HashMap<Ticker, Option<TickerInfo>>, StreamError>>
+        + MaybeSend
         + 'static,
 {
     Task::perform(
@@ -974,9 +973,7 @@ where
 
 fn fetch_ticker_prices<F>(exchange: Exchange, fetch_fn: F) -> Task<Message>
 where
-    F: Future<Output = Result<HashMap<Ticker, TickerStats>, data_providers::StreamError>>
-        + MaybeSend
-        + 'static,
+    F: Future<Output = Result<HashMap<Ticker, TickerStats>, StreamError>> + MaybeSend + 'static,
 {
     Task::perform(
         fetch_fn.map_err(|err| format!("{err}")),

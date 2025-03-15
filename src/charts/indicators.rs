@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::{abbr_large_numbers, round_to_tick, scales::linear};
 use crate::{
     charts::scales::{AxisLabel, Label, calc_label_rect},
-    data_providers::MarketType,
+    data_providers::exchanges::MarketType,
 };
 
 use super::{Interaction, Message};

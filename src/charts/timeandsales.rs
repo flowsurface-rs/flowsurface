@@ -1,4 +1,4 @@
-use crate::data_providers::Trade;
+use crate::data_providers::exchanges::Trade;
 use crate::screen::UserTimezone;
 use crate::screen::dashboard::pane::Message;
 use crate::style::ts_table_container;

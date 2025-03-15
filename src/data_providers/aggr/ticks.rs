@@ -1,4 +1,4 @@
-use crate::data_providers::Trade;
+use crate::data_providers::exchanges::Trade;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

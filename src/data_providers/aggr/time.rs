@@ -1,100 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
+use exchanges::Timeframe;
 use ordered_float::OrderedFloat;
-use serde::{Deserialize, Serialize};
 
-use crate::data_providers::{Kline, Trade};
+use crate::data_providers::exchanges::{Kline, Trade};
 
 use super::round_to_tick;
-
-impl std::fmt::Display for Timeframe {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Timeframe::M1 => "1m",
-                Timeframe::M3 => "3m",
-                Timeframe::M5 => "5m",
-                Timeframe::M15 => "15m",
-                Timeframe::M30 => "30m",
-                Timeframe::H1 => "1h",
-                Timeframe::H2 => "2h",
-                Timeframe::H4 => "4h",
-            }
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum Timeframe {
-    M1,
-    M3,
-    M5,
-    M15,
-    M30,
-    H1,
-    H2,
-    H4,
-}
-
-impl Timeframe {
-    pub const ALL: [Timeframe; 8] = [
-        Timeframe::M1,
-        Timeframe::M3,
-        Timeframe::M5,
-        Timeframe::M15,
-        Timeframe::M30,
-        Timeframe::H1,
-        Timeframe::H2,
-        Timeframe::H4,
-    ];
-
-    pub fn to_minutes(self) -> u16 {
-        match self {
-            Timeframe::M1 => 1,
-            Timeframe::M3 => 3,
-            Timeframe::M5 => 5,
-            Timeframe::M15 => 15,
-            Timeframe::M30 => 30,
-            Timeframe::H1 => 60,
-            Timeframe::H2 => 120,
-            Timeframe::H4 => 240,
-        }
-    }
-
-    pub fn to_milliseconds(self) -> u64 {
-        u64::from(self.to_minutes()) * 60_000
-    }
-}
-
-impl From<Timeframe> for f32 {
-    fn from(timeframe: Timeframe) -> f32 {
-        timeframe.to_milliseconds() as f32
-    }
-}
-
-impl From<Timeframe> for u64 {
-    fn from(timeframe: Timeframe) -> u64 {
-        timeframe.to_milliseconds()
-    }
-}
-
-impl From<u64> for Timeframe {
-    fn from(milliseconds: u64) -> Timeframe {
-        match milliseconds {
-            60_000 => Timeframe::M1,
-            180_000 => Timeframe::M3,
-            300_000 => Timeframe::M5,
-            900_000 => Timeframe::M15,
-            1_800_000 => Timeframe::M30,
-            3_600_000 => Timeframe::H1,
-            7_200_000 => Timeframe::H2,
-            14_400_000 => Timeframe::H4,
-            _ => panic!("Invalid timeframe: {milliseconds}"),
-        }
-    }
-}
 
 type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 

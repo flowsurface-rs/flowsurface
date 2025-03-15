@@ -5,8 +5,8 @@ use iced::widget::{Canvas, center, container, row, text};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::charts::{Caches, ChartBasis, CommonChartData, Interaction, Message, round_to_tick};
-use crate::data_providers::aggr::time::Timeframe;
-use crate::data_providers::format_with_commas;
+use crate::data_providers::aggr::format_with_commas;
+use crate::data_providers::exchanges::Timeframe;
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,

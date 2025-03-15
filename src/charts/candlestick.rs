@@ -12,12 +12,9 @@ use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vecto
 
 use crate::data_providers::aggr::ticks::TickAggr;
 use crate::data_providers::aggr::time::TimeSeries;
-use crate::data_providers::{
-    Kline, OpenInterest as OIData,
-    aggr::time::Timeframe,
-    fetcher::{FetchRange, RequestHandler},
-};
-use crate::data_providers::{MarketType, TickerInfo, Trade};
+use crate::data_providers::exchanges::{Kline, OpenInterest as OIData, Timeframe};
+use crate::data_providers::exchanges::{MarketType, TickerInfo, Trade};
+use crate::data_providers::fetcher::{FetchRange, RequestHandler};
 use crate::layout::SerializableChartData;
 use crate::screen::UserTimezone;
 

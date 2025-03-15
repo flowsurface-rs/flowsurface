@@ -15,14 +15,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    data_providers::{
-        TickerInfo,
-        aggr::{
-            ticks::TickAggr,
-            time::{TimeSeries, Timeframe},
-        },
-        fetcher::{FetchRange, ReqError, RequestHandler},
-    },
+    data_providers::aggr::{ticks::TickAggr, time::TimeSeries},
+    data_providers::exchanges::{TickerInfo, Timeframe},
+    data_providers::fetcher::{FetchRange, ReqError, RequestHandler},
     layout::SerializableChartData,
     screen::UserTimezone,
     style,

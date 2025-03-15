@@ -9,9 +9,9 @@ use crate::{
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
         timeandsales::TimeAndSales,
     },
-    data_providers::{
-        Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo,
-        aggr::{ticks::TickCount, time::Timeframe},
+    data_providers::aggr::ticks::TickCount,
+    data_providers::exchanges::{
+        Exchange, Kline, MarketType, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
     },
     layout::SerializableChartData,
     screen::{

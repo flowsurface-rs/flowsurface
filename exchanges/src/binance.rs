@@ -1,7 +1,7 @@
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::BufReader};
+use std::{collections::HashMap, io::BufReader, path::PathBuf};
 
 use fastwebsockets::{FragmentCollector, OpCode};
 use hyper::upgrade::Upgraded;
@@ -10,8 +10,6 @@ use sonic_rs::{FastStr, to_object_iter_unchecked};
 
 use futures::{SinkExt, Stream};
 use iced_futures::stream;
-
-use crate::layout;
 
 use super::{
     Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State,
@@ -956,7 +954,11 @@ async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result
     Ok(())
 }
 
-pub async fn fetch_trades(ticker: Ticker, from_time: u64) -> Result<Vec<Trade>, StreamError> {
+pub async fn fetch_trades(
+    ticker: Ticker,
+    from_time: u64,
+    data_path: PathBuf,
+) -> Result<Vec<Trade>, StreamError> {
     let today_midnight = chrono::Utc::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
@@ -971,7 +973,7 @@ pub async fn fetch_trades(ticker: Ticker, from_time: u64) -> Result<Vec<Trade>, 
         .ok_or_else(|| StreamError::ParseError("Invalid timestamp".into()))?
         .date_naive();
 
-    match get_hist_trades(ticker, from_date).await {
+    match get_hist_trades(ticker, from_date, data_path).await {
         Ok(trades) => Ok(trades),
         Err(e) => {
             log::warn!(
@@ -1028,6 +1030,7 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
 pub async fn get_hist_trades(
     ticker: Ticker,
     date: chrono::NaiveDate,
+    base_path: PathBuf,
 ) -> Result<Vec<Trade>, StreamError> {
     let (symbol, market_type) = ticker.get_string();
 
@@ -1042,7 +1045,7 @@ pub async fn get_hist_trades(
         date.format("%Y-%m-%d"),
     );
 
-    let base_path = layout::get_data_path(&format!("market_data/binance/{market_subpath}",));
+    let base_path = base_path.join(&market_subpath);
 
     std::fs::create_dir_all(&base_path)
         .map_err(|e| StreamError::ParseError(format!("Failed to create directories: {e}")))?;

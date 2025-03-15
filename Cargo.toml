@@ -11,29 +11,21 @@ repository = "https://github.com/akenshaw/flowsurface"
 iced = { version = "0.14.0-dev", features = ["canvas", "tokio", "image", "advanced", "lazy"] }
 iced_futures = "0.13.2"
 chrono = "0.4.38"
-tokio = { version = "1.43", features = ["macros"] }
 futures = "0.3.31"
 serde_json = "1.0.132"
 serde = { version = "1.0", features = ["derive"] }
-reqwest = { version = "0.12.9", features = ["json"] }
-bytes = "1.8.0"
-sonic-rs = "0.4.0"
-fastwebsockets = { version = "0.9.0", features = ["upgrade"] }
-http-body-util = "0.1.2"
-hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1.10" }
-tokio-rustls = "0.24.1"
-webpki-roots = "0.23.1"
 fern = "0.6.2"
 log = "0.4.22"
 thiserror = "1.0.68"
 ordered-float = "4.5.0"
 regex = "1.11.1"
-rust_decimal = "1.36.0"
 uuid = { version = "1.11.0", features = ["v4"] }
-zip = "2.2.1"
-csv = "1.3.1"
 dirs-next = "2.0.0"
+
+exchanges = { version = "0.1.0", path = "exchanges" }
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "beddf49c76f3b43e7b33452831e1293cad28fd89" }
+
+[workspace]
+members = ["exchanges"]

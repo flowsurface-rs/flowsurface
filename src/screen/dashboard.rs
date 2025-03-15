@@ -10,9 +10,13 @@ use crate::{
         footprint::FootprintChart,
     },
     data_providers::{
-        self, Depth, Exchange, Kline, OpenInterest, StreamConfig, TickMultiplier, Ticker,
-        TickerInfo, Trade, aggr::time::Timeframe, binance, bybit, fetcher::FetchRange,
+        exchanges::{
+            Depth, Event as ExchangeEvent, Exchange, Kline, OpenInterest, StreamConfig,
+            TickMultiplier, Ticker, TickerInfo, Timeframe, Trade, binance, bybit,
+        },
+        fetcher::FetchRange,
     },
+    layout::get_data_path,
     screen::{InfoType, notification_modal},
     style,
     window::{self, Window},
@@ -620,8 +624,10 @@ impl Dashboard {
             Message::FetchTrades(window_id, pane, from_time, to_time, stream_type) => {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
                     if exchange == Exchange::BinanceFutures || exchange == Exchange::BinanceSpot {
+                        let data_path = get_data_path(&format!("market_data/binance/",));
+
                         return Task::perform(
-                            binance::fetch_trades(ticker, from_time),
+                            binance::fetch_trades(ticker, from_time, data_path),
                             move |result| match result {
                                 Ok(trades) => Message::DistributeFetchedTrades(
                                     window_id,
@@ -1314,7 +1320,7 @@ impl Dashboard {
 
     pub fn get_market_subscriptions<M>(
         &self,
-        market_msg: impl Fn(data_providers::Event) -> M + Clone + Send + 'static,
+        market_msg: impl Fn(ExchangeEvent) -> M + Clone + Send + 'static,
     ) -> Subscription<M>
     where
         M: 'static,

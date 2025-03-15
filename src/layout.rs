@@ -6,7 +6,7 @@ use crate::charts::{
     indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
     timeandsales::TimeAndSales,
 };
-use crate::data_providers::{Exchange, StreamType, TickMultiplier, Ticker, aggr::time::Timeframe};
+use crate::data_providers::exchanges::{Exchange, StreamType, TickMultiplier, Ticker, Timeframe};
 use crate::screen::{
     UserTimezone,
     dashboard::{Dashboard, PaneContent, PaneSettings, PaneState},

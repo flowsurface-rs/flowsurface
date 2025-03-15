@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    data_providers::{Exchange, MarketType, Ticker, TickerStats},
+    data_providers::exchanges::{Exchange, MarketType, Ticker, TickerStats},
     style::{self, ICON_FONT, Icon, get_icon_text},
 };
 use iced::{

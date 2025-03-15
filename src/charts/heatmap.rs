@@ -10,8 +10,8 @@ use iced::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::data_providers::{Depth, Trade};
-use crate::{data_providers::TickerInfo, layout::SerializableChartData, screen::UserTimezone};
+use crate::data_providers::exchanges::{Depth, TickerInfo, Trade};
+use crate::{layout::SerializableChartData, screen::UserTimezone};
 
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{
