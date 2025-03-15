@@ -18,8 +18,9 @@ use crate::{
 };
 
 use exchanges::{
-    Depth, Event as ExchangeEvent, Exchange, Kline, OpenInterest, StreamConfig, Ticker, TickerInfo,
-    Timeframe, Trade, binance, bybit,
+    Kline, OpenInterest, Ticker, TickerInfo, Timeframe, Trade,
+    adapter::{Event as ExchangeEvent, Exchange, StreamConfig, binance, bybit},
+    depth::Depth,
 };
 
 use super::{

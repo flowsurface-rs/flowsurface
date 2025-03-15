@@ -1,8 +1,14 @@
-use ordered_float::OrderedFloat;
-use std::collections::BTreeMap;
+pub mod adapter;
+pub mod connect;
+pub mod depth;
 
-pub mod binance;
-pub mod bybit;
+use adapter::{Exchange, MarketType, StreamType};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+use std::{
+    fmt::{self, Write},
+    hash::Hash,
+};
 
 impl std::fmt::Display for Timeframe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -93,228 +99,11 @@ impl From<u64> for Timeframe {
     }
 }
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
-use std::{
-    fmt::{self, Write},
-    hash::Hash,
-};
-
-#[allow(clippy::large_enum_variant)]
-pub enum State {
-    Disconnected,
-    Connected(FragmentCollector<TokioIo<Upgraded>>),
-}
-
-#[derive(Debug, Clone)]
-pub enum Event {
-    Connected(Exchange, Connection),
-    Disconnected(Exchange, String),
-    DepthReceived(StreamType, u64, Depth, Box<[Trade]>),
-    KlineReceived(StreamType, Kline),
-}
-
-#[derive(Debug, Clone)]
-pub struct Connection;
-
-#[allow(dead_code)]
-#[derive(thiserror::Error, Debug)]
-pub enum StreamError {
-    #[error("Fetchrror: {0}")]
-    FetchError(#[from] reqwest::Error),
-    #[error("Parsing error: {0}")]
-    ParseError(String),
-    #[error("Stream error: {0}")]
-    WebsocketError(String),
-    #[error("Invalid request: {0}")]
-    InvalidRequest(String),
-    #[error("{0}")]
-    UnknownError(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
-pub struct TickerInfo {
-    pub ticker: Ticker,
-    #[serde(rename = "tickSize")]
-    pub min_ticksize: f32,
-}
-
-impl TickerInfo {
-    pub fn get_market_type(&self) -> MarketType {
-        self.ticker.market_type
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum StreamType {
-    Kline {
-        exchange: Exchange,
-        ticker: Ticker,
-        timeframe: Timeframe,
-    },
-    DepthAndTrades {
-        exchange: Exchange,
-        ticker: Ticker,
-    },
-    None,
-}
-
-// data types
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-struct Order {
-    #[serde(rename = "0", deserialize_with = "de_string_to_f32")]
-    pub price: f32,
-    #[serde(rename = "1", deserialize_with = "de_string_to_f32")]
-    pub qty: f32,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Depth {
-    pub bids: BTreeMap<OrderedFloat<f32>, f32>,
-    pub asks: BTreeMap<OrderedFloat<f32>, f32>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct VecLocalDepthCache {
-    last_update_id: u64,
-    time: u64,
-    bids: Vec<Order>,
-    asks: Vec<Order>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct LocalDepthCache {
-    last_update_id: u64,
-    time: u64,
-    bids: BTreeMap<OrderedFloat<f32>, f32>,
-    asks: BTreeMap<OrderedFloat<f32>, f32>,
-}
-
-impl LocalDepthCache {
-    fn new() -> Self {
-        Self {
-            last_update_id: 0,
-            time: 0,
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
-        }
-    }
-
-    fn fetched(&mut self, new_depth: &VecLocalDepthCache) {
-        self.last_update_id = new_depth.last_update_id;
-        self.time = new_depth.time;
-
-        self.bids = new_depth
-            .bids
-            .iter()
-            .map(|order| (OrderedFloat(order.price), order.qty))
-            .collect();
-        self.asks = new_depth
-            .asks
-            .iter()
-            .map(|order| (OrderedFloat(order.price), order.qty))
-            .collect();
-    }
-
-    fn update_depth_cache(&mut self, new_depth: &VecLocalDepthCache) {
-        self.last_update_id = new_depth.last_update_id;
-        self.time = new_depth.time;
-
-        Self::update_price_levels(&mut self.bids, &new_depth.bids);
-        Self::update_price_levels(&mut self.asks, &new_depth.asks);
-    }
-
-    fn update_price_levels(price_map: &mut BTreeMap<OrderedFloat<f32>, f32>, orders: &[Order]) {
-        orders.iter().for_each(|order| {
-            if order.qty == 0.0 {
-                price_map.remove(&OrderedFloat(order.price));
-            } else {
-                price_map.insert(OrderedFloat(order.price), order.qty);
-            }
-        });
-    }
-
-    fn get_fetch_id(&self) -> u64 {
-        self.last_update_id
-    }
-
-    fn get_depth(&self) -> Depth {
-        Depth {
-            bids: self.bids.clone(),
-            asks: self.asks.clone(),
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy, Deserialize)]
-pub struct Trade {
-    pub time: u64,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub is_sell: bool,
-    pub price: f32,
-    pub qty: f32,
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-pub struct Kline {
-    pub time: u64,
-    pub open: f32,
-    pub high: f32,
-    pub low: f32,
-    pub close: f32,
-    pub volume: (f32, f32),
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub struct TickerStats {
-    pub mark_price: f32,
-    pub daily_price_chg: f32,
-    pub daily_volume: f32,
-}
-
-// connection types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum Exchange {
-    BinanceFutures,
-    BinanceSpot,
-    BybitLinear,
-    BybitSpot,
-}
-
-impl std::fmt::Display for Exchange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Exchange::BinanceFutures => "Binance Futures",
-                Exchange::BinanceSpot => "Binance Spot",
-                Exchange::BybitLinear => "Bybit Linear",
-                Exchange::BybitSpot => "Bybit Spot",
-            }
-        )
-    }
-}
-impl Exchange {
-    pub const MARKET_TYPES: [(Exchange, MarketType); 4] = [
-        (Exchange::BinanceFutures, MarketType::LinearPerps),
-        (Exchange::BybitLinear, MarketType::LinearPerps),
-        (Exchange::BinanceSpot, MarketType::Spot),
-        (Exchange::BybitSpot, MarketType::Spot),
-    ];
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum MarketType {
-    Spot,
-    LinearPerps,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct Ticker {
     data: [u64; 2],
     len: u8,
-    market_type: MarketType,
+    pub market_type: MarketType,
 }
 
 impl Ticker {
@@ -394,21 +183,43 @@ impl From<(&str, MarketType)> for Ticker {
     }
 }
 
-#[derive(Debug, Clone, Hash)]
-pub struct StreamConfig<I> {
-    pub id: I,
-    pub market_type: MarketType,
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub struct TickerInfo {
+    pub ticker: Ticker,
+    #[serde(rename = "tickSize")]
+    pub min_ticksize: f32,
 }
 
-impl<I> StreamConfig<I> {
-    pub fn new(id: I, exchange: Exchange) -> Self {
-        let market_type = match exchange {
-            Exchange::BinanceFutures | Exchange::BybitLinear => MarketType::LinearPerps,
-            Exchange::BinanceSpot | Exchange::BybitSpot => MarketType::Spot,
-        };
-
-        Self { id, market_type }
+impl TickerInfo {
+    pub fn get_market_type(&self) -> MarketType {
+        self.ticker.market_type
     }
+}
+
+#[derive(Default, Debug, Clone, Copy, Deserialize)]
+pub struct Trade {
+    pub time: u64,
+    #[serde(deserialize_with = "bool_from_int")]
+    pub is_sell: bool,
+    pub price: f32,
+    pub qty: f32,
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub struct Kline {
+    pub time: u64,
+    pub open: f32,
+    pub high: f32,
+    pub low: f32,
+    pub close: f32,
+    pub volume: (f32, f32),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct TickerStats {
+    pub mark_price: f32,
+    pub daily_price_chg: f32,
+    pub daily_volume: f32,
 }
 
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -443,100 +254,6 @@ where
 pub struct OpenInterest {
     pub time: u64,
     pub value: f32,
-}
-
-// websocket
-use bytes::Bytes;
-use fastwebsockets::FragmentCollector;
-use http_body_util::Empty;
-use hyper::{
-    Request,
-    header::{CONNECTION, UPGRADE},
-    upgrade::Upgraded,
-};
-use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
-use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, OwnedTrustAnchor},
-};
-
-struct SpawnExecutor;
-
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-    Fut: std::future::Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        tokio::task::spawn(fut);
-    }
-}
-
-pub fn tls_connector() -> Result<TlsConnector, StreamError> {
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
-
-    let config = ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    Ok(TlsConnector::from(std::sync::Arc::new(config)))
-}
-
-async fn setup_tcp_connection(domain: &str) -> Result<TcpStream, StreamError> {
-    let addr = format!("{domain}:443");
-    TcpStream::connect(&addr)
-        .await
-        .map_err(|e| StreamError::WebsocketError(e.to_string()))
-}
-
-async fn setup_tls_connection(
-    domain: &str,
-    tcp_stream: TcpStream,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, StreamError> {
-    let tls_connector: TlsConnector = tls_connector()?;
-    let domain: tokio_rustls::rustls::ServerName =
-        tokio_rustls::rustls::ServerName::try_from(domain)
-            .map_err(|_| StreamError::ParseError("invalid dnsname".to_string()))?;
-    tls_connector
-        .connect(domain, tcp_stream)
-        .await
-        .map_err(|e| StreamError::WebsocketError(e.to_string()))
-}
-
-async fn setup_websocket_connection(
-    domain: &str,
-    tls_stream: tokio_rustls::client::TlsStream<TcpStream>,
-    url: &str,
-) -> Result<FragmentCollector<TokioIo<Upgraded>>, StreamError> {
-    let req: Request<Empty<Bytes>> = Request::builder()
-        .method("GET")
-        .uri(url)
-        .header("Host", domain)
-        .header(UPGRADE, "websocket")
-        .header(CONNECTION, "upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            fastwebsockets::handshake::generate_key(),
-        )
-        .header("Sec-WebSocket-Version", "13")
-        .body(Empty::<Bytes>::new())
-        .map_err(|e| StreamError::WebsocketError(e.to_string()))?;
-
-    let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream)
-        .await
-        .map_err(|e| StreamError::WebsocketError(e.to_string()))?;
-
-    Ok(FragmentCollector::new(ws))
 }
 
 fn str_f32_parse(s: &str) -> f32 {

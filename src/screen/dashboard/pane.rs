@@ -18,7 +18,10 @@ use crate::{
     style::{self, Icon, get_icon_text},
     window::{self, Window},
 };
-use exchanges::{Exchange, Kline, MarketType, OpenInterest, Ticker, TickerInfo, Timeframe};
+use exchanges::{
+    Kline, OpenInterest, Ticker, TickerInfo, Timeframe,
+    adapter::{Exchange, MarketType},
+};
 use iced::{
     Alignment, Element, Length, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},

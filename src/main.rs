@@ -12,8 +12,8 @@ mod window;
 
 use crate::widget::tooltip;
 use exchanges::{
-    Event as ExchangeEvent, Exchange, StreamError, StreamType, Ticker, TickerInfo, TickerStats,
-    binance, bybit,
+    Ticker, TickerInfo, TickerStats,
+    adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
 };
 use iced::{
     Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,

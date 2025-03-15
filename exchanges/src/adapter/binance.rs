@@ -14,10 +14,15 @@ use iced_futures::{
 };
 
 use super::{
-    Connection, Event, Exchange, Kline, LocalDepthCache, MarketType, OpenInterest, Order, State,
-    StreamError, StreamType, Ticker, TickerInfo, TickerStats, Timeframe, Trade, VecLocalDepthCache,
-    de_string_to_f32, setup_tcp_connection, setup_tls_connection, setup_websocket_connection,
-    str_f32_parse,
+    super::{
+        Exchange, Kline, MarketType, OpenInterest, StreamType, Ticker, TickerInfo, TickerStats,
+        Timeframe, Trade,
+        connect::{State, setup_tcp_connection, setup_tls_connection, setup_websocket_connection},
+        de_string_to_f32,
+        depth::{LocalDepthCache, Order, TempLocalDepth},
+        str_f32_parse,
+    },
+    Connection, Event, StreamError,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -503,7 +508,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 pub fn connect_kline_stream(
     streams: Vec<(Ticker, Timeframe)>,
     market: MarketType,
-) -> impl Stream<Item = super::Event> {
+) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
@@ -607,9 +612,9 @@ pub fn connect_kline_stream(
     })
 }
 
-fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
+fn new_depth_cache(depth: &SonicDepth) -> TempLocalDepth {
     match depth {
-        SonicDepth::Spot(de) => VecLocalDepthCache {
+        SonicDepth::Spot(de) => TempLocalDepth {
             last_update_id: de.final_id,
             time: de.time,
             bids: de
@@ -629,7 +634,7 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
                 })
                 .collect(),
         },
-        SonicDepth::LinearPerp(de) => VecLocalDepthCache {
+        SonicDepth::LinearPerp(de) => TempLocalDepth {
             last_update_id: de.final_id,
             time: de.time,
             bids: de
@@ -652,7 +657,7 @@ fn new_depth_cache(depth: &SonicDepth) -> VecLocalDepthCache {
     }
 }
 
-async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError> {
+async fn fetch_depth(ticker: &Ticker) -> Result<TempLocalDepth, StreamError> {
     let (symbol_str, market_type) = ticker.get_string();
 
     let base_url = match market_type {
@@ -674,7 +679,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
             let fetched_depth: FetchedSpotDepth =
                 serde_json::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
-            let depth: VecLocalDepthCache = VecLocalDepthCache {
+            let depth = TempLocalDepth {
                 last_update_id: fetched_depth.update_id,
                 time: chrono::Utc::now().timestamp_millis() as u64,
                 bids: fetched_depth.bids,
@@ -687,7 +692,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<VecLocalDepthCache, StreamError>
             let fetched_depth: FetchedPerpDepth =
                 serde_json::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
-            let depth: VecLocalDepthCache = VecLocalDepthCache {
+            let depth = TempLocalDepth {
                 last_update_id: fetched_depth.update_id,
                 time: fetched_depth.time,
                 bids: fetched_depth.bids,

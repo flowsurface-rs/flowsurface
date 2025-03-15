@@ -11,7 +11,7 @@ use iced::{
 use serde::{Deserialize, Serialize};
 
 use crate::{layout::SerializableChartData, screen::UserTimezone};
-use exchanges::{Depth, TickerInfo, Trade};
+use exchanges::{TickerInfo, Trade, depth::Depth};
 
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{

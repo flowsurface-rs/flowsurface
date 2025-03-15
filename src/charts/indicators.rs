@@ -6,7 +6,7 @@ use std::{
     fmt::{self, Debug, Display},
 };
 
-use exchanges::MarketType;
+use exchanges::adapter::MarketType;
 use iced::{
     Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,

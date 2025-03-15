@@ -14,7 +14,10 @@ use crate::screen::{
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{screen, style, tooltip};
-use exchanges::{Exchange, StreamType, Ticker, Timeframe};
+use exchanges::{
+    Ticker, Timeframe,
+    adapter::{Exchange, StreamType},
+};
 
 use chrono::NaiveDate;
 use iced::widget::pane_grid::{self, Configuration};

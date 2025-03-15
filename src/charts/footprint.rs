@@ -19,7 +19,7 @@ use crate::{
     aggr::{ticks::TickAggr, time::TimeSeries},
     fetcher::{FetchRange, RequestHandler},
 };
-use exchanges::{Kline, MarketType, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
+use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
 use super::indicators::{self, FootprintIndicator, Indicator};
 use super::scales::PriceInfoLabel;

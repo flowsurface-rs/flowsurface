@@ -14,7 +14,7 @@ use crate::aggr::{ticks::TickAggr, time::TimeSeries};
 use crate::fetcher::{FetchRange, RequestHandler};
 use crate::layout::SerializableChartData;
 use crate::screen::UserTimezone;
-use exchanges::{Kline, MarketType, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
+use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
 use super::indicators::{self, CandlestickIndicator, Indicator};
 use super::scales::PriceInfoLabel;
