@@ -11,6 +11,7 @@ use crate::{
     layout::get_data_path,
     screen::{InfoType, notification_modal},
     style,
+    widget::{self, notification::Toast},
     window::{self, Window},
 };
 
@@ -44,6 +45,7 @@ pub enum Message {
     ErrorOccurred(window::Id, Option<pane_grid::Pane>, DashboardError),
     ClearLastNotification(window::Id, pane_grid::Pane),
     ClearLastGlobalNotification,
+    GlobalNotification(Toast),
 
     LayoutFetchAll,
     RefreshStreams,
@@ -794,6 +796,9 @@ impl Dashboard {
                     }
                 }
             }
+            Message::GlobalNotification(text) => {
+                dbg!(text);
+            }
         }
 
         Task::none()
@@ -1150,14 +1155,13 @@ impl Dashboard {
                     .map(move |message| Message::Pane(window, message));
             }
         } else {
-            self.notification_manager
-                .global_notifications
-                .push(Notification::Warn("Select a pane first".to_string()));
+            let toast = Toast {
+                title: "Error: Pane Init".to_string(),
+                body: "Select a pane first".to_string(),
+                status: widget::notification::Status::Danger,
+            };
 
-            return Task::perform(
-                async { std::thread::sleep(std::time::Duration::from_secs(8)) },
-                move |()| Message::ClearLastGlobalNotification,
-            );
+            return Task::done(Message::GlobalNotification(toast));
         }
 
         Task::none()

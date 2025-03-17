@@ -7,6 +7,7 @@ use iced::{
 
 pub mod column_drag;
 pub mod hsplit;
+pub mod notification;
 
 pub fn tooltip<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,

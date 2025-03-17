@@ -2,13 +2,12 @@ use std::{collections::HashMap, fmt};
 
 use chrono::DateTime;
 use iced::{
-    Alignment, Element, Task, Theme,
+    Alignment, Element, Theme,
     widget::{
         Column, button, column, container, pane_grid, text, tooltip::Position as TooltipPosition,
     },
     window,
 };
-use iced_futures::MaybeSend;
 use serde::{Deserialize, Serialize};
 
 use crate::widget::tooltip;
@@ -147,16 +146,6 @@ pub enum Notification {
     Error(String),
     Info(InfoType),
     Warn(String),
-}
-
-pub fn handle_error<M, F>(err: &str, report: &str, message: F) -> Task<M>
-where
-    F: Fn(Notification) -> M + Send + 'static,
-    M: MaybeSend + 'static,
-{
-    log::error!("{err}: {report}");
-
-    Task::done(message(Notification::Error(report.to_string())))
 }
 
 #[derive(Default)]

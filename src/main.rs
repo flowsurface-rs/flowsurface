@@ -25,16 +25,16 @@ use iced::{
 use iced_futures::{MaybeSend, futures::TryFutureExt};
 use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
 use screen::{
-    Notification, UserTimezone, create_button,
+    UserTimezone, create_button,
     dashboard::{
         self, Dashboard, pane,
         tickers_table::{self, TickersTable},
     },
-    handle_error,
     modal::{confirmation_modal, dashboard_modal},
 };
 use std::{collections::HashMap, future::Future, vec};
 use style::{ICON_BYTES, Icon, get_icon_text};
+use widget::notification::Toast;
 use window::{Window, WindowEvent, window_events};
 
 fn main() {
@@ -96,7 +96,6 @@ fn main() {
 
 #[derive(Debug, Clone)]
 enum Message {
-    Notification(Notification),
     ErrorOccurred(InternalError),
 
     ToggleModal(SidebarModal),
@@ -129,6 +128,9 @@ enum Message {
     ScaleFactorChanged(f64),
 
     ManageLayouts(layout::Message),
+
+    AddNotification(Toast),
+    DeleteNotification(usize),
 }
 
 struct State {
@@ -139,11 +141,11 @@ struct State {
     layouts: LayoutManager,
     active_modal: SidebarModal,
     sidebar_location: Sidebar,
-    notification: Option<Notification>,
     scale_factor: layout::ScaleFactor,
     tickers_table: TickersTable,
     tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
     present_mode: screen::PresentMode,
+    notifications: Vec<Toast>,
 }
 
 impl State {
@@ -175,7 +177,6 @@ impl State {
                 layouts: saved_state.layout_manager,
                 main_window: Window::new(main_window),
                 active_modal: SidebarModal::None,
-                notification: None,
                 tickers_info: HashMap::new(),
                 sidebar_location: saved_state.sidebar,
                 tickers_table: TickersTable::new(saved_state.favorited_tickers),
@@ -183,6 +184,7 @@ impl State {
                 timezone: saved_state.timezone,
                 scale_factor: saved_state.scale_factor,
                 present_mode: saved_state.present_mode,
+                notifications: Vec::new(),
             },
             open_main_window
                 .then(|_| Task::none())
@@ -343,13 +345,16 @@ impl State {
                     self.active_modal = modal;
                 }
             }
-            Message::Notification(notification) => {
-                self.notification = Some(notification);
-            }
             Message::ErrorOccurred(err) => {
                 return match err {
                     InternalError::Fetch(err) => {
-                        handle_error(&err, "Failed to fetch data", Message::Notification)
+                        let toast = Toast {
+                            title: "Error".to_string(),
+                            body: err,
+                            status: widget::notification::Status::Danger,
+                        };
+
+                        Task::done(Message::AddNotification(toast))
                     }
                 };
             }
@@ -387,9 +392,13 @@ impl State {
             Message::Dashboard(message) => {
                 let main_window = self.main_window;
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    return dashboard
-                        .update(message, &main_window)
-                        .map(Message::Dashboard);
+                    if let dashboard::Message::GlobalNotification(toast) = &message {
+                        return Task::done(Message::AddNotification(toast.clone()));
+                    } else {
+                        return dashboard
+                            .update(message, &main_window)
+                            .map(Message::Dashboard);
+                    }
                 }
             }
             Message::ToggleTickersDashboard => {
@@ -493,6 +502,12 @@ impl State {
                     return self.layouts.update(msg).map(Message::ManageLayouts);
                 }
             }
+            Message::AddNotification(toast) => {
+                self.notifications.push(toast);
+            }
+            Message::DeleteNotification(index) => {
+                self.notifications.remove(index);
+            }
         }
         Task::none()
     }
@@ -514,7 +529,7 @@ impl State {
             }
         };
 
-        if id == self.main_window.id {
+        let content = if id == self.main_window.id {
             let tooltip_position = if self.sidebar_location == Sidebar::Left {
                 TooltipPosition::Right
             } else {
@@ -892,7 +907,18 @@ impl State {
             )
             .padding(padding::top(if cfg!(target_os = "macos") { 20 } else { 0 }))
             .into()
-        }
+        };
+
+        widget::notification::Manager::new(
+            content,
+            &self.notifications,
+            match self.sidebar_location {
+                Sidebar::Left => Alignment::End,
+                Sidebar::Right => Alignment::Start,
+            },
+            Message::DeleteNotification,
+        )
+        .into()
     }
 
     fn theme(&self, _window: window::Id) -> Theme {
