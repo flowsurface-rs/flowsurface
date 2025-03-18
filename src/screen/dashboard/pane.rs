@@ -28,6 +28,20 @@ use iced::{
 };
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InfoType {
+    FetchingKlines,
+    FetchingTrades(usize),
+    FetchingOI,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Status {
+    Ready,
+    Loading(InfoType),
+    Stale(String),
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 pub enum PaneModal {
     StreamModifier,
@@ -77,16 +91,15 @@ pub struct PaneState {
     pub content: PaneContent,
     pub settings: PaneSettings,
     pub notifications: Vec<Toast>,
+    pub status: Status,
 }
 
 impl PaneState {
     pub fn new(stream: Vec<StreamType>, settings: PaneSettings) -> Self {
         Self {
-            modal: PaneModal::None,
             stream,
-            content: PaneContent::Starter,
             settings,
-            notifications: vec![],
+            ..Default::default()
         }
     }
 
@@ -101,6 +114,7 @@ impl PaneState {
             content,
             settings,
             notifications: vec![],
+            status: Status::Ready, // TODO: set status from config
         }
     }
 
@@ -508,6 +522,23 @@ impl PaneState {
             _ => {}
         }
 
+        match &self.status {
+            Status::Loading(InfoType::FetchingKlines) => {
+                stream_info_element = stream_info_element.push(text("Fetching Klines..."));
+            }
+            Status::Loading(InfoType::FetchingTrades(count)) => {
+                stream_info_element =
+                    stream_info_element.push(text(format!("Fetching Trades... {count} fetched")));
+            }
+            Status::Loading(InfoType::FetchingOI) => {
+                stream_info_element = stream_info_element.push(text("Fetching Open Interest..."));
+            }
+            Status::Stale(msg) => {
+                stream_info_element = stream_info_element.push(text(msg));
+            }
+            _ => {}
+        }
+
         let content = pane_grid::Content::new(match &self.content {
             PaneContent::Starter => center(text("select a ticker to start").size(16)).into(),
             PaneContent::Heatmap(content, indicators) => {
@@ -549,6 +580,7 @@ impl Default for PaneState {
             content: PaneContent::Starter,
             settings: PaneSettings::default(),
             notifications: vec![],
+            status: Status::Ready,
         }
     }
 }

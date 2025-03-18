@@ -1,5 +1,3 @@
-use std::fmt;
-
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
 use iced::advanced::renderer;
@@ -7,17 +5,15 @@ use iced::advanced::widget::{self, Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget};
 use iced::time::{self, Duration, Instant};
 use iced::widget::{button, column, container, horizontal_space, row, text};
-use iced::window;
 use iced::{
     Alignment, Center, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
     Vector,
 };
-use iced::{Border, theme};
-use iced::{mouse, padding};
+use iced::{Border, mouse, padding, theme, window};
 
 use crate::style::{self, button_transparent};
 
-pub const DEFAULT_TIMEOUT: u64 = 20;
+pub const DEFAULT_TIMEOUT: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Status {
@@ -29,34 +25,10 @@ pub enum Status {
     Warning,
 }
 
-impl Status {
-    pub const ALL: &'static [Self] = &[Self::Primary, Self::Secondary, Self::Success, Self::Danger];
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Status::Primary => "Primary",
-            Status::Secondary => "Secondary",
-            Status::Success => "Success",
-            Status::Danger => "Danger",
-            Status::Warning => "Warning",
-        }
-        .fmt(f)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InfoType {
-    FetchingKlines,
-    FetchingTrades(usize),
-    FetchingOI,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Notification {
     Error(String),
-    Info(InfoType),
+    Info(String),
     Warn(String),
 }
 
@@ -75,25 +47,15 @@ impl Toast {
                 body,
                 status: Status::Danger,
             },
-            Notification::Info(InfoType::FetchingKlines) => Self {
-                title: "Fetching Klines".to_string(),
-                body: "Please wait...".to_string(),
-                status: Status::Primary,
-            },
-            Notification::Info(InfoType::FetchingTrades(fetched)) => Self {
-                title: "Fetching Trades".to_string(),
-                body: format!("Please wait... Fetched: {}", fetched),
-                status: Status::Primary,
-            },
-            Notification::Info(InfoType::FetchingOI) => Self {
-                title: "Fetching Open Interest".to_string(),
-                body: "Please wait...".to_string(),
+            Notification::Info(body) => Self {
+                title: "Info".to_string(),
+                body,
                 status: Status::Primary,
             },
             Notification::Warn(body) => Self {
                 title: "Warning".to_string(),
                 body,
-                status: Status::Secondary,
+                status: Status::Warning,
             },
         }
     }
@@ -110,6 +72,7 @@ impl Toast {
 pub struct Manager<'a, Message> {
     content: Element<'a, Message>,
     toasts: Vec<Element<'a, Message>>,
+    timeout_secs: u64,
     on_close: Box<dyn Fn(usize) -> Message + 'a>,
     alignment: Alignment,
 }
@@ -162,7 +125,15 @@ where
             content: content.into(),
             alignment,
             toasts,
+            timeout_secs: DEFAULT_TIMEOUT,
             on_close: Box::new(on_close),
+        }
+    }
+
+    pub fn timeout(self, seconds: u64) -> Self {
+        Self {
+            timeout_secs: seconds,
+            ..self
         }
     }
 }
@@ -325,6 +296,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
                 state: toasts_state,
                 instants,
                 on_close: &self.on_close,
+                timeout_secs: self.timeout_secs,
             }))
         });
         let overlays = content.into_iter().chain(toasts).collect::<Vec<_>>();
@@ -341,6 +313,7 @@ struct Overlay<'a, 'b, Message> {
     state: &'b mut [Tree],
     instants: &'b mut [Option<Instant>],
     on_close: &'b dyn Fn(usize) -> Message,
+    timeout_secs: u64,
 }
 
 impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Message> {
@@ -378,7 +351,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
                 .for_each(|(index, maybe_instant)| {
                     if let Some(instant) = maybe_instant.as_mut() {
                         let remaining =
-                            time::seconds(DEFAULT_TIMEOUT).saturating_sub(instant.elapsed());
+                            time::seconds(self.timeout_secs).saturating_sub(instant.elapsed());
 
                         if remaining == Duration::ZERO {
                             maybe_instant.take();
