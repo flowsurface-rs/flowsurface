@@ -9,7 +9,6 @@ use crate::{
     charts::{self, ChartBasis, candlestick::CandlestickChart, footprint::FootprintChart},
     fetcher::FetchRange,
     layout::get_data_path,
-    screen::{InfoType, notification_modal},
     style,
     widget::{self, notification::Toast},
     window::{self, Window},
@@ -21,9 +20,7 @@ use exchanges::{
     depth::Depth,
 };
 
-use super::{
-    DashboardError, Notification, NotificationManager, UserTimezone, modal::dashboard_notification,
-};
+use super::{DashboardError, UserTimezone};
 
 use iced::{
     Element, Length, Point, Size, Subscription, Task, Vector,
@@ -43,8 +40,6 @@ pub enum Message {
     Pane(window::Id, pane::Message),
     SavePopoutSpecs(HashMap<window::Id, (Point, Size)>),
     ErrorOccurred(window::Id, Option<pane_grid::Pane>, DashboardError),
-    ClearLastNotification(window::Id, pane_grid::Pane),
-    ClearLastGlobalNotification,
     GlobalNotification(Toast),
 
     LayoutFetchAll,
@@ -78,7 +73,6 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, (Point, Size))>,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
-    notification_manager: NotificationManager,
     pub trade_fetch_enabled: bool,
 }
 
@@ -88,7 +82,6 @@ impl Default for Dashboard {
             panes: pane_grid::State::with_configuration(Self::default_pane_config()),
             focus: None,
             pane_streams: HashMap::new(),
-            notification_manager: NotificationManager::new(),
             popout: HashMap::new(),
             trade_fetch_enabled: false,
         }
@@ -106,42 +99,17 @@ impl Dashboard {
                 a: Box::new(Configuration::Split {
                     axis: pane_grid::Axis::Vertical,
                     ratio: 0.5,
-                    a: Box::new(Configuration::Pane(PaneState {
-                        modal: pane::PaneModal::None,
-                        stream: vec![],
-                        content: PaneContent::Starter,
-                        settings: PaneSettings::default(),
-                    })),
-                    b: Box::new(Configuration::Pane(PaneState {
-                        modal: pane::PaneModal::None,
-                        stream: vec![],
-                        content: PaneContent::Starter,
-                        settings: PaneSettings::default(),
-                    })),
+                    a: Box::new(Configuration::Pane(PaneState::default())),
+                    b: Box::new(Configuration::Pane(PaneState::default())),
                 }),
                 b: Box::new(Configuration::Split {
                     axis: pane_grid::Axis::Vertical,
                     ratio: 0.5,
-                    a: Box::new(Configuration::Pane(PaneState {
-                        modal: pane::PaneModal::None,
-                        stream: vec![],
-                        content: PaneContent::Starter,
-                        settings: PaneSettings::default(),
-                    })),
-                    b: Box::new(Configuration::Pane(PaneState {
-                        modal: pane::PaneModal::None,
-                        stream: vec![],
-                        content: PaneContent::Starter,
-                        settings: PaneSettings::default(),
-                    })),
+                    a: Box::new(Configuration::Pane(PaneState::default())),
+                    b: Box::new(Configuration::Pane(PaneState::default())),
                 }),
             }),
-            b: Box::new(Configuration::Pane(PaneState {
-                modal: pane::PaneModal::None,
-                stream: vec![],
-                content: PaneContent::Starter,
-                settings: PaneSettings::default(),
-            })),
+            b: Box::new(Configuration::Pane(PaneState::default())),
         }
     }
 
@@ -165,7 +133,6 @@ impl Dashboard {
             panes,
             focus: None,
             pane_streams: HashMap::new(),
-            notification_manager: NotificationManager::new(),
             popout,
             trade_fetch_enabled,
         }
@@ -219,22 +186,7 @@ impl Dashboard {
                     }
                 }
             }
-            Message::ClearLastNotification(window, pane) => {
-                self.notification_manager.remove_last(&window, &pane);
-            }
-            Message::ClearLastGlobalNotification => {
-                self.notification_manager.global_notifications.pop();
-            }
-            Message::ErrorOccurred(window, pane, err) => {
-                if let Some(pane) = pane {
-                    self.notification_manager.handle_error(window, pane, err);
-
-                    return Task::perform(
-                        async { std::thread::sleep(std::time::Duration::from_secs(15)) },
-                        move |()| Message::ClearLastNotification(window, pane),
-                    );
-                }
-            }
+            Message::ErrorOccurred(window, pane, err) => {}
             Message::Pane(window, message) => {
                 match message {
                     pane::Message::PaneClicked(pane) => {
@@ -365,19 +317,15 @@ impl Dashboard {
                         }
                     }
                     pane::Message::TicksizeSelected(tick_multiply, pane) => {
-                        self.notification_manager.clear(&window, &pane);
-
                         return self.set_pane_ticksize(main_window.id, window, pane, tick_multiply);
                     }
-                    pane::Message::ChartBasisSelected(basis, pane) => {
-                        self.notification_manager.clear(&window, &pane);
-
+                    pane::Message::ChartBasisSelected(new_basis, pane) => {
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                            state.settings.selected_basis = Some(basis);
+                            state.settings.selected_basis = Some(new_basis);
 
                             if let Some((exchange, ticker)) = state.get_ticker_exchange() {
                                 match &state.content {
-                                    PaneContent::Candlestick(_, _) => match basis {
+                                    PaneContent::Candlestick(_, _) => match new_basis {
                                         ChartBasis::Time(interval) => {
                                             state.stream = vec![StreamType::Kline {
                                                 exchange,
@@ -392,7 +340,7 @@ impl Dashboard {
                                             }];
                                         }
                                     },
-                                    PaneContent::Footprint(_, _) => match basis {
+                                    PaneContent::Footprint(_, _) => match new_basis {
                                         ChartBasis::Time(interval) => {
                                             state.stream = vec![
                                                 StreamType::Kline {
@@ -415,7 +363,7 @@ impl Dashboard {
                             }
                         }
 
-                        match basis {
+                        match new_basis {
                             ChartBasis::Time(timeframe) => {
                                 match self.set_pane_timeframe(
                                     main_window.id,
@@ -431,12 +379,6 @@ impl Dashboard {
                                                 *stream_type,
                                                 None,
                                                 None,
-                                            );
-
-                                            self.notification_manager.push(
-                                                window,
-                                                pane,
-                                                Notification::Info(InfoType::FetchingKlines),
                                             );
 
                                             return Task::done(Message::RefreshStreams).chain(task);
@@ -477,42 +419,36 @@ impl Dashboard {
                             pane_state.content.toggle_indicator(indicator_str);
                         }
                     }
-                    pane::Message::HideNotification(pane, notification) => {
-                        self.notification_manager
-                            .find_and_remove(window, pane, notification);
-                    }
-                }
-            }
-            Message::FetchEvent(req_id, klines, pane_stream, pane_id, window) => {
-                self.notification_manager.remove_info_type(
-                    window,
-                    &pane_id,
-                    &InfoType::FetchingKlines,
-                );
-
-                match klines {
-                    Ok(klines) => {
-                        if let StreamType::Kline { timeframe, .. } = pane_stream {
-                            if let Some(pane_state) =
-                                self.get_mut_pane(main_window.id, window, pane_id)
-                            {
-                                pane_state.insert_klines_vec(req_id, timeframe, &klines);
-                            }
+                    pane::Message::AddNotification(pane, toast) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            pane_state.notifications.push(toast);
                         }
                     }
-                    Err(err) => {
-                        return Task::done(Message::ErrorOccurred(
-                            window,
-                            Some(pane_id),
-                            DashboardError::Fetch(err),
-                        ));
+                    pane::Message::DeleteNotification(pane, idx) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            pane_state.notifications.remove(idx);
+                        }
                     }
                 }
             }
+            Message::FetchEvent(req_id, klines, pane_stream, pane_id, window) => match klines {
+                Ok(klines) => {
+                    if let StreamType::Kline { timeframe, .. } = pane_stream {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane_id)
+                        {
+                            pane_state.insert_klines_vec(req_id, timeframe, &klines);
+                        }
+                    }
+                }
+                Err(err) => {
+                    return Task::done(Message::ErrorOccurred(
+                        window,
+                        Some(pane_id),
+                        DashboardError::Fetch(err),
+                    ));
+                }
+            },
             Message::OIFetchEvent(req_id, oi, pane_stream, pane_id, window) => {
-                self.notification_manager
-                    .remove_info_type(window, &pane_id, &InfoType::FetchingOI);
-
                 if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane_id) {
                     match oi {
                         Ok(oi) => {
@@ -546,14 +482,6 @@ impl Dashboard {
                         }
                         _ => {}
                     });
-
-                for (window, pane) in fetched_panes {
-                    self.notification_manager.push(
-                        window,
-                        pane,
-                        Notification::Info(InfoType::FetchingKlines),
-                    );
-                }
 
                 return Task::batch(klines_fetch_all_task(&self.pane_streams));
             }
@@ -605,14 +533,6 @@ impl Dashboard {
                                 }
                             }
                         });
-
-                    for (window, pane) in inserted_panes {
-                        self.notification_manager.remove_info_type(
-                            window,
-                            &pane,
-                            &InfoType::FetchingKlines,
-                        );
-                    }
                 }
                 Err(err) => {
                     log::error!("{err}");
@@ -641,12 +561,6 @@ impl Dashboard {
                             },
                         );
                     } else {
-                        self.notification_manager.remove_info_type(
-                            window_id,
-                            &pane,
-                            &InfoType::FetchingTrades(0),
-                        );
-
                         return Task::done(Message::ErrorOccurred(
                             window_id,
                             Some(pane),
@@ -659,9 +573,6 @@ impl Dashboard {
             }
             Message::DistributeFetchedTrades(window_id, pane, trades, stream_type, to_time) => {
                 let last_trade_time = trades.last().map_or(0, |trade| trade.time);
-
-                self.notification_manager
-                    .increment_fetching_trades(window_id, &pane, trades.len());
 
                 if last_trade_time < to_time {
                     match self.insert_fetched_trades(
@@ -681,22 +592,10 @@ impl Dashboard {
                             ));
                         }
                         Err(err) => {
-                            self.notification_manager.remove_info_type(
-                                window_id,
-                                &pane,
-                                &InfoType::FetchingTrades(0),
-                            );
-
                             return Task::done(Message::ErrorOccurred(window_id, Some(pane), err));
                         }
                     }
                 } else {
-                    self.notification_manager.remove_info_type(
-                        window_id,
-                        &pane,
-                        &InfoType::FetchingTrades(0),
-                    );
-
                     match self.insert_fetched_trades(main_window.id, window_id, pane, &trades, true)
                     {
                         Ok(()) => {}
@@ -722,18 +621,10 @@ impl Dashboard {
                                 });
 
                             if let Some(stream) = kline_stream {
-                                let stream = *stream;
-
-                                self.notification_manager.push(
-                                    window,
-                                    pane,
-                                    Notification::Info(InfoType::FetchingKlines),
-                                );
-
                                 return get_kline_fetch_task(
                                     window,
                                     pane,
-                                    stream,
+                                    *stream,
                                     Some(req_id),
                                     Some((from, to)),
                                 );
@@ -741,26 +632,24 @@ impl Dashboard {
                         }
                         FetchRange::OpenInterest(from, to) => {
                             let kline_stream = self
-                                .get_pane(main_window.id, window, pane)
+                                .get_mut_pane(main_window.id, window, pane)
                                 .and_then(|pane| {
+                                    pane.notifications.push(Toast {
+                                        title: "Getting data...".to_string(),
+                                        body: "Fetching open interest data".to_string(),
+                                        status: widget::notification::Status::Secondary,
+                                    });
+
                                     pane.stream
                                         .iter()
                                         .find(|stream| matches!(stream, StreamType::Kline { .. }))
                                 });
 
                             if let Some(stream) = kline_stream {
-                                let stream = *stream;
-
-                                self.notification_manager.push(
-                                    window,
-                                    pane,
-                                    Notification::Info(InfoType::FetchingOI),
-                                );
-
                                 return get_oi_fetch_task(
                                     window,
                                     pane,
-                                    stream,
+                                    *stream,
                                     Some(req_id),
                                     Some((from, to)),
                                 );
@@ -780,16 +669,8 @@ impl Dashboard {
                                 });
 
                             if let Some(stream) = trade_stream {
-                                let stream = *stream;
-
-                                self.notification_manager.push(
-                                    window,
-                                    pane,
-                                    Notification::Info(InfoType::FetchingTrades(0)),
-                                );
-
                                 return Task::done(Message::FetchTrades(
-                                    window, pane, from, to, stream,
+                                    window, pane, from, to, *stream,
                                 ));
                             }
                         }
@@ -986,7 +867,6 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
-                self.notification_manager.get(&main_window.id, &id),
             )
         })
         .spacing(6)
@@ -1000,18 +880,8 @@ impl Dashboard {
         }
 
         let pane_grid: Element<_> = pane_grid.into();
-        let base = container(pane_grid.map(move |message| Message::Pane(main_window.id, message)));
 
-        if self.notification_manager.global_notifications.is_empty() {
-            base.into()
-        } else {
-            dashboard_notification(
-                base,
-                notification_modal(&self.notification_manager.global_notifications, move |_| {
-                    Message::ClearLastGlobalNotification
-                }),
-            )
-        }
+        container(pane_grid.map(move |message| Message::Pane(main_window.id, message))).into()
     }
 
     pub fn view_window<'a>(
@@ -1033,7 +903,6 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
-                        self.notification_manager.get(&window, &id),
                     )
                 });
 

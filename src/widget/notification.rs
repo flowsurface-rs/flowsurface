@@ -5,7 +5,6 @@ use iced::advanced::overlay;
 use iced::advanced::renderer;
 use iced::advanced::widget::{self, Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget};
-use iced::theme;
 use iced::time::{self, Duration, Instant};
 use iced::widget::{button, column, container, horizontal_rule, horizontal_space, row, text};
 use iced::window;
@@ -13,6 +12,7 @@ use iced::{
     Alignment, Center, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
     Vector,
 };
+use iced::{Border, theme};
 use iced::{mouse, padding};
 
 use crate::style::{self, button_transparent};
@@ -84,9 +84,14 @@ where
                         ]
                         .align_y(Center)
                     )
+                    .style(match toast.status {
+                        Status::Primary => primary,
+                        Status::Secondary => secondary,
+                        Status::Success => success,
+                        Status::Danger => danger,
+                    })
                     .width(Fill)
                     .padding(4),
-                    horizontal_rule(2),
                     container(text(toast.body.as_str())).width(Fill).padding(4)
                 ])
                 .style(style::chart_modal)
@@ -438,6 +443,11 @@ fn styled(pair: theme::palette::Pair) -> container::Style {
     container::Style {
         background: Some(pair.color.into()),
         text_color: pair.text.into(),
+        border: Border {
+            width: 1.0,
+            color: pair.color.into(),
+            radius: 2.0.into(),
+        },
         ..Default::default()
     }
 }

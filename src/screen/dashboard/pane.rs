@@ -11,11 +11,9 @@ use crate::{
         timeandsales::TimeAndSales,
     },
     layout::SerializableChartData,
-    screen::{
-        self, DashboardError, Notification, UserTimezone, create_button,
-        modal::{pane_menu, pane_notification},
-    },
+    screen::{DashboardError, UserTimezone, create_button, modal::pane_menu},
     style::{self, Icon, get_icon_text},
+    widget::{self, notification::Toast},
     window::{self, Window},
 };
 use exchanges::{
@@ -67,9 +65,10 @@ pub enum Message {
     ChartUserUpdate(pane_grid::Pane, charts::Message),
     VisualConfigChanged(Option<pane_grid::Pane>, VisualConfig),
     ToggleIndicator(pane_grid::Pane, String),
-    HideNotification(pane_grid::Pane, Notification),
     Popout,
     Merge,
+    AddNotification(pane_grid::Pane, Toast),
+    DeleteNotification(pane_grid::Pane, usize),
 }
 
 pub struct PaneState {
@@ -77,6 +76,7 @@ pub struct PaneState {
     pub stream: Vec<StreamType>,
     pub content: PaneContent,
     pub settings: PaneSettings,
+    pub notifications: Vec<Toast>,
 }
 
 impl PaneState {
@@ -86,6 +86,7 @@ impl PaneState {
             stream,
             content: PaneContent::Starter,
             settings,
+            notifications: vec![],
         }
     }
 
@@ -99,6 +100,7 @@ impl PaneState {
             stream,
             content,
             settings,
+            notifications: vec![],
         }
     }
 
@@ -419,7 +421,6 @@ impl PaneState {
         window: window::Id,
         main_window: &'a Window,
         timezone: &'a UserTimezone,
-        notifications: Option<&'a Vec<screen::Notification>>,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut stream_info_element = row![]
             .padding(padding::left(8))
@@ -510,17 +511,15 @@ impl PaneState {
         let content = pane_grid::Content::new(match &self.content {
             PaneContent::Starter => center(text("select a ticker to start").size(16)).into(),
             PaneContent::Heatmap(content, indicators) => {
-                view_chart(id, self, content, notifications, indicators, timezone)
+                view_chart(id, self, content, indicators, timezone)
             }
             PaneContent::Footprint(content, indicators) => {
-                view_chart(id, self, content, notifications, indicators, timezone)
+                view_chart(id, self, content, indicators, timezone)
             }
             PaneContent::Candlestick(content, indicators) => {
-                view_chart(id, self, content, notifications, indicators, timezone)
+                view_chart(id, self, content, indicators, timezone)
             }
-            PaneContent::TimeAndSales(content) => {
-                view_panel(id, self, content, notifications, timezone)
-            }
+            PaneContent::TimeAndSales(content) => view_panel(id, self, content, timezone),
         })
         .style(move |theme| style::pane_background(theme, is_focused));
 
@@ -542,6 +541,18 @@ impl PaneState {
     }
 }
 
+impl Default for PaneState {
+    fn default() -> Self {
+        Self {
+            modal: PaneModal::None,
+            stream: vec![],
+            content: PaneContent::Starter,
+            settings: PaneSettings::default(),
+            notifications: vec![],
+        }
+    }
+}
+
 /// Pane `view()` traits that includes a chart with `Canvas`
 ///
 /// e.g. panes for Heatmap, Footprint, Candlestick charts
@@ -551,7 +562,6 @@ trait ChartView {
         pane: pane_grid::Pane,
         state: &'a PaneState,
         indicators: &'a [I],
-        notifications: Option<&'a Vec<screen::Notification>>,
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message>;
 }
@@ -564,28 +574,16 @@ enum StreamModifier {
 }
 
 fn handle_chart_view<'a, F>(
-    underlay: Element<'a, Message>,
+    base: Element<'a, Message>,
     state: &'a PaneState,
     pane: pane_grid::Pane,
     indicators: &'a [impl Indicator],
     settings_view: F,
-    notifications: Option<&'a Vec<screen::Notification>>,
     stream_modifier: StreamModifier,
 ) -> Element<'a, Message>
 where
     F: FnOnce() -> Element<'a, Message>,
 {
-    let base = if let Some(notifications) = notifications {
-        pane_notification(
-            underlay,
-            screen::notification_modal(notifications, move |notification| {
-                Message::HideNotification(pane, notification)
-            }),
-        )
-    } else {
-        underlay
-    };
-
     match state.modal {
         PaneModal::StreamModifier => pane_menu(
             base,
@@ -625,22 +623,20 @@ impl ChartView for HeatmapChart {
         pane: pane_grid::Pane,
         state: &'a PaneState,
         indicators: &'a [I],
-        notifications: Option<&'a Vec<screen::Notification>>,
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
-        let underlay = self
+        let base = self
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         let settings_view = || config::heatmap_cfg_view(self.get_visual_config(), pane);
 
         handle_chart_view(
-            underlay,
+            base,
             state,
             pane,
             indicators,
             settings_view,
-            notifications,
             StreamModifier::HeatmapChart(
                 state.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
             ),
@@ -654,22 +650,20 @@ impl ChartView for FootprintChart {
         pane: pane_grid::Pane,
         state: &'a PaneState,
         indicators: &'a [I],
-        notifications: Option<&'a Vec<screen::Notification>>,
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
-        let underlay = self
+        let base = self
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         let settings_view = || blank_settings_view();
 
         handle_chart_view(
-            underlay,
+            base,
             state,
             pane,
             indicators,
             settings_view,
-            notifications,
             StreamModifier::FootprintChart(
                 state
                     .settings
@@ -687,22 +681,20 @@ impl ChartView for CandlestickChart {
         pane: pane_grid::Pane,
         state: &'a PaneState,
         indicators: &'a [I],
-        notifications: Option<&'a Vec<screen::Notification>>,
         timezone: &'a UserTimezone,
     ) -> Element<'a, Message> {
-        let underlay = self
+        let base = self
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
         let settings_view = || blank_settings_view();
 
         handle_chart_view(
-            underlay,
+            base,
             state,
             pane,
             indicators,
             settings_view,
-            notifications,
             StreamModifier::CandlestickChart(
                 state
                     .settings
@@ -924,32 +916,24 @@ fn view_panel<'a, C: PanelView>(
     pane: pane_grid::Pane,
     state: &'a PaneState,
     content: &'a C,
-    notifications: Option<&'a Vec<screen::Notification>>,
     timezone: &'a UserTimezone,
 ) -> Element<'a, Message> {
     let base = center(content.view(pane, state, timezone));
 
-    if let Some(notifications) = notifications {
-        pane_notification(
-            base,
-            screen::notification_modal(notifications, move |notification| {
-                Message::HideNotification(pane, notification)
-            }),
-        )
-    } else {
-        base.into()
-    }
+    widget::notification::Manager::new(base, &state.notifications, Alignment::End, move |idx| {
+        Message::DeleteNotification(pane, idx)
+    })
+    .into()
 }
 
 fn view_chart<'a, C: ChartView, I: Indicator>(
     pane: pane_grid::Pane,
     state: &'a PaneState,
     content: &'a C,
-    notifications: Option<&'a Vec<screen::Notification>>,
     indicators: &'a [I],
     timezone: &'a UserTimezone,
 ) -> Element<'a, Message> {
-    content.view(pane, state, indicators, notifications, timezone)
+    content.view(pane, state, indicators, timezone)
 }
 
 // Pane controls, title bar
