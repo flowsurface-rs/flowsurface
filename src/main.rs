@@ -12,7 +12,7 @@ mod window;
 
 use crate::widget::{confirm_dialog, tooltip};
 use exchanges::{
-    Ticker, TickerInfo, TickerStats,
+    Kline, Ticker, TickerInfo, TickerStats, Trade,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
 };
 use iced::{
@@ -109,7 +109,8 @@ enum Message {
     ToggleLayoutLock,
     LayoutSelected(Layout),
     ThemeSelected(Theme),
-    Dashboard(dashboard::Message),
+    ActiveDashboard(dashboard::Message),
+    Dashboard(uuid::Uuid, dashboard::Message),
     SetTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
     SetTimezone(UserTimezone),
     SidebarPosition(layout::Sidebar),
@@ -131,6 +132,20 @@ enum Message {
 
     AddNotification(Toast),
     DeleteNotification(usize),
+
+    DistributeFetchedData(
+        uuid::Uuid,
+        window::Id,
+        pane_grid::Pane,
+        FetchedData,
+        StreamType,
+    ),
+}
+
+#[derive(Debug, Clone)]
+pub enum FetchedData {
+    Trades(Vec<Trade>, u64),
+    Klines(Vec<Kline>),
 }
 
 struct State {
@@ -199,6 +214,19 @@ impl State {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DistributeFetchedData(dashboard_id, window, pane, data, stream_type) => {
+                let main_window_id = self.main_window.id;
+
+                if let Some(dashboard) = self.get_mut_dashboard(dashboard_id) {
+                    return dashboard
+                        .distribute_fetched_data(main_window_id, window, pane, data, stream_type)
+                        .map(move |msg| Message::Dashboard(dashboard_id, msg));
+                } else {
+                    return Task::done(Message::ErrorOccurred(InternalError::Layout(
+                        "Couldn't find dashboard".to_string(),
+                    )));
+                }
+            }
             Message::SetTickersInfo(exchange, tickers_info) => {
                 log::info!(
                     "Received tickers info for {exchange}, len: {}",
@@ -230,12 +258,12 @@ impl State {
                                     trades_buffer,
                                     main_window_id,
                                 )
-                                .map(Message::Dashboard);
+                                .map(Message::ActiveDashboard);
                         }
                         ExchangeEvent::KlineReceived(stream, kline) => {
                             return dashboard
                                 .update_latest_klines(&stream, &kline, main_window_id)
-                                .map(Message::Dashboard);
+                                .map(Message::ActiveDashboard);
                         }
                     }
                 }
@@ -350,6 +378,9 @@ impl State {
                     InternalError::Fetch(err) => {
                         Task::done(Message::AddNotification(Toast::error(err)))
                     }
+                    InternalError::Layout(err) => {
+                        Task::done(Message::AddNotification(Toast::error(err)))
+                    }
                 };
             }
             Message::ThemeSelected(theme) => {
@@ -371,7 +402,7 @@ impl State {
                         active_popout_keys,
                         dashboard::Message::SavePopoutSpecs,
                     )
-                    .map(Message::Dashboard)
+                    .map(Message::ActiveDashboard)
                     .chain(window_tasks)
                     .chain(Task::done(Message::LoadLayout(new_layout_id)));
                 }
@@ -380,18 +411,75 @@ impl State {
                 self.layouts.active_layout = layout.clone();
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     dashboard.focus = None;
-                    return dashboard.load_layout().map(Message::Dashboard);
+                    return dashboard.load_layout().map(Message::ActiveDashboard);
                 }
             }
-            Message::Dashboard(message) => {
+            Message::ActiveDashboard(message) => {
                 let main_window = self.main_window;
+                let active_layout = self.layouts.active_layout.id;
+
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    if let dashboard::Message::GlobalNotification(toast) = &message {
-                        return Task::done(Message::AddNotification(toast.clone()));
-                    } else {
-                        return dashboard
-                            .update(message, &main_window)
-                            .map(Message::Dashboard);
+                    match &message {
+                        dashboard::Message::GlobalNotification(toast) => {
+                            return Task::done(Message::AddNotification(toast.clone()));
+                        }
+                        dashboard::Message::DistributeFetchedTrades(
+                            dashboard_id,
+                            window_id,
+                            pane,
+                            trades,
+                            stream,
+                            to_time,
+                        ) => {
+                            let data = FetchedData::Trades(trades.to_vec(), *to_time);
+
+                            return Task::done(Message::DistributeFetchedData(
+                                *dashboard_id,
+                                *window_id,
+                                *pane,
+                                data,
+                                *stream,
+                            ));
+                        }
+                        _ => {
+                            return dashboard
+                                .update(message, &main_window, &active_layout)
+                                .map(Message::ActiveDashboard);
+                        }
+                    }
+                }
+            }
+            Message::Dashboard(dashboard_id, message) => {
+                let main_window = self.main_window;
+
+                if let Some(dashboard) = self.get_mut_dashboard(dashboard_id) {
+                    match &message {
+                        dashboard::Message::GlobalNotification(toast) => {
+                            return Task::done(Message::AddNotification(toast.clone()));
+                        }
+                        dashboard::Message::DistributeFetchedTrades(
+                            dashboard_id,
+                            window_id,
+                            pane,
+                            trades,
+                            stream,
+                            to_time,
+                        ) => {
+                            let data = FetchedData::Trades(trades.to_vec(), *to_time);
+
+                            return Task::done(Message::DistributeFetchedData(
+                                *dashboard_id,
+                                *window_id,
+                                *pane,
+                                data,
+                                *stream,
+                            ));
+                        }
+                        _ => {
+                            return dashboard
+                                .update(message, &main_window, &dashboard_id)
+                                .map(move |msg| Message::Dashboard(dashboard_id, msg));
+                        }
                     }
                 }
             }
@@ -440,7 +528,7 @@ impl State {
                                 &content,
                             );
 
-                            return task.map(Message::Dashboard);
+                            return task.map(Message::ActiveDashboard);
                         } else {
                             return Task::done(Message::ErrorOccurred(InternalError::Fetch(
                                 format!(
@@ -645,7 +733,7 @@ impl State {
                     self.layouts.is_layout_locked(),
                     &self.timezone,
                 )
-                .map(Message::Dashboard);
+                .map(Message::ActiveDashboard);
 
             let base = column![
                 {
@@ -815,7 +903,7 @@ impl State {
                     let reset_pane_button = tooltip(
                         button(text("Reset").align_x(Alignment::Center))
                             .width(iced::Length::Fill)
-                            .on_press(Message::Dashboard(dashboard::Message::Pane(
+                            .on_press(Message::ActiveDashboard(dashboard::Message::Pane(
                                 id,
                                 pane::Message::ReplacePane(if let Some(focus) = dashboard.focus {
                                     focus.1
@@ -829,7 +917,7 @@ impl State {
                     let split_pane_button = tooltip(
                         button(text("Split").align_x(Alignment::Center))
                             .width(iced::Length::Fill)
-                            .on_press(Message::Dashboard(dashboard::Message::Pane(
+                            .on_press(Message::ActiveDashboard(dashboard::Message::Pane(
                                 id,
                                 pane::Message::SplitPane(
                                     pane_grid::Axis::Horizontal,
@@ -897,7 +985,7 @@ impl State {
                         self.layouts.is_layout_locked(),
                         &self.timezone,
                     )
-                    .map(Message::Dashboard),
+                    .map(Message::ActiveDashboard),
             )
             .padding(padding::top(if cfg!(target_os = "macos") { 20 } else { 0 }))
             .into()
@@ -947,6 +1035,15 @@ impl State {
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
     }
 
+    #[allow(dead_code)]
+    fn get_dashboard(&self, id: uuid::Uuid) -> Option<&Dashboard> {
+        self.layouts.get_dashboard(&id)
+    }
+
+    fn get_mut_dashboard(&mut self, id: uuid::Uuid) -> Option<&mut Dashboard> {
+        self.layouts.get_mut_dashboard(&id)
+    }
+
     fn get_active_dashboard(&self) -> Option<&Dashboard> {
         self.layouts.get_active_dashboard()
     }
@@ -960,6 +1057,8 @@ impl State {
 enum InternalError {
     #[error("Fetch error: {0}")]
     Fetch(String),
+    #[error("Layout error: {0}")]
+    Layout(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

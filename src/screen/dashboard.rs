@@ -4,7 +4,7 @@ pub mod tickers_table;
 pub use pane::{PaneContent, PaneSettings, PaneState};
 
 use crate::{
-    StreamType,
+    FetchedData, StreamType,
     aggr::TickMultiplier,
     charts::{self, ChartBasis, candlestick::CandlestickChart, footprint::FootprintChart},
     fetcher::FetchRange,
@@ -65,7 +65,14 @@ pub enum Message {
 
     // Batched trade fetching
     FetchTrades(window::Id, pane_grid::Pane, u64, u64, StreamType),
-    DistributeFetchedTrades(window::Id, pane_grid::Pane, Vec<Trade>, StreamType, u64),
+    DistributeFetchedTrades(
+        uuid::Uuid,
+        window::Id,
+        pane_grid::Pane,
+        Vec<Trade>,
+        StreamType,
+        u64,
+    ),
 
     ChangePaneStatus(pane_grid::Pane, pane::Status),
 }
@@ -179,7 +186,12 @@ impl Dashboard {
         ]))
     }
 
-    pub fn update(&mut self, message: Message, main_window: &Window) -> Task<Message> {
+    pub fn update(
+        &mut self,
+        message: Message,
+        main_window: &Window,
+        layout_id: &uuid::Uuid,
+    ) -> Task<Message> {
         match message {
             Message::SavePopoutSpecs(specs) => {
                 for (window_id, (position, size)) in specs {
@@ -558,10 +570,13 @@ impl Dashboard {
                     if exchange == Exchange::BinanceFutures || exchange == Exchange::BinanceSpot {
                         let data_path = get_data_path(&format!("market_data/binance/",));
 
+                        let dashboard_id = *layout_id;
+
                         return Task::perform(
                             binance::fetch_trades(ticker, from_time, data_path),
                             move |result| match result {
                                 Ok(trades) => Message::DistributeFetchedTrades(
+                                    dashboard_id,
                                     window_id,
                                     pane,
                                     trades,
@@ -583,42 +598,6 @@ impl Dashboard {
                                 "No trade fetch support for {exchange:?}"
                             )),
                         ));
-                    }
-                }
-            }
-            Message::DistributeFetchedTrades(window_id, pane, trades, stream_type, to_time) => {
-                let last_trade_time = trades.last().map_or(0, |trade| trade.time);
-
-                if last_trade_time < to_time {
-                    match self.insert_fetched_trades(
-                        main_window.id,
-                        window_id,
-                        pane,
-                        &trades,
-                        false,
-                    ) {
-                        Ok(()) => {
-                            return Task::done(Message::FetchTrades(
-                                window_id,
-                                pane,
-                                last_trade_time,
-                                to_time,
-                                stream_type,
-                            ));
-                        }
-                        Err(reason) => {
-                            return Task::done(Message::ErrorOccurred(
-                                window_id,
-                                Some(pane),
-                                reason,
-                            ));
-                        }
-                    }
-                } else {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window.id, window_id, pane, &trades, true)
-                    {
-                        return Task::done(Message::ErrorOccurred(window_id, Some(pane), reason));
                     }
                 }
             }
@@ -692,14 +671,12 @@ impl Dashboard {
                     }
                 }
             }
-            Message::GlobalNotification(text) => {
-                dbg!(text);
-            }
             Message::ChangePaneStatus(pane, status) => {
                 if let Some(pane_state) = self.get_mut_pane(main_window.id, main_window.id, pane) {
                     pane_state.status = status;
                 }
             }
+            _ => {}
         }
 
         Task::none()
@@ -1061,6 +1038,49 @@ impl Dashboard {
                     chart.reset_request_handler();
                 }
             });
+    }
+
+    pub fn distribute_fetched_data(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        data: FetchedData,
+        stream_type: StreamType,
+    ) -> Task<Message> {
+        match data {
+            FetchedData::Trades(trades, to_time) => {
+                let last_trade_time = trades.last().map_or(0, |trade| trade.time);
+
+                if last_trade_time < to_time {
+                    match self.insert_fetched_trades(main_window, window, pane, &trades, false) {
+                        Ok(()) => {
+                            return Task::done(Message::FetchTrades(
+                                window,
+                                pane,
+                                last_trade_time,
+                                to_time,
+                                stream_type,
+                            ));
+                        }
+                        Err(reason) => {
+                            return Task::done(Message::ErrorOccurred(window, Some(pane), reason));
+                        }
+                    }
+                } else {
+                    if let Err(reason) =
+                        self.insert_fetched_trades(main_window, window, pane, &trades, true)
+                    {
+                        return Task::done(Message::ErrorOccurred(window, Some(pane), reason));
+                    }
+                }
+            }
+            FetchedData::Klines(klines) => {
+                dbg!(klines.len());
+            }
+        }
+
+        Task::none()
     }
 
     fn insert_fetched_trades(
