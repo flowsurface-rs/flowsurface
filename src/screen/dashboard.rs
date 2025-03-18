@@ -60,7 +60,7 @@ pub enum Message {
         pane_grid::Pane,
         window::Id,
     ),
-    DistributeFetchedKlines(StreamType, Result<Vec<Kline>, String>),
+    DistributeFetchedKlines(uuid::Uuid, StreamType, Result<Vec<Kline>, String>),
     ChartEvent(pane_grid::Pane, window::Id, charts::Message),
 
     // Batched trade fetching
@@ -441,11 +441,6 @@ impl Dashboard {
                             pane_state.content.toggle_indicator(indicator_str);
                         }
                     }
-                    pane::Message::AddNotification(pane, toast) => {
-                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            pane_state.notifications.push(toast);
-                        }
-                    }
                     pane::Message::DeleteNotification(pane, idx) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             pane_state.notifications.remove(idx);
@@ -510,65 +505,76 @@ impl Dashboard {
                         _ => {}
                     });
 
-                return Task::batch(klines_fetch_all_task(&self.pane_streams));
+                return Task::batch(klines_fetch_all_task(&self.pane_streams, *layout_id));
             }
-            Message::DistributeFetchedKlines(stream_type, klines) => match klines {
-                Ok(klines) => {
-                    let mut inserted_panes = vec![];
+            Message::DistributeFetchedKlines(dashboard_id, stream_type, klines) => {
+                if dashboard_id != *layout_id {
+                    return Task::none();
+                }
 
-                    self.iter_all_panes_mut(main_window.id)
-                        .for_each(|(window, pane, state)| {
-                            if state.matches_stream(&stream_type) {
-                                if let StreamType::Kline { timeframe, .. } = stream_type {
-                                    match &mut state.content {
-                                        PaneContent::Candlestick(chart, indicators) => {
-                                            let (raw_trades, tick_size) =
-                                                (chart.get_raw_trades(), chart.get_tick_size());
+                match klines {
+                    Ok(klines) => {
+                        let mut inserted_panes = vec![];
 
-                                            *chart = CandlestickChart::new(
-                                                chart.get_chart_layout(),
-                                                state.settings.selected_basis.unwrap_or(
-                                                    ChartBasis::Time(timeframe.to_milliseconds()),
-                                                ),
-                                                klines.clone(),
-                                                raw_trades,
-                                                tick_size,
-                                                indicators,
-                                                state.settings.ticker_info,
-                                            );
+                        self.iter_all_panes_mut(main_window.id).for_each(
+                            |(window, pane, state)| {
+                                if state.matches_stream(&stream_type) {
+                                    if let StreamType::Kline { timeframe, .. } = stream_type {
+                                        match &mut state.content {
+                                            PaneContent::Candlestick(chart, indicators) => {
+                                                let (raw_trades, tick_size) =
+                                                    (chart.get_raw_trades(), chart.get_tick_size());
+
+                                                *chart = CandlestickChart::new(
+                                                    chart.get_chart_layout(),
+                                                    state.settings.selected_basis.unwrap_or(
+                                                        ChartBasis::Time(
+                                                            timeframe.to_milliseconds(),
+                                                        ),
+                                                    ),
+                                                    klines.clone(),
+                                                    raw_trades,
+                                                    tick_size,
+                                                    indicators,
+                                                    state.settings.ticker_info,
+                                                );
+                                            }
+                                            PaneContent::Footprint(chart, indicators) => {
+                                                let (raw_trades, tick_size) =
+                                                    (chart.get_raw_trades(), chart.get_tick_size());
+
+                                                *chart = FootprintChart::new(
+                                                    chart.get_chart_layout(),
+                                                    state.settings.selected_basis.unwrap_or(
+                                                        ChartBasis::Time(
+                                                            timeframe.to_milliseconds(),
+                                                        ),
+                                                    ),
+                                                    tick_size,
+                                                    klines.clone(),
+                                                    raw_trades,
+                                                    indicators,
+                                                    state.settings.ticker_info,
+                                                );
+                                            }
+                                            _ => {}
                                         }
-                                        PaneContent::Footprint(chart, indicators) => {
-                                            let (raw_trades, tick_size) =
-                                                (chart.get_raw_trades(), chart.get_tick_size());
 
-                                            *chart = FootprintChart::new(
-                                                chart.get_chart_layout(),
-                                                state.settings.selected_basis.unwrap_or(
-                                                    ChartBasis::Time(timeframe.to_milliseconds()),
-                                                ),
-                                                tick_size,
-                                                klines.clone(),
-                                                raw_trades,
-                                                indicators,
-                                                state.settings.ticker_info,
-                                            );
-                                        }
-                                        _ => {}
+                                        inserted_panes.push((window, pane));
                                     }
-
-                                    inserted_panes.push((window, pane));
                                 }
-                            }
-                        });
+                            },
+                        );
+                    }
+                    Err(err) => {
+                        log::error!("{err}");
+                    }
                 }
-                Err(err) => {
-                    log::error!("{err}");
-                }
-            },
+            }
             Message::FetchTrades(window_id, pane, from_time, to_time, stream_type) => {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
                     if exchange == Exchange::BinanceFutures || exchange == Exchange::BinanceSpot {
-                        let data_path = get_data_path(&format!("market_data/binance/",));
+                        let data_path = get_data_path("market_data/binance/");
 
                         let dashboard_id = *layout_id;
 
@@ -1067,12 +1073,10 @@ impl Dashboard {
                             return Task::done(Message::ErrorOccurred(window, Some(pane), reason));
                         }
                     }
-                } else {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, window, pane, &trades, true)
-                    {
-                        return Task::done(Message::ErrorOccurred(window, Some(pane), reason));
-                    }
+                } else if let Err(reason) =
+                    self.insert_fetched_trades(main_window, window, pane, &trades, true)
+                {
+                    return Task::done(Message::ErrorOccurred(window, Some(pane), reason));
                 }
             }
             FetchedData::Klines(klines) => {
@@ -1442,6 +1446,7 @@ fn get_kline_fetch_task(
 
 fn klines_fetch_all_task(
     streams: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
+    layout_id: uuid::Uuid,
 ) -> Vec<Task<Message>> {
     let mut tasks: Vec<Task<Message>> = vec![];
 
@@ -1470,6 +1475,7 @@ fn klines_fetch_all_task(
                             .map_err(|err| format!("{err}")),
                         move |klines| {
                             Message::DistributeFetchedKlines(
+                                layout_id,
                                 StreamType::Kline {
                                     exchange,
                                     ticker,
@@ -1487,6 +1493,7 @@ fn klines_fetch_all_task(
                             .map_err(|err| format!("{err}")),
                         move |klines| {
                             Message::DistributeFetchedKlines(
+                                layout_id,
                                 StreamType::Kline {
                                     exchange,
                                     ticker,

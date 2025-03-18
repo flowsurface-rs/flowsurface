@@ -35,6 +35,7 @@ pub enum InfoType {
     FetchingOI,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
     Ready,
@@ -81,7 +82,6 @@ pub enum Message {
     ToggleIndicator(pane_grid::Pane, String),
     Popout,
     Merge,
-    AddNotification(pane_grid::Pane, Toast),
     DeleteNotification(pane_grid::Pane, usize),
 }
 

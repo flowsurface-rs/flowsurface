@@ -418,70 +418,22 @@ impl State {
                 let main_window = self.main_window;
                 let active_layout = self.layouts.active_layout.id;
 
-                if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    match &message {
-                        dashboard::Message::GlobalNotification(toast) => {
-                            return Task::done(Message::AddNotification(toast.clone()));
-                        }
-                        dashboard::Message::DistributeFetchedTrades(
-                            dashboard_id,
-                            window_id,
-                            pane,
-                            trades,
-                            stream,
-                            to_time,
-                        ) => {
-                            let data = FetchedData::Trades(trades.to_vec(), *to_time);
-
-                            return Task::done(Message::DistributeFetchedData(
-                                *dashboard_id,
-                                *window_id,
-                                *pane,
-                                data,
-                                *stream,
-                            ));
-                        }
-                        _ => {
-                            return dashboard
-                                .update(message, &main_window, &active_layout)
-                                .map(Message::ActiveDashboard);
-                        }
-                    }
-                }
+                return self.handle_dashboard_msg(
+                    message,
+                    &main_window,
+                    &active_layout,
+                    Message::ActiveDashboard,
+                );
             }
             Message::Dashboard(dashboard_id, message) => {
                 let main_window = self.main_window;
 
-                if let Some(dashboard) = self.get_mut_dashboard(dashboard_id) {
-                    match &message {
-                        dashboard::Message::GlobalNotification(toast) => {
-                            return Task::done(Message::AddNotification(toast.clone()));
-                        }
-                        dashboard::Message::DistributeFetchedTrades(
-                            dashboard_id,
-                            window_id,
-                            pane,
-                            trades,
-                            stream,
-                            to_time,
-                        ) => {
-                            let data = FetchedData::Trades(trades.to_vec(), *to_time);
-
-                            return Task::done(Message::DistributeFetchedData(
-                                *dashboard_id,
-                                *window_id,
-                                *pane,
-                                data,
-                                *stream,
-                            ));
-                        }
-                        _ => {
-                            return dashboard
-                                .update(message, &main_window, &dashboard_id)
-                                .map(move |msg| Message::Dashboard(dashboard_id, msg));
-                        }
-                    }
-                }
+                return self.handle_dashboard_msg(
+                    message,
+                    &main_window,
+                    &dashboard_id,
+                    Message::ActiveDashboard,
+                );
             }
             Message::ToggleTickersDashboard => {
                 self.tickers_table.toggle_table();
@@ -1035,9 +987,45 @@ impl State {
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
     }
 
-    #[allow(dead_code)]
-    fn get_dashboard(&self, id: uuid::Uuid) -> Option<&Dashboard> {
-        self.layouts.get_dashboard(&id)
+    fn handle_dashboard_msg<F>(
+        &mut self,
+        message: dashboard::Message,
+        window: &Window,
+        layout_id: &uuid::Uuid,
+        map_result: F,
+    ) -> Task<Message>
+    where
+        F: FnMut(dashboard::Message) -> Message + 'static + MaybeSend,
+    {
+        if let Some(dashboard) = self.get_mut_dashboard(*layout_id) {
+            match message {
+                dashboard::Message::GlobalNotification(toast) => {
+                    Task::done(Message::AddNotification(toast))
+                }
+                dashboard::Message::DistributeFetchedTrades(
+                    dashboard_id,
+                    window_id,
+                    pane,
+                    trades,
+                    stream,
+                    to_time,
+                ) => {
+                    let data = FetchedData::Trades(trades.to_vec(), to_time);
+                    Task::done(Message::DistributeFetchedData(
+                        dashboard_id,
+                        window_id,
+                        pane,
+                        data,
+                        stream,
+                    ))
+                }
+                _ => dashboard.update(message, window, layout_id).map(map_result),
+            }
+        } else {
+            Task::done(Message::ErrorOccurred(InternalError::Layout(
+                "Couldn't find dashboard".to_string(),
+            )))
+        }
     }
 
     fn get_mut_dashboard(&mut self, id: uuid::Uuid) -> Option<&mut Dashboard> {

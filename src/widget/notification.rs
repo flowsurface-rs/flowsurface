@@ -15,6 +15,7 @@ use crate::style::{self, button_transparent};
 
 pub const DEFAULT_TIMEOUT: u64 = 8;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Status {
     #[default]
@@ -477,7 +478,7 @@ fn styled(pair: theme::palette::Pair) -> container::Style {
         text_color: pair.text.into(),
         border: Border {
             width: 1.0,
-            color: pair.color.into(),
+            color: pair.color,
             radius: 2.0.into(),
         },
         ..Default::default()
