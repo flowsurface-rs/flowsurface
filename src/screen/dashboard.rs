@@ -10,7 +10,7 @@ use crate::{
     fetcher::FetchRange,
     layout::get_data_path,
     style,
-    widget::{self, notification::Toast},
+    widget::notification::{InfoType, Notification, Toast},
     window::{self, Window},
 };
 
@@ -186,7 +186,15 @@ impl Dashboard {
                     }
                 }
             }
-            Message::ErrorOccurred(window, pane, err) => {}
+            Message::ErrorOccurred(window, pane, err) => {
+                if let Some(pane) = pane {
+                    if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                        pane_state.notifications.push(Toast::error(err.to_string()));
+                    }
+                } else {
+                    return Task::done(Message::GlobalNotification(Toast::error(err.to_string())));
+                }
+            }
             Message::Pane(window, message) => {
                 match message {
                     pane::Message::PaneClicked(pane) => {
@@ -613,8 +621,12 @@ impl Dashboard {
                     match fetch {
                         FetchRange::Kline(from, to) => {
                             let kline_stream = self
-                                .get_pane(main_window.id, window, pane)
+                                .get_mut_pane(main_window.id, window, pane)
                                 .and_then(|pane| {
+                                    pane.notifications.push(Toast::new(Notification::Info(
+                                        InfoType::FetchingKlines,
+                                    )));
+
                                     pane.stream
                                         .iter()
                                         .find(|stream| matches!(stream, StreamType::Kline { .. }))
@@ -634,11 +646,8 @@ impl Dashboard {
                             let kline_stream = self
                                 .get_mut_pane(main_window.id, window, pane)
                                 .and_then(|pane| {
-                                    pane.notifications.push(Toast {
-                                        title: "Getting data...".to_string(),
-                                        body: "Fetching open interest data".to_string(),
-                                        status: widget::notification::Status::Secondary,
-                                    });
+                                    pane.notifications
+                                        .push(Toast::new(Notification::Info(InfoType::FetchingOI)));
 
                                     pane.stream
                                         .iter()
@@ -1024,11 +1033,7 @@ impl Dashboard {
                     .map(move |message| Message::Pane(window, message));
             }
         } else {
-            let toast = Toast {
-                title: "Error: Pane Init".to_string(),
-                body: "Select a pane first".to_string(),
-                status: widget::notification::Status::Danger,
-            };
+            let toast = Toast::new(Notification::Error("Select a pane first".to_string()));
 
             return Task::done(Message::GlobalNotification(toast));
         }

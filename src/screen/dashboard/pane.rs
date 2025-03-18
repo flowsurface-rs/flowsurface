@@ -584,6 +584,14 @@ fn handle_chart_view<'a, F>(
 where
     F: FnOnce() -> Element<'a, Message>,
 {
+    let base = widget::notification::Manager::new(
+        base,
+        &state.notifications,
+        Alignment::End,
+        move |msg| Message::DeleteNotification(pane, msg),
+    )
+    .into();
+
     match state.modal {
         PaneModal::StreamModifier => pane_menu(
             base,

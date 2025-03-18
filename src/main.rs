@@ -348,13 +348,7 @@ impl State {
             Message::ErrorOccurred(err) => {
                 return match err {
                     InternalError::Fetch(err) => {
-                        let toast = Toast {
-                            title: "Error".to_string(),
-                            body: err,
-                            status: widget::notification::Status::Danger,
-                        };
-
-                        Task::done(Message::AddNotification(toast))
+                        Task::done(Message::AddNotification(Toast::error(err)))
                     }
                 };
             }

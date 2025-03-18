@@ -6,7 +6,7 @@ use iced::advanced::renderer;
 use iced::advanced::widget::{self, Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget};
 use iced::time::{self, Duration, Instant};
-use iced::widget::{button, column, container, horizontal_rule, horizontal_space, row, text};
+use iced::widget::{button, column, container, horizontal_space, row, text};
 use iced::window;
 use iced::{
     Alignment, Center, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
@@ -26,6 +26,7 @@ pub enum Status {
     Secondary,
     Success,
     Danger,
+    Warning,
 }
 
 impl Status {
@@ -39,16 +40,71 @@ impl fmt::Display for Status {
             Status::Secondary => "Secondary",
             Status::Success => "Success",
             Status::Danger => "Danger",
+            Status::Warning => "Warning",
         }
         .fmt(f)
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InfoType {
+    FetchingKlines,
+    FetchingTrades(usize),
+    FetchingOI,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Notification {
+    Error(String),
+    Info(InfoType),
+    Warn(String),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Toast {
-    pub title: String,
-    pub body: String,
-    pub status: Status,
+    title: String,
+    body: String,
+    status: Status,
+}
+
+impl Toast {
+    pub fn new(context: Notification) -> Self {
+        match context {
+            Notification::Error(body) => Self {
+                title: "Error".to_string(),
+                body,
+                status: Status::Danger,
+            },
+            Notification::Info(InfoType::FetchingKlines) => Self {
+                title: "Fetching Klines".to_string(),
+                body: "Please wait...".to_string(),
+                status: Status::Primary,
+            },
+            Notification::Info(InfoType::FetchingTrades(fetched)) => Self {
+                title: "Fetching Trades".to_string(),
+                body: format!("Please wait... Fetched: {}", fetched),
+                status: Status::Primary,
+            },
+            Notification::Info(InfoType::FetchingOI) => Self {
+                title: "Fetching Open Interest".to_string(),
+                body: "Please wait...".to_string(),
+                status: Status::Primary,
+            },
+            Notification::Warn(body) => Self {
+                title: "Warning".to_string(),
+                body,
+                status: Status::Secondary,
+            },
+        }
+    }
+
+    pub fn error(body: impl Into<String>) -> Self {
+        Self {
+            title: "Error".to_string(),
+            body: body.into(),
+            status: Status::Danger,
+        }
+    }
 }
 
 pub struct Manager<'a, Message> {
@@ -89,6 +145,7 @@ where
                         Status::Secondary => secondary,
                         Status::Success => success,
                         Status::Danger => danger,
+                        Status::Warning => warning,
                     })
                     .width(Fill)
                     .padding(4),
@@ -262,6 +319,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         let toasts = (!self.toasts.is_empty()).then(|| {
             overlay::Element::new(Box::new(Overlay {
                 position: layout.bounds().position() + translation,
+                bounds: layout.bounds(),
                 alignment: self.alignment,
                 toasts: &mut self.toasts,
                 state: toasts_state,
@@ -277,6 +335,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
 struct Overlay<'a, 'b, Message> {
     position: Point,
+    bounds: Rectangle,
     alignment: Alignment,
     toasts: &'b mut [Element<'a, Message>],
     state: &'b mut [Tree],
@@ -285,8 +344,8 @@ struct Overlay<'a, 'b, Message> {
 }
 
 impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Message> {
-    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let limits = layout::Limits::new(Size::ZERO, bounds);
+    fn layout(&mut self, renderer: &Renderer, _bounds: Size) -> layout::Node {
+        let limits = layout::Limits::new(Size::ZERO, self.bounds.size());
 
         layout::flex::resolve(
             layout::flex::Axis::Vertical,
@@ -474,4 +533,10 @@ fn danger(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
 
     styled(palette.danger.weak)
+}
+
+fn warning(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+
+    styled(palette.warning.weak)
 }

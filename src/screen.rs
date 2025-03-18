@@ -1,12 +1,9 @@
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 use chrono::DateTime;
 use iced::{
-    Alignment, Element, Theme,
-    widget::{
-        Column, button, column, container, pane_grid, text, tooltip::Position as TooltipPosition,
-    },
-    window,
+    Element, Theme,
+    widget::{button, tooltip::Position as TooltipPosition},
 };
 use serde::{Deserialize, Serialize};
 
@@ -132,20 +129,6 @@ impl Serialize for UserTimezone {
             UserTimezone::Local => serializer.serialize_str("Local"),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InfoType {
-    FetchingKlines,
-    FetchingTrades(usize),
-    FetchingOI,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Notification {
-    Error(String),
-    Info(InfoType),
-    Warn(String),
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
