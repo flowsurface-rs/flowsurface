@@ -6,7 +6,7 @@ pub use pane::{PaneContent, PaneSettings, PaneState};
 use crate::{
     StreamType,
     aggr::TickMultiplier,
-    charts::{self, ChartBasis, candlestick::CandlestickChart, footprint::FootprintChart},
+    charts::{self, ChartBasis},
     fetcher::{FetchRange, FetchedData},
     layout::get_data_path,
     style,
@@ -56,7 +56,6 @@ pub enum Message {
         FetchedData,
         StreamType,
     ),
-    DistributeFetchedKlines(StreamType, Vec<Kline>),
 
     ChangePaneStatus(pane_grid::Pane, pane::Status),
 }
@@ -452,55 +451,11 @@ impl Dashboard {
                         _ => {}
                     });
 
-                return Task::batch(klines_fetch_all_task(&self.pane_streams));
-            }
-            Message::DistributeFetchedKlines(stream_type, klines) => {
-                let mut inserted_panes = vec![];
-
-                self.iter_all_panes_mut(main_window.id)
-                    .for_each(|(window, pane, state)| {
-                        if state.matches_stream(&stream_type) {
-                            if let StreamType::Kline { timeframe, .. } = stream_type {
-                                match &mut state.content {
-                                    PaneContent::Candlestick(chart, indicators) => {
-                                        let (raw_trades, tick_size) =
-                                            (chart.get_raw_trades(), chart.get_tick_size());
-
-                                        *chart = CandlestickChart::new(
-                                            chart.get_chart_layout(),
-                                            state.settings.selected_basis.unwrap_or(
-                                                ChartBasis::Time(timeframe.to_milliseconds()),
-                                            ),
-                                            klines.clone(),
-                                            raw_trades,
-                                            tick_size,
-                                            indicators,
-                                            state.settings.ticker_info,
-                                        );
-                                    }
-                                    PaneContent::Footprint(chart, indicators) => {
-                                        let (raw_trades, tick_size) =
-                                            (chart.get_raw_trades(), chart.get_tick_size());
-
-                                        *chart = FootprintChart::new(
-                                            chart.get_chart_layout(),
-                                            state.settings.selected_basis.unwrap_or(
-                                                ChartBasis::Time(timeframe.to_milliseconds()),
-                                            ),
-                                            tick_size,
-                                            klines.clone(),
-                                            raw_trades,
-                                            indicators,
-                                            state.settings.ticker_info,
-                                        );
-                                    }
-                                    _ => {}
-                                }
-
-                                inserted_panes.push((window, pane));
-                            }
-                        }
-                    });
+                return Task::batch(self.klines_fetch_all_task(
+                    &self.pane_streams,
+                    *layout_id,
+                    main_window.id,
+                ));
             }
             Message::FetchTrades(window_id, pane, from_time, to_time, stream_type) => {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
@@ -962,7 +917,7 @@ impl Dashboard {
                     .map(move |message| Message::Pane(window, message));
             }
         } else {
-            return Task::done(Message::GlobalNotification(Toast::error(
+            return Task::done(Message::GlobalNotification(Toast::warn(
                 "Select a pane first".to_string(),
             )));
         }
@@ -1320,6 +1275,70 @@ impl Dashboard {
 
         pane_streams
     }
+
+    fn klines_fetch_all_task(
+        &self,
+        streams: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
+        layout_id: uuid::Uuid,
+        main_window_id: window::Id,
+    ) -> Vec<Task<Message>> {
+        let mut tasks: Vec<Task<Message>> = vec![];
+
+        for (exchange, stream) in streams {
+            let mut kline_fetches = Vec::new();
+
+            for stream_types in stream.values() {
+                for stream_type in stream_types {
+                    if let StreamType::Kline {
+                        ticker, timeframe, ..
+                    } = stream_type
+                    {
+                        kline_fetches.push((stream_type, *ticker, *timeframe));
+                    }
+                }
+            }
+
+            for (stream_type, ticker, timeframe) in kline_fetches {
+                let matching_panes: Vec<(window::Id, pane_grid::Pane)> = self
+                    .iter_all_panes(main_window_id)
+                    .filter(|(_, _, pane_state)| pane_state.matches_stream(stream_type))
+                    .map(|(window, pane, _)| (window, pane))
+                    .collect();
+
+                if matching_panes.is_empty() {
+                    let exchange = *exchange;
+                    let fetch_task = Task::perform(
+                        adapter::fetch_klines(exchange, ticker, timeframe, None)
+                            .map_err(|err| format!("{err}")),
+                        move |result| match result {
+                            Ok(_) => Message::GlobalNotification(Toast::warn(format!(
+                                "Fetched klines for stream with no matching panes: {exchange:?} {:?} {timeframe:?}",
+                                ticker.get_string(),
+                            ))),
+                            Err(err) => Message::GlobalNotification(Toast::error(format!(
+                                "Failed to fetch klines for stream: {exchange:?} {:?} {timeframe:?} {err}",
+                                ticker.get_string(),
+                            ))),
+                        },
+                    );
+                    tasks.push(fetch_task);
+                } else {
+                    for (window, pane) in matching_panes {
+                        tasks.push(get_kline_fetch_task(
+                            layout_id,
+                            window,
+                            pane,
+                            *stream_type,
+                            None,
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+
+        tasks
+    }
 }
 
 fn get_oi_fetch_task(
@@ -1394,53 +1413,4 @@ fn get_kline_fetch_task(
     };
 
     update_status.chain(fetch_task)
-}
-
-fn klines_fetch_all_task(
-    streams: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
-) -> Vec<Task<Message>> {
-    let mut tasks: Vec<Task<Message>> = vec![];
-
-    for (exchange, stream) in streams {
-        let mut kline_fetches = Vec::new();
-
-        for stream_types in stream.values() {
-            for stream_type in stream_types {
-                if let StreamType::Kline {
-                    ticker, timeframe, ..
-                } = stream_type
-                {
-                    kline_fetches.push((*ticker, *timeframe));
-                }
-            }
-        }
-
-        for (ticker, timeframe) in kline_fetches {
-            let (ticker, timeframe) = (ticker, timeframe);
-            let exchange = *exchange;
-
-            let fetch_task = Task::perform(
-                adapter::fetch_klines(exchange, ticker, timeframe, None)
-                    .map_err(|err| format!("{err}")),
-                move |result| match result {
-                    Ok(klines) => Message::DistributeFetchedKlines(
-                        StreamType::Kline {
-                            exchange,
-                            ticker,
-                            timeframe,
-                        },
-                        klines,
-                    ),
-                    Err(err) => Message::GlobalNotification(Toast::error(format!(
-                        "Failed to fetch klines for stream: {exchange:?} {:?} {timeframe:?} {err}",
-                        ticker.get_string(),
-                    ))),
-                },
-            );
-
-            tasks.push(fetch_task);
-        }
-    }
-
-    tasks
 }

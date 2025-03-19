@@ -68,6 +68,14 @@ impl Toast {
             status: Status::Danger,
         }
     }
+
+    pub fn warn(body: impl Into<String>) -> Self {
+        Self {
+            title: "Warning".to_string(),
+            body: body.into(),
+            status: Status::Warning,
+        }
+    }
 }
 
 pub struct Manager<'a, Message> {
