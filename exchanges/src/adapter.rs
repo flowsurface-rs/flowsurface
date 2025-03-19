@@ -1,4 +1,4 @@
-use crate::{Kline, Trade, depth::Depth};
+use crate::{Kline, OpenInterest, Trade, depth::Depth};
 
 use super::{Ticker, Timeframe};
 use serde::{Deserialize, Serialize};
@@ -97,5 +97,39 @@ impl<I> StreamConfig<I> {
         };
 
         Self { id, market_type }
+    }
+}
+
+pub async fn fetch_klines(
+    exchange: Exchange,
+    ticker: Ticker,
+    timeframe: Timeframe,
+    range: Option<(u64, u64)>,
+) -> Result<Vec<Kline>, StreamError> {
+    match exchange {
+        Exchange::BinanceFutures => binance::fetch_klines(ticker, timeframe, range)
+            .await
+            .map_err(|e| e.into()),
+        Exchange::BybitLinear => bybit::fetch_klines(ticker, timeframe, range)
+            .await
+            .map_err(|e| e.into()),
+        _ => Err(StreamError::InvalidRequest("Invalid exchange".to_string())),
+    }
+}
+
+pub async fn fetch_open_interest(
+    exchange: Exchange,
+    ticker: Ticker,
+    timeframe: Timeframe,
+    range: Option<(u64, u64)>,
+) -> Result<Vec<OpenInterest>, StreamError> {
+    match exchange {
+        Exchange::BinanceFutures => binance::fetch_historical_oi(ticker, range, timeframe)
+            .await
+            .map_err(|e| e.into()),
+        Exchange::BybitLinear => bybit::fetch_historical_oi(ticker, range, timeframe)
+            .await
+            .map_err(|e| e.into()),
+        _ => Err(StreamError::InvalidRequest("Invalid exchange".to_string())),
     }
 }
