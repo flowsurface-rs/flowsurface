@@ -12,7 +12,7 @@ mod window;
 
 use crate::widget::{confirm_dialog, tooltip};
 use exchanges::{
-    Kline, Ticker, TickerInfo, TickerStats, Trade,
+    Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
 };
 use iced::{
@@ -132,20 +132,6 @@ enum Message {
 
     AddNotification(Toast),
     DeleteNotification(usize),
-
-    DistributeFetchedData(
-        uuid::Uuid,
-        window::Id,
-        pane_grid::Pane,
-        FetchedData,
-        StreamType,
-    ),
-}
-
-#[derive(Debug, Clone)]
-pub enum FetchedData {
-    Trades(Vec<Trade>, u64),
-    Klines(Vec<Kline>),
 }
 
 struct State {
@@ -214,19 +200,6 @@ impl State {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::DistributeFetchedData(dashboard_id, window, pane, data, stream_type) => {
-                let main_window_id = self.main_window.id;
-
-                if let Some(dashboard) = self.get_mut_dashboard(dashboard_id) {
-                    return dashboard
-                        .distribute_fetched_data(main_window_id, window, pane, data, stream_type)
-                        .map(move |msg| Message::Dashboard(dashboard_id, msg));
-                } else {
-                    return Task::done(Message::ErrorOccurred(InternalError::Layout(
-                        "Couldn't find dashboard".to_string(),
-                    )));
-                }
-            }
             Message::SetTickersInfo(exchange, tickers_info) => {
                 log::info!(
                     "Received tickers info for {exchange}, len: {}",
@@ -1002,22 +975,24 @@ impl State {
                 dashboard::Message::GlobalNotification(toast) => {
                     Task::done(Message::AddNotification(toast))
                 }
-                dashboard::Message::DistributeFetchedTrades(
+                dashboard::Message::DistributeFetchedData(
                     dashboard_id,
                     window_id,
                     pane,
-                    trades,
+                    data,
                     stream,
-                    to_time,
                 ) => {
-                    let data = FetchedData::Trades(trades.to_vec(), to_time);
-                    Task::done(Message::DistributeFetchedData(
-                        dashboard_id,
-                        window_id,
-                        pane,
-                        data,
-                        stream,
-                    ))
+                    let main_window_id = self.main_window.id;
+
+                    if let Some(dashboard) = self.get_mut_dashboard(dashboard_id) {
+                        dashboard
+                            .distribute_fetched_data(main_window_id, window_id, pane, data, stream)
+                            .map(move |msg| Message::Dashboard(dashboard_id, msg))
+                    } else {
+                        Task::done(Message::ErrorOccurred(InternalError::Layout(
+                            "Couldn't find dashboard".to_string(),
+                        )))
+                    }
                 }
                 _ => dashboard.update(message, window, layout_id).map(map_result),
             }

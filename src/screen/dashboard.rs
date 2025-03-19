@@ -4,10 +4,10 @@ pub mod tickers_table;
 pub use pane::{PaneContent, PaneSettings, PaneState};
 
 use crate::{
-    FetchedData, StreamType,
+    StreamType,
     aggr::TickMultiplier,
     charts::{self, ChartBasis, candlestick::CandlestickChart, footprint::FootprintChart},
-    fetcher::FetchRange,
+    fetcher::{FetchRange, FetchedData},
     layout::get_data_path,
     style,
     widget::notification::Toast,
@@ -15,7 +15,7 @@ use crate::{
 };
 
 use exchanges::{
-    Kline, OpenInterest, Ticker, TickerInfo, Timeframe, Trade,
+    Kline, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{self, Event as ExchangeEvent, Exchange, StreamConfig, binance, bybit},
     depth::Depth,
 };
@@ -45,34 +45,18 @@ pub enum Message {
     LayoutFetchAll,
     RefreshStreams,
 
-    // Kline fetching
-    FetchEvent(
-        Option<uuid::Uuid>,
-        Vec<Kline>,
-        StreamType,
-        pane_grid::Pane,
-        window::Id,
-    ),
-    OIFetchEvent(
-        Option<uuid::Uuid>,
-        Vec<OpenInterest>,
-        StreamType,
-        pane_grid::Pane,
-        window::Id,
-    ),
-    DistributeFetchedKlines(StreamType, Vec<Kline>),
     ChartEvent(pane_grid::Pane, window::Id, charts::Message),
 
-    // Batched trade fetching
     FetchTrades(window::Id, pane_grid::Pane, u64, u64, StreamType),
-    DistributeFetchedTrades(
+
+    DistributeFetchedData(
         uuid::Uuid,
         window::Id,
         pane_grid::Pane,
-        Vec<Trade>,
+        FetchedData,
         StreamType,
-        u64,
     ),
+    DistributeFetchedKlines(StreamType, Vec<Kline>),
 
     ChangePaneStatus(pane_grid::Pane, pane::Status),
 }
@@ -334,7 +318,9 @@ impl Dashboard {
                         // get fetch tasks for pane's content
                         for stream in &pane_stream {
                             if let StreamType::Kline { .. } = stream {
-                                return get_kline_fetch_task(window, pane, *stream, None, None);
+                                return get_kline_fetch_task(
+                                    *layout_id, window, pane, *stream, None, None,
+                                );
                             }
                         }
                     }
@@ -396,6 +382,7 @@ impl Dashboard {
                                     Ok(stream_type) => {
                                         if let StreamType::Kline { .. } = stream_type {
                                             let task = get_kline_fetch_task(
+                                                *layout_id,
                                                 window,
                                                 pane,
                                                 *stream_type,
@@ -445,24 +432,6 @@ impl Dashboard {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             pane_state.notifications.remove(idx);
                         }
-                    }
-                }
-            }
-            Message::FetchEvent(req_id, klines, pane_stream, pane_id, window) => {
-                if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane_id) {
-                    pane_state.status = pane::Status::Ready;
-
-                    if let StreamType::Kline { timeframe, .. } = pane_stream {
-                        pane_state.insert_klines_vec(req_id, timeframe, &klines);
-                    }
-                }
-            }
-            Message::OIFetchEvent(req_id, oi, pane_stream, pane_id, window) => {
-                if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane_id) {
-                    pane_state.status = pane::Status::Ready;
-
-                    if let StreamType::Kline { .. } = pane_stream {
-                        pane_state.insert_oi_vec(req_id, oi);
                     }
                 }
             }
@@ -543,14 +512,16 @@ impl Dashboard {
                         return Task::perform(
                             binance::fetch_trades(ticker, from_time, data_path),
                             move |result| match result {
-                                Ok(trades) => Message::DistributeFetchedTrades(
-                                    dashboard_id,
-                                    window_id,
-                                    pane,
-                                    trades,
-                                    stream_type,
-                                    to_time,
-                                ),
+                                Ok(trades) => {
+                                    let data = FetchedData::Trades(trades.to_vec(), to_time);
+                                    Message::DistributeFetchedData(
+                                        dashboard_id,
+                                        window_id,
+                                        pane,
+                                        data,
+                                        stream_type,
+                                    )
+                                }
                                 Err(err) => Message::ErrorOccurred(
                                     window_id,
                                     Some(pane),
@@ -586,6 +557,7 @@ impl Dashboard {
 
                             if let Some(stream) = kline_stream {
                                 return get_kline_fetch_task(
+                                    *layout_id,
                                     window,
                                     pane,
                                     *stream,
@@ -605,6 +577,7 @@ impl Dashboard {
 
                             if let Some(stream) = kline_stream {
                                 return get_oi_fetch_task(
+                                    *layout_id,
                                     window,
                                     pane,
                                     *stream,
@@ -1041,8 +1014,23 @@ impl Dashboard {
                     return Task::done(Message::ErrorOccurred(window, Some(pane), reason));
                 }
             }
-            FetchedData::Klines(klines) => {
-                dbg!(klines.len());
+            FetchedData::Klines(klines, req_id) => {
+                if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
+                    pane_state.status = pane::Status::Ready;
+
+                    if let StreamType::Kline { timeframe, .. } = stream_type {
+                        pane_state.insert_klines_vec(req_id, timeframe, &klines);
+                    }
+                }
+            }
+            FetchedData::OI(oi, req_id) => {
+                if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
+                    pane_state.status = pane::Status::Ready;
+
+                    if let StreamType::Kline { .. } = stream_type {
+                        pane_state.insert_oi_vec(req_id, oi);
+                    }
+                }
             }
         }
 
@@ -1335,6 +1323,7 @@ impl Dashboard {
 }
 
 fn get_oi_fetch_task(
+    layout_id: uuid::Uuid,
     window_id: window::Id,
     pane: pane_grid::Pane,
     stream: StreamType,
@@ -1355,7 +1344,10 @@ fn get_oi_fetch_task(
             adapter::fetch_open_interest(exchange, ticker, timeframe, range)
                 .map_err(|err| format!("{err}")),
             move |result| match result {
-                Ok(oi) => Message::OIFetchEvent(req_id, oi, stream, pane, window_id),
+                Ok(oi) => {
+                    let data = FetchedData::OI(oi, req_id);
+                    Message::DistributeFetchedData(layout_id, window_id, pane, data, stream)
+                }
                 Err(err) => {
                     Message::ErrorOccurred(window_id, Some(pane), DashboardError::Fetch(err))
                 }
@@ -1368,6 +1360,7 @@ fn get_oi_fetch_task(
 }
 
 fn get_kline_fetch_task(
+    layout_id: uuid::Uuid,
     window_id: window::Id,
     pane: pane_grid::Pane,
     stream: StreamType,
@@ -1388,7 +1381,10 @@ fn get_kline_fetch_task(
             adapter::fetch_klines(exchange, ticker, timeframe, range)
                 .map_err(|err| format!("{err}")),
             move |result| match result {
-                Ok(klines) => Message::FetchEvent(req_id, klines, stream, pane, window_id),
+                Ok(klines) => {
+                    let data = FetchedData::Klines(klines, req_id);
+                    Message::DistributeFetchedData(layout_id, window_id, pane, data, stream)
+                }
                 Err(err) => {
                     Message::ErrorOccurred(window_id, Some(pane), DashboardError::Fetch(err))
                 }

@@ -107,13 +107,12 @@ pub async fn fetch_klines(
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, StreamError> {
     match exchange {
-        Exchange::BinanceFutures => binance::fetch_klines(ticker, timeframe, range)
-            .await
-            .map_err(|e| e.into()),
-        Exchange::BybitLinear => bybit::fetch_klines(ticker, timeframe, range)
-            .await
-            .map_err(|e| e.into()),
-        _ => Err(StreamError::InvalidRequest("Invalid exchange".to_string())),
+        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+            binance::fetch_klines(ticker, timeframe, range).await
+        }
+        Exchange::BybitLinear | Exchange::BybitSpot => {
+            bybit::fetch_klines(ticker, timeframe, range).await
+        }
     }
 }
 
@@ -124,12 +123,8 @@ pub async fn fetch_open_interest(
     range: Option<(u64, u64)>,
 ) -> Result<Vec<OpenInterest>, StreamError> {
     match exchange {
-        Exchange::BinanceFutures => binance::fetch_historical_oi(ticker, range, timeframe)
-            .await
-            .map_err(|e| e.into()),
-        Exchange::BybitLinear => bybit::fetch_historical_oi(ticker, range, timeframe)
-            .await
-            .map_err(|e| e.into()),
+        Exchange::BinanceFutures => binance::fetch_historical_oi(ticker, range, timeframe).await,
+        Exchange::BybitLinear => bybit::fetch_historical_oi(ticker, range, timeframe).await,
         _ => Err(StreamError::InvalidRequest("Invalid exchange".to_string())),
     }
 }
