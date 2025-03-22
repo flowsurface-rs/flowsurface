@@ -1,24 +1,18 @@
-use crate::aggr::TickMultiplier;
 use crate::charts::{
-    ChartBasis,
-    candlestick::CandlestickChart,
-    footprint::FootprintChart,
-    heatmap::HeatmapChart,
-    indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
+    candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart,
     timeandsales::TimeAndSales,
 };
 use crate::screen::{
     UserTimezone,
-    dashboard::{Dashboard, PaneContent, PaneSettings, PaneState},
+    dashboard::{Dashboard, PaneContent, PaneState},
 };
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
-use data::charts::ChartLayout;
-use exchanges::{
-    Ticker, Timeframe,
-    adapter::{Exchange, StreamType},
-};
+use data::charts::ChartBasis;
+use data::pane::{Axis, PaneSettings, SerializablePane};
+use exchanges::TickMultiplier;
+use exchanges::{Ticker, Timeframe, adapter::Exchange};
 
 use chrono::NaiveDate;
 use iced::widget::pane_grid::{self, Configuration};
@@ -759,39 +753,6 @@ impl Default for SerializableDashboard {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum SerializablePane {
-    Split {
-        axis: Axis,
-        ratio: f32,
-        a: Box<SerializablePane>,
-        b: Box<SerializablePane>,
-    },
-    Starter,
-    HeatmapChart {
-        layout: ChartLayout,
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-        indicators: Vec<HeatmapIndicator>,
-    },
-    FootprintChart {
-        layout: ChartLayout,
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-        indicators: Vec<FootprintIndicator>,
-    },
-    CandlestickChart {
-        layout: ChartLayout,
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-        indicators: Vec<CandlestickIndicator>,
-    },
-    TimeAndSales {
-        stream_type: Vec<StreamType>,
-        settings: PaneSettings,
-    },
-}
-
 impl From<&PaneState> for SerializablePane {
     fn from(pane: &PaneState) -> Self {
         let pane_stream = pane.stream.clone();
@@ -822,12 +783,6 @@ impl From<&PaneState> for SerializablePane {
             },
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub enum Axis {
-    Horizontal,
-    Vertical,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]

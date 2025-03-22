@@ -3,7 +3,11 @@ use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
 };
 
-use data::charts::{ChartLayout, heatmap::Config};
+use data::charts::{
+    ChartBasis, ChartLayout,
+    heatmap::Config,
+    indicators::{HeatmapIndicator, Indicator},
+};
 use iced::widget::canvas::{self, Event, Geometry, Path};
 use iced::{
     Alignment, Color, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse,
@@ -13,12 +17,8 @@ use iced::{
 use crate::screen::UserTimezone;
 use exchanges::{TickerInfo, Trade, depth::Depth};
 
+use super::scales::PriceInfoLabel;
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
-use super::{
-    ChartBasis,
-    indicators::{HeatmapIndicator, Indicator},
-    scales::PriceInfoLabel,
-};
 use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart, view_chart};
 
 use ordered_float::OrderedFloat;

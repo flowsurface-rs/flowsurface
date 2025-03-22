@@ -1,12 +1,11 @@
 pub mod pane;
 pub mod tickers_table;
 
-pub use pane::{PaneContent, PaneSettings, PaneState};
+use data::{charts::ChartBasis, pane::PaneSettings};
+pub use pane::{PaneContent, PaneState};
 
 use crate::{
-    StreamType,
-    aggr::TickMultiplier,
-    charts::{self, ChartBasis},
+    StreamType, charts,
     fetcher::{FetchRange, FetchedData},
     layout::get_data_path,
     style,
@@ -15,7 +14,7 @@ use crate::{
 };
 
 use exchanges::{
-    Kline, Ticker, TickerInfo, Timeframe, Trade,
+    Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{self, Event as ExchangeEvent, Exchange, StreamConfig, binance, bybit},
     depth::Depth,
 };

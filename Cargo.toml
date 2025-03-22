@@ -19,6 +19,7 @@ log = "0.4.22"
 thiserror = "1.0.68"
 ordered-float = "4.5.0"
 regex = "1.11.1"
+rust_decimal = "1.36.0"
 
 [dependencies]
 iced = { version = "0.14.0-dev", default-features = false, features = [
@@ -37,7 +38,7 @@ thiserror.workspace = true
 ordered-float.workspace = true
 regex.workspace = true
 log.workspace = true
-rust_decimal = "1.36.0"
+rust_decimal.workspace = true
 fern = "0.6.2"
 dirs-next = "2.0.0"
 uuid = { version = "1.11.0", features = ["v4"] }

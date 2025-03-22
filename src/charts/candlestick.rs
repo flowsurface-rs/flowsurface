@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use data::charts::ChartLayout;
+use data::charts::indicators::{CandlestickIndicator, Indicator};
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -16,10 +17,10 @@ use crate::fetcher::{FetchRange, RequestHandler};
 use crate::screen::UserTimezone;
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
-use super::indicators::{self, CandlestickIndicator, Indicator};
 use super::scales::PriceInfoLabel;
 use super::{
     Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    indicators,
 };
 use super::{canvas_interaction, count_decimals, request_fetch, update_chart, view_chart};
 

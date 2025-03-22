@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use data::charts::ChartLayout;
+use data::charts::indicators::{FootprintIndicator, Indicator};
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -21,10 +22,10 @@ use crate::{
 };
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
-use super::indicators::{self, FootprintIndicator, Indicator};
 use super::scales::PriceInfoLabel;
 use super::{
     Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    indicators,
 };
 use super::{
     abbr_large_numbers, canvas_interaction, count_decimals, request_fetch, round_to_tick,

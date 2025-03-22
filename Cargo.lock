@@ -738,6 +738,7 @@ checksum = "96a6ac251f4a2aca6b3f91340350eab87ae57c3f127ffeb585e92bd336717991"
 name = "data"
 version = "0.1.0"
 dependencies = [
+ "exchanges",
  "serde",
  "serde_json",
 ]
@@ -951,6 +952,7 @@ dependencies = [
  "ordered-float",
  "regex",
  "reqwest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sonic-rs",

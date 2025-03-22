@@ -1,23 +1,24 @@
 use crate::{
     StreamType,
-    aggr::{TickMultiplier, ticks::TickCount},
+    aggr::ticks::TickCount,
     charts::{
-        self, ChartBasis,
-        candlestick::CandlestickChart,
-        config,
-        footprint::FootprintChart,
-        heatmap::HeatmapChart,
-        indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
-        timeandsales::TimeAndSales,
+        self, candlestick::CandlestickChart, config, footprint::FootprintChart,
+        heatmap::HeatmapChart, timeandsales::TimeAndSales,
     },
     screen::{DashboardError, UserTimezone, create_button},
     style::{self, Icon, get_icon_text},
     widget::{self, notification::Toast, pane_modal},
     window::{self, Window},
 };
-use data::charts::{ChartLayout, VisualConfig};
+use data::{
+    charts::{
+        ChartBasis, ChartLayout, VisualConfig,
+        indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
+    },
+    pane::PaneSettings,
+};
 use exchanges::{
-    Kline, OpenInterest, Ticker, TickerInfo, Timeframe,
+    Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
     adapter::{Exchange, MarketType},
 };
 use iced::{
@@ -1140,13 +1141,4 @@ impl PaneContent {
             _ => {}
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
-#[serde(default)]
-pub struct PaneSettings {
-    pub ticker_info: Option<TickerInfo>,
-    pub tick_multiply: Option<TickMultiplier>,
-    pub visual_config: Option<VisualConfig>,
-    pub selected_basis: Option<ChartBasis>,
 }
