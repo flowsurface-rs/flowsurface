@@ -14,6 +14,7 @@ use crate::screen::{
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
+use data::charts::ChartLayout;
 use exchanges::{
     Ticker, Timeframe,
     adapter::{Exchange, StreamType},
@@ -759,12 +760,6 @@ impl Default for SerializableDashboard {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SerializableChartData {
-    pub crosshair: bool,
-    pub indicators_split: Option<f32>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum SerializablePane {
     Split {
         axis: Axis,
@@ -774,19 +769,19 @@ pub enum SerializablePane {
     },
     Starter,
     HeatmapChart {
-        layout: SerializableChartData,
+        layout: ChartLayout,
         stream_type: Vec<StreamType>,
         settings: PaneSettings,
         indicators: Vec<HeatmapIndicator>,
     },
     FootprintChart {
-        layout: SerializableChartData,
+        layout: ChartLayout,
         stream_type: Vec<StreamType>,
         settings: PaneSettings,
         indicators: Vec<FootprintIndicator>,
     },
     CandlestickChart {
-        layout: SerializableChartData,
+        layout: ChartLayout,
         stream_type: Vec<StreamType>,
         settings: PaneSettings,
         indicators: Vec<CandlestickIndicator>,

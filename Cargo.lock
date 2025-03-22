@@ -735,6 +735,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96a6ac251f4a2aca6b3f91340350eab87ae57c3f127ffeb585e92bd336717991"
 
 [[package]]
+name = "data"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deflate64"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1036,6 +1044,7 @@ name = "flowsurface"
 version = "0.6.0"
 dependencies = [
  "chrono",
+ "data",
  "dirs-next",
  "exchanges",
  "fern",

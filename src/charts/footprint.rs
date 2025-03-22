@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
+use data::charts::ChartLayout;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -13,7 +14,6 @@ use iced::{
 };
 use ordered_float::OrderedFloat;
 
-use crate::layout::SerializableChartData;
 use crate::screen::UserTimezone;
 use crate::{
     aggr::{ticks::TickAggr, time::TimeSeries},
@@ -144,7 +144,7 @@ pub struct FootprintChart {
 
 impl FootprintChart {
     pub fn new(
-        layout: SerializableChartData,
+        layout: ChartLayout,
         basis: ChartBasis,
         tick_size: f32,
         klines_raw: Vec<Kline>,
@@ -413,7 +413,7 @@ impl FootprintChart {
         self.chart.tick_size
     }
 
-    pub fn get_chart_layout(&self) -> SerializableChartData {
+    pub fn get_chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
 

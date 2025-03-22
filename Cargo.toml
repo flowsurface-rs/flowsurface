@@ -8,7 +8,7 @@ categories = ["finance", "visualization", "gui"]
 repository = "https://github.com/akenshaw/flowsurface"
 
 [workspace]
-members = ["exchanges"]
+members = [ "data","exchanges"]
 
 [workspace.dependencies]
 iced_futures = "0.13.2"
@@ -43,6 +43,7 @@ dirs-next = "2.0.0"
 uuid = { version = "1.11.0", features = ["v4"] }
 
 exchanges = { version = "0.1.0", path = "exchanges" }
+data = { version = "0.1.0", path = "data" }
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "892ac1ce722a809e73aecd8d47ed4e7254d156df" }

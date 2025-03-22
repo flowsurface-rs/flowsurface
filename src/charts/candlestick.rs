@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
+use data::charts::ChartLayout;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -12,7 +13,6 @@ use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vecto
 
 use crate::aggr::{ticks::TickAggr, time::TimeSeries};
 use crate::fetcher::{FetchRange, RequestHandler};
-use crate::layout::SerializableChartData;
 use crate::screen::UserTimezone;
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
@@ -129,7 +129,7 @@ pub struct CandlestickChart {
 
 impl CandlestickChart {
     pub fn new(
-        layout: SerializableChartData,
+        layout: ChartLayout,
         basis: ChartBasis,
         klines_raw: Vec<Kline>,
         raw_trades: Vec<Trade>,
@@ -466,7 +466,7 @@ impl CandlestickChart {
         });
     }
 
-    pub fn get_chart_layout(&self) -> SerializableChartData {
+    pub fn get_chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
 

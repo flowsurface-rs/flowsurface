@@ -18,12 +18,12 @@ use uuid::Uuid;
 use crate::{
     aggr::{ticks::TickAggr, time::TimeSeries},
     fetcher::{FetchRange, ReqError, RequestHandler},
-    layout::SerializableChartData,
     screen::UserTimezone,
     style,
     widget::hsplit::HSplit,
     widget::tooltip,
 };
+use data::charts::ChartLayout;
 use exchanges::{TickerInfo, Timeframe};
 
 pub mod candlestick;
@@ -799,8 +799,8 @@ impl CommonChartData {
         }
     }
 
-    fn get_chart_layout(&self) -> SerializableChartData {
-        SerializableChartData {
+    fn get_chart_layout(&self) -> ChartLayout {
+        ChartLayout {
             crosshair: self.crosshair,
             indicators_split: self.indicators_split,
         }

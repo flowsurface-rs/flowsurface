@@ -4,18 +4,18 @@ use crate::{
     charts::{
         self, ChartBasis,
         candlestick::CandlestickChart,
-        config::{self, VisualConfig},
+        config,
         footprint::FootprintChart,
         heatmap::HeatmapChart,
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
         timeandsales::TimeAndSales,
     },
-    layout::SerializableChartData,
     screen::{DashboardError, UserTimezone, create_button},
     style::{self, Icon, get_icon_text},
     widget::{self, notification::Toast, pane_modal},
     window::{self, Window},
 };
+use data::charts::{ChartLayout, VisualConfig};
 use exchanges::{
     Kline, OpenInterest, Ticker, TickerInfo, Timeframe,
     adapter::{Exchange, MarketType},
@@ -261,7 +261,7 @@ impl PaneState {
                     Some(ExistingIndicators::Heatmap(indicators)) => indicators,
                     _ => vec![HeatmapIndicator::Volume],
                 };
-                let layout = existing_layout.unwrap_or(SerializableChartData {
+                let layout = existing_layout.unwrap_or(ChartLayout {
                     crosshair: true,
                     indicators_split: None,
                 });
@@ -293,7 +293,7 @@ impl PaneState {
                     _ => vec![FootprintIndicator::Volume, FootprintIndicator::OpenInterest],
                 };
 
-                let layout = existing_layout.unwrap_or(SerializableChartData {
+                let layout = existing_layout.unwrap_or(ChartLayout {
                     crosshair: true,
                     indicators_split: Some(0.8),
                 });
@@ -327,7 +327,7 @@ impl PaneState {
                     ],
                 };
 
-                let layout = existing_layout.unwrap_or(SerializableChartData {
+                let layout = existing_layout.unwrap_or(ChartLayout {
                     crosshair: true,
                     indicators_split: Some(0.8),
                 });

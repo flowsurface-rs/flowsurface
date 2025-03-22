@@ -3,14 +3,14 @@ use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
 };
 
+use data::charts::{ChartLayout, heatmap::Config};
 use iced::widget::canvas::{self, Event, Geometry, Path};
 use iced::{
     Alignment, Color, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse,
     theme::palette::Extended,
 };
-use serde::{Deserialize, Serialize};
 
-use crate::{layout::SerializableChartData, screen::UserTimezone};
+use crate::screen::UserTimezone;
 use exchanges::{TickerInfo, Trade, depth::Depth};
 
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
@@ -242,7 +242,7 @@ pub struct HeatmapChart {
 
 impl HeatmapChart {
     pub fn new(
-        layout: SerializableChartData,
+        layout: ChartLayout,
         tick_size: f32,
         aggr_time: u64,
         enabled_indicators: &[HeatmapIndicator],
@@ -377,7 +377,7 @@ impl HeatmapChart {
         self.visual_config = visual_config;
     }
 
-    pub fn get_chart_layout(&self) -> SerializableChartData {
+    pub fn get_chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
 
@@ -767,25 +767,6 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
                 mouse::Interaction::default()
             }
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {
-    pub trade_size_filter: f32,
-    pub order_size_filter: f32,
-    pub dynamic_sized_trades: bool,
-    pub trade_size_scale: i32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            trade_size_filter: 0.0,
-            order_size_filter: 0.0,
-            dynamic_sized_trades: true,
-            trade_size_scale: 100,
         }
     }
 }

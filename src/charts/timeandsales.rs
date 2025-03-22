@@ -2,10 +2,10 @@ use crate::screen::UserTimezone;
 use crate::screen::dashboard::pane::Message;
 use crate::style::ts_table_container;
 use chrono::DateTime;
+use data::charts::timeandsales::Config;
 use exchanges::Trade;
 use iced::widget::{Space, column, container, responsive, row, text};
 use iced::{Element, Length, alignment, padding};
-use serde::{Deserialize, Serialize};
 
 struct ConvertedTrade {
     time_str: String,
@@ -113,18 +113,5 @@ impl TimeAndSales {
             column.into()
         })
         .into()
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {
-    pub trade_size_filter: f32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            trade_size_filter: 0.0,
-        }
     }
 }
