@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::widget::tooltip;
 
 pub mod dashboard;
-pub mod modal;
 
 pub fn create_button<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,

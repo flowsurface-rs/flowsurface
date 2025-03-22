@@ -11,9 +11,9 @@ use crate::{
         timeandsales::TimeAndSales,
     },
     layout::SerializableChartData,
-    screen::{DashboardError, UserTimezone, create_button, modal::pane_menu},
+    screen::{DashboardError, UserTimezone, create_button},
     style::{self, Icon, get_icon_text},
-    widget::{self, notification::Toast},
+    widget::{self, notification::Toast, pane_modal},
     window::{self, Window},
 };
 use exchanges::{
@@ -628,14 +628,14 @@ where
     .into();
 
     match state.modal {
-        PaneModal::StreamModifier => pane_menu(
+        PaneModal::StreamModifier => pane_modal(
             base,
             stream_modifier_view(pane, stream_modifier),
             Message::ToggleModal(pane, PaneModal::None),
             padding::left(36),
             Alignment::Start,
         ),
-        PaneModal::Indicators => pane_menu(
+        PaneModal::Indicators => pane_modal(
             base,
             indicators_view(
                 pane,
@@ -649,7 +649,7 @@ where
             padding::right(12).left(12),
             Alignment::End,
         ),
-        PaneModal::Settings => pane_menu(
+        PaneModal::Settings => pane_modal(
             base,
             settings_view(),
             Message::ToggleModal(pane, PaneModal::None),
@@ -770,7 +770,7 @@ impl PanelView for TimeAndSales {
         let underlay = self.view(timezone);
 
         match state.modal {
-            PaneModal::Settings => pane_menu(
+            PaneModal::Settings => pane_modal(
                 underlay,
                 config::timesales_cfg_view(self.get_config(), pane),
                 Message::ToggleModal(pane, PaneModal::None),

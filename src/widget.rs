@@ -1,8 +1,11 @@
 use super::Element;
 use crate::style;
 use iced::{
-    Alignment,
-    widget::{button, column, container, row, scrollable, text, tooltip::Position},
+    Alignment, Color, Length, padding,
+    widget::{
+        button, center, column, container, mouse_area, opaque, row, scrollable, stack, text,
+        tooltip::Position,
+    },
 };
 
 pub mod column_drag;
@@ -35,12 +38,12 @@ pub fn scrollable_content<'a, Message: 'a>(
     .into()
 }
 
-pub fn confirm_dialog<'a, Message: 'a + Clone>(
+pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
     dialog: &'a str,
     on_confirm: Message,
     on_cancel: Message,
 ) -> Element<'a, Message> {
-    let dialog_content = container(
+    container(
         column![
             text(dialog).size(14),
             row![
@@ -55,7 +58,85 @@ pub fn confirm_dialog<'a, Message: 'a + Clone>(
         .spacing(16),
     )
     .padding(24)
-    .style(style::dashboard_modal);
+    .style(style::dashboard_modal)
+    .into()
+}
 
-    dialog_content.into()
+pub fn main_dialog_modal<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        opaque(
+            mouse_area(center(opaque(content)).style(|_theme| {
+                container::Style {
+                    background: Some(
+                        Color {
+                            a: 0.8,
+                            ..Color::BLACK
+                        }
+                        .into(),
+                    ),
+                    ..container::Style::default()
+                }
+            }))
+            .on_press(on_blur)
+        )
+    ]
+    .into()
+}
+
+pub fn dashboard_modal<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+    padding: padding::Padding,
+    align_y: Alignment,
+    align_x: Alignment,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(
+            container(opaque(content))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(padding)
+                .align_y(align_y)
+                .align_x(align_x)
+        )
+        .on_press(on_blur)
+    ]
+    .into()
+}
+
+pub fn pane_modal<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+    padding: padding::Padding,
+    alignment: Alignment,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(
+            container(opaque(content))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(padding)
+                .align_x(alignment)
+        )
+        .on_press(on_blur)
+    ]
+    .into()
 }

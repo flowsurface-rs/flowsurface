@@ -10,7 +10,7 @@ mod style;
 mod widget;
 mod window;
 
-use crate::widget::{confirm_dialog, tooltip};
+use crate::widget::{confirm_dialog_container, tooltip};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
@@ -30,11 +30,10 @@ use screen::{
         self, Dashboard, pane,
         tickers_table::{self, TickersTable},
     },
-    modal::{confirmation_modal, dashboard_modal},
 };
 use std::{collections::HashMap, future::Future, vec};
 use style::{ICON_BYTES, Icon, get_icon_text};
-use widget::notification::Toast;
+use widget::{dashboard_modal, main_dialog_modal, notification::Toast};
 use window::{Window, WindowEvent, window_events};
 
 fn main() {
@@ -775,13 +774,13 @@ impl State {
                     );
 
                     if let Some((dialog, on_confirm)) = &self.confirm_dialog {
-                        let dialog_content = confirm_dialog(
+                        let dialog_content = confirm_dialog_container(
                             dialog,
                             *on_confirm.to_owned(),
                             Message::ToggleDialogModal(None),
                         );
 
-                        confirmation_modal(
+                        main_dialog_modal(
                             base_content,
                             dialog_content,
                             Message::ToggleDialogModal(None),

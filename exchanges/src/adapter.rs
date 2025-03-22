@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub mod binance;
 pub mod bybit;
 
-#[allow(dead_code)]
 #[derive(thiserror::Error, Debug)]
 pub enum StreamError {
     #[error("Fetchrror: {0}")]

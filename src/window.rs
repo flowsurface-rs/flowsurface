@@ -5,38 +5,15 @@ use iced::{Point, Size, Subscription, Task, window};
 pub use iced::window::{Id, Position, Settings, close, open};
 use iced_futures::MaybeSend;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
     pub id: Id,
     pub position: Option<Point>,
-    pub size: Size,
-    pub focused: bool,
 }
 
-#[allow(dead_code)]
 impl Window {
     pub fn new(id: Id) -> Self {
-        Self {
-            id,
-            position: None,
-            size: Size::default(),
-            focused: false,
-        }
-    }
-
-    pub fn opened(&mut self, position: Option<Point>, size: Size) {
-        self.position = position;
-        self.size = size;
-        self.focused = true;
-    }
-
-    pub fn resized(&mut self, size: Size) {
-        self.size = size;
-    }
-
-    pub fn moved(&mut self, position: Point) {
-        self.position = Some(position);
+        Self { id, position: None }
     }
 }
 
