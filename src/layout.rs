@@ -10,6 +10,7 @@ use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
 use data::charts::ChartBasis;
+use data::layout::{SerializableDashboard, SerializableLayout, SerializableLayouts};
 use data::pane::{Axis, PaneSettings, SerializablePane};
 use exchanges::TickMultiplier;
 use exchanges::{Ticker, Timeframe, adapter::Exchange};
@@ -29,36 +30,6 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::vec;
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableLayout {
-    pub name: String,
-    pub dashboard: SerializableDashboard,
-}
-
-impl Default for SerializableLayout {
-    fn default() -> Self {
-        Self {
-            name: "Default".to_string(),
-            dashboard: SerializableDashboard::default(),
-        }
-    }
-}
-
-impl From<(Layout, Dashboard)> for SerializableLayout {
-    fn from((layout, dashboard): (Layout, Dashboard)) -> Self {
-        Self {
-            name: layout.name,
-            dashboard: SerializableDashboard::from(&dashboard),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableLayouts {
-    pub layouts: Vec<SerializableLayout>,
-    pub active_layout: String,
-}
 
 #[derive(Eq, Hash, Debug, Clone, PartialEq)]
 pub struct Layout {
@@ -687,13 +658,6 @@ impl SerializableState {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SerializableDashboard {
-    pub pane: SerializablePane,
-    pub popout: Vec<(SerializablePane, (f32, f32), (f32, f32))>,
-    pub trade_fetch_enabled: bool,
-}
-
 impl<'a> From<&'a Dashboard> for SerializableDashboard {
     fn from(dashboard: &'a Dashboard) -> Self {
         use pane_grid::Node;
@@ -743,12 +707,13 @@ impl<'a> From<&'a Dashboard> for SerializableDashboard {
     }
 }
 
-impl Default for SerializableDashboard {
-    fn default() -> Self {
+pub struct LayoutDashboardPair(pub Layout, pub Dashboard);
+
+impl From<LayoutDashboardPair> for SerializableLayout {
+    fn from(pair: LayoutDashboardPair) -> Self {
         Self {
-            pane: SerializablePane::Starter,
-            popout: vec![],
-            trade_fetch_enabled: false,
+            name: pair.0.name,
+            dashboard: SerializableDashboard::from(&pair.1),
         }
     }
 }

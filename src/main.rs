@@ -11,6 +11,7 @@ mod widget;
 mod window;
 
 use crate::widget::{confirm_dialog_container, tooltip};
+use data::layout::{SerializableDashboard, SerializableLayout, SerializableLayouts};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
@@ -23,7 +24,7 @@ use iced::{
     },
 };
 use iced_futures::{MaybeSend, futures::TryFutureExt};
-use layout::{Layout, LayoutManager, SerializableDashboard, Sidebar};
+use layout::{Layout, LayoutManager, SerializableState, Sidebar};
 use screen::{
     UserTimezone, create_button,
     dashboard::{
@@ -281,14 +282,14 @@ impl State {
                     if let Some((layout, dashboard)) = self.layouts.layouts.get(id) {
                         let serialized_dashboard = SerializableDashboard::from(dashboard);
 
-                        ser_layouts.push(layout::SerializableLayout {
+                        ser_layouts.push(SerializableLayout {
                             name: layout.name.clone(),
                             dashboard: serialized_dashboard,
                         });
                     }
                 }
 
-                let layouts = layout::SerializableLayouts {
+                let layouts = SerializableLayouts {
                     layouts: ser_layouts,
                     active_layout: self.layouts.active_layout.name.clone(),
                 };
@@ -301,7 +302,7 @@ impl State {
                     .map(|(_, (position, size))| (*size, *position))
                     .unzip();
 
-                let layout = layout::SerializableState::from_parts(
+                let layout = SerializableState::from_parts(
                     layouts,
                     self.theme.clone(),
                     favorited_tickers,
