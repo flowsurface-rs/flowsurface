@@ -1,6 +1,5 @@
 #![windows_subsystem = "windows"]
 
-mod aggr;
 mod charts;
 mod layout;
 mod logger;

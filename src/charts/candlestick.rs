@@ -2,8 +2,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use data::UserTimezone;
-use data::charts::ChartLayout;
-use data::charts::indicators::{CandlestickIndicator, Indicator};
+use data::chart::ChartLayout;
+use data::chart::indicators::{CandlestickIndicator, Indicator};
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -13,13 +13,13 @@ use iced::widget::{
 };
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse};
 
-use crate::aggr::{ticks::TickAggr, time::TimeSeries};
+use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchanges::fetcher::{FetchRange, RequestHandler};
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
 use super::scales::PriceInfoLabel;
 use super::{
-    Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
     indicators,
 };
 use super::{canvas_interaction, count_decimals, request_fetch, update_chart, view_chart};
@@ -131,7 +131,7 @@ pub struct CandlestickChart {
 impl CandlestickChart {
     pub fn new(
         layout: ChartLayout,
-        basis: ChartBasis,
+        basis: Basis,
         klines_raw: Vec<Kline>,
         raw_trades: Vec<Trade>,
         tick_size: f32,
@@ -139,7 +139,7 @@ impl CandlestickChart {
         ticker_info: Option<TickerInfo>,
     ) -> CandlestickChart {
         match basis {
-            ChartBasis::Time(interval) => {
+            Basis::Time(interval) => {
                 let timeseries = TimeSeries::new(interval.into(), tick_size, &[], &klines_raw);
 
                 let base_price_y = timeseries.get_base_price();
@@ -160,7 +160,7 @@ impl CandlestickChart {
                         indicators_split: layout.indicators_split,
                         decimals: count_decimals(tick_size),
                         ticker_info,
-                        basis: super::ChartBasis::Time(interval),
+                        basis: super::Basis::Time(interval),
                         ..Default::default()
                     },
                     data_source: ChartData::TimeBased(timeseries),
@@ -190,7 +190,7 @@ impl CandlestickChart {
                     request_handler: RequestHandler::new(),
                 }
             }
-            ChartBasis::Tick(interval) => {
+            Basis::Tick(interval) => {
                 let tick_aggr = TickAggr::new(interval, tick_size, &raw_trades);
                 let volume_data = tick_aggr.get_volume_data();
 
@@ -415,7 +415,7 @@ impl CandlestickChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.basis = ChartBasis::Tick(tick_basis);
+        self.chart.basis = Basis::Tick(tick_basis);
 
         let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
 

@@ -8,4 +8,6 @@ serde_json.workspace = true
 serde.workspace = true
 iced_core.workspace = true
 chrono.workspace = true
+ordered-float.workspace = true
+log.workspace = true
 exchanges = { version = "0.1.0", path = "../exchanges" }

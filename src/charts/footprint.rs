@@ -2,8 +2,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use data::UserTimezone;
-use data::charts::ChartLayout;
-use data::charts::indicators::{FootprintIndicator, Indicator};
+use data::chart::ChartLayout;
+use data::chart::indicators::{FootprintIndicator, Indicator};
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -16,13 +16,13 @@ use iced::{
 };
 use ordered_float::OrderedFloat;
 
-use crate::aggr::{ticks::TickAggr, time::TimeSeries};
+use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchanges::fetcher::{FetchRange, RequestHandler};
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
 use super::scales::PriceInfoLabel;
 use super::{
-    Caches, Chart, ChartBasis, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
     indicators,
 };
 use super::{
@@ -65,7 +65,7 @@ impl Chart for FootprintChart {
         let region = chart.visible_region(chart.bounds.size());
 
         match &chart.basis {
-            ChartBasis::Time(interval) => {
+            Basis::Time(interval) => {
                 let (earliest, latest) = (
                     chart.x_to_interval(region.x) - (interval / 2),
                     chart.x_to_interval(region.x + region.width) + (interval / 2),
@@ -73,7 +73,7 @@ impl Chart for FootprintChart {
 
                 (earliest, latest)
             }
-            ChartBasis::Tick(_) => {
+            Basis::Tick(_) => {
                 unimplemented!()
             }
         }
@@ -144,7 +144,7 @@ pub struct FootprintChart {
 impl FootprintChart {
     pub fn new(
         layout: ChartLayout,
-        basis: ChartBasis,
+        basis: Basis,
         tick_size: f32,
         klines_raw: Vec<Kline>,
         raw_trades: Vec<Trade>,
@@ -152,7 +152,7 @@ impl FootprintChart {
         ticker_info: Option<TickerInfo>,
     ) -> Self {
         match basis {
-            ChartBasis::Time(interval) => {
+            Basis::Time(interval) => {
                 let timeseries =
                     TimeSeries::new(interval.into(), tick_size, &raw_trades, &klines_raw);
 
@@ -205,7 +205,7 @@ impl FootprintChart {
                     request_handler: RequestHandler::new(),
                 }
             }
-            ChartBasis::Tick(interval) => {
+            Basis::Tick(interval) => {
                 let tick_aggr = TickAggr::new(interval, tick_size, &raw_trades);
                 let volume_data = tick_aggr.get_volume_data();
 
@@ -435,7 +435,7 @@ impl FootprintChart {
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
-        self.chart.basis = ChartBasis::Tick(tick_basis);
+        self.chart.basis = Basis::Tick(tick_basis);
 
         let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
 

@@ -1,6 +1,5 @@
 use crate::{
     StreamType,
-    aggr::ticks::TickCount,
     charts::{
         self, candlestick::CandlestickChart, config, footprint::FootprintChart,
         heatmap::HeatmapChart, timeandsales::TimeAndSales,
@@ -12,8 +11,9 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    charts::{
-        ChartBasis, ChartLayout, VisualConfig,
+    aggr::ticks::TickCount,
+    chart::{
+        Basis, ChartLayout, VisualConfig,
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
     },
     pane::PaneSettings,
@@ -72,7 +72,7 @@ pub enum Message {
     MaximizePane(pane_grid::Pane),
     Restore,
     TicksizeSelected(TickMultiplier, pane_grid::Pane),
-    ChartBasisSelected(ChartBasis, pane_grid::Pane),
+    BasisSelected(Basis, pane_grid::Pane),
     ToggleModal(pane_grid::Pane, PaneModal),
     InitPaneContent(
         window::Id,
@@ -175,10 +175,10 @@ impl PaneState {
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
+                    .unwrap_or(Basis::Time(Timeframe::M5.into()));
 
                 match basis {
-                    ChartBasis::Time(interval) => {
+                    Basis::Time(interval) => {
                         vec![
                             StreamType::DepthAndTrades {
                                 exchange,
@@ -191,7 +191,7 @@ impl PaneState {
                             },
                         ]
                     }
-                    ChartBasis::Tick(_) => {
+                    Basis::Tick(_) => {
                         vec![StreamType::DepthAndTrades {
                             exchange,
                             ticker: ticker.0,
@@ -203,17 +203,17 @@ impl PaneState {
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
+                    .unwrap_or(Basis::Time(Timeframe::M15.into()));
 
                 match basis {
-                    ChartBasis::Time(interval) => {
+                    Basis::Time(interval) => {
                         vec![StreamType::Kline {
                             exchange,
                             ticker: ticker.0,
                             timeframe: interval.into(),
                         }]
                     }
-                    ChartBasis::Tick(_) => {
+                    Basis::Tick(_) => {
                         vec![StreamType::DepthAndTrades {
                             exchange,
                             ticker: ticker.0,
@@ -288,7 +288,7 @@ impl PaneState {
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
+                    .unwrap_or(Basis::Time(Timeframe::M5.into()));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Footprint(indicators)) => indicators,
@@ -319,7 +319,7 @@ impl PaneState {
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
+                    .unwrap_or(Basis::Time(Timeframe::M15.into()));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Candlestick(indicators)) => indicators,
@@ -397,7 +397,7 @@ impl PaneState {
 
                     *chart = CandlestickChart::new(
                         layout,
-                        ChartBasis::Time(timeframe.into()),
+                        Basis::Time(timeframe.into()),
                         klines.clone(),
                         raw_trades,
                         tick_size,
@@ -416,7 +416,7 @@ impl PaneState {
 
                     *chart = FootprintChart::new(
                         layout,
-                        ChartBasis::Time(timeframe.into()),
+                        Basis::Time(timeframe.into()),
                         tick_size,
                         klines.clone(),
                         raw_trades,
@@ -497,7 +497,7 @@ impl PaneState {
                         "{} - {}",
                         self.settings
                             .selected_basis
-                            .unwrap_or(ChartBasis::Time(Timeframe::M5.into())),
+                            .unwrap_or(Basis::Time(Timeframe::M5.into())),
                         self.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
                     )))
                     .style(move |theme, status| {
@@ -513,7 +513,7 @@ impl PaneState {
                     button(text(
                         self.settings
                             .selected_basis
-                            .unwrap_or(ChartBasis::Time(Timeframe::M15.into()))
+                            .unwrap_or(Basis::Time(Timeframe::M15.into()))
                             .to_string(),
                     ))
                     .style(move |theme, status| {
@@ -605,8 +605,8 @@ trait ChartView {
 
 #[derive(Debug, Clone, Copy)]
 enum StreamModifier {
-    CandlestickChart(ChartBasis),
-    FootprintChart(ChartBasis, TickMultiplier),
+    CandlestickChart(Basis),
+    FootprintChart(Basis, TickMultiplier),
     HeatmapChart(TickMultiplier),
 }
 
@@ -713,7 +713,7 @@ impl ChartView for FootprintChart {
                 state
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into())),
+                    .unwrap_or(Basis::Time(Timeframe::M5.into())),
                 state.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
             ),
         )
@@ -744,7 +744,7 @@ impl ChartView for CandlestickChart {
                 state
                     .settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into())),
+                    .unwrap_or(Basis::Time(Timeframe::M15.into())),
             ),
         )
     }
@@ -848,13 +848,13 @@ fn stream_modifier_view<'a>(
 
     if let Some(basis) = selected_basis {
         match basis {
-            ChartBasis::Time(selected_timeframe) => {
+            Basis::Time(selected_timeframe) => {
                 timeframes_column = timeframes_column.push(
                     row![
                         create_button("Timeframe".to_string(), None, false,),
                         create_button(
                             "Ticks".to_string(),
-                            Some(Message::ChartBasisSelected(ChartBasis::Tick(200), pane,)),
+                            Some(Message::BasisSelected(Basis::Tick(200), pane,)),
                             true,
                         ),
                     ]
@@ -866,8 +866,8 @@ fn stream_modifier_view<'a>(
                     let msg = if *timeframe == selected_timeframe.into() {
                         None
                     } else {
-                        Some(Message::ChartBasisSelected(
-                            ChartBasis::Time(u64::from(*timeframe)),
+                        Some(Message::BasisSelected(
+                            Basis::Time(u64::from(*timeframe)),
                             pane,
                         ))
                     };
@@ -878,13 +878,13 @@ fn stream_modifier_view<'a>(
                 content_row =
                     content_row.push(container(timeframes_column).style(style::modal_container));
             }
-            ChartBasis::Tick(selected_tick) => {
+            Basis::Tick(selected_tick) => {
                 tick_basis_column = tick_basis_column.push(
                     row![
                         create_button(
                             "Timeframe".to_string(),
-                            Some(Message::ChartBasisSelected(
-                                ChartBasis::Time(Timeframe::M5.into()),
+                            Some(Message::BasisSelected(
+                                Basis::Time(Timeframe::M5.into()),
                                 pane
                             )),
                             true,
@@ -899,8 +899,8 @@ fn stream_modifier_view<'a>(
                     let msg = if *tick_count == selected_tick.into() {
                         None
                     } else {
-                        Some(Message::ChartBasisSelected(
-                            ChartBasis::Tick(u64::from(*tick_count)),
+                        Some(Message::BasisSelected(
+                            Basis::Tick(u64::from(*tick_count)),
                             pane,
                         ))
                     };

@@ -5,7 +5,7 @@ use iced::widget::{Canvas, center, container, row, text};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::charts::{
-    Caches, ChartBasis, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
+    Caches, Basis, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
 use exchanges::Timeframe;
 
@@ -18,7 +18,7 @@ pub fn create_indicator_elem<'a>(
 ) -> Element<'a, Message> {
     let (mut max_value, mut min_value) = {
         match chart_state.basis {
-            ChartBasis::Time(interval) => {
+            Basis::Time(interval) => {
                 if interval < Timeframe::M5.to_milliseconds() {
                     return center(text(
                         "WIP: Open Interest is not available with intervals less than 5 minutes.",
@@ -33,7 +33,7 @@ pub fn create_indicator_elem<'a>(
                         })
                 }
             }
-            ChartBasis::Tick(_) => {
+            Basis::Tick(_) => {
                 return center(text("WIP: Open Interest is not available for tick charts.")).into();
             }
         }
@@ -139,8 +139,8 @@ impl canvas::Program<Message> for OpenInterest<'_> {
         }
 
         let timeframe: u64 = match chart_state.basis {
-            ChartBasis::Time(interval) => interval,
-            ChartBasis::Tick(_) => {
+            Basis::Time(interval) => interval,
+            Basis::Tick(_) => {
                 // TODO: implement
                 return vec![];
             }

@@ -741,6 +741,8 @@ dependencies = [
  "chrono",
  "exchanges",
  "iced_core 0.14.0-dev",
+ "log",
+ "ordered-float",
  "serde",
  "serde_json",
 ]

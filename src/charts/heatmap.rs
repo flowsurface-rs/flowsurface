@@ -4,8 +4,8 @@ use std::{
 };
 
 use data::UserTimezone;
-use data::charts::{
-    ChartBasis, ChartLayout,
+use data::chart::{
+    Basis, ChartLayout,
     heatmap::Config,
     indicators::{HeatmapIndicator, Indicator},
 };
@@ -258,7 +258,7 @@ impl HeatmapChart {
                 crosshair: layout.crosshair,
                 indicators_split: layout.indicators_split,
                 ticker_info,
-                basis: ChartBasis::Time(aggr_time),
+                basis: Basis::Time(aggr_time),
                 ..Default::default()
             },
             indicators: {
@@ -290,8 +290,8 @@ impl HeatmapChart {
         }
 
         let aggregate_time: u64 = match chart.basis {
-            ChartBasis::Time(interval) => interval,
-            ChartBasis::Tick(_) => {
+            Basis::Time(interval) => interval,
+            Basis::Tick(_) => {
                 // TODO: implement
                 unimplemented!()
             }
@@ -385,8 +385,8 @@ impl HeatmapChart {
         let chart_state = self.get_common_data_mut();
 
         let aggregate_time: u64 = match chart_state.basis {
-            ChartBasis::Time(interval) => interval,
-            ChartBasis::Tick(_) => {
+            Basis::Time(interval) => interval,
+            Basis::Tick(_) => {
                 // TODO: implement
                 unimplemented!()
             }

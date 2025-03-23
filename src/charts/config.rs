@@ -1,7 +1,7 @@
 use super::format_with_commas;
 use crate::{screen::dashboard::pane::Message, style, tooltip, widget::scrollable_content};
 
-use data::charts::{VisualConfig, heatmap, timeandsales};
+use data::chart::{VisualConfig, heatmap, timeandsales};
 use iced::{
     Alignment, Element, Length,
     widget::{

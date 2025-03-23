@@ -3,11 +3,12 @@ use std::fmt;
 use chrono::DateTime;
 use exchanges::{Ticker, adapter::Exchange};
 use iced_core::{Point, Size};
-use pane::Pane;
+pub use pane::Pane;
 use serde::{Deserialize, Serialize};
 pub use theme::Theme;
 
-pub mod charts;
+pub mod aggr;
+pub mod chart;
 pub mod pane;
 pub mod theme;
 

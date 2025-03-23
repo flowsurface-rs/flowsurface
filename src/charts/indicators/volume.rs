@@ -6,7 +6,7 @@ use iced::{Element, Length};
 use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::charts::{
-    Caches, ChartBasis, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
+    Caches, Basis, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
 
 pub fn create_indicator_elem<'a>(
@@ -18,12 +18,12 @@ pub fn create_indicator_elem<'a>(
 ) -> Element<'a, Message> {
     let max_volume = {
         match chart_state.basis {
-            ChartBasis::Time(_) => data_points
+            Basis::Time(_) => data_points
                 .range(earliest..=latest)
                 .map(|(_, (buy, sell))| buy.max(*sell))
                 .max_by(|a, b| a.partial_cmp(b).unwrap())
                 .unwrap_or(0.0),
-            ChartBasis::Tick(_) => {
+            Basis::Tick(_) => {
                 let mut max_volume: f32 = 0.0;
                 let earliest = earliest as usize;
                 let latest = latest as usize;
@@ -158,7 +158,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             let (earliest, latest) = chart_state.get_interval_range(region);
 
             match chart_state.basis {
-                ChartBasis::Time(_) => {
+                Basis::Time(_) => {
                     if latest < earliest {
                         return;
                     }
@@ -210,7 +210,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         },
                     );
                 }
-                ChartBasis::Tick(_) => {
+                Basis::Tick(_) => {
                     let earliest = earliest as usize;
                     let latest = latest as usize;
 
@@ -281,7 +281,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
 
                     let (rounded_interval, snap_ratio) = match chart_state.basis {
-                        ChartBasis::Time(timeframe) => {
+                        Basis::Time(timeframe) => {
                             let crosshair_millis = earliest + crosshair_ratio * (latest - earliest);
 
                             let rounded_timestamp =
@@ -292,7 +292,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
                             (rounded_timestamp, snap_ratio)
                         }
-                        ChartBasis::Tick(_) => {
+                        Basis::Tick(_) => {
                             let chart_x_min = region.x;
                             let chart_x_max = region.x + region.width;
 
@@ -320,11 +320,11 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     );
 
                     if let Some((_, (buy_v, sell_v))) = match chart_state.basis {
-                        ChartBasis::Time(_) => self
+                        Basis::Time(_) => self
                             .data_points
                             .iter()
                             .find(|(interval, _)| **interval == rounded_interval),
-                        ChartBasis::Tick(_) => {
+                        Basis::Tick(_) => {
                             let index_from_end = rounded_interval as usize;
 
                             if index_from_end < self.data_points.len() {

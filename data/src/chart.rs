@@ -4,6 +4,10 @@ pub mod heatmap;
 pub mod indicators;
 pub mod timeandsales;
 
+pub fn round_to_tick(value: f32, tick_size: f32) -> f32 {
+    (value / tick_size).round() * tick_size
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChartLayout {
     pub crosshair: bool,
@@ -34,7 +38,7 @@ impl VisualConfig {
 
 /// Defines how chart data is aggregated and displayed along the x-axis.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum ChartBasis {
+pub enum Basis {
     /// Time-based aggregation where each datapoint represents a fixed time interval.
     ///
     /// The u64 value represents milliseconds. Common values include:
@@ -50,16 +54,16 @@ pub enum ChartBasis {
     Tick(u64),
 }
 
-impl ChartBasis {
+impl Basis {
     pub fn is_time(&self) -> bool {
-        matches!(self, ChartBasis::Time(_))
+        matches!(self, Basis::Time(_))
     }
 }
 
-impl std::fmt::Display for ChartBasis {
+impl std::fmt::Display for Basis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ChartBasis::Time(millis) => match *millis {
+            Basis::Time(millis) => match *millis {
                 60_000 => write!(f, "1m"),
                 180_000 => write!(f, "3m"),
                 300_000 => write!(f, "5m"),
@@ -70,7 +74,7 @@ impl std::fmt::Display for ChartBasis {
                 14_400_000 => write!(f, "4h"),
                 _ => write!(f, "{millis}ms"),
             },
-            ChartBasis::Tick(count) => write!(f, "{count}T"),
+            Basis::Tick(count) => write!(f, "{count}T"),
         }
     }
 }

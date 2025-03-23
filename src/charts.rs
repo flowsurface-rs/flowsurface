@@ -1,4 +1,3 @@
-use data::charts::indicators::Indicator;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
 use iced::widget::{center, mouse_area};
 use iced::{
@@ -14,13 +13,9 @@ use iced::{
 use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use uuid::Uuid;
 
-use crate::{
-    aggr::{ticks::TickAggr, time::TimeSeries},
-    style,
-    widget::hsplit::HSplit,
-    widget::tooltip,
-};
-use data::charts::{ChartBasis, ChartLayout};
+use crate::{style, widget::hsplit::HSplit, widget::tooltip};
+use data::aggr::{ticks::TickAggr, time::TimeSeries};
+use data::chart::{Basis, ChartLayout, indicators::Indicator};
 use exchanges::fetcher::{FetchRange, ReqError, RequestHandler};
 use exchanges::{TickerInfo, Timeframe};
 
@@ -301,13 +296,13 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
                 };
 
                 let new_cursor_x = match chart_state.basis {
-                    ChartBasis::Time(_) => {
+                    Basis::Time(_) => {
                         let cursor_time = chart_state.x_to_interval(cursor_chart_x);
                         chart_state.cell_width = new_width;
 
                         chart_state.interval_to_x(cursor_time)
                     }
-                    ChartBasis::Tick(_) => {
+                    Basis::Tick(_) => {
                         let tick_index = cursor_chart_x / chart_state.cell_width;
                         chart_state.cell_width = new_width;
 
@@ -541,7 +536,7 @@ pub struct CommonChartData {
     scaling: f32,
     cell_width: f32,
     cell_height: f32,
-    basis: ChartBasis,
+    basis: Basis,
 
     last_price: Option<PriceInfoLabel>,
 
@@ -561,7 +556,7 @@ impl Default for CommonChartData {
             crosshair: true,
             translation: Vector::default(),
             bounds: Rectangle::default(),
-            basis: ChartBasis::Time(Timeframe::M5.to_milliseconds()),
+            basis: Basis::Time(Timeframe::M5.to_milliseconds()),
             last_price: None,
             scaling: 1.0,
             autoscale: true,
@@ -598,11 +593,11 @@ impl CommonChartData {
 
     fn get_interval_range(&self, region: Rectangle) -> (u64, u64) {
         match self.basis {
-            ChartBasis::Tick(_) => (
+            Basis::Tick(_) => (
                 self.x_to_interval(region.x + region.width),
                 self.x_to_interval(region.x),
             ),
-            ChartBasis::Time(interval) => (
+            Basis::Time(interval) => (
                 self.x_to_interval(region.x).saturating_sub(interval / 2),
                 self.x_to_interval(region.x + region.width)
                     .saturating_add(interval / 2),
@@ -619,7 +614,7 @@ impl CommonChartData {
 
     fn interval_to_x(&self, value: u64) -> f32 {
         match self.basis {
-            ChartBasis::Time(timeframe) => {
+            Basis::Time(timeframe) => {
                 if value <= self.latest_x {
                     let diff = self.latest_x - value;
                     -(diff as f32 / timeframe as f32) * self.cell_width
@@ -628,13 +623,13 @@ impl CommonChartData {
                     (diff as f32 / timeframe as f32) * self.cell_width
                 }
             }
-            ChartBasis::Tick(_) => -((value as f32) * self.cell_width),
+            Basis::Tick(_) => -((value as f32) * self.cell_width),
         }
     }
 
     fn x_to_interval(&self, x: f32) -> u64 {
         match self.basis {
-            ChartBasis::Time(interval) => {
+            Basis::Time(interval) => {
                 if x <= 0.0 {
                     let diff = (-x / self.cell_width * interval as f32) as u64;
                     self.latest_x.saturating_sub(diff)
@@ -643,7 +638,7 @@ impl CommonChartData {
                     self.latest_x.saturating_add(diff)
                 }
             }
-            ChartBasis::Tick(_) => {
+            Basis::Tick(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
@@ -705,7 +700,7 @@ impl CommonChartData {
 
         // Vertical time/tick line
         match self.basis {
-            ChartBasis::Time(timeframe) => {
+            Basis::Time(timeframe) => {
                 let earliest = self.x_to_interval(region.x) as f64;
                 let latest = self.x_to_interval(region.x + region.width) as f64;
 
@@ -727,7 +722,7 @@ impl CommonChartData {
 
                 (rounded_price, rounded_timestamp)
             }
-            ChartBasis::Tick(aggregation) => {
+            Basis::Tick(aggregation) => {
                 let crosshair_ratio = cursor_position.x / bounds.width;
 
                 let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);

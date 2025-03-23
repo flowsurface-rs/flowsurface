@@ -7,7 +7,7 @@ use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
 use data::UserTimezone;
-use data::charts::ChartBasis;
+use data::chart::Basis;
 use data::pane::{Axis, PaneSettings};
 use exchanges::TickMultiplier;
 use exchanges::{Ticker, Timeframe, adapter::Exchange};
@@ -521,14 +521,11 @@ impl<'a> From<&'a Dashboard> for data::Dashboard {
     fn from(dashboard: &'a Dashboard) -> Self {
         use pane_grid::Node;
 
-        fn from_layout(
-            panes: &pane_grid::State<PaneState>,
-            node: pane_grid::Node,
-        ) -> data::pane::Pane {
+        fn from_layout(panes: &pane_grid::State<PaneState>, node: pane_grid::Node) -> data::Pane {
             match node {
                 Node::Split {
                     axis, ratio, a, b, ..
-                } => data::pane::Pane::Split {
+                } => data::Pane::Split {
                     axis: match axis {
                         pane_grid::Axis::Horizontal => Axis::Horizontal,
                         pane_grid::Axis::Vertical => Axis::Vertical,
@@ -539,13 +536,13 @@ impl<'a> From<&'a Dashboard> for data::Dashboard {
                 },
                 Node::Pane(pane) => panes
                     .get(pane)
-                    .map_or(data::pane::Pane::Starter, data::pane::Pane::from),
+                    .map_or(data::Pane::Starter, data::Pane::from),
             }
         }
 
         let main_window_layout = dashboard.panes.layout().clone();
 
-        let popouts_layout: Vec<(data::pane::Pane, (Point, Size))> = dashboard
+        let popouts_layout: Vec<(data::Pane, (Point, Size))> = dashboard
             .popout
             .iter()
             .map(|(_, (pane, specs))| (from_layout(pane, pane.layout().clone()), *specs))
@@ -577,31 +574,31 @@ impl From<LayoutDashboardPair> for data::Layout {
     }
 }
 
-impl From<&PaneState> for data::pane::Pane {
+impl From<&PaneState> for data::Pane {
     fn from(pane: &PaneState) -> Self {
         let pane_stream = pane.stream.clone();
 
         match &pane.content {
-            PaneContent::Starter => data::pane::Pane::Starter,
-            PaneContent::Heatmap(chart, indicators) => data::pane::Pane::HeatmapChart {
+            PaneContent::Starter => data::Pane::Starter,
+            PaneContent::Heatmap(chart, indicators) => data::Pane::HeatmapChart {
                 layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Footprint(chart, indicators) => data::pane::Pane::FootprintChart {
+            PaneContent::Footprint(chart, indicators) => data::Pane::FootprintChart {
                 layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Candlestick(chart, indicators) => data::pane::Pane::CandlestickChart {
+            PaneContent::Candlestick(chart, indicators) => data::Pane::CandlestickChart {
                 layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::TimeAndSales(_) => data::pane::Pane::TimeAndSales {
+            PaneContent::TimeAndSales(_) => data::Pane::TimeAndSales {
                 stream_type: pane_stream,
                 settings: pane.settings,
             },
@@ -609,9 +606,9 @@ impl From<&PaneState> for data::pane::Pane {
     }
 }
 
-fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
+fn configuration(pane: data::Pane) -> Configuration<PaneState> {
     match pane {
-        data::pane::Pane::Split { axis, ratio, a, b } => Configuration::Split {
+        data::Pane::Split { axis, ratio, a, b } => Configuration::Split {
             axis: match axis {
                 Axis::Horizontal => pane_grid::Axis::Horizontal,
                 Axis::Vertical => pane_grid::Axis::Vertical,
@@ -620,10 +617,8 @@ fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
             a: Box::new(configuration(*a)),
             b: Box::new(configuration(*b)),
         },
-        data::pane::Pane::Starter => {
-            Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
-        }
-        data::pane::Pane::CandlestickChart {
+        data::Pane::Starter => Configuration::Pane(PaneState::new(vec![], PaneSettings::default())),
+        data::Pane::CandlestickChart {
             layout,
             stream_type,
             settings,
@@ -632,7 +627,7 @@ fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
             if let Some(ticker_info) = settings.ticker_info {
                 let basis = settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M15.into()));
+                    .unwrap_or(Basis::Time(Timeframe::M15.into()));
 
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Candlestick(
@@ -655,7 +650,7 @@ fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
                 Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
             }
         }
-        data::pane::Pane::FootprintChart {
+        data::Pane::FootprintChart {
             layout,
             stream_type,
             settings,
@@ -668,7 +663,7 @@ fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
                     .multiply_with_min_tick_size(ticker_info);
                 let basis = settings
                     .selected_basis
-                    .unwrap_or(ChartBasis::Time(Timeframe::M5.into()));
+                    .unwrap_or(Basis::Time(Timeframe::M5.into()));
 
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Footprint(
@@ -691,7 +686,7 @@ fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
                 Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
             }
         }
-        data::pane::Pane::HeatmapChart {
+        data::Pane::HeatmapChart {
             layout,
             stream_type,
             settings,
@@ -725,7 +720,7 @@ fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
                 Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
             }
         }
-        data::pane::Pane::TimeAndSales {
+        data::Pane::TimeAndSales {
             stream_type,
             settings,
         } => {

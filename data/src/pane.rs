@@ -1,8 +1,8 @@
 use exchanges::{TickMultiplier, TickerInfo, adapter::StreamType};
 use serde::{Deserialize, Serialize};
 
-use crate::charts::{
-    ChartBasis, ChartLayout, VisualConfig,
+use crate::chart::{
+    Basis, ChartLayout, VisualConfig,
     indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
 };
 
@@ -51,5 +51,5 @@ pub struct PaneSettings {
     pub ticker_info: Option<TickerInfo>,
     pub tick_multiply: Option<TickMultiplier>,
     pub visual_config: Option<VisualConfig>,
-    pub selected_basis: Option<ChartBasis>,
+    pub selected_basis: Option<Basis>,
 }
