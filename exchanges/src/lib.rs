@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod connect;
 pub mod depth;
+pub mod fetcher;
 
 use adapter::{Exchange, MarketType, StreamType};
 use rust_decimal::{

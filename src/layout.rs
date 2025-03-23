@@ -9,7 +9,6 @@ use crate::{style, tooltip};
 use data::UserTimezone;
 use data::charts::ChartBasis;
 use data::pane::{Axis, PaneSettings};
-use data::theme::SerializableTheme;
 use exchanges::TickMultiplier;
 use exchanges::{Ticker, Timeframe, adapter::Exchange};
 
@@ -494,7 +493,7 @@ fn create_icon_button<'a>(
 
 pub struct SavedState {
     pub layout_manager: LayoutManager,
-    pub selected_theme: SerializableTheme,
+    pub selected_theme: data::Theme,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
@@ -507,7 +506,7 @@ impl Default for SavedState {
     fn default() -> Self {
         SavedState {
             layout_manager: LayoutManager::new(),
-            selected_theme: SerializableTheme::default(),
+            selected_theme: data::Theme::default(),
             favorited_tickers: Vec::new(),
             window_size: None,
             window_position: None,

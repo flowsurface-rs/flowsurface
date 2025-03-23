@@ -16,12 +16,12 @@ use uuid::Uuid;
 
 use crate::{
     aggr::{ticks::TickAggr, time::TimeSeries},
-    fetcher::{FetchRange, ReqError, RequestHandler},
     style,
     widget::hsplit::HSplit,
     widget::tooltip,
 };
 use data::charts::{ChartBasis, ChartLayout};
+use exchanges::fetcher::{FetchRange, ReqError, RequestHandler};
 use exchanges::{TickerInfo, Timeframe};
 
 pub mod candlestick;

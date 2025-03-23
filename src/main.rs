@@ -2,7 +2,6 @@
 
 mod aggr;
 mod charts;
-mod fetcher;
 mod layout;
 mod logger;
 mod screen;
@@ -16,7 +15,7 @@ use exchanges::{
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
 };
 use iced::{
-    Alignment, Element, Length, Point, Size, Subscription, Task, Theme, padding,
+    Alignment, Element, Length, Point, Size, Subscription, Task, padding,
     widget::{
         Space, button, center, column, container, pane_grid, pick_list, responsive, row, text,
         tooltip::Position as TooltipPosition,
@@ -103,7 +102,7 @@ enum Message {
 
     ToggleLayoutLock,
     LayoutSelected(Layout),
-    ThemeSelected(Theme),
+    ThemeSelected(data::Theme),
     ActiveDashboard(dashboard::Message),
     Dashboard(uuid::Uuid, dashboard::Message),
     SetTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
@@ -126,10 +125,10 @@ enum Message {
 }
 
 struct State {
-    theme: Theme,
     main_window: Window,
     timezone: data::UserTimezone,
     confirm_dialog: Option<(String, Box<Message>)>,
+    theme: data::Theme,
     layouts: LayoutManager,
     active_modal: SidebarModal,
     sidebar: data::Sidebar,
@@ -164,7 +163,7 @@ impl State {
 
         (
             Self {
-                theme: saved_state.selected_theme.theme,
+                theme: saved_state.selected_theme,
                 layouts: saved_state.layout_manager,
                 main_window: Window::new(main_window),
                 active_modal: SidebarModal::None,
@@ -536,9 +535,7 @@ impl State {
                             Message::ToggleLayoutLock,
                             Some("Layout Lock"),
                             tooltip_position,
-                            |theme: &Theme, status: button::Status| {
-                                style::button::transparent(theme, status, false)
-                            },
+                            |theme, status| style::button::transparent(theme, status, false),
                         )
                     };
                     let settings_modal_button = {
@@ -555,7 +552,7 @@ impl State {
                             }),
                             Some("Settings"),
                             tooltip_position,
-                            move |theme: &Theme, status: button::Status| {
+                            move |theme, status| {
                                 style::button::transparent(theme, status, is_active)
                             },
                         )
@@ -574,7 +571,7 @@ impl State {
                             }),
                             Some("Manage Layouts"),
                             tooltip_position,
-                            move |theme: &Theme, status: button::Status| {
+                            move |theme, status| {
                                 style::button::transparent(theme, status, is_active)
                             },
                         )
@@ -589,7 +586,7 @@ impl State {
                             Message::ToggleTickersDashboard,
                             Some("Search Tickers"),
                             tooltip_position,
-                            move |theme: &Theme, status: button::Status| {
+                            move |theme, status| {
                                 style::button::transparent(theme, status, is_active)
                             },
                         )
@@ -670,8 +667,9 @@ impl State {
             match self.active_modal {
                 SidebarModal::Settings => {
                     let settings_modal = {
-                        let mut all_themes: Vec<Theme> = Theme::ALL.to_vec();
-                        all_themes.push(Theme::Custom(style::custom_theme().into()));
+                        let mut all_themes = iced_core::Theme::ALL.to_vec();
+                        all_themes
+                            .push(iced_core::Theme::Custom(data::theme::custom_theme().into()));
 
                         let trade_fetch_checkbox = {
                             let is_active = dashboard.trade_fetch_enabled;
@@ -698,7 +696,9 @@ impl State {
                         };
 
                         let theme_picklist =
-                            pick_list(all_themes, Some(self.theme.clone()), Message::ThemeSelected);
+                            pick_list(all_themes, Some(self.theme.clone().0), |theme| {
+                                Message::ThemeSelected(data::Theme(theme))
+                            });
 
                         let timezone_picklist = pick_list(
                             [data::UserTimezone::Utc, data::UserTimezone::Local],
@@ -894,8 +894,8 @@ impl State {
         .into()
     }
 
-    fn theme(&self, _window: window::Id) -> Theme {
-        self.theme.clone()
+    fn theme(&self, _window: window::Id) -> iced_core::Theme {
+        self.theme.clone().into()
     }
 
     fn scale_factor(&self, _window: window::Id) -> f64 {

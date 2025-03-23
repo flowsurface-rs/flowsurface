@@ -1,4 +1,3 @@
-use iced::theme::{Custom, Palette};
 use iced::widget::container::{self, Style};
 use iced::widget::pane_grid::{Highlight, Line};
 use iced::widget::scrollable::{Rail, Scroller};
@@ -68,20 +67,6 @@ pub fn get_icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
     text(char::from(icon).to_string())
         .font(ICON_FONT)
         .size(iced::Pixels(size.into()))
-}
-
-pub fn custom_theme() -> Custom {
-    Custom::new(
-        "Flowsurface".to_string(),
-        Palette {
-            background: Color::from_rgb8(24, 22, 22),
-            text: Color::from_rgb8(197, 201, 197),
-            primary: Color::from_rgb8(200, 200, 200),
-            success: Color::from_rgb8(81, 205, 160),
-            danger: Color::from_rgb8(192, 80, 77),
-            warning: Color::from_rgb8(238, 216, 139),
-        },
-    )
 }
 
 #[cfg(target_os = "macos")]

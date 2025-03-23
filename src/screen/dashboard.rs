@@ -6,7 +6,6 @@ pub use pane::{PaneContent, PaneState};
 
 use crate::{
     StreamType, charts,
-    fetcher::{FetchRange, FetchedData},
     layout::get_data_path,
     style,
     widget::notification::Toast,
@@ -17,6 +16,7 @@ use exchanges::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{self, Event as ExchangeEvent, Exchange, StreamConfig, binance, bybit},
     depth::Depth,
+    fetcher::{FetchRange, FetchedData},
 };
 
 use super::DashboardError;

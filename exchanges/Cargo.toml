@@ -13,6 +13,7 @@ rust_decimal.workspace = true
 thiserror.workspace = true
 ordered-float.workspace = true
 regex.workspace = true
+uuid.workspace = true
 tokio = { version = "1.43", features = ["macros"] }
 reqwest = { version = "0.12.9", features = ["json"] }
 bytes = "1.8.0"

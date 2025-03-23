@@ -16,10 +16,8 @@ use iced::{
 };
 use ordered_float::OrderedFloat;
 
-use crate::{
-    aggr::{ticks::TickAggr, time::TimeSeries},
-    fetcher::{FetchRange, RequestHandler},
-};
+use crate::aggr::{ticks::TickAggr, time::TimeSeries};
+use exchanges::fetcher::{FetchRange, RequestHandler};
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
 use super::scales::PriceInfoLabel;

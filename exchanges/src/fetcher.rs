@@ -1,4 +1,4 @@
-use exchanges::{Kline, OpenInterest, Trade};
+use crate::{Kline, OpenInterest, Trade};
 use std::collections::HashMap;
 use uuid::Uuid;
 

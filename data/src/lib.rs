@@ -2,10 +2,10 @@ use std::fmt;
 
 use chrono::DateTime;
 use exchanges::{Ticker, adapter::Exchange};
-use iced_core::{Point, Size, Theme};
+use iced_core::{Point, Size};
 use pane::Pane;
 use serde::{Deserialize, Serialize};
-use theme::SerializableTheme;
+pub use theme::Theme;
 
 pub mod charts;
 pub mod pane;
@@ -89,7 +89,7 @@ impl std::fmt::Display for Sidebar {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct State {
     pub layout_manager: Layouts,
-    pub selected_theme: SerializableTheme,
+    pub selected_theme: Theme,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
@@ -111,9 +111,7 @@ impl State {
     ) -> Self {
         State {
             layout_manager,
-            selected_theme: SerializableTheme {
-                theme: selected_theme,
-            },
+            selected_theme: Theme(selected_theme.0),
             favorited_tickers,
             window_size: size.map(|s| (s.width, s.height)),
             window_position: position.map(|p| (p.x, p.y)),
