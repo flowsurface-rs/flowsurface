@@ -1,17 +1,17 @@
 use exchanges::{Ticker, adapter::Exchange};
 use serde::{Deserialize, Serialize};
 
-use crate::layout::dashboard::WindowSpec;
+use crate::layout::WindowSpec;
 use crate::{Layout, Theme};
+
+pub use super::timezone::UserTimezone;
+pub use super::{ScaleFactor, Sidebar};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layouts {
     pub layouts: Vec<Layout>,
     pub active_layout: String,
 }
-
-pub use super::timezone::UserTimezone;
-pub use super::{ScaleFactor, Sidebar};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct State {

@@ -8,8 +8,21 @@ mod style;
 mod widget;
 mod window;
 
-use crate::widget::{confirm_dialog_container, tooltip};
-use data::{config::theme::custom_theme, layout::dashboard::WindowSpec};
+use layout::{Layout, LayoutManager};
+use screen::{
+    create_button,
+    dashboard::{
+        self, Dashboard, pane,
+        tickers_table::{self, TickersTable},
+    },
+};
+use style::{ICON_BYTES, Icon, get_icon_text};
+use widget::{
+    confirm_dialog_container, dashboard_modal, main_dialog_modal, notification::Toast, tooltip,
+};
+use window::{Window, WindowEvent, window_events};
+
+use data::{config::theme::custom_theme, layout::WindowSpec};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
@@ -22,18 +35,7 @@ use iced::{
     },
 };
 use iced_futures::{MaybeSend, futures::TryFutureExt};
-use layout::{Layout, LayoutManager};
-use screen::{
-    create_button,
-    dashboard::{
-        self, Dashboard, pane,
-        tickers_table::{self, TickersTable},
-    },
-};
 use std::{collections::HashMap, future::Future, vec};
-use style::{ICON_BYTES, Icon, get_icon_text};
-use widget::{dashboard_modal, main_dialog_modal, notification::Toast};
-use window::{Window, WindowEvent, window_events};
 
 fn main() {
     logger::setup(false, false).expect("Failed to initialize logger");
@@ -42,7 +44,7 @@ fn main() {
 
     std::thread::spawn(layout::cleanup_old_data);
 
-    let window_settings = window::Settings {
+    let main_window_cfg = window::Settings {
         size: saved_state
             .main_window
             .map(|window| window.get_size())
@@ -83,7 +85,7 @@ fn main() {
         .theme(State::theme)
         .subscription(State::subscription)
         .font(ICON_BYTES)
-        .run_with(move || State::new(saved_state, window_settings));
+        .run_with(move || State::new(saved_state, main_window_cfg));
 }
 
 #[derive(Debug, Clone)]
@@ -139,9 +141,9 @@ struct State {
 impl State {
     fn new(
         saved_state: layout::SavedState,
-        window_settings: window::Settings,
+        main_window_cfg: window::Settings,
     ) -> (Self, Task<Message>) {
-        let (main_window, open_main_window) = window::open(window_settings);
+        let (main_window_id, open_main_window_task) = window::open(main_window_cfg);
 
         let active_layout = saved_state.layout_manager.active_layout.clone();
 
@@ -161,9 +163,9 @@ impl State {
 
         (
             Self {
-                theme: saved_state.selected_theme,
+                theme: saved_state.theme,
                 layouts: saved_state.layout_manager,
-                main_window: Window::new(main_window),
+                main_window: Window::new(main_window_id),
                 active_modal: SidebarModal::None,
                 tickers_info: HashMap::new(),
                 sidebar: saved_state.sidebar,
@@ -173,7 +175,7 @@ impl State {
                 scale_factor: saved_state.scale_factor,
                 notifications: Vec::new(),
             },
-            open_main_window
+            open_main_window_task
                 .then(|_| Task::none())
                 .chain(Task::batch(vec![
                     Task::done(Message::LoadLayout(active_layout)),

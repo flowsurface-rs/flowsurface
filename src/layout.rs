@@ -6,26 +6,32 @@ use crate::screen::dashboard::{Dashboard, PaneContent, PaneState};
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
-use data::UserTimezone;
-use data::chart::Basis;
-use data::layout::dashboard::WindowSpec;
-use data::layout::pane::{Axis, PaneSettings};
-use exchanges::TickMultiplier;
-use exchanges::{Ticker, Timeframe, adapter::Exchange};
+use data::{
+    UserTimezone,
+    chart::Basis,
+    layout::{
+        WindowSpec,
+        pane::{Axis, PaneSettings},
+    },
+};
+use exchanges::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
 
 use chrono::NaiveDate;
-use iced::widget::pane_grid::{self, Configuration};
 use iced::widget::{
-    Space, button, center, column, container, row, scrollable, text, text_input,
+    Space, button, center, column, container,
+    pane_grid::{self, Configuration},
+    row, scrollable, text, text_input,
     tooltip::Position as TooltipPosition,
 };
 use iced::{Element, Task, Theme, padding};
 use regex::Regex;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::vec;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{Read, Write},
+    path::PathBuf,
+    vec,
+};
 use uuid::Uuid;
 
 #[derive(Eq, Hash, Debug, Clone, PartialEq)]
@@ -491,24 +497,24 @@ fn create_icon_button<'a>(
 
 pub struct SavedState {
     pub layout_manager: LayoutManager,
-    pub selected_theme: data::Theme,
-    pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub main_window: Option<WindowSpec>,
-    pub timezone: UserTimezone,
-    pub sidebar: data::Sidebar,
+    pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub scale_factor: data::ScaleFactor,
+    pub timezone: data::UserTimezone,
+    pub sidebar: data::Sidebar,
+    pub theme: data::Theme,
 }
 
 impl Default for SavedState {
     fn default() -> Self {
         SavedState {
             layout_manager: LayoutManager::new(),
-            selected_theme: data::Theme::default(),
-            favorited_tickers: Vec::new(),
             main_window: None,
+            favorited_tickers: Vec::new(),
+            scale_factor: data::ScaleFactor::default(),
             timezone: UserTimezone::default(),
             sidebar: data::Sidebar::default(),
-            scale_factor: data::ScaleFactor::default(),
+            theme: data::Theme::default(),
         }
     }
 }
@@ -553,17 +559,6 @@ impl<'a> From<&'a Dashboard> for data::Dashboard {
                     .collect()
             },
             trade_fetch_enabled: dashboard.trade_fetch_enabled,
-        }
-    }
-}
-
-pub struct LayoutDashboardPair(pub Layout, pub Dashboard);
-
-impl From<LayoutDashboardPair> for data::Layout {
-    fn from(pair: LayoutDashboardPair) -> Self {
-        Self {
-            name: pair.0.name,
-            dashboard: data::Dashboard::from(&pair.1),
         }
     }
 }
@@ -787,7 +782,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
             };
 
             SavedState {
-                selected_theme: state.selected_theme,
+                theme: state.selected_theme,
                 layout_manager,
                 favorited_tickers: state.favorited_tickers,
                 main_window: state.main_window,

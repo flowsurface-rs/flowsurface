@@ -4,7 +4,7 @@ pub mod tickers_table;
 use data::{
     UserTimezone,
     chart::Basis,
-    layout::{dashboard::WindowSpec, pane::PaneSettings},
+    layout::{WindowSpec, pane::PaneSettings},
 };
 pub use pane::{PaneContent, PaneState};
 

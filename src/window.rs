@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use data::layout::dashboard::WindowSpec;
+use data::layout::WindowSpec;
 use iced::{Point, Size, Subscription, Task, window};
 
 pub use iced::window::{Id, Position, Settings, close, open};
