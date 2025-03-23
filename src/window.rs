@@ -92,6 +92,7 @@ where
 #[cfg(target_os = "linux")]
 pub fn settings() -> Settings {
     Settings {
+        min_size: Some(Size::new(800.0, 600.0)),
         ..Default::default()
     }
 }
@@ -106,6 +107,7 @@ pub fn settings() -> Settings {
             titlebar_transparent: true,
             fullsize_content_view: true,
         },
+        min_size: Some(Size::new(800.0, 600.0)),
         ..Default::default()
     }
 }
@@ -113,6 +115,7 @@ pub fn settings() -> Settings {
 #[cfg(target_os = "windows")]
 pub fn settings() -> Settings {
     Settings {
+        min_size: Some(Size::new(800.0, 600.0)),
         ..Default::default()
     }
 }

@@ -6,7 +6,7 @@ use iced::{Element, Length};
 use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::charts::{
-    Caches, Basis, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
+    Basis, Caches, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
 
 pub fn create_indicator_elem<'a>(
