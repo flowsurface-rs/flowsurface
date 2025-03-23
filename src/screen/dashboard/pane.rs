@@ -16,7 +16,7 @@ use data::{
         Basis, ChartLayout, VisualConfig,
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},
     },
-    pane::PaneSettings,
+    layout::pane::PaneSettings,
 };
 use exchanges::{
     Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,

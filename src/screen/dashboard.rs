@@ -1,7 +1,7 @@
 pub mod pane;
 pub mod tickers_table;
 
-use data::{UserTimezone, chart::Basis, pane::PaneSettings};
+use data::{UserTimezone, chart::Basis, layout::pane::PaneSettings};
 pub use pane::{PaneContent, PaneState};
 
 use crate::{

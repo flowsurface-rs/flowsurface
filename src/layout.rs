@@ -8,7 +8,7 @@ use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
 use data::UserTimezone;
 use data::chart::Basis;
-use data::pane::{Axis, PaneSettings};
+use data::layout::pane::{Axis, PaneSettings};
 use exchanges::TickMultiplier;
 use exchanges::{Ticker, Timeframe, adapter::Exchange};
 

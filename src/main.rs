@@ -9,6 +9,7 @@ mod widget;
 mod window;
 
 use crate::widget::{confirm_dialog_container, tooltip};
+use data::config::theme::custom_theme;
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
@@ -667,8 +668,7 @@ impl State {
                 SidebarModal::Settings => {
                     let settings_modal = {
                         let mut all_themes = iced_core::Theme::ALL.to_vec();
-                        all_themes
-                            .push(iced_core::Theme::Custom(data::theme::custom_theme().into()));
+                        all_themes.push(iced_core::Theme::Custom(custom_theme().into()));
 
                         let trade_fetch_checkbox = {
                             let is_active = dashboard.trade_fetch_enabled;
