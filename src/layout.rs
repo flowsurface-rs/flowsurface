@@ -8,6 +8,7 @@ use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
 use data::UserTimezone;
 use data::chart::Basis;
+use data::layout::dashboard::WindowSpec;
 use data::layout::pane::{Axis, PaneSettings};
 use exchanges::TickMultiplier;
 use exchanges::{Ticker, Timeframe, adapter::Exchange};
@@ -18,7 +19,7 @@ use iced::widget::{
     Space, button, center, column, container, row, scrollable, text, text_input,
     tooltip::Position as TooltipPosition,
 };
-use iced::{Element, Point, Size, Task, Theme, padding};
+use iced::{Element, Task, Theme, padding};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
@@ -218,15 +219,12 @@ impl LayoutManager {
 
                     let ser_dashboard = data::Dashboard::from(dashboard);
 
-                    let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> =
+                    let mut popout_windows: Vec<(Configuration<PaneState>, WindowSpec)> =
                         Vec::new();
 
-                    for (pane, pos, size) in &ser_dashboard.popout {
+                    for (pane, window_spec) in &ser_dashboard.popout {
                         let configuration = configuration(pane.clone());
-                        popout_windows.push((
-                            configuration,
-                            (Point::new(pos.0, pos.1), Size::new(size.0, size.1)),
-                        ));
+                        popout_windows.push((configuration, *window_spec));
                     }
 
                     let dashboard = Dashboard::from_config(
@@ -495,8 +493,7 @@ pub struct SavedState {
     pub layout_manager: LayoutManager,
     pub selected_theme: data::Theme,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
-    pub window_size: Option<(f32, f32)>,
-    pub window_position: Option<(f32, f32)>,
+    pub main_window: Option<WindowSpec>,
     pub timezone: UserTimezone,
     pub sidebar: data::Sidebar,
     pub scale_factor: data::ScaleFactor,
@@ -508,8 +505,7 @@ impl Default for SavedState {
             layout_manager: LayoutManager::new(),
             selected_theme: data::Theme::default(),
             favorited_tickers: Vec::new(),
-            window_size: None,
-            window_position: None,
+            main_window: None,
             timezone: UserTimezone::default(),
             sidebar: data::Sidebar::default(),
             scale_factor: data::ScaleFactor::default(),
@@ -542,10 +538,10 @@ impl<'a> From<&'a Dashboard> for data::Dashboard {
 
         let main_window_layout = dashboard.panes.layout().clone();
 
-        let popouts_layout: Vec<(data::Pane, (Point, Size))> = dashboard
+        let popouts_layout: Vec<(data::Pane, WindowSpec)> = dashboard
             .popout
             .iter()
-            .map(|(_, (pane, specs))| (from_layout(pane, pane.layout().clone()), *specs))
+            .map(|(_, (pane, spec))| (from_layout(pane, pane.layout().clone()), *spec))
             .collect();
 
         data::Dashboard {
@@ -553,9 +549,7 @@ impl<'a> From<&'a Dashboard> for data::Dashboard {
             popout: {
                 popouts_layout
                     .iter()
-                    .map(|(pane, (pos, size))| {
-                        (pane.clone(), (pos.x, pos.y), (size.width, size.height))
-                    })
+                    .map(|(pane, window_spec)| (pane.clone(), *window_spec))
                     .collect()
             },
             trade_fetch_enabled: dashboard.trade_fetch_enabled,
@@ -741,14 +735,11 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
             let mut de_layouts: Vec<(String, Dashboard)> = vec![];
 
             for layout in &state.layout_manager.layouts {
-                let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> = Vec::new();
+                let mut popout_windows = Vec::new();
 
-                for (pane, pos, size) in &layout.dashboard.popout {
+                for (pane, window_spec) in &layout.dashboard.popout {
                     let configuration = configuration(pane.clone());
-                    popout_windows.push((
-                        configuration,
-                        (Point::new(pos.0, pos.1), Size::new(size.0, size.1)),
-                    ));
+                    popout_windows.push((configuration, *window_spec));
                 }
 
                 let dashboard = Dashboard::from_config(
@@ -799,8 +790,7 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
                 selected_theme: state.selected_theme,
                 layout_manager,
                 favorited_tickers: state.favorited_tickers,
-                window_size: state.window_size,
-                window_position: state.window_position,
+                main_window: state.main_window,
                 timezone: state.timezone,
                 sidebar: state.sidebar,
                 scale_factor: state.scale_factor,

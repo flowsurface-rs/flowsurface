@@ -1,7 +1,11 @@
 pub mod pane;
 pub mod tickers_table;
 
-use data::{UserTimezone, chart::Basis, layout::pane::PaneSettings};
+use data::{
+    UserTimezone,
+    chart::Basis,
+    layout::{dashboard::WindowSpec, pane::PaneSettings},
+};
 pub use pane::{PaneContent, PaneState};
 
 use crate::{
@@ -22,7 +26,7 @@ use exchanges::{
 use super::DashboardError;
 
 use iced::{
-    Element, Length, Point, Size, Subscription, Task, Vector,
+    Element, Length, Subscription, Task, Vector,
     widget::{
         PaneGrid, center, container,
         pane_grid::{self, Configuration},
@@ -37,7 +41,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(window::Id, pane::Message),
-    SavePopoutSpecs(HashMap<window::Id, (Point, Size)>),
+    SavePopoutSpecs(HashMap<window::Id, WindowSpec>),
     ErrorOccurred(window::Id, Option<pane_grid::Pane>, DashboardError),
     GlobalNotification(Toast),
 
@@ -62,7 +66,7 @@ pub enum Message {
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
     pub focus: Option<(window::Id, pane_grid::Pane)>,
-    pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, (Point, Size))>,
+    pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, WindowSpec)>,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
     pub trade_fetch_enabled: bool,
 }
@@ -106,7 +110,7 @@ impl Dashboard {
 
     pub fn from_config(
         panes: Configuration<PaneState>,
-        popout_windows: Vec<(Configuration<PaneState>, (Point, Size))>,
+        popout_windows: Vec<(Configuration<PaneState>, WindowSpec)>,
         trade_fetch_enabled: bool,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
@@ -131,21 +135,18 @@ impl Dashboard {
 
     pub fn load_layout(&mut self) -> Task<Message> {
         let mut open_popouts_tasks: Vec<Task<Message>> = vec![];
-        let mut new_popout: Vec<(
-            iced::window::Id,
-            (pane_grid::State<PaneState>, (Point, Size)),
-        )> = Vec::new();
-        let mut keys_to_remove: Vec<(iced::window::Id, (Point, Size))> = Vec::new();
+        let mut new_popout = Vec::new();
+        let mut keys_to_remove = Vec::new();
 
         for (old_window_id, (_, specs)) in &self.popout {
             keys_to_remove.push((*old_window_id, *specs));
         }
 
         // remove keys and open new windows
-        for (old_window_id, (pos, size)) in keys_to_remove {
+        for (old_window_id, window_spec) in keys_to_remove {
             let (window, task) = window::open(window::Settings {
-                position: window::Position::Specific(pos),
-                size,
+                position: window::Position::Specific(window_spec.get_position()),
+                size: window_spec.get_size(),
                 exit_on_close_request: false,
                 ..window::settings()
             });
@@ -176,9 +177,9 @@ impl Dashboard {
     ) -> Task<Message> {
         match message {
             Message::SavePopoutSpecs(specs) => {
-                for (window_id, (position, size)) in specs {
-                    if let Some((_, specs)) = self.popout.get_mut(&window_id) {
-                        *specs = (position, size);
+                for (window_id, new_spec) in specs {
+                    if let Some((_, spec)) = self.popout.get_mut(&window_id) {
+                        *spec = new_spec;
                     }
                 }
             }
@@ -654,10 +655,7 @@ impl Dashboard {
                 });
 
                 let (state, id) = pane_grid::State::new(pane);
-                self.popout.insert(
-                    window,
-                    (state, (Point::new(0.0, 0.0), Size::new(1024.0, 768.0))),
-                );
+                self.popout.insert(window, (state, WindowSpec::default()));
 
                 return task.then(move |window| {
                     Task::done(Message::Pane(window, pane::Message::PaneClicked(id)))

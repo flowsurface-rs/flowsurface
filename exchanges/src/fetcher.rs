@@ -85,6 +85,12 @@ impl RequestHandler {
     }
 }
 
+impl Default for RequestHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum FetchRange {
     Kline(u64, u64),

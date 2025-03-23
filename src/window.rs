@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use data::layout::dashboard::WindowSpec;
 use iced::{Point, Size, Subscription, Task, window};
 
 pub use iced::window::{Id, Position, Settings, close, open};
@@ -41,7 +42,7 @@ fn filtered_events(
 
 pub fn collect_window_specs<M, F>(window_ids: Vec<window::Id>, message: F) -> Task<M>
 where
-    F: Fn(HashMap<window::Id, (Point, Size)>) -> M + Send + 'static,
+    F: Fn(HashMap<window::Id, WindowSpec>) -> M + Send + 'static,
     M: MaybeSend + 'static,
 {
     // Create a task that collects specs for each window
@@ -73,9 +74,11 @@ where
     Task::batch(window_spec_tasks)
         .collect()
         .map(move |results| {
-            let specs: HashMap<window::Id, (Point, Size)> = results
+            let specs: HashMap<window::Id, WindowSpec> = results
                 .into_iter()
-                .filter_map(|(id, (pos, size))| pos.map(|position| (id, (position, size))))
+                .filter_map(|(id, (pos, size))| {
+                    pos.map(|position| (id, WindowSpec::from((&position, &size))))
+                })
                 .collect();
 
             message(specs)

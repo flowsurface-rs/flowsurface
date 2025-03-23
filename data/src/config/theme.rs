@@ -13,9 +13,9 @@ impl Default for Theme {
     }
 }
 
-impl Into<iced_core::Theme> for Theme {
-    fn into(self) -> iced_core::Theme {
-        self.0
+impl From<Theme> for iced_core::Theme {
+    fn from(val: Theme) -> Self {
+        val.0
     }
 }
 

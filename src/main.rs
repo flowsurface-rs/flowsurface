@@ -9,13 +9,13 @@ mod widget;
 mod window;
 
 use crate::widget::{confirm_dialog_container, tooltip};
-use data::config::theme::custom_theme;
+use data::{config::theme::custom_theme, layout::dashboard::WindowSpec};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
 };
 use iced::{
-    Alignment, Element, Length, Point, Size, Subscription, Task, padding,
+    Alignment, Element, Length, Subscription, Task, padding,
     widget::{
         Space, button, center, column, container, pane_grid, pick_list, responsive, row, text,
         tooltip::Position as TooltipPosition,
@@ -42,20 +42,18 @@ fn main() {
 
     std::thread::spawn(layout::cleanup_old_data);
 
-    let main_window_size = saved_state.window_size.unwrap_or((1600.0, 900.0));
-
     let window_settings = window::Settings {
-        size: iced::Size::new(main_window_size.0, main_window_size.1),
-        position: {
-            if let Some(position) = saved_state.window_position {
-                iced::window::Position::Specific(Point {
-                    x: position.0,
-                    y: position.1,
-                })
-            } else {
-                iced::window::Position::Centered
-            }
-        },
+        size: saved_state
+            .main_window
+            .map(|window| window.get_size())
+            .unwrap_or_default(),
+        position: saved_state
+            .main_window
+            .map(|window| window.get_position())
+            .map_or(
+                iced::window::Position::Centered,
+                iced::window::Position::Specific,
+            ),
         platform_specific: {
             #[cfg(target_os = "macos")]
             {
@@ -98,7 +96,7 @@ enum Message {
     ToggleTradeFetch(bool),
 
     WindowEvent(WindowEvent),
-    SaveAndExit(HashMap<window::Id, (Point, Size)>),
+    SaveAndExit(HashMap<window::Id, WindowSpec>),
 
     ToggleLayoutLock,
     LayoutSelected(Layout),
@@ -267,10 +265,9 @@ impl State {
                 dashboard
                     .popout
                     .iter_mut()
-                    .for_each(|(id, (_, (pos, size)))| {
-                        if let Some((new_pos, new_size)) = windows.get(id) {
-                            *pos = *new_pos;
-                            *size = *new_size;
+                    .for_each(|(id, (_, window_spec))| {
+                        if let Some(new_window_spec) = windows.get(id) {
+                            *window_spec = *new_window_spec;
                         }
                     });
 
@@ -294,18 +291,16 @@ impl State {
 
                 let favorited_tickers = self.tickers_table.get_favorited_tickers();
 
-                let (size, position) = windows
+                let main_window = windows
                     .iter()
                     .find(|(id, _)| **id == self.main_window.id)
-                    .map(|(_, (position, size))| (*size, *position))
-                    .unzip();
+                    .map(|(_, spec)| *spec);
 
                 let layout = data::State::from_parts(
                     layouts,
                     self.theme.clone(),
                     favorited_tickers,
-                    size,
-                    position,
+                    main_window,
                     self.timezone,
                     self.sidebar,
                     self.scale_factor,
