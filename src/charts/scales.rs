@@ -1,16 +1,14 @@
 pub mod linear;
 pub mod timeseries;
 
+use super::{ChartBasis, Interaction, Message, round_to_tick};
 use chrono::DateTime;
+use data::UserTimezone;
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,
     widget::canvas::{self, Cache, Frame, Geometry},
 };
-
-use crate::screen::UserTimezone;
-
-use super::{ChartBasis, Interaction, Message, round_to_tick};
 
 /// calculates `Rectangle` from given content, clamps it within bounds if needed
 pub fn calc_label_rect(

@@ -11,7 +11,6 @@ mod widget;
 mod window;
 
 use crate::widget::{confirm_dialog_container, tooltip};
-use data::layout::{SerializableDashboard, SerializableLayout, SerializableLayouts};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
@@ -24,9 +23,9 @@ use iced::{
     },
 };
 use iced_futures::{MaybeSend, futures::TryFutureExt};
-use layout::{Layout, LayoutManager, SerializableState, Sidebar};
+use layout::{Layout, LayoutManager};
 use screen::{
-    UserTimezone, create_button,
+    create_button,
     dashboard::{
         self, Dashboard, pane,
         tickers_table::{self, TickersTable},
@@ -108,8 +107,8 @@ enum Message {
     ActiveDashboard(dashboard::Message),
     Dashboard(uuid::Uuid, dashboard::Message),
     SetTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
-    SetTimezone(UserTimezone),
-    SidebarPosition(layout::Sidebar),
+    SetTimezone(data::UserTimezone),
+    SidebarPosition(data::Sidebar),
     ScaleFactorChanged(f64),
 
     TickersTable(tickers_table::Message),
@@ -129,12 +128,12 @@ enum Message {
 struct State {
     theme: Theme,
     main_window: Window,
-    timezone: UserTimezone,
+    timezone: data::UserTimezone,
     confirm_dialog: Option<(String, Box<Message>)>,
     layouts: LayoutManager,
     active_modal: SidebarModal,
-    sidebar_location: Sidebar,
-    scale_factor: layout::ScaleFactor,
+    sidebar: data::Sidebar,
+    scale_factor: data::ScaleFactor,
     tickers_table: TickersTable,
     tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
     notifications: Vec<Toast>,
@@ -170,7 +169,7 @@ impl State {
                 main_window: Window::new(main_window),
                 active_modal: SidebarModal::None,
                 tickers_info: HashMap::new(),
-                sidebar_location: saved_state.sidebar,
+                sidebar: saved_state.sidebar,
                 tickers_table: TickersTable::new(saved_state.favorited_tickers),
                 confirm_dialog: None,
                 timezone: saved_state.timezone,
@@ -280,16 +279,16 @@ impl State {
 
                 for id in &self.layouts.layout_order {
                     if let Some((layout, dashboard)) = self.layouts.layouts.get(id) {
-                        let serialized_dashboard = SerializableDashboard::from(dashboard);
+                        let serialized_dashboard = data::Dashboard::from(dashboard);
 
-                        ser_layouts.push(SerializableLayout {
+                        ser_layouts.push(data::Layout {
                             name: layout.name.clone(),
                             dashboard: serialized_dashboard,
                         });
                     }
                 }
 
-                let layouts = SerializableLayouts {
+                let layouts = data::Layouts {
                     layouts: ser_layouts,
                     active_layout: self.layouts.active_layout.name.clone(),
                 };
@@ -302,14 +301,14 @@ impl State {
                     .map(|(_, (position, size))| (*size, *position))
                     .unzip();
 
-                let layout = SerializableState::from_parts(
+                let layout = data::State::from_parts(
                     layouts,
                     self.theme.clone(),
                     favorited_tickers,
                     size,
                     position,
                     self.timezone,
-                    self.sidebar_location,
+                    self.sidebar,
                     self.scale_factor,
                 );
 
@@ -462,7 +461,7 @@ impl State {
                 self.timezone = tz;
             }
             Message::SidebarPosition(pos) => {
-                self.sidebar_location = pos;
+                self.sidebar = pos;
             }
             Message::ToggleTradeFetch(checked) => {
                 self.layouts.iter_dashboards_mut().for_each(|dashboard| {
@@ -477,7 +476,7 @@ impl State {
                 self.confirm_dialog = dialog;
             }
             Message::ScaleFactorChanged(value) => {
-                self.scale_factor = layout::ScaleFactor::from(value);
+                self.scale_factor = data::ScaleFactor::from(value);
             }
             Message::ManageLayouts(msg) => {
                 if let layout::Message::SelectActive(layout) = msg {
@@ -514,7 +513,7 @@ impl State {
         };
 
         let content = if id == self.main_window.id {
-            let tooltip_position = if self.sidebar_location == Sidebar::Left {
+            let tooltip_position = if self.sidebar == data::Sidebar::Left {
                 TooltipPosition::Right
             } else {
                 TooltipPosition::Left
@@ -618,11 +617,11 @@ impl State {
                     }
                 };
 
-                match self.sidebar_location {
-                    Sidebar::Left => {
+                match self.sidebar {
+                    data::Sidebar::Left => {
                         row![nav_buttons, tickers_table,]
                     }
-                    Sidebar::Right => {
+                    data::Sidebar::Right => {
                         row![tickers_table, nav_buttons,]
                     }
                 }
@@ -660,9 +659,9 @@ impl State {
                         column![]
                     }
                 },
-                match self.sidebar_location {
-                    Sidebar::Left => row![sidebar, dashboard_view,],
-                    Sidebar::Right => row![dashboard_view, sidebar],
+                match self.sidebar {
+                    data::Sidebar::Left => row![sidebar, dashboard_view,],
+                    data::Sidebar::Right => row![dashboard_view, sidebar],
                 }
                 .spacing(4)
                 .padding(8),
@@ -702,14 +701,14 @@ impl State {
                             pick_list(all_themes, Some(self.theme.clone()), Message::ThemeSelected);
 
                         let timezone_picklist = pick_list(
-                            [UserTimezone::Utc, UserTimezone::Local],
+                            [data::UserTimezone::Utc, data::UserTimezone::Local],
                             Some(self.timezone),
                             Message::SetTimezone,
                         );
 
                         let sidebar_pos = pick_list(
-                            [Sidebar::Left, Sidebar::Right],
-                            Some(self.sidebar_location),
+                            [data::Sidebar::Left, data::Sidebar::Right],
+                            Some(self.sidebar),
                             Message::SidebarPosition,
                         );
 
@@ -760,9 +759,9 @@ impl State {
                         .style(style::dashboard_modal)
                     };
 
-                    let (align_x, padding) = match self.sidebar_location {
-                        Sidebar::Left => (Alignment::Start, padding::left(48).top(8)),
-                        Sidebar::Right => (Alignment::End, padding::right(48).top(8)),
+                    let (align_x, padding) = match self.sidebar {
+                        data::Sidebar::Left => (Alignment::Start, padding::left(48).top(8)),
+                        data::Sidebar::Right => (Alignment::End, padding::right(48).top(8)),
                     };
 
                     let base_content = dashboard_modal(
@@ -852,9 +851,9 @@ impl State {
                         .style(style::dashboard_modal)
                     };
 
-                    let (align_x, padding) = match self.sidebar_location {
-                        Sidebar::Left => (Alignment::Start, padding::left(48).top(40)),
-                        Sidebar::Right => (Alignment::End, padding::right(48).top(40)),
+                    let (align_x, padding) = match self.sidebar {
+                        data::Sidebar::Left => (Alignment::Start, padding::left(48).top(40)),
+                        data::Sidebar::Right => (Alignment::End, padding::right(48).top(40)),
                     };
 
                     dashboard_modal(
@@ -886,9 +885,9 @@ impl State {
         widget::notification::Manager::new(
             content,
             &self.notifications,
-            match self.sidebar_location {
-                Sidebar::Left => Alignment::End,
-                Sidebar::Right => Alignment::Start,
+            match self.sidebar {
+                data::Sidebar::Left => Alignment::End,
+                data::Sidebar::Right => Alignment::Start,
             },
             Message::DeleteNotification,
         )

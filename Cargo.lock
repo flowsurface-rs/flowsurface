@@ -738,7 +738,9 @@ checksum = "96a6ac251f4a2aca6b3f91340350eab87ae57c3f127ffeb585e92bd336717991"
 name = "data"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "exchanges",
+ "iced_core 0.14.0-dev",
  "serde",
  "serde_json",
 ]
@@ -1051,6 +1053,7 @@ dependencies = [
  "exchanges",
  "fern",
  "iced",
+ "iced_core 0.14.0-dev",
  "iced_futures 0.13.2",
  "log",
  "ordered-float",

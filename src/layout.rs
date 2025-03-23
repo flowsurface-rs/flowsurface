@@ -2,16 +2,14 @@ use crate::charts::{
     candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart,
     timeandsales::TimeAndSales,
 };
-use crate::screen::{
-    UserTimezone,
-    dashboard::{Dashboard, PaneContent, PaneState},
-};
+use crate::screen::dashboard::{Dashboard, PaneContent, PaneState};
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::{style, tooltip};
+use data::UserTimezone;
 use data::charts::ChartBasis;
-use data::layout::{SerializableDashboard, SerializableLayout, SerializableLayouts};
-use data::pane::{Axis, PaneSettings, SerializablePane};
+use data::pane::{Axis, PaneSettings};
+use data::theme::SerializableTheme;
 use exchanges::TickMultiplier;
 use exchanges::{Ticker, Timeframe, adapter::Exchange};
 
@@ -23,7 +21,6 @@ use iced::widget::{
 };
 use iced::{Element, Point, Size, Task, Theme, padding};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -220,7 +217,7 @@ impl LayoutManager {
                         name: self.ensure_unique_name(layout.name.clone(), new_id),
                     };
 
-                    let ser_dashboard = SerializableDashboard::from(dashboard);
+                    let ser_dashboard = data::Dashboard::from(dashboard);
 
                     let mut popout_windows: Vec<(Configuration<PaneState>, (Point, Size))> =
                         Vec::new();
@@ -495,22 +492,6 @@ fn create_icon_button<'a>(
     btn
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]
-pub enum Sidebar {
-    #[default]
-    Left,
-    Right,
-}
-
-impl std::fmt::Display for Sidebar {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Sidebar::Left => write!(f, "Left"),
-            Sidebar::Right => write!(f, "Right"),
-        }
-    }
-}
-
 pub struct SavedState {
     pub layout_manager: LayoutManager,
     pub selected_theme: SerializableTheme,
@@ -518,8 +499,8 @@ pub struct SavedState {
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
     pub timezone: UserTimezone,
-    pub sidebar: Sidebar,
-    pub scale_factor: ScaleFactor,
+    pub sidebar: data::Sidebar,
+    pub scale_factor: data::ScaleFactor,
 }
 
 impl Default for SavedState {
@@ -531,145 +512,24 @@ impl Default for SavedState {
             window_size: None,
             window_position: None,
             timezone: UserTimezone::default(),
-            sidebar: Sidebar::default(),
-            scale_factor: ScaleFactor::default(),
+            sidebar: data::Sidebar::default(),
+            scale_factor: data::ScaleFactor::default(),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct SerializableTheme {
-    pub theme: Theme,
-}
-
-impl Default for SerializableTheme {
-    fn default() -> Self {
-        Self {
-            theme: Theme::Custom(style::custom_theme().into()),
-        }
-    }
-}
-
-impl Serialize for SerializableTheme {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let theme_str = match self.theme {
-            Theme::Ferra => "ferra",
-            Theme::Dark => "dark",
-            Theme::Light => "light",
-            Theme::Dracula => "dracula",
-            Theme::Nord => "nord",
-            Theme::SolarizedLight => "solarized_light",
-            Theme::SolarizedDark => "solarized_dark",
-            Theme::GruvboxLight => "gruvbox_light",
-            Theme::GruvboxDark => "gruvbox_dark",
-            Theme::CatppuccinLatte => "catppuccino_latte",
-            Theme::CatppuccinFrappe => "catppuccino_frappe",
-            Theme::CatppuccinMacchiato => "catppuccino_macchiato",
-            Theme::CatppuccinMocha => "catppuccino_mocha",
-            Theme::TokyoNight => "tokyo_night",
-            Theme::TokyoNightStorm => "tokyo_night_storm",
-            Theme::TokyoNightLight => "tokyo_night_light",
-            Theme::KanagawaWave => "kanagawa_wave",
-            Theme::KanagawaDragon => "kanagawa_dragon",
-            Theme::KanagawaLotus => "kanagawa_lotus",
-            Theme::Moonfly => "moonfly",
-            Theme::Nightfly => "nightfly",
-            Theme::Oxocarbon => "oxocarbon",
-            Theme::Custom(_) => "flowsurface",
-        };
-        theme_str.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for SerializableTheme {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let theme_str = String::deserialize(deserializer)?;
-        let theme = match theme_str.as_str() {
-            "ferra" => Theme::Ferra,
-            "dark" => Theme::Dark,
-            "light" => Theme::Light,
-            "dracula" => Theme::Dracula,
-            "nord" => Theme::Nord,
-            "solarized_light" => Theme::SolarizedLight,
-            "solarized_dark" => Theme::SolarizedDark,
-            "gruvbox_light" => Theme::GruvboxLight,
-            "gruvbox_dark" => Theme::GruvboxDark,
-            "catppuccino_latte" => Theme::CatppuccinLatte,
-            "catppuccino_frappe" => Theme::CatppuccinFrappe,
-            "catppuccino_macchiato" => Theme::CatppuccinMacchiato,
-            "catppuccino_mocha" => Theme::CatppuccinMocha,
-            "tokyo_night" => Theme::TokyoNight,
-            "tokyo_night_storm" => Theme::TokyoNightStorm,
-            "tokyo_night_light" => Theme::TokyoNightLight,
-            "kanagawa_wave" => Theme::KanagawaWave,
-            "kanagawa_dragon" => Theme::KanagawaDragon,
-            "kanagawa_lotus" => Theme::KanagawaLotus,
-            "moonfly" => Theme::Moonfly,
-            "nightfly" => Theme::Nightfly,
-            "oxocarbon" => Theme::Oxocarbon,
-            "flowsurface" => SerializableTheme::default().theme,
-            _ => return Err(serde::de::Error::custom("Invalid theme")),
-        };
-        Ok(SerializableTheme { theme })
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SerializableState {
-    pub layout_manager: SerializableLayouts,
-    pub selected_theme: SerializableTheme,
-    pub favorited_tickers: Vec<(Exchange, Ticker)>,
-    pub window_size: Option<(f32, f32)>,
-    pub window_position: Option<(f32, f32)>,
-    pub timezone: UserTimezone,
-    pub sidebar: Sidebar,
-    pub scale_factor: ScaleFactor,
-}
-
-impl SerializableState {
-    pub fn from_parts(
-        layout_manager: SerializableLayouts,
-        selected_theme: Theme,
-        favorited_tickers: Vec<(Exchange, Ticker)>,
-        size: Option<Size>,
-        position: Option<Point>,
-        timezone: UserTimezone,
-        sidebar: Sidebar,
-        scale_factor: ScaleFactor,
-    ) -> Self {
-        SerializableState {
-            layout_manager,
-            selected_theme: SerializableTheme {
-                theme: selected_theme,
-            },
-            favorited_tickers,
-            window_size: size.map(|s| (s.width, s.height)),
-            window_position: position.map(|p| (p.x, p.y)),
-            timezone,
-            sidebar,
-            scale_factor,
-        }
-    }
-}
-
-impl<'a> From<&'a Dashboard> for SerializableDashboard {
+impl<'a> From<&'a Dashboard> for data::Dashboard {
     fn from(dashboard: &'a Dashboard) -> Self {
         use pane_grid::Node;
 
         fn from_layout(
             panes: &pane_grid::State<PaneState>,
             node: pane_grid::Node,
-        ) -> SerializablePane {
+        ) -> data::pane::Pane {
             match node {
                 Node::Split {
                     axis, ratio, a, b, ..
-                } => SerializablePane::Split {
+                } => data::pane::Pane::Split {
                     axis: match axis {
                         pane_grid::Axis::Horizontal => Axis::Horizontal,
                         pane_grid::Axis::Vertical => Axis::Vertical,
@@ -680,19 +540,19 @@ impl<'a> From<&'a Dashboard> for SerializableDashboard {
                 },
                 Node::Pane(pane) => panes
                     .get(pane)
-                    .map_or(SerializablePane::Starter, SerializablePane::from),
+                    .map_or(data::pane::Pane::Starter, data::pane::Pane::from),
             }
         }
 
         let main_window_layout = dashboard.panes.layout().clone();
 
-        let popouts_layout: Vec<(SerializablePane, (Point, Size))> = dashboard
+        let popouts_layout: Vec<(data::pane::Pane, (Point, Size))> = dashboard
             .popout
             .iter()
             .map(|(_, (pane, specs))| (from_layout(pane, pane.layout().clone()), *specs))
             .collect();
 
-        SerializableDashboard {
+        data::Dashboard {
             pane: from_layout(&dashboard.panes, main_window_layout),
             popout: {
                 popouts_layout
@@ -709,40 +569,40 @@ impl<'a> From<&'a Dashboard> for SerializableDashboard {
 
 pub struct LayoutDashboardPair(pub Layout, pub Dashboard);
 
-impl From<LayoutDashboardPair> for SerializableLayout {
+impl From<LayoutDashboardPair> for data::Layout {
     fn from(pair: LayoutDashboardPair) -> Self {
         Self {
             name: pair.0.name,
-            dashboard: SerializableDashboard::from(&pair.1),
+            dashboard: data::Dashboard::from(&pair.1),
         }
     }
 }
 
-impl From<&PaneState> for SerializablePane {
+impl From<&PaneState> for data::pane::Pane {
     fn from(pane: &PaneState) -> Self {
         let pane_stream = pane.stream.clone();
 
         match &pane.content {
-            PaneContent::Starter => SerializablePane::Starter,
-            PaneContent::Heatmap(chart, indicators) => SerializablePane::HeatmapChart {
+            PaneContent::Starter => data::pane::Pane::Starter,
+            PaneContent::Heatmap(chart, indicators) => data::pane::Pane::HeatmapChart {
                 layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Footprint(chart, indicators) => SerializablePane::FootprintChart {
+            PaneContent::Footprint(chart, indicators) => data::pane::Pane::FootprintChart {
                 layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Candlestick(chart, indicators) => SerializablePane::CandlestickChart {
+            PaneContent::Candlestick(chart, indicators) => data::pane::Pane::CandlestickChart {
                 layout: chart.get_chart_layout(),
                 stream_type: pane_stream,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::TimeAndSales(_) => SerializablePane::TimeAndSales {
+            PaneContent::TimeAndSales(_) => data::pane::Pane::TimeAndSales {
                 stream_type: pane_stream,
                 settings: pane.settings,
             },
@@ -750,30 +610,9 @@ impl From<&PaneState> for SerializablePane {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
-pub struct ScaleFactor(f64);
-
-impl Default for ScaleFactor {
-    fn default() -> Self {
-        Self(1.0)
-    }
-}
-
-impl From<f64> for ScaleFactor {
-    fn from(value: f64) -> Self {
-        ScaleFactor(value.clamp(0.8, 1.8))
-    }
-}
-
-impl From<ScaleFactor> for f64 {
-    fn from(value: ScaleFactor) -> Self {
-        value.0
-    }
-}
-
-fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
+fn configuration(pane: data::pane::Pane) -> Configuration<PaneState> {
     match pane {
-        SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
+        data::pane::Pane::Split { axis, ratio, a, b } => Configuration::Split {
             axis: match axis {
                 Axis::Horizontal => pane_grid::Axis::Horizontal,
                 Axis::Vertical => pane_grid::Axis::Vertical,
@@ -782,10 +621,10 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
             a: Box::new(configuration(*a)),
             b: Box::new(configuration(*b)),
         },
-        SerializablePane::Starter => {
+        data::pane::Pane::Starter => {
             Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
         }
-        SerializablePane::CandlestickChart {
+        data::pane::Pane::CandlestickChart {
             layout,
             stream_type,
             settings,
@@ -817,7 +656,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                 Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
             }
         }
-        SerializablePane::FootprintChart {
+        data::pane::Pane::FootprintChart {
             layout,
             stream_type,
             settings,
@@ -853,7 +692,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                 Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
             }
         }
-        SerializablePane::HeatmapChart {
+        data::pane::Pane::HeatmapChart {
             layout,
             stream_type,
             settings,
@@ -887,7 +726,7 @@ fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                 Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
             }
         }
-        SerializablePane::TimeAndSales {
+        data::pane::Pane::TimeAndSales {
             stream_type,
             settings,
         } => {
@@ -991,7 +830,7 @@ pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn read_from_file(file_name: &str) -> Result<SerializableState, Box<dyn std::error::Error>> {
+pub fn read_from_file(file_name: &str) -> Result<data::State, Box<dyn std::error::Error>> {
     let path = get_data_path(file_name);
     let mut file = File::open(path)?;
     let mut contents = String::new();

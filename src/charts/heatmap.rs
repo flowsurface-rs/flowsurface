@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
 };
 
+use data::UserTimezone;
 use data::charts::{
     ChartBasis, ChartLayout,
     heatmap::Config,
@@ -14,7 +15,6 @@ use iced::{
     theme::palette::Extended,
 };
 
-use crate::screen::UserTimezone;
 use exchanges::{TickerInfo, Trade, depth::Depth};
 
 use super::scales::PriceInfoLabel;

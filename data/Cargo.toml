@@ -6,4 +6,6 @@ edition = "2024"
 [dependencies]
 serde_json.workspace = true
 serde.workspace = true
+iced_core.workspace = true
+chrono.workspace = true
 exchanges = { version = "0.1.0", path = "../exchanges" }

@@ -1,7 +1,7 @@
-use crate::screen::UserTimezone;
 use crate::screen::dashboard::pane::Message;
 use crate::style::ts_table_container;
 use chrono::DateTime;
+use data::UserTimezone;
 use data::charts::timeandsales::Config;
 use exchanges::Trade;
 use iced::widget::{Space, column, container, responsive, row, text};

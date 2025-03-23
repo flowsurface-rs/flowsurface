@@ -1,7 +1,7 @@
 pub mod pane;
 pub mod tickers_table;
 
-use data::{charts::ChartBasis, pane::PaneSettings};
+use data::{UserTimezone, charts::ChartBasis, pane::PaneSettings};
 pub use pane::{PaneContent, PaneState};
 
 use crate::{
@@ -19,7 +19,7 @@ use exchanges::{
     depth::Depth,
 };
 
-use super::{DashboardError, UserTimezone};
+use super::DashboardError;
 
 use iced::{
     Element, Length, Point, Size, Subscription, Task, Vector,

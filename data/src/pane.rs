@@ -13,12 +13,12 @@ pub enum Axis {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum SerializablePane {
+pub enum Pane {
     Split {
         axis: Axis,
         ratio: f32,
-        a: Box<SerializablePane>,
-        b: Box<SerializablePane>,
+        a: Box<Pane>,
+        b: Box<Pane>,
     },
     Starter,
     HeatmapChart {

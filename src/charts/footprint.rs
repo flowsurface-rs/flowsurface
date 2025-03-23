@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
+use data::UserTimezone;
 use data::charts::ChartLayout;
 use data::charts::indicators::{FootprintIndicator, Indicator};
 use iced::theme::palette::Extended;
@@ -15,7 +16,6 @@ use iced::{
 };
 use ordered_float::OrderedFloat;
 
-use crate::screen::UserTimezone;
 use crate::{
     aggr::{ticks::TickAggr, time::TimeSeries},
     fetcher::{FetchRange, RequestHandler},

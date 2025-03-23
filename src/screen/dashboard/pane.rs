@@ -5,12 +5,13 @@ use crate::{
         self, candlestick::CandlestickChart, config, footprint::FootprintChart,
         heatmap::HeatmapChart, timeandsales::TimeAndSales,
     },
-    screen::{DashboardError, UserTimezone, create_button},
+    screen::{DashboardError, create_button},
     style::{self, Icon, get_icon_text},
     widget::{self, notification::Toast, pane_modal},
     window::{self, Window},
 };
 use data::{
+    UserTimezone,
     charts::{
         ChartBasis, ChartLayout, VisualConfig,
         indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator, Indicator},

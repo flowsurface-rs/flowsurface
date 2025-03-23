@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
+use data::UserTimezone;
 use data::charts::ChartLayout;
 use data::charts::indicators::{CandlestickIndicator, Indicator};
 use iced::theme::palette::Extended;
@@ -14,7 +15,6 @@ use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vecto
 
 use crate::aggr::{ticks::TickAggr, time::TimeSeries};
 use crate::fetcher::{FetchRange, RequestHandler};
-use crate::screen::UserTimezone;
 use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
 
 use super::scales::PriceInfoLabel;

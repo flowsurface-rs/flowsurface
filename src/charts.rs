@@ -17,7 +17,6 @@ use uuid::Uuid;
 use crate::{
     aggr::{ticks::TickAggr, time::TimeSeries},
     fetcher::{FetchRange, ReqError, RequestHandler},
-    screen::UserTimezone,
     style,
     widget::hsplit::HSplit,
     widget::tooltip,
@@ -376,7 +375,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 fn view_chart<'a, T: Chart, I: Indicator>(
     chart: &'a T,
     indicators: &'a [I],
-    timezone: &'a UserTimezone,
+    timezone: &'a data::UserTimezone,
 ) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 

@@ -12,6 +12,7 @@ members = [ "data","exchanges"]
 
 [workspace.dependencies]
 iced_futures = "0.13.2"
+iced_core = "0.14.0-dev"
 chrono = "0.4.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.132"
@@ -30,6 +31,7 @@ iced = { version = "0.14.0-dev", default-features = false, features = [
     "lazy", 
     "unconditional-rendering",
 ] }
+iced_core.workspace = true
 iced_futures.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
@@ -48,3 +50,5 @@ data = { version = "0.1.0", path = "data" }
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "892ac1ce722a809e73aecd8d47ed4e7254d156df" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "892ac1ce722a809e73aecd8d47ed4e7254d156df", package = "iced_core" }
+
