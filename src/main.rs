@@ -25,7 +25,9 @@ use window::{Window, WindowEvent, window_events};
 use data::{config::theme::custom_theme, layout::WindowSpec};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{Event as ExchangeEvent, Exchange, StreamError, StreamType, binance, bybit},
+    adapter::{
+        Event as ExchangeEvent, Exchange, StreamType, fetch_ticker_info, fetch_ticker_prices,
+    },
 };
 use iced::{
     Alignment, Element, Length, Subscription, Task, padding,
@@ -34,8 +36,7 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use iced_futures::{MaybeSend, futures::TryFutureExt};
-use std::{collections::HashMap, future::Future, vec};
+use std::{collections::HashMap, vec};
 
 fn main() {
     logger::setup(false, false).expect("Failed to initialize logger");
@@ -148,15 +149,13 @@ impl State {
         let active_layout = saved_state.layout_manager.active_layout.clone();
 
         let exchange_fetch_tasks = {
-            Exchange::MARKET_TYPES
+            Exchange::ALL
                 .iter()
-                .map(|(exchange, market_type)| match exchange {
-                    Exchange::BinanceFutures | Exchange::BinanceSpot => {
-                        fetch_ticker_info(*exchange, binance::fetch_ticksize(*market_type))
-                    }
-                    Exchange::BybitLinear | Exchange::BybitSpot => {
-                        fetch_ticker_info(*exchange, bybit::fetch_ticksize(*market_type))
-                    }
+                .map(|exchange| {
+                    Task::perform(fetch_ticker_info(*exchange), move |result| match result {
+                        Ok(ticker_info) => Message::SetTickersInfo(*exchange, ticker_info),
+                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
+                    })
                 })
                 .collect::<Vec<Task<Message>>>()
         };
@@ -400,19 +399,20 @@ impl State {
             }
             Message::FetchAndUpdateTickersTable => {
                 let fetch_tasks = {
-                    Exchange::MARKET_TYPES
+                    Exchange::ALL
                         .iter()
-                        .map(|(exchange, market_type)| match exchange {
-                            Exchange::BinanceFutures | Exchange::BinanceSpot => {
-                                fetch_ticker_prices(
-                                    *exchange,
-                                    binance::fetch_ticker_prices(*market_type),
-                                )
-                            }
-                            Exchange::BybitLinear | Exchange::BybitSpot => fetch_ticker_prices(
-                                *exchange,
-                                bybit::fetch_ticker_prices(*market_type),
-                            ),
+                        .map(|exchange| {
+                            Task::perform(
+                                fetch_ticker_prices(*exchange),
+                                move |result| match result {
+                                    Ok(ticker_info) => {
+                                        Message::UpdateTickersTable(*exchange, ticker_info)
+                                    }
+                                    Err(err) => Message::ErrorOccurred(InternalError::Fetch(
+                                        err.to_string(),
+                                    )),
+                                },
+                            )
                         })
                         .collect::<Vec<Task<Message>>>()
                 };
@@ -930,7 +930,7 @@ impl State {
         map_result: F,
     ) -> Task<Message>
     where
-        F: FnMut(dashboard::Message) -> Message + 'static + MaybeSend,
+        F: FnMut(dashboard::Message) -> Message + 'static + iced_futures::MaybeSend,
     {
         if let Some(dashboard) = self.get_mut_dashboard(*layout_id) {
             match message {
@@ -991,32 +991,4 @@ enum SidebarModal {
     Layout,
     Settings,
     None,
-}
-
-fn fetch_ticker_info<F>(exchange: Exchange, fetch_fn: F) -> Task<Message>
-where
-    F: Future<Output = Result<HashMap<Ticker, Option<TickerInfo>>, StreamError>>
-        + MaybeSend
-        + 'static,
-{
-    Task::perform(
-        fetch_fn.map_err(|err| format!("{err}")),
-        move |ticksize| match ticksize {
-            Ok(ticksize) => Message::SetTickersInfo(exchange, ticksize),
-            Err(err) => Message::ErrorOccurred(InternalError::Fetch(err)),
-        },
-    )
-}
-
-fn fetch_ticker_prices<F>(exchange: Exchange, fetch_fn: F) -> Task<Message>
-where
-    F: Future<Output = Result<HashMap<Ticker, TickerStats>, StreamError>> + MaybeSend + 'static,
-{
-    Task::perform(
-        fetch_fn.map_err(|err| format!("{err}")),
-        move |tickers_table| match tickers_table {
-            Ok(tickers_table) => Message::UpdateTickersTable(exchange, tickers_table),
-            Err(err) => Message::ErrorOccurred(InternalError::Fetch(err)),
-        },
-    )
 }

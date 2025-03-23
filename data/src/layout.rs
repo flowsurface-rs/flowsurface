@@ -21,22 +21,22 @@ impl Default for Layout {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub struct Window<T> {
+pub struct Window<T = f32> {
     pub width: T,
     pub height: T,
     pub pos_x: T,
     pub pos_y: T,
 }
 
-impl Window<f32> {
-    pub fn get_size(&self) -> iced_core::Size {
+impl<T: Copy> Window<T> {
+    pub fn get_size(&self) -> iced_core::Size<T> {
         iced_core::Size {
             width: self.width,
             height: self.height,
         }
     }
 
-    pub fn get_position(&self) -> iced_core::Point {
+    pub fn get_position(&self) -> iced_core::Point<T> {
         iced_core::Point {
             x: self.pos_x,
             y: self.pos_y,

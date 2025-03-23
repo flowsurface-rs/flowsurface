@@ -1,4 +1,6 @@
-use crate::{Kline, OpenInterest, Trade, depth::Depth};
+use std::collections::HashMap;
+
+use crate::{Kline, OpenInterest, TickerInfo, TickerStats, Trade, depth::Depth};
 
 use super::{Ticker, Timeframe};
 use serde::{Deserialize, Serialize};
@@ -62,13 +64,21 @@ impl std::fmt::Display for Exchange {
         )
     }
 }
+
 impl Exchange {
-    pub const MARKET_TYPES: [(Exchange, MarketType); 4] = [
-        (Exchange::BinanceFutures, MarketType::LinearPerps),
-        (Exchange::BybitLinear, MarketType::LinearPerps),
-        (Exchange::BinanceSpot, MarketType::Spot),
-        (Exchange::BybitSpot, MarketType::Spot),
+    pub const ALL: [Exchange; 4] = [
+        Exchange::BinanceFutures,
+        Exchange::BinanceSpot,
+        Exchange::BybitLinear,
+        Exchange::BybitSpot,
     ];
+
+    pub fn get_market_type(&self) -> MarketType {
+        match self {
+            Exchange::BinanceFutures | Exchange::BybitLinear => MarketType::LinearPerps,
+            Exchange::BinanceSpot | Exchange::BybitSpot => MarketType::Spot,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +106,34 @@ impl<I> StreamConfig<I> {
         };
 
         Self { id, market_type }
+    }
+}
+
+pub async fn fetch_ticker_info(
+    exchange: Exchange,
+) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
+    let market_type = exchange.get_market_type();
+
+    match exchange {
+        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+            binance::fetch_ticksize(market_type).await
+        }
+        Exchange::BybitLinear | Exchange::BybitSpot => bybit::fetch_ticksize(market_type).await,
+    }
+}
+
+pub async fn fetch_ticker_prices(
+    exchange: Exchange,
+) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
+    let market_type = exchange.get_market_type();
+
+    match exchange {
+        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+            binance::fetch_ticker_prices(market_type).await
+        }
+        Exchange::BybitLinear | Exchange::BybitSpot => {
+            bybit::fetch_ticker_prices(market_type).await
+        }
     }
 }
 
