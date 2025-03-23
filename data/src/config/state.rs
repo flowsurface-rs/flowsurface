@@ -4,16 +4,18 @@ use serde::{Deserialize, Serialize};
 use crate::layout::WindowSpec;
 use crate::{Layout, Theme};
 
-pub use super::timezone::UserTimezone;
-pub use super::{ScaleFactor, Sidebar};
+use super::ScaleFactor;
+use super::sidebar::Sidebar;
+use super::timezone::UserTimezone;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Layouts {
     pub layouts: Vec<Layout>,
     pub active_layout: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct State {
     pub layout_manager: Layouts,
     pub selected_theme: Theme,

@@ -10,4 +10,6 @@ iced_core.workspace = true
 chrono.workspace = true
 ordered-float.workspace = true
 log.workspace = true
+thiserror.workspace = true
+
 exchanges = { version = "0.1.0", path = "../exchanges" }

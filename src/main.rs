@@ -22,7 +22,7 @@ use widget::{
 };
 use window::{Window, WindowEvent, window_events};
 
-use data::{config::theme::custom_theme, layout::WindowSpec};
+use data::{InternalError, config::theme::custom_theme, layout::WindowSpec, sidebar};
 use exchanges::{
     Ticker, TickerInfo, TickerStats,
     adapter::{
@@ -49,7 +49,7 @@ fn main() {
         size: saved_state
             .main_window
             .map(|window| window.get_size())
-            .unwrap_or_default(),
+            .unwrap_or_else(|| window::default_size()),
         position: saved_state
             .main_window
             .map(|window| window.get_position())
@@ -93,8 +93,6 @@ fn main() {
 enum Message {
     ErrorOccurred(InternalError),
 
-    ToggleModal(SidebarModal),
-
     MarketWsEvent(ExchangeEvent),
     ToggleTradeFetch(bool),
 
@@ -103,23 +101,25 @@ enum Message {
 
     ToggleLayoutLock,
     LayoutSelected(Layout),
-    ThemeSelected(data::Theme),
+    LoadLayout(Layout),
+    ManageLayouts(layout::Message),
+
     ActiveDashboard(dashboard::Message),
     Dashboard(uuid::Uuid, dashboard::Message),
+
     SetTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
     SetTimezone(data::UserTimezone),
-    SidebarPosition(data::Sidebar),
+    ToggleSidebarMenu(sidebar::Menu),
+    SetSidebarPosition(sidebar::Position),
     ScaleFactorChanged(f64),
+    ThemeSelected(data::Theme),
 
     TickersTable(tickers_table::Message),
     ToggleTickersDashboard,
     UpdateTickersTable(Exchange, HashMap<Ticker, TickerStats>),
     FetchAndUpdateTickersTable,
 
-    LoadLayout(Layout),
     ToggleDialogModal(Option<(String, Box<Message>)>),
-
-    ManageLayouts(layout::Message),
 
     AddNotification(Toast),
     DeleteNotification(usize),
@@ -127,15 +127,14 @@ enum Message {
 
 struct State {
     main_window: Window,
-    timezone: data::UserTimezone,
-    confirm_dialog: Option<(String, Box<Message>)>,
-    theme: data::Theme,
     layouts: LayoutManager,
-    active_modal: SidebarModal,
-    sidebar: data::Sidebar,
-    scale_factor: data::ScaleFactor,
     tickers_table: TickersTable,
     tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
+    confirm_dialog: Option<(String, Box<Message>)>,
+    scale_factor: data::ScaleFactor,
+    timezone: data::UserTimezone,
+    sidebar: data::Sidebar,
+    theme: data::Theme,
     notifications: Vec<Toast>,
 }
 
@@ -165,7 +164,6 @@ impl State {
                 theme: saved_state.theme,
                 layouts: saved_state.layout_manager,
                 main_window: Window::new(main_window_id),
-                active_modal: SidebarModal::None,
                 tickers_info: HashMap::new(),
                 sidebar: saved_state.sidebar,
                 tickers_table: TickersTable::new(saved_state.favorited_tickers),
@@ -290,7 +288,8 @@ impl State {
                     active_layout: self.layouts.active_layout.name.clone(),
                 };
 
-                let favorited_tickers = self.tickers_table.get_favorited_tickers();
+                let favorited_tickers: Vec<(Exchange, Ticker)> =
+                    self.tickers_table.get_favorited_tickers();
 
                 let main_window = windows
                     .iter()
@@ -321,13 +320,6 @@ impl State {
                 }
 
                 return iced::exit();
-            }
-            Message::ToggleModal(modal) => {
-                if modal == self.active_modal {
-                    self.active_modal = SidebarModal::None;
-                } else {
-                    self.active_modal = modal;
-                }
             }
             Message::ErrorOccurred(err) => {
                 return match err {
@@ -456,8 +448,16 @@ impl State {
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
             }
-            Message::SidebarPosition(pos) => {
-                self.sidebar = pos;
+            Message::ToggleSidebarMenu(menu) => {
+                let new_menu = if self.sidebar.is_menu_active(menu) {
+                    sidebar::Menu::None
+                } else {
+                    menu
+                };
+                self.sidebar.set_menu(new_menu);
+            }
+            Message::SetSidebarPosition(position) => {
+                self.sidebar.set_position(position);
             }
             Message::ToggleTradeFetch(checked) => {
                 self.layouts.iter_dashboards_mut().for_each(|dashboard| {
@@ -508,8 +508,10 @@ impl State {
             }
         };
 
+        let sidebar_pos = self.sidebar.position;
+
         let content = if id == self.main_window.id {
-            let tooltip_position = if self.sidebar == data::Sidebar::Left {
+            let tooltip_position = if sidebar_pos == sidebar::Position::Left {
                 TooltipPosition::Right
             } else {
                 TooltipPosition::Left
@@ -536,17 +538,13 @@ impl State {
                         )
                     };
                     let settings_modal_button = {
-                        let is_active = matches!(self.active_modal, SidebarModal::Settings);
+                        let is_active = self.sidebar.is_menu_active(sidebar::Menu::Settings);
 
                         create_button(
                             get_icon_text(Icon::Cog, 14)
                                 .width(24)
                                 .align_x(Alignment::Center),
-                            Message::ToggleModal(if is_active {
-                                SidebarModal::None
-                            } else {
-                                SidebarModal::Settings
-                            }),
+                            Message::ToggleSidebarMenu(sidebar::Menu::Settings),
                             Some("Settings"),
                             tooltip_position,
                             move |theme, status| {
@@ -555,17 +553,13 @@ impl State {
                         )
                     };
                     let layout_modal_button = {
-                        let is_active = matches!(self.active_modal, SidebarModal::Layout);
+                        let is_active = self.sidebar.is_menu_active(sidebar::Menu::Layout);
 
                         create_button(
                             get_icon_text(Icon::Layout, 14)
                                 .width(24)
                                 .align_x(Alignment::Center),
-                            Message::ToggleModal(if is_active {
-                                SidebarModal::None
-                            } else {
-                                SidebarModal::Layout
-                            }),
+                            Message::ToggleSidebarMenu(sidebar::Menu::Layout),
                             Some("Manage Layouts"),
                             tooltip_position,
                             move |theme, status| {
@@ -611,11 +605,11 @@ impl State {
                     }
                 };
 
-                match self.sidebar {
-                    data::Sidebar::Left => {
+                match sidebar_pos {
+                    sidebar::Position::Left => {
                         row![nav_buttons, tickers_table,]
                     }
-                    data::Sidebar::Right => {
+                    sidebar::Position::Right => {
                         row![tickers_table, nav_buttons,]
                     }
                 }
@@ -653,16 +647,16 @@ impl State {
                         column![]
                     }
                 },
-                match self.sidebar {
-                    data::Sidebar::Left => row![sidebar, dashboard_view,],
-                    data::Sidebar::Right => row![dashboard_view, sidebar],
+                match sidebar_pos {
+                    sidebar::Position::Left => row![sidebar, dashboard_view,],
+                    sidebar::Position::Right => row![dashboard_view, sidebar],
                 }
                 .spacing(4)
                 .padding(8),
             ];
 
-            match self.active_modal {
-                SidebarModal::Settings => {
+            match self.sidebar.active_menu {
+                sidebar::Menu::Settings => {
                     let settings_modal = {
                         let mut all_themes = iced_core::Theme::ALL.to_vec();
                         all_themes.push(iced_core::Theme::Custom(custom_theme().into()));
@@ -703,9 +697,9 @@ impl State {
                         );
 
                         let sidebar_pos = pick_list(
-                            [data::Sidebar::Left, data::Sidebar::Right],
-                            Some(self.sidebar),
-                            Message::SidebarPosition,
+                            [sidebar::Position::Left, sidebar::Position::Right],
+                            Some(sidebar_pos),
+                            Message::SetSidebarPosition,
                         );
 
                         let scale_factor = {
@@ -755,15 +749,15 @@ impl State {
                         .style(style::dashboard_modal)
                     };
 
-                    let (align_x, padding) = match self.sidebar {
-                        data::Sidebar::Left => (Alignment::Start, padding::left(48).top(8)),
-                        data::Sidebar::Right => (Alignment::End, padding::right(48).top(8)),
+                    let (align_x, padding) = match sidebar_pos {
+                        sidebar::Position::Left => (Alignment::Start, padding::left(48).top(8)),
+                        sidebar::Position::Right => (Alignment::End, padding::right(48).top(8)),
                     };
 
                     let base_content = dashboard_modal(
                         base,
                         settings_modal,
-                        Message::ToggleModal(SidebarModal::None),
+                        Message::ToggleSidebarMenu(sidebar::Menu::None),
                         padding,
                         Alignment::End,
                         align_x,
@@ -785,7 +779,7 @@ impl State {
                         base_content
                     }
                 }
-                SidebarModal::Layout => {
+                sidebar::Menu::Layout => {
                     // Pane management
                     let reset_pane_button = tooltip(
                         button(text("Reset").align_x(Alignment::Center))
@@ -847,21 +841,21 @@ impl State {
                         .style(style::dashboard_modal)
                     };
 
-                    let (align_x, padding) = match self.sidebar {
-                        data::Sidebar::Left => (Alignment::Start, padding::left(48).top(40)),
-                        data::Sidebar::Right => (Alignment::End, padding::right(48).top(40)),
+                    let (align_x, padding) = match sidebar_pos {
+                        sidebar::Position::Left => (Alignment::Start, padding::left(48).top(40)),
+                        sidebar::Position::Right => (Alignment::End, padding::right(48).top(40)),
                     };
 
                     dashboard_modal(
                         base,
                         manage_layout_modal,
-                        Message::ToggleModal(SidebarModal::None),
+                        Message::ToggleSidebarMenu(sidebar::Menu::None),
                         padding,
                         Alignment::Start,
                         align_x,
                     )
                 }
-                SidebarModal::None => base.into(),
+                sidebar::Menu::None => base.into(),
             }
         } else {
             container(
@@ -881,9 +875,9 @@ impl State {
         widget::notification::Manager::new(
             content,
             &self.notifications,
-            match self.sidebar {
-                data::Sidebar::Left => Alignment::End,
-                data::Sidebar::Right => Alignment::Start,
+            match sidebar_pos {
+                sidebar::Position::Left => Alignment::End,
+                sidebar::Position::Right => Alignment::Start,
             },
             Message::DeleteNotification,
         )
@@ -976,19 +970,4 @@ impl State {
     fn get_active_dashboard_mut(&mut self) -> Option<&mut Dashboard> {
         self.layouts.get_active_dashboard_mut()
     }
-}
-
-#[derive(thiserror::Error, Debug, Clone)]
-enum InternalError {
-    #[error("Fetch error: {0}")]
-    Fetch(String),
-    #[error("Layout error: {0}")]
-    Layout(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum SidebarModal {
-    Layout,
-    Settings,
-    None,
 }

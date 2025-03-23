@@ -18,6 +18,10 @@ impl Window {
     }
 }
 
+pub fn default_size() -> Size {
+    WindowSpec::default().get_size()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum WindowEvent {
     CloseRequested(window::Id),

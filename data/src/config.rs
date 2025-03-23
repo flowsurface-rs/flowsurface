@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub mod sidebar;
 pub mod state;
 pub mod theme;
 pub mod timezone;
@@ -22,21 +23,5 @@ impl From<f64> for ScaleFactor {
 impl From<ScaleFactor> for f64 {
     fn from(value: ScaleFactor) -> Self {
         value.0
-    }
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]
-pub enum Sidebar {
-    #[default]
-    Left,
-    Right,
-}
-
-impl std::fmt::Display for Sidebar {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Sidebar::Left => write!(f, "Left"),
-            Sidebar::Right => write!(f, "Right"),
-        }
     }
 }
