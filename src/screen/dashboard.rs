@@ -60,7 +60,7 @@ pub enum Message {
         StreamType,
     ),
 
-    ChangePaneStatus(pane_grid::Pane, pane::Status),
+    ChangePaneStatus(pane_grid::Pane, window::Id, pane::Status),
 }
 
 pub struct Dashboard {
@@ -269,7 +269,6 @@ impl Dashboard {
                         }
                     }
                     pane::Message::InitPaneContent(
-                        window,
                         content_str,
                         is_pane,
                         pane_stream,
@@ -557,6 +556,7 @@ impl Dashboard {
                             if let Some(stream) = trade_stream {
                                 return Task::done(Message::ChangePaneStatus(
                                     pane,
+                                    window,
                                     pane::Status::Loading(pane::InfoType::FetchingTrades(0)),
                                 ))
                                 .chain(Task::done(
@@ -567,8 +567,8 @@ impl Dashboard {
                     }
                 }
             }
-            Message::ChangePaneStatus(pane, status) => {
-                if let Some(pane_state) = self.get_mut_pane(main_window.id, main_window.id, pane) {
+            Message::ChangePaneStatus(pane, window, status) => {
+                if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                     pane_state.status = status;
                 }
             }
@@ -909,8 +909,8 @@ impl Dashboard {
         if let Some((window, selected_pane)) = self.focus {
             if let Some(pane_state) = self.get_mut_pane(main_window, window, selected_pane) {
                 return pane_state
-                    .init_content_task(content, exchange, ticker, selected_pane, window)
-                    .map(move |message| Message::Pane(window, message));
+                    .init_content_task(content, exchange, ticker, selected_pane)
+                    .map(move |msg| Message::Pane(window, msg));
             }
         } else {
             return Task::done(Message::GlobalNotification(Toast::warn(
@@ -1339,7 +1339,7 @@ impl Dashboard {
 
 fn get_oi_fetch_task(
     layout_id: uuid::Uuid,
-    window_id: window::Id,
+    window: window::Id,
     pane: pane_grid::Pane,
     stream: StreamType,
     req_id: Option<uuid::Uuid>,
@@ -1347,6 +1347,7 @@ fn get_oi_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane,
+        window,
         pane::Status::Loading(pane::InfoType::FetchingOI),
     ));
 
@@ -1361,11 +1362,9 @@ fn get_oi_fetch_task(
             move |result| match result {
                 Ok(oi) => {
                     let data = FetchedData::OI(oi, req_id);
-                    Message::DistributeFetchedData(layout_id, window_id, pane, data, stream)
+                    Message::DistributeFetchedData(layout_id, window, pane, data, stream)
                 }
-                Err(err) => {
-                    Message::ErrorOccurred(window_id, Some(pane), DashboardError::Fetch(err))
-                }
+                Err(err) => Message::ErrorOccurred(window, Some(pane), DashboardError::Fetch(err)),
             },
         ),
         _ => Task::none(),
@@ -1376,7 +1375,7 @@ fn get_oi_fetch_task(
 
 fn get_kline_fetch_task(
     layout_id: uuid::Uuid,
-    window_id: window::Id,
+    window: window::Id,
     pane: pane_grid::Pane,
     stream: StreamType,
     req_id: Option<uuid::Uuid>,
@@ -1384,6 +1383,7 @@ fn get_kline_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane,
+        window,
         pane::Status::Loading(pane::InfoType::FetchingKlines),
     ));
 
@@ -1398,11 +1398,9 @@ fn get_kline_fetch_task(
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines(klines, req_id);
-                    Message::DistributeFetchedData(layout_id, window_id, pane, data, stream)
+                    Message::DistributeFetchedData(layout_id, window, pane, data, stream)
                 }
-                Err(err) => {
-                    Message::ErrorOccurred(window_id, Some(pane), DashboardError::Fetch(err))
-                }
+                Err(err) => Message::ErrorOccurred(window, Some(pane), DashboardError::Fetch(err)),
             },
         ),
         _ => Task::none(),

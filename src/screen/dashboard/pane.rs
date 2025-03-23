@@ -74,13 +74,7 @@ pub enum Message {
     TicksizeSelected(TickMultiplier, pane_grid::Pane),
     BasisSelected(Basis, pane_grid::Pane),
     ToggleModal(pane_grid::Pane, PaneModal),
-    InitPaneContent(
-        window::Id,
-        String,
-        Option<pane_grid::Pane>,
-        Vec<StreamType>,
-        TickerInfo,
-    ),
+    InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamType>, TickerInfo),
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(pane_grid::Pane, charts::Message),
     VisualConfigChanged(Option<pane_grid::Pane>, VisualConfig),
@@ -162,7 +156,6 @@ impl PaneState {
         exchange: Exchange,
         ticker: (Ticker, TickerInfo),
         pane: pane_grid::Pane,
-        window: window::Id,
     ) -> Task<Message> {
         let streams = match content {
             "heatmap" | "time&sales" => {
@@ -227,7 +220,6 @@ impl PaneState {
         self.stream = streams.clone();
 
         Task::done(Message::InitPaneContent(
-            window,
             content.to_string(),
             Some(pane),
             streams,
