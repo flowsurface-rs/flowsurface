@@ -358,20 +358,13 @@ impl State {
                     }
                     dashboard::Message::DistributeFetchedData(
                         layout_id,
-                        window_id,
-                        pane,
+                        pane_uid,
                         data,
                         stream,
                     ) => {
                         if let Some(dashboard) = self.get_mut_dashboard(layout_id) {
                             return dashboard
-                                .distribute_fetched_data(
-                                    main_window.id,
-                                    window_id,
-                                    pane,
-                                    data,
-                                    stream,
-                                )
+                                .distribute_fetched_data(main_window.id, pane_uid, data, stream)
                                 .map(move |msg| Message::Dashboard(Some(layout_id), msg));
                         } else {
                             return Task::done(Message::ErrorOccurred(InternalError::Layout(

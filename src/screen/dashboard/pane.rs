@@ -85,11 +85,12 @@ pub enum Message {
 }
 
 pub struct PaneState {
+    pub id: uuid::Uuid,
     pub modal: PaneModal,
-    pub stream: Vec<StreamType>,
     pub content: PaneContent,
     pub settings: PaneSettings,
     pub notifications: Vec<Toast>,
+    pub streams: Vec<StreamType>,
     pub status: Status,
 }
 
@@ -100,11 +101,11 @@ impl PaneState {
 
     pub fn from_config(
         content: PaneContent,
-        stream: Vec<StreamType>,
+        streams: Vec<StreamType>,
         settings: PaneSettings,
     ) -> Self {
         Self {
-            stream,
+            streams,
             content,
             settings,
             ..Default::default()
@@ -128,7 +129,7 @@ impl PaneState {
     }
 
     pub fn get_ticker_exchange(&self) -> Option<(Exchange, Ticker)> {
-        for stream in &self.stream {
+        for stream in &self.streams {
             match stream {
                 StreamType::DepthAndTrades { exchange, ticker } => {
                     return Some((*exchange, *ticker));
@@ -211,7 +212,7 @@ impl PaneState {
             _ => vec![],
         };
 
-        self.stream = streams.clone();
+        self.streams = streams.clone();
 
         Task::done(Message::InitPaneContent(
             content.to_string(),
@@ -559,17 +560,18 @@ impl PaneState {
     }
 
     pub fn matches_stream(&self, stream: &StreamType) -> bool {
-        self.stream.iter().any(|existing| existing == stream)
+        self.streams.iter().any(|existing| existing == stream)
     }
 }
 
 impl Default for PaneState {
     fn default() -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             modal: PaneModal::None,
-            stream: vec![],
             content: PaneContent::Starter,
             settings: PaneSettings::default(),
+            streams: vec![],
             notifications: vec![],
             status: Status::Ready,
         }

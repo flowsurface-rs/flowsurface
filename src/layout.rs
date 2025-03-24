@@ -562,30 +562,30 @@ impl<'a> From<&'a Dashboard> for data::Dashboard {
 
 impl From<&PaneState> for data::Pane {
     fn from(pane: &PaneState) -> Self {
-        let pane_stream = pane.stream.clone();
+        let streams = pane.streams.clone();
 
         match &pane.content {
             PaneContent::Starter => data::Pane::Starter,
             PaneContent::Heatmap(chart, indicators) => data::Pane::HeatmapChart {
                 layout: chart.get_chart_layout(),
-                stream_type: pane_stream,
+                stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
             PaneContent::Footprint(chart, indicators) => data::Pane::FootprintChart {
                 layout: chart.get_chart_layout(),
-                stream_type: pane_stream,
+                stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
             PaneContent::Candlestick(chart, indicators) => data::Pane::CandlestickChart {
                 layout: chart.get_chart_layout(),
-                stream_type: pane_stream,
+                stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
             PaneContent::TimeAndSales(_) => data::Pane::TimeAndSales {
-                stream_type: pane_stream,
+                stream_type: streams,
                 settings: pane.settings,
             },
         }
