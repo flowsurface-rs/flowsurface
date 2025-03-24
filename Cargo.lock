@@ -743,11 +743,11 @@ dependencies = [
  "exchanges",
  "iced_core 0.14.0-dev",
  "log",
- "ordered-float",
+ "ordered-float 5.0.0",
  "regex",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -956,14 +956,14 @@ dependencies = [
  "hyper-util",
  "iced_futures 0.13.2",
  "log",
- "ordered-float",
+ "ordered-float 5.0.0",
  "regex",
  "reqwest",
  "rust_decimal",
  "serde",
  "serde_json",
  "sonic-rs",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-rustls 0.24.1",
  "uuid",
@@ -1026,9 +1026,9 @@ dependencies = [
 
 [[package]]
 name = "fern"
-version = "0.6.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9f0c14694cbd524c8720dd69b0e3179344f04ebb5f90f2e4a440c6ea3b2f1ee"
+checksum = "4316185f709b23713e41e3195f90edef7fb00c3ed4adc79769cf09cc762a3b29"
 dependencies = [
  "log",
 ]
@@ -1051,7 +1051,7 @@ checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
 
 [[package]]
 name = "flowsurface"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "data",
@@ -1061,12 +1061,10 @@ dependencies = [
  "iced_core 0.14.0-dev",
  "iced_futures 0.13.2",
  "log",
- "ordered-float",
- "regex",
- "rust_decimal",
+ "ordered-float 5.0.0",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "uuid",
 ]
 
@@ -1577,7 +1575,7 @@ dependencies = [
  "rustls 0.23.23",
  "rustls-pki-types",
  "tokio",
- "tokio-rustls 0.26.1",
+ "tokio-rustls 0.26.2",
  "tower-service",
 ]
 
@@ -1642,7 +1640,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "iced_core 0.14.0-dev",
  "iced_futures 0.14.0-dev",
@@ -1674,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "bitflags 2.8.0",
  "bytes",
@@ -1706,7 +1704,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "futures",
  "iced_core 0.14.0-dev",
@@ -1720,7 +1718,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "bitflags 2.8.0",
  "bytemuck",
@@ -1739,7 +1737,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -1751,7 +1749,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "bytes",
  "iced_core 0.14.0-dev",
@@ -1764,7 +1762,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1779,7 +1777,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "bitflags 2.8.0",
  "bytemuck",
@@ -1798,7 +1796,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "iced_renderer",
  "iced_runtime",
@@ -1813,7 +1811,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=892ac1ce722a809e73aecd8d47ed4e7254d156df#892ac1ce722a809e73aecd8d47ed4e7254d156df"
+source = "git+https://github.com/iced-rs/iced?rev=4b075b9731f4658a885357024cc77dee10e223c3#4b075b9731f4658a885357024cc77dee10e223c3"
 dependencies = [
  "iced_futures 0.14.0-dev",
  "iced_graphics",
@@ -2346,7 +2344,7 @@ dependencies = [
  "spirv",
  "strum",
  "termcolor",
- "thiserror 2.0.11",
+ "thiserror 2.0.12",
  "unicode-xid",
 ]
 
@@ -2738,6 +2736,15 @@ name = "ordered-float"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "ordered-float"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2c1f9f56e534ac6a9b8a4600bdf0f530fb393b5f393e7b4d03489c3cf0c3f01"
 dependencies = [
  "num-traits",
 ]
@@ -3883,7 +3890,7 @@ dependencies = [
  "simdutf8",
  "sonic-number",
  "sonic-simd",
- "thiserror 2.0.11",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -4085,11 +4092,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.11"
+version = "2.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d452f284b73e6d76dd36758a0c8684b1d5be31f92b89d07fd5822175732206fc"
+checksum = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708"
 dependencies = [
- "thiserror-impl 2.0.11",
+ "thiserror-impl 2.0.12",
 ]
 
 [[package]]
@@ -4105,9 +4112,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.11"
+version = "2.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26afc1baea8a989337eeb52b6e72a039780ce45c3edfcc9c5b9d112feeb173c2"
+checksum = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4246,9 +4253,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.1"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f6d0975eaace0cf0fcadee4e4aaa5da15b5c079146f2cffb67c113be122bf37"
+checksum = "8e727b36a1a0e8b74c376ac2211e40c2c8af09fb4013c60d910495810f008e9b"
 dependencies = [
  "rustls 0.23.23",
  "tokio",
@@ -4812,7 +4819,7 @@ dependencies = [
  "raw-window-handle",
  "rustc-hash 1.1.0",
  "smallvec",
- "thiserror 2.0.11",
+ "thiserror 2.0.12",
  "wgpu-hal",
  "wgpu-types",
 ]
@@ -4847,7 +4854,7 @@ dependencies = [
  "ndk-sys 0.5.0+25.2.9519653",
  "objc",
  "once_cell",
- "ordered-float",
+ "ordered-float 4.6.0",
  "parking_lot 0.12.3",
  "profiling",
  "range-alloc",
@@ -4855,7 +4862,7 @@ dependencies = [
  "renderdoc-sys",
  "rustc-hash 1.1.0",
  "smallvec",
- "thiserror 2.0.11",
+ "thiserror 2.0.12",
  "wasm-bindgen",
  "web-sys",
  "wgpu-types",
@@ -5525,7 +5532,7 @@ dependencies = [
  "memchr",
  "pbkdf2",
  "sha1",
- "thiserror 2.0.11",
+ "thiserror 2.0.12",
  "time",
  "xz2",
  "zeroize",

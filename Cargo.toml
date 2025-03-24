@@ -1,6 +1,6 @@
 [package]
 name = "flowsurface"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -8,7 +8,7 @@ categories = ["finance", "visualization", "gui"]
 repository = "https://github.com/akenshaw/flowsurface"
 
 [workspace]
-members = [ "data","exchanges"]
+members = [ "data", "exchanges"]
 
 [workspace.dependencies]
 iced_futures = "0.13.2"
@@ -17,8 +17,8 @@ chrono = "0.4.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.132"
 log = "0.4.22"
-thiserror = "1.0.68"
-ordered-float = "4.5.0"
+thiserror = "2.0.12"
+ordered-float = "5.0.0"
 regex = "1.11.1"
 rust_decimal = "1.36.0"
 uuid = { version = "1.11.0", features = ["v4"] }
@@ -26,10 +26,10 @@ uuid = { version = "1.11.0", features = ["v4"] }
 [dependencies]
 iced = { version = "0.14.0-dev", default-features = false, features = [
     "wgpu", 
-    "canvas", 
-    "tokio", 
-    "advanced", 
     "lazy", 
+    "tokio", 
+    "canvas",
+    "advanced",
     "unconditional-rendering",
 ] }
 iced_core.workspace = true
@@ -39,16 +39,14 @@ serde_json.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 ordered-float.workspace = true
-regex.workspace = true
 log.workspace = true
-rust_decimal.workspace = true
 uuid.workspace = true
-fern = "0.6.2"
+fern = "0.7.1"
 
 exchanges = { version = "0.1.0", path = "exchanges" }
 data = { version = "0.1.0", path = "data" }
 
 [patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "892ac1ce722a809e73aecd8d47ed4e7254d156df" }
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "892ac1ce722a809e73aecd8d47ed4e7254d156df", package = "iced_core" }
+iced = { git = "https://github.com/iced-rs/iced", rev = "4b075b9731f4658a885357024cc77dee10e223c3" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "4b075b9731f4658a885357024cc77dee10e223c3", package = "iced_core" }
 
