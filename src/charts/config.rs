@@ -128,7 +128,6 @@ pub fn timesales_cfg_view<'a>(
                     Some(pane),
                     VisualConfig::TimeAndSales(timeandsales::Config {
                         trade_size_filter: value,
-                        ..cfg
                     }),
                 )
             })

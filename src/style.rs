@@ -359,7 +359,6 @@ pub fn chart_modal(theme: &Theme) -> Style {
             blur_radius: 12.0,
             color: Color::BLACK.scale_alpha(if palette.is_dark { 0.4 } else { 0.2 }),
         },
-        ..Default::default()
     }
 }
 
@@ -539,7 +538,6 @@ pub fn ticker_card(theme: &Theme) -> Style {
             radius: 4.0.into(),
             width: 1.0,
             color: palette.background.strong.color,
-            ..Border::default()
         },
         ..Default::default()
     }

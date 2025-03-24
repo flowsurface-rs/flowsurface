@@ -690,6 +690,16 @@ impl Dashboard {
         }
     }
 
+    fn get_mut_pane_state_by_uuid(
+        &mut self,
+        main_window: window::Id,
+        uuid: uuid::Uuid,
+    ) -> Option<&mut PaneState> {
+        self.iter_all_panes_mut(main_window)
+            .find(|(_, _, state)| state.id == uuid)
+            .map(|(_, _, state)| state)
+    }
+
     fn iter_all_panes(
         &self,
         main_window: window::Id,
@@ -714,26 +724,6 @@ impl Dashboard {
                     .iter_mut()
                     .map(|(pane, state)| (*window_id, *pane, state))
             }))
-    }
-
-    fn get_mut_pane_by_uuid(
-        &mut self,
-        main_window: window::Id,
-        uuid: uuid::Uuid,
-    ) -> Option<(window::Id, pane_grid::Pane)> {
-        self.iter_all_panes_mut(main_window)
-            .find(|(_, _, state)| state.id == uuid)
-            .map(|(window, pane, _)| (window, pane))
-    }
-
-    fn get_mut_pane_state_by_uuid(
-        &mut self,
-        main_window: window::Id,
-        uuid: uuid::Uuid,
-    ) -> Option<&mut PaneState> {
-        self.iter_all_panes_mut(main_window)
-            .find(|(_, _, state)| state.id == uuid)
-            .map(|(_, _, state)| state)
     }
 
     pub fn view<'a>(
@@ -987,38 +977,38 @@ impl Dashboard {
         trades: &[Trade],
         is_batches_done: bool,
     ) -> Result<(), DashboardError> {
-        if let Some((window, pane)) = self.get_mut_pane_by_uuid(main_window, pane_uid) {
-            if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-                if let pane::Status::Loading(pane::InfoType::FetchingTrades(count)) =
-                    &mut pane_state.status
-                {
-                    *count += trades.len();
-                } else {
-                    pane_state.status =
-                        pane::Status::Loading(pane::InfoType::FetchingTrades(trades.len()));
-                }
+        let pane_state = self
+            .get_mut_pane_state_by_uuid(main_window, pane_uid)
+            .ok_or_else(|| {
+                DashboardError::Unknown(
+                    "No matching pane state found for fetched trades".to_string(),
+                )
+            })?;
 
-                match &mut pane_state.content {
-                    PaneContent::Footprint(chart, _) => {
-                        chart.insert_raw_trades(trades.to_owned(), is_batches_done);
-
-                        if is_batches_done {
-                            pane_state.status = pane::Status::Ready;
-                        }
-                        return Ok(());
-                    }
-                    _ => {
-                        return Err(DashboardError::Unknown(
-                            "No matching chart found for fetched trades".to_string(),
-                        ));
-                    }
-                }
+        match &mut pane_state.status {
+            pane::Status::Loading(pane::InfoType::FetchingTrades(count)) => {
+                *count += trades.len();
+            }
+            _ => {
+                pane_state.status =
+                    pane::Status::Loading(pane::InfoType::FetchingTrades(trades.len()));
             }
         }
 
-        Err(DashboardError::Unknown(
-            "No matching pane found for fetched trades".to_string(),
-        ))
+        match &mut pane_state.content {
+            PaneContent::Footprint(chart, _) => {
+                chart.insert_raw_trades(trades.to_owned(), is_batches_done);
+
+                if is_batches_done {
+                    pane_state.status = pane::Status::Ready;
+                }
+
+                Ok(())
+            }
+            _ => Err(DashboardError::Unknown(
+                "No matching chart found for fetched trades".to_string(),
+            )),
+        }
     }
 
     pub fn update_latest_klines(
