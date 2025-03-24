@@ -713,8 +713,8 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
     }
 }
 
-pub fn load_saved_state(file_path: &str) -> SavedState {
-    match data::read_from_file(file_path) {
+pub fn load_saved_state() -> SavedState {
+    match data::read_from_file(data::SAVED_STATE_PATH) {
         Ok(state) => {
             let mut de_layouts: Vec<(String, Dashboard)> = vec![];
 

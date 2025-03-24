@@ -44,7 +44,7 @@ use std::{collections::HashMap, vec};
 fn main() {
     logger::setup(false, false).expect("Failed to initialize logger");
 
-    let saved_state = layout::load_saved_state("dashboard_state.json");
+    let saved_state = layout::load_saved_state();
 
     std::thread::spawn(data::cleanup_old_market_data);
 
@@ -293,12 +293,12 @@ impl State {
 
                 match serde_json::to_string(&layout) {
                     Ok(layout_str) => {
-                        if let Err(e) =
-                            data::write_json_to_file(&layout_str, "dashboard_state.json")
-                        {
+                        let file_name = data::SAVED_STATE_PATH;
+
+                        if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
                             log::error!("Failed to write layout state to file: {}", e);
                         } else {
-                            log::info!("Successfully wrote layout state to dashboard_state.json");
+                            log::info!("Successfully wrote layout state to {file_name}");
                         }
                     }
                     Err(e) => log::error!("Failed to serialize layout: {}", e),

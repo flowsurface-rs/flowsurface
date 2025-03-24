@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use chrono::NaiveDate;
 pub use config::ScaleFactor;
 pub use config::sidebar::{self, Sidebar};
 pub use config::state::{Layouts, State};
@@ -15,7 +14,8 @@ pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
 pub use layout::{Dashboard, Layout, Pane};
-use regex::Regex;
+
+pub const SAVED_STATE_PATH: &str = "saved-state.json";
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum InternalError {
@@ -52,16 +52,14 @@ pub fn read_from_file(file_name: &str) -> Result<State, Box<dyn std::error::Erro
             // If parsing fails, backup the file
             drop(file); // Close the file before renaming
 
-            // Create backup filename with "_old" added
-            let backup_path = if let Some(ext) = path.extension() {
-                let mut old_filename = path.file_stem().unwrap().to_os_string();
-                old_filename.push("_old");
-                path.with_file_name(old_filename).with_extension(ext)
+            // Create backup file with different name to prevent overwriting it
+            let backup_file_name = if let Some(pos) = file_name.rfind('.') {
+                format!("{}_old{}", &file_name[..pos], &file_name[pos..])
             } else {
-                let mut old_filename = path.file_name().unwrap().to_os_string();
-                old_filename.push("_old");
-                path.with_file_name(old_filename)
+                format!("{}_old", file_name)
             };
+
+            let backup_path = get_data_path(&backup_file_name);
 
             if let Err(rename_err) = std::fs::rename(&path, &backup_path) {
                 log::warn!(
@@ -72,7 +70,7 @@ pub fn read_from_file(file_name: &str) -> Result<State, Box<dyn std::error::Erro
                 );
             } else {
                 log::info!(
-                    "Backed up corrupted state file to '{}'. It can be restored it manually.",
+                    "Backed up corrupted state file to '{}'. It can be restored manually.",
                     backup_path.display()
                 );
             }
@@ -99,7 +97,8 @@ pub fn cleanup_old_market_data() -> usize {
         return 0;
     }
 
-    let re = Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$").expect("Cleanup regex pattern is valid");
+    let re =
+        regex::Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$").expect("Cleanup regex pattern is valid");
     let today = chrono::Local::now().date_naive();
     let mut deleted_files = Vec::new();
 
@@ -128,7 +127,7 @@ pub fn cleanup_old_market_data() -> usize {
             };
 
             if let Some(cap) = re.captures(filename) {
-                if let Ok(file_date) = NaiveDate::parse_from_str(&cap[1], "%Y-%m-%d") {
+                if let Ok(file_date) = chrono::NaiveDate::parse_from_str(&cap[1], "%Y-%m-%d") {
                     let days_old = today.signed_duration_since(file_date).num_days();
                     if days_old > 4 {
                         if let Err(e) = std::fs::remove_file(&path) {
