@@ -9,10 +9,7 @@ use crate::{style, tooltip};
 use data::{
     UserTimezone,
     chart::Basis,
-    layout::{
-        WindowSpec,
-        pane::{Axis, PaneSettings},
-    },
+    layout::{WindowSpec, pane::Axis},
 };
 use exchanges::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
 
@@ -606,7 +603,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
             a: Box::new(configuration(*a)),
             b: Box::new(configuration(*b)),
         },
-        data::Pane::Starter => Configuration::Pane(PaneState::new(vec![], PaneSettings::default())),
+        data::Pane::Starter => Configuration::Pane(PaneState::new()),
         data::Pane::CandlestickChart {
             layout,
             stream_type,
@@ -636,7 +633,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                 ))
             } else {
                 log::info!("Skipping a CandlestickChart initialization due to missing ticker info");
-                Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+                Configuration::Pane(PaneState::new())
             }
         }
         data::Pane::FootprintChart {
@@ -672,7 +669,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                 ))
             } else {
                 log::info!("Skipping a FootprintChart initialization due to missing ticker info");
-                Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+                Configuration::Pane(PaneState::new())
             }
         }
         data::Pane::HeatmapChart {
@@ -706,7 +703,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                 ))
             } else {
                 log::info!("Skipping a HeatmapChart initialization due to missing ticker info");
-                Configuration::Pane(PaneState::new(vec![], PaneSettings::default()))
+                Configuration::Pane(PaneState::new())
             }
         }
         data::Pane::TimeAndSales {

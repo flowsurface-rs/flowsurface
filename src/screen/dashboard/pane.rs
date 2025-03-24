@@ -94,12 +94,8 @@ pub struct PaneState {
 }
 
 impl PaneState {
-    pub fn new(stream: Vec<StreamType>, settings: PaneSettings) -> Self {
-        Self {
-            stream,
-            settings,
-            ..Default::default()
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn from_config(
@@ -108,12 +104,10 @@ impl PaneState {
         settings: PaneSettings,
     ) -> Self {
         Self {
-            modal: PaneModal::None,
             stream,
             content,
             settings,
-            notifications: vec![],
-            status: Status::Ready, // TODO: set status from config
+            ..Default::default()
         }
     }
 

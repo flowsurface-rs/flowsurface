@@ -1,11 +1,7 @@
 pub mod pane;
 pub mod tickers_table;
 
-use data::{
-    UserTimezone,
-    chart::Basis,
-    layout::{WindowSpec, pane::PaneSettings},
-};
+use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 pub use pane::{PaneContent, PaneState};
 
 use crate::{
@@ -207,11 +203,9 @@ impl Dashboard {
                         }
                     }
                     pane::Message::SplitPane(axis, pane) => {
-                        let focus_pane = if let Some((new_pane, _)) = self.panes.split(
-                            axis,
-                            pane,
-                            PaneState::new(vec![], PaneSettings::default()),
-                        ) {
+                        let focus_pane = if let Some((new_pane, _)) =
+                            self.panes.split(axis, pane, PaneState::new())
+                        {
                             Some(new_pane)
                         } else {
                             None
@@ -234,7 +228,7 @@ impl Dashboard {
                     }
                     pane::Message::ReplacePane(pane) => {
                         if let Some(pane) = self.panes.get_mut(pane) {
-                            *pane = PaneState::new(vec![], PaneSettings::default());
+                            *pane = PaneState::new();
                         }
                     }
                     pane::Message::ToggleModal(pane, modal_type) => {
@@ -596,19 +590,15 @@ impl Dashboard {
             let pane = self.panes.iter().last().map(|(pane, _)| pane).copied();
 
             if let Some(pane) = pane {
-                let result = self.panes.split(
-                    axis,
-                    pane,
-                    pane_state.unwrap_or(PaneState::new(vec![], PaneSettings::default())),
-                );
+                let result = self
+                    .panes
+                    .split(axis, pane, pane_state.unwrap_or(PaneState::new()));
 
                 if let Some((pane, _)) = result {
                     return self.focus_pane(main_window.id, pane);
                 }
             } else {
-                let (state, pane) = pane_grid::State::new(
-                    pane_state.unwrap_or(PaneState::new(vec![], PaneSettings::default())),
-                );
+                let (state, pane) = pane_grid::State::new(pane_state.unwrap_or(PaneState::new()));
                 self.panes = state;
 
                 return self.focus_pane(main_window.id, pane);
@@ -629,9 +619,7 @@ impl Dashboard {
     fn split_pane(&mut self, axis: pane_grid::Axis, main_window: &Window) -> Task<Message> {
         if let Some((window, pane)) = self.focus {
             if window == main_window.id {
-                let result =
-                    self.panes
-                        .split(axis, pane, PaneState::new(vec![], PaneSettings::default()));
+                let result = self.panes.split(axis, pane, PaneState::new());
 
                 if let Some((pane, _)) = result {
                     return self.focus_pane(main_window.id, pane);

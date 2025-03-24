@@ -787,7 +787,6 @@ impl State {
                     }
                 }
                 sidebar::Menu::Layout => {
-                    // Pane management
                     let reset_pane_button = tooltip(
                         button(text("Reset").align_x(Alignment::Center))
                             .width(iced::Length::Fill)
@@ -834,7 +833,9 @@ impl State {
                                 column![
                                     text("Panes").size(14),
                                     if dashboard.focus.is_some() {
-                                        row![reset_pane_button, split_pane_button,].spacing(8)
+                                        row![reset_pane_button, split_pane_button,]
+                                            .padding(padding::left(8).right(8))
+                                            .spacing(8)
                                     } else {
                                         row![text("No pane selected"),]
                                     },
