@@ -13,7 +13,6 @@ use data::{
 };
 use exchanges::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
 
-use chrono::NaiveDate;
 use iced::widget::{
     Space, button, center, column, container,
     pane_grid::{self, Configuration},
@@ -21,14 +20,7 @@ use iced::widget::{
     tooltip::Position as TooltipPosition,
 };
 use iced::{Element, Task, Theme, padding};
-use regex::Regex;
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{Read, Write},
-    path::PathBuf,
-    vec,
-};
+use std::{collections::HashMap, vec};
 use uuid::Uuid;
 
 #[derive(Eq, Hash, Debug, Clone, PartialEq)]
@@ -722,7 +714,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
 }
 
 pub fn load_saved_state(file_path: &str) -> SavedState {
-    match read_from_file(file_path) {
+    match data::read_from_file(file_path) {
         Ok(state) => {
             let mut de_layouts: Vec<(String, Dashboard)> = vec![];
 
@@ -797,88 +789,4 @@ pub fn load_saved_state(file_path: &str) -> SavedState {
             SavedState::default()
         }
     }
-}
-
-pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
-    let path = get_data_path(file_name);
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
-    Ok(())
-}
-
-pub fn read_from_file(file_name: &str) -> Result<data::State, Box<dyn std::error::Error>> {
-    let path = get_data_path(file_name);
-    let mut file = File::open(path)?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-
-    Ok(serde_json::from_str(&contents)?)
-}
-
-pub fn get_data_path(path_name: &str) -> PathBuf {
-    if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
-        PathBuf::from(path)
-    } else {
-        let data_dir = dirs_next::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        data_dir.join("flowsurface").join(path_name)
-    }
-}
-
-pub fn cleanup_old_data() -> usize {
-    let data_path = get_data_path("market_data/binance/data/futures/um/daily/aggTrades");
-
-    if !data_path.exists() {
-        log::warn!("Data path {:?} does not exist, skipping cleanup", data_path);
-        return 0;
-    }
-
-    let re = Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$").expect("Cleanup regex pattern is valid");
-    let today = chrono::Local::now().date_naive();
-    let mut deleted_files = Vec::new();
-
-    let entries = match std::fs::read_dir(data_path) {
-        Ok(entries) => entries,
-        Err(e) => {
-            log::error!("Failed to read data directory: {}", e);
-            return 0;
-        }
-    };
-
-    for entry in entries.filter_map(Result::ok) {
-        let symbol_dir = match std::fs::read_dir(entry.path()) {
-            Ok(dir) => dir,
-            Err(e) => {
-                log::error!("Failed to read symbol directory {:?}: {}", entry.path(), e);
-                continue;
-            }
-        };
-
-        for file in symbol_dir.filter_map(Result::ok) {
-            let path = file.path();
-            let filename = match path.to_str() {
-                Some(name) => name,
-                None => continue,
-            };
-
-            if let Some(cap) = re.captures(filename) {
-                if let Ok(file_date) = NaiveDate::parse_from_str(&cap[1], "%Y-%m-%d") {
-                    let days_old = today.signed_duration_since(file_date).num_days();
-                    if days_old > 4 {
-                        if let Err(e) = std::fs::remove_file(&path) {
-                            log::error!("Failed to remove old file {}: {}", filename, e);
-                        } else {
-                            deleted_files.push(filename.to_string());
-                            log::info!("Removed old file: {}", filename);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    log::info!(
-        "File cleanup completed. Deleted {} files",
-        deleted_files.len()
-    );
-    deleted_files.len()
 }

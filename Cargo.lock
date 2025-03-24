@@ -739,10 +739,12 @@ name = "data"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs-next",
  "exchanges",
  "iced_core 0.14.0-dev",
  "log",
  "ordered-float",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1053,7 +1055,6 @@ version = "0.6.0"
 dependencies = [
  "chrono",
  "data",
- "dirs-next",
  "exchanges",
  "fern",
  "iced",

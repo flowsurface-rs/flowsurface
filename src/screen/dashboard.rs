@@ -1,13 +1,11 @@
 pub mod pane;
 pub mod tickers_table;
 
-use data::{UserTimezone, chart::Basis, layout::WindowSpec};
+use data::{UserTimezone, chart::Basis, get_data_path, layout::WindowSpec};
 pub use pane::{PaneContent, PaneState};
 
 use crate::{
-    StreamType, charts,
-    layout::get_data_path,
-    style,
+    StreamType, charts, style,
     widget::notification::Toast,
     window::{self, Window},
 };

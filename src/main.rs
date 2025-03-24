@@ -46,7 +46,7 @@ fn main() {
 
     let saved_state = layout::load_saved_state("dashboard_state.json");
 
-    std::thread::spawn(layout::cleanup_old_data);
+    std::thread::spawn(data::cleanup_old_market_data);
 
     let main_window_cfg = window::Settings {
         size: saved_state
@@ -294,7 +294,7 @@ impl State {
                 match serde_json::to_string(&layout) {
                     Ok(layout_str) => {
                         if let Err(e) =
-                            layout::write_json_to_file(&layout_str, "dashboard_state.json")
+                            data::write_json_to_file(&layout_str, "dashboard_state.json")
                         {
                             log::error!("Failed to write layout state to file: {}", e);
                         } else {

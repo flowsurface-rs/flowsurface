@@ -5,8 +5,6 @@ use std::{
     process,
 };
 
-use crate::layout;
-
 const MAX_LOG_FILE_SIZE: u64 = 10_000_000; // 10 MB
 
 pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), fern::InitError> {
@@ -32,7 +30,7 @@ pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), fern::InitError> {
     if is_debug {
         logger = logger.chain(std::io::stdout());
     } else {
-        let log_file_path = layout::get_data_path("output.log");
+        let log_file_path = data::get_data_path("output.log");
 
         if let Some(parent) = log_file_path.parent() {
             std::fs::create_dir_all(parent)?;
