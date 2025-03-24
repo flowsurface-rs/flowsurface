@@ -52,7 +52,7 @@ fn main() {
         size: saved_state
             .main_window
             .map(|window| window.get_size())
-            .unwrap_or_else(|| window::default_size()),
+            .unwrap_or_else(window::default_size),
         position: saved_state
             .main_window
             .map(|window| window.get_position())
