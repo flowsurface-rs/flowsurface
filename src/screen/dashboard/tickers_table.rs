@@ -16,6 +16,9 @@ use iced::{
     },
 };
 
+const TICKER_CARD_HEIGHT: f32 = 64.0;
+const SEARCH_BAR_HEIGHT: f32 = 120.0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TickerTab {
     All,
@@ -251,15 +254,11 @@ impl TickersTable {
     }
 
     fn is_container_visible(&self, index: usize, bounds: Size) -> bool {
-        let ticker_container_height = 64.0;
-        let base_search_bar_height = 120.0;
+        let item_top = SEARCH_BAR_HEIGHT + (index as f32 * TICKER_CARD_HEIGHT);
+        let item_bottom = item_top + TICKER_CARD_HEIGHT;
 
-        let item_top = base_search_bar_height + (index as f32 * ticker_container_height);
-        let item_bottom = item_top + ticker_container_height;
-
-        (item_bottom >= (self.scroll_offset.y - (2.0 * ticker_container_height)))
-            && (item_top
-                <= (self.scroll_offset.y + bounds.height + (2.0 * ticker_container_height)))
+        (item_bottom >= (self.scroll_offset.y - (2.0 * TICKER_CARD_HEIGHT)))
+            && (item_top <= (self.scroll_offset.y + bounds.height + (2.0 * TICKER_CARD_HEIGHT)))
     }
 
     pub fn is_open(&self) -> bool {

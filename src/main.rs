@@ -738,7 +738,7 @@ impl State {
 
                         container(
                             column![
-                                column![text("Sidebar").size(14), sidebar_pos,].spacing(8),
+                                column![text("Sidebar position").size(14), sidebar_pos,].spacing(8),
                                 column![text("Time zone").size(14), timezone_picklist,].spacing(8),
                                 column![text("Theme").size(14), theme_picklist,].spacing(8),
                                 column![text("Interface scale").size(14), scale_factor,].spacing(8),

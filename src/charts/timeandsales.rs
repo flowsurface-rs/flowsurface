@@ -1,20 +1,22 @@
 use crate::screen::dashboard::pane::Message;
 use crate::style::ts_table_container;
-use chrono::DateTime;
 use data::UserTimezone;
 use data::chart::timeandsales::Config;
 use exchanges::Trade;
-use iced::widget::{Space, column, container, responsive, row, text};
-use iced::{Element, Length, alignment, padding};
+use iced::widget::{column, container, responsive, row, text};
+use iced::{Alignment, Element, Length, padding};
 
-struct ConvertedTrade {
+struct TradeDisplay {
     time_str: String,
     price: f32,
     qty: f32,
     is_sell: bool,
 }
+
+const TRADE_ROW_HEIGHT: f32 = 16.0;
+
 pub struct TimeAndSales {
-    recent_trades: Vec<ConvertedTrade>,
+    recent_trades: Vec<TradeDisplay>,
     config: Config,
     max_filtered_qty: f32,
     max_size: usize,
@@ -44,11 +46,11 @@ impl TimeAndSales {
         let size_filter = self.config.trade_size_filter;
 
         for trade in trades_buffer {
-            if let Some(trade_time) = DateTime::from_timestamp(
+            if let Some(trade_time) = chrono::DateTime::from_timestamp(
                 trade.time as i64 / 1000,
                 (trade.time % 1000) as u32 * 1_000_000,
             ) {
-                let converted_trade = ConvertedTrade {
+                let converted_trade = TradeDisplay {
                     time_str: trade_time.format("%M:%S.%3f").to_string(),
                     price: trade.price,
                     qty: trade.qty,
@@ -82,28 +84,22 @@ impl TimeAndSales {
                 .padding(padding::top(4).left(4).right(4))
                 .height(Length::Fill);
 
-            let row_height = 16.0;
-            let rows_can_fit = size.height / row_height;
+            let rows_can_fit = ((size.height / TRADE_ROW_HEIGHT).floor()) as usize;
 
             let filtered_trades_iter = self
                 .recent_trades
                 .iter()
                 .filter(|t| (t.qty * t.price) >= self.config.trade_size_filter);
 
-            for trade in filtered_trades_iter.rev().take(rows_can_fit as usize) {
-                column = column.push(container(Space::new(
-                    Length::Fixed(0.0),
-                    Length::Fixed(2.0),
-                )));
-
+            for trade in filtered_trades_iter.rev().take(rows_can_fit) {
                 let trade_row = row![
                     container(text(&trade.time_str))
                         .width(Length::FillPortion(8))
-                        .align_x(alignment::Horizontal::Center),
+                        .align_x(Alignment::Center),
                     container(text(trade.price)).width(Length::FillPortion(6)),
                     container(text(trade.qty)).width(Length::FillPortion(4))
                 ]
-                .height(Length::Fixed(row_height));
+                .height(Length::Fixed(TRADE_ROW_HEIGHT));
 
                 column = column.push(container(trade_row).style(move |theme| {
                     ts_table_container(theme, trade.is_sell, trade.qty / self.max_filtered_qty)

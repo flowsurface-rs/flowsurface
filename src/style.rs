@@ -447,9 +447,9 @@ pub fn ts_table_container(theme: &Theme, is_sell: bool, color_alpha: f32) -> Sty
     Style {
         text_color: color.into(),
         border: Border {
-            width: 1.0,
+            width: 2.0,
             color: color.scale_alpha(color_alpha),
-            ..Border::default()
+            radius: 2.0.into(),
         },
         ..Default::default()
     }
