@@ -11,7 +11,6 @@ use iced::{
     },
 };
 use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
-use uuid::Uuid;
 
 use crate::{style, widget::hsplit::HSplit, widget::tooltip};
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
@@ -67,7 +66,7 @@ pub enum Message {
     XScaling(f32, f32, bool),
     BoundsChanged(Rectangle),
     SplitDragged(f32),
-    NewDataRange(Uuid, FetchRange),
+    NewDataRange(uuid::Uuid, FetchRange),
     DoubleClick(AxisScaleClicked),
 }
 

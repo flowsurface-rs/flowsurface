@@ -508,8 +508,8 @@ impl Default for SavedState {
     }
 }
 
-impl<'a> From<&'a Dashboard> for data::Dashboard {
-    fn from(dashboard: &'a Dashboard) -> Self {
+impl From<&Dashboard> for data::Dashboard {
+    fn from(dashboard: &Dashboard) -> Self {
         use pane_grid::Node;
 
         fn from_layout(panes: &pane_grid::State<PaneState>, node: pane_grid::Node) -> data::Pane {

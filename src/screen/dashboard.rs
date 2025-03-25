@@ -626,6 +626,7 @@ impl Dashboard {
                         .map(|point| window::Position::Specific(point + Vector::new(20.0, 20.0)))
                         .unwrap_or_default(),
                     exit_on_close_request: false,
+                    min_size: Some(iced::Size::new(400.0, 300.0)),
                     ..window::settings()
                 });
 

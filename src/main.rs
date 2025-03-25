@@ -94,7 +94,6 @@ enum Message {
 
     Dashboard(Option<Uuid>, dashboard::Message),
 
-    SetTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
     SetTimezone(data::UserTimezone),
     ToggleSidebarMenu(sidebar::Menu),
     SetSidebarPosition(sidebar::Position),
@@ -102,9 +101,12 @@ enum Message {
     ThemeSelected(data::Theme),
 
     TickersTable(tickers_table::Message),
-    ToggleTickersDashboard,
+    ToggleTickersTable,
     UpdateTickersTable(Exchange, HashMap<Ticker, TickerStats>),
-    FetchAndUpdateTickersTable,
+    FetchForTickersTable,
+
+    FetchForTickersInfo,
+    UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
 
     ToggleDialogModal(Option<(String, Box<Message>)>),
 
@@ -130,17 +132,7 @@ impl State {
         saved_state: layout::SavedState,
         main_window_cfg: window::Settings,
     ) -> (Self, Task<Message>) {
-        let (main_window_id, open_main_window_task) = window::open(main_window_cfg);
-
-        let exchange_fetch_tasks = Exchange::ALL
-            .iter()
-            .map(|exchange| {
-                Task::perform(fetch_ticker_info(*exchange), move |result| match result {
-                    Ok(ticker_info) => Message::SetTickersInfo(*exchange, ticker_info),
-                    Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
-                })
-            })
-            .collect::<Vec<Task<Message>>>();
+        let (main_window_id, open_main_window) = window::open(main_window_cfg);
 
         let active_layout = saved_state.layout_manager.active_layout.clone();
 
@@ -155,22 +147,37 @@ impl State {
                 scale_factor: saved_state.scale_factor,
                 sidebar: saved_state.sidebar,
                 theme: saved_state.theme,
-                notifications: Vec::new(),
+                notifications: vec![],
             },
-            open_main_window_task
+            open_main_window
                 .then(|_| Task::none())
                 .chain(Task::batch(vec![
                     Task::done(Message::LoadLayout(active_layout)),
                     Task::done(Message::SetTimezone(saved_state.timezone)),
-                    Task::done(Message::FetchAndUpdateTickersTable),
-                    Task::batch(exchange_fetch_tasks),
+                    Task::done(Message::FetchForTickersTable),
+                    Task::done(Message::FetchForTickersInfo),
                 ])),
         )
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::SetTickersInfo(exchange, tickers_info) => {
+            Message::FetchForTickersInfo => {
+                let fetch_tasks = Exchange::ALL
+                    .iter()
+                    .map(|exchange| {
+                        Task::perform(fetch_ticker_info(*exchange), move |result| match result {
+                            Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
+                            Err(err) => {
+                                Message::ErrorOccurred(InternalError::Fetch(err.to_string()))
+                            }
+                        })
+                    })
+                    .collect::<Vec<Task<Message>>>();
+
+                return Task::batch(fetch_tasks);
+            }
+            Message::UpdateTickersInfo(exchange, tickers_info) => {
                 log::info!(
                     "Received tickers info for {exchange}, len: {}",
                     tickers_info.len()
@@ -273,9 +280,6 @@ impl State {
                     active_layout: self.layouts.active_layout.name.clone(),
                 };
 
-                let favorited_tickers: Vec<(Exchange, Ticker)> =
-                    self.tickers_table.get_favorited_tickers();
-
                 let main_window = windows
                     .iter()
                     .find(|(id, _)| **id == self.main_window.id)
@@ -284,7 +288,7 @@ impl State {
                 let layout = data::State::from_parts(
                     layouts,
                     self.theme.clone(),
-                    favorited_tickers,
+                    self.tickers_table.get_favorited_tickers(),
                     main_window,
                     self.timezone,
                     self.sidebar,
@@ -383,13 +387,13 @@ impl State {
                     }
                 }
             }
-            Message::ToggleTickersDashboard => {
+            Message::ToggleTickersTable => {
                 self.tickers_table.toggle_table();
             }
             Message::UpdateTickersTable(exchange, tickers_info) => {
                 self.tickers_table.update_table(exchange, tickers_info);
             }
-            Message::FetchAndUpdateTickersTable => {
+            Message::FetchForTickersTable => {
                 let fetch_tasks = {
                     Exchange::ALL
                         .iter()
@@ -574,7 +578,7 @@ impl State {
                             get_icon_text(Icon::Search, 14)
                                 .width(24)
                                 .align_x(Alignment::Center),
-                            Message::ToggleTickersDashboard,
+                            Message::ToggleTickersTable,
                             Some("Search Tickers"),
                             tooltip_position,
                             move |theme, status| {
@@ -727,7 +731,7 @@ impl State {
                                 ]
                                 .align_y(Alignment::Center)
                                 .spacing(8)
-                                .padding(8),
+                                .padding(4),
                             )
                             .style(style::modal_container)
                         };
@@ -744,7 +748,7 @@ impl State {
                             .spacing(20),
                         )
                         .align_x(Alignment::Start)
-                        .max_width(500)
+                        .max_width(400)
                         .padding(24)
                         .style(style::dashboard_modal)
                     };
@@ -920,7 +924,7 @@ impl State {
                 300
             },
         ))
-        .map(|_| Message::FetchAndUpdateTickersTable);
+        .map(|_| Message::FetchForTickersTable);
 
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
     }
