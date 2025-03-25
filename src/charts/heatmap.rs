@@ -533,210 +533,199 @@ impl canvas::Program<Message> for HeatmapChart {
         let volume_indicator = self.indicators.contains_key(&HeatmapIndicator::Volume);
 
         let heatmap = chart.cache.main.draw(renderer, bounds_size, |frame| {
-            frame.with_save(|frame| {
-                frame.translate(center);
-                frame.scale(chart.scaling);
-                frame.translate(chart.translation);
+            frame.translate(center);
+            frame.scale(chart.scaling);
+            frame.translate(chart.translation);
 
-                let region = chart.visible_region(frame.size());
+            let region = chart.visible_region(frame.size());
 
-                let (earliest, latest) = chart.get_interval_range(region);
-                let (highest, lowest) = chart.get_price_range(region);
+            let (earliest, latest) = chart.get_interval_range(region);
+            let (highest, lowest) = chart.get_price_range(region);
 
-                if latest < earliest {
+            if latest < earliest {
+                return;
+            }
+
+            let cell_height = chart.cell_height;
+            let cell_height_scaled = cell_height * chart.scaling;
+
+            let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
+
+            let max_depth_qty = qty_scales.max_depth_qty;
+            let (max_aggr_volume, max_trade_qty) =
+                (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
+
+            self.orderbook
+                .iter_time_filtered(earliest, latest, highest, lowest)
+                .for_each(|(price, runs)| {
+                    let y_position = chart.price_to_y(price.0);
+
+                    runs.iter()
+                        .filter(|run| **price * run.qty.0 > self.visual_config.order_size_filter)
+                        .for_each(|run| {
+                            let start_x = chart.interval_to_x(run.start_time.max(earliest));
+                            let end_x = chart.interval_to_x(run.until_time.min(latest)).min(0.0);
+
+                            let width = end_x - start_x;
+
+                            if width > 0.0 {
+                                let color_alpha = (run.qty.0 / max_depth_qty).min(1.0);
+                                let width_unscaled = width / chart.scaling;
+
+                                if width_unscaled > 40.0
+                                    && cell_height_scaled >= 10.0
+                                    && color_alpha > 0.4
+                                {
+                                    frame.fill_text(canvas::Text {
+                                        content: abbr_large_numbers(run.qty.0),
+                                        position: Point::new(
+                                            start_x + (cell_height / 2.0),
+                                            y_position,
+                                        ),
+                                        size: iced::Pixels(cell_height),
+                                        color: Color::WHITE,
+                                        align_y: Alignment::Center.into(),
+                                        ..canvas::Text::default()
+                                    });
+
+                                    frame.fill_rectangle(
+                                        Point::new(start_x, y_position - (cell_height / 2.0)),
+                                        Size::new(width, cell_height),
+                                        get_depth_color(palette, run.is_bid, color_alpha),
+                                    );
+
+                                    frame.fill_rectangle(
+                                        Point::new(start_x, y_position - (cell_height / 2.0)),
+                                        Size::new(1.0, cell_height),
+                                        Color::WHITE,
+                                    );
+                                } else {
+                                    frame.fill_rectangle(
+                                        Point::new(start_x, y_position - (cell_height / 2.0)),
+                                        Size::new(width, cell_height),
+                                        get_depth_color(palette, run.is_bid, color_alpha),
+                                    );
+                                }
+                            }
+                        });
+                });
+
+            if let Some((latest_timestamp, _, _)) = self.timeseries.last() {
+                let max_qty = self
+                    .orderbook
+                    .latest_order_runs(highest, lowest, *latest_timestamp)
+                    .map(|(_, order_run)| order_run.qty.0)
+                    .fold(f32::MIN, f32::max)
+                    .ceil()
+                    * 5.0
+                    / 5.0;
+                if max_qty.is_infinite() {
                     return;
                 }
 
-                let cell_height = chart.cell_height;
-                let cell_height_scaled = cell_height * chart.scaling;
-
-                let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
-
-                let max_depth_qty = qty_scales.max_depth_qty;
-                let (max_aggr_volume, max_trade_qty) =
-                    (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
-
                 self.orderbook
-                    .iter_time_filtered(earliest, latest, highest, lowest)
-                    .for_each(|(price, runs)| {
+                    .latest_order_runs(highest, lowest, *latest_timestamp)
+                    .for_each(|(price, run)| {
                         let y_position = chart.price_to_y(price.0);
+                        let bar_width = (run.qty.0 / max_qty) * 50.0;
 
-                        runs.iter()
-                            .filter(|run| {
-                                **price * run.qty.0 > self.visual_config.order_size_filter
-                            })
-                            .for_each(|run| {
-                                let start_x = chart.interval_to_x(run.start_time.max(earliest));
-                                let end_x =
-                                    chart.interval_to_x(run.until_time.min(latest)).min(0.0);
-
-                                let width = end_x - start_x;
-
-                                if width > 0.0 {
-                                    let color_alpha = (run.qty.0 / max_depth_qty).min(1.0);
-                                    let width_unscaled = width / chart.scaling;
-
-                                    if width_unscaled > 40.0
-                                        && cell_height_scaled >= 10.0
-                                        && color_alpha > 0.4
-                                    {
-                                        frame.fill_text(canvas::Text {
-                                            content: abbr_large_numbers(run.qty.0),
-                                            position: Point::new(
-                                                start_x + (cell_height / 2.0),
-                                                y_position,
-                                            ),
-                                            size: iced::Pixels(cell_height),
-                                            color: Color::WHITE,
-                                            align_y: Alignment::Center.into(),
-                                            ..canvas::Text::default()
-                                        });
-
-                                        frame.fill_rectangle(
-                                            Point::new(start_x, y_position - (cell_height / 2.0)),
-                                            Size::new(width, cell_height),
-                                            get_depth_color(palette, run.is_bid, color_alpha),
-                                        );
-
-                                        frame.fill_rectangle(
-                                            Point::new(start_x, y_position - (cell_height / 2.0)),
-                                            Size::new(1.0, cell_height),
-                                            Color::WHITE,
-                                        );
-                                    } else {
-                                        frame.fill_rectangle(
-                                            Point::new(start_x, y_position - (cell_height / 2.0)),
-                                            Size::new(width, cell_height),
-                                            get_depth_color(palette, run.is_bid, color_alpha),
-                                        );
-                                    }
-                                }
-                            });
+                        frame.fill_rectangle(
+                            Point::new(0.0, y_position - (cell_height / 2.0)),
+                            Size::new(bar_width, cell_height),
+                            get_depth_color(palette, run.is_bid, 0.5),
+                        );
                     });
 
-                if let Some((latest_timestamp, _, _)) = self.timeseries.last() {
-                    let max_qty = self
-                        .orderbook
-                        .latest_order_runs(highest, lowest, *latest_timestamp)
-                        .map(|(_, order_run)| order_run.qty.0)
-                        .fold(f32::MIN, f32::max)
-                        .ceil()
-                        * 5.0
-                        / 5.0;
-                    if max_qty.is_infinite() {
-                        return;
-                    }
+                // max bid/ask quantity text
+                let text_size = 9.0 / chart.scaling;
+                let text_content = abbr_large_numbers(max_qty);
+                let text_position = Point::new(50.0, region.y);
 
-                    self.orderbook
-                        .latest_order_runs(highest, lowest, *latest_timestamp)
-                        .for_each(|(price, run)| {
-                            let y_position = chart.price_to_y(price.0);
-                            let bar_width = (run.qty.0 / max_qty) * 50.0;
+                frame.fill_text(canvas::Text {
+                    content: text_content,
+                    position: text_position,
+                    size: iced::Pixels(text_size),
+                    color: palette.background.base.text,
+                    ..canvas::Text::default()
+                });
+            };
 
-                            frame.fill_rectangle(
-                                Point::new(0.0, y_position - (cell_height / 2.0)),
-                                Size::new(bar_width, cell_height),
-                                get_depth_color(palette, run.is_bid, 0.5),
-                            );
-                        });
+            self.visible_data_iter(earliest, latest).for_each(
+                |(time, trades, (buy_volume, sell_volume))| {
+                    let x_position = chart.interval_to_x(*time);
 
-                    // max bid/ask quantity text
-                    let text_size = 9.0 / chart.scaling;
-                    let text_content = abbr_large_numbers(max_qty);
-                    let text_position = Point::new(50.0, region.y);
+                    trades.iter().for_each(|trade| {
+                        let y_position = chart.price_to_y(trade.price);
 
-                    frame.fill_text(canvas::Text {
-                        content: text_content,
-                        position: text_position,
-                        size: iced::Pixels(text_size),
-                        color: palette.background.base.text,
-                        ..canvas::Text::default()
-                    });
-                };
+                        if trade.qty * trade.price > self.visual_config.trade_size_filter {
+                            let color = if trade.is_sell {
+                                palette.danger.base.color
+                            } else {
+                                palette.success.base.color
+                            };
 
-                self.visible_data_iter(earliest, latest).for_each(
-                    |(time, trades, (buy_volume, sell_volume))| {
-                        let x_position = chart.interval_to_x(*time);
-
-                        trades.iter().for_each(|trade| {
-                            let y_position = chart.price_to_y(trade.price);
-
-                            if trade.qty * trade.price > self.visual_config.trade_size_filter {
-                                let color = if trade.is_sell {
-                                    palette.danger.base.color
+                            let radius = {
+                                if self.visual_config.dynamic_sized_trades {
+                                    // normalize range
+                                    let scale_factor =
+                                        (self.visual_config.trade_size_scale as f32) / 100.0;
+                                    1.0 + (trade.qty / max_trade_qty) * (28.0 - 1.0) * scale_factor
                                 } else {
-                                    palette.success.base.color
-                                };
+                                    cell_height / 2.0
+                                }
+                            };
 
-                                let radius = {
-                                    if self.visual_config.dynamic_sized_trades {
-                                        // normalize range
-                                        let scale_factor =
-                                            (self.visual_config.trade_size_scale as f32) / 100.0;
-                                        1.0 + (trade.qty / max_trade_qty)
-                                            * (28.0 - 1.0)
-                                            * scale_factor
-                                    } else {
-                                        cell_height / 2.0
-                                    }
-                                };
-
-                                frame.fill(
-                                    &Path::circle(Point::new(x_position, y_position), radius),
-                                    color,
-                                );
-                            }
-                        });
-
-                        if volume_indicator {
-                            let bar_width = (chart.cell_width / 2.0) * 0.9;
-
-                            let buy_bar_height = (buy_volume / max_aggr_volume)
-                                * (bounds.height / chart.scaling)
-                                * 0.1;
-                            let sell_bar_height = (sell_volume / max_aggr_volume)
-                                * (bounds.height / chart.scaling)
-                                * 0.1;
-
-                            frame.fill_rectangle(
-                                Point::new(x_position, (region.y + region.height) - buy_bar_height),
-                                Size::new(bar_width, buy_bar_height),
-                                palette.success.base.color,
-                            );
-
-                            frame.fill_rectangle(
-                                Point::new(
-                                    x_position - bar_width,
-                                    (region.y + region.height) - sell_bar_height,
-                                ),
-                                Size::new(bar_width, sell_bar_height),
-                                palette.danger.base.color,
+                            frame.fill(
+                                &Path::circle(Point::new(x_position, y_position), radius),
+                                color,
                             );
                         }
-                    },
+                    });
+
+                    if volume_indicator {
+                        let bar_width = (chart.cell_width / 2.0) * 0.9;
+
+                        let buy_bar_height =
+                            (buy_volume / max_aggr_volume) * (bounds.height / chart.scaling) * 0.1;
+                        let sell_bar_height =
+                            (sell_volume / max_aggr_volume) * (bounds.height / chart.scaling) * 0.1;
+
+                        frame.fill_rectangle(
+                            Point::new(x_position, (region.y + region.height) - buy_bar_height),
+                            Size::new(bar_width, buy_bar_height),
+                            palette.success.base.color,
+                        );
+
+                        frame.fill_rectangle(
+                            Point::new(
+                                x_position - bar_width,
+                                (region.y + region.height) - sell_bar_height,
+                            ),
+                            Size::new(bar_width, sell_bar_height),
+                            palette.danger.base.color,
+                        );
+                    }
+                },
+            );
+
+            if volume_indicator && max_aggr_volume > 0.0 {
+                let text_size = 9.0 / chart.scaling;
+                let text_content = abbr_large_numbers(max_aggr_volume);
+                let text_width = (text_content.len() as f32 * text_size) / 1.5;
+
+                let text_position = Point::new(
+                    (region.x + region.width) - text_width,
+                    (region.y + region.height) - (bounds.height / chart.scaling) * 0.1 - text_size,
                 );
 
-                if volume_indicator && max_aggr_volume > 0.0 {
-                    let text_size = 9.0 / chart.scaling;
-                    let text_content = abbr_large_numbers(max_aggr_volume);
-                    let text_width = (text_content.len() as f32 * text_size) / 1.5;
-
-                    let text_position = Point::new(
-                        (region.x + region.width) - text_width,
-                        (region.y + region.height)
-                            - (bounds.height / chart.scaling) * 0.1
-                            - text_size,
-                    );
-
-                    frame.fill_text(canvas::Text {
-                        content: text_content,
-                        position: text_position,
-                        size: iced::Pixels(text_size),
-                        color: palette.background.base.text,
-                        ..canvas::Text::default()
-                    });
-                }
-            });
+                frame.fill_text(canvas::Text {
+                    content: text_content,
+                    position: text_position,
+                    size: iced::Pixels(text_size),
+                    color: palette.background.base.text,
+                    ..canvas::Text::default()
+                });
+            }
         });
 
         if chart.crosshair & !self.timeseries.is_empty() {
