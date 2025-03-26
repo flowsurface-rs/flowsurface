@@ -12,6 +12,7 @@ ordered-float.workspace = true
 log.workspace = true
 thiserror.workspace = true
 regex.workspace = true
+strum.workspace = true
 dirs-next = "2.0.0"
 
 exchanges = { version = "0.1.0", path = "../exchanges" }

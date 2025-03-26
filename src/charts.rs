@@ -761,9 +761,11 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task
         Ok(req_id) => Some(Task::done(Message::NewDataRange(req_id, range))),
         Err(e) => {
             match e {
-                ReqError::Overlaps => log::debug!("Request overlaps with existing request"),
-                ReqError::Failed(msg) => log::debug!("Request already failed: {}", msg),
-                ReqError::Completed => log::debug!("Request already completed"),
+                ReqError::Overlaps => {
+                    log::debug!("Request overlaps with existing request: {range:?}")
+                }
+                ReqError::Failed(msg) => log::debug!("Request already failed: {msg}: {range:?}"),
+                ReqError::Completed => log::debug!("Request already completed: {range:?}"),
             }
             None
         }

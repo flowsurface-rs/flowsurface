@@ -1,73 +1,107 @@
-use chrono::Local;
 use std::{
-    fs::{self, File},
-    path::PathBuf,
-    process,
+    env, mem,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
-const MAX_LOG_FILE_SIZE: u64 = 10_000_000; // 10 MB
+use chrono::Utc;
+use log::Log;
+use tokio::sync::mpsc as tokio_mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
-pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), fern::InitError> {
-    let log_level = if log_trace {
-        log::LevelFilter::Trace
-    } else {
-        log::LevelFilter::Info
-    };
+pub use data::log::{Error, Record};
 
-    let mut logger = fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{}:{} [{}:{}] -- {}",
-                Local::now().format("%H:%M:%S%.3f"),
-                record.level(),
-                record.file().unwrap_or("unknown"),
-                record.line().unwrap_or(0),
-                message
-            ));
-        })
-        .level(log_level);
+pub fn setup(is_debug: bool) -> Result<ReceiverStream<Vec<Record>>, Error> {
+    let level_filter = env::var("RUST_LOG")
+        .ok()
+        .as_deref()
+        .map(str::parse::<log::Level>)
+        .transpose()?
+        .unwrap_or(log::Level::Debug)
+        .to_level_filter();
+
+    let mut io_sink = fern::Dispatch::new().format(|out, message, record| {
+        out.finish(format_args!(
+            "{}:{} -- {}",
+            chrono::Local::now().format("%H:%M:%S%.3f"),
+            record.level(),
+            message
+        ))
+    });
 
     if is_debug {
-        logger = logger.chain(std::io::stdout());
+        io_sink = io_sink.chain(std::io::stdout());
     } else {
-        let log_file_path = data::get_data_path("output.log");
+        let log_file = data::log::file()?;
 
-        if let Some(parent) = log_file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let log_file = File::create(&log_file_path)?;
-        log_file.set_len(0)?;
-
-        let log_file = fern::log_file(&log_file_path)?;
-        logger = logger.chain(log_file);
-
-        std::thread::spawn(move || {
-            monitor_file_size(log_file_path, MAX_LOG_FILE_SIZE);
-        });
+        io_sink = io_sink.chain(log_file);
     }
 
-    logger.apply()?;
-    Ok(())
+    let (channel_sink, receiver) = channel_logger();
+
+    fern::Dispatch::new()
+        .level(log::LevelFilter::Off)
+        .level_for("panic", log::LevelFilter::Error)
+        .level_for("iced_wgpu", log::LevelFilter::Info)
+        .level_for("data", level_filter)
+        .level_for("flowsurface", level_filter)
+        .chain(io_sink)
+        .chain(channel_sink)
+        .apply()?;
+
+    Ok(receiver)
 }
 
-fn monitor_file_size(file_path: PathBuf, max_size_bytes: u64) {
-    loop {
-        match fs::metadata(&file_path) {
-            Ok(metadata) => {
-                if metadata.len() > max_size_bytes {
-                    eprintln!(
-                        "Things went south. Log file size caused panic exceeding {} MB",
-                        metadata.len() / 1_000_000,
-                    );
-                    process::exit(1);
-                }
+fn channel_logger() -> (Box<dyn Log>, ReceiverStream<Vec<Record>>) {
+    let (log_sender, log_receiver) = mpsc::channel();
+    let (async_sender, async_receiver) = tokio_mpsc::channel(1);
+
+    struct Sink {
+        sender: mpsc::Sender<Record>,
+    }
+
+    impl Log for Sink {
+        fn enabled(&self, _metadata: &::log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &::log::Record) {
+            let _ = self.sender.send(Record {
+                timestamp: Utc::now(),
+                level: record.level().into(),
+                message: format!("{}", record.args()),
+            });
+        }
+
+        fn flush(&self) {}
+    }
+
+    thread::spawn(move || {
+        const BATCH_SIZE: usize = 25;
+        const BATCH_TIMEOUT: Duration = Duration::from_millis(250);
+
+        let mut batch = Vec::with_capacity(BATCH_SIZE);
+        let mut timeout = Instant::now();
+
+        loop {
+            if let Ok(log) = log_receiver.recv_timeout(BATCH_TIMEOUT) {
+                batch.push(log);
             }
-            Err(err) => {
-                eprintln!("Error reading log file metadata: {err}");
-                process::exit(1);
+
+            if batch.len() >= BATCH_SIZE
+                || (!batch.is_empty() && timeout.elapsed() >= BATCH_TIMEOUT)
+            {
+                timeout = Instant::now();
+
+                let _ = async_sender
+                    .blocking_send(mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE)));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(30));
-    }
+    });
+
+    (
+        Box::new(Sink { sender: log_sender }),
+        ReceiverStream::new(async_receiver),
+    )
 }

@@ -17,7 +17,6 @@ use screen::{
     },
 };
 use style::{Icon, get_icon_text};
-use uuid::Uuid;
 use widget::{
     confirm_dialog_container, dashboard_modal, main_dialog_modal,
     notification::{self, Toast},
@@ -42,7 +41,7 @@ use iced::{
 use std::{collections::HashMap, vec};
 
 fn main() {
-    logger::setup(false, false).expect("Failed to initialize logger");
+    logger::setup(false).expect("Failed to initialize logger");
 
     let saved_state = layout::load_saved_state();
 
@@ -92,7 +91,7 @@ enum Message {
     LoadLayout(Layout),
     ManageLayouts(layout::Message),
 
-    Dashboard(Option<Uuid>, dashboard::Message),
+    Dashboard(Option<uuid::Uuid>, dashboard::Message),
 
     SetTimezone(data::UserTimezone),
     ToggleSidebarMenu(sidebar::Menu),

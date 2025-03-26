@@ -13,7 +13,7 @@ members = [ "data", "exchanges"]
 [workspace.dependencies]
 iced_futures = "0.13.2"
 iced_core = "0.14.0-dev"
-chrono = "0.4.38"
+chrono = { version = "0.4.40", features = ['serde'] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.132"
 log = "0.4.22"
@@ -21,6 +21,9 @@ thiserror = "2.0.12"
 ordered-float = "5.0.0"
 regex = "1.11.1"
 rust_decimal = "1.36.0"
+tokio = { version = "1.43", features = ["macros"] }
+tokio-stream = { version = "0.1" }
+strum = { version = "0.27.1", features = ["derive"] }
 uuid = { version = "1.11.0", features = ["v4"] }
 
 [dependencies]
@@ -41,6 +44,8 @@ thiserror.workspace = true
 ordered-float.workspace = true
 log.workspace = true
 uuid.workspace = true
+tokio-stream.workspace = true
+tokio.workspace =true
 fern = "0.7.1"
 
 exchanges = { version = "0.1.0", path = "exchanges" }

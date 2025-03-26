@@ -2,6 +2,7 @@ pub mod aggr;
 pub mod chart;
 pub mod config;
 pub mod layout;
+pub mod log;
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -13,6 +14,7 @@ pub use config::state::{Layouts, State};
 pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
+use ::log::{error, info, warn};
 pub use layout::{Dashboard, Layout, Pane};
 
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
@@ -62,14 +64,14 @@ pub fn read_from_file(file_name: &str) -> Result<State, Box<dyn std::error::Erro
             let backup_path = get_data_path(&backup_file_name);
 
             if let Err(rename_err) = std::fs::rename(&path, &backup_path) {
-                log::warn!(
+                warn!(
                     "Failed to backup corrupted state file '{}' to '{}': {}",
                     path.display(),
                     backup_path.display(),
                     rename_err
                 );
             } else {
-                log::info!(
+                info!(
                     "Backed up corrupted state file to '{}'. It can be restored manually.",
                     backup_path.display()
                 );
@@ -93,7 +95,7 @@ pub fn cleanup_old_market_data() -> usize {
     let data_path = get_data_path("market_data/binance/data/futures/um/daily/aggTrades");
 
     if !data_path.exists() {
-        log::warn!("Data path {:?} does not exist, skipping cleanup", data_path);
+        warn!("Data path {:?} does not exist, skipping cleanup", data_path);
         return 0;
     }
 
@@ -105,7 +107,7 @@ pub fn cleanup_old_market_data() -> usize {
     let entries = match std::fs::read_dir(data_path) {
         Ok(entries) => entries,
         Err(e) => {
-            log::error!("Failed to read data directory: {}", e);
+            error!("Failed to read data directory: {}", e);
             return 0;
         }
     };
@@ -114,7 +116,7 @@ pub fn cleanup_old_market_data() -> usize {
         let symbol_dir = match std::fs::read_dir(entry.path()) {
             Ok(dir) => dir,
             Err(e) => {
-                log::error!("Failed to read symbol directory {:?}: {}", entry.path(), e);
+                error!("Failed to read symbol directory {:?}: {}", entry.path(), e);
                 continue;
             }
         };
@@ -131,10 +133,10 @@ pub fn cleanup_old_market_data() -> usize {
                     let days_old = today.signed_duration_since(file_date).num_days();
                     if days_old > 4 {
                         if let Err(e) = std::fs::remove_file(&path) {
-                            log::error!("Failed to remove old file {}: {}", filename, e);
+                            error!("Failed to remove old file {}: {}", filename, e);
                         } else {
                             deleted_files.push(filename.to_string());
-                            log::info!("Removed old file: {}", filename);
+                            info!("Removed old file: {}", filename);
                         }
                     }
                 }
@@ -142,7 +144,7 @@ pub fn cleanup_old_market_data() -> usize {
         }
     }
 
-    log::info!(
+    info!(
         "File cleanup completed. Deleted {} files",
         deleted_files.len()
     );
