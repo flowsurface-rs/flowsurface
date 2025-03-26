@@ -1,19 +1,24 @@
 use std::{
-    env, mem,
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+    process,
     sync::mpsc,
     thread,
-    time::{Duration, Instant},
 };
 
-use chrono::Utc;
-use log::Log;
-use tokio::sync::mpsc as tokio_mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+pub use data::log::Error;
 
-pub use data::log::{Error, Record};
+const MAX_LOG_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
 
-pub fn setup(is_debug: bool) -> Result<ReceiverStream<Vec<Record>>, Error> {
-    let level_filter = env::var("RUST_LOG")
+enum LogMessage {
+    Content(Vec<u8>),
+    Flush,
+    Shutdown,
+}
+
+pub fn setup(is_debug: bool) -> Result<(), Error> {
+    let level_filter = std::env::var("RUST_LOG")
         .ok()
         .as_deref()
         .map(str::parse::<log::Level>)
@@ -33,12 +38,13 @@ pub fn setup(is_debug: bool) -> Result<ReceiverStream<Vec<Record>>, Error> {
     if is_debug {
         io_sink = io_sink.chain(std::io::stdout());
     } else {
-        let log_file = data::log::file()?;
+        let log_path = data::log::path()?;
+        initial_rotation(&log_path)?;
 
-        io_sink = io_sink.chain(log_file);
+        let logger: Box<dyn Write + Send> = Box::new(BackgroundLogger::new(log_path)?);
+
+        io_sink = io_sink.chain(logger);
     }
-
-    let (channel_sink, receiver) = channel_logger();
 
     fern::Dispatch::new()
         .level(log::LevelFilter::Off)
@@ -47,61 +53,143 @@ pub fn setup(is_debug: bool) -> Result<ReceiverStream<Vec<Record>>, Error> {
         .level_for("data", level_filter)
         .level_for("flowsurface", level_filter)
         .chain(io_sink)
-        .chain(channel_sink)
         .apply()?;
 
-    Ok(receiver)
+    Ok(())
 }
 
-fn channel_logger() -> (Box<dyn Log>, ReceiverStream<Vec<Record>>) {
-    let (log_sender, log_receiver) = mpsc::channel();
-    let (async_sender, async_receiver) = tokio_mpsc::channel(1);
+fn initial_rotation(log_path: &PathBuf) -> io::Result<()> {
+    let path = PathBuf::from(".");
 
-    struct Sink {
-        sender: mpsc::Sender<Record>,
+    let dir = log_path.parent().unwrap_or(&path);
+
+    let previous_log_path = dir.join("flowsurface-previous.log");
+
+    if previous_log_path.exists() {
+        fs::remove_file(&previous_log_path)?;
     }
 
-    impl Log for Sink {
-        fn enabled(&self, _metadata: &::log::Metadata) -> bool {
-            true
-        }
-
-        fn log(&self, record: &::log::Record) {
-            let _ = self.sender.send(Record {
-                timestamp: Utc::now(),
-                level: record.level().into(),
-                message: format!("{}", record.args()),
-            });
-        }
-
-        fn flush(&self) {}
+    if log_path.exists() {
+        fs::rename(log_path, &previous_log_path)?;
     }
 
-    thread::spawn(move || {
-        const BATCH_SIZE: usize = 25;
-        const BATCH_TIMEOUT: Duration = Duration::from_millis(250);
+    Ok(())
+}
 
-        let mut batch = Vec::with_capacity(BATCH_SIZE);
-        let mut timeout = Instant::now();
+struct BackgroundLogger {
+    sender: mpsc::Sender<LogMessage>,
+    _thread_handle: thread::JoinHandle<()>,
+}
 
-        loop {
-            if let Ok(log) = log_receiver.recv_timeout(BATCH_TIMEOUT) {
-                batch.push(log);
-            }
+impl BackgroundLogger {
+    fn new(path: PathBuf) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
 
-            if batch.len() >= BATCH_SIZE
-                || (!batch.is_empty() && timeout.elapsed() >= BATCH_TIMEOUT)
-            {
-                timeout = Instant::now();
+        let thread_handle = thread::Builder::new()
+            .name("logger-thread".to_string())
+            .spawn(move || {
+                let mut logger = match Logger::new(path) {
+                    Ok(logger) => logger,
+                    Err(e) => {
+                        eprintln!("Failed to initialize logger: {}", e);
+                        return;
+                    }
+                };
 
-                let _ = async_sender
-                    .blocking_send(mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE)));
-            }
+                loop {
+                    match receiver.recv() {
+                        Ok(LogMessage::Content(data)) => {
+                            if let Err(e) = logger.write_all(&data) {
+                                eprintln!("Logging error: {}", e);
+                            }
+                        }
+                        Ok(LogMessage::Flush) => {
+                            if let Err(e) = logger.flush() {
+                                eprintln!("Error flushing logs: {}", e);
+                            }
+                        }
+                        Ok(LogMessage::Shutdown) | Err(_) => break,
+                    }
+                }
+            })?;
+
+        Ok(BackgroundLogger {
+            sender,
+            _thread_handle: thread_handle,
+        })
+    }
+}
+
+impl Write for BackgroundLogger {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let len = buf.len();
+        self.sender
+            .send(LogMessage::Content(buf.to_vec()))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Logger thread disconnected"))?;
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.sender
+            .send(LogMessage::Flush)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Logger thread disconnected"))?;
+        Ok(())
+    }
+}
+
+impl Drop for BackgroundLogger {
+    fn drop(&mut self) {
+        let _ = self.sender.send(LogMessage::Shutdown);
+    }
+}
+
+struct Logger {
+    file: fs::File,
+    current_size: u64,
+}
+
+impl Logger {
+    fn new(path: PathBuf) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+
+        let size = file.metadata()?.len();
+
+        Ok(Logger {
+            file,
+            current_size: size,
+        })
+    }
+}
+
+impl Write for Logger {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let buf_len = buf.len() as u64;
+
+        if self.current_size + buf_len > MAX_LOG_FILE_SIZE {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
+            let error_msg = format!(
+                "\n{}:FATAL -- Log file size would exceed the maximum allowed size of {} bytes\n",
+                timestamp, MAX_LOG_FILE_SIZE
+            );
+
+            eprintln!("{error_msg}");
+
+            let _ = self.file.write_all(error_msg.as_bytes());
+            let _ = self.file.flush();
+
+            process::abort();
         }
-    });
 
-    (
-        Box::new(Sink { sender: log_sender }),
-        ReceiverStream::new(async_receiver),
-    )
+        let bytes = self.file.write(buf)?;
+        self.current_size += bytes as u64;
+
+        Ok(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
 }

@@ -21,9 +21,6 @@ thiserror = "2.0.12"
 ordered-float = "5.0.0"
 regex = "1.11.1"
 rust_decimal = "1.36.0"
-tokio = { version = "1.43", features = ["macros"] }
-tokio-stream = { version = "0.1" }
-strum = { version = "0.27.1", features = ["derive"] }
 uuid = { version = "1.11.0", features = ["v4"] }
 
 [dependencies]
@@ -44,8 +41,6 @@ thiserror.workspace = true
 ordered-float.workspace = true
 log.workspace = true
 uuid.workspace = true
-tokio-stream.workspace = true
-tokio.workspace =true
 fern = "0.7.1"
 
 exchanges = { version = "0.1.0", path = "exchanges" }

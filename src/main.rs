@@ -185,6 +185,7 @@ impl State {
             }
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
+
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     match event {
                         ExchangeEvent::Connected(exchange, _) => {
