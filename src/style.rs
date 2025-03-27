@@ -462,70 +462,36 @@ pub fn search_input(
 ) -> widget::text_input::Style {
     let palette = theme.extended_palette();
 
-    match status {
-        widget::text_input::Status::Active => widget::text_input::Style {
-            background: palette.background.weak.color.into(),
-            border: Border {
-                radius: 3.0.into(),
-                width: 1.0,
-                color: palette.secondary.base.color,
-            },
-            icon: palette.background.strong.text,
-            placeholder: palette.background.base.text,
-            value: palette.background.weak.text,
-            selection: palette.background.strong.color,
-        },
-        widget::text_input::Status::Hovered => widget::text_input::Style {
-            background: palette.background.weak.color.into(),
-            border: Border {
-                radius: 3.0.into(),
-                width: 1.0,
-                color: palette.secondary.strong.color,
-            },
-            icon: palette.background.strong.text,
-            placeholder: palette.background.base.text,
-            value: palette.background.weak.text,
-            selection: palette.background.strong.color,
-        },
-        widget::text_input::Status::Focused { .. } => widget::text_input::Style {
-            background: palette.background.weak.color.into(),
-            border: Border {
-                radius: 3.0.into(),
-                width: 2.0,
-                color: palette.secondary.strong.color,
-            },
-            icon: palette.background.strong.text,
-            placeholder: palette.background.base.text,
-            value: palette.background.weak.text,
-            selection: palette.background.strong.color,
-        },
-        widget::text_input::Status::Disabled => widget::text_input::Style {
-            background: palette.background.weak.color.into(),
-            border: Border {
-                radius: 3.0.into(),
-                width: 1.0,
-                color: palette.secondary.weak.color,
-            },
-            icon: palette.background.weak.text,
-            placeholder: palette.background.weak.text,
-            value: palette.background.weak.text,
-            selection: palette.background.weak.text,
-        },
-    }
-}
+    let (background, border_color, placeholder) = match status {
+        widget::text_input::Status::Active => (
+            palette.background.weakest.color,
+            palette.background.weak.color,
+            palette.background.strongest.color,
+        ),
+        widget::text_input::Status::Hovered => (
+            palette.background.weak.color,
+            palette.background.strong.color,
+            palette.background.base.text,
+        ),
+        widget::text_input::Status::Focused { .. }
+        | widget::text_input::Status::Disabled { .. } => (
+            palette.background.base.color,
+            palette.background.strong.color,
+            palette.background.base.text,
+        ),
+    };
 
-pub fn sorter_container(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
-
-    Style {
-        text_color: Some(palette.background.base.text),
-        background: Some(palette.background.weakest.color.into()),
+    widget::text_input::Style {
+        background: background.into(),
         border: Border {
-            width: 1.0,
-            color: palette.background.weak.color,
             radius: 3.0.into(),
+            width: 1.0,
+            color: border_color,
         },
-        ..Default::default()
+        icon: palette.background.strong.text,
+        placeholder,
+        value: palette.background.weak.text,
+        selection: palette.background.strongest.color,
     }
 }
 

@@ -10,7 +10,8 @@ use iced::{
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
-        Button, Column, Container, Space, Text, button, column, container, row,
+        Button, Column, Container, Space, Text, button, column, container, horizontal_rule,
+        horizontal_space, row,
         scrollable::{self, AbsoluteOffset},
         text, text_input,
     },
@@ -305,155 +306,160 @@ impl TickersTable {
     }
 
     pub fn view(&self, bounds: Size) -> Element<'_, Message> {
-        let all_button = create_tab_button(text("ALL"), &self.selected_tab, TickerTab::All);
-        let bybit_button = create_tab_button(text("Bybit"), &self.selected_tab, TickerTab::Bybit);
-        let binance_button =
-            create_tab_button(text("Binance"), &self.selected_tab, TickerTab::Binance);
-        let favorites_button = create_tab_button(
-            text(char::from(Icon::StarFilled).to_string())
-                .font(ICON_FONT)
-                .width(11),
-            &self.selected_tab,
-            TickerTab::Favorites,
-        );
-
-        let spot_market_button = button(text("Spot"))
-            .on_press(Message::SetMarketFilter(Some(MarketType::Spot)))
-            .style(move |theme, status| style::button::transparent(theme, status, false));
-
-        let perp_market_button = button(text("Linear Perps"))
-            .on_press(Message::SetMarketFilter(Some(MarketType::LinearPerps)))
-            .style(move |theme, status| style::button::transparent(theme, status, false));
-
         let show_sorting_button = button(get_icon_text(Icon::Sort, 14).align_x(Horizontal::Center))
             .on_press(Message::ShowSortingOptions);
 
-        let volume_sort_button = button(
-            row![
-                text("Volume"),
-                get_icon_text(
-                    if self.selected_sort_option == SortOptions::VolumeDesc {
-                        Icon::SortDesc
-                    } else {
-                        Icon::SortAsc
-                    },
-                    14
-                )
-            ]
-            .spacing(4)
-            .align_y(Vertical::Center),
-        )
-        .on_press(Message::ChangeSortOption(SortOptions::VolumeAsc));
-
-        let change_sort_button = button(
-            row![
-                text("Change"),
-                get_icon_text(
-                    if self.selected_sort_option == SortOptions::ChangeDesc {
-                        Icon::SortDesc
-                    } else {
-                        Icon::SortAsc
-                    },
-                    14
-                )
-            ]
-            .spacing(4)
-            .align_y(Vertical::Center),
-        )
-        .on_press(Message::ChangeSortOption(SortOptions::ChangeAsc));
-
-        let mut content = column![
-            row![
-                text_input("Search for a ticker...", &self.search_query)
-                    .style(style::search_input)
-                    .on_input(Message::UpdateSearchQuery)
-                    .align_x(Horizontal::Left),
-                if self.show_sort_options {
-                    show_sorting_button
-                        .style(move |theme, status| style::button::transparent(theme, status, true))
-                } else {
-                    show_sorting_button.style(move |theme, status| {
-                        style::button::transparent(theme, status, false)
-                    })
-                }
-            ]
-            .align_y(Vertical::Center)
-            .spacing(4),
+        let search_bar_row = row![
+            text_input("Search for a ticker...", &self.search_query)
+                .style(style::search_input)
+                .on_input(Message::UpdateSearchQuery)
+                .align_x(Horizontal::Left)
+                .padding(6),
             if self.show_sort_options {
-                container(
-                    column![
-                        row![
-                            Space::new(Length::FillPortion(2), Length::Shrink),
-                            match self.selected_sort_option {
-                                SortOptions::VolumeAsc | SortOptions::VolumeDesc =>
-                                    volume_sort_button.style(move |theme, status| {
-                                        style::button::transparent(theme, status, true)
-                                    }),
-                                _ => volume_sort_button.style(move |theme, status| {
-                                    style::button::transparent(theme, status, false)
-                                }),
-                            },
-                            Space::new(Length::FillPortion(1), Length::Shrink),
-                            match self.selected_sort_option {
-                                SortOptions::ChangeAsc | SortOptions::ChangeDesc =>
-                                    change_sort_button.style(move |theme, status| {
-                                        style::button::transparent(theme, status, true)
-                                    }),
-                                _ => change_sort_button.style(move |theme, status| {
-                                    style::button::transparent(theme, status, false)
-                                }),
-                            },
-                            Space::new(Length::FillPortion(2), Length::Shrink),
-                        ],
-                        row![
-                            Space::new(Length::FillPortion(1), Length::Shrink),
-                            match self.selected_market {
-                                Some(MarketType::Spot) =>
-                                    spot_market_button.style(move |theme, status| {
-                                        style::button::transparent(theme, status, true)
-                                    }),
-                                _ => spot_market_button.style(move |theme, status| {
-                                    style::button::transparent(theme, status, false)
-                                }),
-                            },
-                            Space::new(Length::FillPortion(1), Length::Shrink),
-                            match self.selected_market {
-                                Some(MarketType::LinearPerps) =>
-                                    perp_market_button.style(move |theme, status| {
-                                        style::button::transparent(theme, status, true)
-                                    }),
-                                _ => perp_market_button.style(move |theme, status| {
-                                    style::button::transparent(theme, status, false)
-                                }),
-                            },
-                            Space::new(Length::FillPortion(1), Length::Shrink),
-                        ],
-                    ]
-                    .spacing(4),
-                )
-                .padding(4)
-                .style(style::sorter_container)
+                show_sorting_button
+                    .style(move |theme, status| style::button::transparent(theme, status, true))
             } else {
-                container(column![])
-            },
+                show_sorting_button
+                    .style(move |theme, status| style::button::transparent(theme, status, false))
+            }
+        ]
+        .align_y(Vertical::Center)
+        .spacing(4);
+
+        let sort_options_column = {
+            let spot_market_button = button(text("Spot"))
+                .on_press(Message::SetMarketFilter(Some(MarketType::Spot)))
+                .style(move |theme, status| style::button::transparent(theme, status, false));
+
+            let perp_market_button = button(text("Linear Perps"))
+                .on_press(Message::SetMarketFilter(Some(MarketType::LinearPerps)))
+                .style(move |theme, status| style::button::transparent(theme, status, false));
+
+            let volume_sort_button = button(
+                row![
+                    text("Volume"),
+                    get_icon_text(
+                        if self.selected_sort_option == SortOptions::VolumeDesc {
+                            Icon::SortDesc
+                        } else {
+                            Icon::SortAsc
+                        },
+                        14
+                    )
+                ]
+                .spacing(4)
+                .align_y(Vertical::Center),
+            )
+            .on_press(Message::ChangeSortOption(SortOptions::VolumeAsc));
+
+            let change_sort_button = button(
+                row![
+                    text("Change"),
+                    get_icon_text(
+                        if self.selected_sort_option == SortOptions::ChangeDesc {
+                            Icon::SortDesc
+                        } else {
+                            Icon::SortAsc
+                        },
+                        14
+                    )
+                ]
+                .spacing(4)
+                .align_y(Vertical::Center),
+            )
+            .on_press(Message::ChangeSortOption(SortOptions::ChangeAsc));
+
+            column![
+                row![
+                    Space::new(Length::FillPortion(2), Length::Shrink),
+                    match self.selected_sort_option {
+                        SortOptions::VolumeAsc | SortOptions::VolumeDesc => volume_sort_button
+                            .style(move |theme, status| {
+                                style::button::transparent(theme, status, true)
+                            }),
+                        _ => volume_sort_button.style(move |theme, status| {
+                            style::button::transparent(theme, status, false)
+                        }),
+                    },
+                    Space::new(Length::FillPortion(1), Length::Shrink),
+                    match self.selected_sort_option {
+                        SortOptions::ChangeAsc | SortOptions::ChangeDesc => change_sort_button
+                            .style(move |theme, status| {
+                                style::button::transparent(theme, status, true)
+                            }),
+                        _ => change_sort_button.style(move |theme, status| {
+                            style::button::transparent(theme, status, false)
+                        }),
+                    },
+                    Space::new(Length::FillPortion(2), Length::Shrink),
+                ],
+                row![
+                    Space::new(Length::FillPortion(1), Length::Shrink),
+                    match self.selected_market {
+                        Some(MarketType::Spot) => spot_market_button.style(move |theme, status| {
+                            style::button::transparent(theme, status, true)
+                        }),
+                        _ => spot_market_button.style(move |theme, status| {
+                            style::button::transparent(theme, status, false)
+                        }),
+                    },
+                    Space::new(Length::FillPortion(1), Length::Shrink),
+                    match self.selected_market {
+                        Some(MarketType::LinearPerps) =>
+                            perp_market_button.style(move |theme, status| {
+                                style::button::transparent(theme, status, true)
+                            }),
+                        _ => perp_market_button.style(move |theme, status| {
+                            style::button::transparent(theme, status, false)
+                        }),
+                    },
+                    Space::new(Length::FillPortion(1), Length::Shrink),
+                ],
+                horizontal_rule(1.0).style(style::split_ruler),
+            ]
+            .padding(4)
+            .spacing(4)
+        };
+
+        let exchange_filters_row = {
+            let all_button = create_tab_button(text("ALL"), &self.selected_tab, TickerTab::All);
+            let bybit_button =
+                create_tab_button(text("Bybit"), &self.selected_tab, TickerTab::Bybit);
+            let binance_button =
+                create_tab_button(text("Binance"), &self.selected_tab, TickerTab::Binance);
+            let favorites_button = create_tab_button(
+                text(char::from(Icon::StarFilled).to_string()).font(ICON_FONT),
+                &self.selected_tab,
+                TickerTab::Favorites,
+            );
+
             row![
                 favorites_button,
-                Space::new(Length::FillPortion(1), Length::Shrink),
+                horizontal_space(),
                 all_button,
-                Space::new(Length::FillPortion(1), Length::Shrink),
+                horizontal_space(),
                 bybit_button,
-                Space::new(Length::FillPortion(1), Length::Shrink),
+                horizontal_space(),
                 binance_button,
             ]
-            .padding(padding::bottom(4)),
-        ]
-        .spacing(4)
-        .padding(padding::right(8))
-        .width(Length::Fill);
+        };
+
+        let mut content = column![search_bar_row,]
+            .spacing(8)
+            .padding(padding::right(8))
+            .width(Length::Fill);
+
+        if self.show_sort_options {
+            content = content.push(sort_options_column);
+        };
+
+        content = content.push(exchange_filters_row);
+
+        let mut ticker_cards = column![].spacing(4);
 
         match self.selected_tab {
             TickerTab::All => {
-                content =
+                ticker_cards =
                     self.combined_tickers
                         .iter()
                         .filter(|(_, ticker, _, _)| {
@@ -466,17 +472,17 @@ impl TickersTable {
                         })
                         .enumerate()
                         .fold(
-                            content,
-                            |content, (index, (exchange, ticker, _, is_fav))| {
+                            ticker_cards,
+                            |ticker_cards, (index, (exchange, ticker, _, is_fav))| {
                                 let is_visible = self.is_container_visible(index, bounds);
-                                content.push(self.create_ticker_container(
+                                ticker_cards.push(self.create_ticker_container(
                                     is_visible, *exchange, ticker, *is_fav,
                                 ))
                             },
                         );
             }
             TickerTab::Favorites => {
-                content =
+                ticker_cards =
                     self.combined_tickers
                         .iter()
                         .filter(|(_, ticker, _, is_fav)| {
@@ -490,17 +496,17 @@ impl TickersTable {
                         })
                         .enumerate()
                         .fold(
-                            content,
-                            |content, (index, (exchange, ticker, _, is_fav))| {
+                            ticker_cards,
+                            |ticker_cards, (index, (exchange, ticker, _, is_fav))| {
                                 let is_visible = self.is_container_visible(index, bounds);
-                                content.push(self.create_ticker_container(
+                                ticker_cards.push(self.create_ticker_container(
                                     is_visible, *exchange, ticker, *is_fav,
                                 ))
                             },
                         );
             }
             _ => {
-                content = self
+                ticker_cards = self
                     .combined_tickers
                     .iter()
                     .filter(|(ex, ticker, _, _)| {
@@ -513,12 +519,19 @@ impl TickersTable {
                             }
                     })
                     .enumerate()
-                    .fold(content, |content, (index, (ex, ticker, _, is_fav))| {
-                        let is_visible = self.is_container_visible(index, bounds);
-                        content.push(self.create_ticker_container(is_visible, *ex, ticker, *is_fav))
-                    });
+                    .fold(
+                        ticker_cards,
+                        |ticker_cards, (index, (ex, ticker, _, is_fav))| {
+                            let is_visible = self.is_container_visible(index, bounds);
+                            ticker_cards.push(
+                                self.create_ticker_container(is_visible, *ex, ticker, *is_fav),
+                            )
+                        },
+                    );
             }
         }
+
+        content = content.push(ticker_cards);
 
         scrollable::Scrollable::with_direction(
             content,
