@@ -1,4 +1,3 @@
-use regex::Regex;
 use serde_json::Value;
 use serde_json::json;
 use sonic_rs::to_object_iter_unchecked;
@@ -213,6 +212,7 @@ async fn connect(
         match market_type {
             MarketType::Spot => "spot",
             MarketType::LinearPerps => "linear",
+            MarketType::InversePerps => "inverse",
         }
     );
     setup_websocket_connection(domain, tls_stream, &url).await
@@ -226,6 +226,7 @@ async fn try_connect(
     let exchange = match market_type {
         MarketType::Spot => Exchange::BybitSpot,
         MarketType::LinearPerps => Exchange::BybitLinear,
+        MarketType::InversePerps => Exchange::BybitInverse,
     };
 
     match connect("stream.bybit.com", market_type).await {
@@ -271,6 +272,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let exchange = match market_type {
             MarketType::Spot => Exchange::BybitSpot,
             MarketType::LinearPerps => Exchange::BybitLinear,
+            MarketType::InversePerps => Exchange::BybitInverse,
         };
 
         let stream_1 = format!("publicTrade.{symbol_str}");
@@ -278,7 +280,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
             "orderbook.{}.{}",
             match market_type {
                 MarketType::Spot => "200",
-                MarketType::LinearPerps => "500",
+                MarketType::LinearPerps | MarketType::InversePerps => "500",
             },
             symbol_str,
         );
@@ -395,6 +397,7 @@ pub fn connect_kline_stream(
         let exchange = match market_type {
             MarketType::Spot => Exchange::BybitSpot,
             MarketType::LinearPerps => Exchange::BybitLinear,
+            MarketType::InversePerps => Exchange::BybitInverse,
         };
 
         let stream_str = streams
@@ -622,6 +625,7 @@ pub async fn fetch_klines(
     let market = match market_type {
         MarketType::Spot => "spot",
         MarketType::LinearPerps => "linear",
+        MarketType::InversePerps => "inverse",
     };
 
     let mut url = format!(
@@ -678,6 +682,7 @@ pub async fn fetch_ticksize(
     let market = match market_type {
         MarketType::Spot => "spot",
         MarketType::LinearPerps => "linear",
+        MarketType::InversePerps => "inverse",
     };
 
     let url =
@@ -695,15 +700,21 @@ pub async fn fetch_ticksize(
 
     let mut ticker_info_map = HashMap::new();
 
-    let re = Regex::new(r"^[a-zA-Z0-9]+$").unwrap();
-
     for item in result_list {
         let symbol = item["symbol"]
             .as_str()
             .ok_or_else(|| StreamError::ParseError("Symbol not found".to_string()))?;
 
-        if !re.is_match(symbol) {
-            continue;
+        if let Some(contract_type) = item["contractType"].as_str() {
+            if contract_type != "LinearPerpetual" && contract_type != "InversePerpetual" {
+                continue;
+            }
+        }
+
+        if let Some(quote_asset) = item["quoteAsset"].as_str() {
+            if quote_asset != "USDT" && quote_asset != "USD" {
+                continue;
+            }
         }
 
         let price_filter = item["priceFilter"]
@@ -730,7 +741,8 @@ pub async fn fetch_ticksize(
     Ok(ticker_info_map)
 }
 
-const PERP_FILTER_VOLUME: f32 = 12_000_000.0;
+const LINEAR_FILTER_VOLUME: f32 = 12_000_000.0;
+const INVERSE_FILTER_VOLUME: f32 = 1_000.0;
 const SPOT_FILTER_VOLUME: f32 = 4_000_000.0;
 
 pub async fn fetch_ticker_prices(
@@ -738,7 +750,8 @@ pub async fn fetch_ticker_prices(
 ) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
     let (market, volume_threshold) = match market_type {
         MarketType::Spot => ("spot", SPOT_FILTER_VOLUME),
-        MarketType::LinearPerps => ("linear", PERP_FILTER_VOLUME),
+        MarketType::LinearPerps => ("linear", LINEAR_FILTER_VOLUME),
+        MarketType::InversePerps => ("inverse", INVERSE_FILTER_VOLUME),
     };
 
     let url = format!("https://api.bybit.com/v5/market/tickers?category={market}");
@@ -754,16 +767,10 @@ pub async fn fetch_ticker_prices(
 
     let mut ticker_prices_map = HashMap::new();
 
-    let re = Regex::new(r"^[a-zA-Z0-9]+$").unwrap();
-
     for item in result_list {
         let symbol = item["symbol"]
             .as_str()
             .ok_or_else(|| StreamError::ParseError("Symbol not found".to_string()))?;
-
-        if !re.is_match(symbol) {
-            continue;
-        }
 
         let mark_price = item["lastPrice"]
             .as_str()
@@ -785,16 +792,20 @@ pub async fn fetch_ticker_prices(
             .parse::<f32>()
             .map_err(|_| StreamError::ParseError("Failed to parse daily volume".to_string()))?;
 
-        let quote_volume = daily_volume * mark_price;
+        let volume_in_usd = if market_type == MarketType::InversePerps {
+            daily_volume
+        } else {
+            daily_volume * mark_price
+        };
 
-        if quote_volume < volume_threshold {
+        if volume_in_usd < volume_threshold {
             continue;
         }
 
         let ticker_stats = TickerStats {
             mark_price,
             daily_price_chg: daily_price_chg * 100.0,
-            daily_volume: quote_volume,
+            daily_volume: volume_in_usd,
         };
 
         ticker_prices_map.insert(Ticker::new(symbol, market_type), ticker_stats);

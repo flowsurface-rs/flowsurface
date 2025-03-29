@@ -118,7 +118,9 @@ impl Ticker {
 
         assert!(base_len <= 20, "Ticker too long");
         assert!(
-            ticker.chars().all(|c| c.is_ascii_alphanumeric()),
+            ticker
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "Invalid character in ticker: {ticker:?}"
         );
 
@@ -129,6 +131,7 @@ impl Ticker {
             let value = match c {
                 b'0'..=b'9' => c - b'0',
                 b'A'..=b'Z' => c - b'A' + 10,
+                b'_' => 36,
                 _ => unreachable!(),
             };
             let shift = (i % 10) * 6;
@@ -150,6 +153,7 @@ impl Ticker {
             let c = match value {
                 0..=9 => (b'0' + value as u8) as char,
                 10..=35 => (b'A' + (value as u8 - 10)) as char,
+                36 => '_',
                 _ => unreachable!(),
             };
             result.push(c);
@@ -161,12 +165,12 @@ impl Ticker {
 
 impl fmt::Display for Ticker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Direct formatting without intermediate String allocation
         for i in 0..self.len {
             let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
             let c = match value {
                 0..=9 => (b'0' + value as u8) as char,
                 10..=35 => (b'A' + (value as u8 - 10)) as char,
+                36 => '_',
                 _ => unreachable!(),
             };
             f.write_char(c)?;

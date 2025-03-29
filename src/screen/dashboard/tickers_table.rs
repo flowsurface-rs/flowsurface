@@ -205,7 +205,7 @@ impl TickersTable {
             ticker_str + {
                 match market {
                     MarketType::Spot => "",
-                    MarketType::LinearPerps => "P",
+                    MarketType::LinearPerps | MarketType::InversePerps => "P",
                 }
             }
         };
@@ -221,8 +221,14 @@ impl TickersTable {
 
     fn matches_exchange(ex: &Exchange, tab: &TickerTab) -> bool {
         match tab {
-            TickerTab::Bybit => matches!(ex, Exchange::BybitLinear | Exchange::BybitSpot),
-            TickerTab::Binance => matches!(ex, Exchange::BinanceFutures | Exchange::BinanceSpot),
+            TickerTab::Bybit => matches!(
+                ex,
+                Exchange::BybitLinear | Exchange::BybitSpot | Exchange::BybitInverse
+            ),
+            TickerTab::Binance => matches!(
+                ex,
+                Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot
+            ),
             _ => false,
         }
     }
@@ -331,8 +337,12 @@ impl TickersTable {
                 .on_press(Message::SetMarketFilter(Some(MarketType::Spot)))
                 .style(move |theme, status| style::button::transparent(theme, status, false));
 
-            let perp_market_button = button(text("Linear Perps"))
+            let linear_markets_btn = button(text("Linear"))
                 .on_press(Message::SetMarketFilter(Some(MarketType::LinearPerps)))
+                .style(move |theme, status| style::button::transparent(theme, status, false));
+
+            let inverse_markets_btn = button(text("Inverse"))
+                .on_press(Message::SetMarketFilter(Some(MarketType::InversePerps)))
                 .style(move |theme, status| style::button::transparent(theme, status, false));
 
             let volume_sort_button = button(
@@ -406,10 +416,20 @@ impl TickersTable {
                     Space::new(Length::FillPortion(1), Length::Shrink),
                     match self.selected_market {
                         Some(MarketType::LinearPerps) =>
-                            perp_market_button.style(move |theme, status| {
+                            linear_markets_btn.style(move |theme, status| {
                                 style::button::transparent(theme, status, true)
                             }),
-                        _ => perp_market_button.style(move |theme, status| {
+                        _ => linear_markets_btn.style(move |theme, status| {
+                            style::button::transparent(theme, status, false)
+                        }),
+                    },
+                    Space::new(Length::FillPortion(1), Length::Shrink),
+                    match self.selected_market {
+                        Some(MarketType::InversePerps) =>
+                            inverse_markets_btn.style(move |theme, status| {
+                                style::button::transparent(theme, status, true)
+                            }),
+                        _ => inverse_markets_btn.style(move |theme, status| {
                             style::button::transparent(theme, status, false)
                         }),
                     },
@@ -562,10 +582,12 @@ fn create_ticker_card<'a>(
                 row![
                     row![
                         match exchange {
-                            Exchange::BybitLinear | Exchange::BybitSpot =>
-                                get_icon_text(Icon::BybitLogo, 12),
-                            Exchange::BinanceFutures | Exchange::BinanceSpot =>
-                                get_icon_text(Icon::BinanceLogo, 12),
+                            Exchange::BybitInverse
+                            | Exchange::BybitLinear
+                            | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 12),
+                            Exchange::BinanceInverse
+                            | Exchange::BinanceLinear
+                            | Exchange::BinanceSpot => get_icon_text(Icon::BinanceLogo, 12),
                         },
                         text(&display_data.display_ticker),
                     ]
@@ -616,15 +638,17 @@ fn create_expanded_ticker_card<'a>(
         .spacing(2),
         row![
             match exchange {
-                Exchange::BybitLinear | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 12),
-                Exchange::BinanceFutures | Exchange::BinanceSpot =>
+                Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot =>
+                    get_icon_text(Icon::BybitLogo, 12),
+                Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot =>
                     get_icon_text(Icon::BinanceLogo, 12),
             },
             text(
                 ticker_str + {
                     match market {
                         MarketType::Spot => "",
-                        MarketType::LinearPerps => " Perp",
+                        MarketType::LinearPerps => " Linear Perp",
+                        MarketType::InversePerps => " Inverse Perp",
                     }
                 }
             ),

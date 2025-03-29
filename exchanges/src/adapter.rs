@@ -26,6 +26,7 @@ pub enum StreamError {
 pub enum MarketType {
     Spot,
     LinearPerps,
+    InversePerps,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -44,9 +45,11 @@ pub enum StreamType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Exchange {
-    BinanceFutures,
+    BinanceLinear,
+    BinanceInverse,
     BinanceSpot,
     BybitLinear,
+    BybitInverse,
     BybitSpot,
 }
 
@@ -56,9 +59,11 @@ impl std::fmt::Display for Exchange {
             f,
             "{}",
             match self {
-                Exchange::BinanceFutures => "Binance Futures",
+                Exchange::BinanceLinear => "Binance Linear",
+                Exchange::BinanceInverse => "Binance Inverse",
                 Exchange::BinanceSpot => "Binance Spot",
                 Exchange::BybitLinear => "Bybit Linear",
+                Exchange::BybitInverse => "Bybit Inverse",
                 Exchange::BybitSpot => "Bybit Spot",
             }
         )
@@ -66,16 +71,19 @@ impl std::fmt::Display for Exchange {
 }
 
 impl Exchange {
-    pub const ALL: [Exchange; 4] = [
-        Exchange::BinanceFutures,
+    pub const ALL: [Exchange; 6] = [
+        Exchange::BinanceLinear,
+        Exchange::BinanceInverse,
         Exchange::BinanceSpot,
         Exchange::BybitLinear,
+        Exchange::BybitInverse,
         Exchange::BybitSpot,
     ];
 
     pub fn get_market_type(&self) -> MarketType {
         match self {
-            Exchange::BinanceFutures | Exchange::BybitLinear => MarketType::LinearPerps,
+            Exchange::BinanceLinear | Exchange::BybitLinear => MarketType::LinearPerps,
+            Exchange::BinanceInverse | Exchange::BybitInverse => MarketType::InversePerps,
             Exchange::BinanceSpot | Exchange::BybitSpot => MarketType::Spot,
         }
     }
@@ -100,10 +108,7 @@ pub struct StreamConfig<I> {
 
 impl<I> StreamConfig<I> {
     pub fn new(id: I, exchange: Exchange) -> Self {
-        let market_type = match exchange {
-            Exchange::BinanceFutures | Exchange::BybitLinear => MarketType::LinearPerps,
-            Exchange::BinanceSpot | Exchange::BybitSpot => MarketType::Spot,
-        };
+        let market_type = exchange.get_market_type();
 
         Self { id, market_type }
     }
@@ -115,10 +120,12 @@ pub async fn fetch_ticker_info(
     let market_type = exchange.get_market_type();
 
     match exchange {
-        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+        Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
             binance::fetch_ticksize(market_type).await
         }
-        Exchange::BybitLinear | Exchange::BybitSpot => bybit::fetch_ticksize(market_type).await,
+        Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
+            bybit::fetch_ticksize(market_type).await
+        }
     }
 }
 
@@ -128,10 +135,10 @@ pub async fn fetch_ticker_prices(
     let market_type = exchange.get_market_type();
 
     match exchange {
-        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+        Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
             binance::fetch_ticker_prices(market_type).await
         }
-        Exchange::BybitLinear | Exchange::BybitSpot => {
+        Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticker_prices(market_type).await
         }
     }
@@ -144,10 +151,10 @@ pub async fn fetch_klines(
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, StreamError> {
     match exchange {
-        Exchange::BinanceFutures | Exchange::BinanceSpot => {
+        Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
             binance::fetch_klines(ticker, timeframe, range).await
         }
-        Exchange::BybitLinear | Exchange::BybitSpot => {
+        Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_klines(ticker, timeframe, range).await
         }
     }
@@ -160,8 +167,12 @@ pub async fn fetch_open_interest(
     range: Option<(u64, u64)>,
 ) -> Result<Vec<OpenInterest>, StreamError> {
     match exchange {
-        Exchange::BinanceFutures => binance::fetch_historical_oi(ticker, range, timeframe).await,
-        Exchange::BybitLinear => bybit::fetch_historical_oi(ticker, range, timeframe).await,
+        Exchange::BinanceLinear | Exchange::BinanceInverse => {
+            binance::fetch_historical_oi(ticker, range, timeframe).await
+        }
+        Exchange::BybitLinear | Exchange::BybitInverse => {
+            bybit::fetch_historical_oi(ticker, range, timeframe).await
+        }
         _ => Err(StreamError::InvalidRequest("Invalid exchange".to_string())),
     }
 }

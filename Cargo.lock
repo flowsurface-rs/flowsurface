@@ -958,7 +958,6 @@ dependencies = [
  "iced_futures 0.13.2",
  "log",
  "ordered-float 5.0.0",
- "regex",
  "reqwest",
  "rust_decimal",
  "serde",

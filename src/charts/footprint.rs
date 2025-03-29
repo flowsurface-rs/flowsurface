@@ -305,24 +305,35 @@ impl FootprintChart {
                 }
 
                 if !self.fetching_trades {
-                    let (kline_earliest, _) = self.get_trades_timerange(kline_latest);
+                    if let Some(earliest_gap) = timeseries
+                        .data_points
+                        .range(visible_earliest..=visible_latest)
+                        .filter(|(_, dp)| dp.trades.is_empty())
+                        .map(|(time, _)| *time)
+                        .min()
+                    {
+                        let last_kline_before_gap = timeseries
+                            .data_points
+                            .range(..earliest_gap)
+                            .filter(|(_, dp)| !dp.trades.is_empty())
+                            .max_by_key(|(time, _)| *time)
+                            .map(|(time, _)| *time)
+                            .unwrap_or(earliest_gap);
 
-                    if visible_earliest < kline_earliest {
-                        let trade_earliest = self
-                            .raw_trades
-                            .iter()
-                            .filter(|trade| trade.time >= kline_earliest)
-                            .map(|trade| trade.time)
-                            .min();
+                        let first_kline_after_gap = timeseries
+                            .data_points
+                            .range(earliest_gap..)
+                            .filter(|(_, dp)| !dp.trades.is_empty())
+                            .min_by_key(|(time, _)| *time)
+                            .map(|(time, _)| *time)
+                            .unwrap_or(kline_latest);
 
-                        if let Some(earliest) = trade_earliest {
-                            if let Some(fetch_task) = request_fetch(
-                                &mut self.request_handler,
-                                FetchRange::Trades(visible_earliest, earliest),
-                            ) {
-                                self.fetching_trades = true;
-                                return Some(fetch_task);
-                            }
+                        if let Some(fetch_task) = request_fetch(
+                            &mut self.request_handler,
+                            FetchRange::Trades(last_kline_before_gap, first_kline_after_gap),
+                        ) {
+                            self.fetching_trades = true;
+                            return Some(fetch_task);
                         }
                     }
                 }
@@ -460,40 +471,6 @@ impl FootprintChart {
                 to_time = to_time.max(*time);
             });
         };
-
-        (from_time, to_time)
-    }
-
-    fn get_trades_timerange(&self, latest_kline: u64) -> (u64, u64) {
-        let mut from_time = latest_kline;
-        let mut to_time = 0;
-
-        match &self.data_source {
-            ChartData::TimeBased(source) => {
-                source
-                    .data_points
-                    .iter()
-                    .filter(|(_, dp)| !dp.trades.is_empty())
-                    .for_each(|(time, _)| {
-                        from_time = from_time.min(*time);
-                        to_time = to_time.max(*time);
-                    });
-            }
-            ChartData::TickBased(tick_aggr) => {
-                let earliest = tick_aggr
-                    .data_points
-                    .iter()
-                    .rev()
-                    .enumerate()
-                    .find(|(_, tick_kline)| !tick_kline.trades.is_empty())
-                    .map(|(index, _)| index);
-
-                if let Some(earliest) = earliest {
-                    from_time = tick_aggr.data_points.len() as u64 - earliest as u64;
-                    to_time = tick_aggr.data_points.len() as u64;
-                }
-            }
-        }
 
         (from_time, to_time)
     }

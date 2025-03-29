@@ -438,7 +438,10 @@ impl Dashboard {
             }
             Message::FetchTrades(pane_id, from_time, to_time, stream_type) => {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
-                    if exchange == Exchange::BinanceFutures || exchange == Exchange::BinanceSpot {
+                    if exchange == Exchange::BinanceSpot
+                        || exchange == Exchange::BinanceLinear
+                        || exchange == Exchange::BinanceInverse
+                    {
                         let data_path = get_data_path("market_data/binance/");
 
                         let dashboard_id = *layout_id;
@@ -1152,13 +1155,17 @@ impl Dashboard {
                         StreamType::DepthAndTrades { ticker, .. } => {
                             let config = StreamConfig::new(*ticker, *exchange);
                             Some(match exchange {
-                                Exchange::BinanceSpot | Exchange::BinanceFutures => {
+                                Exchange::BinanceSpot
+                                | Exchange::BinanceInverse
+                                | Exchange::BinanceLinear => {
                                     Subscription::run_with(config, move |cfg| {
                                         binance::connect_market_stream(cfg.id)
                                     })
                                     .map(market_msg.clone())
                                 }
-                                Exchange::BybitSpot | Exchange::BybitLinear => {
+                                Exchange::BybitSpot
+                                | Exchange::BybitLinear
+                                | Exchange::BybitInverse => {
                                     Subscription::run_with(config, move |cfg| {
                                         bybit::connect_market_stream(cfg.id)
                                     })
@@ -1188,13 +1195,13 @@ impl Dashboard {
                 let config = StreamConfig::new(kline_streams, *exchange);
 
                 market_subscriptions.push(match exchange {
-                    Exchange::BinanceSpot | Exchange::BinanceFutures => {
+                    Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
                         Subscription::run_with(config, move |cfg| {
                             binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
                         })
                         .map(market_msg.clone())
                     }
-                    Exchange::BybitSpot | Exchange::BybitLinear => {
+                    Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
                         Subscription::run_with(config, move |cfg| {
                             bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
                         })

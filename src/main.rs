@@ -102,7 +102,7 @@ enum Message {
     TickersTable(tickers_table::Message),
     ToggleTickersTable,
     UpdateTickersTable(Exchange, HashMap<Ticker, TickerStats>),
-    FetchForTickersTable,
+    FetchForTickersTable(Option<Exchange>),
 
     FetchForTickersInfo,
     UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
@@ -153,7 +153,6 @@ impl State {
                 .chain(Task::batch(vec![
                     Task::done(Message::LoadLayout(active_layout)),
                     Task::done(Message::SetTimezone(saved_state.timezone)),
-                    Task::done(Message::FetchForTickersTable),
                     Task::done(Message::FetchForTickersInfo),
                 ])),
         )
@@ -181,7 +180,10 @@ impl State {
                     "Received tickers info for {exchange}, len: {}",
                     tickers_info.len()
                 );
+
                 self.tickers_info.insert(exchange, tickers_info);
+
+                return Task::done(Message::FetchForTickersTable(Some(exchange)));
             }
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
@@ -390,30 +392,53 @@ impl State {
             Message::ToggleTickersTable => {
                 self.tickers_table.toggle_table();
             }
-            Message::UpdateTickersTable(exchange, tickers_info) => {
-                self.tickers_table.update_table(exchange, tickers_info);
-            }
-            Message::FetchForTickersTable => {
-                let fetch_tasks = {
-                    Exchange::ALL
-                        .iter()
-                        .map(|exchange| {
-                            Task::perform(
-                                fetch_ticker_prices(*exchange),
-                                move |result| match result {
-                                    Ok(ticker_info) => {
-                                        Message::UpdateTickersTable(*exchange, ticker_info)
-                                    }
-                                    Err(err) => Message::ErrorOccurred(InternalError::Fetch(
-                                        err.to_string(),
-                                    )),
-                                },
-                            )
-                        })
-                        .collect::<Vec<Task<Message>>>()
-                };
+            Message::UpdateTickersTable(exchange, ticker_stats) => {
+                let tickers = self
+                    .tickers_info
+                    .get(&exchange)
+                    .map(|info| info.keys().copied().collect::<Vec<_>>())
+                    .unwrap_or_default();
 
-                return Task::batch(fetch_tasks);
+                let filtered_tickers_stats = ticker_stats
+                    .into_iter()
+                    .filter(|(ticker, _)| tickers.iter().any(|t| t == ticker))
+                    .collect::<HashMap<Ticker, TickerStats>>();
+
+                self.tickers_table
+                    .update_table(exchange, filtered_tickers_stats);
+            }
+            Message::FetchForTickersTable(exchange) => {
+                if let Some(exchange) = exchange {
+                    return Task::perform(
+                        fetch_ticker_prices(exchange),
+                        move |result| match result {
+                            Ok(ticker_stats) => Message::UpdateTickersTable(exchange, ticker_stats),
+                            Err(err) => {
+                                Message::ErrorOccurred(InternalError::Fetch(err.to_string()))
+                            }
+                        },
+                    );
+                } else {
+                    let fetch_tasks = {
+                        Exchange::ALL
+                            .iter()
+                            .map(|exchange| {
+                                Task::perform(fetch_ticker_prices(*exchange), move |result| {
+                                    match result {
+                                        Ok(ticker_stats) => {
+                                            Message::UpdateTickersTable(*exchange, ticker_stats)
+                                        }
+                                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(
+                                            err.to_string(),
+                                        )),
+                                    }
+                                })
+                            })
+                            .collect::<Vec<Task<Message>>>()
+                    };
+
+                    return Task::batch(fetch_tasks);
+                }
             }
             Message::TickersTable(message) => {
                 if let tickers_table::Message::TickerSelected(ticker, exchange, content) = message {
@@ -924,7 +949,7 @@ impl State {
                 300
             },
         ))
-        .map(|_| Message::FetchForTickersTable);
+        .map(|_| Message::FetchForTickersTable(None));
 
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
     }

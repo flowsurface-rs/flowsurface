@@ -440,16 +440,18 @@ impl PaneState {
             stream_info_element = stream_info_element.push(
                 row![
                     match exchange {
-                        Exchange::BinanceFutures | Exchange::BinanceSpot =>
-                            get_icon_text(Icon::BinanceLogo, 14),
-                        Exchange::BybitLinear | Exchange::BybitSpot =>
+                        Exchange::BinanceSpot
+                        | Exchange::BinanceLinear
+                        | Exchange::BinanceInverse => get_icon_text(Icon::BinanceLogo, 14),
+                        Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot =>
                             get_icon_text(Icon::BybitLogo, 14),
                     },
                     text({
-                        if market == MarketType::LinearPerps {
-                            ticker_str + " PERP"
-                        } else {
-                            ticker_str
+                        match market {
+                            MarketType::Spot => ticker_str,
+                            MarketType::InversePerps | MarketType::LinearPerps => {
+                                ticker_str + " PERP"
+                            }
                         }
                     })
                     .size(14),
