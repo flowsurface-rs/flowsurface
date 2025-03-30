@@ -560,8 +560,27 @@ pub fn connect_kline_stream(
                             if let Ok(StreamData::Kline(ticker, de_kline)) =
                                 feed_de(&msg.payload[..], market)
                             {
-                                let buy_volume = de_kline.taker_buy_base_asset_volume;
-                                let sell_volume = de_kline.volume - buy_volume;
+                                let (buy_volume, sell_volume) = {
+                                    let buy_volume = de_kline.taker_buy_base_asset_volume;
+                                    let sell_volume = de_kline.volume - buy_volume;
+
+                                    match market {
+                                        MarketType::Spot => (buy_volume, sell_volume),
+                                        MarketType::LinearPerps => (buy_volume, sell_volume),
+                                        MarketType::InversePerps => {
+                                            let contract_size =
+                                                if ticker.get_string().0 == "BTCUSD_PERP" {
+                                                    100.0
+                                                } else {
+                                                    10.0
+                                                };
+                                            (
+                                                buy_volume * contract_size,
+                                                sell_volume * contract_size,
+                                            )
+                                        }
+                                    }
+                                };
 
                                 let kline = Kline {
                                     time: de_kline.time,
@@ -783,7 +802,33 @@ pub async fn fetch_klines(
     let fetched_klines: Vec<FetchedKlines> = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse klines: {e}")))?;
 
-    let klines: Vec<_> = fetched_klines.into_iter().map(Kline::from).collect();
+    let klines: Vec<_> = fetched_klines
+        .into_iter()
+        .map(|k| Kline {
+            time: k.0,
+            open: k.1,
+            high: k.2,
+            low: k.3,
+            close: k.4,
+            volume: match market_type {
+                MarketType::Spot => (k.5, k.9),
+                MarketType::LinearPerps => {
+                    let sell_volume = k.5 - k.9;
+                    (k.9, sell_volume)
+                }
+                MarketType::InversePerps => {
+                    let contract_size = if symbol_str == "BTCUSD_PERP" {
+                        100.0
+                    } else {
+                        10.0
+                    };
+
+                    let sell_volume = k.5 - k.9;
+                    (k.9 * contract_size, sell_volume * contract_size)
+                }
+            },
+        })
+        .collect();
 
     Ok(klines)
 }
