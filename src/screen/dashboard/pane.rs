@@ -335,12 +335,14 @@ impl PaneState {
                 )
             }
             "time&sales" => {
+                let _ = self.set_tickers_info(None, ticker_info);
+
                 let config = self
                     .settings
                     .visual_config
                     .and_then(|cfg| cfg.time_and_sales());
 
-                PaneContent::TimeAndSales(TimeAndSales::new(config))
+                PaneContent::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)))
             }
             _ => {
                 log::error!("content not found: {}", content_str);
@@ -760,10 +762,12 @@ impl PanelView for TimeAndSales {
     ) -> Element<Message> {
         let underlay = self.view(timezone);
 
+        let settings_view = config::timesales_cfg_view(self.get_config(), pane);
+
         match state.modal {
             PaneModal::Settings => pane_modal(
                 underlay,
-                config::timesales_cfg_view(self.get_config(), pane),
+                settings_view,
                 Message::ToggleModal(pane, PaneModal::None),
                 padding::right(12).left(12),
                 Alignment::End,

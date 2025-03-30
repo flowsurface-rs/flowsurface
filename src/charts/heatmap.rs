@@ -15,7 +15,7 @@ use iced::{
     theme::palette::Extended,
 };
 
-use exchanges::{TickerInfo, Trade, depth::Depth};
+use exchanges::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
 use super::scales::PriceInfoLabel;
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
@@ -437,6 +437,11 @@ impl HeatmapChart {
     }
 
     fn calc_qty_scales(&self, earliest: u64, latest: u64, highest: f32, lowest: f32) -> QtyScale {
+        let market_type = match self.chart.ticker_info {
+            Some(ref ticker_info) => ticker_info.get_market_type(),
+            None => return QtyScale::default(),
+        };
+
         let (mut max_aggr_volume, mut max_trade_qty) = (0.0f32, 0.0f32);
         let mut max_depth_qty = 0.0f32;
 
@@ -463,7 +468,14 @@ impl HeatmapChart {
                 runs.iter()
                     .filter_map(|run| {
                         let visible_run = run.get_visible_runs(earliest, latest)?;
-                        if **price * visible_run.qty.0 > self.visual_config.order_size_filter {
+
+                        let order_size = match market_type {
+                            MarketType::LinearPerps => **price * visible_run.qty.0,
+                            MarketType::InversePerps => visible_run.qty.0,
+                            _ => **price * visible_run.qty.0,
+                        };
+
+                        if order_size > self.visual_config.order_size_filter {
                             Some(visible_run)
                         } else {
                             None
@@ -525,6 +537,11 @@ impl canvas::Program<Message> for HeatmapChart {
             return vec![];
         }
 
+        let market_type = match self.chart.ticker_info {
+            Some(ref ticker_info) => ticker_info.get_market_type(),
+            None => return vec![],
+        };
+
         let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
         let bounds_size = bounds.size();
 
@@ -561,7 +578,14 @@ impl canvas::Program<Message> for HeatmapChart {
                     let y_position = chart.price_to_y(price.0);
 
                     runs.iter()
-                        .filter(|run| **price * run.qty.0 > self.visual_config.order_size_filter)
+                        .filter(|run| {
+                            let order_size = match market_type {
+                                MarketType::LinearPerps => **price * run.qty.0,
+                                MarketType::InversePerps => run.qty.0,
+                                _ => **price * run.qty.0,
+                            };
+                            order_size > self.visual_config.order_size_filter
+                        })
                         .for_each(|run| {
                             let start_x = chart.interval_to_x(run.start_time.max(earliest));
                             let end_x = chart.interval_to_x(run.until_time.min(latest)).min(0.0);
@@ -657,7 +681,13 @@ impl canvas::Program<Message> for HeatmapChart {
                     trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
 
-                        if trade.qty * trade.price > self.visual_config.trade_size_filter {
+                        let trade_size = match market_type {
+                            MarketType::LinearPerps => trade.qty * trade.price,
+                            MarketType::InversePerps => trade.qty,
+                            _ => trade.qty * trade.price,
+                        };
+
+                        if trade_size > self.visual_config.trade_size_filter {
                             let color = if trade.is_sell {
                                 palette.danger.base.color
                             } else {

@@ -702,10 +702,15 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
             stream_type,
             settings,
         } => {
+            if settings.ticker_info.is_none() {
+                log::info!("Skipping a TimeAndSales initialization due to missing ticker info");
+                return Configuration::Pane(PaneState::new());
+            }
+
             let config = settings.visual_config.and_then(|cfg| cfg.time_and_sales());
 
             Configuration::Pane(PaneState::from_config(
-                PaneContent::TimeAndSales(TimeAndSales::new(config)),
+                PaneContent::TimeAndSales(TimeAndSales::new(config, settings.ticker_info)),
                 stream_type,
                 settings,
             ))
