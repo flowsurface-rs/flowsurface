@@ -36,7 +36,7 @@ impl Indicator for CandlestickIndicator {
     fn get_available(market_type: Option<MarketType>) -> &'static [Self] {
         match market_type {
             Some(MarketType::Spot) => &Self::SPOT,
-            Some(MarketType::LinearPerps) => &Self::PERPS,
+            Some(MarketType::LinearPerps) | Some(MarketType::InversePerps) => &Self::PERPS,
             _ => &Self::ALL,
         }
     }
@@ -77,7 +77,7 @@ impl Indicator for HeatmapIndicator {
     fn get_available(market_type: Option<MarketType>) -> &'static [Self] {
         match market_type {
             Some(MarketType::Spot) => &Self::SPOT,
-            Some(MarketType::LinearPerps) => &Self::PERPS,
+            Some(MarketType::LinearPerps) | Some(MarketType::InversePerps) => &Self::PERPS,
             _ => &Self::ALL,
         }
     }
@@ -112,7 +112,7 @@ impl Indicator for FootprintIndicator {
     fn get_available(market_type: Option<MarketType>) -> &'static [Self] {
         match market_type {
             Some(MarketType::Spot) => &Self::SPOT,
-            Some(MarketType::LinearPerps) => &Self::PERPS,
+            Some(MarketType::LinearPerps) | Some(MarketType::InversePerps) => &Self::PERPS,
             _ => &Self::ALL,
         }
     }

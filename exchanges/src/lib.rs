@@ -203,6 +203,11 @@ impl TickerInfo {
     pub fn get_market_type(&self) -> MarketType {
         self.ticker.market_type
     }
+
+    pub fn is_perps(&self) -> bool {
+        self.ticker.market_type == MarketType::LinearPerps
+            || self.ticker.market_type == MarketType::InversePerps
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

@@ -15,7 +15,7 @@ use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vecto
 
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchanges::fetcher::{FetchRange, RequestHandler};
-use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade, adapter::MarketType};
+use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
 use super::scales::PriceInfoLabel;
 use super::{
@@ -288,9 +288,7 @@ impl CandlestickChart {
                 for data in self.indicators.values() {
                     if let IndicatorData::OpenInterest(_, _) = data {
                         if timeframe >= Timeframe::M5.to_milliseconds()
-                            && self.chart.ticker_info.is_some_and(|info| {
-                                info.get_market_type() == MarketType::LinearPerps
-                            })
+                            && self.chart.ticker_info.is_some_and(|t| t.is_perps())
                         {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
 

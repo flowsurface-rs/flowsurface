@@ -449,9 +449,8 @@ impl PaneState {
                     text({
                         match market {
                             MarketType::Spot => ticker_str,
-                            MarketType::InversePerps | MarketType::LinearPerps => {
-                                ticker_str + " PERP"
-                            }
+                            MarketType::LinearPerps => ticker_str + " PERP",
+                            MarketType::InversePerps => ticker_str,
                         }
                     })
                     .size(14),

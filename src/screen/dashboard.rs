@@ -1340,8 +1340,8 @@ fn get_oi_fetch_task(
     let fetch_task = match stream {
         StreamType::Kline {
             exchange,
-            ticker,
             timeframe,
+            ticker,
         } => Task::perform(
             adapter::fetch_open_interest(exchange, ticker, timeframe, range)
                 .map_err(|err| format!("{err}")),

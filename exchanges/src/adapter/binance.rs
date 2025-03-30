@@ -939,26 +939,146 @@ pub async fn fetch_ticker_prices(
             }
         };
 
-        let volume_in_usd = if market == MarketType::InversePerps {
-            volume
-        } else {
-            volume * last_price
-        };
-
-        if volume_in_usd < volume_threshold {
+        if volume < volume_threshold {
             continue;
         }
 
         let ticker_stats = TickerStats {
             mark_price: last_price,
             daily_price_chg: price_change_pt,
-            daily_volume: volume_in_usd,
+            daily_volume: match market {
+                MarketType::Spot | MarketType::LinearPerps => volume,
+                MarketType::InversePerps => {
+                    let contract_size = if symbol == "BTCUSD_PERP" { 100.0 } else { 10.0 };
+                    volume * contract_size
+                }
+            },
         };
 
         ticker_price_map.insert(Ticker::new(symbol, market), ticker_stats);
     }
 
     Ok(ticker_price_map)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeOpenInterest {
+    #[serde(rename = "timestamp")]
+    pub time: u64,
+    #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_f32")]
+    pub sum: f32,
+}
+
+const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+
+pub async fn fetch_historical_oi(
+    ticker: Ticker,
+    range: Option<(u64, u64)>,
+    period: Timeframe,
+) -> Result<Vec<OpenInterest>, StreamError> {
+    let (ticker_str, market) = ticker.get_string();
+    let period_str = period.to_string();
+
+    let (domain, pair_str) = match market {
+        MarketType::LinearPerps => (
+            "https://fapi.binance.com/futures/data/openInterestHist",
+            format!("?symbol={ticker_str}",),
+        ),
+        MarketType::InversePerps => (
+            "https://dapi.binance.com/futures/data/openInterestHist",
+            format!(
+                "?pair={}&contractType=PERPETUAL",
+                ticker_str.split('_').next().unwrap().to_string()
+            ),
+        ),
+        _ => {
+            let err_msg = format!("Unsupported market type for open interest: {market:?}");
+            log::error!("{}", err_msg);
+            return Err(StreamError::UnknownError(err_msg));
+        }
+    };
+
+    let mut url = format!("{domain}{pair_str}&period={period_str}",);
+
+    if let Some((start, end)) = range {
+        // API is limited to 30 days of historical data
+        let thirty_days_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Could not get system time")
+            .as_millis() as u64
+            - THIRTY_DAYS_MS;
+
+        if end < thirty_days_ago {
+            let err_msg = format!(
+                "Requested end time {end} is before available data (30 days is the API limit)"
+            );
+            log::error!("{}", err_msg);
+            return Err(StreamError::UnknownError(err_msg));
+        }
+
+        let adjusted_start = if start < thirty_days_ago {
+            log::warn!(
+                "Adjusting start time from {} to {} (30 days limit)",
+                start,
+                thirty_days_ago
+            );
+            thirty_days_ago
+        } else {
+            start
+        };
+
+        let interval_ms = period.to_milliseconds();
+        let num_intervals = ((end - adjusted_start) / interval_ms).min(500);
+
+        url.push_str(&format!(
+            "&startTime={adjusted_start}&endTime={end}&limit={num_intervals}"
+        ));
+    } else {
+        url.push_str("&limit=400");
+    }
+
+    let response = reqwest::get(&url).await.map_err(|e| {
+        log::error!("Failed to fetch from {}: {}", url, e);
+        StreamError::FetchError(e)
+    })?;
+
+    let text = response.text().await.map_err(|e| {
+        log::error!("Failed to get response text from {}: {}", url, e);
+        StreamError::FetchError(e)
+    })?;
+
+    let binance_oi: Vec<DeOpenInterest> = serde_json::from_str(&text).map_err(|e| {
+        log::error!(
+            "Failed to parse response from {}: {}\nResponse: {}",
+            url,
+            e,
+            text
+        );
+        StreamError::ParseError(format!("Failed to parse open interest: {e}"))
+    })?;
+
+    let open_interest = binance_oi
+        .iter()
+        .map(|x| OpenInterest {
+            time: x.time,
+            value: match market {
+                MarketType::LinearPerps => x.sum,
+                MarketType::InversePerps => {
+                    let contract_size = if ticker_str == "BTCUSD_PERP" {
+                        100.0
+                    } else {
+                        10.0
+                    };
+
+                    x.sum * contract_size
+                }
+                _ => 0.0,
+            },
+        })
+        .collect::<Vec<OpenInterest>>();
+
+    Ok(open_interest)
 }
 
 async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result<(), StreamError> {
@@ -1165,107 +1285,4 @@ pub async fn get_hist_trades(
             "Failed to open compressed file: {e}"
         ))),
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeOpenInterest {
-    #[serde(rename = "timestamp")]
-    pub time: u64,
-    #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_f32")]
-    pub sum: f32,
-}
-
-const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
-
-pub async fn fetch_historical_oi(
-    ticker: Ticker,
-    range: Option<(u64, u64)>,
-    period: Timeframe,
-) -> Result<Vec<OpenInterest>, StreamError> {
-    let ticker_str = ticker.get_string().0.to_uppercase();
-    let period_str = match period {
-        Timeframe::M5 => "5m",
-        Timeframe::M15 => "15m",
-        Timeframe::M30 => "30m",
-        Timeframe::H1 => "1h",
-        Timeframe::H2 => "2h",
-        Timeframe::H4 => "4h",
-        _ => {
-            let err_msg = format!("Unsupported timeframe for open interest: {period}");
-            log::error!("{}", err_msg);
-            return Err(StreamError::UnknownError(err_msg));
-        }
-    };
-
-    let mut url = format!(
-        "https://fapi.binance.com/futures/data/openInterestHist?symbol={ticker_str}&period={period_str}",
-    );
-
-    if let Some((start, end)) = range {
-        // This API seems to be limited to 30 days of historical data
-        let thirty_days_ago = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Could not get system time")
-            .as_millis() as u64
-            - THIRTY_DAYS_MS;
-
-        if end < thirty_days_ago {
-            let err_msg = format!(
-                "Requested end time {end} is before available data (30 days is the API limit)"
-            );
-            log::error!("{}", err_msg);
-            return Err(StreamError::UnknownError(err_msg));
-        }
-
-        let adjusted_start = if start < thirty_days_ago {
-            log::warn!(
-                "Adjusting start time from {} to {} (30 days limit)",
-                start,
-                thirty_days_ago
-            );
-            thirty_days_ago
-        } else {
-            start
-        };
-
-        let interval_ms = period.to_milliseconds();
-        let num_intervals = ((end - adjusted_start) / interval_ms).min(500);
-
-        url.push_str(&format!(
-            "&startTime={adjusted_start}&endTime={end}&limit={num_intervals}"
-        ));
-    } else {
-        url.push_str("&limit=400");
-    }
-
-    let response = reqwest::get(&url).await.map_err(|e| {
-        log::error!("Failed to fetch from {}: {}", url, e);
-        StreamError::FetchError(e)
-    })?;
-
-    let text = response.text().await.map_err(|e| {
-        log::error!("Failed to get response text from {}: {}", url, e);
-        StreamError::FetchError(e)
-    })?;
-
-    let binance_oi: Vec<DeOpenInterest> = serde_json::from_str(&text).map_err(|e| {
-        log::error!(
-            "Failed to parse response from {}: {}\nResponse: {}",
-            url,
-            e,
-            text
-        );
-        StreamError::ParseError(format!("Failed to parse open interest: {e}"))
-    })?;
-
-    let open_interest = binance_oi
-        .iter()
-        .map(|x| OpenInterest {
-            time: x.time,
-            value: x.sum,
-        })
-        .collect();
-
-    Ok(open_interest)
 }
