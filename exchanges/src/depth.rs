@@ -83,10 +83,18 @@ impl LocalDepthCache {
         self.last_update_id
     }
 
-    pub fn get_depth(&self) -> Depth {
+    pub fn get_depth(&self, contract_size: f32) -> Depth {
         Depth {
-            bids: self.bids.clone(),
-            asks: self.asks.clone(),
+            bids: self
+                .bids
+                .iter()
+                .map(|(price, qty)| (OrderedFloat(price.0), qty * contract_size))
+                .collect(),
+            asks: self
+                .asks
+                .iter()
+                .map(|(price, qty)| (OrderedFloat(price.0), qty * contract_size))
+                .collect(),
         }
     }
 }

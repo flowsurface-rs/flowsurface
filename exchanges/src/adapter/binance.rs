@@ -287,6 +287,18 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
             MarketType::InversePerps => "dstream.binance.com",
         };
 
+        let contract_size = match market {
+            MarketType::Spot => 1.0,
+            MarketType::LinearPerps => 1.0,
+            MarketType::InversePerps => {
+                if symbol_str == "BTCUSD_PERP" {
+                    100.0
+                } else {
+                    10.0
+                }
+            }
+        };
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -345,7 +357,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
                                                 price: de_trade.price,
-                                                qty: de_trade.qty,
+                                                qty: de_trade.qty * contract_size,
                                             };
 
                                             trades_buffer.push(trade);
@@ -399,7 +411,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                                     ticker,
                                                                 },
                                                                 de_depth.time,
-                                                                orderbook.get_depth(),
+                                                                orderbook.get_depth(contract_size),
                                                                 std::mem::take(&mut trades_buffer)
                                                                     .into_boxed_slice(),
                                                             ))
@@ -456,7 +468,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                                     ticker,
                                                                 },
                                                                 de_depth.time,
-                                                                orderbook.get_depth(),
+                                                                orderbook.get_depth(contract_size),
                                                                 std::mem::take(&mut trades_buffer)
                                                                     .into_boxed_slice(),
                                                             ))

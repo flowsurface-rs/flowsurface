@@ -91,9 +91,7 @@ pub fn get_data_path(path_name: &str) -> PathBuf {
     }
 }
 
-pub fn cleanup_old_market_data() -> usize {
-    let data_path = get_data_path("market_data/binance/data/futures/um/daily/aggTrades");
-
+fn cleanup_directory(data_path: PathBuf) -> usize {
     if !data_path.exists() {
         warn!("Data path {:?} does not exist, skipping cleanup", data_path);
         return 0;
@@ -104,10 +102,10 @@ pub fn cleanup_old_market_data() -> usize {
     let today = chrono::Local::now().date_naive();
     let mut deleted_files = Vec::new();
 
-    let entries = match std::fs::read_dir(data_path) {
+    let entries = match std::fs::read_dir(&data_path) {
         Ok(entries) => entries,
         Err(e) => {
-            error!("Failed to read data directory: {}", e);
+            error!("Failed to read data directory {:?}: {}", data_path, e);
             return 0;
         }
     };
@@ -144,9 +142,22 @@ pub fn cleanup_old_market_data() -> usize {
         }
     }
 
-    info!(
-        "File cleanup completed. Deleted {} files",
-        deleted_files.len()
-    );
     deleted_files.len()
+}
+
+pub fn cleanup_old_market_data() -> usize {
+    let paths = ["um", "cm"].map(|market_type| {
+        get_data_path(&format!(
+            "market_data/binance/data/futures/{}/daily/aggTrades",
+            market_type
+        ))
+    });
+
+    let total_deleted: usize = paths
+        .iter()
+        .map(|path| cleanup_directory(path.clone()))
+        .sum();
+
+    info!("File cleanup completed. Deleted {} files", total_deleted);
+    total_deleted
 }
