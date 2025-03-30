@@ -6,6 +6,8 @@ use exchanges::Trade;
 use iced::widget::{column, container, responsive, row, text};
 use iced::{Alignment, Element, Length, padding};
 
+use super::abbr_large_numbers;
+
 struct TradeDisplay {
     time_str: String,
     price: f32,
@@ -97,7 +99,7 @@ impl TimeAndSales {
                         .width(Length::FillPortion(8))
                         .align_x(Alignment::Center),
                     container(text(trade.price)).width(Length::FillPortion(6)),
-                    container(text(trade.qty)).width(Length::FillPortion(4))
+                    container(text(abbr_large_numbers(trade.qty))).width(Length::FillPortion(4))
                 ]
                 .height(Length::Fixed(TRADE_ROW_HEIGHT));
 

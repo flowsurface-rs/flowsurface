@@ -287,17 +287,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
             MarketType::InversePerps => "dstream.binance.com",
         };
 
-        let contract_size = match market {
-            MarketType::Spot => 1.0,
-            MarketType::LinearPerps => 1.0,
-            MarketType::InversePerps => {
-                if symbol_str == "BTCUSD_PERP" {
-                    100.0
-                } else {
-                    10.0
-                }
-            }
-        };
+        let contract_size = ticker.get_contract_size();
 
         loop {
             match &mut state {
@@ -573,25 +563,12 @@ pub fn connect_kline_stream(
                                 feed_de(&msg.payload[..], market)
                             {
                                 let (buy_volume, sell_volume) = {
+                                    let c_size = ticker.get_contract_size();
+
                                     let buy_volume = de_kline.taker_buy_base_asset_volume;
                                     let sell_volume = de_kline.volume - buy_volume;
 
-                                    match market {
-                                        MarketType::Spot => (buy_volume, sell_volume),
-                                        MarketType::LinearPerps => (buy_volume, sell_volume),
-                                        MarketType::InversePerps => {
-                                            let contract_size =
-                                                if ticker.get_string().0 == "BTCUSD_PERP" {
-                                                    100.0
-                                                } else {
-                                                    10.0
-                                                };
-                                            (
-                                                buy_volume * contract_size,
-                                                sell_volume * contract_size,
-                                            )
-                                        }
-                                    }
+                                    (c_size * buy_volume, c_size * sell_volume)
                                 };
 
                                 let kline = Kline {
@@ -1115,23 +1092,13 @@ pub async fn fetch_historical_oi(
         StreamError::ParseError(format!("Failed to parse open interest: {e}"))
     })?;
 
+    let contract_size = ticker.get_contract_size();
+
     let open_interest = binance_oi
         .iter()
         .map(|x| OpenInterest {
             time: x.time,
-            value: match market {
-                MarketType::LinearPerps => x.sum,
-                MarketType::InversePerps => {
-                    let contract_size = if ticker_str == "BTCUSD_PERP" {
-                        100.0
-                    } else {
-                        10.0
-                    };
-
-                    x.sum * contract_size
-                }
-                _ => 0.0,
-            },
+            value: x.sum * contract_size,
         })
         .collect::<Vec<OpenInterest>>();
 
