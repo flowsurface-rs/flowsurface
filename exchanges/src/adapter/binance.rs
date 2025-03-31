@@ -287,7 +287,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
             MarketType::InversePerps => "dstream.binance.com",
         };
 
-        let contract_size = ticker.get_contract_size();
+        let contract_size = get_contract_size(&ticker, market);
 
         loop {
             match &mut state {
@@ -347,7 +347,9 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
                                                 price: de_trade.price,
-                                                qty: de_trade.qty * contract_size,
+                                                qty: contract_size
+                                                    .map(|size| de_trade.qty * size)
+                                                    .unwrap_or(de_trade.qty),
                                             };
 
                                             trades_buffer.push(trade);
@@ -391,7 +393,10 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         || (prev_id == de_depth.prev_final_id)
                                                     {
                                                         orderbook.update_depth_cache(
-                                                            &new_depth_cache(&depth_type),
+                                                            &new_depth_cache(
+                                                                &depth_type,
+                                                                contract_size,
+                                                            ),
                                                         );
 
                                                         let _ = output
@@ -401,7 +406,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                                     ticker,
                                                                 },
                                                                 de_depth.time,
-                                                                orderbook.get_depth(contract_size),
+                                                                orderbook.get_depth(),
                                                                 std::mem::take(&mut trades_buffer)
                                                                     .into_boxed_slice(),
                                                             ))
@@ -448,7 +453,10 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         || (prev_id == de_depth.first_id - 1)
                                                     {
                                                         orderbook.update_depth_cache(
-                                                            &new_depth_cache(&depth_type),
+                                                            &new_depth_cache(
+                                                                &depth_type,
+                                                                contract_size,
+                                                            ),
                                                         );
 
                                                         let _ = output
@@ -458,7 +466,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                                     ticker,
                                                                 },
                                                                 de_depth.time,
-                                                                orderbook.get_depth(contract_size),
+                                                                orderbook.get_depth(),
                                                                 std::mem::take(&mut trades_buffer)
                                                                     .into_boxed_slice(),
                                                             ))
@@ -563,12 +571,14 @@ pub fn connect_kline_stream(
                                 feed_de(&msg.payload[..], market)
                             {
                                 let (buy_volume, sell_volume) = {
-                                    let c_size = ticker.get_contract_size();
-
                                     let buy_volume = de_kline.taker_buy_base_asset_volume;
                                     let sell_volume = de_kline.volume - buy_volume;
 
-                                    (c_size * buy_volume, c_size * sell_volume)
+                                    if let Some(c_size) = get_contract_size(&ticker, market) {
+                                        (buy_volume * c_size, sell_volume * c_size)
+                                    } else {
+                                        (buy_volume, sell_volume)
+                                    }
                                 };
 
                                 let kline = Kline {
@@ -623,48 +633,43 @@ pub fn connect_kline_stream(
     })
 }
 
-fn new_depth_cache(depth: &SonicDepth) -> TempLocalDepth {
-    match depth {
-        SonicDepth::Spot(de) => TempLocalDepth {
-            last_update_id: de.final_id,
-            time: de.time,
-            bids: de
-                .bids
-                .iter()
-                .map(|x| Order {
-                    price: x.price,
-                    qty: x.qty,
-                })
-                .collect(),
-            asks: de
-                .asks
-                .iter()
-                .map(|x| Order {
-                    price: x.price,
-                    qty: x.qty,
-                })
-                .collect(),
-        },
-        SonicDepth::Perp(de) => TempLocalDepth {
-            last_update_id: de.final_id,
-            time: de.time,
-            bids: de
-                .bids
-                .iter()
-                .map(|x| Order {
-                    price: x.price,
-                    qty: x.qty,
-                })
-                .collect(),
-            asks: de
-                .asks
-                .iter()
-                .map(|x| Order {
-                    price: x.price,
-                    qty: x.qty,
-                })
-                .collect(),
-        },
+fn get_contract_size(ticker: &Ticker, market_type: MarketType) -> Option<f32> {
+    match market_type {
+        MarketType::Spot => None,
+        MarketType::LinearPerps => None,
+        MarketType::InversePerps => {
+            if ticker.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
+                Some(100.0)
+            } else {
+                Some(10.0)
+            }
+        }
+    }
+}
+
+fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> TempLocalDepth {
+    let (time, final_id, bids, asks) = match depth {
+        SonicDepth::Spot(de) => (de.time, de.final_id, &de.bids, &de.asks),
+        SonicDepth::Perp(de) => (de.time, de.final_id, &de.bids, &de.asks),
+    };
+
+    TempLocalDepth {
+        last_update_id: final_id,
+        time,
+        bids: bids
+            .iter()
+            .map(|x| Order {
+                price: x.price,
+                qty: contract_size.map(|size| x.qty * size).unwrap_or(x.qty),
+            })
+            .collect(),
+        asks: asks
+            .iter()
+            .map(|x| Order {
+                price: x.price,
+                qty: contract_size.map(|size| x.qty * size).unwrap_or(x.qty),
+            })
+            .collect(),
     }
 }
 
@@ -1022,7 +1027,7 @@ pub async fn fetch_historical_oi(
             "https://dapi.binance.com/futures/data/openInterestHist",
             format!(
                 "?pair={}&contractType=PERPETUAL",
-                ticker_str.split('_').next().unwrap().to_string()
+                ticker_str.split('_').next().unwrap()
             ),
         ),
         _ => {
@@ -1091,13 +1096,22 @@ pub async fn fetch_historical_oi(
         StreamError::ParseError(format!("Failed to parse open interest: {e}"))
     })?;
 
-    let contract_size = ticker.get_contract_size();
+    let contract_size = match market {
+        MarketType::Spot | MarketType::LinearPerps => None,
+        MarketType::InversePerps => {
+            if ticker.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
+                Some(100.0)
+            } else {
+                Some(10.0)
+            }
+        }
+    };
 
     let open_interest = binance_oi
         .iter()
         .map(|x| OpenInterest {
             time: x.time,
-            value: x.sum * contract_size,
+            value: contract_size.map(|size| x.sum * size).unwrap_or(x.sum),
         })
         .collect::<Vec<OpenInterest>>();
 

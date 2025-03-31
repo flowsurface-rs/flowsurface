@@ -348,7 +348,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 .send(Event::DepthReceived(
                                                     StreamType::DepthAndTrades { exchange, ticker },
                                                     time,
-                                                    orderbook.get_depth(1.0),
+                                                    orderbook.get_depth(),
                                                     std::mem::take(&mut trades_buffer)
                                                         .into_boxed_slice(),
                                                 ))

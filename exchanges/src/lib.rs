@@ -186,19 +186,6 @@ impl Ticker {
     pub fn get_market_type(&self) -> MarketType {
         self.market_type
     }
-
-    pub fn get_contract_size(&self) -> f32 {
-        match self.market_type {
-            MarketType::Spot | MarketType::LinearPerps => 1.0,
-            MarketType::InversePerps => {
-                if self.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
-                    100.0
-                } else {
-                    10.0
-                }
-            }
-        }
-    }
 }
 
 impl fmt::Display for Ticker {
