@@ -50,15 +50,11 @@ fn main() {
     let main_window_cfg = window::Settings {
         size: saved_state
             .main_window
-            .map(|window| window.get_size())
-            .unwrap_or_else(window::default_size),
-        position: saved_state
-            .main_window
-            .map(|window| window.get_position())
-            .map_or(
-                iced::window::Position::Centered,
-                iced::window::Position::Specific,
-            ),
+            .map_or_else(window::default_size, |w| w.get_size()),
+        position: saved_state.main_window.map(|w| w.get_position()).map_or(
+            iced::window::Position::Centered,
+            iced::window::Position::Specific,
+        ),
         exit_on_close_request: false,
         ..window::settings()
     };
@@ -206,8 +202,8 @@ impl State {
                                 .update_depth_and_trades(
                                     &stream,
                                     depth_update_t,
-                                    depth,
-                                    trades_buffer,
+                                    &depth,
+                                    &trades_buffer,
                                     main_window_id,
                                 )
                                 .map(move |msg| Message::Dashboard(None, msg));
@@ -230,11 +226,8 @@ impl State {
                 WindowEvent::CloseRequested(window) => {
                     let main_window = self.main_window.id;
 
-                    let dashboard = match self.get_active_dashboard_mut() {
-                        Some(dashboard) => dashboard,
-                        None => {
-                            return iced::exit();
-                        }
+                    let Some(dashboard) = self.get_active_dashboard_mut() else {
+                        return iced::exit();
                     };
 
                     if window != main_window {
@@ -314,10 +307,7 @@ impl State {
             }
             Message::ErrorOccurred(err) => {
                 return match err {
-                    InternalError::Fetch(err) => {
-                        Task::done(Message::AddNotification(Toast::error(err)))
-                    }
-                    InternalError::Layout(err) => {
+                    InternalError::Fetch(err) | InternalError::Layout(err) => {
                         Task::done(Message::AddNotification(Toast::error(err)))
                     }
                 };
@@ -521,20 +511,17 @@ impl State {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
-        let dashboard = match self.get_active_dashboard() {
-            Some(dashboard) => dashboard,
-            None => {
-                return center(
-                    column![
-                        text("No dashboard available").size(20),
-                        button("Add new dashboard")
-                            .on_press(Message::ManageLayouts(layout::Message::AddLayout))
-                    ]
-                    .align_x(Alignment::Center)
-                    .spacing(8),
-                )
-                .into();
-            }
+        let Some(dashboard) = self.get_active_dashboard() else {
+            return center(
+                column![
+                    text("No dashboard available").size(20),
+                    button("Add new dashboard")
+                        .on_press(Message::ManageLayouts(layout::Message::AddLayout))
+                ]
+                .align_x(Alignment::Center)
+                .spacing(8),
+            )
+            .into();
         };
 
         let sidebar_pos = self.sidebar.position;
@@ -649,7 +636,7 @@ impl State {
                 .view(
                     &self.main_window,
                     self.layouts.is_layout_locked(),
-                    &self.timezone,
+                    self.timezone,
                 )
                 .map(move |msg| Message::Dashboard(None, msg));
 
@@ -902,7 +889,7 @@ impl State {
                         id,
                         &self.main_window,
                         self.layouts.is_layout_locked(),
-                        &self.timezone,
+                        self.timezone,
                     )
                     .map(move |msg| Message::Dashboard(None, msg)),
             )
@@ -933,11 +920,8 @@ impl State {
     fn subscription(&self) -> Subscription<Message> {
         let window_events = window_events().map(Message::WindowEvent);
 
-        let dashboard = match self.get_active_dashboard() {
-            Some(dashboard) => dashboard,
-            None => {
-                return window_events;
-            }
+        let Some(dashboard) = self.get_active_dashboard() else {
+            return window_events;
         };
 
         let exchange_streams = dashboard.get_market_subscriptions(Message::MarketWsEvent);

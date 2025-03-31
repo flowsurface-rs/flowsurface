@@ -736,7 +736,7 @@ impl FootprintChart {
     pub fn view<'a, I: Indicator>(
         &'a self,
         indicators: &'a [I],
-        timezone: &'a UserTimezone,
+        timezone: UserTimezone,
     ) -> Element<'a, Message> {
         view_chart(self, indicators, timezone)
     }

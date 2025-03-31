@@ -68,7 +68,6 @@ impl TimeAndSales {
                 };
 
                 let trade_size = match market_type {
-                    MarketType::LinearPerps => converted_trade.qty * converted_trade.price,
                     MarketType::InversePerps => converted_trade.qty,
                     _ => converted_trade.qty * converted_trade.price,
                 };
@@ -94,7 +93,7 @@ impl TimeAndSales {
         }
     }
 
-    pub fn view(&self, _timezone: &UserTimezone) -> Element<'_, Message> {
+    pub fn view(&self, _timezone: UserTimezone) -> Element<'_, Message> {
         responsive(move |size| {
             let market_type = match self.ticker_info {
                 Some(ref ticker_info) => ticker_info.get_market_type(),
@@ -114,7 +113,6 @@ impl TimeAndSales {
 
             let filtered_trades_iter = self.recent_trades.iter().filter(|t| {
                 let trade_size = match market_type {
-                    MarketType::LinearPerps => t.qty * t.price,
                     MarketType::InversePerps => t.qty,
                     _ => t.qty * t.price,
                 };

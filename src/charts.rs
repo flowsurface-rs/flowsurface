@@ -369,7 +369,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
 fn view_chart<'a, T: Chart, I: Indicator>(
     chart: &'a T,
     indicators: &'a [I],
-    timezone: &'a data::UserTimezone,
+    timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
     let chart_state = chart.get_common_data();
 
@@ -762,7 +762,7 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task
         Err(e) => {
             match e {
                 ReqError::Overlaps => {
-                    log::debug!("Request overlaps with existing request: {range:?}")
+                    log::debug!("Request overlaps with existing request: {range:?}");
                 }
                 ReqError::Failed(msg) => log::debug!("Request already failed: {msg}: {range:?}"),
                 ReqError::Completed => log::debug!("Request already completed: {range:?}"),
@@ -838,7 +838,7 @@ pub fn format_with_commas(num: f32) -> String {
     };
 
     let num_commas = (integer_part.len() - 1) / 3;
-    let decimal_len = decimal_part.map_or(0, |d| d.len());
+    let decimal_len = decimal_part.map_or(0, str::len);
     let capacity =
         (if is_negative { 1 } else { 0 }) + integer_part.len() + num_commas + decimal_len;
 

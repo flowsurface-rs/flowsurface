@@ -635,8 +635,7 @@ pub fn connect_kline_stream(
 
 fn get_contract_size(ticker: &Ticker, market_type: MarketType) -> Option<f32> {
     match market_type {
-        MarketType::Spot => None,
-        MarketType::LinearPerps => None,
+        MarketType::Spot | MarketType::LinearPerps => None,
         MarketType::InversePerps => {
             if ticker.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
                 Some(100.0)
@@ -1096,16 +1095,7 @@ pub async fn fetch_historical_oi(
         StreamError::ParseError(format!("Failed to parse open interest: {e}"))
     })?;
 
-    let contract_size = match market {
-        MarketType::Spot | MarketType::LinearPerps => None,
-        MarketType::InversePerps => {
-            if ticker.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
-                Some(100.0)
-            } else {
-                Some(10.0)
-            }
-        }
-    };
+    let contract_size = get_contract_size(&ticker, market);
 
     let open_interest = binance_oi
         .iter()

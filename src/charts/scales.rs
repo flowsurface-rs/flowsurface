@@ -159,7 +159,7 @@ pub struct AxisLabelsX<'a> {
     pub translation_x: f32,
     pub basis: Basis,
     pub cell_width: f32,
-    pub timezone: &'a UserTimezone,
+    pub timezone: UserTimezone,
     pub chart_bounds: Rectangle,
     pub interval_keys: Vec<u64>,
 }

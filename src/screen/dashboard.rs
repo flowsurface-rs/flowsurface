@@ -282,7 +282,7 @@ impl Dashboard {
                                         .or_default()
                                         .insert(*stream);
                                 }
-                                _ => {}
+                                StreamType::None => {}
                             }
                         }
 
@@ -403,7 +403,7 @@ impl Dashboard {
                     pane::Message::Merge => return self.merge_pane(main_window),
                     pane::Message::ToggleIndicator(pane, indicator_str) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            pane_state.content.toggle_indicator(indicator_str);
+                            pane_state.content.toggle_indicator(&indicator_str);
                         }
                     }
                     pane::Message::DeleteNotification(pane, idx) => {
@@ -450,7 +450,7 @@ impl Dashboard {
                             binance::fetch_trades(ticker, from_time, data_path),
                             move |result| match result {
                                 Ok(trades) => {
-                                    let data = FetchedData::Trades(trades.to_vec(), to_time);
+                                    let data = FetchedData::Trades(trades.clone(), to_time);
                                     Message::DistributeFetchedData(
                                         dashboard_id,
                                         pane_id,
@@ -732,7 +732,7 @@ impl Dashboard {
         &'a self,
         main_window: &'a Window,
         layout_locked: bool,
-        timezone: &'a UserTimezone,
+        timezone: UserTimezone,
     ) -> Element<'a, Message> {
         let focus = self.focus;
 
@@ -768,7 +768,7 @@ impl Dashboard {
         window: window::Id,
         main_window: &'a Window,
         layout_locked: bool,
-        timezone: &'a UserTimezone,
+        timezone: UserTimezone,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container({
@@ -870,10 +870,7 @@ impl Dashboard {
                 }
 
                 match &pane_state.content {
-                    PaneContent::Candlestick(_, _) => {
-                        return Ok((stream_type, pane_state.id));
-                    }
-                    PaneContent::Footprint(_, _) => {
+                    PaneContent::Candlestick(_, _) | PaneContent::Footprint(_, _) => {
                         return Ok((stream_type, pane_state.id));
                     }
                     _ => {}
@@ -931,7 +928,7 @@ impl Dashboard {
 
                 if last_trade_time < to_time {
                     match self.insert_fetched_trades(main_window, pane_uid, &trades, false) {
-                        Ok(_) => {
+                        Ok(()) => {
                             return Task::done(Message::FetchTrades(
                                 pane_uid,
                                 last_trade_time,
@@ -1055,8 +1052,8 @@ impl Dashboard {
         &mut self,
         stream: &StreamType,
         depth_update_t: u64,
-        depth: Depth,
-        trades_buffer: Box<[Trade]>,
+        depth: &Depth,
+        trades_buffer: &[Trade],
         main_window: window::Id,
     ) -> Task<Message> {
         let mut found_match = false;
@@ -1066,16 +1063,16 @@ impl Dashboard {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         PaneContent::Heatmap(chart, _) => {
-                            chart.insert_datapoint(&trades_buffer, depth_update_t, &depth);
+                            chart.insert_datapoint(trades_buffer, depth_update_t, depth);
                         }
                         PaneContent::Footprint(chart, _) => {
-                            chart.insert_trades_buffer(&trades_buffer, depth_update_t);
+                            chart.insert_trades_buffer(trades_buffer, depth_update_t);
                         }
                         PaneContent::TimeAndSales(chart) => {
-                            chart.update(&trades_buffer);
+                            chart.update(trades_buffer);
                         }
                         PaneContent::Candlestick(chart, _) => {
-                            chart.insert_trades_buffer(&trades_buffer);
+                            chart.insert_trades_buffer(trades_buffer);
                         }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");
@@ -1251,7 +1248,7 @@ impl Dashboard {
                             let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());
                             ticker_map.insert(StreamType::DepthAndTrades { exchange, ticker });
                         }
-                        _ => {}
+                        StreamType::None => {}
                     }
                 }
             });

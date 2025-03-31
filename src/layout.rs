@@ -100,9 +100,9 @@ impl LayoutManager {
         }
     }
 
-    fn ensure_unique_name(&self, proposed_name: String, current_id: Uuid) -> String {
+    fn ensure_unique_name(&self, proposed_name: &str, current_id: Uuid) -> String {
         let mut counter = 2;
-        let mut final_name = proposed_name.clone();
+        let mut final_name = proposed_name.to_string();
 
         while self
             .layouts
@@ -178,7 +178,7 @@ impl LayoutManager {
                 self.edit_mode = Editing::Preview;
             }
             Message::SetLayoutName(id, new_name) => {
-                let unique_name = self.ensure_unique_name(new_name, id);
+                let unique_name = self.ensure_unique_name(&new_name, id);
                 let updated_layout = Layout {
                     id,
                     name: unique_name,
@@ -209,7 +209,7 @@ impl LayoutManager {
                     let new_id = Uuid::new_v4();
                     let new_layout = Layout {
                         id: new_id,
-                        name: self.ensure_unique_name(layout.name.clone(), new_id),
+                        name: self.ensure_unique_name(&layout.name, new_id),
                     };
 
                     let ser_dashboard = data::Dashboard::from(dashboard);
