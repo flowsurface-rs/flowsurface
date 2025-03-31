@@ -263,7 +263,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
-        let (symbol_str, market) = ticker.get_string();
+        let (symbol_str, market) = ticker.to_full_symbol_and_type();
 
         let exchange = match market {
             MarketType::Spot => Exchange::BinanceSpot,
@@ -527,7 +527,7 @@ pub fn connect_kline_stream(
                 let timeframe_str = timeframe.to_string();
                 format!(
                     "{}@kline_{timeframe_str}",
-                    ticker.get_string().0.to_lowercase()
+                    ticker.to_full_symbol_and_type().0.to_lowercase()
                 )
             })
             .collect::<Vec<String>>()
@@ -669,7 +669,7 @@ fn new_depth_cache(depth: &SonicDepth) -> TempLocalDepth {
 }
 
 async fn fetch_depth(ticker: &Ticker) -> Result<TempLocalDepth, StreamError> {
-    let (symbol_str, market_type) = ticker.get_string();
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let base_url = match market_type {
         MarketType::Spot => "https://api.binance.com/api/v3/depth",
@@ -753,7 +753,7 @@ pub async fn fetch_klines(
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, StreamError> {
-    let (symbol_str, market_type) = ticker.get_string();
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
     let timeframe_str = timeframe.to_string();
 
     let base_url = match market_type {
@@ -800,8 +800,7 @@ pub async fn fetch_klines(
             low: k.3,
             close: k.4,
             volume: match market_type {
-                MarketType::Spot => (k.5, k.9),
-                MarketType::LinearPerps => {
+                MarketType::Spot | MarketType::LinearPerps => {
                     let sell_volume = k.5 - k.9;
                     (k.9, sell_volume)
                 }
@@ -1011,7 +1010,7 @@ pub async fn fetch_historical_oi(
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, StreamError> {
-    let (ticker_str, market) = ticker.get_string();
+    let (ticker_str, market) = ticker.to_full_symbol_and_type();
     let period_str = period.to_string();
 
     let (domain, pair_str) = match market {
@@ -1167,7 +1166,7 @@ pub async fn fetch_trades(
 }
 
 pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trade>, StreamError> {
-    let (symbol_str, market_type) = ticker.get_string();
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
     let base_url = match market_type {
         MarketType::Spot => "https://api.binance.com/api/v3/aggTrades",
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/aggTrades",
@@ -1214,7 +1213,7 @@ pub async fn get_hist_trades(
     date: chrono::NaiveDate,
     base_path: PathBuf,
 ) -> Result<Vec<Trade>, StreamError> {
-    let (symbol, market_type) = ticker.get_string();
+    let (symbol, market_type) = ticker.to_full_symbol_and_type();
 
     let market_subpath = match market_type {
         MarketType::Spot => format!("data/spot/daily/aggTrades/{symbol}"),

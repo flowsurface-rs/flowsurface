@@ -1298,11 +1298,11 @@ impl Dashboard {
                         move |result| match result {
                             Ok(_) => Message::GlobalNotification(Toast::warn(format!(
                                 "Fetched klines for stream with no matching panes: {exchange:?} {:?} {timeframe:?}",
-                                ticker.get_string(),
+                                ticker.to_full_symbol_and_type(),
                             ))),
                             Err(err) => Message::GlobalNotification(Toast::error(format!(
                                 "Failed to fetch klines for stream: {exchange:?} {:?} {timeframe:?} {err}",
-                                ticker.get_string(),
+                                ticker.to_full_symbol_and_type(),
                             ))),
                         },
                     );

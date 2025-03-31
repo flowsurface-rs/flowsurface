@@ -29,6 +29,20 @@ pub enum MarketType {
     InversePerps,
 }
 
+impl std::fmt::Display for MarketType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                MarketType::Spot => "Spot",
+                MarketType::LinearPerps => "Linear",
+                MarketType::InversePerps => "Inverse",
+            }
+        )
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum StreamType {
     Kline {

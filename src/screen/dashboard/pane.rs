@@ -431,32 +431,34 @@ impl PaneState {
         timezone: &'a UserTimezone,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut stream_info_element = row![]
-            .padding(padding::left(8))
+            .padding(padding::left(4))
             .align_y(Vertical::Center)
             .spacing(8)
             .height(Length::Fixed(32.0));
 
         if let Some((exchange, ticker)) = self.get_ticker_exchange() {
-            let (ticker_str, market) = ticker.get_string();
+            let (ticker_str, market) = ticker.display_symbol_and_type();
+
+            let exchange_icon = match exchange {
+                Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse => {
+                    get_icon_text(Icon::BinanceLogo, 14)
+                }
+                Exchange::BybitSpot | Exchange::BybitLinear | Exchange::BybitInverse => {
+                    get_icon_text(Icon::BybitLogo, 14)
+                }
+            };
 
             stream_info_element = stream_info_element.push(
                 row![
-                    match exchange {
-                        Exchange::BinanceSpot
-                        | Exchange::BinanceLinear
-                        | Exchange::BinanceInverse => get_icon_text(Icon::BinanceLogo, 14),
-                        Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot =>
-                            get_icon_text(Icon::BybitLogo, 14),
-                    },
-                    text({
-                        match market {
-                            MarketType::Spot => ticker_str,
-                            MarketType::LinearPerps => ticker_str + " PERP",
-                            MarketType::InversePerps => ticker_str,
-                        }
-                    })
-                    .size(14),
+                    container(
+                        row![exchange_icon, text(market.to_string()).size(14)]
+                            .padding(4)
+                            .spacing(2)
+                    )
+                    .style(style::market_type_bg),
+                    text(ticker_str).size(14),
                 ]
+                .align_y(Vertical::Center)
                 .spacing(4),
             );
         }

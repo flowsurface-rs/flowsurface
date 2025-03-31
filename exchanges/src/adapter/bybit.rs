@@ -267,7 +267,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
 
-        let (symbol_str, market_type) = ticker.get_string();
+        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
         let exchange = match market_type {
             MarketType::Spot => Exchange::BybitSpot,
@@ -404,7 +404,10 @@ pub fn connect_kline_stream(
             .iter()
             .map(|(ticker, timeframe)| {
                 let timeframe_str = timeframe.to_minutes().to_string();
-                format!("kline.{timeframe_str}.{}", ticker.get_string().0)
+                format!(
+                    "kline.{timeframe_str}.{}",
+                    ticker.to_full_symbol_and_type().0
+                )
             })
             .collect::<Vec<String>>();
 
@@ -503,7 +506,7 @@ pub async fn fetch_historical_oi(
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, StreamError> {
-    let ticker_str = ticker.get_string().0.to_uppercase();
+    let ticker_str = ticker.to_full_symbol_and_type().0.to_uppercase();
     let period_str = match period {
         Timeframe::M5 => "5min",
         Timeframe::M15 => "15min",
@@ -610,7 +613,7 @@ pub async fn fetch_klines(
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, StreamError> {
-    let (symbol_str, market_type) = &ticker.get_string();
+    let (symbol_str, market_type) = &ticker.to_full_symbol_and_type();
     let timeframe_str = timeframe.to_minutes().to_string();
 
     fn parse_kline_field<T: std::str::FromStr>(field: Option<&str>) -> Result<T, StreamError> {

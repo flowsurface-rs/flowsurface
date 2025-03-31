@@ -198,7 +198,7 @@ impl TickersTable {
     }
 
     fn compute_display_data(ticker: &Ticker, stats: &TickerStats) -> TickerDisplayData {
-        let (ticker_str, market) = ticker.get_string();
+        let (ticker_str, market) = ticker.display_symbol_and_type();
         let display_ticker = if ticker_str.len() >= 11 {
             ticker_str[..9].to_string() + "..."
         } else {
@@ -483,7 +483,7 @@ impl TickersTable {
                     self.combined_tickers
                         .iter()
                         .filter(|(_, ticker, _, _)| {
-                            let (ticker, market) = ticker.get_string();
+                            let (ticker, market) = ticker.to_full_symbol_and_type();
                             ticker.contains(&self.search_query)
                                 && match self.selected_market {
                                     Some(market_type) => market == market_type,
@@ -506,7 +506,7 @@ impl TickersTable {
                     self.combined_tickers
                         .iter()
                         .filter(|(_, ticker, _, is_fav)| {
-                            let (ticker, market) = ticker.get_string();
+                            let (ticker, market) = ticker.to_full_symbol_and_type();
                             *is_fav
                                 && ticker.contains(&self.search_query)
                                 && match self.selected_market {
@@ -530,7 +530,7 @@ impl TickersTable {
                     .combined_tickers
                     .iter()
                     .filter(|(ex, ticker, _, _)| {
-                        let (ticker, market) = ticker.get_string();
+                        let (ticker, market) = ticker.to_full_symbol_and_type();
                         Self::matches_exchange(ex, &self.selected_tab)
                             && ticker.contains(&self.search_query)
                             && match self.selected_market {
@@ -620,7 +620,7 @@ fn create_expanded_ticker_card<'a>(
     display_data: &'a TickerDisplayData,
     is_fav: bool,
 ) -> Column<'a, Message> {
-    let (ticker_str, market) = ticker.get_string();
+    let (ticker_str, market) = ticker.display_symbol_and_type();
 
     column![
         row![
@@ -644,13 +644,13 @@ fn create_expanded_ticker_card<'a>(
                     get_icon_text(Icon::BinanceLogo, 12),
             },
             text(
-                ticker_str + {
-                    match market {
+                ticker_str
+                    + " "
+                    + &market.to_string()
+                    + match market {
                         MarketType::Spot => "",
-                        MarketType::LinearPerps => " Linear Perp",
-                        MarketType::InversePerps => " Inverse Perp",
+                        MarketType::LinearPerps | MarketType::InversePerps => " Perp",
                     }
-                }
             ),
         ]
         .spacing(2),

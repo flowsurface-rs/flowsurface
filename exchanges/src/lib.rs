@@ -146,7 +146,7 @@ impl Ticker {
         }
     }
 
-    pub fn get_string(&self) -> (String, MarketType) {
+    pub fn to_full_symbol_and_type(&self) -> (String, MarketType) {
         let mut result = String::with_capacity(self.len as usize);
         for i in 0..self.len {
             let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
@@ -154,6 +154,27 @@ impl Ticker {
                 0..=9 => (b'0' + value as u8) as char,
                 10..=35 => (b'A' + (value as u8 - 10)) as char,
                 36 => '_',
+                _ => unreachable!(),
+            };
+            result.push(c);
+        }
+
+        (result, self.market_type)
+    }
+
+    pub fn display_symbol_and_type(&self) -> (String, MarketType) {
+        let mut result = String::with_capacity(self.len as usize);
+
+        for i in 0..self.len {
+            let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
+
+            if value == 36 {
+                break;
+            }
+
+            let c = match value {
+                0..=9 => (b'0' + value as u8) as char,
+                10..=35 => (b'A' + (value as u8 - 10)) as char,
                 _ => unreachable!(),
             };
             result.push(c);
@@ -170,7 +191,7 @@ impl Ticker {
         match self.market_type {
             MarketType::Spot | MarketType::LinearPerps => 1.0,
             MarketType::InversePerps => {
-                if self.get_string().0 == "BTCUSD_PERP" {
+                if self.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
                     100.0
                 } else {
                     10.0
