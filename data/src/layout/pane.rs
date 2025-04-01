@@ -1,4 +1,4 @@
-use exchanges::{TickMultiplier, TickerInfo, adapter::StreamType};
+use exchange::{TickMultiplier, TickerInfo, adapter::StreamType};
 use serde::{Deserialize, Serialize};
 
 use crate::chart::{

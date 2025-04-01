@@ -11,7 +11,7 @@ use data::{
     chart::Basis,
     layout::{WindowSpec, pane::Axis},
 };
-use exchanges::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
+use exchange::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
 
 use iced::widget::{
     Space, button, center, column, container,

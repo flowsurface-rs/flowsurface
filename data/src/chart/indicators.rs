@@ -3,7 +3,7 @@ use std::{
     fmt::{self, Display},
 };
 
-use exchanges::adapter::MarketType;
+use exchange::adapter::MarketType;
 use serde::{Deserialize, Serialize};
 
 pub trait Indicator: PartialEq + Display + std::fmt::Debug + 'static {

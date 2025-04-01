@@ -14,8 +14,8 @@ use iced::widget::{
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse};
 
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
-use exchanges::fetcher::{FetchRange, RequestHandler};
-use exchanges::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
+use exchange::fetcher::{FetchRange, RequestHandler};
+use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
 use super::scales::PriceInfoLabel;
 use super::{

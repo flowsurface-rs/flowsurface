@@ -10,7 +10,7 @@ use crate::{
     window::{self, Window},
 };
 
-use exchanges::{
+use exchange::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{self, Event as ExchangeEvent, Exchange, StreamConfig, binance, bybit},
     depth::Depth,

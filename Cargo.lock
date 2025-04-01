@@ -790,7 +790,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs-next",
- "exchanges",
+ "exchange",
  "iced_core 0.14.0-dev",
  "log",
  "ordered-float 5.0.0",
@@ -994,7 +994,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "exchanges"
+name = "exchange"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -1104,7 +1104,7 @@ version = "0.6.1"
 dependencies = [
  "chrono",
  "data",
- "exchanges",
+ "exchange",
  "fern",
  "iced",
  "iced_core 0.14.0-dev",

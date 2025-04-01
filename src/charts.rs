@@ -15,8 +15,8 @@ use scales::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 use crate::{style, widget::hsplit::HSplit, widget::tooltip};
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use data::chart::{Basis, ChartLayout, indicators::Indicator};
-use exchanges::fetcher::{FetchRange, ReqError, RequestHandler};
-use exchanges::{TickerInfo, Timeframe};
+use exchange::fetcher::{FetchRange, ReqError, RequestHandler};
+use exchange::{TickerInfo, Timeframe};
 
 pub mod candlestick;
 pub mod config;

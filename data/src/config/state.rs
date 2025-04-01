@@ -1,4 +1,4 @@
-use exchanges::{Ticker, adapter::Exchange};
+use exchange::{Ticker, adapter::Exchange};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::WindowSpec;

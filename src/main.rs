@@ -22,10 +22,10 @@ use widget::{
     notification::{self, Toast},
     tooltip,
 };
-use window::{Window, WindowEvent, window_events};
+use window::{Window, window_events};
 
 use data::{InternalError, config::theme::custom_theme, layout::WindowSpec, sidebar};
-use exchanges::{
+use exchange::{
     Ticker, TickerInfo, TickerStats,
     adapter::{
         Event as ExchangeEvent, Exchange, StreamType, fetch_ticker_info, fetch_ticker_prices,
@@ -76,10 +76,10 @@ fn main() {
 enum Message {
     ErrorOccurred(InternalError),
 
-    MarketWsEvent(ExchangeEvent),
+    MarketWsEvent(exchange::Event),
     ToggleTradeFetch(bool),
 
-    WindowEvent(WindowEvent),
+    WindowEvent(window::Event),
     SaveAndExit(HashMap<window::Id, WindowSpec>),
 
     ToggleLayoutLock,
@@ -223,7 +223,7 @@ impl State {
                 }
             }
             Message::WindowEvent(event) => match event {
-                WindowEvent::CloseRequested(window) => {
+                window::Event::CloseRequested(window) => {
                     let main_window = self.main_window.id;
 
                     let Some(dashboard) = self.get_active_dashboard_mut() else {

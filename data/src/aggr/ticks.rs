@@ -1,4 +1,4 @@
-use exchanges::Trade;
+use exchange::Trade;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

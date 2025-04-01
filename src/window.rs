@@ -23,11 +23,11 @@ pub fn default_size() -> Size {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum WindowEvent {
+pub enum Event {
     CloseRequested(window::Id),
 }
 
-pub fn window_events() -> Subscription<WindowEvent> {
+pub fn window_events() -> Subscription<Event> {
     iced::event::listen_with(filtered_events)
 }
 
@@ -35,10 +35,10 @@ fn filtered_events(
     event: iced::Event,
     _status: iced::event::Status,
     window: window::Id,
-) -> Option<WindowEvent> {
+) -> Option<Event> {
     match &event {
         iced::Event::Window(iced::window::Event::CloseRequested) => {
-            Some(WindowEvent::CloseRequested(window))
+            Some(Event::CloseRequested(window))
         }
         _ => None,
     }

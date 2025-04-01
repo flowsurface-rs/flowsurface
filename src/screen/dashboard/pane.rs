@@ -18,7 +18,7 @@ use data::{
     },
     layout::pane::PaneSettings,
 };
-use exchanges::{
+use exchange::{
     Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
     adapter::{Exchange, MarketType},
 };

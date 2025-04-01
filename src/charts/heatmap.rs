@@ -15,7 +15,7 @@ use iced::{
     theme::palette::Extended,
 };
 
-use exchanges::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
+use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
 use super::scales::PriceInfoLabel;
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};

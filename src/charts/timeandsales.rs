@@ -2,8 +2,8 @@ use crate::screen::dashboard::pane::Message;
 use crate::style::ts_table_container;
 use data::UserTimezone;
 use data::chart::timeandsales::Config;
-use exchanges::adapter::MarketType;
-use exchanges::{TickerInfo, Trade};
+use exchange::adapter::MarketType;
+use exchange::{TickerInfo, Trade};
 use iced::widget::{center, column, container, responsive, row, text};
 use iced::{Alignment, Element, Length, padding};
 

@@ -7,7 +7,7 @@ use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mou
 use crate::charts::{
     Basis, Caches, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
-use exchanges::Timeframe;
+use exchange::Timeframe;
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,

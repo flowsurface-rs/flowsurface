@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::style::{self, ICON_FONT, Icon, get_icon_text};
-use exchanges::{
+use exchange::{
     Ticker, TickerStats,
     adapter::{Exchange, MarketType},
 };

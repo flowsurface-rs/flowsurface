@@ -8,7 +8,7 @@ categories = ["finance", "visualization", "gui"]
 repository = "https://github.com/akenshaw/flowsurface"
 
 [workspace]
-members = [ "data", "exchanges"]
+members = [ "data", "exchange"]
 
 [workspace.dependencies]
 iced_futures = "0.13.2"
@@ -43,7 +43,7 @@ log.workspace = true
 uuid.workspace = true
 fern = "0.7.1"
 
-exchanges = { version = "0.1.0", path = "exchanges" }
+exchange = { version = "0.1.0", path = "exchange" }
 data = { version = "0.1.0", path = "data" }
 
 [patch.crates-io]

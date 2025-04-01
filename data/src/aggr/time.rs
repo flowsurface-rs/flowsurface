@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
-use exchanges::Timeframe;
+use exchange::Timeframe;
 use ordered_float::OrderedFloat;
 
-use exchanges::{Kline, Trade};
+use exchange::{Kline, Trade};
 
 use crate::chart::round_to_tick;
 
