@@ -385,7 +385,7 @@ impl PaneState {
                     *chart = CandlestickChart::new(
                         layout,
                         Basis::Time(timeframe.into()),
-                        &klines,
+                        klines,
                         raw_trades,
                         tick_size,
                         indicators,
@@ -405,7 +405,7 @@ impl PaneState {
                         layout,
                         Basis::Time(timeframe.into()),
                         tick_size,
-                        &klines,
+                        klines,
                         raw_trades,
                         indicators,
                         ticker_info,

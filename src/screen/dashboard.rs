@@ -731,13 +731,13 @@ impl Dashboard {
     pub fn view<'a>(
         &'a self,
         main_window: &'a Window,
-        layout_locked: bool,
+        layout_lock: bool,
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         let focus = self.focus;
 
         let mut pane_grid = PaneGrid::new(&self.panes, |id, pane, maximized| {
-            let is_focused = !layout_locked && focus == Some((main_window.id, id));
+            let is_focused = !layout_lock && focus == Some((main_window.id, id));
             pane.view(
                 id,
                 self.panes.len(),
@@ -751,7 +751,7 @@ impl Dashboard {
         .spacing(6)
         .style(style::pane_grid);
 
-        if !layout_locked {
+        if !layout_lock {
             pane_grid = pane_grid
                 .on_click(pane::Message::PaneClicked)
                 .on_resize(8, pane::Message::PaneResized)
@@ -767,7 +767,7 @@ impl Dashboard {
         &'a self,
         window: window::Id,
         main_window: &'a Window,
-        layout_locked: bool,
+        layout_lock: bool,
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
@@ -785,7 +785,7 @@ impl Dashboard {
                     )
                 });
 
-                if !layout_locked {
+                if !layout_lock {
                     pane_grid = pane_grid.on_click(pane::Message::PaneClicked);
                 }
                 pane_grid

@@ -109,7 +109,7 @@ enum Message {
 
 struct State {
     main_window: Window,
-    layouts: LayoutManager,
+    layout_manager: LayoutManager,
     tickers_table: TickersTable,
     tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
     confirm_dialog: Option<(String, Box<Message>)>,
@@ -132,7 +132,7 @@ impl State {
         (
             Self {
                 main_window: Window::new(main_window_id),
-                layouts: saved_state.layout_manager,
+                layout_manager: saved_state.layout_manager,
                 tickers_table: TickersTable::new(saved_state.favorited_tickers),
                 tickers_info: HashMap::new(),
                 confirm_dialog: None,
@@ -215,7 +215,7 @@ impl State {
                 }
             }
             Message::ToggleLayoutLock => {
-                self.layouts.toggle_layout_lock();
+                self.layout_manager.toggle_layout_lock();
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     dashboard.focus = None;
                 }
@@ -257,8 +257,8 @@ impl State {
 
                 let mut ser_layouts = Vec::new();
 
-                for id in &self.layouts.layout_order {
-                    if let Some((layout, dashboard)) = self.layouts.layouts.get(id) {
+                for id in &self.layout_manager.layout_order {
+                    if let Some((layout, dashboard)) = self.layout_manager.layouts.get(id) {
                         let serialized_dashboard = data::Dashboard::from(dashboard);
 
                         ser_layouts.push(data::Layout {
@@ -270,7 +270,7 @@ impl State {
 
                 let layouts = data::Layouts {
                     layouts: ser_layouts,
-                    active_layout: self.layouts.active_layout.name.clone(),
+                    active_layout: self.layout_manager.active_layout.name.clone(),
                 };
 
                 let main_window = windows
@@ -335,7 +335,7 @@ impl State {
                 }
             }
             Message::LoadLayout(layout) => {
-                self.layouts.active_layout = layout.clone();
+                self.layout_manager.active_layout = layout.clone();
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     dashboard.focus = None;
                     return dashboard
@@ -356,7 +356,7 @@ impl State {
                         data,
                         stream,
                     ) => {
-                        if let Some(dashboard) = self.layouts.get_mut_dashboard(&layout_id) {
+                        if let Some(dashboard) = self.layout_manager.get_mut_dashboard(&layout_id) {
                             return dashboard
                                 .distribute_fetched_data(main_window.id, pane_uid, data, stream)
                                 .map(move |msg| Message::Dashboard(Some(layout_id), msg));
@@ -367,9 +367,9 @@ impl State {
                         }
                     }
                     _ => {
-                        let layout_id = id.unwrap_or(self.layouts.active_layout.id);
+                        let layout_id = id.unwrap_or(self.layout_manager.active_layout.id);
 
-                        if let Some(dashboard) = self.layouts.get_mut_dashboard(&layout_id) {
+                        if let Some(dashboard) = self.layout_manager.get_mut_dashboard(&layout_id) {
                             return dashboard
                                 .update(message, &main_window, &layout_id)
                                 .map(move |msg| Message::Dashboard(Some(layout_id), msg));
@@ -477,9 +477,11 @@ impl State {
                 self.sidebar.set_position(position);
             }
             Message::ToggleTradeFetch(checked) => {
-                self.layouts.iter_dashboards_mut().for_each(|dashboard| {
-                    dashboard.toggle_trade_fetch(checked, &self.main_window);
-                });
+                self.layout_manager
+                    .iter_dashboards_mut()
+                    .for_each(|dashboard| {
+                        dashboard.toggle_trade_fetch(checked, &self.main_window);
+                    });
 
                 if checked {
                     self.confirm_dialog = None;
@@ -495,7 +497,7 @@ impl State {
                 if let layout::Message::SelectActive(layout) = msg {
                     return Task::done(Message::LayoutSelected(layout));
                 } else {
-                    return self.layouts.update(msg).map(Message::ManageLayouts);
+                    return self.layout_manager.update(msg).map(Message::ManageLayouts);
                 }
             }
             Message::AddNotification(toast) => {
@@ -523,6 +525,7 @@ impl State {
         };
 
         let sidebar_pos = self.sidebar.position;
+        let layout_lock = self.layout_manager.is_layout_locked();
 
         let content = if id == self.main_window.id {
             let tooltip_position = if sidebar_pos == sidebar::Position::Left {
@@ -536,7 +539,7 @@ impl State {
                     let layout_lock_button = {
                         create_button(
                             get_icon_text(
-                                if self.layouts.is_layout_locked() {
+                                if layout_lock {
                                     Icon::Locked
                                 } else {
                                     Icon::Unlocked
@@ -631,11 +634,7 @@ impl State {
             };
 
             let dashboard_view = dashboard
-                .view(
-                    &self.main_window,
-                    self.layouts.is_layout_locked(),
-                    self.timezone,
-                )
+                .view(&self.main_window, layout_lock, self.timezone)
                 .map(move |msg| Message::Dashboard(None, msg));
 
             let base = column![
@@ -851,7 +850,7 @@ impl State {
                                 .spacing(8),
                                 column![
                                     text("Layouts").size(14),
-                                    self.layouts.view().map(Message::ManageLayouts),
+                                    self.layout_manager.view().map(Message::ManageLayouts),
                                 ]
                                 .align_x(Alignment::Center)
                                 .spacing(8),
@@ -883,12 +882,7 @@ impl State {
         } else {
             container(
                 dashboard
-                    .view_window(
-                        id,
-                        &self.main_window,
-                        self.layouts.is_layout_locked(),
-                        self.timezone,
-                    )
+                    .view_window(id, &self.main_window, layout_lock, self.timezone)
                     .map(move |msg| Message::Dashboard(None, msg)),
             )
             .padding(padding::top(if cfg!(target_os = "macos") { 20 } else { 0 }))
@@ -937,10 +931,10 @@ impl State {
     }
 
     fn get_active_dashboard(&self) -> Option<&Dashboard> {
-        self.layouts.get_active_dashboard()
+        self.layout_manager.get_active_dashboard()
     }
 
     fn get_active_dashboard_mut(&mut self) -> Option<&mut Dashboard> {
-        self.layouts.get_active_dashboard_mut()
+        self.layout_manager.get_active_dashboard_mut()
     }
 }
