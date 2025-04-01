@@ -27,9 +27,7 @@ use window::{Window, window_events};
 use data::{InternalError, config::theme::custom_theme, layout::WindowSpec, sidebar};
 use exchange::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{
-        Event as ExchangeEvent, Exchange, StreamType, fetch_ticker_info, fetch_ticker_prices,
-    },
+    adapter::{Exchange, StreamType, fetch_ticker_info, fetch_ticker_prices},
 };
 use iced::{
     Alignment, Element, Length, Subscription, Task, padding,
@@ -186,13 +184,13 @@ impl State {
 
                 if let Some(dashboard) = self.get_active_dashboard_mut() {
                     match event {
-                        ExchangeEvent::Connected(exchange, _) => {
+                        exchange::Event::Connected(exchange, _) => {
                             log::info!("a stream connected to {exchange} WS");
                         }
-                        ExchangeEvent::Disconnected(exchange, reason) => {
+                        exchange::Event::Disconnected(exchange, reason) => {
                             log::info!("a stream disconnected from {exchange} WS: {reason:?}");
                         }
-                        ExchangeEvent::DepthReceived(
+                        exchange::Event::DepthReceived(
                             stream,
                             depth_update_t,
                             depth,
@@ -208,7 +206,7 @@ impl State {
                                 )
                                 .map(move |msg| Message::Dashboard(None, msg));
                         }
-                        ExchangeEvent::KlineReceived(stream, kline) => {
+                        exchange::Event::KlineReceived(stream, kline) => {
                             return dashboard
                                 .update_latest_klines(&stream, &kline, main_window_id)
                                 .map(move |msg| Message::Dashboard(None, msg));
@@ -358,7 +356,7 @@ impl State {
                         data,
                         stream,
                     ) => {
-                        if let Some(dashboard) = self.get_mut_dashboard(layout_id) {
+                        if let Some(dashboard) = self.layouts.get_mut_dashboard(&layout_id) {
                             return dashboard
                                 .distribute_fetched_data(main_window.id, pane_uid, data, stream)
                                 .map(move |msg| Message::Dashboard(Some(layout_id), msg));
@@ -371,7 +369,7 @@ impl State {
                     _ => {
                         let layout_id = id.unwrap_or(self.layouts.active_layout.id);
 
-                        if let Some(dashboard) = self.get_mut_dashboard(layout_id) {
+                        if let Some(dashboard) = self.layouts.get_mut_dashboard(&layout_id) {
                             return dashboard
                                 .update(message, &main_window, &layout_id)
                                 .map(move |msg| Message::Dashboard(Some(layout_id), msg));
@@ -936,10 +934,6 @@ impl State {
         .map(|_| Message::FetchForTickersTable(None));
 
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
-    }
-
-    fn get_mut_dashboard(&mut self, id: uuid::Uuid) -> Option<&mut Dashboard> {
-        self.layouts.get_mut_dashboard(&id)
     }
 
     fn get_active_dashboard(&self) -> Option<&Dashboard> {

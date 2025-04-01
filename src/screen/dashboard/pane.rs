@@ -290,7 +290,7 @@ impl PaneState {
                         layout,
                         basis,
                         tick_size,
-                        vec![],
+                        &[],
                         vec![],
                         &enabled_indicators,
                         Some(ticker_info),
@@ -323,7 +323,7 @@ impl PaneState {
                     CandlestickChart::new(
                         layout,
                         basis,
-                        vec![],
+                        &[],
                         vec![],
                         tick_size,
                         &enabled_indicators,
@@ -353,7 +353,7 @@ impl PaneState {
         Ok(())
     }
 
-    pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: Vec<OpenInterest>) {
+    pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
         match &mut self.content {
             PaneContent::Candlestick(chart, _) => {
                 chart.insert_open_interest(req_id, oi);
@@ -385,7 +385,7 @@ impl PaneState {
                     *chart = CandlestickChart::new(
                         layout,
                         Basis::Time(timeframe.into()),
-                        klines.clone(),
+                        &klines,
                         raw_trades,
                         tick_size,
                         indicators,
@@ -405,7 +405,7 @@ impl PaneState {
                         layout,
                         Basis::Time(timeframe.into()),
                         tick_size,
-                        klines.clone(),
+                        &klines,
                         raw_trades,
                         indicators,
                         ticker_info,

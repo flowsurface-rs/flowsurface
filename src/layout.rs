@@ -612,7 +612,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                         CandlestickChart::new(
                             layout,
                             basis,
-                            vec![],
+                            &[],
                             vec![],
                             ticker_info.min_ticksize,
                             &indicators,
@@ -649,7 +649,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                             layout,
                             basis,
                             tick_size,
-                            vec![],
+                            &[],
                             vec![],
                             &indicators,
                             settings.ticker_info,

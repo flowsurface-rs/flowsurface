@@ -960,7 +960,7 @@ impl Dashboard {
                     pane_state.status = pane::Status::Ready;
 
                     if let StreamType::Kline { .. } = stream_type {
-                        pane_state.insert_oi_vec(req_id, oi);
+                        pane_state.insert_oi_vec(req_id, &oi);
                     }
                 }
             }

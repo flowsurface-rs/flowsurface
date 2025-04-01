@@ -470,7 +470,6 @@ impl HeatmapChart {
                         let visible_run = run.get_visible_runs(earliest, latest)?;
 
                         let order_size = match market_type {
-                            MarketType::LinearPerps => **price * visible_run.qty.0,
                             MarketType::InversePerps => visible_run.qty.0,
                             _ => **price * visible_run.qty.0,
                         };
@@ -580,7 +579,6 @@ impl canvas::Program<Message> for HeatmapChart {
                     runs.iter()
                         .filter(|run| {
                             let order_size = match market_type {
-                                MarketType::LinearPerps => **price * run.qty.0,
                                 MarketType::InversePerps => run.qty.0,
                                 _ => **price * run.qty.0,
                             };
@@ -682,7 +680,6 @@ impl canvas::Program<Message> for HeatmapChart {
                         let y_position = chart.price_to_y(trade.price);
 
                         let trade_size = match market_type {
-                            MarketType::LinearPerps => trade.qty * trade.price,
                             MarketType::InversePerps => trade.qty,
                             _ => trade.qty * trade.price,
                         };

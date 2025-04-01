@@ -146,7 +146,7 @@ impl FootprintChart {
         layout: ChartLayout,
         basis: Basis,
         tick_size: f32,
-        klines_raw: Vec<Kline>,
+        klines_raw: &[Kline],
         raw_trades: Vec<Trade>,
         enabled_indicators: &[FootprintIndicator],
         ticker_info: Option<TickerInfo>,
@@ -154,7 +154,7 @@ impl FootprintChart {
         match basis {
             Basis::Time(interval) => {
                 let timeseries =
-                    TimeSeries::new(interval.into(), tick_size, &raw_trades, &klines_raw);
+                    TimeSeries::new(interval.into(), tick_size, &raw_trades, klines_raw);
 
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
@@ -317,16 +317,14 @@ impl FootprintChart {
                             .range(..earliest_gap)
                             .filter(|(_, dp)| !dp.trades.is_empty())
                             .max_by_key(|(time, _)| *time)
-                            .map(|(time, _)| *time)
-                            .unwrap_or(earliest_gap);
+                            .map_or(earliest_gap, |(time, _)| *time);
 
                         let first_kline_after_gap = timeseries
                             .data_points
                             .range(earliest_gap..)
                             .filter(|(_, dp)| !dp.trades.is_empty())
                             .min_by_key(|(time, _)| *time)
-                            .map(|(time, _)| *time)
-                            .unwrap_or(kline_latest);
+                            .map_or(kline_latest, |(time, _)| *time);
 
                         if let Some(fetch_task) = request_fetch(
                             &mut self.request_handler,
@@ -553,7 +551,7 @@ impl FootprintChart {
         self.render_start();
     }
 
-    pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
+    pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: &[OIData]) {
         if let Some(req_id) = req_id {
             if oi_data.is_empty() {
                 self.request_handler

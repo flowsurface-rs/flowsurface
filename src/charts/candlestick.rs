@@ -132,7 +132,7 @@ impl CandlestickChart {
     pub fn new(
         layout: ChartLayout,
         basis: Basis,
-        klines_raw: Vec<Kline>,
+        klines_raw: &[Kline],
         raw_trades: Vec<Trade>,
         tick_size: f32,
         enabled_indicators: &[CandlestickIndicator],
@@ -140,7 +140,7 @@ impl CandlestickChart {
     ) -> CandlestickChart {
         match basis {
             Basis::Time(interval) => {
-                let timeseries = TimeSeries::new(interval.into(), tick_size, &[], &klines_raw);
+                let timeseries = TimeSeries::new(interval.into(), tick_size, &[], klines_raw);
 
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
@@ -367,7 +367,7 @@ impl CandlestickChart {
         self.render_start();
     }
 
-    pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: Vec<OIData>) {
+    pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: &[OIData]) {
         if let Some(req_id) = req_id {
             if oi_data.is_empty() {
                 self.request_handler

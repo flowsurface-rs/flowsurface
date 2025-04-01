@@ -347,9 +347,9 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
                                                 price: de_trade.price,
-                                                qty: contract_size
-                                                    .map(|size| de_trade.qty * size)
-                                                    .unwrap_or(de_trade.qty),
+                                                qty: contract_size.map_or(de_trade.qty, |size| {
+                                                    de_trade.qty * size
+                                                }),
                                             };
 
                                             trades_buffer.push(trade);
@@ -659,14 +659,14 @@ fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> TempLocalD
             .iter()
             .map(|x| Order {
                 price: x.price,
-                qty: contract_size.map(|size| x.qty * size).unwrap_or(x.qty),
+                qty: contract_size.map_or(x.qty, |size| x.qty * size),
             })
             .collect(),
         asks: asks
             .iter()
             .map(|x| Order {
                 price: x.price,
-                qty: contract_size.map(|size| x.qty * size).unwrap_or(x.qty),
+                qty: contract_size.map_or(x.qty, |size| x.qty * size),
             })
             .collect(),
     }
@@ -1101,7 +1101,7 @@ pub async fn fetch_historical_oi(
         .iter()
         .map(|x| OpenInterest {
             time: x.time,
-            value: contract_size.map(|size| x.sum * size).unwrap_or(x.sum),
+            value: contract_size.map_or(x.sum, |size| x.sum * size),
         })
         .collect::<Vec<OpenInterest>>();
 
