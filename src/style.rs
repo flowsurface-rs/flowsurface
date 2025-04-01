@@ -84,19 +84,6 @@ pub fn branding_text(theme: &Theme) -> iced::widget::text::Style {
     }
 }
 
-pub fn market_type_bg(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
-
-    Style {
-        text_color: Some(palette.background.strongest.color),
-        border: Border {
-            radius: 4.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
 // Tooltips
 pub fn tooltip(theme: &Theme) -> Style {
     let palette = theme.extended_palette();

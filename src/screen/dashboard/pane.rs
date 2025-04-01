@@ -429,15 +429,13 @@ impl PaneState {
         timezone: UserTimezone,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut stream_info_element = row![]
-            .padding(padding::left(4))
+            .padding(padding::left(8))
             .align_y(Vertical::Center)
             .spacing(8)
             .height(Length::Fixed(32.0));
 
         if let Some((exchange, ticker)) = self.get_ticker_exchange() {
-            let (ticker_str, market) = ticker.display_symbol_and_type();
-
-            let exchange_icon = match exchange {
+            let exchange_info = match exchange {
                 Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse => {
                     get_icon_text(Icon::BinanceLogo, 14)
                 }
@@ -446,18 +444,18 @@ impl PaneState {
                 }
             };
 
+            let ticker_str = {
+                let symbol = ticker.display_symbol_and_type().0;
+                match ticker.get_market_type() {
+                    MarketType::Spot => symbol,
+                    MarketType::LinearPerps | MarketType::InversePerps => symbol + " PERP",
+                }
+            };
+
             stream_info_element = stream_info_element.push(
-                row![
-                    container(
-                        row![exchange_icon, text(market.to_string()).size(14)]
-                            .padding(4)
-                            .spacing(2)
-                    )
-                    .style(style::market_type_bg),
-                    text(ticker_str).size(14),
-                ]
-                .align_y(Vertical::Center)
-                .spacing(4),
+                row![exchange_info, text(ticker_str).size(14),]
+                    .align_y(Vertical::Center)
+                    .spacing(4),
             );
         }
 
