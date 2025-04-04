@@ -11,7 +11,7 @@ use iced::widget::{
     canvas::{self, Event, Geometry},
     column,
 };
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse};
+use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchange::fetcher::{FetchRange, RequestHandler};
@@ -19,7 +19,7 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
 use super::scales::PriceInfoLabel;
 use super::{
-    Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
     indicators,
 };
 use super::{canvas_interaction, count_decimals, request_fetch, update_chart, view_chart};
@@ -33,7 +33,7 @@ impl Chart for CandlestickChart {
         &mut self.chart
     }
 
-    fn update_chart(&mut self, message: &Message) -> Task<Message> {
+    fn update_chart(&mut self, message: &Message) -> Action {
         let task = update_chart(self, message);
         self.render_start();
 
@@ -240,7 +240,7 @@ impl CandlestickChart {
         self.chart.tick_size
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
+    pub fn update_latest_kline(&mut self, kline: &Kline) -> Action {
         if let ChartData::TimeBased(ref mut timeseries) = self.data_source {
             timeseries.insert_klines(&[kline.to_owned()]);
 
@@ -259,13 +259,13 @@ impl CandlestickChart {
             chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
 
             self.render_start();
-            return self.get_missing_data_task().unwrap_or(Task::none());
+            return self.get_missing_data_task();
         }
 
-        Task::none()
+        Action::None
     }
 
-    fn get_missing_data_task(&mut self) -> Option<Task<Message>> {
+    fn get_missing_data_task(&mut self) -> Action {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
@@ -276,12 +276,10 @@ impl CandlestickChart {
 
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
-                    if let Some(task) = request_fetch(
+                    return request_fetch(
                         &mut self.request_handler,
                         FetchRange::Kline(earliest, kline_earliest),
-                    ) {
-                        return Some(task);
-                    }
+                    );
                 }
 
                 // priority 2, Open Interest data
@@ -293,21 +291,17 @@ impl CandlestickChart {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
 
                             if visible_earliest < oi_earliest {
-                                if let Some(task) = request_fetch(
+                                return request_fetch(
                                     &mut self.request_handler,
                                     FetchRange::OpenInterest(earliest, oi_earliest),
-                                ) {
-                                    return Some(task);
-                                }
+                                );
                             }
 
                             if oi_latest < kline_latest {
-                                if let Some(task) = request_fetch(
+                                return request_fetch(
                                     &mut self.request_handler,
                                     FetchRange::OpenInterest(oi_latest.max(earliest), kline_latest),
-                                ) {
-                                    return Some(task);
-                                }
+                                );
                             }
                         }
                     }
@@ -321,20 +315,18 @@ impl CandlestickChart {
                     let earliest =
                         missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe;
 
-                    if let Some(task) = request_fetch(
+                    return request_fetch(
                         &mut self.request_handler,
                         FetchRange::Kline(earliest, latest),
-                    ) {
-                        return Some(task);
-                    }
+                    );
                 }
             }
             ChartData::TickBased(_) => {
-                // TODO: implement trade fetch to build missing tick klines
+                // TODO: implement trade fetch
             }
         }
 
-        None
+        Action::None
     }
 
     pub fn insert_new_klines(&mut self, req_id: uuid::Uuid, klines_raw: &Vec<Kline>) {
@@ -563,7 +555,7 @@ impl CandlestickChart {
         )
     }
 
-    pub fn update(&mut self, message: &Message) -> Task<Message> {
+    pub fn update(&mut self, message: &Message) -> Action {
         self.update_chart(message)
     }
 

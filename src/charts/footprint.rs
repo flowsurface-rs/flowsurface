@@ -11,9 +11,7 @@ use iced::widget::{
     canvas::{self, Event, Geometry},
     column,
 };
-use iced::{
-    Alignment, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse,
-};
+use iced::{Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use ordered_float::OrderedFloat;
 
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
@@ -22,7 +20,7 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
 use super::scales::PriceInfoLabel;
 use super::{
-    Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
     indicators,
 };
 use super::{
@@ -39,11 +37,11 @@ impl Chart for FootprintChart {
         &mut self.chart
     }
 
-    fn update_chart(&mut self, message: &Message) -> Task<Message> {
-        let task = update_chart(self, message);
+    fn update_chart(&mut self, message: &Message) -> Action {
+        let action = update_chart(self, message);
         self.render_start();
 
-        task
+        action
     }
 
     fn canvas_interaction(
@@ -256,7 +254,7 @@ impl FootprintChart {
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline) -> Task<Message> {
+    pub fn update_latest_kline(&mut self, kline: &Kline) -> Action {
         match self.data_source {
             ChartData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[kline.to_owned()]);
@@ -276,16 +274,17 @@ impl FootprintChart {
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
 
                 self.render_start();
-                self.get_missing_data_task().unwrap_or(Task::none())
+                return self.get_missing_data_task();
             }
             ChartData::TickBased(_) => {
                 self.render_start();
-                Task::none()
             }
         }
+
+        Action::None
     }
 
-    fn get_missing_data_task(&mut self) -> Option<Task<Message>> {
+    fn get_missing_data_task(&mut self) -> Action {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
@@ -296,12 +295,10 @@ impl FootprintChart {
 
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
-                    if let Some(task) = request_fetch(
+                    return request_fetch(
                         &mut self.request_handler,
                         FetchRange::Kline(earliest, kline_earliest),
-                    ) {
-                        return Some(task);
-                    }
+                    );
                 }
 
                 if !self.fetching_trades {
@@ -326,13 +323,10 @@ impl FootprintChart {
                             .min_by_key(|(time, _)| *time)
                             .map_or(kline_latest, |(time, _)| *time);
 
-                        if let Some(fetch_task) = request_fetch(
+                        return request_fetch(
                             &mut self.request_handler,
                             FetchRange::Trades(last_kline_before_gap, first_kline_after_gap),
-                        ) {
-                            self.fetching_trades = true;
-                            return Some(fetch_task);
-                        }
+                        );
                     }
                 }
 
@@ -345,21 +339,17 @@ impl FootprintChart {
                             let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
 
                             if visible_earliest < oi_earliest {
-                                if let Some(task) = request_fetch(
+                                return request_fetch(
                                     &mut self.request_handler,
                                     FetchRange::OpenInterest(earliest, oi_earliest),
-                                ) {
-                                    return Some(task);
-                                }
+                                );
                             }
 
                             if oi_latest < kline_latest {
-                                if let Some(task) = request_fetch(
+                                return request_fetch(
                                     &mut self.request_handler,
                                     FetchRange::OpenInterest(oi_latest.max(earliest), kline_latest),
-                                ) {
-                                    return Some(task);
-                                }
+                                );
                             }
                         }
                     }
@@ -373,12 +363,10 @@ impl FootprintChart {
                     let earliest =
                         missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe;
 
-                    if let Some(task) = request_fetch(
+                    return request_fetch(
                         &mut self.request_handler,
                         FetchRange::Kline(earliest, latest),
-                    ) {
-                        return Some(task);
-                    }
+                    );
                 }
             }
             ChartData::TickBased(_) => {
@@ -386,7 +374,7 @@ impl FootprintChart {
             }
         }
 
-        None
+        Action::None
     }
 
     pub fn reset_request_handler(&mut self) {
@@ -727,7 +715,7 @@ impl FootprintChart {
         )
     }
 
-    pub fn update(&mut self, message: &Message) -> Task<Message> {
+    pub fn update(&mut self, message: &Message) -> Action {
         self.update_chart(message)
     }
 

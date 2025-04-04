@@ -1,7 +1,7 @@
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
 use iced::widget::{center, mouse_area};
 use iced::{
-    Element, Length, Point, Rectangle, Size, Task, Theme, Vector, alignment,
+    Element, Length, Point, Rectangle, Size, Theme, Vector, alignment,
     mouse::{self},
     widget::{
         Space, button,
@@ -66,7 +66,6 @@ pub enum Message {
     XScaling(f32, f32, bool),
     BoundsChanged(Rectangle),
     SplitDragged(f32),
-    NewDataRange(uuid::Uuid, FetchRange),
     DoubleClick(AxisScaleClicked),
 }
 
@@ -75,7 +74,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn get_common_data_mut(&mut self) -> &mut CommonChartData;
 
-    fn update_chart(&mut self, message: &Message) -> Task<Message>;
+    fn update_chart(&mut self, message: &Message) -> Action;
 
     fn canvas_interaction(
         &self,
@@ -240,7 +239,13 @@ fn canvas_interaction<T: Chart>(
     }
 }
 
-fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
+pub enum Action {
+    ErrorOccurred(data::InternalError),
+    FetchRequested(uuid::Uuid, FetchRange),
+    None,
+}
+
+fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Action {
     let chart_state = chart.get_common_data_mut();
 
     match message {
@@ -360,10 +365,10 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Task<Message> {
         Message::SplitDragged(split) => {
             chart_state.indicators_split = Some(*split);
         }
-        _ => {}
+        Message::CrosshairMoved => {}
     }
 
-    Task::none()
+    Action::None
 }
 
 fn view_chart<'a, T: Chart, I: Indicator>(
@@ -756,9 +761,9 @@ impl CommonChartData {
     }
 }
 
-fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task<Message>> {
+fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Action {
     match handler.add_request(range) {
-        Ok(req_id) => Some(Task::done(Message::NewDataRange(req_id, range))),
+        Ok(req_id) => Action::FetchRequested(req_id, range),
         Err(e) => {
             match e {
                 ReqError::Overlaps => {
@@ -767,7 +772,7 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Task
                 ReqError::Failed(msg) => log::debug!("Request already failed: {msg}: {range:?}"),
                 ReqError::Completed => log::debug!("Request already completed: {range:?}"),
             }
-            None
+            Action::None
         }
     }
 }

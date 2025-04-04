@@ -11,13 +11,13 @@ use data::chart::{
 };
 use iced::widget::canvas::{self, Event, Geometry, Path};
 use iced::{
-    Alignment, Color, Element, Point, Rectangle, Renderer, Size, Task, Theme, Vector, mouse,
+    Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse,
     theme::palette::Extended,
 };
 
 use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
-use super::scales::PriceInfoLabel;
+use super::{Action, scales::PriceInfoLabel};
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart, view_chart};
 
@@ -32,7 +32,7 @@ impl Chart for HeatmapChart {
         &mut self.chart
     }
 
-    fn update_chart(&mut self, message: &Message) -> Task<Message> {
+    fn update_chart(&mut self, message: &Message) -> Action {
         let task = update_chart(self, message);
         self.render_start();
 
@@ -496,7 +496,7 @@ impl HeatmapChart {
         None
     }
 
-    pub fn update(&mut self, message: &Message) -> Task<Message> {
+    pub fn update(&mut self, message: &Message) -> Action {
         self.update_chart(message)
     }
 
