@@ -18,12 +18,18 @@ enum LogMessage {
 }
 
 pub fn setup(is_debug: bool) -> Result<(), Error> {
+    let default_level = if is_debug {
+        log::Level::Debug
+    } else {
+        log::Level::Info
+    };
+
     let level_filter = std::env::var("RUST_LOG")
         .ok()
         .as_deref()
         .map(str::parse::<log::Level>)
         .transpose()?
-        .unwrap_or(log::Level::Debug)
+        .unwrap_or(default_level)
         .to_level_filter();
 
     let mut io_sink = fern::Dispatch::new().format(|out, message, record| {

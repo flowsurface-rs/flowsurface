@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod charts;
 mod layout;
@@ -36,7 +36,7 @@ use iced::{
 use std::{collections::HashMap, vec};
 
 fn main() {
-    logger::setup(false).expect("Failed to initialize logger");
+    logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
 
     let saved_state = layout::load_saved_state();
 
