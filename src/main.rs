@@ -75,23 +75,20 @@ enum Message {
     ToggleTradeFetch(bool),
 
     WindowEvent(window::Event),
-    SaveAndExit(HashMap<window::Id, WindowSpec>),
+    ExitRequested(HashMap<window::Id, WindowSpec>),
 
-    LayoutSelected(Layout),
     LoadLayout(Layout),
-    ManageLayouts(layout::Message),
+    Layouts(layout::Message),
 
     Dashboard(Option<uuid::Uuid>, dashboard::Message),
-
-    SetTimezone(data::UserTimezone),
-    ToggleSidebarMenu(sidebar::Menu),
-    SetSidebarPosition(sidebar::Position),
-    ScaleFactorChanged(f64),
-    ThemeSelected(data::Theme),
-
     TickersTable(tickers_table::Message),
     FetchForTickersInfo,
 
+    ThemeSelected(data::Theme),
+    ScaleFactorChanged(f64),
+    SetTimezone(data::UserTimezone),
+    SetSidebarPosition(sidebar::Position),
+    ToggleSidebarMenu(sidebar::Menu),
     ToggleDialogModal(Option<(String, Box<Message>)>),
 
     AddNotification(Toast),
@@ -117,7 +114,7 @@ impl State {
     ) -> (Self, Task<Message>) {
         let (main_window_id, open_main_window) = window::open(main_window_cfg);
 
-        let active_layout = saved_state.layout_manager.active_layout.clone();
+        let active_layout = saved_state.layout_manager.get_active_layout();
 
         (
             Self {
@@ -213,10 +210,10 @@ impl State {
 
                     opened_windows.push(self.main_window.id);
 
-                    return window::collect_window_specs(opened_windows, Message::SaveAndExit);
+                    return window::collect_window_specs(opened_windows, Message::ExitRequested);
                 }
             },
-            Message::SaveAndExit(windows) => {
+            Message::ExitRequested(windows) => {
                 let dashboard = self
                     .get_active_dashboard_mut()
                     .expect("No active dashboard");
@@ -288,36 +285,6 @@ impl State {
             Message::ThemeSelected(theme) => {
                 self.theme = theme;
             }
-            Message::LayoutSelected(new_layout_id) => {
-                if let Some(dashboard) = self.get_active_dashboard() {
-                    let active_popout_keys = dashboard.popout.keys().copied().collect::<Vec<_>>();
-
-                    let window_tasks = Task::batch(
-                        active_popout_keys
-                            .iter()
-                            .map(|&popout_id| window::close(popout_id))
-                            .collect::<Vec<_>>(),
-                    )
-                    .then(|_: Task<window::Id>| Task::none());
-
-                    return window::collect_window_specs(
-                        active_popout_keys,
-                        dashboard::Message::SavePopoutSpecs,
-                    )
-                    .map(move |msg| Message::Dashboard(None, msg))
-                    .chain(window_tasks)
-                    .chain(Task::done(Message::LoadLayout(new_layout_id)));
-                }
-            }
-            Message::LoadLayout(layout) => {
-                self.layout_manager.active_layout = layout.clone();
-                if let Some(dashboard) = self.get_active_dashboard_mut() {
-                    dashboard.focus = None;
-                    return dashboard
-                        .load_layout()
-                        .map(move |msg| Message::Dashboard(None, msg));
-                }
-            }
             Message::Dashboard(id, message) => match message {
                 dashboard::Message::Notification(toast) => {
                     return Task::done(Message::AddNotification(toast));
@@ -376,6 +343,12 @@ impl State {
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
             }
+            Message::SetSidebarPosition(position) => {
+                self.sidebar.set_position(position);
+            }
+            Message::ScaleFactorChanged(value) => {
+                self.scale_factor = data::ScaleFactor::from(value);
+            }
             Message::ToggleSidebarMenu(menu) => {
                 let new_menu = if self.sidebar.is_menu_active(menu) {
                     sidebar::Menu::None
@@ -383,9 +356,6 @@ impl State {
                     menu
                 };
                 self.sidebar.set_menu(new_menu);
-            }
-            Message::SetSidebarPosition(position) => {
-                self.sidebar.set_position(position);
             }
             Message::ToggleTradeFetch(checked) => {
                 self.layout_manager
@@ -401,14 +371,46 @@ impl State {
             Message::ToggleDialogModal(dialog) => {
                 self.confirm_dialog = dialog;
             }
-            Message::ScaleFactorChanged(value) => {
-                self.scale_factor = data::ScaleFactor::from(value);
+            Message::Layouts(message) => {
+                let action = self.layout_manager.update(message);
+
+                match action {
+                    layout::Action::Select(layout) => {
+                        if let Some(dashboard) = self.get_active_dashboard() {
+                            let active_popout_keys =
+                                dashboard.popout.keys().copied().collect::<Vec<_>>();
+
+                            let window_tasks = Task::batch(
+                                active_popout_keys
+                                    .iter()
+                                    .map(|&popout_id| window::close(popout_id))
+                                    .collect::<Vec<_>>(),
+                            )
+                            .then(|_: Task<window::Id>| Task::none());
+
+                            return window::collect_window_specs(
+                                active_popout_keys,
+                                dashboard::Message::SavePopoutSpecs,
+                            )
+                            .map(move |msg| Message::Dashboard(None, msg))
+                            .chain(window_tasks)
+                            .chain(Task::done(Message::LoadLayout(layout)));
+                        } else {
+                            return Task::done(Message::ErrorOccurred(InternalError::Layout(
+                                "Couldn't get active dashboard".to_string(),
+                            )));
+                        }
+                    }
+                    layout::Action::None => {}
+                }
             }
-            Message::ManageLayouts(msg) => {
-                if let layout::Message::SelectActive(layout) = msg {
-                    return Task::done(Message::LayoutSelected(layout));
-                } else {
-                    return self.layout_manager.update(msg).map(Message::ManageLayouts);
+            Message::LoadLayout(layout) => {
+                self.layout_manager.active_layout = layout.clone();
+                if let Some(dashboard) = self.get_active_dashboard_mut() {
+                    dashboard.focus = None;
+                    return dashboard
+                        .load_layout()
+                        .map(move |msg| Message::Dashboard(None, msg));
                 }
             }
             Message::AddNotification(toast) => {
@@ -427,7 +429,7 @@ impl State {
                 column![
                     text("No dashboard available").size(20),
                     button("Add new dashboard")
-                        .on_press(Message::ManageLayouts(layout::Message::AddLayout))
+                        .on_press(Message::Layouts(layout::Message::AddLayout))
                 ]
                 .align_x(Alignment::Center)
                 .spacing(8),
@@ -741,7 +743,7 @@ impl State {
                                 .spacing(8),
                                 column![
                                     text("Layouts").size(14),
-                                    self.layout_manager.view().map(Message::ManageLayouts),
+                                    self.layout_manager.view().map(Message::Layouts),
                                 ]
                                 .align_x(Alignment::Center)
                                 .spacing(8),

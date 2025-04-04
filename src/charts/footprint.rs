@@ -323,10 +323,15 @@ impl FootprintChart {
                             .min_by_key(|(time, _)| *time)
                             .map_or(kline_latest, |(time, _)| *time);
 
-                        return request_fetch(
+                        let request = request_fetch(
                             &mut self.request_handler,
                             FetchRange::Trades(last_kline_before_gap, first_kline_after_gap),
                         );
+
+                        if !matches!(request, Action::None) {
+                            self.fetching_trades = true;
+                            return request;
+                        }
                     }
                 }
 

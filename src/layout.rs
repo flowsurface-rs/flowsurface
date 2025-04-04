@@ -19,7 +19,7 @@ use iced::widget::{
     row, scrollable, text, text_input,
     tooltip::Position as TooltipPosition,
 };
-use iced::{Element, Task, Theme, padding};
+use iced::{Element, Theme, padding};
 use std::{collections::HashMap, vec};
 use uuid::Uuid;
 
@@ -47,6 +47,11 @@ pub enum Message {
     ToggleEditMode(Editing),
     CloneLayout(Uuid),
     Reorder(DragEvent),
+}
+
+pub enum Action {
+    None,
+    Select(Layout),
 }
 
 pub struct LayoutManager {
@@ -127,10 +132,14 @@ impl LayoutManager {
         self.get_mut_dashboard(&id)
     }
 
-    pub fn update(&mut self, message: Message) -> Task<Message> {
+    pub fn get_active_layout(&self) -> Layout {
+        self.active_layout.clone()
+    }
+
+    pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::SelectActive(layout) => {
-                self.active_layout = layout;
+                return Action::Select(layout);
             }
             Message::ToggleEditMode(new_mode) => match (&new_mode, &self.edit_mode) {
                 (Editing::Preview, Editing::Preview) => {
@@ -155,15 +164,11 @@ impl LayoutManager {
                 self.layouts
                     .insert(new_layout.id, (new_layout.clone(), Dashboard::default()));
 
-                self.active_layout = new_layout;
+                return Action::Select(new_layout);
             }
             Message::RemoveLayout(id) => {
-                if self.active_layout.id == id {
-                    return Task::none();
-                } else {
-                    self.layouts.remove(&id);
-                    self.layout_order.retain(|layout_id| *layout_id != id);
-                }
+                self.layouts.remove(&id);
+                self.layout_order.retain(|layout_id| *layout_id != id);
 
                 self.edit_mode = Editing::Preview;
             }
@@ -251,7 +256,7 @@ impl LayoutManager {
             },
         }
 
-        Task::none()
+        Action::None
     }
 
     pub fn view(&self) -> Element<'_, Message> {

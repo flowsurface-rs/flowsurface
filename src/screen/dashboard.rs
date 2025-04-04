@@ -230,13 +230,21 @@ impl Dashboard {
                             }
                         };
                     }
-                    pane::Message::ChartUserUpdate(pane, chart_message) => {
-                        return self.update_chart_state(
-                            pane,
-                            window,
-                            &chart_message,
-                            main_window.id,
-                        );
+                    pane::Message::ChartUserUpdate(pane, msg) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            match pane_state.content {
+                                PaneContent::Heatmap(ref mut chart, _) => {
+                                    chart.update(&msg);
+                                }
+                                PaneContent::Footprint(ref mut chart, _) => {
+                                    chart.update(&msg);
+                                }
+                                PaneContent::Candlestick(ref mut chart, _) => {
+                                    chart.update(&msg);
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                     pane::Message::VisualConfigChanged(pane, cfg) => {
                         if let Some(pane) = pane {
@@ -1005,7 +1013,6 @@ impl Dashboard {
         main_window: window::Id,
     ) -> Task<Message> {
         let mut tasks = vec![];
-
         let mut found_match = false;
 
         self.iter_all_panes_mut(main_window)
@@ -1037,7 +1044,7 @@ impl Dashboard {
             });
 
         if !found_match {
-            log::error!("No matching pane found for the stream: {stream:?}");
+            log::warn!("{stream:?} stream had no matching panes - dropping");
             tasks.push(Task::done(Message::RefreshStreams));
         }
 
@@ -1083,40 +1090,6 @@ impl Dashboard {
         } else {
             log::error!("No matching pane found for the stream: {stream:?}");
             Task::done(Message::RefreshStreams)
-        }
-    }
-
-    fn update_chart_state(
-        &mut self,
-        pane: pane_grid::Pane,
-        window: window::Id,
-        message: &charts::Message,
-        main_window: window::Id,
-    ) -> Task<Message> {
-        if let Some(pane_state) = self.get_mut_pane(main_window, window, pane) {
-            match pane_state.content {
-                PaneContent::Heatmap(ref mut chart, _) => {
-                    chart.update(message);
-                    Task::none()
-                }
-                PaneContent::Footprint(ref mut chart, _) => {
-                    chart.update(message);
-                    Task::none()
-                }
-                PaneContent::Candlestick(ref mut chart, _) => {
-                    chart.update(message);
-                    Task::none()
-                }
-                _ => Task::done(Message::ErrorOccurred(
-                    Some(pane_state.id),
-                    DashboardError::Unknown("No chart found".to_string()),
-                )),
-            }
-        } else {
-            Task::done(Message::ErrorOccurred(
-                None,
-                DashboardError::Unknown("No pane found to update its state".to_string()),
-            ))
         }
     }
 
