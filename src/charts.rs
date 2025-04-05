@@ -74,7 +74,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn get_common_data_mut(&mut self) -> &mut CommonChartData;
 
-    fn update_chart(&mut self, message: &Message) -> Action;
+    fn update_chart(&mut self, message: &Message);
 
     fn canvas_interaction(
         &self,
@@ -245,7 +245,7 @@ pub enum Action {
     None,
 }
 
-fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Action {
+fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
     let chart_state = chart.get_common_data_mut();
 
     match message {
@@ -367,8 +367,6 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) -> Action {
         }
         Message::CrosshairMoved => {}
     }
-
-    Action::None
 }
 
 fn view_chart<'a, T: Chart, I: Indicator>(

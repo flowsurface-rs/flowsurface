@@ -33,11 +33,9 @@ impl Chart for CandlestickChart {
         &mut self.chart
     }
 
-    fn update_chart(&mut self, message: &Message) -> Action {
-        let task = update_chart(self, message);
+    fn update_chart(&mut self, message: &Message) {
+        update_chart(self, message);
         self.render_start();
-
-        task
     }
 
     fn canvas_interaction(
@@ -555,7 +553,7 @@ impl CandlestickChart {
         )
     }
 
-    pub fn update(&mut self, message: &Message) -> Action {
+    pub fn update(&mut self, message: &Message) {
         self.update_chart(message)
     }
 

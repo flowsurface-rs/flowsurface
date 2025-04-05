@@ -17,7 +17,7 @@ use iced::{
 
 use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
-use super::{Action, scales::PriceInfoLabel};
+use super::scales::PriceInfoLabel;
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart, view_chart};
 
@@ -32,11 +32,9 @@ impl Chart for HeatmapChart {
         &mut self.chart
     }
 
-    fn update_chart(&mut self, message: &Message) -> Action {
-        let task = update_chart(self, message);
+    fn update_chart(&mut self, message: &Message) {
+        update_chart(self, message);
         self.render_start();
-
-        task
     }
 
     fn canvas_interaction(
@@ -496,7 +494,7 @@ impl HeatmapChart {
         None
     }
 
-    pub fn update(&mut self, message: &Message) -> Action {
+    pub fn update(&mut self, message: &Message) {
         self.update_chart(message)
     }
 
