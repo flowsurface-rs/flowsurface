@@ -29,6 +29,7 @@ iced = { version = "0.14.0-dev", default-features = false, features = [
     "lazy", 
     "tokio", 
     "canvas",
+    "sipper",
     "advanced",
     "unconditional-rendering",
 ] }
@@ -47,6 +48,6 @@ exchange = { version = "0.1.0", path = "exchange" }
 data = { version = "0.1.0", path = "data" }
 
 [patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "4b075b9731f4658a885357024cc77dee10e223c3" }
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "4b075b9731f4658a885357024cc77dee10e223c3", package = "iced_core" }
+iced = { git = "https://github.com/iced-rs/iced", rev = "cd27dae8abdecc5ff751e1e201ade79bc6b8e23a" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "cd27dae8abdecc5ff751e1e201ade79bc6b8e23a", package = "iced_core" }
 
