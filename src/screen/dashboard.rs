@@ -12,7 +12,7 @@ use crate::{
 
 use exchange::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
-    adapter::{self, Event as ExchangeEvent, Exchange, StreamConfig, StreamError, binance, bybit},
+    adapter::{self, Exchange, StreamConfig, StreamError, binance, bybit},
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
 };
@@ -45,10 +45,9 @@ pub enum Message {
     RefreshStreams,
 
     ChartRequest(pane_grid::Pane, window::Id, uuid::Uuid, FetchRange),
-    FetchTrades(uuid::Uuid, u64, u64, StreamType),
     DistributeFetchedData(uuid::Uuid, uuid::Uuid, FetchedData, StreamType),
     ChangePaneStatus(uuid::Uuid, pane::Status),
-    SipTrades(uuid::Uuid, u64, u64, StreamType),
+    FetchTrades(uuid::Uuid, u64, u64, StreamType),
 }
 
 pub struct Dashboard {
@@ -474,52 +473,7 @@ impl Dashboard {
                     None,
                 );
             }
-            Message::FetchTrades(pane_id, from_time, to_time, stream_type) => {
-                if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
-                    if exchange == Exchange::BinanceSpot
-                        || exchange == Exchange::BinanceLinear
-                        || exchange == Exchange::BinanceInverse
-                    {
-                        let data_path = get_data_path("market_data/binance/");
-
-                        let dashboard_id = *layout_id;
-
-                        return (
-                            Task::perform(
-                                binance::fetch_trades(ticker, from_time, data_path),
-                                move |result: Result<Vec<Trade>, adapter::StreamError>| match result
-                                {
-                                    Ok(trades) => {
-                                        let data = FetchedData::Trades(trades.clone(), to_time);
-                                        Message::DistributeFetchedData(
-                                            dashboard_id,
-                                            pane_id,
-                                            data,
-                                            stream_type,
-                                        )
-                                    }
-                                    Err(err) => Message::ErrorOccurred(
-                                        Some(pane_id),
-                                        DashboardError::Fetch(err.to_string()),
-                                    ),
-                                },
-                            ),
-                            None,
-                        );
-                    } else {
-                        return (
-                            Task::done(Message::ErrorOccurred(
-                                None,
-                                DashboardError::Fetch(format!(
-                                    "No trade fetch support for {exchange:?}"
-                                )),
-                            )),
-                            None,
-                        );
-                    }
-                }
-            }
-            Message::SipTrades(pane_uid, from_time, to_time, stream_type) => {
+            Message::FetchTrades(pane_uid, from_time, to_time, stream_type) => {
                 if let StreamType::DepthAndTrades { exchange, ticker } = stream_type {
                     if exchange == Exchange::BinanceSpot
                         || exchange == Exchange::BinanceLinear
@@ -527,7 +481,6 @@ impl Dashboard {
                     {
                         let data_path = get_data_path("market_data/binance/");
                         let dashboard_id = *layout_id;
-                        let pane_id = pane_uid;
 
                         return (
                             Task::sip(
@@ -536,17 +489,17 @@ impl Dashboard {
                                     let data = FetchedData::Trades(batch, to_time);
                                     Message::DistributeFetchedData(
                                         dashboard_id,
-                                        pane_id,
+                                        pane_uid,
                                         data,
                                         stream_type,
                                     )
                                 },
                                 move |result| match result {
                                     Ok(_) => {
-                                        Message::ChangePaneStatus(pane_id, pane::Status::Ready)
+                                        Message::ChangePaneStatus(pane_uid, pane::Status::Ready)
                                     }
                                     Err(err) => Message::ErrorOccurred(
-                                        Some(pane_id),
+                                        Some(pane_uid),
                                         DashboardError::Fetch(err.to_string()),
                                     ),
                                 },
@@ -631,7 +584,7 @@ impl Dashboard {
                                 pane_uid,
                                 pane::Status::Loading(pane::InfoType::FetchingTrades(0)),
                             ))
-                            .chain(Task::done(Message::SipTrades(pane_uid, from, to, stream))),
+                            .chain(Task::done(Message::FetchTrades(pane_uid, from, to, stream))),
                             None,
                         );
                     }
@@ -1011,16 +964,10 @@ impl Dashboard {
                 let last_trade_time = trades.last().map_or(0, |trade| trade.time);
 
                 if last_trade_time < to_time {
-                    match self.insert_fetched_trades(main_window, pane_uid, &trades, false) {
-                        Ok(()) => {
-                            return Task::done(Message::ChangePaneStatus(
-                                pane_uid,
-                                pane::Status::Loading(pane::InfoType::FetchingTrades(trades.len())),
-                            ));
-                        }
-                        Err(reason) => {
-                            return Task::done(Message::ErrorOccurred(Some(pane_uid), reason));
-                        }
+                    if let Err(reason) =
+                        self.insert_fetched_trades(main_window, pane_uid, &trades, false)
+                    {
+                        return Task::done(Message::ErrorOccurred(Some(pane_uid), reason));
                     }
                 } else if let Err(reason) =
                     self.insert_fetched_trades(main_window, pane_uid, &trades, true)
@@ -1181,7 +1128,7 @@ impl Dashboard {
 
     pub fn get_market_subscriptions<M>(
         &self,
-        market_msg: impl Fn(ExchangeEvent) -> M + Clone + Send + 'static,
+        market_msg: impl Fn(exchange::Event) -> M + Clone + Send + 'static,
     ) -> Subscription<M>
     where
         M: 'static,
