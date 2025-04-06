@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use data::UserTimezone;
 use data::chart::ChartLayout;
 use data::chart::indicators::{FootprintIndicator, Indicator};
+use iced::task::Handle;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{LineDash, Path, Stroke};
 use iced::widget::container;
@@ -133,7 +134,7 @@ pub struct FootprintChart {
     data_source: ChartData,
     raw_trades: Vec<Trade>,
     indicators: HashMap<FootprintIndicator, IndicatorData>,
-    fetching_trades: bool,
+    fetching_trades: (bool, Option<Handle>),
     request_handler: RequestHandler,
 }
 
@@ -197,7 +198,7 @@ impl FootprintChart {
                             })
                             .collect()
                     },
-                    fetching_trades: false,
+                    fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                 }
             }
@@ -245,7 +246,7 @@ impl FootprintChart {
                             })
                             .collect()
                     },
-                    fetching_trades: false,
+                    fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                 }
             }
@@ -299,7 +300,7 @@ impl FootprintChart {
                     );
                 }
 
-                if !self.fetching_trades {
+                if !self.fetching_trades.0 {
                     if let Some(earliest_gap) = timeseries
                         .data_points
                         .range(visible_earliest..=visible_latest)
@@ -327,7 +328,7 @@ impl FootprintChart {
                         );
 
                         if !matches!(request, Action::None) {
-                            self.fetching_trades = true;
+                            self.fetching_trades = (true, None);
                             return request;
                         }
                     }
@@ -382,7 +383,7 @@ impl FootprintChart {
 
     pub fn reset_request_handler(&mut self) {
         self.request_handler = RequestHandler::new();
-        self.fetching_trades = false;
+        self.fetching_trades = (false, None);
     }
 
     pub fn get_raw_trades(&self) -> Vec<Trade> {
@@ -404,6 +405,10 @@ impl FootprintChart {
                 // TODO: implement
             }
         }
+    }
+
+    pub fn set_handle(&mut self, handle: Handle) {
+        self.fetching_trades.1 = Some(handle);
     }
 
     pub fn get_tick_size(&self) -> f32 {
@@ -508,7 +513,7 @@ impl FootprintChart {
         self.raw_trades.extend(raw_trades);
 
         if is_batches_done {
-            self.fetching_trades = false;
+            self.fetching_trades = (false, None);
         }
     }
 

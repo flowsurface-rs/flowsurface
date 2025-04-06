@@ -554,7 +554,7 @@ impl Dashboard {
                             let data_path = data::get_data_path("market_data/binance/");
                             let dashboard_id = *layout_id;
 
-                            let (task, _) = Task::sip(
+                            let (task, handle) = Task::sip(
                                 fetch_trades_batched(ticker, from_time, to_time, data_path),
                                 move |batch| {
                                     let data = FetchedData::Trades(batch, to_time);
@@ -576,6 +576,12 @@ impl Dashboard {
                                 },
                             )
                             .abortable();
+
+                            if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                                if let PaneContent::Footprint(chart, _) = &mut state.content {
+                                    chart.set_handle(handle.abort_on_drop());
+                                }
+                            };
 
                             return (task, None);
                         }
