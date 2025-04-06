@@ -324,7 +324,10 @@ impl FootprintChart {
 
                         let request = request_fetch(
                             &mut self.request_handler,
-                            FetchRange::Trades(last_kline_before_gap, first_kline_after_gap),
+                            FetchRange::Trades(
+                                last_kline_before_gap.max(visible_earliest),
+                                first_kline_after_gap.min(visible_latest),
+                            ),
                         );
 
                         if !matches!(request, Action::None) {
