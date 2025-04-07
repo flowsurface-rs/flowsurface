@@ -812,7 +812,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         .map(|(_, (buy_v, sell_v))| buy_v + sell_v)
                         .fold(0.0, f32::max);
 
-                    let vpsr_height = cell_height_scaled * 0.6;
+                    let vpsr_height = cell_height_scaled * 0.8;
 
                     vpsr.iter().for_each(|(price, (buy_v, sell_v))| {
                         let y_position = chart.price_to_y(**price);
@@ -854,10 +854,8 @@ impl canvas::Program<Message> for HeatmapChart {
                         let text_size = 9.0 / chart.scaling;
                         let text_content = abbr_large_numbers(max_vpsr);
 
-                        let text_position = Point::new(
-                            region.x + (bounds.height / chart.scaling) * 0.1,
-                            region.y + text_size,
-                        );
+                        let text_position =
+                            Point::new(region.x + (bounds.height / chart.scaling) * 0.1, region.y);
 
                         frame.fill_text(canvas::Text {
                             content: text_content,
