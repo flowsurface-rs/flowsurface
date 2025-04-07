@@ -229,7 +229,7 @@ pub struct GroupedTrade {
 #[allow(dead_code)]
 enum IndicatorData {
     Volume,
-    VPSR(HashMap<OrderedFloat<f32>, (f32, f32)>),
+    SessionVolumeProfile(HashMap<OrderedFloat<f32>, (f32, f32)>),
 }
 
 pub struct HeatmapChart {
@@ -268,7 +268,7 @@ impl HeatmapChart {
                         let data = match indicator {
                             HeatmapIndicator::Volume => IndicatorData::Volume,
                             HeatmapIndicator::SessionVolumeProfile => {
-                                IndicatorData::VPSR(HashMap::new())
+                                IndicatorData::SessionVolumeProfile(HashMap::new())
                             }
                         };
                         (indicator, data)
@@ -347,7 +347,7 @@ impl HeatmapChart {
                 }
             }
 
-            if let Some(IndicatorData::VPSR(data)) = self
+            if let Some(IndicatorData::SessionVolumeProfile(data)) = self
                 .indicators
                 .get_mut(&HeatmapIndicator::SessionVolumeProfile)
             {
@@ -421,7 +421,7 @@ impl HeatmapChart {
         chart_state.tick_size = new_tick_size;
         chart_state.decimals = count_decimals(new_tick_size);
 
-        if let Some(IndicatorData::VPSR(data)) = self
+        if let Some(IndicatorData::SessionVolumeProfile(data)) = self
             .indicators
             .get_mut(&HeatmapIndicator::SessionVolumeProfile)
         {
@@ -441,7 +441,9 @@ impl HeatmapChart {
             Entry::Vacant(entry) => {
                 let data = match indicator {
                     HeatmapIndicator::Volume => IndicatorData::Volume,
-                    HeatmapIndicator::SessionVolumeProfile => IndicatorData::VPSR(HashMap::new()),
+                    HeatmapIndicator::SessionVolumeProfile => {
+                        IndicatorData::SessionVolumeProfile(HashMap::new())
+                    }
                 };
                 entry.insert(data);
             }
@@ -583,9 +585,6 @@ impl canvas::Program<Message> for HeatmapChart {
         let palette = theme.extended_palette();
 
         let volume_indicator = self.indicators.contains_key(&HeatmapIndicator::Volume);
-        let vpsr_indicator = self
-            .indicators
-            .contains_key(&HeatmapIndicator::SessionVolumeProfile);
 
         let heatmap = chart.cache.main.draw(renderer, bounds_size, |frame| {
             frame.translate(center);
@@ -791,30 +790,24 @@ impl canvas::Program<Message> for HeatmapChart {
                 },
             );
 
-            if vpsr_indicator {
-                let vpsr = self
-                    .indicators
-                    .get(&HeatmapIndicator::SessionVolumeProfile)
-                    .and_then(|data| {
-                        if let IndicatorData::VPSR(trades) = data {
-                            Some(trades)
-                        } else {
-                            None
-                        }
-                    });
+            if let Some(IndicatorData::SessionVolumeProfile(data)) =
+                self.indicators.get(&HeatmapIndicator::SessionVolumeProfile)
+            {
+                let max_vpsr = data
+                    .iter()
+                    .filter(|(price, _)| {
+                        **price <= OrderedFloat(highest) && **price >= OrderedFloat(lowest)
+                    })
+                    .map(|(_, (buy_v, sell_v))| buy_v + sell_v)
+                    .fold(0.0, f32::max);
 
-                if let Some(vpsr) = vpsr {
-                    let max_vpsr = vpsr
-                        .iter()
-                        .filter(|(price, _)| {
-                            **price <= OrderedFloat(highest) && **price >= OrderedFloat(lowest)
-                        })
-                        .map(|(_, (buy_v, sell_v))| buy_v + sell_v)
-                        .fold(0.0, f32::max);
+                let vpsr_height = cell_height_scaled * 0.8;
 
-                    let vpsr_height = cell_height_scaled * 0.8;
-
-                    vpsr.iter().for_each(|(price, (buy_v, sell_v))| {
+                data.iter()
+                    .filter(|(price, _)| {
+                        **price <= OrderedFloat(highest) && **price >= OrderedFloat(lowest)
+                    })
+                    .for_each(|(price, (buy_v, sell_v))| {
                         let y_position = chart.price_to_y(**price);
 
                         let buy_vpsr_width =
@@ -850,21 +843,20 @@ impl canvas::Program<Message> for HeatmapChart {
                         }
                     });
 
-                    if max_vpsr > 0.0 {
-                        let text_size = 9.0 / chart.scaling;
-                        let text_content = abbr_large_numbers(max_vpsr);
+                if max_vpsr > 0.0 {
+                    let text_size = 9.0 / chart.scaling;
+                    let text_content = abbr_large_numbers(max_vpsr);
 
-                        let text_position =
-                            Point::new(region.x + (bounds.height / chart.scaling) * 0.1, region.y);
+                    let text_position =
+                        Point::new(region.x + (bounds.height / chart.scaling) * 0.1, region.y);
 
-                        frame.fill_text(canvas::Text {
-                            content: text_content,
-                            position: text_position,
-                            size: iced::Pixels(text_size),
-                            color: palette.background.base.text,
-                            ..canvas::Text::default()
-                        });
-                    }
+                    frame.fill_text(canvas::Text {
+                        content: text_content,
+                        position: text_position,
+                        size: iced::Pixels(text_size),
+                        color: palette.background.base.text,
+                        ..canvas::Text::default()
+                    });
                 }
             }
 
