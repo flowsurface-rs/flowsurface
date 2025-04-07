@@ -1,3 +1,4 @@
+use iced::widget::canvas::{LineDash, Stroke};
 use iced::widget::container::{self, Style};
 use iced::widget::pane_grid::{Highlight, Line};
 use iced::widget::scrollable::{Rail, Scroller};
@@ -590,4 +591,25 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
         radius: iced::border::Radius::default(),
         fill_mode: iced::widget::rule::FillMode::Full,
     }
+}
+
+// crosshair dashed line for charts
+pub fn get_dashed_line(theme: &Theme) -> Stroke {
+    let palette = theme.extended_palette();
+
+    Stroke::with_color(
+        Stroke {
+            width: 1.0,
+            line_dash: LineDash {
+                segments: &[4.0, 4.0],
+                offset: 8,
+            },
+            ..Default::default()
+        },
+        palette
+            .secondary
+            .strong
+            .color
+            .scale_alpha(if palette.is_dark { 0.8 } else { 1.0 }),
+    )
 }

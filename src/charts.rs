@@ -4,9 +4,7 @@ use iced::{
     Element, Length, Point, Rectangle, Size, Theme, Vector, alignment,
     mouse::{self},
     widget::{
-        Space, button,
-        canvas::{LineDash, Path, Stroke},
-        column, container, row, text,
+        Space, button, canvas::Path, column, container, row, text,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -664,23 +662,7 @@ impl CommonChartData {
     ) -> (f32, u64) {
         let region = self.visible_region(bounds);
 
-        let palette = theme.extended_palette();
-
-        let dashed_line = Stroke::with_color(
-            Stroke {
-                width: 1.0,
-                line_dash: LineDash {
-                    segments: &[4.0, 4.0],
-                    offset: 8,
-                },
-                ..Default::default()
-            },
-            palette
-                .secondary
-                .strong
-                .color
-                .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
-        );
+        let dashed_line = style::get_dashed_line(theme);
 
         // Horizontal price line
         let highest = self.y_to_price(region.y);

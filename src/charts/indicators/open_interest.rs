@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
-use iced::widget::canvas::{self, Cache, Event, Geometry, LineDash, Path, Stroke};
+use iced::widget::canvas::{self, Cache, Event, Geometry, Path, Stroke};
 use iced::widget::{Canvas, center, container, row, text};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::charts::{
     Basis, Caches, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
+use crate::style::get_dashed_line;
 use exchange::Timeframe;
 
 pub fn create_indicator_elem<'a>(
@@ -230,21 +231,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
 
         if chart_state.crosshair {
             let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
-                let dashed_line = Stroke::with_color(
-                    Stroke {
-                        width: 1.0,
-                        line_dash: LineDash {
-                            segments: &[4.0, 4.0],
-                            offset: 8,
-                        },
-                        ..Default::default()
-                    },
-                    palette
-                        .secondary
-                        .strong
-                        .color
-                        .scale_alpha(if palette.is_dark { 0.6 } else { 1.0 }),
-                );
+                let dashed_line = get_dashed_line(theme);
 
                 if let Some(cursor_position) = cursor.position_in(chart_state.bounds) {
                     let region = self.visible_region(frame.size());

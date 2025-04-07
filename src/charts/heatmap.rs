@@ -811,34 +811,34 @@ impl canvas::Program<Message> for HeatmapChart {
                         let y_position = chart.price_to_y(**price);
 
                         let buy_vpsr_width =
-                            (buy_v / max_vpsr) * (bounds.height / chart.scaling) * 0.1;
+                            (buy_v / max_vpsr) * (bounds.width / chart.scaling) * 0.1;
 
                         let sell_vpsr_width =
-                            (sell_v / max_vpsr) * (bounds.height / chart.scaling) * 0.1;
+                            (sell_v / max_vpsr) * (bounds.width / chart.scaling) * 0.1;
 
                         if buy_vpsr_width > sell_vpsr_width {
                             frame.fill_rectangle(
                                 Point::new(region.x, y_position - (vpsr_height / 2.0)),
                                 Size::new(buy_vpsr_width, vpsr_height),
-                                palette.success.weak.color.scale_alpha(0.8),
+                                palette.success.weak.color,
                             );
 
                             frame.fill_rectangle(
                                 Point::new(region.x, y_position - (vpsr_height / 2.0)),
                                 Size::new(sell_vpsr_width, vpsr_height),
-                                palette.danger.weak.color.scale_alpha(0.8),
+                                palette.danger.weak.color,
                             );
                         } else {
                             frame.fill_rectangle(
                                 Point::new(region.x, y_position - (vpsr_height / 2.0)),
                                 Size::new(sell_vpsr_width, vpsr_height),
-                                palette.danger.weak.color.scale_alpha(0.8),
+                                palette.danger.weak.color,
                             );
 
                             frame.fill_rectangle(
                                 Point::new(region.x, y_position - (vpsr_height / 2.0)),
                                 Size::new(buy_vpsr_width, vpsr_height),
-                                palette.success.weak.color.scale_alpha(0.8),
+                                palette.success.weak.color,
                             );
                         }
                     });
@@ -848,7 +848,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let text_content = abbr_large_numbers(max_vpsr);
 
                     let text_position =
-                        Point::new(region.x + (bounds.height / chart.scaling) * 0.1, region.y);
+                        Point::new(region.x + (bounds.width / chart.scaling) * 0.1, region.y);
 
                     frame.fill_text(canvas::Text {
                         content: text_content,
