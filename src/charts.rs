@@ -480,6 +480,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
                 .height(Length::Fixed(26.0))
         ]
     ]
+    .padding(1)
     .into()
 }
 

@@ -801,6 +801,27 @@ impl canvas::Program<Message> for HeatmapChart {
                     .map(|(_, (buy_v, sell_v))| buy_v + sell_v)
                     .fold(0.0, f32::max);
 
+                let max_bar_width = (bounds.width / chart.scaling) * 0.1;
+
+                let min_segment_width = 2.0;
+                let segments = ((max_bar_width / min_segment_width).floor() as usize)
+                    .max(10)
+                    .min(40);
+
+                for i in 0..segments {
+                    let segment_width = max_bar_width / segments as f32;
+                    let segment_x = region.x + (i as f32 * segment_width);
+
+                    // Alpha starts at 0.95 and decreases to 0.1
+                    let alpha = 0.95 - (0.85 * i as f32 / (segments - 1) as f32);
+
+                    frame.fill_rectangle(
+                        Point::new(segment_x, region.y),
+                        Size::new(segment_width, region.height),
+                        palette.background.weakest.color.scale_alpha(alpha),
+                    );
+                }
+
                 let vpsr_height = cell_height_scaled * 0.8;
 
                 data.iter()
@@ -810,11 +831,8 @@ impl canvas::Program<Message> for HeatmapChart {
                     .for_each(|(price, (buy_v, sell_v))| {
                         let y_position = chart.price_to_y(**price);
 
-                        let buy_vpsr_width =
-                            (buy_v / max_vpsr) * (bounds.width / chart.scaling) * 0.1;
-
-                        let sell_vpsr_width =
-                            (sell_v / max_vpsr) * (bounds.width / chart.scaling) * 0.1;
+                        let buy_vpsr_width = (buy_v / max_vpsr) * max_bar_width;
+                        let sell_vpsr_width = (sell_v / max_vpsr) * max_bar_width;
 
                         if buy_vpsr_width > sell_vpsr_width {
                             frame.fill_rectangle(
@@ -847,8 +865,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let text_size = 9.0 / chart.scaling;
                     let text_content = abbr_large_numbers(max_vpsr);
 
-                    let text_position =
-                        Point::new(region.x + (bounds.width / chart.scaling) * 0.1, region.y);
+                    let text_position = Point::new(region.x + max_bar_width, region.y);
 
                     frame.fill_text(canvas::Text {
                         content: text_content,
