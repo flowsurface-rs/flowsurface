@@ -71,6 +71,7 @@ impl Display for CandlestickIndicator {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum HeatmapIndicator {
     Volume,
+    SessionVolumeProfile,
 }
 
 impl Indicator for HeatmapIndicator {
@@ -88,15 +89,25 @@ impl Indicator for HeatmapIndicator {
 }
 
 impl HeatmapIndicator {
-    const ALL: [HeatmapIndicator; 1] = [HeatmapIndicator::Volume];
-    const SPOT: [HeatmapIndicator; 1] = [HeatmapIndicator::Volume];
-    const PERPS: [HeatmapIndicator; 1] = [HeatmapIndicator::Volume];
+    const ALL: [HeatmapIndicator; 2] = [
+        HeatmapIndicator::Volume,
+        HeatmapIndicator::SessionVolumeProfile,
+    ];
+    const SPOT: [HeatmapIndicator; 2] = [
+        HeatmapIndicator::Volume,
+        HeatmapIndicator::SessionVolumeProfile,
+    ];
+    const PERPS: [HeatmapIndicator; 2] = [
+        HeatmapIndicator::Volume,
+        HeatmapIndicator::SessionVolumeProfile,
+    ];
 }
 
 impl Display for HeatmapIndicator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             HeatmapIndicator::Volume => write!(f, "Volume"),
+            HeatmapIndicator::SessionVolumeProfile => write!(f, "VPSR"),
         }
     }
 }

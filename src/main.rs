@@ -457,7 +457,7 @@ impl State {
                                 .width(24)
                                 .align_x(Alignment::Center),
                             Message::ToggleSidebarMenu(sidebar::Menu::Settings),
-                            Some("Settings"),
+                            None,
                             tooltip_position,
                             move |theme, status| {
                                 style::button::transparent(theme, status, is_active)
@@ -485,7 +485,7 @@ impl State {
                                 .width(24)
                                 .align_x(Alignment::Center),
                             Message::TickersTable(tickers_table::Message::ToggleTable),
-                            Some("Search Tickers"),
+                            None,
                             tooltip_position,
                             move |theme, status| {
                                 style::button::transparent(theme, status, is_table_open)

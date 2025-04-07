@@ -226,8 +226,10 @@ pub struct GroupedTrade {
     pub qty: f32,
 }
 
+#[allow(dead_code)]
 enum IndicatorData {
     Volume,
+    VPSR(HashMap<OrderedFloat<f32>, (f32, f32)>),
 }
 
 pub struct HeatmapChart {
@@ -262,11 +264,19 @@ impl HeatmapChart {
             indicators: {
                 enabled_indicators
                     .iter()
-                    .map(|&indicator| (indicator, IndicatorData::Volume))
+                    .map(|&indicator| {
+                        let data = match indicator {
+                            HeatmapIndicator::Volume => IndicatorData::Volume,
+                            HeatmapIndicator::SessionVolumeProfile => {
+                                IndicatorData::VPSR(HashMap::new())
+                            }
+                        };
+                        (indicator, data)
+                    })
                     .collect()
             },
             orderbook: Orderbook::new(tick_size, aggr_time),
-            timeseries: Vec::new(),
+            timeseries: vec![],
             visual_config: config.unwrap_or_default(),
         }
     }
@@ -337,6 +347,23 @@ impl HeatmapChart {
                 }
             }
 
+            if let Some(IndicatorData::VPSR(data)) = self
+                .indicators
+                .get_mut(&HeatmapIndicator::SessionVolumeProfile)
+            {
+                for trade in &grouped_trades {
+                    if trade.is_sell {
+                        data.entry(OrderedFloat(trade.price))
+                            .or_insert_with(|| (0.0, 0.0))
+                            .1 += trade.qty;
+                    } else {
+                        data.entry(OrderedFloat(trade.price))
+                            .or_insert_with(|| (0.0, 0.0))
+                            .0 += trade.qty;
+                    }
+                }
+            }
+
             self.timeseries.push((
                 rounded_depth_update,
                 grouped_trades.into_boxed_slice(),
@@ -394,6 +421,13 @@ impl HeatmapChart {
         chart_state.tick_size = new_tick_size;
         chart_state.decimals = count_decimals(new_tick_size);
 
+        if let Some(IndicatorData::VPSR(data)) = self
+            .indicators
+            .get_mut(&HeatmapIndicator::SessionVolumeProfile)
+        {
+            data.clear();
+        }
+
         self.timeseries.clear();
 
         self.orderbook = Orderbook::new(new_tick_size, aggregate_time);
@@ -405,7 +439,11 @@ impl HeatmapChart {
                 entry.remove();
             }
             Entry::Vacant(entry) => {
-                entry.insert(IndicatorData::Volume);
+                let data = match indicator {
+                    HeatmapIndicator::Volume => IndicatorData::Volume,
+                    HeatmapIndicator::SessionVolumeProfile => IndicatorData::VPSR(HashMap::new()),
+                };
+                entry.insert(data);
             }
         }
     }
@@ -545,6 +583,9 @@ impl canvas::Program<Message> for HeatmapChart {
         let palette = theme.extended_palette();
 
         let volume_indicator = self.indicators.contains_key(&HeatmapIndicator::Volume);
+        let vpsr_indicator = self
+            .indicators
+            .contains_key(&HeatmapIndicator::SessionVolumeProfile);
 
         let heatmap = chart.cache.main.draw(renderer, bounds_size, |frame| {
             frame.translate(center);
@@ -715,23 +756,119 @@ impl canvas::Program<Message> for HeatmapChart {
                         let sell_bar_height =
                             (sell_volume / max_aggr_volume) * (bounds.height / chart.scaling) * 0.1;
 
-                        frame.fill_rectangle(
-                            Point::new(x_position, (region.y + region.height) - buy_bar_height),
-                            Size::new(bar_width, buy_bar_height),
-                            palette.success.base.color,
-                        );
+                        if buy_bar_height > sell_bar_height {
+                            frame.fill_rectangle(
+                                Point::new(x_position, (region.y + region.height) - buy_bar_height),
+                                Size::new(bar_width, buy_bar_height),
+                                palette.success.base.color,
+                            );
 
-                        frame.fill_rectangle(
-                            Point::new(
-                                x_position - bar_width,
-                                (region.y + region.height) - sell_bar_height,
-                            ),
-                            Size::new(bar_width, sell_bar_height),
-                            palette.danger.base.color,
-                        );
+                            frame.fill_rectangle(
+                                Point::new(
+                                    x_position,
+                                    (region.y + region.height) - sell_bar_height,
+                                ),
+                                Size::new(bar_width, sell_bar_height),
+                                palette.danger.base.color,
+                            );
+                        } else {
+                            frame.fill_rectangle(
+                                Point::new(
+                                    x_position,
+                                    (region.y + region.height) - sell_bar_height,
+                                ),
+                                Size::new(bar_width, sell_bar_height),
+                                palette.danger.base.color,
+                            );
+
+                            frame.fill_rectangle(
+                                Point::new(x_position, (region.y + region.height) - buy_bar_height),
+                                Size::new(bar_width, buy_bar_height),
+                                palette.success.base.color,
+                            );
+                        }
                     }
                 },
             );
+
+            if vpsr_indicator {
+                let vpsr = self
+                    .indicators
+                    .get(&HeatmapIndicator::SessionVolumeProfile)
+                    .and_then(|data| {
+                        if let IndicatorData::VPSR(trades) = data {
+                            Some(trades)
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(vpsr) = vpsr {
+                    let max_vpsr = vpsr
+                        .iter()
+                        .filter(|(price, _)| {
+                            **price <= OrderedFloat(highest) && **price >= OrderedFloat(lowest)
+                        })
+                        .map(|(_, (buy_v, sell_v))| buy_v + sell_v)
+                        .fold(0.0, f32::max);
+
+                    let vpsr_height = cell_height_scaled * 0.6;
+
+                    vpsr.iter().for_each(|(price, (buy_v, sell_v))| {
+                        let y_position = chart.price_to_y(**price);
+
+                        let buy_vpsr_width =
+                            (buy_v / max_vpsr) * (bounds.height / chart.scaling) * 0.1;
+
+                        let sell_vpsr_width =
+                            (sell_v / max_vpsr) * (bounds.height / chart.scaling) * 0.1;
+
+                        if buy_vpsr_width > sell_vpsr_width {
+                            frame.fill_rectangle(
+                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
+                                Size::new(buy_vpsr_width, vpsr_height),
+                                palette.success.weak.color.scale_alpha(0.8),
+                            );
+
+                            frame.fill_rectangle(
+                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
+                                Size::new(sell_vpsr_width, vpsr_height),
+                                palette.danger.weak.color.scale_alpha(0.8),
+                            );
+                        } else {
+                            frame.fill_rectangle(
+                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
+                                Size::new(sell_vpsr_width, vpsr_height),
+                                palette.danger.weak.color.scale_alpha(0.8),
+                            );
+
+                            frame.fill_rectangle(
+                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
+                                Size::new(buy_vpsr_width, vpsr_height),
+                                palette.success.weak.color.scale_alpha(0.8),
+                            );
+                        }
+                    });
+
+                    if max_vpsr > 0.0 {
+                        let text_size = 9.0 / chart.scaling;
+                        let text_content = abbr_large_numbers(max_vpsr);
+
+                        let text_position = Point::new(
+                            region.x + (bounds.height / chart.scaling) * 0.1,
+                            region.y + text_size,
+                        );
+
+                        frame.fill_text(canvas::Text {
+                            content: text_content,
+                            position: text_position,
+                            size: iced::Pixels(text_size),
+                            color: palette.background.base.text,
+                            ..canvas::Text::default()
+                        });
+                    }
+                }
+            }
 
             if volume_indicator && max_aggr_volume > 0.0 {
                 let text_size = 9.0 / chart.scaling;
