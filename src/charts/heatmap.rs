@@ -812,8 +812,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let segment_width = max_bar_width / segments as f32;
                     let segment_x = region.x + (i as f32 * segment_width);
 
-                    // Alpha starts at 0.95 and decreases to 0.1
-                    let alpha = 0.95 - (0.85 * i as f32 / (segments - 1) as f32);
+                    let alpha = 0.95 - (0.85 * (i as f32 / (segments - 1) as f32).powf(2.0));
 
                     frame.fill_rectangle(
                         Point::new(segment_x, region.y),
