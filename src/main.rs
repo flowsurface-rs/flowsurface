@@ -18,7 +18,7 @@ use screen::{
 };
 use style::{Icon, TITLE_PADDING_TOP, get_icon_text};
 use widget::{
-    confirm_dialog_container, dashboard_modal, main_dialog_modal,
+    confirm_dialog_container, create_slider_row, dashboard_modal, main_dialog_modal,
     notification::{self, Toast},
     tooltip,
 };
@@ -29,7 +29,7 @@ use exchange::adapter::{Exchange, StreamType, fetch_ticker_info};
 use iced::{
     Alignment, Element, Length, Subscription, Task, padding,
     widget::{
-        Slider, Space, Text, button, center, checkbox, column, container, pane_grid, pick_list,
+        Slider, Space, button, center, checkbox, column, container, pane_grid, pick_list,
         responsive, row, text, tooltip::Position as TooltipPosition,
     },
 };
@@ -540,10 +540,11 @@ impl Flowsurface {
 
                     let audio_btn = {
                         let is_active = self.sidebar.is_menu_active(sidebar::Menu::Audio);
-                        let icon = if self.sound_cache.is_muted() {
-                            Icon::SpeakerOff
-                        } else {
-                            Icon::SpeakerOn
+
+                        let icon = match self.sound_cache.get_volume().unwrap_or(0.0) {
+                            v if v >= 40.0 => Icon::SpeakerHigh,
+                            v if v > 0.0 => Icon::SpeakerLow,
+                            _ => Icon::SpeakerOff,
                         };
 
                         create_button(
@@ -980,24 +981,4 @@ impl Flowsurface {
     fn get_active_dashboard_mut(&mut self) -> Option<&mut Dashboard> {
         self.layout_manager.get_active_dashboard_mut()
     }
-}
-
-fn create_slider_row<'a>(
-    label: Text<'a>,
-    slider: Element<'a, Message>,
-    placeholder: Text<'a>,
-) -> Element<'a, Message> {
-    container(
-        row![
-            label,
-            column![slider, placeholder,]
-                .spacing(2)
-                .align_x(Alignment::Center),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(8)
-        .padding(8),
-    )
-    .style(style::modal_container)
-    .into()
 }

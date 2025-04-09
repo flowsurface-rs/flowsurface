@@ -34,8 +34,9 @@ pub enum Icon {
     Edit,
     Checkmark,
     Clone,
-    SpeakerOn,
     SpeakerOff,
+    SpeakerLow,
+    SpeakerHigh,
 }
 
 impl From<Icon> for char {
@@ -64,8 +65,9 @@ impl From<Icon> for char {
             Icon::Edit => '\u{E811}',
             Icon::Checkmark => '\u{E812}',
             Icon::Clone => '\u{F0C5}',
-            Icon::SpeakerOn => '\u{E813}',
             Icon::SpeakerOff => '\u{E814}',
+            Icon::SpeakerHigh => '\u{E815}',
+            Icon::SpeakerLow => '\u{E816}',
         }
     }
 }

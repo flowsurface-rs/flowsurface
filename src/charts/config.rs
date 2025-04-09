@@ -1,11 +1,15 @@
 use super::format_with_commas;
-use crate::{screen::dashboard::pane::Message, style, tooltip, widget::scrollable_content};
+use crate::{
+    screen::dashboard::pane::Message,
+    style, tooltip,
+    widget::{create_slider_row, scrollable_content},
+};
 
 use data::chart::{VisualConfig, heatmap, timeandsales};
 use iced::{
     Alignment, Element, Length,
     widget::{
-        Slider, Text, button, column, container, pane_grid, row, text,
+        Slider, button, column, container, pane_grid, row, text,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -151,26 +155,6 @@ pub fn timesales_cfg_view<'a>(
     .padding(16)
     .max_width(500)
     .style(style::chart_modal)
-    .into()
-}
-
-fn create_slider_row<'a>(
-    label: Text<'a>,
-    slider: Element<'a, Message>,
-    placeholder: Text<'a>,
-) -> Element<'a, Message> {
-    container(
-        row![
-            label,
-            column![slider, placeholder,]
-                .spacing(2)
-                .align_x(Alignment::Center),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(8)
-        .padding(8),
-    )
-    .style(style::modal_container)
     .into()
 }
 

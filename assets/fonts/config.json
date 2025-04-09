@@ -329,15 +329,21 @@
       ]
     },
     {
-      "uid": "43m0a70tvxqc6q7jxgzhz5lmlt3ce2iy",
-      "css": "volume-low",
-      "code": 59411,
-      "src": "typicons"
-    },
-    {
       "uid": "0a9d5a8bfa0ccfd44a38328b8ca276c2",
       "css": "volume-off",
       "code": 59412,
+      "src": "typicons"
+    },
+    {
+      "uid": "okc52fdxu9uz2wnl0awdtv5373is429s",
+      "css": "volume-high",
+      "code": 59413,
+      "src": "typicons"
+    },
+    {
+      "uid": "3bf8e868324f7efb93c7bde31be9cc5e",
+      "css": "volume-middle",
+      "code": 59414,
       "src": "typicons"
     }
   ]

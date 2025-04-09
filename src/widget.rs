@@ -3,7 +3,7 @@ use crate::style;
 use iced::{
     Alignment, Color, Length, padding,
     widget::{
-        button, center, column, container, mouse_area, opaque, row, scrollable, stack, text,
+        Text, button, center, column, container, mouse_area, opaque, row, scrollable, stack, text,
         tooltip::Position,
     },
 };
@@ -138,5 +138,28 @@ where
         )
         .on_press(on_blur)
     ]
+    .into()
+}
+
+pub fn create_slider_row<'a, Message>(
+    label: Text<'a>,
+    slider: Element<'a, Message>,
+    placeholder: Text<'a>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    container(
+        row![
+            label,
+            column![slider, placeholder,]
+                .spacing(2)
+                .align_x(Alignment::Center),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8)
+        .padding(8),
+    )
+    .style(style::modal_container)
     .into()
 }
