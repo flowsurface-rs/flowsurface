@@ -117,8 +117,9 @@ impl Flowsurface {
         let active_layout = saved_state.layout_manager.get_active_layout();
         let (main_window_id, open_main_window) = window::open(main_window_cfg);
 
-        let sound_cache = data::audio::SoundCache::with_default_sounds()
-            .expect("Failed to initialize sound cache");
+        let sound_cache =
+            data::audio::SoundCache::with_default_sounds(saved_state.audio_stream_volume)
+                .expect("Failed to initialize sound cache");
 
         (
             Self {
@@ -301,6 +302,7 @@ impl Flowsurface {
                     self.timezone,
                     self.sidebar,
                     self.scale_factor,
+                    self.sound_cache.get_volume(),
                 );
 
                 match serde_json::to_string(&layout) {
@@ -890,8 +892,15 @@ impl Flowsurface {
                         container(
                             column![
                                 column![text("Sound").size(14), volume_slider,].spacing(8),
-                                column![text("Available audio streams").size(14), streams_row,]
-                                    .spacing(8),
+                                column![
+                                    text(format!(
+                                        "Audio streams [{}]",
+                                        self.layout_manager.get_active_layout().name
+                                    ))
+                                    .size(14),
+                                    streams_row,
+                                ]
+                                .spacing(8),
                             ]
                             .spacing(20),
                         )

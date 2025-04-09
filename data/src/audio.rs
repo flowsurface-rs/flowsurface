@@ -27,7 +27,7 @@ pub struct SoundCache {
 }
 
 impl SoundCache {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(volume: Option<f32>) -> Result<Self, String> {
         let (stream, stream_handle) = match OutputStream::try_default() {
             Ok(result) => result,
             Err(err) => return Err(format!("Failed to open audio output: {}", err)),
@@ -37,12 +37,12 @@ impl SoundCache {
             _stream: stream,
             stream_handle,
             sound_data: HashMap::new(),
-            volume: Some(50.0),
+            volume,
         })
     }
 
-    pub fn with_default_sounds() -> Result<Self, String> {
-        let mut cache = Self::new()?;
+    pub fn with_default_sounds(volume: Option<f32>) -> Result<Self, String> {
+        let mut cache = Self::new(volume)?;
 
         for path in DEFAULT_SOUNDS {
             if let Err(e) = cache.load_sound(path) {

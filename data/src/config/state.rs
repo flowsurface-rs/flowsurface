@@ -24,6 +24,7 @@ pub struct State {
     pub timezone: UserTimezone,
     pub sidebar: Sidebar,
     pub scale_factor: ScaleFactor,
+    pub audio_stream_volume: Option<f32>,
 }
 
 impl State {
@@ -35,6 +36,7 @@ impl State {
         timezone: UserTimezone,
         sidebar: Sidebar,
         scale_factor: ScaleFactor,
+        audio_stream_volume: Option<f32>,
     ) -> Self {
         State {
             layout_manager,
@@ -44,6 +46,7 @@ impl State {
             timezone,
             sidebar,
             scale_factor,
+            audio_stream_volume,
         }
     }
 }
