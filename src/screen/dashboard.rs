@@ -55,7 +55,7 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, WindowSpec)>,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
-    pub audio_streams: Vec<(Exchange, exchange::Ticker)>,
+    pub audio_streams: HashSet<(Exchange, exchange::Ticker)>,
     pub trade_fetch_enabled: bool,
 }
 
@@ -66,7 +66,7 @@ impl Default for Dashboard {
             focus: None,
             pane_streams: HashMap::new(),
             popout: HashMap::new(),
-            audio_streams: vec![],
+            audio_streams: HashSet::new(),
             trade_fetch_enabled: false,
         }
     }
@@ -106,7 +106,7 @@ impl Dashboard {
     pub fn from_config(
         panes: Configuration<PaneState>,
         popout_windows: Vec<(Configuration<PaneState>, WindowSpec)>,
-        audio_streams: Vec<(Exchange, Ticker)>,
+        audio_streams: HashSet<(Exchange, Ticker)>,
         trade_fetch_enabled: bool,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
@@ -479,13 +479,19 @@ impl Dashboard {
             }
             Message::RefreshStreams => {
                 self.pane_streams = self.get_all_diff_streams(main_window.id);
+
+                self.audio_streams.retain(|(exchange, ticker)| {
+                    self.pane_streams
+                        .get(exchange)
+                        .and_then(|tickers| tickers.get(ticker))
+                        .is_some()
+                });
             }
             Message::ToggleStreamAudio(exchange, ticker, is_enabled) => {
                 if is_enabled {
-                    self.audio_streams.push((exchange, ticker));
+                    self.audio_streams.insert((exchange, ticker));
                 } else {
-                    self.audio_streams
-                        .retain(|(ex, tk)| *ex != exchange || *tk != ticker);
+                    self.audio_streams.remove(&(exchange, ticker));
                 }
             }
             Message::ChartRequestedFetch(pane, window, req_id, fetch) => match fetch {
@@ -1234,39 +1240,23 @@ impl Dashboard {
         let mut pane_streams = HashMap::new();
 
         self.iter_all_panes(main_window)
-            .for_each(|(_, _, pane_state)| {
-                for stream_type in &pane_state.streams {
-                    match stream_type {
-                        StreamType::Kline {
-                            exchange,
-                            ticker,
-                            timeframe,
-                        } => {
-                            let exchange = *exchange;
-                            let ticker = *ticker;
-                            let timeframe = *timeframe;
+            .flat_map(|(_, _, pane_state)| &pane_state.streams)
+            .filter(|stream_type| !matches!(stream_type, StreamType::None))
+            .for_each(|stream_type| {
+                let (exchange, ticker) = match stream_type {
+                    StreamType::Kline {
+                        exchange, ticker, ..
+                    } => (*exchange, *ticker),
+                    StreamType::DepthAndTrades { exchange, ticker } => (*exchange, *ticker),
+                    StreamType::None => unreachable!(),
+                };
 
-                            let exchange_map =
-                                pane_streams.entry(exchange).or_insert(HashMap::new());
-                            let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());
-                            ticker_map.insert(StreamType::Kline {
-                                exchange,
-                                ticker,
-                                timeframe,
-                            });
-                        }
-                        StreamType::DepthAndTrades { exchange, ticker } => {
-                            let exchange = *exchange;
-                            let ticker = *ticker;
-
-                            let exchange_map =
-                                pane_streams.entry(exchange).or_insert(HashMap::new());
-                            let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());
-                            ticker_map.insert(StreamType::DepthAndTrades { exchange, ticker });
-                        }
-                        StreamType::None => {}
-                    }
-                }
+                pane_streams
+                    .entry(exchange)
+                    .or_insert_with(HashMap::new)
+                    .entry(ticker)
+                    .or_insert_with(HashSet::new)
+                    .insert(*stream_type);
             });
 
         pane_streams
@@ -1336,17 +1326,11 @@ impl Dashboard {
     }
 
     pub fn is_stream_audio_enabled(&self, stream: &StreamType) -> bool {
-        self.audio_streams.iter().any(|(exchange, ticker)| {
-            if let StreamType::DepthAndTrades {
-                exchange: ex,
-                ticker: tk,
-            } = stream
-            {
-                *exchange == *ex && *ticker == *tk
-            } else {
-                false
-            }
-        })
+        if let StreamType::DepthAndTrades { exchange, ticker } = stream {
+            self.audio_streams.contains(&(*exchange, *ticker))
+        } else {
+            false
+        }
     }
 }
 

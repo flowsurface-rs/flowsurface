@@ -111,10 +111,8 @@ impl SoundCache {
         if level == 0.0 {
             self.volume = None;
             return;
-        }
-
-        let clamped_level = level.max(0.0).min(100.0);
-        self.volume = Some(clamped_level);
+        };
+        self.volume = Some(level.clamp(0.0, 100.0));
     }
 
     pub fn mute(&mut self) {

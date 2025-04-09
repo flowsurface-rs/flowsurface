@@ -540,11 +540,11 @@ impl Flowsurface {
 
                     let audio_btn = {
                         let is_active = self.sidebar.is_menu_active(sidebar::Menu::Audio);
-                        let icon = self
-                            .sound_cache
-                            .is_muted()
-                            .then(|| Icon::SpeakerOff)
-                            .unwrap_or(Icon::SpeakerOn);
+                        let icon = if self.sound_cache.is_muted() {
+                            Icon::SpeakerOff
+                        } else {
+                            Icon::SpeakerOn
+                        };
 
                         create_button(
                             get_icon_text(icon, 14).width(24).align_x(Alignment::Center),
