@@ -47,6 +47,7 @@ pub enum Message {
     ChartRequestedFetch(pane_grid::Pane, window::Id, uuid::Uuid, FetchRange),
     DistributeFetchedData(uuid::Uuid, uuid::Uuid, FetchedData, StreamType),
     ChangePaneStatus(uuid::Uuid, pane::Status),
+    ToggleStreamAudio(Exchange, Ticker, bool),
 }
 
 pub struct Dashboard {
@@ -54,6 +55,7 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, WindowSpec)>,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
+    pub audio_streams: Vec<(Exchange, exchange::Ticker)>,
     pub trade_fetch_enabled: bool,
 }
 
@@ -64,6 +66,7 @@ impl Default for Dashboard {
             focus: None,
             pane_streams: HashMap::new(),
             popout: HashMap::new(),
+            audio_streams: vec![],
             trade_fetch_enabled: false,
         }
     }
@@ -103,6 +106,7 @@ impl Dashboard {
     pub fn from_config(
         panes: Configuration<PaneState>,
         popout_windows: Vec<(Configuration<PaneState>, WindowSpec)>,
+        audio_streams: Vec<(Exchange, Ticker)>,
         trade_fetch_enabled: bool,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
@@ -120,6 +124,7 @@ impl Dashboard {
             panes,
             focus: None,
             pane_streams: HashMap::new(),
+            audio_streams,
             popout,
             trade_fetch_enabled,
         }
@@ -474,6 +479,14 @@ impl Dashboard {
             }
             Message::RefreshStreams => {
                 self.pane_streams = self.get_all_diff_streams(main_window.id);
+            }
+            Message::ToggleStreamAudio(exchange, ticker, is_enabled) => {
+                if is_enabled {
+                    self.audio_streams.push((exchange, ticker));
+                } else {
+                    self.audio_streams
+                        .retain(|(ex, tk)| *ex != exchange || *tk != ticker);
+                }
             }
             Message::ChartRequestedFetch(pane, window, req_id, fetch) => match fetch {
                 FetchRange::Kline(from, to) => {
@@ -1214,13 +1227,13 @@ impl Dashboard {
         Subscription::batch(market_subscriptions)
     }
 
-    fn get_all_diff_streams(
-        &mut self,
+    pub fn get_all_diff_streams(
+        &self,
         main_window: window::Id,
     ) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
         let mut pane_streams = HashMap::new();
 
-        self.iter_all_panes_mut(main_window)
+        self.iter_all_panes(main_window)
             .for_each(|(_, _, pane_state)| {
                 for stream_type in &pane_state.streams {
                     match stream_type {
@@ -1255,8 +1268,6 @@ impl Dashboard {
                     }
                 }
             });
-
-        self.pane_streams.clone_from(&pane_streams);
 
         pane_streams
     }
@@ -1322,6 +1333,20 @@ impl Dashboard {
         }
 
         tasks
+    }
+
+    pub fn is_stream_audio_enabled(&self, stream: &StreamType) -> bool {
+        self.audio_streams.iter().any(|(exchange, ticker)| {
+            if let StreamType::DepthAndTrades {
+                exchange: ex,
+                ticker: tk,
+            } = stream
+            {
+                *exchange == *ex && *ticker == *tk
+            } else {
+                false
+            }
+        })
     }
 }
 

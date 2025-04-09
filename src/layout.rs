@@ -220,6 +220,7 @@ impl LayoutManager {
                     let dashboard = Dashboard::from_config(
                         configuration(ser_dashboard.pane.clone()),
                         popout_windows,
+                        ser_dashboard.enabled_audio_streams.clone(),
                         ser_dashboard.trade_fetch_enabled,
                     );
 
@@ -540,6 +541,7 @@ impl From<&Dashboard> for data::Dashboard {
                     .map(|(pane, window_spec)| (pane.clone(), *window_spec))
                     .collect()
             },
+            enabled_audio_streams: dashboard.audio_streams.clone(),
             trade_fetch_enabled: dashboard.trade_fetch_enabled,
         }
     }
@@ -729,6 +731,7 @@ pub fn load_saved_state() -> SavedState {
                 let dashboard = Dashboard::from_config(
                     configuration(layout.dashboard.pane.clone()),
                     popout_windows,
+                    layout.dashboard.enabled_audio_streams.clone(),
                     layout.dashboard.trade_fetch_enabled,
                 );
 

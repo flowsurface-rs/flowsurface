@@ -51,6 +51,7 @@ impl std::fmt::Display for Position {
 pub enum Menu {
     Layout,
     Settings,
+    Audio,
     #[default]
     None,
 }
