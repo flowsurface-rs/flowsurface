@@ -1,4 +1,7 @@
+use crate::layout::pane::ok_or_default;
+use exchange::ExchangeTicker;
 use rodio::{Decoder, OutputStream, OutputStreamHandle};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -18,6 +21,36 @@ pub const DEFAULT_SOUNDS: &[&str] = &[
     HARD_SELL_SOUND,
     TICK_SOUND,
 ];
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub enum Threshold {
+    Count(usize),
+    Qty(f32),
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub struct StreamCfg {
+    pub enabled: bool,
+    pub threshold: Threshold,
+}
+
+impl Default for StreamCfg {
+    fn default() -> Self {
+        StreamCfg {
+            enabled: true,
+            threshold: Threshold::Count(10),
+        }
+    }
+}
+
+#[derive(Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AudioStream {
+    #[serde(deserialize_with = "ok_or_default")]
+    pub streams: HashMap<ExchangeTicker, StreamCfg>,
+    #[serde(deserialize_with = "ok_or_default")]
+    pub volume: Option<f32>,
+}
 
 pub struct SoundCache {
     _stream: OutputStream,

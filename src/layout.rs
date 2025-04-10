@@ -220,7 +220,6 @@ impl LayoutManager {
                     let dashboard = Dashboard::from_config(
                         configuration(ser_dashboard.pane.clone()),
                         popout_windows,
-                        ser_dashboard.enabled_audio_streams.clone(),
                         ser_dashboard.trade_fetch_enabled,
                     );
 
@@ -482,11 +481,11 @@ pub struct SavedState {
     pub layout_manager: LayoutManager,
     pub main_window: Option<WindowSpec>,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
-    pub audio_stream_volume: Option<f32>,
     pub scale_factor: data::ScaleFactor,
     pub timezone: data::UserTimezone,
     pub sidebar: data::Sidebar,
     pub theme: data::Theme,
+    pub audio_cfg: data::AudioStream,
 }
 
 impl Default for SavedState {
@@ -495,11 +494,11 @@ impl Default for SavedState {
             layout_manager: LayoutManager::new(),
             main_window: None,
             favorited_tickers: Vec::new(),
-            audio_stream_volume: None,
             scale_factor: data::ScaleFactor::default(),
             timezone: UserTimezone::default(),
             sidebar: data::Sidebar::default(),
             theme: data::Theme::default(),
+            audio_cfg: data::AudioStream::default(),
         }
     }
 }
@@ -543,7 +542,6 @@ impl From<&Dashboard> for data::Dashboard {
                     .map(|(pane, window_spec)| (pane.clone(), *window_spec))
                     .collect()
             },
-            enabled_audio_streams: dashboard.audio_streams.clone(),
             trade_fetch_enabled: dashboard.trade_fetch_enabled,
         }
     }
@@ -733,7 +731,6 @@ pub fn load_saved_state() -> SavedState {
                 let dashboard = Dashboard::from_config(
                     configuration(layout.dashboard.pane.clone()),
                     popout_windows,
-                    layout.dashboard.enabled_audio_streams.clone(),
                     layout.dashboard.trade_fetch_enabled,
                 );
 
@@ -778,11 +775,11 @@ pub fn load_saved_state() -> SavedState {
                 theme: state.selected_theme,
                 layout_manager,
                 favorited_tickers: state.favorited_tickers,
-                audio_stream_volume: state.audio_stream_volume,
                 main_window: state.main_window,
                 timezone: state.timezone,
                 sidebar: state.sidebar,
                 scale_factor: state.scale_factor,
+                audio_cfg: state.audio_cfg,
             }
         }
         Err(e) => {

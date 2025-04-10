@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+pub use audio::AudioStream;
 pub use config::ScaleFactor;
 pub use config::sidebar::{self, Sidebar};
 pub use config::state::{Layouts, State};

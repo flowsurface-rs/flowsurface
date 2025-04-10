@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use crate::{Kline, OpenInterest, TickerInfo, TickerStats, Trade, depth::Depth};
 
@@ -81,6 +81,22 @@ impl std::fmt::Display for Exchange {
                 Exchange::BybitSpot => "Bybit Spot",
             }
         )
+    }
+}
+
+impl FromStr for Exchange {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Binance Linear" => Ok(Exchange::BinanceLinear),
+            "Binance Inverse" => Ok(Exchange::BinanceInverse),
+            "Binance Spot" => Ok(Exchange::BinanceSpot),
+            "Bybit Linear" => Ok(Exchange::BybitLinear),
+            "Bybit Inverse" => Ok(Exchange::BybitInverse),
+            "Bybit Spot" => Ok(Exchange::BybitSpot),
+            _ => Err(format!("Invalid exchange: {}", s)),
+        }
     }
 }
 

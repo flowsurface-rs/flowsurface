@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod charts;
 mod layout;
 mod logger;
@@ -18,7 +19,7 @@ use screen::{
 };
 use style::{Icon, TITLE_PADDING_TOP, get_icon_text};
 use widget::{
-    confirm_dialog_container, create_slider_row, dashboard_modal, main_dialog_modal,
+    confirm_dialog_container, dashboard_modal, main_dialog_modal,
     notification::{self, Toast},
     tooltip,
 };
@@ -29,11 +30,13 @@ use exchange::adapter::{Exchange, StreamType, fetch_ticker_info};
 use iced::{
     Alignment, Element, Length, Subscription, Task, padding,
     widget::{
-        Slider, Space, button, center, checkbox, column, container, pane_grid, pick_list,
-        responsive, row, text, tooltip::Position as TooltipPosition,
+        Space, button, center, column, container, pane_grid, pick_list, responsive, row, text,
+        tooltip::Position as TooltipPosition,
     },
 };
 use std::{collections::HashMap, vec};
+
+const TRADE_SOUND_CUTOFF: usize = 10;
 
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
@@ -64,7 +67,7 @@ struct Flowsurface {
     sidebar: data::Sidebar,
     theme: data::Theme,
     notifications: Vec<Toast>,
-    sound_cache: data::audio::SoundCache,
+    audio_stream: audio::AudioStream,
 }
 
 #[derive(Debug, Clone)]
@@ -94,8 +97,7 @@ enum Message {
     AddNotification(Toast),
     DeleteNotification(usize),
 
-    PlaySound(i32, i32),
-    SoundLevelChanged(f32),
+    AudioStream(audio::Message),
 }
 
 impl Flowsurface {
@@ -117,10 +119,6 @@ impl Flowsurface {
         let active_layout = saved_state.layout_manager.get_active_layout();
         let (main_window_id, open_main_window) = window::open(main_window_cfg);
 
-        let sound_cache =
-            data::audio::SoundCache::with_default_sounds(saved_state.audio_stream_volume)
-                .expect("Failed to initialize sound cache");
-
         (
             Self {
                 main_window: Window::new(main_window_id),
@@ -132,7 +130,7 @@ impl Flowsurface {
                 sidebar: saved_state.sidebar,
                 theme: saved_state.theme,
                 notifications: vec![],
-                sound_cache,
+                audio_stream: audio::AudioStream::new(saved_state.audio_cfg),
             },
             open_main_window
                 .then(|_| Task::none())
@@ -201,14 +199,30 @@ impl Flowsurface {
                                 )
                                 .map(move |msg| Message::Dashboard(None, msg));
 
-                            if dashboard.is_stream_audio_enabled(&stream)
-                                && (buy_count > 10 || sell_count > 10)
+                            if self.audio_stream.is_stream_audio_enabled(&stream)
+                                && (buy_count > TRADE_SOUND_CUTOFF
+                                    || sell_count > TRADE_SOUND_CUTOFF)
                             {
-                                return task
-                                    .chain(Task::done(Message::PlaySound(buy_count, sell_count)));
-                            } else {
-                                return task;
-                            };
+                                let hard_count = TRADE_SOUND_CUTOFF * 4;
+
+                                let sound = if buy_count > hard_count {
+                                    data::audio::HARD_BUY_SOUND
+                                } else if buy_count > TRADE_SOUND_CUTOFF {
+                                    data::audio::BUY_SOUND
+                                } else if sell_count > hard_count {
+                                    data::audio::HARD_SELL_SOUND
+                                } else if sell_count > TRADE_SOUND_CUTOFF {
+                                    data::audio::SELL_SOUND
+                                } else {
+                                    return Task::none();
+                                };
+
+                                if let Err(err) = &self.play_sound(sound) {
+                                    log::error!("Failed to play sound: {err}");
+                                }
+                            }
+
+                            return task;
                         }
                         exchange::Event::KlineReceived(stream, kline) => {
                             return dashboard
@@ -217,24 +231,6 @@ impl Flowsurface {
                         }
                     }
                 }
-            }
-            Message::PlaySound(buy_count, sell_count) => {
-                let sound = if buy_count > 40 {
-                    data::audio::HARD_BUY_SOUND
-                } else if buy_count > 10 {
-                    data::audio::BUY_SOUND
-                } else if sell_count > 40 {
-                    data::audio::HARD_SELL_SOUND
-                } else if sell_count > 10 {
-                    data::audio::SELL_SOUND
-                } else {
-                    return Task::none();
-                };
-
-                let _ = &self.sound_cache.play(sound);
-            }
-            Message::SoundLevelChanged(value) => {
-                self.sound_cache.set_sound_level(value);
             }
             Message::WindowEvent(event) => match event {
                 window::Event::CloseRequested(window) => {
@@ -294,6 +290,8 @@ impl Flowsurface {
                     .find(|(id, _)| **id == self.main_window.id)
                     .map(|(_, spec)| *spec);
 
+                let audio_cfg = data::AudioStream::from(&self.audio_stream);
+
                 let layout = data::State::from_parts(
                     layouts,
                     self.theme.clone(),
@@ -302,7 +300,7 @@ impl Flowsurface {
                     self.timezone,
                     self.sidebar,
                     self.scale_factor,
-                    self.sound_cache.get_volume(),
+                    audio_cfg,
                 );
 
                 match serde_json::to_string(&layout) {
@@ -463,6 +461,14 @@ impl Flowsurface {
             Message::DeleteNotification(index) => {
                 self.notifications.remove(index);
             }
+            Message::AudioStream(message) => {
+                let action = self.audio_stream.update(message);
+
+                match action {
+                    audio::Action::None => {}
+                    audio::Action::Select => {}
+                }
+            }
         }
         Task::none()
     }
@@ -541,7 +547,7 @@ impl Flowsurface {
                     let audio_btn = {
                         let is_active = self.sidebar.is_menu_active(sidebar::Menu::Audio);
 
-                        let icon = match self.sound_cache.get_volume().unwrap_or(0.0) {
+                        let icon = match self.audio_stream.get_volume().unwrap_or(0.0) {
                             v if v >= 40.0 => Icon::SpeakerHigh,
                             v if v > 0.0 => Icon::SpeakerLow,
                             _ => Icon::SpeakerOff,
@@ -836,88 +842,32 @@ impl Flowsurface {
                     )
                 }
                 sidebar::Menu::Audio => {
-                    let audio_modal = {
-                        let volume_slider = {
-                            let volume_pct = self.sound_cache.get_volume().unwrap_or(0.0);
-
-                            create_slider_row(
-                                text("Volume"),
-                                Slider::new(0.0..=100.0, volume_pct, move |value| {
-                                    Message::SoundLevelChanged(value)
-                                })
-                                .step(1.0)
-                                .into(),
-                                text(format!("{volume_pct}%")).size(13),
-                            )
-                        };
-
-                        let depth_streams_list: Vec<(Exchange, exchange::Ticker)> = dashboard
-                            .pane_streams
-                            .iter()
-                            .flat_map(|(exchange, streams)| {
-                                streams
-                                    .iter()
-                                    .filter(|(ticker, stream_types)| {
-                                        stream_types.contains(&StreamType::DepthAndTrades {
-                                            exchange: *exchange,
-                                            ticker: **ticker,
-                                        })
-                                    })
-                                    .map(|(ticker, _)| (*exchange, *ticker))
-                            })
-                            .collect();
-
-                        let mut streams_row = column![].spacing(4);
-
-                        for (exchange, ticker) in depth_streams_list {
-                            let is_stream_audio_enabled =
-                                dashboard.is_stream_audio_enabled(&StreamType::DepthAndTrades {
-                                    exchange,
-                                    ticker,
-                                });
-
-                            let stream_checkbox =
-                                checkbox(format!("{exchange} - {ticker}"), is_stream_audio_enabled)
-                                    .on_toggle(move |checked| {
-                                        Message::Dashboard(
-                                            None,
-                                            dashboard::Message::ToggleStreamAudio(
-                                                exchange, ticker, checked,
-                                            ),
-                                        )
-                                    });
-
-                            streams_row = streams_row.push(stream_checkbox);
-                        }
-
-                        container(
-                            column![
-                                column![text("Sound").size(14), volume_slider,].spacing(8),
-                                column![
-                                    text(format!(
-                                        "Audio streams [{}]",
-                                        self.layout_manager.get_active_layout().name
-                                    ))
-                                    .size(14),
-                                    streams_row,
-                                ]
-                                .spacing(8),
-                            ]
-                            .spacing(20),
-                        )
-                        .max_width(400)
-                        .padding(24)
-                        .style(style::dashboard_modal)
-                    };
-
                     let (align_x, padding) = match sidebar_pos {
-                        sidebar::Position::Left => (Alignment::Start, padding::left(48).top(40)),
-                        sidebar::Position::Right => (Alignment::End, padding::right(48).top(40)),
+                        sidebar::Position::Left => (Alignment::Start, padding::left(48).top(64)),
+                        sidebar::Position::Right => (Alignment::End, padding::right(48).top(64)),
                     };
+
+                    let depth_streams_list: Vec<(Exchange, exchange::Ticker)> = dashboard
+                        .pane_streams
+                        .iter()
+                        .flat_map(|(exchange, streams)| {
+                            streams
+                                .iter()
+                                .filter(|(ticker, stream_types)| {
+                                    stream_types.contains(&StreamType::DepthAndTrades {
+                                        exchange: *exchange,
+                                        ticker: **ticker,
+                                    })
+                                })
+                                .map(|(ticker, _)| (*exchange, *ticker))
+                        })
+                        .collect();
 
                     dashboard_modal(
                         base,
-                        audio_modal,
+                        self.audio_stream
+                            .view(depth_streams_list)
+                            .map(Message::AudioStream),
                         Message::ToggleSidebarMenu(sidebar::Menu::None),
                         padding,
                         Alignment::Start,
@@ -972,6 +922,10 @@ impl Flowsurface {
         let tickers_table_fetch = self.tickers_table.subscription().map(Message::TickersTable);
 
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
+    }
+
+    fn play_sound(&self, sound: &str) -> Result<(), String> {
+        self.audio_stream.play(sound)
     }
 
     fn get_active_dashboard(&self) -> Option<&Dashboard> {

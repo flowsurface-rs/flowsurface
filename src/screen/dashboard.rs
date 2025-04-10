@@ -47,7 +47,6 @@ pub enum Message {
     ChartRequestedFetch(pane_grid::Pane, window::Id, uuid::Uuid, FetchRange),
     DistributeFetchedData(uuid::Uuid, uuid::Uuid, FetchedData, StreamType),
     ChangePaneStatus(uuid::Uuid, pane::Status),
-    ToggleStreamAudio(Exchange, Ticker, bool),
 }
 
 pub struct Dashboard {
@@ -55,7 +54,6 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, WindowSpec)>,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
-    pub audio_streams: HashSet<(Exchange, exchange::Ticker)>,
     pub trade_fetch_enabled: bool,
 }
 
@@ -66,7 +64,6 @@ impl Default for Dashboard {
             focus: None,
             pane_streams: HashMap::new(),
             popout: HashMap::new(),
-            audio_streams: HashSet::new(),
             trade_fetch_enabled: false,
         }
     }
@@ -106,7 +103,6 @@ impl Dashboard {
     pub fn from_config(
         panes: Configuration<PaneState>,
         popout_windows: Vec<(Configuration<PaneState>, WindowSpec)>,
-        audio_streams: HashSet<(Exchange, Ticker)>,
         trade_fetch_enabled: bool,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
@@ -124,7 +120,6 @@ impl Dashboard {
             panes,
             focus: None,
             pane_streams: HashMap::new(),
-            audio_streams,
             popout,
             trade_fetch_enabled,
         }
@@ -479,20 +474,6 @@ impl Dashboard {
             }
             Message::RefreshStreams => {
                 self.pane_streams = self.get_all_diff_streams(main_window.id);
-
-                self.audio_streams.retain(|(exchange, ticker)| {
-                    self.pane_streams
-                        .get(exchange)
-                        .and_then(|tickers| tickers.get(ticker))
-                        .is_some()
-                });
-            }
-            Message::ToggleStreamAudio(exchange, ticker, is_enabled) => {
-                if is_enabled {
-                    self.audio_streams.insert((exchange, ticker));
-                } else {
-                    self.audio_streams.remove(&(exchange, ticker));
-                }
             }
             Message::ChartRequestedFetch(pane, window, req_id, fetch) => match fetch {
                 FetchRange::Kline(from, to) => {
@@ -1323,14 +1304,6 @@ impl Dashboard {
         }
 
         tasks
-    }
-
-    pub fn is_stream_audio_enabled(&self, stream: &StreamType) -> bool {
-        if let StreamType::DepthAndTrades { exchange, ticker } = stream {
-            self.audio_streams.contains(&(*exchange, *ticker))
-        } else {
-            false
-        }
     }
 }
 

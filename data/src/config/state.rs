@@ -1,20 +1,19 @@
+use crate::layout::WindowSpec;
+use crate::{AudioStream, Layout, Theme};
 use exchange::{Ticker, adapter::Exchange};
 use serde::{Deserialize, Serialize};
-
-use crate::layout::WindowSpec;
-use crate::{Layout, Theme};
 
 use super::ScaleFactor;
 use super::sidebar::Sidebar;
 use super::timezone::UserTimezone;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Layouts {
     pub layouts: Vec<Layout>,
     pub active_layout: String,
 }
 
-#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[derive(Default, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct State {
     pub layout_manager: Layouts,
@@ -24,7 +23,7 @@ pub struct State {
     pub timezone: UserTimezone,
     pub sidebar: Sidebar,
     pub scale_factor: ScaleFactor,
-    pub audio_stream_volume: Option<f32>,
+    pub audio_cfg: AudioStream,
 }
 
 impl State {
@@ -36,7 +35,7 @@ impl State {
         timezone: UserTimezone,
         sidebar: Sidebar,
         scale_factor: ScaleFactor,
-        audio_stream_volume: Option<f32>,
+        audio_cfg: AudioStream,
     ) -> Self {
         State {
             layout_manager,
@@ -46,7 +45,7 @@ impl State {
             timezone,
             sidebar,
             scale_factor,
-            audio_stream_volume,
+            audio_cfg,
         }
     }
 }

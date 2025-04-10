@@ -105,6 +105,104 @@ impl From<u64> for Timeframe {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExchangeTicker {
+    pub exchange: Exchange,
+    pub ticker: Ticker,
+}
+
+impl ExchangeTicker {
+    pub fn new(exchange: Exchange, ticker_str: &str) -> Self {
+        let market_type = exchange.get_market_type();
+        let ticker = Ticker::new(ticker_str, market_type);
+
+        Self { exchange, ticker }
+    }
+
+    pub fn from_parts(exchange: Exchange, ticker: Ticker) -> Self {
+        assert_eq!(
+            ticker.market_type,
+            exchange.get_market_type(),
+            "Ticker market type must match Exchange market type"
+        );
+
+        Self { exchange, ticker }
+    }
+
+    fn exchange_to_string(exchange: &Exchange) -> &'static str {
+        match exchange {
+            Exchange::BinanceLinear => "BinanceLinear",
+            Exchange::BinanceInverse => "BinanceInverse",
+            Exchange::BinanceSpot => "BinanceSpot",
+            Exchange::BybitLinear => "BybitLinear",
+            Exchange::BybitInverse => "BybitInverse",
+            Exchange::BybitSpot => "BybitSpot",
+        }
+    }
+
+    fn string_to_exchange(s: &str) -> Result<Exchange, String> {
+        match s {
+            "BinanceLinear" => Ok(Exchange::BinanceLinear),
+            "BinanceInverse" => Ok(Exchange::BinanceInverse),
+            "BinanceSpot" => Ok(Exchange::BinanceSpot),
+            "BybitLinear" => Ok(Exchange::BybitLinear),
+            "BybitInverse" => Ok(Exchange::BybitInverse),
+            "BybitSpot" => Ok(Exchange::BybitSpot),
+            _ => Err(format!("Unknown exchange: {}", s)),
+        }
+    }
+}
+
+impl Serialize for ExchangeTicker {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
+        let exchange_str = Self::exchange_to_string(&self.exchange);
+        let combined = format!("{}:{}", exchange_str, ticker_str);
+        serializer.serialize_str(&combined)
+    }
+}
+
+impl<'de> Deserialize<'de> for ExchangeTicker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let parts: Vec<&str> = s.split(':').collect();
+
+        if parts.len() != 2 {
+            return Err(serde::de::Error::custom(format!(
+                "Invalid ExchangeTicker format: expected 'Exchange:Ticker', got '{}'",
+                s
+            )));
+        }
+
+        // Parse the exchange
+        let exchange_str = parts[0];
+        let exchange = Self::string_to_exchange(exchange_str).map_err(serde::de::Error::custom)?;
+
+        // Get the market type from the exchange
+        let market_type = exchange.get_market_type();
+
+        // Create the ticker
+        let ticker_str = parts[1];
+        let ticker = Ticker::new(ticker_str, market_type);
+
+        Ok(ExchangeTicker { exchange, ticker })
+    }
+}
+
+impl fmt::Display for ExchangeTicker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
+        let exchange_str = Self::exchange_to_string(&self.exchange);
+        write!(f, "{}:{}", exchange_str, ticker_str)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct Ticker {
     data: [u64; 2],
@@ -203,18 +301,6 @@ impl fmt::Display for Ticker {
         }
 
         Ok(())
-    }
-}
-
-impl From<(String, MarketType)> for Ticker {
-    fn from((s, market_type): (String, MarketType)) -> Self {
-        Ticker::new(s, market_type)
-    }
-}
-
-impl From<(&str, MarketType)> for Ticker {
-    fn from((s, market_type): (&str, MarketType)) -> Self {
-        Ticker::new(s, market_type)
     }
 }
 

@@ -1,6 +1,3 @@
-use std::collections::HashSet;
-
-use exchange::{Ticker, adapter::Exchange};
 use serde::{Deserialize, Serialize};
 
 use super::{WindowSpec, pane::Pane};
@@ -13,6 +10,5 @@ pub struct Dashboard {
     #[serde(deserialize_with = "ok_or_default")]
     pub popout: Vec<(Pane, WindowSpec)>,
     #[serde(default)]
-    pub enabled_audio_streams: HashSet<(Exchange, Ticker)>,
     pub trade_fetch_enabled: bool,
 }
