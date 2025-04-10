@@ -22,13 +22,22 @@ pub const DEFAULT_SOUNDS: &[&str] = &[
     TICK_SOUND,
 ];
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Threshold {
     Count(usize),
     Qty(f32),
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+impl std::fmt::Display for Threshold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Threshold::Count(count) => write!(f, "Count based: {}", count),
+            Threshold::Qty(qty) => write!(f, "Qty based: {:.2}", qty),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct StreamCfg {
     pub enabled: bool,
     pub threshold: Threshold,
