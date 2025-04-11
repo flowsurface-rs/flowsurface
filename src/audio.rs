@@ -56,7 +56,7 @@ impl AudioStream {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::SoundLevelChanged(value) => {
-                self.cache.set_sound_level(value);
+                self.cache.set_volume(value);
             }
             Message::ToggleStream(is_checked, (exchange, ticker)) => {
                 if is_checked {
@@ -273,12 +273,10 @@ impl AudioStream {
                         } else {
                             data::audio::HARD_BUY_SOUND
                         }
+                    } else if is_sell {
+                        data::audio::SELL_SOUND
                     } else {
-                        if is_sell {
-                            data::audio::SELL_SOUND
-                        } else {
-                            data::audio::BUY_SOUND
-                        }
+                        data::audio::BUY_SOUND
                     }
                 };
 
@@ -295,19 +293,8 @@ impl AudioStream {
                     }
                 }
             }
-            data::audio::Threshold::Qty(v) => {
-                for trade in trades_buffer {
-                    if trade.qty >= v {
-                        let sound = if trade.is_sell {
-                            data::audio::SELL_SOUND
-                        } else {
-                            data::audio::BUY_SOUND
-                        };
-
-                        self.play(sound)?;
-                        break;
-                    }
-                }
+            data::audio::Threshold::Qty(_) => {
+                unimplemented!()
             }
         }
 

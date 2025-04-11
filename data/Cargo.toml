@@ -13,6 +13,6 @@ log.workspace = true
 thiserror.workspace = true
 regex.workspace = true
 dirs-next = "2.0.0"
-rodio = "0.20.1"
+rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 
 exchange = { version = "0.1.0", path = "../exchange" }
