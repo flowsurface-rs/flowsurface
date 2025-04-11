@@ -12,15 +12,7 @@ pub const HARD_BUY_SOUND: &str = "assets/sounds/dry-pop-up.wav";
 pub const SELL_SOUND: &str = "assets/sounds/hard-typewriter-hit.wav";
 pub const HARD_SELL_SOUND: &str = "assets/sounds/fall-on-foam-splash.wav";
 
-pub const TICK_SOUND: &str = "assets/sounds/typewriter-soft-click.wav";
-
-pub const DEFAULT_SOUNDS: &[&str] = &[
-    BUY_SOUND,
-    SELL_SOUND,
-    HARD_BUY_SOUND,
-    HARD_SELL_SOUND,
-    TICK_SOUND,
-];
+pub const DEFAULT_SOUNDS: &[&str] = &[BUY_SOUND, SELL_SOUND, HARD_BUY_SOUND, HARD_SELL_SOUND];
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Threshold {

@@ -1,5 +1,6 @@
+use crate::TooltipPosition;
 use crate::style::{self, get_icon_text};
-use crate::widget::create_slider_row;
+use crate::widget::{create_slider_row, tooltip};
 use data::audio::{SoundCache, StreamCfg};
 use exchange::adapter::{Exchange, StreamType};
 
@@ -8,6 +9,8 @@ use iced::widget::{button, column, container, row, text};
 use iced::widget::{checkbox, horizontal_space, slider};
 use iced::{Element, padding};
 use std::collections::HashMap;
+
+const HARD_THRESHOLD: usize = 4;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -127,14 +130,23 @@ impl AudioStream {
                         Message::ToggleStream(is_checked, (exchange, ticker))
                     });
 
+                let is_expanded = self
+                    .expanded_card
+                    .map(|(ex, tk)| ex == exchange && tk == ticker)
+                    .unwrap_or(false);
+
                 let stream_row = row![
                     stream_checkbox,
                     horizontal_space(),
-                    button(get_icon_text(style::Icon::Cog, 12))
-                        .on_press(Message::ToggleCard(exchange, ticker))
-                        .style(move |theme, status| {
-                            style::button::transparent(theme, status, false)
-                        })
+                    tooltip(
+                        button(get_icon_text(style::Icon::Cog, 12))
+                            .on_press(Message::ToggleCard(exchange, ticker))
+                            .style(move |theme, status| {
+                                style::button::transparent(theme, status, is_expanded)
+                            }),
+                        Some("Toggle filters for triggering a sound"),
+                        TooltipPosition::Top,
+                    )
                 ]
                 .align_y(iced::Alignment::Center)
                 .padding(4)
@@ -142,7 +154,7 @@ impl AudioStream {
 
                 column = column.push(stream_row);
 
-                if self.expanded_card == Some((exchange, ticker)) {
+                if is_expanded {
                     if let Some(cfg) = self.streams.get(&exchange).and_then(|s| s.get(&ticker)) {
                         match cfg.threshold {
                             data::audio::Threshold::Count(v) => {
@@ -250,23 +262,53 @@ impl AudioStream {
                         }
                     });
 
-                let hard_count = v * 4;
-
-                let sound = if buy_count > hard_count {
-                    data::audio::HARD_BUY_SOUND
-                } else if buy_count > v {
-                    data::audio::BUY_SOUND
-                } else if sell_count > hard_count {
-                    data::audio::HARD_SELL_SOUND
-                } else if sell_count > v {
-                    data::audio::SELL_SOUND
-                } else {
+                if buy_count < v && sell_count < v {
                     return Ok(());
+                }
+
+                let sound = |count: usize, is_sell: bool| {
+                    if count > (v * HARD_THRESHOLD) {
+                        if is_sell {
+                            data::audio::HARD_SELL_SOUND
+                        } else {
+                            data::audio::HARD_BUY_SOUND
+                        }
+                    } else {
+                        if is_sell {
+                            data::audio::SELL_SOUND
+                        } else {
+                            data::audio::BUY_SOUND
+                        }
+                    }
                 };
 
-                self.play(sound)?;
+                match buy_count.cmp(&sell_count) {
+                    std::cmp::Ordering::Greater => {
+                        self.play(sound(buy_count, false))?;
+                    }
+                    std::cmp::Ordering::Less => {
+                        self.play(sound(sell_count, true))?;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        self.play(sound(buy_count, false))?;
+                        self.play(sound(sell_count, true))?;
+                    }
+                }
             }
-            data::audio::Threshold::Qty(_v) => todo!(),
+            data::audio::Threshold::Qty(v) => {
+                for trade in trades_buffer {
+                    if trade.qty >= v {
+                        let sound = if trade.is_sell {
+                            data::audio::SELL_SOUND
+                        } else {
+                            data::audio::BUY_SOUND
+                        };
+
+                        self.play(sound)?;
+                        break;
+                    }
+                }
+            }
         }
 
         Ok(())
