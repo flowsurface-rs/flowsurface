@@ -132,8 +132,7 @@ impl AudioStream {
 
                 let is_expanded = self
                     .expanded_card
-                    .map(|(ex, tk)| ex == exchange && tk == ticker)
-                    .unwrap_or(false);
+                    .is_some_and(|(ex, tk)| ex == exchange && tk == ticker);
 
                 let stream_row = row![
                     stream_checkbox,
@@ -226,9 +225,8 @@ impl AudioStream {
     }
 
     pub fn should_play_sound(&self, stream: &StreamType) -> Option<StreamCfg> {
-        let (exchange, ticker) = match stream {
-            StreamType::DepthAndTrades { exchange, ticker } => (exchange, ticker),
-            _ => return None,
+        let StreamType::DepthAndTrades { exchange, ticker } = stream else {
+            return None;
         };
 
         match self
@@ -246,9 +244,8 @@ impl AudioStream {
         stream: &StreamType,
         trades_buffer: &[Trade],
     ) -> Result<(), String> {
-        let cfg = match self.should_play_sound(stream) {
-            Some(cfg) => cfg,
-            None => return Ok(()),
+        let Some(cfg) = self.should_play_sound(stream) else {
+            return Ok(());
         };
 
         match cfg.threshold {

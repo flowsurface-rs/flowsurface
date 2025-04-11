@@ -17,7 +17,6 @@ pub const DEFAULT_SOUNDS: &[&str] = &[BUY_SOUND, SELL_SOUND, HARD_BUY_SOUND, HAR
 pub struct SoundCache {
     _stream: OutputStream,
     stream_handle: OutputStreamHandle,
-    sound_data: HashMap<String, Vec<u8>>,
     sample_buffers: HashMap<String, rodio::buffer::SamplesBuffer<i16>>,
     volume: Option<f32>,
 }
@@ -32,7 +31,6 @@ impl SoundCache {
         Ok(SoundCache {
             _stream: stream,
             stream_handle,
-            sound_data: HashMap::new(),
             sample_buffers: HashMap::new(),
             volume,
         })
@@ -65,8 +63,6 @@ impl SoundCache {
         if let Err(err) = std::io::Read::read_to_end(&mut buf_reader, &mut buffer) {
             return Err(format!("Failed to read sound file '{}': {}", path, err));
         }
-
-        self.sound_data.insert(path.to_string(), buffer.clone());
 
         let cursor = std::io::Cursor::new(buffer);
         let decoder = match Decoder::new(cursor) {

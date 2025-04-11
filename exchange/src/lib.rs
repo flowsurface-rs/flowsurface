@@ -130,7 +130,7 @@ impl SerTicker {
         Self { exchange, ticker }
     }
 
-    fn exchange_to_string(exchange: &Exchange) -> &'static str {
+    fn exchange_to_string(exchange: Exchange) -> &'static str {
         match exchange {
             Exchange::BinanceLinear => "BinanceLinear",
             Exchange::BinanceInverse => "BinanceInverse",
@@ -160,7 +160,7 @@ impl Serialize for SerTicker {
         S: serde::Serializer,
     {
         let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
-        let exchange_str = Self::exchange_to_string(&self.exchange);
+        let exchange_str = Self::exchange_to_string(self.exchange);
         let combined = format!("{}:{}", exchange_str, ticker_str);
         serializer.serialize_str(&combined)
     }
@@ -196,7 +196,7 @@ impl<'de> Deserialize<'de> for SerTicker {
 impl fmt::Display for SerTicker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
-        let exchange_str = Self::exchange_to_string(&self.exchange);
+        let exchange_str = Self::exchange_to_string(self.exchange);
         write!(f, "{}:{}", exchange_str, ticker_str)
     }
 }
