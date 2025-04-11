@@ -3,6 +3,7 @@ use crate::widget::create_slider_row;
 use data::audio::{SoundCache, StreamCfg};
 use exchange::adapter::{Exchange, StreamType};
 
+use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
 use iced::widget::{checkbox, horizontal_space, slider};
 use iced::{Element, padding};
@@ -13,6 +14,7 @@ pub enum Message {
     SoundLevelChanged(f32),
     ToggleStream(bool, (Exchange, exchange::Ticker)),
     ToggleCard(Exchange, exchange::Ticker),
+    SetThreshold(Exchange, exchange::Ticker, data::audio::Threshold),
 }
 
 pub enum Action {
@@ -21,9 +23,9 @@ pub enum Action {
 }
 
 pub struct AudioStream {
-    pub cache: SoundCache,
-    pub streams: HashMap<Exchange, HashMap<exchange::Ticker, StreamCfg>>,
-    pub expanded_card: Option<(Exchange, exchange::Ticker)>,
+    cache: SoundCache,
+    streams: HashMap<Exchange, HashMap<exchange::Ticker, StreamCfg>>,
+    expanded_card: Option<(Exchange, exchange::Ticker)>,
 }
 
 impl AudioStream {
@@ -84,6 +86,13 @@ impl AudioStream {
                     _ => Some((exchange, ticker)),
                 };
             }
+            Message::SetThreshold(exchange, ticker, threshold) => {
+                if let Some(streams) = self.streams.get_mut(&exchange) {
+                    if let Some(cfg) = streams.get_mut(&ticker) {
+                        cfg.threshold = threshold;
+                    }
+                }
+            }
         }
 
         Action::None
@@ -135,11 +144,34 @@ impl AudioStream {
 
                 if self.expanded_card == Some((exchange, ticker)) {
                     if let Some(cfg) = self.streams.get(&exchange).and_then(|s| s.get(&ticker)) {
-                        column = column.push(
-                            row![text(format!("Threshold: {}", cfg.threshold))]
-                                .padding(8)
-                                .spacing(4),
-                        );
+                        match cfg.threshold {
+                            data::audio::Threshold::Count(v) => {
+                                let threshold_slider =
+                                    slider(1.0..=100.0, v as f32, move |value| {
+                                        Message::SetThreshold(
+                                            exchange,
+                                            ticker,
+                                            data::audio::Threshold::Count(value as usize),
+                                        )
+                                    });
+
+                                column = column.push(
+                                    column![
+                                        text(format!("Buy/sell trade count in buffer ≥ {}", v)),
+                                        threshold_slider
+                                    ]
+                                    .padding(8)
+                                    .spacing(4),
+                                );
+                            }
+                            data::audio::Threshold::Qty(v) => {
+                                column = column.push(
+                                    row![text(format!("Any trade's size in buffer ≥ {}", v))]
+                                        .padding(8)
+                                        .spacing(4),
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -171,15 +203,73 @@ impl AudioStream {
     }
 
     pub fn is_stream_audio_enabled(&self, stream: &StreamType) -> bool {
-        if let StreamType::DepthAndTrades { exchange, ticker } = stream {
-            if let Some(streams) = self.streams.get(exchange) {
-                if let Some(cfg) = streams.get(ticker) {
-                    return cfg.enabled;
-                }
+        match stream {
+            StreamType::DepthAndTrades { exchange, ticker } => self
+                .streams
+                .get(exchange)
+                .and_then(|streams| streams.get(ticker))
+                .is_some_and(|cfg| cfg.enabled),
+            _ => false,
+        }
+    }
+
+    pub fn should_play_sound(&self, stream: &StreamType) -> Option<StreamCfg> {
+        let (exchange, ticker) = match stream {
+            StreamType::DepthAndTrades { exchange, ticker } => (exchange, ticker),
+            _ => return None,
+        };
+
+        match self
+            .streams
+            .get(exchange)
+            .and_then(|streams| streams.get(ticker))
+        {
+            Some(cfg) if cfg.enabled => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn try_play_sound(
+        &self,
+        stream: &StreamType,
+        trades_buffer: &[Trade],
+    ) -> Result<(), String> {
+        let cfg = match self.should_play_sound(stream) {
+            Some(cfg) => cfg,
+            None => return Ok(()),
+        };
+
+        match cfg.threshold {
+            data::audio::Threshold::Count(v) => {
+                let (buy_count, sell_count) =
+                    trades_buffer.iter().fold((0, 0), |(buy_c, sell_c), trade| {
+                        if trade.is_sell {
+                            (buy_c, sell_c + 1)
+                        } else {
+                            (buy_c + 1, sell_c)
+                        }
+                    });
+
+                let hard_count = v * 4;
+
+                let sound = if buy_count > hard_count {
+                    data::audio::HARD_BUY_SOUND
+                } else if buy_count > v {
+                    data::audio::BUY_SOUND
+                } else if sell_count > hard_count {
+                    data::audio::HARD_SELL_SOUND
+                } else if sell_count > v {
+                    data::audio::SELL_SOUND
+                } else {
+                    return Ok(());
+                };
+
+                self.play(sound)?;
             }
+            data::audio::Threshold::Qty(_v) => todo!(),
         }
 
-        false
+        Ok(())
     }
 }
 
@@ -189,7 +279,7 @@ impl From<&AudioStream> for data::AudioStream {
 
         for (&exchange, ticker_map) in &audio_stream.streams {
             for (&ticker, cfg) in ticker_map {
-                let exchange_ticker = exchange::ExchangeTicker::from_parts(exchange, ticker);
+                let exchange_ticker = exchange::SerTicker::from_parts(exchange, ticker);
                 streams.insert(exchange_ticker, *cfg);
             }
         }

@@ -105,13 +105,14 @@ impl From<u64> for Timeframe {
     }
 }
 
+/// Serializable version of `(Exchange, Ticker)` tuples that is used for keys in maps
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ExchangeTicker {
+pub struct SerTicker {
     pub exchange: Exchange,
     pub ticker: Ticker,
 }
 
-impl ExchangeTicker {
+impl SerTicker {
     pub fn new(exchange: Exchange, ticker_str: &str) -> Self {
         let market_type = exchange.get_market_type();
         let ticker = Ticker::new(ticker_str, market_type);
@@ -153,7 +154,7 @@ impl ExchangeTicker {
     }
 }
 
-impl Serialize for ExchangeTicker {
+impl Serialize for SerTicker {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -165,7 +166,7 @@ impl Serialize for ExchangeTicker {
     }
 }
 
-impl<'de> Deserialize<'de> for ExchangeTicker {
+impl<'de> Deserialize<'de> for SerTicker {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -180,22 +181,19 @@ impl<'de> Deserialize<'de> for ExchangeTicker {
             )));
         }
 
-        // Parse the exchange
         let exchange_str = parts[0];
         let exchange = Self::string_to_exchange(exchange_str).map_err(serde::de::Error::custom)?;
 
-        // Get the market type from the exchange
         let market_type = exchange.get_market_type();
 
-        // Create the ticker
         let ticker_str = parts[1];
         let ticker = Ticker::new(ticker_str, market_type);
 
-        Ok(ExchangeTicker { exchange, ticker })
+        Ok(SerTicker { exchange, ticker })
     }
 }
 
-impl fmt::Display for ExchangeTicker {
+impl fmt::Display for SerTicker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
         let exchange_str = Self::exchange_to_string(&self.exchange);

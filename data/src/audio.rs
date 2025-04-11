@@ -1,5 +1,5 @@
 use crate::layout::pane::ok_or_default;
-use exchange::ExchangeTicker;
+use exchange::SerTicker;
 use rodio::{Decoder, OutputStream, OutputStreamHandle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,7 +56,7 @@ impl Default for StreamCfg {
 #[serde(default)]
 pub struct AudioStream {
     #[serde(deserialize_with = "ok_or_default")]
-    pub streams: HashMap<ExchangeTicker, StreamCfg>,
+    pub streams: HashMap<SerTicker, StreamCfg>,
     #[serde(deserialize_with = "ok_or_default")]
     pub volume: Option<f32>,
 }

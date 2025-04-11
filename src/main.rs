@@ -36,8 +36,6 @@ use iced::{
 };
 use std::{collections::HashMap, vec};
 
-const TRADE_SOUND_CUTOFF: usize = 10;
-
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
 
@@ -178,17 +176,6 @@ impl Flowsurface {
                             depth,
                             trades_buffer,
                         ) => {
-                            let (buy_count, sell_count) = trades_buffer.iter().fold(
-                                (0, 0),
-                                |(buy_count, sell_count), trade| {
-                                    if trade.is_sell {
-                                        (buy_count, sell_count + 1)
-                                    } else {
-                                        (buy_count + 1, sell_count)
-                                    }
-                                },
-                            );
-
                             let task = dashboard
                                 .update_depth_and_trades(
                                     &stream,
@@ -199,27 +186,10 @@ impl Flowsurface {
                                 )
                                 .map(move |msg| Message::Dashboard(None, msg));
 
-                            if self.audio_stream.is_stream_audio_enabled(&stream)
-                                && (buy_count > TRADE_SOUND_CUTOFF
-                                    || sell_count > TRADE_SOUND_CUTOFF)
+                            if let Err(err) =
+                                self.audio_stream.try_play_sound(&stream, &trades_buffer)
                             {
-                                let hard_count = TRADE_SOUND_CUTOFF * 4;
-
-                                let sound = if buy_count > hard_count {
-                                    data::audio::HARD_BUY_SOUND
-                                } else if buy_count > TRADE_SOUND_CUTOFF {
-                                    data::audio::BUY_SOUND
-                                } else if sell_count > hard_count {
-                                    data::audio::HARD_SELL_SOUND
-                                } else if sell_count > TRADE_SOUND_CUTOFF {
-                                    data::audio::SELL_SOUND
-                                } else {
-                                    return Task::none();
-                                };
-
-                                if let Err(err) = &self.play_sound(sound) {
-                                    log::error!("Failed to play sound: {err}");
-                                }
+                                log::error!("Failed to play sound: {err}");
                             }
 
                             return task;
@@ -922,10 +892,6 @@ impl Flowsurface {
         let tickers_table_fetch = self.tickers_table.subscription().map(Message::TickersTable);
 
         Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
-    }
-
-    fn play_sound(&self, sound: &str) -> Result<(), String> {
-        self.audio_stream.play(sound)
     }
 
     fn get_active_dashboard(&self) -> Option<&Dashboard> {
