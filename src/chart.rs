@@ -494,7 +494,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0)),
             chart_controls
-                .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
+                .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)))
                 .height(Length::Fixed(26.0))
         ]
     ]

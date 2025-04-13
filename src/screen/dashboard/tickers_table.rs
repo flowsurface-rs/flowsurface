@@ -7,11 +7,11 @@ use exchange::{
     adapter::{Exchange, MarketType, fetch_ticker_prices},
 };
 use iced::{
-    Element, Length, Renderer, Size, Subscription, Task, Theme,
+    Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
-        Button, Column, Container, Space, Text, button, column, container, horizontal_rule,
+        Button, Container, Space, Text, button, column, container, horizontal_rule,
         horizontal_space, row,
         scrollable::{self, AbsoluteOffset},
         text, text_input,
@@ -693,49 +693,53 @@ fn create_ticker_card<'a>(
     exchange: Exchange,
     ticker: &Ticker,
     display_data: &'a TickerDisplayData,
-) -> Column<'a, Message> {
+) -> Element<'a, Message> {
     let color_column = container(column![])
         .height(Length::Fill)
         .width(Length::Fixed(2.0))
         .style(move |theme| style::ticker_card_bar(theme, display_data.card_color_alpha));
 
-    column![
-        button(row![
-            color_column,
-            column![
-                row![
+    container(
+        button(
+            row![
+                color_column,
+                column![
                     row![
-                        match exchange {
-                            Exchange::BybitInverse
-                            | Exchange::BybitLinear
-                            | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 12),
-                            Exchange::BinanceInverse
-                            | Exchange::BinanceLinear
-                            | Exchange::BinanceSpot => get_icon_text(Icon::BinanceLogo, 12),
-                        },
-                        text(&display_data.display_ticker),
+                        row![
+                            match exchange {
+                                Exchange::BybitInverse
+                                | Exchange::BybitLinear
+                                | Exchange::BybitSpot => get_icon_text(Icon::BybitLogo, 12),
+                                Exchange::BinanceInverse
+                                | Exchange::BinanceLinear
+                                | Exchange::BinanceSpot => get_icon_text(Icon::BinanceLogo, 12),
+                            },
+                            text(&display_data.display_ticker),
+                        ]
+                        .spacing(2)
+                        .align_y(alignment::Vertical::Center),
+                        Space::new(Length::Fill, Length::Shrink),
+                        text(&display_data.price_change_display),
                     ]
-                    .spacing(2)
+                    .spacing(4)
                     .align_y(alignment::Vertical::Center),
-                    Space::new(Length::Fill, Length::Shrink),
-                    text(&display_data.price_change_display),
+                    row![
+                        text(&display_data.mark_price_display),
+                        Space::new(Length::Fill, Length::Shrink),
+                        text(&display_data.volume_display),
+                    ]
+                    .spacing(4),
                 ]
-                .spacing(4)
-                .align_y(alignment::Vertical::Center),
-                row![
-                    text(&display_data.mark_price_display),
-                    Space::new(Length::Fill, Length::Shrink),
-                    text(&display_data.volume_display),
-                ]
+                .padding(padding::left(8).right(8).bottom(4).top(4))
                 .spacing(4),
             ]
-            .padding(8)
-            .spacing(4),
-        ])
+            .align_y(Alignment::Center),
+        )
         .style(style::button::ticker_card)
-        .on_press(Message::ExpandTickerCard(Some((*ticker, exchange))))
-    ]
-    .height(Length::Fixed(60.0))
+        .on_press(Message::ExpandTickerCard(Some((*ticker, exchange)))),
+    )
+    .height(Length::Fixed(56.0))
+    .into()
 }
 
 fn create_expanded_ticker_card<'a>(
@@ -743,7 +747,7 @@ fn create_expanded_ticker_card<'a>(
     ticker: &Ticker,
     display_data: &'a TickerDisplayData,
     is_fav: bool,
-) -> Column<'a, Message> {
+) -> Element<'a, Message> {
     let (ticker_str, market) = ticker.display_symbol_and_type();
 
     column![
@@ -780,17 +784,17 @@ fn create_expanded_ticker_card<'a>(
         .spacing(2),
         column![
             row![
-                text("Last Updated Price: ").size(10),
+                text("Last Updated Price: ").size(11),
                 Space::new(Length::Fill, Length::Shrink),
                 text(&display_data.mark_price_display)
             ],
             row![
-                text("Daily Change: ").size(10),
+                text("Daily Change: ").size(11),
                 Space::new(Length::Fill, Length::Shrink),
                 text(&display_data.price_change_display),
             ],
             row![
-                text("Daily Volume: ").size(10),
+                text("Daily Volume: ").size(11),
                 Space::new(Length::Fill, Length::Shrink),
                 text(&display_data.volume_display),
             ],
@@ -831,6 +835,7 @@ fn create_expanded_ticker_card<'a>(
     ]
     .padding(padding::top(8).right(16).left(16).bottom(16))
     .spacing(12)
+    .into()
 }
 
 fn create_tab_button<'a>(
