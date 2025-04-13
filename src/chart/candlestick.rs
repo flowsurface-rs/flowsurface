@@ -17,6 +17,8 @@ use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
+use crate::style;
+
 use super::scale::PriceInfoLabel;
 use super::{
     Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
@@ -737,7 +739,7 @@ impl canvas::Program<Message> for CandlestickChart {
                                 .find(|(time, _)| **time == rounded_aggregation)
                             {
                                 let tooltip_text = format!(
-                                    "O: {}   H: {}   L: {}   C: {}",
+                                    "O: {}  H: {}  L: {}  C: {}",
                                     dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close,
                                 );
 
@@ -746,6 +748,7 @@ impl canvas::Program<Message> for CandlestickChart {
                                     position: Point::new(8.0, 8.0),
                                     size: iced::Pixels(12.0),
                                     color: palette.background.base.text,
+                                    font: style::AZERET_MONO,
                                     ..canvas::Text::default()
                                 };
                                 frame.fill_text(text);
@@ -759,7 +762,7 @@ impl canvas::Program<Message> for CandlestickChart {
                                     &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
 
                                 let tooltip_text = format!(
-                                    "O: {}   H: {}   L: {}   C: {}",
+                                    "O: {}  H: {}  L: {}  C: {}",
                                     dp.open_price, dp.high_price, dp.low_price, dp.close_price
                                 );
 
@@ -768,6 +771,7 @@ impl canvas::Program<Message> for CandlestickChart {
                                     position: Point::new(8.0, 8.0),
                                     size: iced::Pixels(12.0),
                                     color: palette.background.base.text,
+                                    font: style::AZERET_MONO,
                                     ..canvas::Text::default()
                                 };
                                 frame.fill_text(text);

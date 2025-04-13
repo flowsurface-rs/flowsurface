@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::style::{self, ICON_FONT, Icon, get_icon_text};
+use crate::style::{self, ICONS_FONT, Icon, get_icon_text};
 use data::InternalError;
 use exchange::{
     Ticker, TickerInfo, TickerStats,
@@ -563,7 +563,7 @@ impl TickersTable {
             let binance_button =
                 create_tab_button(text("Binance"), &self.selected_tab, TickerTab::Binance);
             let favorites_button = create_tab_button(
-                text(char::from(Icon::StarFilled).to_string()).font(ICON_FONT),
+                text(char::from(Icon::StarFilled).to_string()).font(ICONS_FONT),
                 &self.selected_tab,
                 TickerTab::Favorites,
             );
@@ -780,17 +780,17 @@ fn create_expanded_ticker_card<'a>(
         .spacing(2),
         column![
             row![
-                text("Last Updated Price: ").size(11),
+                text("Last Updated Price: ").size(10),
                 Space::new(Length::Fill, Length::Shrink),
                 text(&display_data.mark_price_display)
             ],
             row![
-                text("Daily Change: ").size(11),
+                text("Daily Change: ").size(10),
                 Space::new(Length::Fill, Length::Shrink),
                 text(&display_data.price_change_display),
             ],
             row![
-                text("Daily Volume: ").size(11),
+                text("Daily Volume: ").size(10),
                 Space::new(Length::Fill, Length::Shrink),
                 text(&display_data.volume_display),
             ],

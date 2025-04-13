@@ -1,5 +1,5 @@
 use crate::screen::dashboard::pane::Message;
-use crate::style::ts_table_container;
+use crate::style::{self, ts_table_container};
 use data::UserTimezone;
 use data::chart::timeandsales::Config;
 use exchange::adapter::MarketType;
@@ -16,7 +16,7 @@ struct TradeDisplay {
     is_sell: bool,
 }
 
-const TRADE_ROW_HEIGHT: f32 = 16.0;
+const TRADE_ROW_HEIGHT: f32 = 15.0;
 
 pub struct TimeAndSales {
     recent_trades: Vec<TradeDisplay>,
@@ -121,15 +121,30 @@ impl TimeAndSales {
 
             for trade in filtered_trades_iter.rev().take(rows_can_fit) {
                 let trade_row = row![
-                    container(text(&trade.time_str))
-                        .width(Length::FillPortion(8))
-                        .align_x(Alignment::Center),
-                    container(text(trade.price)).width(Length::FillPortion(6)),
-                    container(text(abbr_large_numbers(trade.qty))).width(Length::FillPortion(4))
+                    container(
+                        text(&trade.time_str)
+                            .font(style::AZERET_MONO)
+                            .size(iced::Pixels(11.0))
+                    )
+                    .width(Length::FillPortion(8))
+                    .align_x(Alignment::Center),
+                    container(
+                        text(trade.price)
+                            .font(style::AZERET_MONO)
+                            .size(iced::Pixels(11.0))
+                    )
+                    .width(Length::FillPortion(6)),
+                    container(
+                        text(abbr_large_numbers(trade.qty))
+                            .font(style::AZERET_MONO)
+                            .size(iced::Pixels(11.0))
+                    )
+                    .width(Length::FillPortion(4))
                 ]
+                .align_y(Alignment::Center)
                 .height(Length::Fixed(TRADE_ROW_HEIGHT));
 
-                column = column.push(container(trade_row).style(move |theme| {
+                column = column.push(container(trade_row).padding(2).style(move |theme| {
                     ts_table_container(theme, trade.is_sell, trade.qty / self.max_filtered_qty)
                 }));
             }

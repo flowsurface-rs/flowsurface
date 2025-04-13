@@ -7,7 +7,7 @@ use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mou
 use crate::chart::{
     Basis, Caches, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
-use crate::style::get_dashed_line;
+use crate::style::{self, get_dashed_line};
 use exchange::Timeframe;
 
 pub fn create_indicator_elem<'a>(
@@ -63,7 +63,7 @@ pub fn create_indicator_elem<'a>(
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
-    .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)));
+    .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)));
 
     row![indi_chart, container(indi_labels),].into()
 }
@@ -274,27 +274,26 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                         } else {
                             "Change: N/A".to_string()
                         };
+                        let value_text = format!("Value: {}", format_with_commas(*oi_value));
 
-                        let tooltip_text = format!(
-                            "Open Interest: {}\n{}",
-                            format_with_commas(*oi_value),
-                            change_text,
+                        let tooltip_text = format!("{}\n{}", value_text, change_text);
+                        let tooltip_bg_width = value_text.len().max(change_text.len()) as f32 * 8.0;
+
+                        frame.fill_rectangle(
+                            Point::new(4.0, 0.0),
+                            Size::new(tooltip_bg_width, 28.0),
+                            palette.background.base.color,
                         );
 
                         let text = canvas::Text {
                             content: tooltip_text,
                             position: Point::new(8.0, 2.0),
-                            size: iced::Pixels(10.0),
+                            size: iced::Pixels(9.0),
                             color: palette.background.base.text,
+                            font: style::AZERET_MONO,
                             ..canvas::Text::default()
                         };
                         frame.fill_text(text);
-
-                        frame.fill_rectangle(
-                            Point::new(4.0, 0.0),
-                            Size::new(140.0, 28.0),
-                            palette.background.base.color,
-                        );
                     }
                 } else if let Some(cursor_position) = cursor.position_in(bounds) {
                     // Horizontal price line

@@ -8,7 +8,7 @@ use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use crate::chart::{
     Basis, Caches, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
 };
-use crate::style::get_dashed_line;
+use crate::style::{self, get_dashed_line};
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,
@@ -61,7 +61,7 @@ pub fn create_indicator_elem<'a>(
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
-    .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)));
+    .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)));
 
     row![indi_chart, container(indi_labels),].into()
 }
@@ -323,32 +323,40 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                     } {
                         let mut tooltip_bg_height = 28.0;
 
-                        let tooltip_text: String = if *buy_v == -1.0 {
+                        let (tooltip_text, tooltip_bg_width) = if *buy_v == -1.0 {
                             tooltip_bg_height = 14.0;
 
-                            format!("Volume: {}", format_with_commas(*sell_v),)
+                            let text = format!("Volume: {}", format_with_commas(*sell_v),);
+                            let bg_width = text.len() as f32 * 8.0;
+
+                            (text, bg_width)
                         } else {
-                            format!(
-                                "Buy Volume: {}\nSell Volume: {}",
-                                format_with_commas(*buy_v),
-                                format_with_commas(*sell_v),
-                            )
+                            let buy_volume =
+                                format!("Buy Volume: {}\n", format_with_commas(*buy_v));
+                            let sell_volume =
+                                format!("Sell Volume: {}", format_with_commas(*sell_v));
+
+                            let bg_width = buy_volume.len().max(sell_volume.len()) as f32 * 8.0;
+
+                            let text = format!("{}{}", buy_volume, sell_volume);
+                            (text, bg_width)
                         };
+
+                        frame.fill_rectangle(
+                            Point::new(4.0, 0.0),
+                            Size::new(tooltip_bg_width, tooltip_bg_height),
+                            palette.background.base.color,
+                        );
 
                         let text = canvas::Text {
                             content: tooltip_text,
                             position: Point::new(8.0, 2.0),
-                            size: iced::Pixels(10.0),
+                            size: iced::Pixels(9.0),
                             color: palette.background.base.text,
+                            font: style::AZERET_MONO,
                             ..canvas::Text::default()
                         };
                         frame.fill_text(text);
-
-                        frame.fill_rectangle(
-                            Point::new(4.0, 0.0),
-                            Size::new(140.0, tooltip_bg_height),
-                            palette.background.base.color,
-                        );
                     }
                 } else if let Some(cursor_position) = cursor.position_in(bounds) {
                     // Horizontal price line

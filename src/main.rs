@@ -17,7 +17,7 @@ use screen::{
         tickers_table::{self, TickersTable},
     },
 };
-use style::{Icon, TITLE_PADDING_TOP, get_icon_text};
+use style::{Icon, get_icon_text};
 use widget::{
     confirm_dialog_container, dashboard_modal, main_dialog_modal,
     notification::{self, Toast},
@@ -34,7 +34,7 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use std::{collections::HashMap, vec};
+use std::{borrow::Cow, collections::HashMap, vec};
 
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
@@ -43,11 +43,14 @@ fn main() {
 
     let _ = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)
         .settings(iced::Settings {
-            default_text_size: iced::Pixels(12.0),
             antialiasing: true,
+            fonts: vec![
+                Cow::Borrowed(style::AZERET_MONO_BYTES),
+                Cow::Borrowed(style::ICONS_BYTES),
+            ],
+            default_text_size: iced::Pixels(12.0),
             ..Default::default()
         })
-        .font(style::ICON_BYTES)
         .title(Flowsurface::title)
         .theme(Flowsurface::theme)
         .scale_factor(Flowsurface::scale_factor)
@@ -577,11 +580,8 @@ impl Flowsurface {
                     {
                         iced::widget::center(
                             text("FLOWSURFACE")
-                                .font(iced::Font {
-                                    weight: iced::font::Weight::Bold,
-                                    ..Default::default()
-                                })
-                                .size(16)
+                                .font(style::AZERET_MONO)
+                                .size(15)
                                 .style(style::branding_text)
                                 .align_x(Alignment::Center),
                         )
@@ -852,7 +852,7 @@ impl Flowsurface {
                     .view_window(id, &self.main_window, self.timezone)
                     .map(move |msg| Message::Dashboard(None, msg)),
             )
-            .padding(padding::top(TITLE_PADDING_TOP))
+            .padding(padding::top(style::TITLE_PADDING_TOP))
             .into()
         };
 

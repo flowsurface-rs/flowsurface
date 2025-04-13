@@ -17,6 +17,8 @@ use iced::{
 
 use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
+use crate::style;
+
 use super::scale::PriceInfoLabel;
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart, view_chart};
@@ -665,6 +667,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                         size: iced::Pixels(cell_height),
                                         color: Color::WHITE,
                                         align_y: Alignment::Center.into(),
+                                        font: style::AZERET_MONO,
                                         ..canvas::Text::default()
                                     });
 
@@ -726,6 +729,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     position: text_position,
                     size: iced::Pixels(text_size),
                     color: palette.background.base.text,
+                    font: style::AZERET_MONO,
                     ..canvas::Text::default()
                 });
             };
@@ -889,6 +893,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         position: text_position,
                         size: iced::Pixels(text_size),
                         color: palette.background.base.text,
+                        font: style::AZERET_MONO,
                         ..canvas::Text::default()
                     });
                 }
@@ -909,6 +914,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     position: text_position,
                     size: iced::Pixels(text_size),
                     color: palette.background.base.text,
+                    font: style::AZERET_MONO,
                     ..canvas::Text::default()
                 });
             }

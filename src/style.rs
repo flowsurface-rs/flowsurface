@@ -1,3 +1,4 @@
+use iced::font::{Family, Stretch, Weight};
 use iced::widget::canvas::{LineDash, Stroke};
 use iced::widget::container::{self, Style};
 use iced::widget::pane_grid::{Highlight, Line};
@@ -5,8 +6,16 @@ use iced::widget::scrollable::{Rail, Scroller};
 use iced::widget::{Text, text};
 use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
 
-pub const ICON_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
-pub const ICON_FONT: Font = Font::with_name("icons");
+pub const ICONS_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
+pub const ICONS_FONT: Font = Font::with_name("icons");
+
+pub const AZERET_MONO_BYTES: &[u8] = include_bytes!("../assets/fonts/AzeretMono-Regular.ttf");
+pub const AZERET_MONO: Font = Font {
+    family: Family::Name("Azeret Mono"),
+    weight: Weight::Normal,
+    stretch: Stretch::Normal,
+    style: iced::font::Style::Normal,
+};
 
 pub const TITLE_PADDING_TOP: f32 = if cfg!(target_os = "macos") { 20.0 } else { 0.0 };
 
@@ -74,7 +83,7 @@ impl From<Icon> for char {
 
 pub fn get_icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
     text(char::from(icon).to_string())
-        .font(ICON_FONT)
+        .font(ICONS_FONT)
         .size(iced::Pixels(size.into()))
 }
 

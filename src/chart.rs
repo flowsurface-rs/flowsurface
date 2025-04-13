@@ -464,7 +464,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         container(
             mouse_area(axis_labels_y).on_double_click(Message::DoubleClick(AxisScaleClicked::Y))
         )
-        .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 2.0)))
+        .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)))
         .height(Length::FillPortion(120))
     ];
 
