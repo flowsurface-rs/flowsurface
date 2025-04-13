@@ -608,6 +608,17 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
     }
 }
 
+pub fn indicator_ruler(theme: &Theme) -> iced::widget::rule::Style {
+    let palette = theme.extended_palette();
+
+    iced::widget::rule::Style {
+        color: palette.background.strong.color.scale_alpha(0.2),
+        width: 1,
+        radius: iced::border::Radius::default(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+    }
+}
+
 // crosshair dashed line for charts
 pub fn get_dashed_line(theme: &Theme) -> Stroke {
     let palette = theme.extended_palette();

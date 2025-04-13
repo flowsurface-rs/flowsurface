@@ -2,27 +2,14 @@ pub mod open_interest;
 pub mod volume;
 
 use iced::{
-    Event, Point, Rectangle, Renderer, Size, Theme, mouse,
-    theme::palette::Extended,
-    widget::canvas::{self, Cache, Frame, Geometry},
+    Event, Rectangle, Renderer, Theme, mouse,
+    widget::canvas::{self, Cache, Geometry},
 };
 
 use super::{abbr_large_numbers, round_to_tick, scale::linear};
 use crate::chart::scale::{AxisLabel, Label, calc_label_rect};
 
 use super::{Interaction, Message};
-
-fn draw_borders(frame: &mut Frame, bounds: Rectangle, palette: &Extended) {
-    frame.fill_rectangle(
-        Point::new(0.0, 0.0),
-        Size::new(1.0, bounds.height),
-        if palette.is_dark {
-            palette.background.weak.color.scale_alpha(0.4)
-        } else {
-            palette.background.strong.color.scale_alpha(0.4)
-        },
-    );
-}
 
 pub struct IndicatorLabel<'a> {
     pub label_cache: &'a Cache,
@@ -63,8 +50,6 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
         let tick_size = 1.0;
 
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
-            draw_borders(frame, bounds, palette);
-
             let mut all_labels = linear::generate_labels(
                 bounds,
                 self.min,

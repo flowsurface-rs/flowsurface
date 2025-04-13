@@ -50,7 +50,7 @@ impl Chart for CandlestickChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicator<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
+    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
         self.view_indicators(indicators)
     }
 

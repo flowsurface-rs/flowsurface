@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use iced::widget::canvas::{self, Cache, Event, Geometry, Path, Stroke};
-use iced::widget::{Canvas, center, container, row, text};
+use iced::widget::{Canvas, center, container, row, text, vertical_rule};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use crate::chart::{
@@ -65,7 +65,12 @@ pub fn create_indicator_elem<'a>(
     .height(Length::Fill)
     .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)));
 
-    row![indi_chart, container(indi_labels),].into()
+    row![
+        indi_chart,
+        vertical_rule(1).style(style::indicator_ruler),
+        container(indi_labels),
+    ]
+    .into()
 }
 
 pub struct OpenInterest<'a> {
@@ -163,16 +168,6 @@ impl canvas::Program<Message> for OpenInterest<'_> {
             ));
 
             let region = self.visible_region(frame.size());
-
-            frame.fill_rectangle(
-                Point::new(region.x, 0.0),
-                Size::new(region.width, 1.0 / chart_state.scaling),
-                if palette.is_dark {
-                    palette.background.weak.color.scale_alpha(0.2)
-                } else {
-                    palette.background.strong.color.scale_alpha(0.2)
-                },
-            );
 
             let (earliest, latest) = chart_state.get_interval_range(region);
 

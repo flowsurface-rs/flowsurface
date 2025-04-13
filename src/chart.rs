@@ -1,5 +1,5 @@
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
-use iced::widget::{center, mouse_area};
+use iced::widget::{center, horizontal_rule, mouse_area, vertical_rule};
 use iced::{
     Element, Length, Point, Rectangle, Size, Theme, Vector, alignment,
     mouse::{self},
@@ -82,7 +82,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>>;
 
-    fn view_indicator<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>>;
+    fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>>;
 
     fn get_visible_timerange(&self) -> (u64, u64);
 
@@ -461,6 +461,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         container(chart_canvas)
             .width(Length::FillPortion(10))
             .height(Length::FillPortion(120)),
+        vertical_rule(1).style(style::split_ruler),
         container(
             mouse_area(axis_labels_y).on_double_click(Message::DoubleClick(AxisScaleClicked::Y))
         )
@@ -470,10 +471,10 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
     let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
         (Some(split_at), false) => {
-            if let Some(indicator) = chart.view_indicator(indicators) {
+            if let Some(indicators) = chart.view_indicators(indicators) {
                 row![HSplit::new(
                     main_chart,
-                    indicator,
+                    indicators,
                     split_at,
                     Message::SplitDragged,
                 )]
@@ -486,6 +487,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
     column![
         chart_content,
+        horizontal_rule(1).style(style::indicator_ruler),
         row![
             container(
                 mouse_area(axis_labels_x)

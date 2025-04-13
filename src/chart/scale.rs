@@ -664,12 +664,6 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());
 
-            frame.fill_rectangle(
-                Point::new(0.0, 0.0),
-                Size::new(1.0, bounds.height),
-                palette.background.strong.color.scale_alpha(0.4),
-            );
-
             let highest = self.y_to_price(region.y);
             let lowest = self.y_to_price(region.y + region.height);
 
