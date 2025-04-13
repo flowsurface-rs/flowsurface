@@ -5,9 +5,12 @@ use data::chart::timeandsales::Config;
 use exchange::adapter::MarketType;
 use exchange::{TickerInfo, Trade};
 use iced::widget::{center, column, container, responsive, row, text};
-use iced::{Alignment, Element, Length, padding};
+use iced::{Alignment, Element, Length};
 
 use super::abbr_large_numbers;
+
+const TARGET_SIZE: usize = 700;
+const MAX_SIZE: usize = 900;
 
 struct TradeDisplay {
     time_str: String,
@@ -16,14 +19,12 @@ struct TradeDisplay {
     is_sell: bool,
 }
 
-const TRADE_ROW_HEIGHT: f32 = 15.0;
+const TRADE_ROW_HEIGHT: f32 = 14.0;
 
 pub struct TimeAndSales {
     recent_trades: Vec<TradeDisplay>,
     config: Config,
     max_filtered_qty: f32,
-    max_size: usize,
-    target_size: usize,
     ticker_info: Option<TickerInfo>,
 }
 
@@ -33,8 +34,6 @@ impl TimeAndSales {
             recent_trades: Vec::new(),
             config: config.unwrap_or_default(),
             max_filtered_qty: 0.0,
-            max_size: 900,
-            target_size: 700,
             ticker_info,
         }
     }
@@ -80,8 +79,8 @@ impl TimeAndSales {
             }
         }
 
-        if self.recent_trades.len() > self.max_size {
-            let drain_amount = self.recent_trades.len() - self.target_size;
+        if self.recent_trades.len() > MAX_SIZE {
+            let drain_amount = self.recent_trades.len() - TARGET_SIZE;
 
             self.max_filtered_qty = self.recent_trades[drain_amount..]
                 .iter()
@@ -105,9 +104,7 @@ impl TimeAndSales {
                 }
             };
 
-            let mut column = column![]
-                .padding(padding::top(4).left(4).right(4))
-                .height(Length::Fill);
+            let mut content = column![].padding(4);
 
             let rows_can_fit = ((size.height / TRADE_ROW_HEIGHT).floor()) as usize;
 
@@ -144,12 +141,12 @@ impl TimeAndSales {
                 .align_y(Alignment::Center)
                 .height(Length::Fixed(TRADE_ROW_HEIGHT));
 
-                column = column.push(container(trade_row).padding(2).style(move |theme| {
+                content = content.push(container(trade_row).padding(1).style(move |theme| {
                     ts_table_container(theme, trade.is_sell, trade.qty / self.max_filtered_qty)
                 }));
             }
 
-            column.into()
+            content.into()
         })
         .into()
     }

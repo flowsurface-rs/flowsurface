@@ -823,7 +823,9 @@ impl canvas::Program<Message> for FootprintChart {
             let cell_height_unscaled = cell_height * chart.scaling;
             let cell_width_unscaled = cell_width * chart.scaling;
 
-            let text_size = cell_height_unscaled.round().min(16.0) - 3.0;
+            let text_size_from_height = cell_height_unscaled.round().min(16.0) - 3.0;
+            let text_size_from_width = (cell_width_unscaled * 0.1).round().min(16.0) - 3.0;
+            let text_size = text_size_from_height.min(text_size_from_width);
 
             let candle_width = 0.1 * cell_width;
 
@@ -1071,7 +1073,7 @@ fn draw_data_point(
         let mut bar_color_alpha = 1.0;
 
         if trade.1.0 > 0.0 {
-            if cell_height_unscaled > 10.0 && cell_width_unscaled > 100.0 {
+            if cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0 {
                 // cell is large enough, display the trade quantity
                 let text_content = abbr_large_numbers(trade.1.0);
 
@@ -1103,7 +1105,7 @@ fn draw_data_point(
             );
         }
         if trade.1.1 > 0.0 {
-            if cell_height_unscaled > 10.0 && cell_width_unscaled > 100.0 {
+            if cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0 {
                 let text_content = abbr_large_numbers(trade.1.1);
 
                 let text_position = Point::new(x_position - (candle_width / 4.0), y_position);
