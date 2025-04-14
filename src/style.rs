@@ -88,7 +88,7 @@ pub fn get_icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn branding_text(theme: &Theme) -> iced::widget::text::Style {
+pub fn title_text(theme: &Theme) -> iced::widget::text::Style {
     let palette = theme.extended_palette();
 
     iced::widget::text::Style {

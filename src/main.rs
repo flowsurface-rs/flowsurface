@@ -580,9 +580,12 @@ impl Flowsurface {
                     {
                         iced::widget::center(
                             text("FLOWSURFACE")
-                                .font(style::AZERET_MONO)
-                                .size(15)
-                                .style(style::branding_text)
+                                .font(iced::Font {
+                                    weight: iced::font::Weight::Bold,
+                                    ..Default::default()
+                                })
+                                .size(16)
+                                .style(style::title_text)
                                 .align_x(Alignment::Center),
                         )
                         .height(20)
