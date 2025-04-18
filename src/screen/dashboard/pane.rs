@@ -286,7 +286,7 @@ impl PaneState {
                     let main_chart_split: f32 = 0.7;
                     let mut splits = vec![main_chart_split];
 
-                    if enabled_indicators.len() > 0 {
+                    if !enabled_indicators.is_empty() {
                         let indicator_split = main_chart_split
                             + (1.0 - main_chart_split) / (enabled_indicators.len()) as f32;
                         splits.extend(vec![indicator_split; enabled_indicators.len() - 1]);
@@ -332,7 +332,7 @@ impl PaneState {
                     let main_chart_split: f32 = 0.7;
                     let mut splits = vec![main_chart_split];
 
-                    if enabled_indicators.len() > 0 {
+                    if !enabled_indicators.is_empty() {
                         let indicator_split = main_chart_split
                             + (1.0 - main_chart_split) / (enabled_indicators.len()) as f32;
                         splits.extend(vec![indicator_split; enabled_indicators.len() - 1]);
@@ -899,22 +899,24 @@ fn indicators_view<I: Indicator>(
     let mut content_row =
         column![container(text("Indicators").size(14)).padding(padding::bottom(8)),].spacing(4);
 
-    for indicator in I::get_available(market_type) {
-        content_row = content_row.push(if selected.contains(indicator) {
-            button(row![
-                text(indicator.to_string()),
-                horizontal_space(),
-                container(get_icon_text(Icon::Checkmark, 12)),
-            ])
-            .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
-            .width(Length::Fill)
-            .style(move |theme, status| style::button::modifier(theme, status, true))
-        } else {
-            button(text(indicator.to_string()))
+    if let Some(market) = market_type {
+        for indicator in I::get_available(market) {
+            content_row = content_row.push(if selected.contains(indicator) {
+                button(row![
+                    text(indicator.to_string()),
+                    horizontal_space(),
+                    container(get_icon_text(Icon::Checkmark, 12)),
+                ])
                 .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
                 .width(Length::Fill)
-                .style(move |theme, status| style::button::modifier(theme, status, false))
-        });
+                .style(move |theme, status| style::button::modifier(theme, status, true))
+            } else {
+                button(text(indicator.to_string()))
+                    .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+                    .width(Length::Fill)
+                    .style(move |theme, status| style::button::modifier(theme, status, false))
+            });
+        }
     }
 
     container(content_row)

@@ -66,7 +66,7 @@ pub enum Message {
     YScaling(f32, f32, bool),
     XScaling(f32, f32, bool),
     BoundsChanged(Rectangle),
-    SplitResized(usize, f32),
+    SplitDragged(usize, f32),
     DoubleClick(AxisScaleClicked),
 }
 
@@ -381,7 +381,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
                 chart_state.translation.x += center_delta_x;
             }
         }
-        Message::SplitResized(split, size) => {
+        Message::SplitDragged(split, size) => {
             if let Some(split) = chart_state.splits.get_mut(*split) {
                 *split = (*size * 100.0).round() / 100.0;
             }
@@ -485,7 +485,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
             }
 
             MultiSplit::new(panels, &chart_state.splits, |index, position| {
-                Message::SplitResized(index, position)
+                Message::SplitDragged(index, position)
             })
             .into()
         } else {
@@ -980,15 +980,11 @@ pub fn format_with_commas(num: f32) -> String {
 }
 
 pub fn calc_splits(main_split: f32, active_indicators: usize) -> Vec<f32> {
-    let new_splits = {
-        let mut splits = vec![main_split];
+    let mut splits = vec![main_split];
 
-        if active_indicators > 0 {
-            let indicator_split = main_split + (1.0 - main_split) / (active_indicators) as f32;
-            splits.extend(vec![indicator_split; active_indicators - 1]);
-        }
-        splits
-    };
-
-    new_splits
+    if active_indicators > 0 {
+        let indicator_split = main_split + (1.0 - main_split) / (active_indicators) as f32;
+        splits.extend(vec![indicator_split; active_indicators - 1]);
+    }
+    splits
 }

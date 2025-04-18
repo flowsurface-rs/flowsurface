@@ -670,7 +670,7 @@ impl FootprintChart {
             }
         }
 
-        if let Some(main_split) = self.chart.splits.get(0) {
+        if let Some(main_split) = self.chart.splits.first() {
             let active_indicators = self
                 .indicators
                 .iter()
@@ -692,10 +692,12 @@ impl FootprintChart {
 
         let mut indicators = vec![];
 
-        for indicator in I::get_enabled(
-            enabled,
-            chart_state.ticker_info.map(|info| info.get_market_type()),
-        ) {
+        let market = match chart_state.ticker_info {
+            Some(ref info) => info.get_market_type(),
+            None => return indicators,
+        };
+
+        for indicator in I::get_enabled(enabled, market) {
             if let Some(candlestick_indicator) =
                 indicator.as_any().downcast_ref::<FootprintIndicator>()
             {

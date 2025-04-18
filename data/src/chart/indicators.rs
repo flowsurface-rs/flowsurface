@@ -7,37 +7,32 @@ use exchange::adapter::MarketType;
 use serde::{Deserialize, Serialize};
 
 pub trait Indicator: PartialEq + Display + std::fmt::Debug + 'static {
-    fn get_available(market_type: Option<MarketType>) -> &'static [Self]
+    fn get_available(market: MarketType) -> &'static [Self]
     where
         Self: Sized;
 
-    fn get_enabled(
-        indicators: &[Self],
-        market_type: Option<MarketType>,
-    ) -> impl Iterator<Item = &Self>
+    fn get_enabled(indicators: &[Self], market: MarketType) -> impl Iterator<Item = &Self>
     where
         Self: Sized,
     {
-        Self::get_available(market_type)
+        Self::get_available(market)
             .iter()
             .filter(move |indicator| indicators.contains(indicator))
     }
     fn as_any(&self) -> &dyn Any;
 }
 
-/// Candlestick chart indicators
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, serde::Serialize, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum CandlestickIndicator {
     Volume,
     OpenInterest,
 }
 
 impl Indicator for CandlestickIndicator {
-    fn get_available(market_type: Option<MarketType>) -> &'static [Self] {
+    fn get_available(market_type: MarketType) -> &'static [Self] {
         match market_type {
-            Some(MarketType::Spot) => &Self::SPOT,
-            Some(MarketType::LinearPerps | MarketType::InversePerps) => &Self::PERPS,
-            _ => &Self::ALL,
+            MarketType::Spot => &Self::SPOT,
+            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
         }
     }
 
@@ -47,10 +42,6 @@ impl Indicator for CandlestickIndicator {
 }
 
 impl CandlestickIndicator {
-    const ALL: [CandlestickIndicator; 2] = [
-        CandlestickIndicator::Volume,
-        CandlestickIndicator::OpenInterest,
-    ];
     const SPOT: [CandlestickIndicator; 1] = [CandlestickIndicator::Volume];
     const PERPS: [CandlestickIndicator; 2] = [
         CandlestickIndicator::Volume,
@@ -67,7 +58,6 @@ impl Display for CandlestickIndicator {
     }
 }
 
-/// Heatmap chart indicators
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum HeatmapIndicator {
     Volume,
@@ -75,11 +65,10 @@ pub enum HeatmapIndicator {
 }
 
 impl Indicator for HeatmapIndicator {
-    fn get_available(market_type: Option<MarketType>) -> &'static [Self] {
+    fn get_available(market_type: MarketType) -> &'static [Self] {
         match market_type {
-            Some(MarketType::Spot) => &Self::SPOT,
-            Some(MarketType::LinearPerps | MarketType::InversePerps) => &Self::PERPS,
-            _ => &Self::ALL,
+            MarketType::Spot => &Self::SPOT,
+            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
         }
     }
 
@@ -89,10 +78,6 @@ impl Indicator for HeatmapIndicator {
 }
 
 impl HeatmapIndicator {
-    const ALL: [HeatmapIndicator; 2] = [
-        HeatmapIndicator::Volume,
-        HeatmapIndicator::SessionVolumeProfile,
-    ];
     const SPOT: [HeatmapIndicator; 2] = [
         HeatmapIndicator::Volume,
         HeatmapIndicator::SessionVolumeProfile,
@@ -112,7 +97,6 @@ impl Display for HeatmapIndicator {
     }
 }
 
-/// Footprint chart indicators
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum FootprintIndicator {
     Volume,
@@ -120,11 +104,10 @@ pub enum FootprintIndicator {
 }
 
 impl Indicator for FootprintIndicator {
-    fn get_available(market_type: Option<MarketType>) -> &'static [Self] {
+    fn get_available(market_type: MarketType) -> &'static [Self] {
         match market_type {
-            Some(MarketType::Spot) => &Self::SPOT,
-            Some(MarketType::LinearPerps | MarketType::InversePerps) => &Self::PERPS,
-            _ => &Self::ALL,
+            MarketType::Spot => &Self::SPOT,
+            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
         }
     }
 
@@ -134,8 +117,6 @@ impl Indicator for FootprintIndicator {
 }
 
 impl FootprintIndicator {
-    const ALL: [FootprintIndicator; 2] =
-        [FootprintIndicator::Volume, FootprintIndicator::OpenInterest];
     const SPOT: [FootprintIndicator; 1] = [FootprintIndicator::Volume];
     const PERPS: [FootprintIndicator; 2] =
         [FootprintIndicator::Volume, FootprintIndicator::OpenInterest];

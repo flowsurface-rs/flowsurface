@@ -433,7 +433,9 @@ impl Flowsurface {
                 self.notifications.push(toast);
             }
             Message::DeleteNotification(index) => {
-                self.notifications.remove(index);
+                if index < self.notifications.len() {
+                    self.notifications.remove(index);
+                }
             }
             Message::AudioStream(message) => {
                 let action = self.audio_stream.update(message);
