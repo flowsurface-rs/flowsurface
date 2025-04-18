@@ -250,7 +250,7 @@ impl PaneState {
                 };
                 let layout = existing_layout.unwrap_or(ChartLayout {
                     crosshair: true,
-                    indicators_split: None,
+                    splits: vec![],
                 });
 
                 let basis = self.settings.selected_basis.unwrap_or(Basis::Time(100));
@@ -282,9 +282,21 @@ impl PaneState {
                     _ => vec![FootprintIndicator::Volume, FootprintIndicator::OpenInterest],
                 };
 
+                let splits = {
+                    let main_chart_split: f32 = 0.7;
+                    let mut splits = vec![main_chart_split];
+
+                    if enabled_indicators.len() > 0 {
+                        let indicator_split = main_chart_split
+                            + (1.0 - main_chart_split) / (enabled_indicators.len()) as f32;
+                        splits.extend(vec![indicator_split; enabled_indicators.len() - 1]);
+                    }
+                    splits
+                };
+
                 let layout = existing_layout.unwrap_or(ChartLayout {
                     crosshair: true,
-                    indicators_split: Some(0.8),
+                    splits,
                 });
 
                 PaneContent::Footprint(
@@ -316,9 +328,21 @@ impl PaneState {
                     ],
                 };
 
+                let splits = {
+                    let main_chart_split: f32 = 0.7;
+                    let mut splits = vec![main_chart_split];
+
+                    if enabled_indicators.len() > 0 {
+                        let indicator_split = main_chart_split
+                            + (1.0 - main_chart_split) / (enabled_indicators.len()) as f32;
+                        splits.extend(vec![indicator_split; enabled_indicators.len() - 1]);
+                    }
+                    splits
+                };
+
                 let layout = existing_layout.unwrap_or(ChartLayout {
                     crosshair: true,
-                    indicators_split: Some(0.8),
+                    splits,
                 });
 
                 PaneContent::Candlestick(

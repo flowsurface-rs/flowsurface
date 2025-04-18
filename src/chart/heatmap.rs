@@ -49,7 +49,7 @@ impl Chart for HeatmapChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
+    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Vec<Element<Message>> {
         self.view_indicators(indicators)
     }
 
@@ -262,7 +262,7 @@ impl HeatmapChart {
                 tick_size,
                 decimals: count_decimals(tick_size),
                 crosshair: layout.crosshair,
-                indicators_split: layout.indicators_split,
+                splits: layout.splits,
                 ticker_info,
                 basis,
                 ..Default::default()
@@ -552,8 +552,8 @@ impl HeatmapChart {
         }
     }
 
-    pub fn view_indicators<I: Indicator>(&self, _indis: &[I]) -> Option<Element<Message>> {
-        None
+    pub fn view_indicators<I: Indicator>(&self, _indis: &[I]) -> Vec<Element<Message>> {
+        vec![]
     }
 
     pub fn update(&mut self, message: &Message) {

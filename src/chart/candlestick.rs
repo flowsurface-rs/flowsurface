@@ -5,13 +5,9 @@ use data::UserTimezone;
 use data::chart::ChartLayout;
 use data::chart::indicators::{CandlestickIndicator, Indicator};
 use iced::theme::palette::Extended;
+use iced::widget::canvas::{self, Event, Geometry};
 use iced::widget::canvas::{LineDash, Path, Stroke};
-use iced::widget::container;
-use iced::widget::{
-    canvas::{self, Event, Geometry},
-    column,
-};
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchange::fetcher::{FetchRange, RequestHandler};
@@ -20,7 +16,7 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 use super::scale::PriceInfoLabel;
 use super::{
     Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
-    indicator,
+    calc_splits, indicator,
 };
 use super::{canvas_interaction, count_decimals, request_fetch, update_chart, view_chart};
 
@@ -48,7 +44,7 @@ impl Chart for CandlestickChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
+    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Vec<Element<Message>> {
         self.view_indicators(indicators)
     }
 
@@ -147,6 +143,28 @@ impl CandlestickChart {
 
                 let y_ticks = (scale_high - scale_low) / tick_size;
 
+                let enabled_indicators: HashMap<CandlestickIndicator, IndicatorData> =
+                    enabled_indicators
+                        .iter()
+                        .map(|indicator| {
+                            (
+                                *indicator,
+                                match indicator {
+                                    CandlestickIndicator::Volume => IndicatorData::Volume(
+                                        Caches::default(),
+                                        volume_data.clone(),
+                                    ),
+                                    CandlestickIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(
+                                            Caches::default(),
+                                            BTreeMap::new(),
+                                        )
+                                    }
+                                },
+                            )
+                        })
+                        .collect();
+
                 CandlestickChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
@@ -155,35 +173,14 @@ impl CandlestickChart {
                         latest_x,
                         tick_size,
                         crosshair: layout.crosshair,
-                        indicators_split: layout.indicators_split,
                         decimals: count_decimals(tick_size),
                         ticker_info,
                         basis: super::Basis::Time(interval),
+                        splits: layout.splits,
                         ..Default::default()
                     },
                     data_source: ChartData::TimeBased(timeseries),
-                    indicators: {
-                        enabled_indicators
-                            .iter()
-                            .map(|indicator| {
-                                (
-                                    *indicator,
-                                    match indicator {
-                                        CandlestickIndicator::Volume => IndicatorData::Volume(
-                                            Caches::default(),
-                                            volume_data.clone(),
-                                        ),
-                                        CandlestickIndicator::OpenInterest => {
-                                            IndicatorData::OpenInterest(
-                                                Caches::default(),
-                                                BTreeMap::new(),
-                                            )
-                                        }
-                                    },
-                                )
-                            })
-                            .collect()
-                    },
+                    indicators: enabled_indicators,
                     raw_trades,
                     request_handler: RequestHandler::new(),
                 }
@@ -192,6 +189,28 @@ impl CandlestickChart {
                 let tick_aggr = TickAggr::new(interval, tick_size, &raw_trades);
                 let volume_data = tick_aggr.get_volume_data();
 
+                let enabled_indicators: HashMap<CandlestickIndicator, IndicatorData> =
+                    enabled_indicators
+                        .iter()
+                        .map(|indicator| {
+                            (
+                                *indicator,
+                                match indicator {
+                                    CandlestickIndicator::Volume => IndicatorData::Volume(
+                                        Caches::default(),
+                                        volume_data.clone(),
+                                    ),
+                                    CandlestickIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(
+                                            Caches::default(),
+                                            BTreeMap::new(),
+                                        )
+                                    }
+                                },
+                            )
+                        })
+                        .collect();
+
                 CandlestickChart {
                     chart: CommonChartData {
                         cell_width: Self::DEFAULT_CELL_WIDTH,
@@ -199,34 +218,13 @@ impl CandlestickChart {
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,
-                        indicators_split: layout.indicators_split,
                         ticker_info,
                         basis,
+                        splits: layout.splits,
                         ..Default::default()
                     },
                     data_source: ChartData::TickBased(tick_aggr),
-                    indicators: {
-                        enabled_indicators
-                            .iter()
-                            .map(|indicator| {
-                                (
-                                    *indicator,
-                                    match indicator {
-                                        CandlestickIndicator::Volume => IndicatorData::Volume(
-                                            Caches::default(),
-                                            volume_data.clone(),
-                                        ),
-                                        CandlestickIndicator::OpenInterest => {
-                                            IndicatorData::OpenInterest(
-                                                Caches::default(),
-                                                BTreeMap::new(),
-                                            )
-                                        }
-                                    },
-                                )
-                            })
-                            .collect()
-                    },
+                    indicators: enabled_indicators,
                     raw_trades,
                     request_handler: RequestHandler::new(),
                 }
@@ -495,25 +493,30 @@ impl CandlestickChart {
                     }
                 };
                 entry.insert(data);
-
-                if self.chart.indicators_split.is_none() {
-                    self.chart.indicators_split = Some(0.8);
-                }
             }
         }
 
-        if self.indicators.is_empty() {
-            self.chart.indicators_split = None;
+        if let Some(main_split) = self.chart.splits.get(0) {
+            let active_indicators = self
+                .indicators
+                .iter()
+                .filter(|(_, data)| match data {
+                    IndicatorData::Volume(_, _) => true,
+                    IndicatorData::OpenInterest(_, _) => true,
+                })
+                .count();
+
+            self.chart.splits = calc_splits(*main_split, active_indicators);
         }
     }
 
-    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>> {
+    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Vec<Element<Message>> {
         let chart_state = self.get_common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
         let (earliest, latest) = chart_state.get_interval_range(visible_region);
 
-        let mut indicators: iced::widget::Column<'_, Message> = column![];
+        let mut indicators = vec![];
 
         for indicator in I::get_enabled(
             enabled,
@@ -527,7 +530,7 @@ impl CandlestickChart {
                         if let Some(IndicatorData::Volume(cache, data)) =
                             self.indicators.get(&CandlestickIndicator::Volume)
                         {
-                            indicators = indicators.push(indicator::volume::create_indicator_elem(
+                            indicators.push(indicator::volume::create_indicator_elem(
                                 chart_state,
                                 cache,
                                 data,
@@ -540,26 +543,20 @@ impl CandlestickChart {
                         if let Some(IndicatorData::OpenInterest(cache, data)) =
                             self.indicators.get(&CandlestickIndicator::OpenInterest)
                         {
-                            indicators =
-                                indicators.push(indicator::open_interest::create_indicator_elem(
-                                    chart_state,
-                                    cache,
-                                    data,
-                                    earliest,
-                                    latest,
-                                ));
+                            indicators.push(indicator::open_interest::create_indicator_elem(
+                                chart_state,
+                                cache,
+                                data,
+                                earliest,
+                                latest,
+                            ));
                         }
                     }
                 }
             }
         }
 
-        Some(
-            container(indicators)
-                .width(Length::FillPortion(10))
-                .height(Length::Fill)
-                .into(),
-        )
+        indicators
     }
 
     pub fn update(&mut self, message: &Message) {

@@ -9,7 +9,7 @@ use iced::{
 };
 
 pub mod column_drag;
-pub mod hsplit;
+pub mod multi_split;
 pub mod notification;
 
 pub fn tooltip<'a, Message: 'a>(

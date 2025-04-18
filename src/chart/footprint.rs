@@ -6,13 +6,9 @@ use data::chart::ChartLayout;
 use data::chart::indicators::{FootprintIndicator, Indicator};
 use iced::task::Handle;
 use iced::theme::palette::Extended;
+use iced::widget::canvas::{self, Event, Geometry};
 use iced::widget::canvas::{LineDash, Path, Stroke};
-use iced::widget::container;
-use iced::widget::{
-    canvas::{self, Event, Geometry},
-    column,
-};
-use iced::{Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use ordered_float::OrderedFloat;
 
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
@@ -24,7 +20,7 @@ use crate::style;
 use super::scale::PriceInfoLabel;
 use super::{
     Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
-    indicator,
+    calc_splits, indicator,
 };
 use super::{
     abbr_large_numbers, canvas_interaction, count_decimals, request_fetch, round_to_tick,
@@ -55,7 +51,7 @@ impl Chart for FootprintChart {
         canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
-    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Option<Element<Message>> {
+    fn view_indicators<I: Indicator>(&self, indicators: &[I]) -> Vec<Element<Message>> {
         self.view_indicators(indicators)
     }
 
@@ -171,7 +167,7 @@ impl FootprintChart {
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,
-                        indicators_split: layout.indicators_split,
+                        splits: layout.splits,
                         ticker_info,
                         basis,
                         ..Default::default()
@@ -215,7 +211,7 @@ impl FootprintChart {
                         tick_size,
                         decimals: count_decimals(tick_size),
                         crosshair: layout.crosshair,
-                        indicators_split: layout.indicators_split,
+                        splits: layout.splits,
                         ticker_info,
                         basis,
                         ..Default::default()
@@ -671,25 +667,30 @@ impl FootprintChart {
                     }
                 };
                 entry.insert(data);
-
-                if self.chart.indicators_split.is_none() {
-                    self.chart.indicators_split = Some(0.8);
-                }
             }
         }
 
-        if self.indicators.is_empty() {
-            self.chart.indicators_split = None;
+        if let Some(main_split) = self.chart.splits.get(0) {
+            let active_indicators = self
+                .indicators
+                .iter()
+                .filter(|(_, data)| match data {
+                    IndicatorData::Volume(_, _) => true,
+                    IndicatorData::OpenInterest(_, _) => true,
+                })
+                .count();
+
+            self.chart.splits = calc_splits(*main_split, active_indicators);
         }
     }
 
-    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>> {
+    pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Vec<Element<Message>> {
         let chart_state: &CommonChartData = self.get_common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
         let (earliest, latest) = chart_state.get_interval_range(visible_region);
 
-        let mut indicators: iced::widget::Column<'_, Message> = column![];
+        let mut indicators = vec![];
 
         for indicator in I::get_enabled(
             enabled,
@@ -703,7 +704,7 @@ impl FootprintChart {
                         if let Some(IndicatorData::Volume(cache, data)) =
                             self.indicators.get(&FootprintIndicator::Volume)
                         {
-                            indicators = indicators.push(indicator::volume::create_indicator_elem(
+                            indicators.push(indicator::volume::create_indicator_elem(
                                 chart_state,
                                 cache,
                                 data,
@@ -716,26 +717,20 @@ impl FootprintChart {
                         if let Some(IndicatorData::OpenInterest(cache, data)) =
                             self.indicators.get(&FootprintIndicator::OpenInterest)
                         {
-                            indicators =
-                                indicators.push(indicator::open_interest::create_indicator_elem(
-                                    chart_state,
-                                    cache,
-                                    data,
-                                    earliest,
-                                    latest,
-                                ));
+                            indicators.push(indicator::open_interest::create_indicator_elem(
+                                chart_state,
+                                cache,
+                                data,
+                                earliest,
+                                latest,
+                            ));
                         }
                     }
                 }
             }
         }
 
-        Some(
-            container(indicators)
-                .width(Length::FillPortion(10))
-                .height(Length::Fill)
-                .into(),
-        )
+        indicators
     }
 
     pub fn update(&mut self, message: &Message) {

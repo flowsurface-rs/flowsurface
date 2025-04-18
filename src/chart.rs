@@ -4,6 +4,7 @@ use iced::widget::{center, horizontal_rule, mouse_area, vertical_rule};
 use iced::{
     Element, Length, Point, Rectangle, Size, Theme, Vector, alignment,
     mouse::{self},
+    padding,
     widget::{
         Space, button, canvas::Path, column, container, row, text,
         tooltip::Position as TooltipPosition,
@@ -11,7 +12,8 @@ use iced::{
 };
 use scale::{AxisLabelsX, AxisLabelsY, PriceInfoLabel};
 
-use crate::{style, widget::hsplit::HSplit, widget::tooltip};
+use crate::widget::multi_split::MultiSplit;
+use crate::{style, widget::tooltip};
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use data::chart::{Basis, ChartLayout, indicators::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
@@ -64,7 +66,7 @@ pub enum Message {
     YScaling(f32, f32, bool),
     XScaling(f32, f32, bool),
     BoundsChanged(Rectangle),
-    SplitDragged(f32),
+    SplitResized(usize, f32),
     DoubleClick(AxisScaleClicked),
 }
 
@@ -83,7 +85,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>>;
 
-    fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Option<Element<Message>>;
+    fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Vec<Element<Message>>;
 
     fn get_visible_timerange(&self) -> (u64, u64);
 
@@ -379,8 +381,10 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
                 chart_state.translation.x += center_delta_x;
             }
         }
-        Message::SplitDragged(split) => {
-            chart_state.indicators_split = Some(*split);
+        Message::SplitResized(split, size) => {
+            if let Some(split) = chart_state.splits.get_mut(*split) {
+                *split = (*size * 100.0).round() / 100.0;
+            }
         }
         Message::CrosshairMoved => {}
     }
@@ -408,22 +412,6 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         timezone,
         chart_bounds: chart_state.bounds,
         interval_keys: chart.get_interval_keys(),
-    })
-    .width(Length::Fill)
-    .height(Length::Fill);
-
-    let axis_labels_y = Canvas::new(AxisLabelsY {
-        labels_cache: &chart_state.cache.y_labels,
-        translation_y: chart_state.translation.y,
-        scaling: chart_state.scaling,
-        decimals: chart_state.decimals,
-        min: chart_state.base_price_y,
-        last_price: chart_state.last_price,
-        crosshair: chart_state.crosshair,
-        tick_size: chart_state.tick_size,
-        cell_height: chart_state.cell_height,
-        basis: chart_state.basis,
-        chart_bounds: chart_state.bounds,
     })
     .width(Length::Fill)
     .height(Length::Fill);
@@ -456,34 +444,53 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         .padding(2)
     };
 
-    let chart_canvas = Canvas::new(chart).width(Length::Fill).height(Length::Fill);
+    let chart_content = {
+        let axis_labels_y = Canvas::new(AxisLabelsY {
+            labels_cache: &chart_state.cache.y_labels,
+            translation_y: chart_state.translation.y,
+            scaling: chart_state.scaling,
+            decimals: chart_state.decimals,
+            min: chart_state.base_price_y,
+            last_price: chart_state.last_price,
+            crosshair: chart_state.crosshair,
+            tick_size: chart_state.tick_size,
+            cell_height: chart_state.cell_height,
+            basis: chart_state.basis,
+            chart_bounds: chart_state.bounds,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
 
-    let main_chart = row![
-        container(chart_canvas)
-            .width(Length::FillPortion(10))
-            .height(Length::FillPortion(120)),
-        vertical_rule(1).style(style::split_ruler),
-        container(
-            mouse_area(axis_labels_y).on_double_click(Message::DoubleClick(AxisScaleClicked::Y))
-        )
-        .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)))
-        .height(Length::FillPortion(120))
-    ];
+        let main_chart: Element<_> = row![
+            container(Canvas::new(chart).width(Length::Fill).height(Length::Fill))
+                .width(Length::FillPortion(10))
+                .height(Length::FillPortion(120)),
+            vertical_rule(1).style(style::split_ruler),
+            container(
+                mouse_area(axis_labels_y)
+                    .on_double_click(Message::DoubleClick(AxisScaleClicked::Y))
+            )
+            .width(Length::Fixed(60.0 + (chart_state.decimals as f32 * 4.0)))
+            .height(Length::FillPortion(120))
+        ]
+        .into();
 
-    let chart_content = match (chart_state.indicators_split, indicators.is_empty()) {
-        (Some(split_at), false) => {
-            if let Some(indicators) = chart.view_indicators(indicators) {
-                row![HSplit::new(
-                    main_chart,
-                    indicators,
-                    split_at,
-                    Message::SplitDragged,
-                )]
-            } else {
-                main_chart
+        let indicators = chart.view_indicators(indicators);
+
+        if !indicators.is_empty() {
+            let mut panels = vec![main_chart];
+
+            for indicator in indicators {
+                panels.push(indicator);
             }
+
+            MultiSplit::new(panels, &chart_state.splits, |index, position| {
+                Message::SplitResized(index, position)
+            })
+            .into()
+        } else {
+            main_chart
         }
-        _ => main_chart,
     };
 
     column![
@@ -494,6 +501,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
                 mouse_area(axis_labels_x)
                     .on_double_click(Message::DoubleClick(AxisScaleClicked::X))
             )
+            .padding(padding::right(1))
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0)),
             chart_controls
@@ -568,7 +576,7 @@ pub struct CommonChartData {
     decimals: usize,
     ticker_info: Option<TickerInfo>,
 
-    indicators_split: Option<f32>,
+    splits: Vec<f32>,
 }
 
 impl Default for CommonChartData {
@@ -588,8 +596,8 @@ impl Default for CommonChartData {
             latest_x: 0,
             tick_size: 0.0,
             decimals: 0,
-            indicators_split: None,
             ticker_info: None,
+            splits: vec![],
         }
     }
 }
@@ -861,7 +869,7 @@ impl CommonChartData {
     fn get_chart_layout(&self) -> ChartLayout {
         ChartLayout {
             crosshair: self.crosshair,
-            indicators_split: self.indicators_split,
+            splits: self.splits.clone(),
         }
     }
 }
@@ -969,4 +977,18 @@ pub fn format_with_commas(num: f32) -> String {
     }
 
     result
+}
+
+pub fn calc_splits(main_split: f32, active_indicators: usize) -> Vec<f32> {
+    let new_splits = {
+        let mut splits = vec![main_split];
+
+        if active_indicators > 0 {
+            let indicator_split = main_split + (1.0 - main_split) / (active_indicators) as f32;
+            splits.extend(vec![indicator_split; active_indicators - 1]);
+        }
+        splits
+    };
+
+    new_splits
 }
