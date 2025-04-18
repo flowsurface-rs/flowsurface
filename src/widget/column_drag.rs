@@ -441,8 +441,17 @@ where
                     }
                     Action::Dragging { origin, index, .. } => {
                         if let Some(cursor_position) = cursor.position() {
+                            let bounds = layout.bounds();
+                            // clamp y so the ghost never goes outside the column
+                            let clamped_y =
+                                cursor_position.y.clamp(bounds.y, bounds.y + bounds.height);
+                            let clamped_cursor = Point {
+                                x: cursor_position.x,
+                                y: clamped_y,
+                            };
+
                             *action = Action::Dragging {
-                                last_cursor: cursor_position,
+                                last_cursor: clamped_cursor,
                                 origin,
                                 index,
                             };
