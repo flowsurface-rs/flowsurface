@@ -351,7 +351,7 @@ impl LayoutManager {
                             layout_row = layout_row.push(self.create_delete_button(layout.id));
                         }
                     }
-                    _ => {
+                    Editing::None => {
                         layout_row = layout_row.push(layout_btn(
                             layout,
                             if self.active_layout.id == layout.id {

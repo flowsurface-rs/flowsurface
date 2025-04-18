@@ -1,12 +1,12 @@
 use std::{
     any::Any,
-    fmt::{self, Display},
+    fmt::{self, Debug, Display},
 };
 
 use exchange::adapter::MarketType;
 use serde::{Deserialize, Serialize};
 
-pub trait Indicator: PartialEq + Display + std::fmt::Debug + 'static {
+pub trait Indicator: PartialEq + Display + Debug + 'static {
     fn get_available(market: MarketType) -> &'static [Self]
     where
         Self: Sized;

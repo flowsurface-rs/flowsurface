@@ -444,6 +444,11 @@ impl Dashboard {
                             pane_state.notifications.remove(idx);
                         }
                     }
+                    pane::Message::ReorderIndicator(pane, event) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            pane_state.content.reorder_indicators(event);
+                        }
+                    }
                 }
             }
             Message::LayoutFetchAll => {

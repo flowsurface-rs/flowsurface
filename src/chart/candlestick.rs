@@ -523,35 +523,37 @@ impl CandlestickChart {
             None => return indicators,
         };
 
-        for indicator in I::get_enabled(enabled, market) {
-            if let Some(candlestick_indicator) =
-                indicator.as_any().downcast_ref::<CandlestickIndicator>()
-            {
-                match candlestick_indicator {
-                    CandlestickIndicator::Volume => {
-                        if let Some(IndicatorData::Volume(cache, data)) =
-                            self.indicators.get(&CandlestickIndicator::Volume)
-                        {
-                            indicators.push(indicator::volume::create_indicator_elem(
-                                chart_state,
-                                cache,
-                                data,
-                                earliest,
-                                latest,
-                            ));
+        for indicator in enabled {
+            if I::get_available(market).contains(indicator) {
+                if let Some(candlestick_indicator) =
+                    indicator.as_any().downcast_ref::<CandlestickIndicator>()
+                {
+                    match candlestick_indicator {
+                        CandlestickIndicator::Volume => {
+                            if let Some(IndicatorData::Volume(cache, data)) =
+                                self.indicators.get(&CandlestickIndicator::Volume)
+                            {
+                                indicators.push(indicator::volume::create_indicator_elem(
+                                    chart_state,
+                                    cache,
+                                    data,
+                                    earliest,
+                                    latest,
+                                ));
+                            }
                         }
-                    }
-                    CandlestickIndicator::OpenInterest => {
-                        if let Some(IndicatorData::OpenInterest(cache, data)) =
-                            self.indicators.get(&CandlestickIndicator::OpenInterest)
-                        {
-                            indicators.push(indicator::open_interest::create_indicator_elem(
-                                chart_state,
-                                cache,
-                                data,
-                                earliest,
-                                latest,
-                            ));
+                        CandlestickIndicator::OpenInterest => {
+                            if let Some(IndicatorData::OpenInterest(cache, data)) =
+                                self.indicators.get(&CandlestickIndicator::OpenInterest)
+                            {
+                                indicators.push(indicator::open_interest::create_indicator_elem(
+                                    chart_state,
+                                    cache,
+                                    data,
+                                    earliest,
+                                    latest,
+                                ));
+                            }
                         }
                     }
                 }
