@@ -213,7 +213,13 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                             1.0 - threshold
                         };
 
-                        let split_at = split_at.clamp(lower, upper);
+                        let (min_bound, max_bound) = if lower <= upper {
+                            (lower, upper)
+                        } else {
+                            (upper, lower)
+                        };
+
+                        let split_at = split_at.clamp(min_bound, max_bound);
 
                         shell.publish((self.resize)(index, split_at));
                         shell.capture_event();
