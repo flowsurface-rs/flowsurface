@@ -65,7 +65,7 @@ pub fn create_indicator_elem<'a>(
 
     row![
         indi_chart,
-        vertical_rule(1).style(style::indicator_ruler),
+        vertical_rule(1).style(style::split_ruler),
         container(indi_labels),
     ]
     .into()
@@ -311,21 +311,42 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                         dashed_line,
                     );
 
-                    if let Some((_, (buy_v, sell_v))) = match chart_state.basis {
-                        Basis::Time(_) => self
-                            .data_points
-                            .iter()
-                            .find(|(interval, _)| **interval == rounded_interval),
+                    let volume_data = match chart_state.basis {
+                        Basis::Time(_) => {
+                            let exact_match = self
+                                .data_points
+                                .iter()
+                                .find(|(interval, _)| **interval == rounded_interval);
+
+                            if exact_match.is_none()
+                                && rounded_interval
+                                    > self.data_points.keys().last().copied().unwrap_or(0)
+                            {
+                                self.data_points.iter().last()
+                            } else {
+                                exact_match
+                            }
+                        }
                         Basis::Tick(_) => {
                             let index_from_end = rounded_interval as usize;
 
                             if index_from_end < self.data_points.len() {
                                 self.data_points.iter().rev().nth(index_from_end)
+                            } else if !self.data_points.is_empty() {
+                                let right_edge = chart_state.x_to_interval(region.x + region.width);
+
+                                if rounded_interval <= right_edge {
+                                    self.data_points.iter().rev().next()
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
                         }
-                    } {
+                    };
+
+                    if let Some((_, (buy_v, sell_v))) = volume_data {
                         let mut tooltip_bg_height = 28.0;
 
                         let (tooltip_text, tooltip_bg_width) = if *buy_v == -1.0 {

@@ -601,18 +601,7 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
     let palette = theme.extended_palette();
 
     iced::widget::rule::Style {
-        color: palette.background.strong.color.scale_alpha(0.4),
-        width: 1,
-        radius: iced::border::Radius::default(),
-        fill_mode: iced::widget::rule::FillMode::Full,
-    }
-}
-
-pub fn indicator_ruler(theme: &Theme) -> iced::widget::rule::Style {
-    let palette = theme.extended_palette();
-
-    iced::widget::rule::Style {
-        color: palette.background.strong.color.scale_alpha(0.2),
+        color: palette.background.strong.color.scale_alpha(0.25),
         width: 1,
         radius: iced::border::Radius::default(),
         fill_mode: iced::widget::rule::FillMode::Full,

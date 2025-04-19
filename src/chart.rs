@@ -495,7 +495,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
     column![
         chart_content,
-        horizontal_rule(1).style(style::indicator_ruler),
+        horizontal_rule(1).style(style::split_ruler),
         row![
             container(
                 mouse_area(axis_labels_x)
@@ -715,7 +715,7 @@ impl CommonChartData {
                     let change_pct = ((dp.kline.close - dp.kline.open) / dp.kline.open) * 100.0;
 
                     let tooltip_text = format!(
-                        "O:{} H:{} L:{} C:{} Δ:{:+.2}%",
+                        "O: {} H: {} L: {} C: {} {:+.2}%",
                         dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close, change_pct
                     );
 
@@ -740,7 +740,7 @@ impl CommonChartData {
                     let change_pct = ((dp.close_price - dp.open_price) / dp.open_price) * 100.0;
 
                     let tooltip_text = format!(
-                        "O:{} H:{} L:{} C:{} Δ:{:+.2}%",
+                        "O: {} H: {} L: {} C: {} {:+.2}%",
                         dp.open_price, dp.high_price, dp.low_price, dp.close_price, change_pct
                     );
 

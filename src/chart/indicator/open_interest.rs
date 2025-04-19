@@ -67,7 +67,7 @@ pub fn create_indicator_elem<'a>(
 
     row![
         indi_chart,
-        vertical_rule(1).style(style::indicator_ruler),
+        vertical_rule(1).style(style::split_ruler),
         container(indi_labels),
     ]
     .into()
@@ -251,11 +251,23 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                         dashed_line,
                     );
 
-                    if let Some((_, oi_value)) = self
-                        .timeseries
-                        .iter()
-                        .find(|(time, _)| **time == rounded_timestamp)
-                    {
+                    let oi_data = {
+                        let exact_match = self
+                            .timeseries
+                            .iter()
+                            .find(|(time, _)| **time == rounded_timestamp);
+
+                        if exact_match.is_none()
+                            && rounded_timestamp
+                                > self.timeseries.keys().last().copied().unwrap_or(0)
+                        {
+                            self.timeseries.iter().last()
+                        } else {
+                            exact_match
+                        }
+                    };
+
+                    if let Some((_, oi_value)) = oi_data {
                         let next_value = self
                             .timeseries
                             .range((rounded_timestamp + timeframe)..=u64::MAX)
