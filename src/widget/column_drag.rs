@@ -84,8 +84,6 @@ pub enum DragEvent {
     },
 }
 
-const DRAG_DEADBAND_DISTANCE: f32 = 8.0;
-
 #[allow(missing_debug_implementations)]
 pub struct Column<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where
@@ -98,7 +96,6 @@ where
     max_width: f32,
     align: Alignment,
     clip: bool,
-    deadband_zone: f32,
     children: Vec<Element<'a, Message, Theme, Renderer>>,
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
     class: Theme::Class<'a>,
@@ -144,7 +141,6 @@ where
             max_width: f32::INFINITY,
             align: Alignment::Start,
             clip: false,
-            deadband_zone: DRAG_DEADBAND_DISTANCE,
             children,
             class: Theme::default(),
             on_drag: None,
@@ -195,12 +191,6 @@ where
     /// overflow.
     pub fn clip(mut self, clip: bool) -> Self {
         self.clip = clip;
-        self
-    }
-
-    /// Sets the drag deadband zone of the [`Column`].
-    pub fn deadband_zone(mut self, deadband_zone: f32) -> Self {
-        self.deadband_zone = deadband_zone;
         self
     }
 
@@ -410,9 +400,20 @@ where
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if let Some(cursor_position) = cursor.position_over(layout.bounds()) {
+                let bounds = layout.bounds();
+
+                if let Some(cursor_position) = cursor.position_over(bounds) {
+                    let drag_handle_bounds = Rectangle {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: 12.0,
+                        height: bounds.height,
+                    };
+
                     for (index, child_layout) in layout.children().enumerate() {
-                        if child_layout.bounds().contains(cursor_position) {
+                        if cursor.is_over(drag_handle_bounds)
+                            && child_layout.bounds().contains(cursor_position)
+                        {
                             *action = Action::Picking {
                                 index,
                                 origin: cursor_position,
@@ -426,16 +427,13 @@ where
                 match *action {
                     Action::Picking { index, origin } => {
                         if let Some(cursor_position) = cursor.position() {
-                            if (cursor_position.y - origin.y).abs() > self.deadband_zone {
-                                // Start dragging
-                                *action = Action::Dragging {
-                                    index,
-                                    origin,
-                                    last_cursor: cursor_position,
-                                };
-                                if let Some(on_reorder) = &self.on_drag {
-                                    shell.publish(on_reorder(DragEvent::Picked { index }));
-                                }
+                            *action = Action::Dragging {
+                                index,
+                                origin,
+                                last_cursor: cursor_position,
+                            };
+                            if let Some(on_reorder) = &self.on_drag {
+                                shell.publish(on_reorder(DragEvent::Picked { index }));
                             }
                         }
                     }
@@ -515,8 +513,23 @@ where
     ) -> mouse::Interaction {
         let action = tree.state.downcast_ref::<Action>();
 
-        if let Action::Dragging { .. } = *action {
-            return mouse::Interaction::Grabbing;
+        match action {
+            Action::Dragging { .. } | Action::Picking { .. } => {
+                return mouse::Interaction::Grabbing;
+            }
+            _ => {
+                let bounds = layout.bounds();
+                let drag_handle_bounds = Rectangle {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: 12.0,
+                    height: bounds.height,
+                };
+
+                if cursor.position_in(drag_handle_bounds).is_some() {
+                    return mouse::Interaction::Grab;
+                }
+            }
         }
 
         self.children

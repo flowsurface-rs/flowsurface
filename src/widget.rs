@@ -1,5 +1,5 @@
 use super::Element;
-use crate::style;
+use crate::style::{self, ICONS_FONT, Icon};
 use iced::{
     Alignment, Color, Length, padding,
     widget::{
@@ -162,4 +162,19 @@ where
     )
     .style(style::modal_container)
     .into()
+}
+
+pub fn dragger_row<'a, Message>(content: Element<'a, Message>) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let icon = text(char::from(Icon::DragHandle).to_string())
+        .font(ICONS_FONT)
+        .style(style::drag_handle)
+        .size(10);
+
+    container(row![icon, content,].align_y(Alignment::Center).spacing(2))
+        .padding(2)
+        .style(style::layout_row_container)
+        .into()
 }

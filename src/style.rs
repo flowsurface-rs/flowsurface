@@ -46,6 +46,7 @@ pub enum Icon {
     SpeakerOff,
     SpeakerLow,
     SpeakerHigh,
+    DragHandle,
 }
 
 impl From<Icon> for char {
@@ -77,6 +78,7 @@ impl From<Icon> for char {
             Icon::SpeakerOff => '\u{E814}',
             Icon::SpeakerHigh => '\u{E815}',
             Icon::SpeakerLow => '\u{E816}',
+            Icon::DragHandle => '\u{E817}',
         }
     }
 }
@@ -605,6 +607,14 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
         width: 1,
         radius: iced::border::Radius::default(),
         fill_mode: iced::widget::rule::FillMode::Full,
+    }
+}
+
+pub fn drag_handle(theme: &Theme) -> iced::widget::text::Style {
+    let palette = theme.extended_palette();
+
+    iced::widget::text::Style {
+        color: Some(palette.background.strong.color),
     }
 }
 

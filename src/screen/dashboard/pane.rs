@@ -6,7 +6,7 @@ use crate::{
     },
     screen::{DashboardError, create_button},
     style::{self, Icon, get_icon_text},
-    widget::{self, column_drag, notification::Toast, pane_modal},
+    widget::{self, column_drag, dragger_row, notification::Toast, pane_modal},
     window::{self, Window},
 };
 use data::{
@@ -903,26 +903,24 @@ fn indicators_view<I: Indicator>(
 
     if let Some(market) = market_type {
         for indicator in selected {
-            indicators_column = indicators_column.push(
-                button(row![
-                    text(indicator.to_string()),
-                    horizontal_space(),
-                    container(get_icon_text(Icon::Checkmark, 12)),
-                ])
-                .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
-                .width(Length::Fill)
-                .style(move |theme, status| style::button::modifier(theme, status, true)),
-            );
+            let indicator_row = button(row![
+                text(indicator.to_string()),
+                horizontal_space(),
+                container(get_icon_text(Icon::Checkmark, 12)),
+            ])
+            .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+            .style(move |theme, status| style::button::modifier(theme, status, true));
+
+            indicators_column = indicators_column.push(dragger_row(indicator_row.into()));
         }
 
         for indicator in I::get_available(market) {
             if !selected.contains(indicator) {
-                indicators_column = indicators_column.push(
-                    button(text(indicator.to_string()))
-                        .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
-                        .width(Length::Fill)
-                        .style(move |theme, status| style::button::modifier(theme, status, false)),
-                );
+                let indicator_row = button(text(indicator.to_string()))
+                    .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+                    .style(move |theme, status| style::button::modifier(theme, status, true));
+
+                indicators_column = indicators_column.push(dragger_row(indicator_row.into()));
             }
         }
     }

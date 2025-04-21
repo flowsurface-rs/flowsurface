@@ -5,6 +5,7 @@ use crate::chart::{
 use crate::screen::dashboard::{Dashboard, PaneContent, PaneState};
 use crate::style::get_icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
+use crate::widget::dragger_row;
 use crate::{style, tooltip};
 use data::{
     UserTimezone,
@@ -295,7 +296,7 @@ impl LayoutManager {
 
         for id in &self.layout_order {
             if let Some((layout, _)) = self.layouts.get(id) {
-                let mut layout_row = row![].padding(4).height(iced::Length::Fixed(34.0));
+                let mut layout_row = row![].height(iced::Length::Fixed(32.0));
 
                 if self.active_layout.id == layout.id {
                     let color_column = container(column![])
@@ -363,8 +364,9 @@ impl LayoutManager {
                     }
                 }
 
-                layouts_column =
-                    layouts_column.push(container(layout_row).style(style::layout_row_container));
+                layouts_column = layouts_column.push(dragger_row(
+                    layout_row.align_y(iced::Alignment::Center).into(),
+                ));
             }
         }
 
