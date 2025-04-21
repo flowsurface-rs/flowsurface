@@ -273,19 +273,19 @@ impl LayoutManager {
             }
         };
 
-        content = content.push(
+        content = content.push(row![
+            Space::with_width(iced::Length::Fill),
             row![
-                Space::with_width(iced::Length::Fill),
-                row![
-                    tooltip(
-                        button("i").style(move |theme, status| style::button::modifier(theme, status, true)),
-                        Some("- Drag & drop to reorder layouts\n- Layouts won't be saved if app exits abruptly"),
-                        TooltipPosition::Top,
-                    ),
-                    edit_btn,
-                ].spacing(4),
+                tooltip(
+                    button("i")
+                        .style(move |theme, status| style::button::modifier(theme, status, true)),
+                    Some("Layouts won't be saved if app exits abruptly"),
+                    TooltipPosition::Top,
+                ),
+                edit_btn,
             ]
-        );
+            .spacing(4),
+        ]);
 
         let layout_btn =
             |layout: &Layout, on_press: Option<Message>| create_layout_button(layout, on_press);
@@ -365,7 +365,9 @@ impl LayoutManager {
                 }
 
                 layouts_column = layouts_column.push(dragger_row(
-                    layout_row.align_y(iced::Alignment::Center).into(),
+                    container(layout_row.align_y(iced::Alignment::Center))
+                        .style(style::dragger_row_container)
+                        .into(),
                 ));
             }
         }

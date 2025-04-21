@@ -175,6 +175,6 @@ where
 
     container(row![icon, content,].align_y(Alignment::Center).spacing(2))
         .padding(2)
-        .style(style::layout_row_container)
+        .style(style::dragger_row_container)
         .into()
 }

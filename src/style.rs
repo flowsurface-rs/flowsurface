@@ -426,7 +426,7 @@ pub fn modal_container(theme: &Theme) -> Style {
     }
 }
 
-pub fn layout_row_container(theme: &Theme) -> Style {
+pub fn dragger_row_container(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {

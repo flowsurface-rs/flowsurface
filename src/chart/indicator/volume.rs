@@ -336,7 +336,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
                                 let right_edge = chart_state.x_to_interval(region.x + region.width);
 
                                 if rounded_interval <= right_edge {
-                                    self.data_points.iter().rev().next()
+                                    self.data_points.iter().next_back()
                                 } else {
                                     None
                                 }

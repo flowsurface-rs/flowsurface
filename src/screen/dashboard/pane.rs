@@ -903,11 +903,14 @@ fn indicators_view<I: Indicator>(
 
     if let Some(market) = market_type {
         for indicator in selected {
-            let indicator_row = button(row![
-                text(indicator.to_string()),
-                horizontal_space(),
-                container(get_icon_text(Icon::Checkmark, 12)),
-            ])
+            let indicator_row = button(
+                row![
+                    text(indicator.to_string()),
+                    horizontal_space(),
+                    container(get_icon_text(Icon::Checkmark, 12)),
+                ]
+                .width(Length::Fill),
+            )
             .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
             .style(move |theme, status| style::button::modifier(theme, status, true));
 
@@ -918,7 +921,8 @@ fn indicators_view<I: Indicator>(
             if !selected.contains(indicator) {
                 let indicator_row = button(text(indicator.to_string()))
                     .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
-                    .style(move |theme, status| style::button::modifier(theme, status, true));
+                    .width(Length::Fill)
+                    .style(move |theme, status| style::button::modifier(theme, status, false));
 
                 indicators_column = indicators_column.push(dragger_row(indicator_row.into()));
             }
