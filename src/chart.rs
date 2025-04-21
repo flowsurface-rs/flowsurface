@@ -19,11 +19,10 @@ use data::chart::{Basis, ChartLayout, indicators::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{TickerInfo, Timeframe};
 
-pub mod candlestick;
 pub mod config;
-pub mod footprint;
 pub mod heatmap;
 pub mod indicator;
+pub mod kline;
 mod scale;
 pub mod timeandsales;
 
@@ -47,13 +46,13 @@ pub enum AxisScaleClicked {
 }
 
 pub trait ChartConstants {
-    const MIN_SCALING: f32;
-    const MAX_SCALING: f32;
-    const MIN_CELL_WIDTH: f32;
-    const MAX_CELL_WIDTH: f32;
-    const MIN_CELL_HEIGHT: f32;
-    const MAX_CELL_HEIGHT: f32;
-    const DEFAULT_CELL_WIDTH: f32;
+    fn min_scaling(&self) -> f32;
+    fn max_scaling(&self) -> f32;
+    fn max_cell_width(&self) -> f32;
+    fn min_cell_width(&self) -> f32;
+    fn max_cell_height(&self) -> f32;
+    fn min_cell_height(&self) -> f32;
+    fn default_cell_width(&self) -> f32;
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +160,12 @@ fn canvas_interaction<T: Chart>(
                     })
                 }
                 mouse::Event::WheelScrolled { delta } => {
+                    let default_cell_width = T::default_cell_width(chart);
+                    let min_cell_width = T::min_cell_width(chart);
+                    let max_cell_width = T::max_cell_width(chart);
+                    let max_scaling = T::max_scaling(chart);
+                    let min_scaling = T::min_scaling(chart);
+
                     if matches!(interaction, Interaction::Panning { .. }) {
                         return Some(canvas::Action::capture());
                     }
@@ -174,32 +179,32 @@ fn canvas_interaction<T: Chart>(
                     let should_adjust_cell_width = match (y.signum(), chart_state.scaling) {
                         // zooming out at max scaling with increased cell width
                         (-1.0, scaling)
-                            if scaling == T::MAX_SCALING
-                                && chart_state.cell_width > T::DEFAULT_CELL_WIDTH =>
+                            if scaling == max_scaling
+                                && chart_state.cell_width > default_cell_width =>
                         {
                             true
                         }
 
                         // zooming in at min scaling with decreased cell width
                         (1.0, scaling)
-                            if scaling == T::MIN_SCALING
-                                && chart_state.cell_width < T::DEFAULT_CELL_WIDTH =>
+                            if scaling == min_scaling
+                                && chart_state.cell_width < default_cell_width =>
                         {
                             true
                         }
 
                         // zooming in at max scaling with room to increase cell width
                         (1.0, scaling)
-                            if scaling == T::MAX_SCALING
-                                && chart_state.cell_width < T::MAX_CELL_WIDTH =>
+                            if scaling == max_scaling
+                                && chart_state.cell_width < max_cell_width =>
                         {
                             true
                         }
 
                         // zooming out at min scaling with room to decrease cell width
                         (-1.0, scaling)
-                            if scaling == T::MIN_SCALING
-                                && chart_state.cell_width > T::MIN_CELL_WIDTH =>
+                            if scaling == min_scaling
+                                && chart_state.cell_width > min_cell_width =>
                         {
                             true
                         }
@@ -219,12 +224,12 @@ fn canvas_interaction<T: Chart>(
                     }
 
                     // normal scaling cases
-                    if (*y < 0.0 && chart_state.scaling > T::MIN_SCALING)
-                        || (*y > 0.0 && chart_state.scaling < T::MAX_SCALING)
+                    if (*y < 0.0 && chart_state.scaling > min_scaling)
+                        || (*y > 0.0 && chart_state.scaling < max_scaling)
                     {
                         let old_scaling = chart_state.scaling;
                         let scaling = (chart_state.scaling * (1.0 + y / 30.0))
-                            .clamp(T::MIN_SCALING, T::MAX_SCALING);
+                            .clamp(min_scaling, max_scaling);
 
                         let translation = {
                             let factor = scaling - old_scaling;
@@ -265,12 +270,18 @@ pub enum Action {
 }
 
 fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
+    let default_chart_width = T::default_cell_width(chart);
+    let min_cell_width = T::min_cell_width(chart);
+    let max_cell_width = T::max_cell_width(chart);
+    let min_cell_height = T::min_cell_height(chart);
+    let max_cell_height = T::max_cell_height(chart);
+
     let chart_state = chart.get_common_data_mut();
 
     match message {
         Message::DoubleClick(scale) => match scale {
             AxisScaleClicked::X => {
-                chart_state.cell_width = T::DEFAULT_CELL_WIDTH;
+                chart_state.cell_width = default_chart_width;
             }
             AxisScaleClicked::Y => {
                 chart_state.autoscale = true;
@@ -296,8 +307,8 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
             chart_state.crosshair = !chart_state.crosshair;
         }
         Message::XScaling(delta, cursor_to_center_x, is_wheel_scroll) => {
-            if *delta < 0.0 && chart_state.cell_width > T::MIN_CELL_WIDTH
-                || *delta > 0.0 && chart_state.cell_width < T::MAX_CELL_WIDTH
+            if *delta < 0.0 && chart_state.cell_width > min_cell_width
+                || *delta > 0.0 && chart_state.cell_width < max_cell_width
             {
                 let (old_scaling, old_translation_x) =
                     { (chart_state.scaling, chart_state.translation.x) };
@@ -305,7 +316,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
                 let zoom_factor = if *is_wheel_scroll { 30.0 } else { 90.0 };
 
                 let new_width = (chart_state.cell_width * (1.0 + delta / zoom_factor))
-                    .clamp(T::MIN_CELL_WIDTH, T::MAX_CELL_WIDTH);
+                    .clamp(min_cell_width, max_cell_width);
 
                 let latest_x = chart_state.interval_to_x(chart_state.latest_x);
                 let is_interval_x_visible = chart_state.is_interval_x_visible(latest_x);
@@ -343,8 +354,8 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
-            if *delta < 0.0 && chart_state.cell_height > T::MIN_CELL_HEIGHT
-                || *delta > 0.0 && chart_state.cell_height < T::MAX_CELL_HEIGHT
+            if *delta < 0.0 && chart_state.cell_height > min_cell_height
+                || *delta > 0.0 && chart_state.cell_height < max_cell_height
             {
                 let (old_scaling, old_translation_y) =
                     { (chart_state.scaling, chart_state.translation.y) };
@@ -352,7 +363,7 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
                 let zoom_factor = if *is_wheel_scroll { 30.0 } else { 90.0 };
 
                 let new_height = (chart_state.cell_height * (1.0 + delta / zoom_factor))
-                    .clamp(T::MIN_CELL_HEIGHT, T::MAX_CELL_HEIGHT);
+                    .clamp(min_cell_height, max_cell_height);
 
                 let cursor_chart_y = cursor_to_center_y / old_scaling - old_translation_y;
 

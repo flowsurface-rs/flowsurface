@@ -246,10 +246,7 @@ impl Dashboard {
                                 PaneContent::Heatmap(ref mut chart, _) => {
                                     chart.update(&msg);
                                 }
-                                PaneContent::Footprint(ref mut chart, _) => {
-                                    chart.update(&msg);
-                                }
-                                PaneContent::Candlestick(ref mut chart, _) => {
+                                PaneContent::Kline(ref mut chart, _) => {
                                     chart.update(&msg);
                                 }
                                 _ => {}
@@ -346,8 +343,10 @@ impl Dashboard {
                             state.settings.selected_basis = Some(new_basis);
 
                             if let Some((exchange, ticker)) = state.get_ticker_exchange() {
-                                match &state.content {
-                                    PaneContent::Candlestick(_, _) => match new_basis {
+                                let chart_kind = state.content.chart_kind().unwrap_or_default();
+
+                                match &chart_kind {
+                                    data::chart::KlineChartKind::Candles => match new_basis {
                                         Basis::Time(interval) => {
                                             state.streams = vec![StreamType::Kline {
                                                 exchange,
@@ -362,7 +361,7 @@ impl Dashboard {
                                             }];
                                         }
                                     },
-                                    PaneContent::Footprint(_, _) => match new_basis {
+                                    data::chart::KlineChartKind::Footprint => match new_basis {
                                         Basis::Time(interval) => {
                                             state.streams = vec![
                                                 StreamType::Kline {
@@ -380,7 +379,6 @@ impl Dashboard {
                                             }];
                                         }
                                     },
-                                    _ => {}
                                 }
                             }
                         }
@@ -417,14 +415,8 @@ impl Dashboard {
                                 if let Some(pane_state) =
                                     self.get_mut_pane(main_window.id, window, pane)
                                 {
-                                    match &mut pane_state.content {
-                                        PaneContent::Footprint(chart, _) => {
-                                            chart.set_tick_basis(size);
-                                        }
-                                        PaneContent::Candlestick(chart, _) => {
-                                            chart.set_tick_basis(size);
-                                        }
-                                        _ => {}
+                                    if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                                        chart.set_tick_basis(size);
                                     }
                                 }
                             }
@@ -455,8 +447,8 @@ impl Dashboard {
                 let mut fetched_panes = vec![];
 
                 self.iter_all_panes(main_window.id)
-                    .for_each(|(window, pane, pane_state)| match pane_state.content {
-                        PaneContent::Candlestick(_, _) | PaneContent::Footprint(_, _) => {
+                    .for_each(|(window, pane, pane_state)| {
+                        if let PaneContent::Kline(_, _) = pane_state.content {
                             if pane_state
                                 .settings
                                 .selected_basis
@@ -465,7 +457,6 @@ impl Dashboard {
                                 fetched_panes.push((window, pane));
                             }
                         }
-                        _ => {}
                     });
 
                 return (
@@ -583,7 +574,7 @@ impl Dashboard {
                             .abortable();
 
                             if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                                if let PaneContent::Footprint(chart, _) = &mut state.content {
+                                if let PaneContent::Kline(chart, _) = &mut state.content {
                                     chart.set_handle(handle.abort_on_drop());
                                 }
                             };
@@ -853,7 +844,7 @@ impl Dashboard {
 
             if let Some(ticker_info) = pane_state.settings.ticker_info {
                 match pane_state.content {
-                    PaneContent::Footprint(ref mut chart, _) => {
+                    PaneContent::Kline(ref mut chart, _) => {
                         chart.change_tick_size(
                             new_tick_multiply.multiply_with_min_tick_size(ticker_info),
                         );
@@ -909,11 +900,8 @@ impl Dashboard {
                     *timeframe = new_timeframe;
                 }
 
-                match &pane_state.content {
-                    PaneContent::Candlestick(_, _) | PaneContent::Footprint(_, _) => {
-                        return Ok((stream_type, pane_state.id));
-                    }
-                    _ => {}
+                if let PaneContent::Kline(_, _) = &pane_state.content {
+                    return Ok((stream_type, pane_state.id));
                 }
             }
         }
@@ -949,7 +937,7 @@ impl Dashboard {
 
         self.iter_all_panes_mut(main_window.id)
             .for_each(|(_, _, pane_state)| {
-                if let PaneContent::Footprint(chart, _) = &mut pane_state.content {
+                if let PaneContent::Kline(chart, _) = &mut pane_state.content {
                     chart.reset_request_handler();
                 }
             });
@@ -1027,7 +1015,7 @@ impl Dashboard {
         }
 
         match &mut pane_state.content {
-            PaneContent::Footprint(chart, _) => {
+            PaneContent::Kline(chart, _) => {
                 chart.insert_raw_trades(trades.to_owned(), is_batches_done);
 
                 if is_batches_done {
@@ -1055,8 +1043,7 @@ impl Dashboard {
             .for_each(|(window, pane, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     let action = match &mut pane_state.content {
-                        PaneContent::Candlestick(chart, _) => chart.update_latest_kline(kline),
-                        PaneContent::Footprint(chart, _) => chart.update_latest_kline(kline),
+                        PaneContent::Kline(chart, _) => chart.update_latest_kline(kline),
                         _ => chart::Action::None,
                     };
 
@@ -1104,14 +1091,11 @@ impl Dashboard {
                         PaneContent::Heatmap(chart, _) => {
                             chart.insert_datapoint(trades_buffer, depth_update_t, depth);
                         }
-                        PaneContent::Footprint(chart, _) => {
+                        PaneContent::Kline(chart, _) => {
                             chart.insert_trades_buffer(trades_buffer, depth_update_t);
                         }
                         PaneContent::TimeAndSales(chart) => {
                             chart.update(trades_buffer);
-                        }
-                        PaneContent::Candlestick(chart, _) => {
-                            chart.insert_trades_buffer(trades_buffer);
                         }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");

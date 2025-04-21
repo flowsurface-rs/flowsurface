@@ -23,6 +23,39 @@ pub trait Indicator: PartialEq + Display + Debug + 'static {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
+pub enum KlineIndicator {
+    Volume,
+    OpenInterest,
+}
+
+impl Indicator for KlineIndicator {
+    fn get_available(market_type: MarketType) -> &'static [Self] {
+        match market_type {
+            MarketType::Spot => &Self::SPOT,
+            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl KlineIndicator {
+    const SPOT: [KlineIndicator; 1] = [KlineIndicator::Volume];
+    const PERPS: [KlineIndicator; 2] = [KlineIndicator::Volume, KlineIndicator::OpenInterest];
+}
+
+impl Display for KlineIndicator {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            KlineIndicator::Volume => write!(f, "Volume"),
+            KlineIndicator::OpenInterest => write!(f, "Open Interest"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum CandlestickIndicator {
     Volume,
     OpenInterest,

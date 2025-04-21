@@ -73,17 +73,45 @@ impl Chart for HeatmapChart {
     }
 }
 
+const MIN_SCALING: f32 = 0.6;
+const MAX_SCALING: f32 = 1.2;
+
+const MAX_CELL_WIDTH: f32 = 12.0;
+const MIN_CELL_WIDTH: f32 = 1.0;
+
+const MAX_CELL_HEIGHT: f32 = 10.0;
+const MIN_CELL_HEIGHT: f32 = 1.0;
+
+const DEFAULT_CELL_WIDTH: f32 = 3.0;
+
 impl ChartConstants for HeatmapChart {
-    const MIN_SCALING: f32 = 0.6;
-    const MAX_SCALING: f32 = 1.2;
+    fn min_scaling(&self) -> f32 {
+        MIN_SCALING
+    }
 
-    const MAX_CELL_WIDTH: f32 = 12.0;
-    const MIN_CELL_WIDTH: f32 = 1.0;
+    fn max_scaling(&self) -> f32 {
+        MAX_SCALING
+    }
 
-    const MAX_CELL_HEIGHT: f32 = 10.0;
-    const MIN_CELL_HEIGHT: f32 = 1.0;
+    fn max_cell_width(&self) -> f32 {
+        MAX_CELL_WIDTH
+    }
 
-    const DEFAULT_CELL_WIDTH: f32 = 3.0;
+    fn min_cell_width(&self) -> f32 {
+        MIN_CELL_WIDTH
+    }
+
+    fn max_cell_height(&self) -> f32 {
+        MAX_CELL_HEIGHT
+    }
+
+    fn min_cell_height(&self) -> f32 {
+        MIN_CELL_HEIGHT
+    }
+
+    fn default_cell_width(&self) -> f32 {
+        DEFAULT_CELL_WIDTH
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -257,7 +285,7 @@ impl HeatmapChart {
     ) -> Self {
         HeatmapChart {
             chart: CommonChartData {
-                cell_width: Self::DEFAULT_CELL_WIDTH,
+                cell_width: DEFAULT_CELL_WIDTH,
                 cell_height: 4.0,
                 tick_size,
                 decimals: count_decimals(tick_size),

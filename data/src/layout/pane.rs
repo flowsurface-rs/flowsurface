@@ -4,7 +4,8 @@ use serde_json::Value;
 
 use crate::chart::{
     Basis, ChartLayout, VisualConfig,
-    indicators::{CandlestickIndicator, FootprintIndicator, HeatmapIndicator},
+    indicators::{HeatmapIndicator, KlineIndicator},
+    kline::KlineChartKind,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -31,21 +32,14 @@ pub enum Pane {
         settings: PaneSettings,
         indicators: Vec<HeatmapIndicator>,
     },
-    FootprintChart {
+    KlineChart {
         layout: ChartLayout,
+        kind: KlineChartKind,
         #[serde(deserialize_with = "ok_or_default")]
         stream_type: Vec<StreamType>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: PaneSettings,
-        indicators: Vec<FootprintIndicator>,
-    },
-    CandlestickChart {
-        layout: ChartLayout,
-        #[serde(deserialize_with = "ok_or_default")]
-        stream_type: Vec<StreamType>,
-        #[serde(deserialize_with = "ok_or_default")]
-        settings: PaneSettings,
-        indicators: Vec<CandlestickIndicator>,
+        indicators: Vec<KlineIndicator>,
     },
     TimeAndSales {
         stream_type: Vec<StreamType>,
