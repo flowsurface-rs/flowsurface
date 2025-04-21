@@ -631,8 +631,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
             let region = chart.visible_region(frame.size());
 
-            let (earliest, latest) = chart.get_interval_range(region);
-            let (highest, lowest) = chart.get_price_range(region);
+            let (earliest, latest) = chart.interval_range(&region);
+            let (highest, lowest) = chart.price_range(&region);
 
             if latest < earliest {
                 return;

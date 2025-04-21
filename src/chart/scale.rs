@@ -263,9 +263,8 @@ impl AxisLabelsX<'_> {
         palette: &Extended,
         x_labels_can_fit: i32,
     ) -> Vec<AxisLabel> {
-        let timeframe = match self.basis {
-            Basis::Time(tf) => tf,
-            _ => return Vec::new(),
+        let Basis::Time(timeframe) = self.basis else {
+            return Vec::new();
         };
 
         let (time_step, rounded_earliest) =

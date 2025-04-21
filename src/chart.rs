@@ -1,5 +1,5 @@
 use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Cache, Canvas, Event, Frame};
+use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Stroke};
 use iced::widget::{center, horizontal_rule, mouse_area, vertical_rule};
 use iced::{
     Element, Length, Point, Rectangle, Size, Theme, Vector, alignment,
@@ -504,7 +504,9 @@ fn view_chart<'a, T: Chart, I: Indicator>(
 
         let indicators = chart.view_indicators(indicators);
 
-        if !indicators.is_empty() {
+        if indicators.is_empty() {
+            main_chart
+        } else {
             let mut panels = vec![main_chart];
 
             for indicator in indicators {
@@ -515,8 +517,6 @@ fn view_chart<'a, T: Chart, I: Indicator>(
                 Message::SplitDragged(index, position)
             })
             .into()
-        } else {
-            main_chart
         }
     };
 
@@ -648,7 +648,7 @@ impl CommonChartData {
         interval_x >= region.x && interval_x <= region.x + region.width
     }
 
-    fn get_interval_range(&self, region: Rectangle) -> (u64, u64) {
+    fn interval_range(&self, region: &Rectangle) -> (u64, u64) {
         match self.basis {
             Basis::Tick(_) => (
                 self.x_to_interval(region.x + region.width),
@@ -662,7 +662,7 @@ impl CommonChartData {
         }
     }
 
-    fn get_price_range(&self, region: Rectangle) -> (f32, f32) {
+    fn price_range(&self, region: &Rectangle) -> (f32, f32) {
         let highest = self.y_to_price(region.y);
         let lowest = self.y_to_price(region.y + region.height);
 
@@ -708,109 +708,6 @@ impl CommonChartData {
 
     fn y_to_price(&self, y: f32) -> f32 {
         self.base_price_y - (y / self.cell_height) * self.tick_size
-    }
-
-    fn draw_crosshair_tooltip(
-        data: &ChartData,
-        frame: &mut Frame,
-        palette: &Extended,
-        at_interval: u64,
-    ) {
-        let tooltip = match data {
-            ChartData::TimeBased(timeseries) => {
-                let dp_opt = timeseries
-                    .data_points
-                    .iter()
-                    .find(|(time, _)| **time == at_interval)
-                    .map(|(_, dp)| dp);
-
-                let dp_opt = if dp_opt.is_none() && !timeseries.data_points.is_empty() {
-                    if let Some((last_time, _)) = timeseries.data_points.last_key_value() {
-                        if at_interval > *last_time {
-                            timeseries.data_points.last_key_value().map(|(_, dp)| dp)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    dp_opt
-                };
-
-                if let Some(dp) = dp_opt {
-                    let change_pct = ((dp.kline.close - dp.kline.open) / dp.kline.open) * 100.0;
-
-                    let tooltip_text = format!(
-                        "O: {} H: {} L: {} C: {} {:+.2}%",
-                        dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close, change_pct
-                    );
-
-                    Some((
-                        tooltip_text,
-                        if change_pct >= 0.0 {
-                            palette.success.base.color
-                        } else {
-                            palette.danger.base.color
-                        },
-                    ))
-                } else {
-                    None
-                }
-            }
-            ChartData::TickBased(tick_aggr) => {
-                let index = (at_interval / tick_aggr.interval) as usize;
-
-                if index < tick_aggr.data_points.len() {
-                    let dp = &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
-
-                    let change_pct = ((dp.close_price - dp.open_price) / dp.open_price) * 100.0;
-
-                    let tooltip_text = format!(
-                        "O: {} H: {} L: {} C: {} {:+.2}%",
-                        dp.open_price, dp.high_price, dp.low_price, dp.close_price, change_pct
-                    );
-
-                    Some((
-                        tooltip_text,
-                        if change_pct >= 0.0 {
-                            palette.success.base.color
-                        } else {
-                            palette.danger.base.color
-                        },
-                    ))
-                } else {
-                    None
-                }
-            }
-        };
-
-        if let Some((content, color)) = tooltip {
-            let position = Point::new(8.0, 8.0);
-
-            let tooltip_rect = Rectangle {
-                x: position.x,
-                y: position.y,
-                width: content.len() as f32 * 8.0,
-                height: 16.0,
-            };
-
-            frame.fill_rectangle(
-                tooltip_rect.position(),
-                tooltip_rect.size(),
-                palette.background.weakest.color.scale_alpha(0.9),
-            );
-
-            let text = canvas::Text {
-                content,
-                position,
-                size: iced::Pixels(12.0),
-                color,
-                font: style::AZERET_MONO,
-                ..canvas::Text::default()
-            };
-            frame.fill_text(text);
-        }
     }
 
     fn draw_crosshair(
@@ -890,6 +787,38 @@ impl CommonChartData {
 
                 (rounded_price, rounded_tick)
             }
+        }
+    }
+
+    fn draw_last_price_line(
+        &self,
+        frame: &mut canvas::Frame,
+        palette: &Extended,
+        region: Rectangle,
+    ) {
+        if let Some(price) = &self.last_price {
+            let (mut y_pos, line_color) = price.get_with_color(palette);
+            y_pos = self.price_to_y(y_pos);
+
+            let marker_line = Stroke::with_color(
+                Stroke {
+                    width: 1.0,
+                    line_dash: LineDash {
+                        segments: &[2.0, 2.0],
+                        offset: 4,
+                    },
+                    ..Default::default()
+                },
+                line_color.scale_alpha(0.5),
+            );
+
+            frame.stroke(
+                &Path::line(
+                    Point::new(0.0, y_pos),
+                    Point::new(region.x + region.width, y_pos),
+                ),
+                marker_line,
+            );
         }
     }
 
@@ -980,8 +909,7 @@ pub fn format_with_commas(num: f32) -> String {
 
     let num_commas = (integer_part.len() - 1) / 3;
     let decimal_len = decimal_part.map_or(0, str::len);
-    let capacity =
-        (if is_negative { 1 } else { 0 }) + integer_part.len() + num_commas + decimal_len;
+    let capacity = usize::from(is_negative) + integer_part.len() + num_commas + decimal_len;
 
     let mut result = String::with_capacity(capacity);
 

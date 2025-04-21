@@ -161,7 +161,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
             let region = self.visible_region(frame.size());
 
-            let (earliest, latest) = chart_state.get_interval_range(region);
+            let (earliest, latest) = chart_state.interval_range(&region);
 
             match chart_state.basis {
                 Basis::Time(_) => {

@@ -169,7 +169,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
 
             let region = self.visible_region(frame.size());
 
-            let (earliest, latest) = chart_state.get_interval_range(region);
+            let (earliest, latest) = chart_state.interval_range(&region);
 
             let mut max_value: f32 = f32::MIN;
             let mut min_value: f32 = f32::MAX;

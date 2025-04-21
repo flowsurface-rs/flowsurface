@@ -218,7 +218,7 @@ impl TimeSeries {
 }
 
 impl From<&TimeSeries> for BTreeMap<u64, (f32, f32)> {
-    /// Converts datapoints into a BTreeMap of timestamps and volume data
+    /// Converts datapoints into a map of timestamps and volume data
     fn from(timeseries: &TimeSeries) -> Self {
         timeseries
             .data_points

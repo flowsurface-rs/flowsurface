@@ -7,7 +7,7 @@ use data::chart::{ChartLayout, KlineChartKind};
 use iced::task::Handle;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Event, Geometry};
-use iced::widget::canvas::{LineDash, Path, Stroke};
+use iced::widget::canvas::{Path, Stroke};
 use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use ordered_float::OrderedFloat;
 
@@ -726,8 +726,7 @@ impl KlineChart {
                 .indicators
                 .iter()
                 .filter(|(_, data)| match data {
-                    IndicatorData::Volume(_, _) => true,
-                    IndicatorData::OpenInterest(_, _) => true,
+                    IndicatorData::OpenInterest(_, _) | IndicatorData::Volume(_, _) => true,
                 })
                 .count();
 
@@ -739,7 +738,7 @@ impl KlineChart {
         let chart_state: &CommonChartData = self.common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
-        let (earliest, latest) = chart_state.get_interval_range(visible_region);
+        let (earliest, latest) = chart_state.interval_range(&visible_region);
 
         let mut indicators = vec![];
 
@@ -831,13 +830,13 @@ impl canvas::Program<Message> for KlineChart {
             frame.translate(chart.translation);
 
             let region = chart.visible_region(frame.size());
-            let (earliest, latest) = chart.get_interval_range(region);
+            let (earliest, latest) = chart.interval_range(&region);
             let price_to_y = |price: f32| chart.price_to_y(price);
 
             match self.kind {
                 KlineChartKind::Footprint => {
                     let (cell_width, cell_height) = (chart.cell_width, chart.cell_height);
-                    let (highest, lowest) = chart.get_price_range(region);
+                    let (highest, lowest) = chart.price_range(&region);
 
                     let (max_trade_qty, _) =
                         self.calc_qty_scales(earliest, latest, highest, lowest, chart.tick_size);
@@ -854,9 +853,9 @@ impl canvas::Program<Message> for KlineChart {
                     render_data_source(
                         &self.data_source,
                         frame,
-                        chart,
                         earliest,
                         latest,
+                        |i| chart.interval_to_x(i),
                         |frame, x_position, kline, trades| {
                             draw_footprint_dp(
                                 frame,
@@ -872,7 +871,7 @@ impl canvas::Program<Message> for KlineChart {
                                 x_position,
                                 kline,
                                 trades,
-                            )
+                            );
                         },
                     );
                 }
@@ -882,9 +881,9 @@ impl canvas::Program<Message> for KlineChart {
                     render_data_source(
                         &self.data_source,
                         frame,
-                        chart,
                         earliest,
                         latest,
+                        |i| chart.interval_to_x(i),
                         |frame, x_position, kline, _| {
                             draw_candle_dp(
                                 frame,
@@ -893,13 +892,13 @@ impl canvas::Program<Message> for KlineChart {
                                 palette,
                                 x_position,
                                 kline,
-                            )
+                            );
                         },
                     );
                 }
             }
 
-            draw_last_price_line(frame, chart, palette, region);
+            chart.draw_last_price_line(frame, palette, region);
         });
 
         if chart.crosshair {
@@ -908,12 +907,7 @@ impl canvas::Program<Message> for KlineChart {
                     let (_, rounded_aggregation) =
                         chart.draw_crosshair(frame, theme, bounds_size, cursor_position);
 
-                    CommonChartData::draw_crosshair_tooltip(
-                        &self.data_source,
-                        frame,
-                        palette,
-                        rounded_aggregation,
-                    );
+                    draw_crosshair_tooltip(&self.data_source, frame, palette, rounded_aggregation);
                 }
             });
 
@@ -942,44 +936,12 @@ impl canvas::Program<Message> for KlineChart {
     }
 }
 
-fn draw_last_price_line(
-    frame: &mut canvas::Frame,
-    chart: &CommonChartData,
-    palette: &Extended,
-    region: Rectangle,
-) {
-    if let Some(price) = &chart.last_price {
-        let (mut y_pos, line_color) = price.get_with_color(palette);
-        y_pos = chart.price_to_y(y_pos);
-
-        let marker_line = Stroke::with_color(
-            Stroke {
-                width: 1.0,
-                line_dash: LineDash {
-                    segments: &[2.0, 2.0],
-                    offset: 4,
-                },
-                ..Default::default()
-            },
-            line_color.scale_alpha(0.5),
-        );
-
-        frame.stroke(
-            &Path::line(
-                Point::new(0.0, y_pos),
-                Point::new(region.x + region.width, y_pos),
-            ),
-            marker_line,
-        );
-    }
-}
-
 fn render_data_source<F>(
     data_source: &ChartData,
     frame: &mut canvas::Frame,
-    chart: &CommonChartData,
     earliest: u64,
     latest: u64,
+    interval_to_x: impl Fn(u64) -> f32,
     draw_fn: F,
 ) where
     F: Fn(&mut canvas::Frame, f32, &Kline, &KlineTrades),
@@ -996,7 +958,7 @@ fn render_data_source<F>(
                 .enumerate()
                 .filter(|(index, _)| *index <= latest && *index >= earliest)
                 .for_each(|(index, tick_aggr)| {
-                    let x_position = chart.interval_to_x(index as u64);
+                    let x_position = interval_to_x(index as u64);
 
                     draw_fn(
                         frame,
@@ -1015,11 +977,114 @@ fn render_data_source<F>(
                 .data_points
                 .range(earliest..=latest)
                 .for_each(|(timestamp, dp)| {
-                    let x_position = chart.interval_to_x(*timestamp);
+                    let x_position = interval_to_x(*timestamp);
 
                     draw_fn(frame, x_position, &dp.kline, &dp.trades);
                 });
         }
+    }
+}
+
+fn draw_crosshair_tooltip(
+    data: &ChartData,
+    frame: &mut canvas::Frame,
+    palette: &Extended,
+    at_interval: u64,
+) {
+    let tooltip = match data {
+        ChartData::TimeBased(timeseries) => {
+            let dp_opt = timeseries
+                .data_points
+                .iter()
+                .find(|(time, _)| **time == at_interval)
+                .map(|(_, dp)| dp);
+
+            let dp_opt = if dp_opt.is_none() && !timeseries.data_points.is_empty() {
+                if let Some((last_time, _)) = timeseries.data_points.last_key_value() {
+                    if at_interval > *last_time {
+                        timeseries.data_points.last_key_value().map(|(_, dp)| dp)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                dp_opt
+            };
+
+            if let Some(dp) = dp_opt {
+                let change_pct = ((dp.kline.close - dp.kline.open) / dp.kline.open) * 100.0;
+
+                let tooltip_text = format!(
+                    "O: {} H: {} L: {} C: {} {:+.2}%",
+                    dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close, change_pct
+                );
+
+                Some((
+                    tooltip_text,
+                    if change_pct >= 0.0 {
+                        palette.success.base.color
+                    } else {
+                        palette.danger.base.color
+                    },
+                ))
+            } else {
+                None
+            }
+        }
+        ChartData::TickBased(tick_aggr) => {
+            let index = (at_interval / tick_aggr.interval) as usize;
+
+            if index < tick_aggr.data_points.len() {
+                let dp = &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
+
+                let change_pct = ((dp.close_price - dp.open_price) / dp.open_price) * 100.0;
+
+                let tooltip_text = format!(
+                    "O: {} H: {} L: {} C: {} {:+.2}%",
+                    dp.open_price, dp.high_price, dp.low_price, dp.close_price, change_pct
+                );
+
+                Some((
+                    tooltip_text,
+                    if change_pct >= 0.0 {
+                        palette.success.base.color
+                    } else {
+                        palette.danger.base.color
+                    },
+                ))
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some((content, color)) = tooltip {
+        let position = Point::new(8.0, 8.0);
+
+        let tooltip_rect = Rectangle {
+            x: position.x,
+            y: position.y,
+            width: content.len() as f32 * 8.0,
+            height: 16.0,
+        };
+
+        frame.fill_rectangle(
+            tooltip_rect.position(),
+            tooltip_rect.size(),
+            palette.background.weakest.color.scale_alpha(0.9),
+        );
+
+        let text = canvas::Text {
+            content,
+            position,
+            size: iced::Pixels(12.0),
+            color,
+            font: style::AZERET_MONO,
+            ..canvas::Text::default()
+        };
+        frame.fill_text(text);
     }
 }
 

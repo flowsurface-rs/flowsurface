@@ -18,7 +18,7 @@ use iced::{
     Background, Border, Element, Length, Padding, Pixels, Point, Rectangle, Size, Theme, Vector,
 };
 
-pub fn reorder_vec<T>(vec: &mut Vec<T>, event: DragEvent) {
+pub fn reorder_vec<T>(vec: &mut Vec<T>, event: &DragEvent) {
     if let DragEvent::Dropped {
         index,
         target_index,
@@ -28,19 +28,19 @@ pub fn reorder_vec<T>(vec: &mut Vec<T>, event: DragEvent) {
         if vec.len() > 1 {
             match drop_position {
                 DropPosition::Before | DropPosition::After => {
-                    if target_index != index && target_index != index + 1 {
-                        let item = vec.remove(index);
+                    if target_index != index && *target_index != index + 1 {
+                        let item = vec.remove(*index);
                         let insert_index = if index < target_index {
-                            target_index - 1
+                            *target_index - 1
                         } else {
-                            target_index
+                            *target_index
                         };
                         vec.insert(insert_index, item);
                     }
                 }
                 DropPosition::Swap => {
-                    if target_index != index && target_index < vec.len() {
-                        vec.swap(index, target_index);
+                    if target_index != index && *target_index < vec.len() {
+                        vec.swap(*index, *target_index);
                     }
                 }
             }

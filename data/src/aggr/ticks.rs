@@ -225,7 +225,7 @@ impl TickAggr {
 }
 
 impl From<&TickAggr> for BTreeMap<u64, (f32, f32)> {
-    /// Converts datapoints into a BTreeMap of timestamps and volume data
+    /// Converts datapoints into a map of timestamps and volume data
     fn from(tick_aggr: &TickAggr) -> Self {
         tick_aggr
             .data_points

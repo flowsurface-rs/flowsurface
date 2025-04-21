@@ -1214,10 +1214,10 @@ impl Dashboard {
             .filter(|stream_type| !matches!(stream_type, StreamType::None))
             .for_each(|stream_type| {
                 let (exchange, ticker) = match stream_type {
-                    StreamType::Kline {
+                    StreamType::DepthAndTrades { exchange, ticker }
+                    | StreamType::Kline {
                         exchange, ticker, ..
                     } => (*exchange, *ticker),
-                    StreamType::DepthAndTrades { exchange, ticker } => (*exchange, *ticker),
                     StreamType::None => unreachable!(),
                 };
 
