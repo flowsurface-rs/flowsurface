@@ -14,14 +14,14 @@ thiserror.workspace = true
 ordered-float.workspace = true
 uuid.workspace = true
 
-tokio = { version = "1.43", features = ["macros"] }
-reqwest = { version = "0.12.9", default-features = false, features = ["json", "brotli", "rustls-tls"] }
+tokio = { version = "1.43", default-features = false }
+reqwest = { version = "0.12.9", default-features = false, features = ["json", "rustls-tls"] }
 bytes = "1.8.0"
-sonic-rs = "0.4.0"
-fastwebsockets = { version = "0.9.0", features = ["upgrade"] }
+sonic-rs = { version = "0.5.0", default-features = false }
+fastwebsockets = { version = "0.9.0", default-features = false, features = ["upgrade"] }
 http-body-util = "0.1.2"
-hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1.10" }
+hyper = { version = "1", default-features = false, features = ["http1", "client"] }
+hyper-util = { version = "0.1.10", default-features = false }
 tokio-rustls = "0.24.1"
 webpki-roots = "0.23.1"
 zip = "2.3.0"
