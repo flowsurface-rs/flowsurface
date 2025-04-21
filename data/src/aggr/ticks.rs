@@ -201,12 +201,8 @@ impl TickAggr {
             .map(|dp| (dp, self.data_points.len() - 1))
     }
 
-    pub fn get_volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
-        self.data_points
-            .iter()
-            .enumerate()
-            .map(|(idx, dp)| (idx as u64, (dp.volume_buy, dp.volume_sell)))
-            .collect()
+    pub fn volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
+        self.into()
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade]) {
@@ -225,5 +221,17 @@ impl TickAggr {
                 }
             }
         }
+    }
+}
+
+impl From<&TickAggr> for BTreeMap<u64, (f32, f32)> {
+    /// Converts datapoints into a BTreeMap of timestamps and volume data
+    fn from(tick_aggr: &TickAggr) -> Self {
+        tick_aggr
+            .data_points
+            .iter()
+            .enumerate()
+            .map(|(idx, dp)| (idx as u64, (dp.volume_buy, dp.volume_sell)))
+            .collect()
     }
 }

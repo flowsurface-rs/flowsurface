@@ -93,12 +93,8 @@ impl TimeSeries {
         (scale_high, scale_low)
     }
 
-    pub fn get_volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
-        let mut volume_data = BTreeMap::new();
-        for (time, data_point) in &self.data_points {
-            volume_data.insert(*time, data_point.kline.volume);
-        }
-        volume_data
+    pub fn volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
+        self.into()
     }
 
     pub fn get_kline_timerange(&self) -> (u64, u64) {
@@ -218,5 +214,16 @@ impl TimeSeries {
         }
 
         None
+    }
+}
+
+impl From<&TimeSeries> for BTreeMap<u64, (f32, f32)> {
+    /// Converts datapoints into a BTreeMap of timestamps and volume data
+    fn from(timeseries: &TimeSeries) -> Self {
+        timeseries
+            .data_points
+            .iter()
+            .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
+            .collect()
     }
 }

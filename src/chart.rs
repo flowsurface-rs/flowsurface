@@ -982,9 +982,14 @@ pub fn format_with_commas(num: f32) -> String {
 pub fn calc_splits(main_split: f32, active_indicators: usize) -> Vec<f32> {
     let mut splits = vec![main_split];
 
-    if active_indicators > 0 {
-        let indicator_split = main_split + (1.0 - main_split) / (active_indicators) as f32;
-        splits.extend(vec![indicator_split; active_indicators - 1]);
+    if active_indicators > 1 {
+        let remaining_space = 0.9 - main_split;
+        let section_size = remaining_space / (active_indicators) as f32;
+
+        for i in 1..active_indicators {
+            let split_position = main_split + section_size * (i as f32);
+            splits.push(split_position);
+        }
     }
     splits
 }

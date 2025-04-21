@@ -110,6 +110,24 @@ impl IndicatorData {
             }
         }
     }
+
+    fn create_indicator_elem<'a>(
+        &'a self,
+        chart: &'a CommonChartData,
+        earliest: u64,
+        latest: u64,
+    ) -> Element<'a, Message> {
+        match self {
+            IndicatorData::Volume(cache, data) => {
+                indicator::volume::create_indicator_elem(chart, cache, data, earliest, latest)
+            }
+            IndicatorData::OpenInterest(cache, data) => {
+                indicator::open_interest::create_indicator_elem(
+                    chart, cache, data, earliest, latest,
+                )
+            }
+        }
+    }
 }
 
 type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
@@ -154,9 +172,30 @@ impl FootprintChart {
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
                 let (scale_high, scale_low) = timeseries.get_price_scale(12);
-                let volume_data = timeseries.get_volume_data();
 
                 let y_ticks = (scale_high - scale_low) / tick_size;
+
+                let enabled_indicators: HashMap<FootprintIndicator, IndicatorData> =
+                    enabled_indicators
+                        .iter()
+                        .map(|indicator| {
+                            (
+                                *indicator,
+                                match indicator {
+                                    FootprintIndicator::Volume => IndicatorData::Volume(
+                                        Caches::default(),
+                                        timeseries.volume_data(),
+                                    ),
+                                    FootprintIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(
+                                            Caches::default(),
+                                            BTreeMap::new(),
+                                        )
+                                    }
+                                },
+                            )
+                        })
+                        .collect();
 
                 FootprintChart {
                     chart: CommonChartData {
@@ -174,35 +213,35 @@ impl FootprintChart {
                     },
                     data_source: ChartData::TimeBased(timeseries),
                     raw_trades,
-                    indicators: {
-                        enabled_indicators
-                            .iter()
-                            .map(|indicator| {
-                                (
-                                    *indicator,
-                                    match indicator {
-                                        FootprintIndicator::Volume => IndicatorData::Volume(
-                                            Caches::default(),
-                                            volume_data.clone(),
-                                        ),
-                                        FootprintIndicator::OpenInterest => {
-                                            IndicatorData::OpenInterest(
-                                                Caches::default(),
-                                                BTreeMap::new(),
-                                            )
-                                        }
-                                    },
-                                )
-                            })
-                            .collect()
-                    },
+                    indicators: enabled_indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                 }
             }
             Basis::Tick(interval) => {
                 let tick_aggr = TickAggr::new(interval, tick_size, &raw_trades);
-                let volume_data = tick_aggr.get_volume_data();
+
+                let enabled_indicators: HashMap<FootprintIndicator, IndicatorData> =
+                    enabled_indicators
+                        .iter()
+                        .map(|indicator| {
+                            (
+                                *indicator,
+                                match indicator {
+                                    FootprintIndicator::Volume => IndicatorData::Volume(
+                                        Caches::default(),
+                                        tick_aggr.volume_data(),
+                                    ),
+                                    FootprintIndicator::OpenInterest => {
+                                        IndicatorData::OpenInterest(
+                                            Caches::default(),
+                                            BTreeMap::new(),
+                                        )
+                                    }
+                                },
+                            )
+                        })
+                        .collect();
 
                 FootprintChart {
                     chart: CommonChartData {
@@ -222,28 +261,7 @@ impl FootprintChart {
                         &raw_trades,
                     )),
                     raw_trades,
-                    indicators: {
-                        enabled_indicators
-                            .iter()
-                            .map(|indicator| {
-                                (
-                                    *indicator,
-                                    match indicator {
-                                        FootprintIndicator::Volume => IndicatorData::Volume(
-                                            Caches::default(),
-                                            volume_data.clone(),
-                                        ),
-                                        FootprintIndicator::OpenInterest => {
-                                            IndicatorData::OpenInterest(
-                                                Caches::default(),
-                                                BTreeMap::new(),
-                                            )
-                                        }
-                                    },
-                                )
-                            })
-                            .collect()
-                    },
+                    indicators: enabled_indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                 }
@@ -450,7 +468,7 @@ impl FootprintChart {
         let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
 
         if let Some(indicator) = self.indicators.get_mut(&FootprintIndicator::Volume) {
-            *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.get_volume_data());
+            *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.volume_data());
         }
 
         self.data_source = ChartData::TickBased(new_tick_aggr);
@@ -643,23 +661,10 @@ impl FootprintChart {
                 let data = match indicator {
                     FootprintIndicator::Volume => match &self.data_source {
                         ChartData::TimeBased(timeseries) => {
-                            let volume_data = timeseries
-                                .data_points
-                                .iter()
-                                .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
-                                .collect();
-
-                            IndicatorData::Volume(Caches::default(), volume_data)
+                            IndicatorData::Volume(Caches::default(), timeseries.into())
                         }
                         ChartData::TickBased(tick_aggr) => {
-                            let volume_data = tick_aggr
-                                .data_points
-                                .iter()
-                                .enumerate()
-                                .map(|(idx, dp)| (idx as u64, (dp.volume_buy, dp.volume_sell)))
-                                .collect();
-
-                            IndicatorData::Volume(Caches::default(), volume_data)
+                            IndicatorData::Volume(Caches::default(), tick_aggr.into())
                         }
                     },
                     FootprintIndicator::OpenInterest => {
@@ -704,26 +709,19 @@ impl FootprintChart {
                 {
                     match candlestick_indicator {
                         FootprintIndicator::Volume => {
-                            if let Some(IndicatorData::Volume(cache, data)) =
-                                self.indicators.get(&FootprintIndicator::Volume)
-                            {
-                                indicators.push(indicator::volume::create_indicator_elem(
+                            if let Some(i) = self.indicators.get(&FootprintIndicator::Volume) {
+                                indicators.push(i.create_indicator_elem(
                                     chart_state,
-                                    cache,
-                                    data,
                                     earliest,
                                     latest,
                                 ));
                             }
                         }
                         FootprintIndicator::OpenInterest => {
-                            if let Some(IndicatorData::OpenInterest(cache, data)) =
-                                self.indicators.get(&FootprintIndicator::OpenInterest)
+                            if let Some(i) = self.indicators.get(&FootprintIndicator::OpenInterest)
                             {
-                                indicators.push(indicator::open_interest::create_indicator_elem(
+                                indicators.push(i.create_indicator_elem(
                                     chart_state,
-                                    cache,
-                                    data,
                                     earliest,
                                     latest,
                                 ));
