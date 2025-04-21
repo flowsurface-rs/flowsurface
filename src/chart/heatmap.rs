@@ -26,11 +26,11 @@ use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart
 use ordered_float::OrderedFloat;
 
 impl Chart for HeatmapChart {
-    fn get_common_data(&self) -> &CommonChartData {
+    fn common_data(&self) -> &CommonChartData {
         &self.chart
     }
 
-    fn get_common_data_mut(&mut self) -> &mut CommonChartData {
+    fn common_data_mut(&mut self) -> &mut CommonChartData {
         &mut self.chart
     }
 
@@ -53,8 +53,8 @@ impl Chart for HeatmapChart {
         self.view_indicators(indicators)
     }
 
-    fn get_visible_timerange(&self) -> (u64, u64) {
-        let chart = self.get_common_data();
+    fn visible_timerange(&self) -> (u64, u64) {
+        let chart = self.common_data();
         let visible_region = chart.visible_region(chart.bounds.size());
 
         (
@@ -63,7 +63,7 @@ impl Chart for HeatmapChart {
         )
     }
 
-    fn get_interval_keys(&self) -> Vec<u64> {
+    fn interval_keys(&self) -> Vec<u64> {
         vec![]
         //self.timeseries.iter().map(|(time, _, _)| *time).collect()
     }
@@ -112,7 +112,7 @@ struct OrderRun {
 }
 
 impl OrderRun {
-    fn get_visible_runs(&self, earliest: u64, latest: u64) -> Option<&OrderRun> {
+    fn with_range(&self, earliest: u64, latest: u64) -> Option<&OrderRun> {
         if self.start_time <= latest && self.until_time >= earliest {
             Some(self)
         } else {
@@ -452,7 +452,7 @@ impl HeatmapChart {
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
-        let chart_state = self.get_common_data_mut();
+        let chart_state = self.common_data_mut();
 
         let basis = chart_state.basis;
 
@@ -468,7 +468,6 @@ impl HeatmapChart {
         }
 
         self.timeseries.clear();
-
         self.orderbook = Orderbook::new(new_tick_size, basis);
     }
 
@@ -490,7 +489,7 @@ impl HeatmapChart {
     }
 
     fn render_start(&mut self) {
-        let chart_state = self.get_common_data_mut();
+        let chart_state = self.common_data_mut();
 
         if chart_state.autoscale {
             chart_state.translation = Vector::new(
@@ -544,7 +543,7 @@ impl HeatmapChart {
             .for_each(|(price, runs)| {
                 runs.iter()
                     .filter_map(|run| {
-                        let visible_run = run.get_visible_runs(earliest, latest)?;
+                        let visible_run = run.with_range(earliest, latest)?;
 
                         let order_size = match market_type {
                             MarketType::InversePerps => visible_run.qty.0,
@@ -607,7 +606,7 @@ impl canvas::Program<Message> for HeatmapChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let chart = self.get_common_data();
+        let chart = self.common_data();
 
         if chart.bounds.width == 0.0 {
             return vec![];

@@ -235,3 +235,16 @@ impl From<&TickAggr> for BTreeMap<u64, (f32, f32)> {
             .collect()
     }
 }
+
+impl From<&TickAccumulation> for exchange::Kline {
+    fn from(dp: &TickAccumulation) -> exchange::Kline {
+        exchange::Kline {
+            time: dp.start_timestamp,
+            open: dp.open_price,
+            high: dp.high_price,
+            low: dp.low_price,
+            close: dp.close_price,
+            volume: (dp.volume_buy, dp.volume_sell),
+        }
+    }
+}

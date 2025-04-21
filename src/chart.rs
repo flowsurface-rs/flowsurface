@@ -70,9 +70,9 @@ pub enum Message {
 }
 
 trait Chart: ChartConstants + canvas::Program<Message> {
-    fn get_common_data(&self) -> &CommonChartData;
+    fn common_data(&self) -> &CommonChartData;
 
-    fn get_common_data_mut(&mut self) -> &mut CommonChartData;
+    fn common_data_mut(&mut self) -> &mut CommonChartData;
 
     fn update_chart(&mut self, message: &Message);
 
@@ -86,9 +86,9 @@ trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Vec<Element<Message>>;
 
-    fn get_visible_timerange(&self) -> (u64, u64);
+    fn visible_timerange(&self) -> (u64, u64);
 
-    fn get_interval_keys(&self) -> Vec<u64>;
+    fn interval_keys(&self) -> Vec<u64>;
 
     fn is_empty(&self) -> bool;
 }
@@ -104,7 +104,7 @@ fn canvas_interaction<T: Chart>(
         *interaction = Interaction::None;
     }
 
-    if chart.get_common_data().bounds != bounds {
+    if chart.common_data().bounds != bounds {
         return Some(canvas::Action::publish(Message::BoundsChanged(bounds)));
     }
 
@@ -115,7 +115,7 @@ fn canvas_interaction<T: Chart>(
 
     match event {
         Event::Mouse(mouse_event) => {
-            let chart_state = chart.get_common_data();
+            let chart_state = chart.common_data();
 
             match mouse_event {
                 mouse::Event::ButtonPressed(button) => {
@@ -270,43 +270,50 @@ pub enum Action {
 }
 
 fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
-    let default_chart_width = T::default_cell_width(chart);
-    let min_cell_width = T::min_cell_width(chart);
-    let max_cell_width = T::max_cell_width(chart);
-    let min_cell_height = T::min_cell_height(chart);
-    let max_cell_height = T::max_cell_height(chart);
-
-    let chart_state = chart.get_common_data_mut();
-
     match message {
-        Message::DoubleClick(scale) => match scale {
-            AxisScaleClicked::X => {
-                chart_state.cell_width = default_chart_width;
+        Message::DoubleClick(scale) => {
+            let default_chart_width = T::default_cell_width(chart);
+
+            let chart_state = chart.common_data_mut();
+
+            match scale {
+                AxisScaleClicked::X => {
+                    chart_state.cell_width = default_chart_width;
+                }
+                AxisScaleClicked::Y => {
+                    chart_state.autoscale = true;
+                }
             }
-            AxisScaleClicked::Y => {
-                chart_state.autoscale = true;
-            }
-        },
+        }
         Message::Translated(translation) => {
+            let chart_state = chart.common_data_mut();
             chart_state.translation = *translation;
             chart_state.autoscale = false;
         }
         Message::Scaled(scaling, translation) => {
+            let chart_state = chart.common_data_mut();
             chart_state.scaling = *scaling;
             chart_state.translation = *translation;
 
             chart_state.autoscale = false;
         }
         Message::AutoscaleToggle => {
+            let chart_state = chart.common_data_mut();
             chart_state.autoscale = !chart_state.autoscale;
             if chart_state.autoscale {
                 chart_state.scaling = 1.0;
             }
         }
         Message::CrosshairToggle => {
+            let chart_state = chart.common_data_mut();
             chart_state.crosshair = !chart_state.crosshair;
         }
         Message::XScaling(delta, cursor_to_center_x, is_wheel_scroll) => {
+            let min_cell_width = T::min_cell_width(chart);
+            let max_cell_width = T::max_cell_width(chart);
+
+            let chart_state = chart.common_data_mut();
+
             if *delta < 0.0 && chart_state.cell_width > min_cell_width
                 || *delta > 0.0 && chart_state.cell_width < max_cell_width
             {
@@ -354,6 +361,11 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
+            let min_cell_height = T::min_cell_height(chart);
+            let max_cell_height = T::max_cell_height(chart);
+
+            let chart_state = chart.common_data_mut();
+
             if *delta < 0.0 && chart_state.cell_height > min_cell_height
                 || *delta > 0.0 && chart_state.cell_height < max_cell_height
             {
@@ -381,6 +393,8 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::BoundsChanged(bounds) => {
+            let chart_state = chart.common_data_mut();
+
             // calculate how center shifted
             let old_center_x = chart_state.bounds.width / 2.0;
             let new_center_x = bounds.width / 2.0;
@@ -393,6 +407,8 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::SplitDragged(split, size) => {
+            let chart_state = chart.common_data_mut();
+
             if let Some(split) = chart_state.splits.get_mut(*split) {
                 *split = (*size * 100.0).round() / 100.0;
             }
@@ -406,7 +422,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
     indicators: &'a [I],
     timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
-    let chart_state = chart.get_common_data();
+    let chart_state = chart.common_data();
 
     if chart.is_empty() {
         return center(text("Waiting for data...").size(16)).into();
@@ -422,7 +438,7 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         cell_width: chart_state.cell_width,
         timezone,
         chart_bounds: chart_state.bounds,
-        interval_keys: chart.get_interval_keys(),
+        interval_keys: chart.interval_keys(),
     })
     .width(Length::Fill)
     .height(Length::Fill);

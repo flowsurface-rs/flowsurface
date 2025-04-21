@@ -28,11 +28,11 @@ use super::{
 };
 
 impl Chart for KlineChart {
-    fn get_common_data(&self) -> &CommonChartData {
+    fn common_data(&self) -> &CommonChartData {
         &self.chart
     }
 
-    fn get_common_data_mut(&mut self) -> &mut CommonChartData {
+    fn common_data_mut(&mut self) -> &mut CommonChartData {
         &mut self.chart
     }
 
@@ -55,8 +55,8 @@ impl Chart for KlineChart {
         self.view_indicators(indicators)
     }
 
-    fn get_visible_timerange(&self) -> (u64, u64) {
-        let chart = self.get_common_data();
+    fn visible_timerange(&self) -> (u64, u64) {
+        let chart = self.common_data();
         let region = chart.visible_region(chart.bounds.size());
 
         match &chart.basis {
@@ -74,7 +74,7 @@ impl Chart for KlineChart {
         }
     }
 
-    fn get_interval_keys(&self) -> Vec<u64> {
+    fn interval_keys(&self) -> Vec<u64> {
         match &self.data_source {
             ChartData::TimeBased(_) => {
                 //timeseries.data_points.keys().cloned().collect()
@@ -190,7 +190,12 @@ impl KlineChart {
 
                 let base_price_y = timeseries.get_base_price();
                 let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
-                let (scale_high, scale_low) = timeseries.get_price_scale(12);
+                let (scale_high, scale_low) = timeseries.get_price_scale({
+                    match kind {
+                        KlineChartKind::Footprint => 12,
+                        KlineChartKind::Candles => 60,
+                    }
+                });
 
                 let y_ticks = (scale_high - scale_low) / tick_size;
 
@@ -305,7 +310,7 @@ impl KlineChart {
                     data.insert(kline.time, (kline.volume.0, kline.volume.1));
                 };
 
-                let chart = self.get_common_data_mut();
+                let chart = self.common_data_mut();
 
                 if (kline.time) > chart.latest_x {
                     chart.latest_x = kline.time;
@@ -333,7 +338,7 @@ impl KlineChart {
             ChartData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
 
-                let (visible_earliest, visible_latest) = self.get_visible_timerange();
+                let (visible_earliest, visible_latest) = self.visible_timerange();
                 let (kline_earliest, kline_latest) = timeseries.get_kline_timerange();
                 let earliest = visible_earliest - (visible_latest - visible_earliest);
 
@@ -474,7 +479,7 @@ impl KlineChart {
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
-        let chart = self.get_common_data_mut();
+        let chart = self.common_data_mut();
 
         chart.cell_height *= new_tick_size / chart.tick_size;
         chart.tick_size = new_tick_size;
@@ -731,7 +736,7 @@ impl KlineChart {
     }
 
     pub fn view_indicators<I: Indicator>(&self, enabled: &[I]) -> Vec<Element<Message>> {
-        let chart_state: &CommonChartData = self.get_common_data();
+        let chart_state: &CommonChartData = self.common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
         let (earliest, latest) = chart_state.get_interval_range(visible_region);
@@ -809,7 +814,7 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let chart = self.get_common_data();
+        let chart = self.common_data();
 
         if chart.bounds.width == 0.0 {
             return vec![];
@@ -993,16 +998,12 @@ fn render_data_source<F>(
                 .for_each(|(index, tick_aggr)| {
                     let x_position = chart.interval_to_x(index as u64);
 
-                    let kline = Kline {
-                        time: tick_aggr.start_timestamp,
-                        open: tick_aggr.open_price,
-                        high: tick_aggr.high_price,
-                        low: tick_aggr.low_price,
-                        close: tick_aggr.close_price,
-                        volume: (tick_aggr.volume_buy, tick_aggr.volume_sell),
-                    };
-
-                    draw_fn(frame, x_position, &kline, &tick_aggr.trades);
+                    draw_fn(
+                        frame,
+                        x_position,
+                        &Kline::from(tick_aggr),
+                        &tick_aggr.trades,
+                    );
                 });
         }
         ChartData::TimeBased(timeseries) => {
@@ -1015,6 +1016,7 @@ fn render_data_source<F>(
                 .range(earliest..=latest)
                 .for_each(|(timestamp, dp)| {
                     let x_position = chart.interval_to_x(*timestamp);
+
                     draw_fn(frame, x_position, &dp.kline, &dp.trades);
                 });
         }
