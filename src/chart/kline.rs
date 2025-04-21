@@ -134,52 +134,31 @@ type KlineTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 impl ChartConstants for KlineChart {
     fn min_scaling(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 0.4,
-            KlineChartKind::Candles => 0.6,
-        }
+        self.kind.min_scaling()
     }
 
     fn max_scaling(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 1.2,
-            KlineChartKind::Candles => 2.5,
-        }
+        self.kind.max_scaling()
     }
 
     fn max_cell_width(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 360.0,
-            KlineChartKind::Candles => 16.0,
-        }
+        self.kind.max_cell_width()
     }
 
     fn min_cell_width(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 80.0,
-            KlineChartKind::Candles => 1.0,
-        }
+        self.kind.min_cell_width()
     }
 
     fn max_cell_height(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 90.0,
-            KlineChartKind::Candles => 8.0,
-        }
+        self.kind.max_cell_height()
     }
 
     fn min_cell_height(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 1.0,
-            KlineChartKind::Candles => 0.001,
-        }
+        self.kind.min_cell_height()
     }
 
     fn default_cell_width(&self) -> f32 {
-        match self.kind {
-            KlineChartKind::Footprint => 80.0,
-            KlineChartKind::Candles => 4.0,
-        }
+        self.kind.default_cell_width()
     }
 }
 
