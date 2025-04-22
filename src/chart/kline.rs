@@ -747,15 +747,15 @@ impl KlineChart {
             None => return indicators,
         };
 
-        for indicator in enabled {
-            if I::get_available(market).contains(indicator) {
-                if let Some(candlestick_indicator) =
-                    indicator.as_any().downcast_ref::<KlineIndicator>()
+        for selected_indicator in enabled {
+            if I::get_available(market).contains(selected_indicator) {
+                if let Some(indicator) =
+                    selected_indicator.as_any().downcast_ref::<KlineIndicator>()
                 {
-                    match candlestick_indicator {
+                    match indicator {
                         KlineIndicator::Volume => {
-                            if let Some(i) = self.indicators.get(&KlineIndicator::Volume) {
-                                indicators.push(i.create_indicator_elem(
+                            if let Some(data) = self.indicators.get(&KlineIndicator::Volume) {
+                                indicators.push(data.create_indicator_elem(
                                     chart_state,
                                     earliest,
                                     latest,
@@ -763,8 +763,8 @@ impl KlineChart {
                             }
                         }
                         KlineIndicator::OpenInterest => {
-                            if let Some(i) = self.indicators.get(&KlineIndicator::OpenInterest) {
-                                indicators.push(i.create_indicator_elem(
+                            if let Some(data) = self.indicators.get(&KlineIndicator::OpenInterest) {
+                                indicators.push(data.create_indicator_elem(
                                     chart_state,
                                     earliest,
                                     latest,

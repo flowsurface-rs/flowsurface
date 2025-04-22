@@ -507,11 +507,9 @@ fn view_chart<'a, T: Chart, I: Indicator>(
         if indicators.is_empty() {
             main_chart
         } else {
-            let mut panels = vec![main_chart];
-
-            for indicator in indicators {
-                panels.push(indicator);
-            }
+            let panels = std::iter::once(main_chart)
+                .chain(indicators)
+                .collect::<Vec<_>>();
 
             MultiSplit::new(panels, &chart_state.splits, |index, position| {
                 Message::SplitDragged(index, position)

@@ -247,7 +247,6 @@ impl PaneState {
                 });
 
                 let basis = self.settings.selected_basis.unwrap_or(Basis::Time(100));
-
                 let config = self.settings.visual_config.and_then(|cfg| cfg.heatmap());
 
                 PaneContent::Heatmap(
@@ -262,61 +261,25 @@ impl PaneState {
                     enabled_indicators,
                 )
             }
-            "footprint" => {
-                let tick_size = self.set_tickers_info(Some(TickMultiplier(50)), ticker_info);
-
-                let basis = self
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Basis::Time(Timeframe::M5.into()));
-
-                let enabled_indicators = match existing_indicators {
-                    Some(ExistingIndicators::Kline(indicators)) => indicators,
-                    _ => vec![KlineIndicator::Volume, KlineIndicator::OpenInterest],
-                };
-
-                let splits = {
-                    let main_chart_split: f32 = 0.7;
-                    let mut splits = vec![main_chart_split];
-
-                    if !enabled_indicators.is_empty() {
-                        let indicator_split = main_chart_split
-                            + (1.0 - main_chart_split) / (enabled_indicators.len()) as f32;
-                        splits.extend(vec![indicator_split; enabled_indicators.len() - 1]);
-                    }
-                    splits
-                };
-
-                let layout = existing_layout.unwrap_or(ChartLayout {
-                    crosshair: true,
-                    splits,
-                });
-
-                PaneContent::Kline(
-                    KlineChart::new(
-                        layout,
-                        basis,
-                        tick_size,
-                        &[],
-                        vec![],
-                        &enabled_indicators,
-                        Some(ticker_info),
+            "footprint" | "candlestick" => {
+                let (tick_mltp, default_tf, chart_kind) = match content_str {
+                    "footprint" => (
+                        Some(TickMultiplier(50)),
+                        Timeframe::M5,
                         data::chart::KlineChartKind::Footprint,
                     ),
-                    enabled_indicators,
-                )
-            }
-            "candlestick" => {
-                let tick_size = self.set_tickers_info(None, ticker_info);
+                    _ => (None, Timeframe::M15, data::chart::KlineChartKind::Candles),
+                };
 
+                let tick_size = self.set_tickers_info(tick_mltp, ticker_info);
                 let basis = self
                     .settings
                     .selected_basis
-                    .unwrap_or(Basis::Time(Timeframe::M15.into()));
+                    .unwrap_or(Basis::Time(default_tf.into()));
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Kline(indicators)) => indicators,
-                    _ => vec![KlineIndicator::Volume, KlineIndicator::OpenInterest],
+                    _ => KlineIndicator::get_available(ticker_info.get_market_type()).to_vec(),
                 };
 
                 let splits = {
@@ -345,19 +308,17 @@ impl PaneState {
                         vec![],
                         &enabled_indicators,
                         Some(ticker_info),
-                        data::chart::KlineChartKind::Candles,
+                        chart_kind,
                     ),
                     enabled_indicators,
                 )
             }
             "time&sales" => {
                 let _ = self.set_tickers_info(None, ticker_info);
-
                 let config = self
                     .settings
                     .visual_config
                     .and_then(|cfg| cfg.time_and_sales());
-
                 PaneContent::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)))
             }
             _ => {
