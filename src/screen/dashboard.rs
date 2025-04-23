@@ -361,7 +361,7 @@ impl Dashboard {
                                             }];
                                         }
                                     },
-                                    data::chart::KlineChartKind::Footprint => match new_basis {
+                                    data::chart::KlineChartKind::Footprint(_) => match new_basis {
                                         Basis::Time(interval) => {
                                             state.streams = vec![
                                                 StreamType::Kline {
@@ -439,6 +439,13 @@ impl Dashboard {
                     pane::Message::ReorderIndicator(pane, event) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             pane_state.content.reorder_indicators(event);
+                        }
+                    }
+                    pane::Message::ClusterKindSelected(pane, cluster_kind) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                                chart.set_cluster_kind(cluster_kind);
+                            }
                         }
                     }
                 }

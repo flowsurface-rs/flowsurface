@@ -850,20 +850,23 @@ fn count_decimals(value: f32) -> usize {
 }
 
 fn abbr_large_numbers(value: f32) -> String {
-    if value >= 1_000_000_000.0 {
-        format!("{:.2}b", value / 1_000_000_000.0)
-    } else if value >= 1_000_000.0 {
-        format!("{:.2}m", value / 1_000_000.0)
-    } else if value >= 1000.0 {
-        format!("{:.1}k", value / 1000.0)
-    } else if value >= 100.0 {
-        format!("{value:.0}")
-    } else if value >= 10.0 {
-        format!("{value:.1}")
-    } else if value >= 1.0 {
-        format!("{value:.2}")
+    let abs_value = value.abs();
+    let sign = if value < 0.0 { "-" } else { "" };
+
+    if abs_value >= 1_000_000_000.0 {
+        format!("{}{:.2}b", sign, abs_value / 1_000_000_000.0)
+    } else if abs_value >= 1_000_000.0 {
+        format!("{}{:.2}m", sign, abs_value / 1_000_000.0)
+    } else if abs_value >= 1000.0 {
+        format!("{}{:.1}k", sign, abs_value / 1000.0)
+    } else if abs_value >= 100.0 {
+        format!("{}{:.0}", sign, abs_value)
+    } else if abs_value >= 10.0 {
+        format!("{}{:.1}", sign, abs_value)
+    } else if abs_value >= 1.0 {
+        format!("{}{:.2}", sign, abs_value)
     } else {
-        format!("{value:.3}")
+        format!("{}{:.3}", sign, abs_value)
     }
 }
 

@@ -148,11 +148,21 @@ impl TickAccumulation {
         }
     }
 
-    pub fn get_max_trade_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
+    pub fn max_bidask_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
         let mut max_qty: f32 = 0.0;
         for (price, (buy_qty, sell_qty)) in &self.trades {
             if price >= &lowest && price <= &highest {
                 max_qty = max_qty.max(buy_qty.max(*sell_qty));
+            }
+        }
+        max_qty
+    }
+
+    pub fn max_delta_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
+        let mut max_qty: f32 = 0.0;
+        for (price, (buy_qty, sell_qty)) in &self.trades {
+            if price >= &lowest && price <= &highest {
+                max_qty = max_qty.max((buy_qty - *sell_qty).abs());
             }
         }
         max_qty

@@ -21,6 +21,7 @@ pub struct ChartLayout {
 pub enum VisualConfig {
     Heatmap(heatmap::Config),
     TimeAndSales(timeandsales::Config),
+    Kline(kline::Config),
 }
 
 impl VisualConfig {
@@ -34,6 +35,13 @@ impl VisualConfig {
     pub fn time_and_sales(&self) -> Option<timeandsales::Config> {
         match self {
             Self::TimeAndSales(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn kline(&self) -> Option<kline::Config> {
+        match self {
+            Self::Kline(cfg) => Some(*cfg),
             _ => None,
         }
     }

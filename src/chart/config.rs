@@ -5,11 +5,15 @@ use crate::{
     widget::{create_slider_row, scrollable_content},
 };
 
-use data::chart::{VisualConfig, heatmap, timeandsales};
+use data::chart::{
+    VisualConfig, heatmap,
+    kline::{self, ClusterKind},
+    timeandsales,
+};
 use iced::{
     Alignment, Element, Length,
     widget::{
-        Slider, button, column, container, pane_grid, row, text,
+        Slider, button, column, container, pane_grid, pick_list, row, text,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -116,6 +120,40 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
     .max_width(500)
     .style(style::chart_modal)
     .into()
+}
+
+pub fn kline_cfg_view<'a>(cfg: &kline::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
+    if let Some(cluster_kind) = cfg.cluster_kind {
+        let cluster_picklist = pick_list(
+            ClusterKind::ALL,
+            Some(cluster_kind),
+            move |new_cluster_kind| Message::ClusterKindSelected(pane, new_cluster_kind),
+        );
+
+        container(scrollable_content(
+            column![
+                column![text("Clustering type").size(14), cluster_picklist,]
+                    .spacing(20)
+                    .padding(16)
+                    .align_x(Alignment::Center),
+            ]
+            .spacing(8),
+        ))
+        .width(Length::Shrink)
+        .padding(16)
+        .max_width(500)
+        .style(style::chart_modal)
+        .into()
+    } else {
+        container(text(
+            "This chart type doesn't have any configurations, WIP...",
+        ))
+        .padding(16)
+        .width(Length::Shrink)
+        .max_width(500)
+        .style(style::chart_modal)
+        .into()
+    }
 }
 
 pub fn timesales_cfg_view<'a>(
