@@ -67,7 +67,11 @@ pub enum ClusterKind {
 }
 
 impl ClusterKind {
-    pub const ALL: [ClusterKind; 2] = [ClusterKind::BidAsk, ClusterKind::DeltaProfile];
+    pub const ALL: [ClusterKind; 3] = [
+        ClusterKind::BidAsk,
+        ClusterKind::VolumeProfile,
+        ClusterKind::DeltaProfile,
+    ];
 }
 
 impl std::fmt::Display for ClusterKind {
@@ -80,7 +84,7 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub cluster_kind: Option<ClusterKind>,
 }

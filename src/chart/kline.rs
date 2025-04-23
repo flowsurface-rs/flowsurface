@@ -672,7 +672,7 @@ impl KlineChart {
                     match cluster_kind {
                         ClusterKind::BidAsk => DataPoint::max_bidask_qty,
                         ClusterKind::DeltaProfile => DataPoint::max_delta_qty,
-                        _ => unimplemented!(),
+                        ClusterKind::VolumeProfile => DataPoint::max_total_qty,
                     };
 
                 timeseries
@@ -692,7 +692,7 @@ impl KlineChart {
                     match cluster_kind {
                         ClusterKind::BidAsk => TickAccumulation::max_bidask_qty,
                         ClusterKind::DeltaProfile => TickAccumulation::max_delta_qty,
-                        _ => unimplemented!(),
+                        ClusterKind::VolumeProfile => TickAccumulation::max_total_qty,
                     };
 
                 tick_aggr
@@ -906,42 +906,23 @@ impl canvas::Program<Message> for KlineChart {
                         earliest,
                         latest,
                         |i| chart.interval_to_x(i),
-                        |frame, x_position, kline, trades| match cluster_kind {
-                            ClusterKind::BidAsk => {
-                                draw_bidask_clusters(
-                                    frame,
-                                    price_to_y,
-                                    cell_width,
-                                    cell_height,
-                                    candle_width,
-                                    cell_height_unscaled,
-                                    cell_width_unscaled,
-                                    max_cluster_qty,
-                                    palette,
-                                    text_size,
-                                    x_position,
-                                    kline,
-                                    trades,
-                                );
-                            }
-                            ClusterKind::DeltaProfile => {
-                                draw_deltap_clusters(
-                                    frame,
-                                    price_to_y,
-                                    cell_width,
-                                    cell_height,
-                                    candle_width,
-                                    cell_height_unscaled,
-                                    cell_width_unscaled,
-                                    max_cluster_qty,
-                                    palette,
-                                    text_size,
-                                    x_position,
-                                    kline,
-                                    trades,
-                                );
-                            }
-                            _ => todo!(),
+                        |frame, x_position, kline, trades| {
+                            draw_clusters(
+                                frame,
+                                price_to_y,
+                                cell_width,
+                                cell_height,
+                                candle_width,
+                                cell_height_unscaled,
+                                cell_width_unscaled,
+                                max_cluster_qty,
+                                palette,
+                                text_size,
+                                x_position,
+                                kline,
+                                trades,
+                                cluster_kind,
+                            );
                         },
                     );
                 }
@@ -1006,6 +987,55 @@ impl canvas::Program<Message> for KlineChart {
     }
 }
 
+fn draw_footprint_kline(
+    frame: &mut canvas::Frame,
+    price_to_y: impl Fn(f32) -> f32,
+    x_position: f32,
+    candle_width: f32,
+    kline: &Kline,
+    palette: &Extended,
+) {
+    let y_open = price_to_y(kline.open);
+    let y_high = price_to_y(kline.high);
+    let y_low = price_to_y(kline.low);
+    let y_close = price_to_y(kline.close);
+
+    // Kline body
+    let body_color = if kline.close >= kline.open {
+        palette.success.weak.color
+    } else {
+        palette.danger.weak.color
+    };
+    frame.fill_rectangle(
+        Point::new(x_position - (candle_width / 8.0), y_open.min(y_close)),
+        Size::new(candle_width / 4.0, (y_open - y_close).abs()),
+        body_color,
+    );
+
+    // Kline wick
+    let wick_color = if kline.close >= kline.open {
+        palette.success.weak.color
+    } else {
+        palette.danger.weak.color
+    };
+
+    let marker_line = Stroke::with_color(
+        Stroke {
+            width: 1.0,
+            ..Default::default()
+        },
+        wick_color.scale_alpha(0.6),
+    );
+
+    frame.stroke(
+        &Path::line(
+            Point::new(x_position, y_high),
+            Point::new(x_position, y_low),
+        ),
+        marker_line,
+    );
+}
+
 fn render_data_source<F>(
     data_source: &ChartData,
     frame: &mut canvas::Frame,
@@ -1053,6 +1083,174 @@ fn render_data_source<F>(
                 });
         }
     }
+}
+
+fn draw_clusters(
+    frame: &mut canvas::Frame,
+    price_to_y: impl Fn(f32) -> f32,
+    cell_width: f32,
+    cell_height: f32,
+    candle_width: f32,
+    cell_height_unscaled: f32,
+    cell_width_unscaled: f32,
+    max_cluster_qty: f32,
+    palette: &Extended,
+    text_size: f32,
+    x_position: f32,
+    kline: &Kline,
+    trades: &KlineTrades,
+    cluster_kind: ClusterKind,
+) {
+    let x_position = if cluster_kind == ClusterKind::BidAsk {
+        x_position
+    } else {
+        x_position - (cell_width * 0.5)
+    };
+
+    draw_footprint_kline(frame, &price_to_y, x_position, candle_width, kline, palette);
+
+    let should_show_text = cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0;
+    let text_color = palette.background.weakest.text;
+    let bar_color_alpha = if should_show_text { 0.3 } else { 1.0 };
+
+    match cluster_kind {
+        ClusterKind::VolumeProfile => {
+            for (price, (buy_qty, sell_qty)) in trades {
+                let y_position = price_to_y(**price);
+                let total_qty = buy_qty + sell_qty;
+
+                if should_show_text {
+                    draw_cluster_text(
+                        frame,
+                        &abbr_large_numbers(total_qty),
+                        Point::new(x_position + (candle_width / 4.0), y_position),
+                        text_size,
+                        text_color,
+                        Alignment::Start,
+                        Alignment::Center,
+                    );
+                }
+
+                let bar_width = (total_qty / max_cluster_qty) * (cell_width * 0.8);
+                frame.fill_rectangle(
+                    Point::new(
+                        x_position + (candle_width / 4.0),
+                        y_position - (cell_height / 2.0),
+                    ),
+                    Size::new(bar_width, cell_height),
+                    palette.primary.weak.color.scale_alpha(bar_color_alpha),
+                );
+            }
+        }
+        ClusterKind::DeltaProfile => {
+            for (price, (buy_qty, sell_qty)) in trades {
+                let y_position = price_to_y(**price);
+                let delta_qty = buy_qty - sell_qty;
+
+                if should_show_text {
+                    draw_cluster_text(
+                        frame,
+                        &abbr_large_numbers(delta_qty),
+                        Point::new(x_position + (candle_width / 4.0), y_position),
+                        text_size,
+                        text_color,
+                        Alignment::Start,
+                        Alignment::Center,
+                    );
+                }
+
+                let bar_width = (delta_qty.abs() / max_cluster_qty) * (cell_width * 0.8);
+                let bar_color = if delta_qty >= 0.0 {
+                    palette.success.base.color.scale_alpha(bar_color_alpha)
+                } else {
+                    palette.danger.base.color.scale_alpha(bar_color_alpha)
+                };
+
+                frame.fill_rectangle(
+                    Point::new(
+                        x_position + (candle_width / 4.0),
+                        y_position - (cell_height / 2.0),
+                    ),
+                    Size::new(bar_width, cell_height),
+                    bar_color,
+                );
+            }
+        }
+        ClusterKind::BidAsk => {
+            for (price, (buy_qty, sell_qty)) in trades {
+                let y_position = price_to_y(**price);
+
+                if *buy_qty > 0.0 {
+                    if should_show_text {
+                        draw_cluster_text(
+                            frame,
+                            &abbr_large_numbers(*buy_qty),
+                            Point::new(x_position + (candle_width / 4.0), y_position),
+                            text_size,
+                            text_color,
+                            Alignment::Start,
+                            Alignment::Center,
+                        );
+                    }
+
+                    let bar_width = (buy_qty / max_cluster_qty) * (cell_width * 0.4);
+                    frame.fill_rectangle(
+                        Point::new(
+                            x_position + (candle_width / 4.0),
+                            y_position - (cell_height / 2.0),
+                        ),
+                        Size::new(bar_width, cell_height),
+                        palette.success.base.color.scale_alpha(bar_color_alpha),
+                    );
+                }
+
+                if *sell_qty > 0.0 {
+                    if should_show_text {
+                        draw_cluster_text(
+                            frame,
+                            &abbr_large_numbers(*sell_qty),
+                            Point::new(x_position - (candle_width / 4.0), y_position),
+                            text_size,
+                            text_color,
+                            Alignment::End,
+                            Alignment::Center,
+                        );
+                    }
+
+                    let bar_width = -(sell_qty / max_cluster_qty) * (cell_width * 0.4);
+                    frame.fill_rectangle(
+                        Point::new(
+                            x_position - (candle_width / 4.0),
+                            y_position - (cell_height / 2.0),
+                        ),
+                        Size::new(bar_width, cell_height),
+                        palette.danger.base.color.scale_alpha(bar_color_alpha),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn draw_cluster_text(
+    frame: &mut canvas::Frame,
+    text: &str,
+    position: Point,
+    text_size: f32,
+    color: iced::Color,
+    align_x: Alignment,
+    align_y: Alignment,
+) {
+    frame.fill_text(canvas::Text {
+        content: text.to_string(),
+        position,
+        size: iced::Pixels(text_size),
+        color,
+        align_x: align_x.into(),
+        align_y: align_y.into(),
+        font: style::AZERET_MONO,
+        ..canvas::Text::default()
+    });
 }
 
 fn draw_crosshair_tooltip(
@@ -1192,236 +1390,4 @@ fn draw_candle_dp(
         Size::new(candle_width / 4.0, (y_high - y_low).abs()),
         wick_color,
     );
-}
-
-fn draw_deltap_clusters(
-    frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
-    cell_width: f32,
-    cell_height: f32,
-    candle_width: f32,
-    cell_height_unscaled: f32,
-    cell_width_unscaled: f32,
-    max_cluster_qty: f32,
-    palette: &Extended,
-    text_size: f32,
-    x_position: f32,
-    kline: &Kline,
-    trades: &KlineTrades,
-) {
-    let y_open = price_to_y(kline.open);
-    let y_high = price_to_y(kline.high);
-    let y_low = price_to_y(kline.low);
-    let y_close = price_to_y(kline.close);
-
-    let x_position = x_position - (cell_width * 0.5);
-
-    // Kline body
-    let body_color = if kline.close >= kline.open {
-        palette.success.weak.color
-    } else {
-        palette.danger.weak.color
-    };
-    frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 8.0), y_open.min(y_close)),
-        Size::new(candle_width / 4.0, (y_open - y_close).abs()),
-        body_color,
-    );
-
-    // Kline wick
-    let wick_color = if kline.close >= kline.open {
-        palette.success.weak.color
-    } else {
-        palette.danger.weak.color
-    };
-
-    let marker_line = Stroke::with_color(
-        Stroke {
-            width: 1.0,
-            ..Default::default()
-        },
-        wick_color.scale_alpha(0.6),
-    );
-
-    frame.stroke(
-        &Path::line(
-            Point::new(x_position, y_high),
-            Point::new(x_position, y_low),
-        ),
-        marker_line,
-    );
-
-    // Trades
-    let cluster_qty_text_color = palette.background.weakest.text;
-
-    for (price, (buy_qty, sell_qty)) in trades {
-        let y_position = price_to_y(**price);
-
-        let mut bar_color_alpha = 1.0;
-
-        let delta_qty = buy_qty - sell_qty;
-
-        if cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0 {
-            // cell is large enough, display the cluster quantity texts
-            let text_content = abbr_large_numbers(delta_qty);
-            let text_position = Point::new(x_position + (candle_width / 4.0), y_position);
-
-            frame.fill_text(canvas::Text {
-                content: text_content,
-                position: text_position,
-                size: iced::Pixels(text_size),
-                color: cluster_qty_text_color,
-                align_x: Alignment::Start.into(),
-                align_y: Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..canvas::Text::default()
-            });
-
-            bar_color_alpha = 0.3;
-        }
-
-        let bar_width = (delta_qty.abs() / max_cluster_qty) * (cell_width * 0.8);
-
-        frame.fill_rectangle(
-            Point::new(
-                x_position + (candle_width / 4.0),
-                y_position - (cell_height / 2.0),
-            ),
-            Size::new(bar_width, cell_height),
-            if delta_qty >= 0.0 {
-                palette.success.base.color.scale_alpha(bar_color_alpha)
-            } else {
-                palette.danger.base.color.scale_alpha(bar_color_alpha)
-            },
-        );
-    }
-}
-
-fn draw_bidask_clusters(
-    frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
-    cell_width: f32,
-    cell_height: f32,
-    candle_width: f32,
-    cell_height_unscaled: f32,
-    cell_width_unscaled: f32,
-    max_cluster_qty: f32,
-    palette: &Extended,
-    text_size: f32,
-    x_position: f32,
-    kline: &Kline,
-    trades: &KlineTrades,
-) {
-    let y_open = price_to_y(kline.open);
-    let y_high = price_to_y(kline.high);
-    let y_low = price_to_y(kline.low);
-    let y_close = price_to_y(kline.close);
-
-    // Kline body
-    let body_color = if kline.close >= kline.open {
-        palette.success.weak.color
-    } else {
-        palette.danger.weak.color
-    };
-    frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 8.0), y_open.min(y_close)),
-        Size::new(candle_width / 4.0, (y_open - y_close).abs()),
-        body_color,
-    );
-
-    // Kline wick
-    let wick_color = if kline.close >= kline.open {
-        palette.success.weak.color
-    } else {
-        palette.danger.weak.color
-    };
-
-    let marker_line = Stroke::with_color(
-        Stroke {
-            width: 1.0,
-            ..Default::default()
-        },
-        wick_color.scale_alpha(0.6),
-    );
-
-    frame.stroke(
-        &Path::line(
-            Point::new(x_position, y_high),
-            Point::new(x_position, y_low),
-        ),
-        marker_line,
-    );
-
-    // Trades
-    let trade_qty_text_color = palette.background.weakest.text;
-
-    for trade in trades {
-        let y_position = price_to_y(**trade.0);
-
-        let mut bar_color_alpha = 1.0;
-
-        if trade.1.0 > 0.0 {
-            if cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0 {
-                // cell is large enough, display the trade quantity
-                let text_content = abbr_large_numbers(trade.1.0);
-
-                let text_position = Point::new(x_position + (candle_width / 4.0), y_position);
-
-                frame.fill_text(canvas::Text {
-                    content: text_content,
-                    position: text_position,
-                    size: iced::Pixels(text_size),
-                    color: trade_qty_text_color,
-                    align_x: Alignment::Start.into(),
-                    align_y: Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..canvas::Text::default()
-                });
-
-                bar_color_alpha = 0.3;
-            }
-
-            let bar_width = (trade.1.0 / max_cluster_qty) * (cell_width * 0.4);
-
-            frame.fill_rectangle(
-                Point::new(
-                    x_position + (candle_width / 4.0),
-                    y_position - (cell_height / 2.0),
-                ),
-                Size::new(bar_width, cell_height),
-                palette.success.base.color.scale_alpha(bar_color_alpha),
-            );
-        }
-        if trade.1.1 > 0.0 {
-            if cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0 {
-                let text_content = abbr_large_numbers(trade.1.1);
-
-                let text_position = Point::new(x_position - (candle_width / 4.0), y_position);
-
-                frame.fill_text(canvas::Text {
-                    content: text_content,
-                    position: text_position,
-                    size: iced::Pixels(text_size),
-                    color: trade_qty_text_color,
-                    align_x: Alignment::End.into(),
-                    align_y: Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..canvas::Text::default()
-                });
-
-                bar_color_alpha = 0.3;
-            }
-
-            let bar_width = -(trade.1.1 / max_cluster_qty) * (cell_width * 0.4);
-
-            frame.fill_rectangle(
-                Point::new(
-                    x_position - (candle_width / 4.0),
-                    y_position - (cell_height / 2.0),
-                ),
-                Size::new(bar_width, cell_height),
-                palette.danger.base.color.scale_alpha(bar_color_alpha),
-            );
-        }
-    }
 }
