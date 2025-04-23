@@ -1131,15 +1131,42 @@ fn draw_clusters(
                     );
                 }
 
-                let bar_width = (total_qty / max_cluster_qty) * (cell_width * 0.8);
-                frame.fill_rectangle(
-                    Point::new(
-                        x_position + (candle_width / 4.0),
-                        y_position - (cell_height / 2.0),
-                    ),
-                    Size::new(bar_width, cell_height),
-                    palette.primary.weak.color.scale_alpha(bar_color_alpha),
-                );
+                let total_bar_width = (total_qty / max_cluster_qty) * (cell_width * 0.8);
+                let buy_bar_width = (buy_qty / total_qty) * total_bar_width;
+                let sell_bar_width = (sell_qty / total_qty) * total_bar_width;
+
+                let start_x = x_position + (candle_width / 4.0);
+                let start_y = y_position - (cell_height / 2.0);
+
+                if buy_qty >= sell_qty {
+                    frame.fill_rectangle(
+                        Point::new(start_x, start_y),
+                        Size::new(total_bar_width, cell_height),
+                        palette.success.base.color.scale_alpha(bar_color_alpha),
+                    );
+
+                    if *sell_qty > 0.0 {
+                        frame.fill_rectangle(
+                            Point::new(start_x, start_y),
+                            Size::new(sell_bar_width, cell_height),
+                            palette.danger.base.color.scale_alpha(bar_color_alpha),
+                        );
+                    }
+                } else {
+                    frame.fill_rectangle(
+                        Point::new(start_x, start_y),
+                        Size::new(total_bar_width, cell_height),
+                        palette.danger.base.color.scale_alpha(bar_color_alpha),
+                    );
+
+                    if *buy_qty > 0.0 {
+                        frame.fill_rectangle(
+                            Point::new(start_x, start_y),
+                            Size::new(buy_bar_width, cell_height),
+                            palette.success.base.color.scale_alpha(bar_color_alpha),
+                        );
+                    }
+                }
             }
         }
         ClusterKind::DeltaProfile => {
