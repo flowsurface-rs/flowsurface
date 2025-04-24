@@ -1,12 +1,15 @@
-use crate::chart::{kline::KlineTrades, round_to_tick};
+use crate::chart::{
+    kline::{KlineTrades, NPoc},
+    round_to_tick,
+};
 use exchange::{Kline, Timeframe, Trade};
 
 use ordered_float::OrderedFloat;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 pub struct DataPoint {
     pub kline: Kline,
-    pub trades: KlineTrades,
+    pub footprint: KlineTrades,
 }
 
 impl DataPoint {
@@ -15,7 +18,7 @@ impl DataPoint {
         F: Fn(f32, f32) -> f32,
     {
         let mut max_qty: f32 = 0.0;
-        for (price, (buy_qty, sell_qty)) in &self.trades {
+        for (price, (buy_qty, sell_qty)) in &self.footprint.trades {
             if price >= &lowest && price <= &highest {
                 max_qty = max_qty.max(f(*buy_qty, *sell_qty));
             }
@@ -33,6 +36,26 @@ impl DataPoint {
 
     pub fn max_total_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
         self.max_qty_by(highest, lowest, |buy, sell| buy + sell)
+    }
+
+    pub fn add_trade(&mut self, price_level: OrderedFloat<f32>, qty: f32, is_sell: bool) {
+        self.footprint.add_trade(price_level, qty, is_sell);
+    }
+
+    pub fn poc_price(&self) -> Option<f32> {
+        self.footprint.poc_price()
+    }
+
+    pub fn set_poc_status(&mut self, status: NPoc) {
+        self.footprint.set_poc_status(status);
+    }
+
+    pub fn clear_trades(&mut self) {
+        self.footprint.clear();
+    }
+
+    pub fn calculate_poc(&mut self) -> bool {
+        self.footprint.calculate_poc()
     }
 }
 
@@ -57,13 +80,7 @@ impl TimeSeries {
             tick_size,
         };
 
-        for kline in klines {
-            let data_point = DataPoint {
-                kline: *kline,
-                trades: HashMap::new(),
-            };
-            timeseries.data_points.insert(kline.time, data_point);
-        }
+        timeseries.insert_klines(klines);
 
         if !raw_trades.is_empty() {
             timeseries.insert_trades(raw_trades, None);
@@ -136,7 +153,7 @@ impl TimeSeries {
                 .entry(kline.time)
                 .or_insert_with(|| DataPoint {
                     kline: *kline,
-                    trades: HashMap::new(),
+                    footprint: KlineTrades::new(),
                 });
 
             entry.kline = *kline;
@@ -150,13 +167,18 @@ impl TimeSeries {
 
         let aggregate_time = self.interval.to_milliseconds();
         let tick_size = self.tick_size;
-
         let rounded_update_t = update_t.map(|t| (t / aggregate_time) * aggregate_time);
+
+        let mut updated_times = Vec::new();
 
         buffer.iter().for_each(|trade| {
             let rounded_time =
                 rounded_update_t.unwrap_or((trade.time / aggregate_time) * aggregate_time);
             let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+
+            if !updated_times.contains(&rounded_time) {
+                updated_times.push(rounded_time);
+            }
 
             let entry = self
                 .data_points
@@ -170,26 +192,47 @@ impl TimeSeries {
                         close: trade.price,
                         volume: (0.0, 0.0),
                     },
-                    trades: HashMap::new(),
+                    footprint: KlineTrades::new(),
                 });
 
-            if let Some((buy_qty, sell_qty)) = entry.trades.get_mut(&price_level) {
-                if trade.is_sell {
-                    *sell_qty += trade.qty;
-                } else {
-                    *buy_qty += trade.qty;
-                }
-            } else if trade.is_sell {
-                entry.trades.insert(price_level, (0.0, trade.qty));
-            } else {
-                entry.trades.insert(price_level, (trade.qty, 0.0));
-            }
+            entry.add_trade(price_level, trade.qty, trade.is_sell);
         });
+
+        for time in updated_times {
+            if let Some(data_point) = self.data_points.get_mut(&time) {
+                data_point.calculate_poc();
+            }
+        }
+
+        self.update_poc_status();
+    }
+
+    pub fn update_poc_status(&mut self) {
+        let updates = self
+            .data_points
+            .iter()
+            .filter_map(|(&time, dp)| dp.poc_price().map(|price| (time, price)))
+            .collect::<Vec<_>>();
+
+        for (current_time, poc_price) in updates {
+            let mut npoc = NPoc::default();
+
+            for (&next_time, next_dp) in self.data_points.range((current_time + 1)..) {
+                if next_dp.kline.low <= poc_price && next_dp.kline.high >= poc_price {
+                    npoc.filled(next_time);
+                    break;
+                }
+            }
+
+            if let Some(data_point) = self.data_points.get_mut(&current_time) {
+                data_point.set_poc_status(npoc);
+            }
+        }
     }
 
     pub fn clear_trades(&mut self) {
         for data_point in self.data_points.values_mut() {
-            data_point.trades.clear();
+            data_point.clear_trades();
         }
     }
 

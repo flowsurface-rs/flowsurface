@@ -3,7 +3,77 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
-pub type KlineTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
+#[derive(Debug, Clone, Default)]
+pub struct KlineTrades {
+    pub trades: HashMap<OrderedFloat<f32>, (f32, f32)>,
+    pub poc: Option<PointOfControl>,
+}
+
+impl KlineTrades {
+    pub fn new() -> Self {
+        Self {
+            trades: HashMap::new(),
+            poc: None,
+        }
+    }
+
+    pub fn add_trade(&mut self, price_level: OrderedFloat<f32>, qty: f32, is_sell: bool) {
+        if let Some((buy_qty, sell_qty)) = self.trades.get_mut(&price_level) {
+            if is_sell {
+                *sell_qty += qty;
+            } else {
+                *buy_qty += qty;
+            }
+        } else if is_sell {
+            self.trades.insert(price_level, (0.0, qty));
+        } else {
+            self.trades.insert(price_level, (qty, 0.0));
+        }
+    }
+
+    pub fn calculate_poc(&mut self) -> bool {
+        if self.trades.is_empty() {
+            return false;
+        }
+
+        let mut max_volume = 0.0;
+        let mut poc_price = 0.0;
+
+        for (price, (buy_qty, sell_qty)) in &self.trades {
+            let total_volume = buy_qty + sell_qty;
+            if total_volume > max_volume {
+                max_volume = total_volume;
+                poc_price = price.0;
+            }
+        }
+
+        if max_volume > 0.0 {
+            self.poc = Some(PointOfControl {
+                price: poc_price,
+                volume: max_volume,
+                status: NPoc::default(),
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_poc_status(&mut self, status: NPoc) {
+        if let Some(poc) = &mut self.poc {
+            poc.status = status;
+        }
+    }
+
+    pub fn poc_price(&self) -> Option<f32> {
+        self.poc.map(|poc| poc.price)
+    }
+
+    pub fn clear(&mut self) {
+        self.trades.clear();
+        self.poc = None;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub enum KlineChartKind {
@@ -103,5 +173,27 @@ impl Config {
         Self {
             cluster_kind: Some(cluster_kind),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PointOfControl {
+    pub price: f32,
+    pub volume: f32,
+    pub status: NPoc,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NPoc {
+    #[default]
+    Naked,
+    Filled {
+        at: u64,
+    },
+}
+
+impl NPoc {
+    pub fn filled(&mut self, at: u64) {
+        *self = NPoc::Filled { at };
     }
 }

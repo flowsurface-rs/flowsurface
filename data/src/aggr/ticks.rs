@@ -3,7 +3,10 @@ use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-use crate::chart::{kline::KlineTrades, round_to_tick};
+use crate::chart::{
+    kline::{KlineTrades, NPoc},
+    round_to_tick,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TickCount {
@@ -87,7 +90,7 @@ pub struct TickAccumulation {
     pub close_price: f32,
     pub volume_buy: f32,
     pub volume_sell: f32,
-    pub trades: KlineTrades,
+    pub footprint: KlineTrades,
     pub start_timestamp: u64,
 }
 
@@ -110,7 +113,7 @@ impl TickAccumulation {
             close_price: trade.price,
             volume_buy: if trade.is_sell { 0.0 } else { trade.qty },
             volume_sell: if trade.is_sell { trade.qty } else { 0.0 },
-            trades,
+            footprint: KlineTrades { trades, poc: None },
             start_timestamp: trade.time,
         }
     }
@@ -133,16 +136,16 @@ impl TickAccumulation {
     fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
         let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
 
-        if let Some((buy_qty, sell_qty)) = self.trades.get_mut(&price_level) {
+        if let Some((buy_qty, sell_qty)) = self.footprint.trades.get_mut(&price_level) {
             if trade.is_sell {
                 *sell_qty += trade.qty;
             } else {
                 *buy_qty += trade.qty;
             }
         } else if trade.is_sell {
-            self.trades.insert(price_level, (0.0, trade.qty));
+            self.footprint.trades.insert(price_level, (0.0, trade.qty));
         } else {
-            self.trades.insert(price_level, (trade.qty, 0.0));
+            self.footprint.trades.insert(price_level, (trade.qty, 0.0));
         }
     }
 
@@ -151,7 +154,7 @@ impl TickAccumulation {
         F: Fn(f32, f32) -> f32,
     {
         let mut max_qty: f32 = 0.0;
-        for (price, (buy_qty, sell_qty)) in &self.trades {
+        for (price, (buy_qty, sell_qty)) in &self.footprint.trades {
             if price >= &lowest && price <= &highest {
                 max_qty = max_qty.max(f(*buy_qty, *sell_qty));
             }
@@ -173,6 +176,18 @@ impl TickAccumulation {
 
     pub fn is_full(&self, interval: u64) -> bool {
         self.tick_count >= interval as usize
+    }
+
+    pub fn poc_price(&self) -> Option<f32> {
+        self.footprint.poc_price()
+    }
+
+    pub fn set_poc_status(&mut self, status: NPoc) {
+        self.footprint.set_poc_status(status);
+    }
+
+    pub fn calculate_poc(&mut self) -> bool {
+        self.footprint.calculate_poc()
     }
 }
 
@@ -219,19 +234,64 @@ impl TickAggr {
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade]) {
+        let mut updated_indices = Vec::new();
+
         for trade in buffer {
             if self.data_points.is_empty() {
                 self.data_points
                     .push(TickAccumulation::new(trade, self.tick_size));
+                updated_indices.push(0);
             } else {
                 let last_idx = self.data_points.len() - 1;
 
                 if self.data_points[last_idx].is_full(self.interval) {
                     self.data_points
                         .push(TickAccumulation::new(trade, self.tick_size));
+                    updated_indices.push(self.data_points.len() - 1);
                 } else {
                     self.data_points[last_idx].update_with_trade(trade, self.tick_size);
+                    if !updated_indices.contains(&last_idx) {
+                        updated_indices.push(last_idx);
+                    }
                 }
+            }
+        }
+
+        for idx in updated_indices {
+            if idx < self.data_points.len() {
+                self.data_points[idx].calculate_poc();
+            }
+        }
+
+        self.update_poc_status();
+    }
+
+    pub fn update_poc_status(&mut self) {
+        let updates = self
+            .data_points
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| dp.poc_price().map(|price| (idx, price)))
+            .collect::<Vec<_>>();
+
+        let total_points = self.data_points.len();
+
+        for (current_idx, poc_price) in updates {
+            let mut npoc = NPoc::default();
+
+            for next_idx in (current_idx + 1)..total_points {
+                let next_dp = &self.data_points[next_idx];
+                if next_dp.low_price <= poc_price && next_dp.high_price >= poc_price {
+                    // while visualizing we use reversed index orders
+                    let reversed_idx = (total_points - 1) - next_idx;
+                    npoc.filled(reversed_idx as u64);
+                    break;
+                }
+            }
+
+            if current_idx < total_points {
+                let data_point = &mut self.data_points[current_idx];
+                data_point.set_poc_status(npoc);
             }
         }
     }

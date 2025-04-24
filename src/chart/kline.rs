@@ -2,7 +2,7 @@ use data::UserTimezone;
 use data::aggr::ticks::{TickAccumulation, TickAggr};
 use data::aggr::time::{DataPoint, TimeSeries};
 use data::chart::indicators::{Indicator, KlineIndicator};
-use data::chart::kline::{ClusterKind, Config, KlineTrades};
+use data::chart::kline::{ClusterKind, Config, KlineTrades, NPoc};
 use data::chart::{ChartLayout, KlineChartKind};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
@@ -367,21 +367,21 @@ impl KlineChart {
                     if let Some(earliest_gap) = timeseries
                         .data_points
                         .range(visible_earliest..=visible_latest)
-                        .filter(|(_, dp)| dp.trades.is_empty())
+                        .filter(|(_, dp)| dp.footprint.trades.is_empty())
                         .map(|(time, _)| *time)
                         .min()
                     {
                         let last_kline_before_gap = timeseries
                             .data_points
                             .range(..earliest_gap)
-                            .filter(|(_, dp)| !dp.trades.is_empty())
+                            .filter(|(_, dp)| !dp.footprint.trades.is_empty())
                             .max_by_key(|(time, _)| *time)
                             .map_or(earliest_gap, |(time, _)| *time);
 
                         let first_kline_after_gap = timeseries
                             .data_points
                             .range(earliest_gap..)
-                            .filter(|(_, dp)| !dp.trades.is_empty())
+                            .filter(|(_, dp)| !dp.footprint.trades.is_empty())
                             .min_by_key(|(time, _)| *time)
                             .map_or(kline_latest, |(time, _)| *time);
 
@@ -871,7 +871,9 @@ impl canvas::Program<Message> for KlineChart {
 
             let region = chart.visible_region(frame.size());
             let (earliest, latest) = chart.interval_range(&region);
+
             let price_to_y = |price: f32| chart.price_to_y(price);
+            let interval_to_x = |interval: u64| chart.interval_to_x(interval);
 
             match self.kind {
                 KlineChartKind::Footprint(cluster_kind) => {
@@ -904,11 +906,13 @@ impl canvas::Program<Message> for KlineChart {
                         frame,
                         earliest,
                         latest,
-                        |i| chart.interval_to_x(i),
+                        interval_to_x,
                         |frame, x_position, kline, trades| {
                             draw_clusters(
                                 frame,
                                 price_to_y,
+                                interval_to_x,
+                                x_position,
                                 chart.cell_width,
                                 chart.cell_height,
                                 candle_width,
@@ -917,7 +921,6 @@ impl canvas::Program<Message> for KlineChart {
                                 max_cluster_qty,
                                 palette,
                                 text_size,
-                                x_position,
                                 kline,
                                 trades,
                                 cluster_kind,
@@ -933,7 +936,7 @@ impl canvas::Program<Message> for KlineChart {
                         frame,
                         earliest,
                         latest,
-                        |i| chart.interval_to_x(i),
+                        interval_to_x,
                         |frame, x_position, kline, _| {
                             draw_candle_dp(
                                 frame,
@@ -1095,7 +1098,7 @@ fn render_data_source<F>(
                         frame,
                         x_position,
                         &Kline::from(tick_aggr),
-                        &tick_aggr.trades,
+                        &tick_aggr.footprint,
                     );
                 });
         }
@@ -1110,15 +1113,43 @@ fn render_data_source<F>(
                 .for_each(|(timestamp, dp)| {
                     let x_position = interval_to_x(*timestamp);
 
-                    draw_fn(frame, x_position, &dp.kline, &dp.trades);
+                    draw_fn(frame, x_position, &dp.kline, &dp.footprint);
                 });
         }
+    }
+}
+
+fn draw_studies(
+    frame: &mut canvas::Frame,
+    price_to_y: impl Fn(f32) -> f32,
+    interval_to_x: impl Fn(u64) -> f32,
+    candle_width: f32,
+    palette: &Extended,
+    x_position: f32,
+    footprint: &KlineTrades,
+) {
+    if let Some(poc) = footprint.poc {
+        let poc_y = price_to_y(poc.price);
+
+        let start_x = x_position + (candle_width / 4.0);
+        let (until_x, color) = match poc.status {
+            NPoc::Naked => (-x_position, palette.warning.weak.color),
+            NPoc::Filled { at } => (interval_to_x(at) - start_x, palette.background.strong.color),
+        };
+
+        frame.fill_rectangle(
+            Point::new(start_x, poc_y - 1.0),
+            Size::new(until_x, 1.0),
+            color,
+        );
     }
 }
 
 fn draw_clusters(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(f32) -> f32,
+    interval_to_x: impl Fn(u64) -> f32,
+    x_position: f32,
     cell_width: f32,
     cell_height: f32,
     candle_width: f32,
@@ -1127,19 +1158,28 @@ fn draw_clusters(
     max_cluster_qty: f32,
     palette: &Extended,
     text_size: f32,
-    x_position: f32,
     kline: &Kline,
-    trades: &KlineTrades,
+    footprint: &KlineTrades,
     cluster_kind: ClusterKind,
 ) {
     let text_color = palette.background.weakest.text;
+
+    draw_studies(
+        frame,
+        &price_to_y,
+        &interval_to_x,
+        candle_width,
+        palette,
+        x_position,
+        footprint,
+    );
 
     match cluster_kind {
         ClusterKind::VolumeProfile => {
             let should_show_text = cell_height_unscaled > 8.0 && cell_width_unscaled > 80.0;
             let bar_color_alpha = if should_show_text { 0.25 } else { 1.0 };
 
-            for (price, (buy_qty, sell_qty)) in trades {
+            for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
                 let total_qty = buy_qty + sell_qty;
 
@@ -1197,7 +1237,7 @@ fn draw_clusters(
             let should_show_text = cell_height_unscaled > 8.0 && cell_width_unscaled > 80.0;
             let bar_color_alpha = if should_show_text { 0.25 } else { 1.0 };
 
-            for (price, (buy_qty, sell_qty)) in trades {
+            for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
                 let delta_qty = buy_qty - sell_qty;
 
@@ -1234,7 +1274,7 @@ fn draw_clusters(
             let should_show_text = cell_height_unscaled > 8.0 && cell_width_unscaled > 120.0;
             let bar_color_alpha = if should_show_text { 0.25 } else { 1.0 };
 
-            for (price, (buy_qty, sell_qty)) in trades {
+            for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
 
                 if *buy_qty > 0.0 {
