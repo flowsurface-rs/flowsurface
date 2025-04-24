@@ -879,7 +879,6 @@ impl canvas::Program<Message> for KlineChart {
 
             match self.kind {
                 KlineChartKind::Footprint(cluster_kind) => {
-                    let (cell_width, cell_height) = (chart.cell_width, chart.cell_height);
                     let (highest, lowest) = chart.price_range(&region);
 
                     let (max_cluster_qty, _) = self.calc_qty_scales(
@@ -891,14 +890,18 @@ impl canvas::Program<Message> for KlineChart {
                         cluster_kind,
                     );
 
-                    let cell_height_unscaled = cell_height * chart.scaling;
-                    let cell_width_unscaled = cell_width * chart.scaling;
+                    let cell_height_unscaled = chart.cell_height * chart.scaling;
+                    let cell_width_unscaled = chart.cell_width * chart.scaling;
 
-                    let text_size_from_height = cell_height_unscaled.round().min(16.0) - 3.0;
-                    let text_size_from_width = (cell_width_unscaled * 0.1).round().min(16.0) - 3.0;
-                    let text_size = text_size_from_height.min(text_size_from_width);
+                    let text_size = {
+                        let text_size_from_height = cell_height_unscaled.round().min(16.0) - 3.0;
+                        let text_size_from_width =
+                            (cell_width_unscaled * 0.1).round().min(16.0) - 3.0;
 
-                    let candle_width = 0.1 * cell_width;
+                        text_size_from_height.min(text_size_from_width)
+                    };
+
+                    let candle_width = 0.1 * chart.cell_width;
 
                     render_data_source(
                         &self.data_source,
@@ -910,8 +913,8 @@ impl canvas::Program<Message> for KlineChart {
                             draw_clusters(
                                 frame,
                                 price_to_y,
-                                cell_width,
-                                cell_height,
+                                chart.cell_width,
+                                chart.cell_height,
                                 candle_width,
                                 cell_height_unscaled,
                                 cell_width_unscaled,
@@ -1000,7 +1003,6 @@ fn draw_footprint_kline(
     let y_low = price_to_y(kline.low);
     let y_close = price_to_y(kline.close);
 
-    // Kline body
     let body_color = if kline.close >= kline.open {
         palette.success.weak.color
     } else {
@@ -1012,13 +1014,11 @@ fn draw_footprint_kline(
         body_color,
     );
 
-    // Kline wick
     let wick_color = if kline.close >= kline.open {
         palette.success.weak.color
     } else {
         palette.danger.weak.color
     };
-
     let marker_line = Stroke::with_color(
         Stroke {
             width: 1.0,
@@ -1026,13 +1026,48 @@ fn draw_footprint_kline(
         },
         wick_color.scale_alpha(0.6),
     );
-
     frame.stroke(
         &Path::line(
             Point::new(x_position, y_high),
             Point::new(x_position, y_low),
         ),
         marker_line,
+    );
+}
+
+fn draw_candle_dp(
+    frame: &mut canvas::Frame,
+    price_to_y: impl Fn(f32) -> f32,
+    candle_width: f32,
+    palette: &Extended,
+    x_position: f32,
+    kline: &Kline,
+) {
+    let y_open = price_to_y(kline.open);
+    let y_high = price_to_y(kline.high);
+    let y_low = price_to_y(kline.low);
+    let y_close = price_to_y(kline.close);
+
+    let body_color = if kline.close >= kline.open {
+        palette.success.base.color
+    } else {
+        palette.danger.base.color
+    };
+    frame.fill_rectangle(
+        Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
+        Size::new(candle_width, (y_open - y_close).abs()),
+        body_color,
+    );
+
+    let wick_color = if kline.close >= kline.open {
+        palette.success.base.color
+    } else {
+        palette.danger.base.color
+    };
+    frame.fill_rectangle(
+        Point::new(x_position - (candle_width / 8.0), y_high),
+        Size::new(candle_width / 4.0, (y_high - y_low).abs()),
+        wick_color,
     );
 }
 
@@ -1101,20 +1136,13 @@ fn draw_clusters(
     trades: &KlineTrades,
     cluster_kind: ClusterKind,
 ) {
-    let x_position = if cluster_kind == ClusterKind::BidAsk {
-        x_position
-    } else {
-        x_position - (cell_width * 0.5)
-    };
-
-    draw_footprint_kline(frame, &price_to_y, x_position, candle_width, kline, palette);
-
-    let should_show_text = cell_height_unscaled > 10.0 && cell_width_unscaled > 120.0;
     let text_color = palette.background.weakest.text;
-    let bar_color_alpha = if should_show_text { 0.3 } else { 1.0 };
 
     match cluster_kind {
         ClusterKind::VolumeProfile => {
+            let should_show_text = cell_height_unscaled > 8.0 && cell_width_unscaled > 80.0;
+            let bar_color_alpha = if should_show_text { 0.25 } else { 1.0 };
+
             for (price, (buy_qty, sell_qty)) in trades {
                 let y_position = price_to_y(**price);
                 let total_qty = buy_qty + sell_qty;
@@ -1170,6 +1198,9 @@ fn draw_clusters(
             }
         }
         ClusterKind::DeltaProfile => {
+            let should_show_text = cell_height_unscaled > 8.0 && cell_width_unscaled > 80.0;
+            let bar_color_alpha = if should_show_text { 0.25 } else { 1.0 };
+
             for (price, (buy_qty, sell_qty)) in trades {
                 let y_position = price_to_y(**price);
                 let delta_qty = buy_qty - sell_qty;
@@ -1204,6 +1235,9 @@ fn draw_clusters(
             }
         }
         ClusterKind::BidAsk => {
+            let should_show_text = cell_height_unscaled > 8.0 && cell_width_unscaled > 120.0;
+            let bar_color_alpha = if should_show_text { 0.25 } else { 1.0 };
+
             for (price, (buy_qty, sell_qty)) in trades {
                 let y_position = price_to_y(**price);
 
@@ -1257,6 +1291,8 @@ fn draw_clusters(
             }
         }
     }
+
+    draw_footprint_kline(frame, &price_to_y, x_position, candle_width, kline, palette);
 }
 
 fn draw_cluster_text(
@@ -1381,40 +1417,4 @@ fn draw_crosshair_tooltip(
         };
         frame.fill_text(text);
     }
-}
-
-fn draw_candle_dp(
-    frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
-    candle_width: f32,
-    palette: &Extended,
-    x_position: f32,
-    kline: &Kline,
-) {
-    let y_open = price_to_y(kline.open);
-    let y_high = price_to_y(kline.high);
-    let y_low = price_to_y(kline.low);
-    let y_close = price_to_y(kline.close);
-
-    let body_color = if kline.close >= kline.open {
-        palette.success.base.color
-    } else {
-        palette.danger.base.color
-    };
-    frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
-        Size::new(candle_width, (y_open - y_close).abs()),
-        body_color,
-    );
-
-    let wick_color = if kline.close >= kline.open {
-        palette.success.base.color
-    } else {
-        palette.danger.base.color
-    };
-    frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 8.0), y_high),
-        Size::new(candle_width / 4.0, (y_high - y_low).abs()),
-        wick_color,
-    );
 }
