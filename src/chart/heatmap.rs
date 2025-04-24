@@ -439,7 +439,7 @@ impl HeatmapChart {
         chart.base_price_y = (mid_price / (chart.tick_size)).round() * (chart.tick_size);
     }
 
-    pub fn get_visual_config(&self) -> Config {
+    pub fn visual_config(&self) -> Config {
         self.visual_config
     }
 
@@ -447,7 +447,7 @@ impl HeatmapChart {
         self.visual_config = visual_config;
     }
 
-    pub fn get_chart_layout(&self) -> ChartLayout {
+    pub fn chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
 

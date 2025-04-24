@@ -226,11 +226,11 @@ impl PaneState {
         let (existing_indicators, existing_layout) = match (&self.content, content_str) {
             (PaneContent::Heatmap(chart, indicators), "heatmap") => (
                 Some(ExistingIndicators::Heatmap(indicators.clone())),
-                Some(chart.get_chart_layout()),
+                Some(chart.chart_layout()),
             ),
             (PaneContent::Kline(chart, indicators), "footprint" | "candlestick") => (
                 Some(ExistingIndicators::Kline(indicators.clone())),
-                Some(chart.get_chart_layout()),
+                Some(chart.chart_layout()),
             ),
             _ => (None, None),
         };
@@ -359,8 +359,8 @@ impl PaneState {
                 if let Some(id) = req_id {
                     chart.insert_new_klines(id, klines);
                 } else {
-                    let (raw_trades, tick_size) = (chart.get_raw_trades(), chart.get_tick_size());
-                    let layout = chart.get_chart_layout();
+                    let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
+                    let layout = chart.chart_layout();
                     let ticker_info = self.settings.ticker_info;
 
                     *chart = KlineChart::new(
@@ -371,7 +371,7 @@ impl PaneState {
                         raw_trades,
                         indicators,
                         ticker_info,
-                        chart.get_kind(),
+                        chart.kind(),
                         Some(*chart.visual_config()),
                     );
                 }
@@ -441,7 +441,7 @@ impl PaneState {
                     .on_press(Message::ToggleModal(id, PaneModal::StreamModifier)),
                 );
             }
-            PaneContent::Kline(chart, _) => match chart.get_kind() {
+            PaneContent::Kline(chart, _) => match chart.kind() {
                 data::chart::KlineChartKind::Footprint(_) => {
                     stream_info_element = stream_info_element.push(
                         button(text(format!(
@@ -720,7 +720,7 @@ impl ChartView for KlineChart {
             pane,
             indicators,
             settings_view,
-            match self.get_kind() {
+            match self.kind() {
                 data::chart::KlineChartKind::Footprint(_) => StreamModifier::FootprintChart(
                     state
                         .settings
@@ -751,7 +751,7 @@ impl ChartView for HeatmapChart {
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
-        let settings_view = || config::heatmap_cfg_view(self.get_visual_config(), pane);
+        let settings_view = || config::heatmap_cfg_view(self.visual_config(), pane);
 
         handle_chart_view(
             base,
@@ -1019,7 +1019,7 @@ pub enum PaneContent {
 impl PaneContent {
     pub fn chart_kind(&self) -> Option<data::chart::KlineChartKind> {
         match self {
-            PaneContent::Kline(chart, _) => Some(chart.get_kind()),
+            PaneContent::Kline(chart, _) => Some(chart.kind()),
             _ => None,
         }
     }

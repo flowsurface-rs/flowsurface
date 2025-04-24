@@ -1,24 +1,11 @@
-use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
-
 use data::UserTimezone;
-use data::aggr::ticks::TickAccumulation;
-use data::aggr::time::DataPoint;
+use data::aggr::ticks::{TickAccumulation, TickAggr};
+use data::aggr::time::{DataPoint, TimeSeries};
 use data::chart::indicators::{Indicator, KlineIndicator};
-use data::chart::kline::{ClusterKind, Config};
+use data::chart::kline::{ClusterKind, Config, KlineTrades};
 use data::chart::{ChartLayout, KlineChartKind};
-use iced::task::Handle;
-use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Event, Geometry};
-use iced::widget::canvas::{Path, Stroke};
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
-use ordered_float::OrderedFloat;
-
-use data::aggr::{ticks::TickAggr, time::TimeSeries};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
-
-use crate::style;
 
 use super::scale::PriceInfoLabel;
 use super::{
@@ -29,6 +16,17 @@ use super::{
     abbr_large_numbers, canvas_interaction, count_decimals, request_fetch, round_to_tick,
     update_chart, view_chart,
 };
+
+use crate::style;
+
+use iced::task::Handle;
+use iced::theme::palette::Extended;
+use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
+use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use ordered_float::OrderedFloat;
+
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 
 impl Chart for KlineChart {
     fn common_data(&self) -> &CommonChartData {
@@ -132,8 +130,6 @@ impl IndicatorData {
         }
     }
 }
-
-type KlineTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 impl ChartConstants for KlineChart {
     fn min_scaling(&self) -> f32 {
@@ -335,7 +331,7 @@ impl KlineChart {
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
 
                 self.render_start();
-                return self.get_missing_data_task();
+                return self.missing_data_task();
             }
             ChartData::TickBased(_) => {
                 self.render_start();
@@ -345,11 +341,11 @@ impl KlineChart {
         Action::None
     }
 
-    pub fn get_kind(&self) -> KlineChartKind {
+    pub fn kind(&self) -> KlineChartKind {
         self.kind
     }
 
-    fn get_missing_data_task(&mut self) -> Action {
+    fn missing_data_task(&mut self) -> Action {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
@@ -407,7 +403,7 @@ impl KlineChart {
                         if timeframe >= Timeframe::M5.to_milliseconds()
                             && self.chart.ticker_info.is_some_and(|t| t.is_perps())
                         {
-                            let (oi_earliest, oi_latest) = self.get_oi_timerange(kline_latest);
+                            let (oi_earliest, oi_latest) = self.oi_timerange(kline_latest);
 
                             if visible_earliest < oi_earliest {
                                 let range = FetchRange::OpenInterest(earliest, oi_earliest);
@@ -461,7 +457,7 @@ impl KlineChart {
         self.fetching_trades = (false, None);
     }
 
-    pub fn get_raw_trades(&self) -> Vec<Trade> {
+    pub fn raw_trades(&self) -> Vec<Trade> {
         self.raw_trades.clone()
     }
 
@@ -486,11 +482,11 @@ impl KlineChart {
         self.fetching_trades.1 = Some(handle);
     }
 
-    pub fn get_tick_size(&self) -> f32 {
+    pub fn tick_size(&self) -> f32 {
         self.chart.tick_size
     }
 
-    pub fn get_chart_layout(&self) -> ChartLayout {
+    pub fn chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
 
@@ -540,7 +536,7 @@ impl KlineChart {
         self.render_start();
     }
 
-    fn get_oi_timerange(&self, latest_kline: u64) -> (u64, u64) {
+    fn oi_timerange(&self, latest_kline: u64) -> (u64, u64) {
         let mut from_time = latest_kline;
         let mut to_time = u64::MIN;
 

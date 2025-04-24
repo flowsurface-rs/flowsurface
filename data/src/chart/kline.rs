@@ -1,4 +1,9 @@
+use std::collections::HashMap;
+
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+
+pub type KlineTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub enum KlineChartKind {

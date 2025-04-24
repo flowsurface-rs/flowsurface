@@ -555,14 +555,14 @@ impl From<&PaneState> for data::Pane {
         match &pane.content {
             PaneContent::Starter => data::Pane::Starter,
             PaneContent::Heatmap(chart, indicators) => data::Pane::HeatmapChart {
-                layout: chart.get_chart_layout(),
+                layout: chart.chart_layout(),
                 stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
             PaneContent::Kline(chart, indicators) => data::Pane::KlineChart {
-                layout: chart.get_chart_layout(),
-                kind: chart.get_kind(),
+                layout: chart.chart_layout(),
+                kind: chart.kind(),
                 stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),

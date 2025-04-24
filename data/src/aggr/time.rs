@@ -1,48 +1,38 @@
-use std::collections::{BTreeMap, HashMap};
+use crate::chart::{kline::KlineTrades, round_to_tick};
+use exchange::{Kline, Timeframe, Trade};
 
-use exchange::Timeframe;
 use ordered_float::OrderedFloat;
-
-use exchange::{Kline, Trade};
-
-use crate::chart::round_to_tick;
-
-type FootprintTrades = HashMap<OrderedFloat<f32>, (f32, f32)>;
+use std::collections::{BTreeMap, HashMap};
 
 pub struct DataPoint {
     pub kline: Kline,
-    pub trades: FootprintTrades,
+    pub trades: KlineTrades,
 }
 
 impl DataPoint {
-    pub fn max_bidask_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
+    fn max_qty_by<F>(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>, f: F) -> f32
+    where
+        F: Fn(f32, f32) -> f32,
+    {
         let mut max_qty: f32 = 0.0;
         for (price, (buy_qty, sell_qty)) in &self.trades {
             if price >= &lowest && price <= &highest {
-                max_qty = max_qty.max(buy_qty.max(*sell_qty));
+                max_qty = max_qty.max(f(*buy_qty, *sell_qty));
             }
         }
         max_qty
+    }
+
+    pub fn max_bidask_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
+        self.max_qty_by(highest, lowest, |buy, sell| buy.max(sell))
     }
 
     pub fn max_delta_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        let mut max_qty: f32 = 0.0;
-        for (price, (buy_qty, sell_qty)) in &self.trades {
-            if price >= &lowest && price <= &highest {
-                max_qty = max_qty.max((buy_qty - *sell_qty).abs());
-            }
-        }
-        max_qty
+        self.max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs())
     }
 
     pub fn max_total_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        let mut max_qty: f32 = 0.0;
-        for (price, (buy_qty, sell_qty)) in &self.trades {
-            if price >= &lowest && price <= &highest {
-                max_qty = max_qty.max(buy_qty + *sell_qty);
-            }
-        }
-        max_qty
+        self.max_qty_by(highest, lowest, |buy, sell| buy + sell)
     }
 }
 
