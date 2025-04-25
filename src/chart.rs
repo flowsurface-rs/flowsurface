@@ -563,14 +563,12 @@ enum ChartData {
 impl ChartData {
     pub fn get_latest_price_range_y_midpoint(&self, chart_state: &CommonChartData) -> f32 {
         match self {
-            ChartData::TimeBased(timeseries) => {
-                timeseries.get_latest_kline().map_or(0.0, |kline| {
-                    let y_low = chart_state.price_to_y(kline.low);
-                    let y_high = chart_state.price_to_y(kline.high);
-                    -(y_low + y_high) / 2.0
-                })
-            }
-            ChartData::TickBased(tick_aggr) => tick_aggr.get_latest_dp().map_or(0.0, |(dp, _)| {
+            ChartData::TimeBased(timeseries) => timeseries.latest_kline().map_or(0.0, |kline| {
+                let y_low = chart_state.price_to_y(kline.low);
+                let y_high = chart_state.price_to_y(kline.high);
+                -(y_low + y_high) / 2.0
+            }),
+            ChartData::TickBased(tick_aggr) => tick_aggr.latest_dp().map_or(0.0, |(dp, _)| {
                 let y_low = chart_state.price_to_y(dp.low_price);
                 let y_high = chart_state.price_to_y(dp.high_price);
                 -(y_low + y_high) / 2.0

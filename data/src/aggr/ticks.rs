@@ -1,85 +1,11 @@
 use exchange::Trade;
 use ordered_float::OrderedFloat;
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 use crate::chart::{
-    kline::{KlineTrades, NPoc},
+    kline::{ClusterKind, KlineTrades, NPoc},
     round_to_tick,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TickCount {
-    T10,
-    T20,
-    T50,
-    T100,
-    T200,
-    T500,
-    T1000,
-}
-
-impl TickCount {
-    pub const ALL: [TickCount; 7] = [
-        TickCount::T10,
-        TickCount::T20,
-        TickCount::T50,
-        TickCount::T100,
-        TickCount::T200,
-        TickCount::T500,
-        TickCount::T1000,
-    ];
-}
-
-impl From<usize> for TickCount {
-    fn from(value: usize) -> Self {
-        match value {
-            10 => TickCount::T10,
-            20 => TickCount::T20,
-            50 => TickCount::T50,
-            100 => TickCount::T100,
-            200 => TickCount::T200,
-            500 => TickCount::T500,
-            1000 => TickCount::T1000,
-            _ => panic!("Invalid tick count value"),
-        }
-    }
-}
-
-impl From<TickCount> for u64 {
-    fn from(value: TickCount) -> Self {
-        match value {
-            TickCount::T10 => 10,
-            TickCount::T20 => 20,
-            TickCount::T50 => 50,
-            TickCount::T100 => 100,
-            TickCount::T200 => 200,
-            TickCount::T500 => 500,
-            TickCount::T1000 => 1000,
-        }
-    }
-}
-
-impl From<u64> for TickCount {
-    fn from(value: u64) -> Self {
-        match value {
-            10 => TickCount::T10,
-            20 => TickCount::T20,
-            50 => TickCount::T50,
-            100 => TickCount::T100,
-            200 => TickCount::T200,
-            500 => TickCount::T500,
-            1000 => TickCount::T1000,
-            _ => panic!("Invalid tick count value"),
-        }
-    }
-}
-
-impl std::fmt::Display for TickCount {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}T", u64::from(*self))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
@@ -130,48 +56,31 @@ impl TickAccumulation {
             self.volume_buy += trade.qty;
         }
 
-        self.add_trade_at_price_level(trade, tick_size);
+        self.add_trade(trade, tick_size);
     }
 
-    fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
-        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
-
-        if let Some((buy_qty, sell_qty)) = self.footprint.trades.get_mut(&price_level) {
-            if trade.is_sell {
-                *sell_qty += trade.qty;
-            } else {
-                *buy_qty += trade.qty;
-            }
-        } else if trade.is_sell {
-            self.footprint.trades.insert(price_level, (0.0, trade.qty));
-        } else {
-            self.footprint.trades.insert(price_level, (trade.qty, 0.0));
-        }
+    fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
+        self.footprint.add_trade_at_price_level(trade, tick_size);
     }
 
-    fn max_qty_by<F>(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>, f: F) -> f32
-    where
-        F: Fn(f32, f32) -> f32,
-    {
-        let mut max_qty: f32 = 0.0;
-        for (price, (buy_qty, sell_qty)) in &self.footprint.trades {
-            if price >= &lowest && price <= &highest {
-                max_qty = max_qty.max(f(*buy_qty, *sell_qty));
+    pub fn max_cluster_qty(
+        &self,
+        cluster_kind: ClusterKind,
+        highest: OrderedFloat<f32>,
+        lowest: OrderedFloat<f32>,
+    ) -> f32 {
+        match cluster_kind {
+            ClusterKind::BidAsk => self
+                .footprint
+                .max_qty_by(highest, lowest, |buy, sell| buy.max(sell)),
+            ClusterKind::DeltaProfile => self
+                .footprint
+                .max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs()),
+            ClusterKind::VolumeProfile => {
+                self.footprint
+                    .max_qty_by(highest, lowest, |buy, sell| buy + sell)
             }
         }
-        max_qty
-    }
-
-    pub fn max_bidask_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        self.max_qty_by(highest, lowest, |buy, sell| buy.max(sell))
-    }
-
-    pub fn max_delta_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        self.max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs())
-    }
-
-    pub fn max_total_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        self.max_qty_by(highest, lowest, |buy, sell| buy + sell)
     }
 
     pub fn is_full(&self, interval: u64) -> bool {
@@ -223,7 +132,7 @@ impl TickAggr {
     }
 
     /// return latest data point and its index
-    pub fn get_latest_dp(&self) -> Option<(&TickAccumulation, usize)> {
+    pub fn latest_dp(&self) -> Option<(&TickAccumulation, usize)> {
         self.data_points
             .last()
             .map(|dp| (dp, self.data_points.len() - 1))
@@ -294,6 +203,29 @@ impl TickAggr {
                 data_point.set_poc_status(npoc);
             }
         }
+    }
+
+    pub fn max_qty_idx_range(
+        &self,
+        cluster_kind: ClusterKind,
+        earliest: usize,
+        latest: usize,
+        highest: OrderedFloat<f32>,
+        lowest: OrderedFloat<f32>,
+    ) -> f32 {
+        let mut max_cluster_qty: f32 = 0.0;
+
+        self.data_points
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(index, _)| *index <= latest && *index >= earliest)
+            .for_each(|(_, dp)| {
+                max_cluster_qty =
+                    max_cluster_qty.max(dp.max_cluster_qty(cluster_kind, highest, lowest))
+            });
+
+        max_cluster_qty
     }
 }
 

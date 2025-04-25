@@ -1,6 +1,6 @@
 use data::UserTimezone;
-use data::aggr::ticks::{TickAccumulation, TickAggr};
-use data::aggr::time::{DataPoint, TimeSeries};
+use data::aggr::ticks::TickAggr;
+use data::aggr::time::TimeSeries;
 use data::chart::indicators::{Indicator, KlineIndicator};
 use data::chart::kline::{ClusterKind, Config, KlineTrades, NPoc};
 use data::chart::{ChartLayout, KlineChartKind};
@@ -198,9 +198,9 @@ impl KlineChart {
                 let timeseries =
                     TimeSeries::new(interval.into(), tick_size, &raw_trades, klines_raw);
 
-                let base_price_y = timeseries.get_base_price();
-                let latest_x = timeseries.get_latest_timestamp().unwrap_or(0);
-                let (scale_high, scale_low) = timeseries.get_price_scale({
+                let base_price_y = timeseries.base_price();
+                let latest_x = timeseries.latest_timestamp().unwrap_or(0);
+                let (scale_high, scale_low) = timeseries.price_scale({
                     match kind {
                         KlineChartKind::Footprint(_) => 12,
                         KlineChartKind::Candles => 60,
@@ -351,7 +351,7 @@ impl KlineChart {
                 let timeframe = timeseries.interval.to_milliseconds();
 
                 let (visible_earliest, visible_latest) = self.visible_timerange();
-                let (kline_earliest, kline_latest) = timeseries.get_kline_timerange();
+                let (kline_earliest, kline_latest) = timeseries.kline_timerange();
                 let earliest = visible_earliest - (visible_latest - visible_earliest);
 
                 // priority 1, basic kline data fetch
@@ -655,56 +655,31 @@ impl KlineChart {
         lowest: f32,
         tick_size: f32,
         cluster_kind: ClusterKind,
-    ) -> (f32, f32) {
-        let mut max_cluster_qty: f32 = 0.0;
-        let mut max_volume: f32 = 0.0;
-
+    ) -> f32 {
         let rounded_highest = OrderedFloat(round_to_tick(highest + tick_size, tick_size));
         let rounded_lowest = OrderedFloat(round_to_tick(lowest - tick_size, tick_size));
 
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => {
-                let max_qty_fn: fn(&DataPoint, OrderedFloat<f32>, OrderedFloat<f32>) -> f32 =
-                    match cluster_kind {
-                        ClusterKind::BidAsk => DataPoint::max_bidask_qty,
-                        ClusterKind::DeltaProfile => DataPoint::max_delta_qty,
-                        ClusterKind::VolumeProfile => DataPoint::max_total_qty,
-                    };
-
-                timeseries
-                    .data_points
-                    .range(earliest..=latest)
-                    .for_each(|(_, dp)| {
-                        max_cluster_qty =
-                            max_cluster_qty.max(max_qty_fn(dp, rounded_highest, rounded_lowest));
-                        max_volume = max_volume.max(dp.kline.volume.0.max(dp.kline.volume.1));
-                    });
-            }
+            ChartData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
+                cluster_kind,
+                earliest,
+                latest,
+                rounded_highest,
+                rounded_lowest,
+            ),
             ChartData::TickBased(tick_aggr) => {
                 let earliest = earliest as usize;
                 let latest = latest as usize;
 
-                let max_qty_fn: fn(&TickAccumulation, OrderedFloat<f32>, OrderedFloat<f32>) -> f32 =
-                    match cluster_kind {
-                        ClusterKind::BidAsk => TickAccumulation::max_bidask_qty,
-                        ClusterKind::DeltaProfile => TickAccumulation::max_delta_qty,
-                        ClusterKind::VolumeProfile => TickAccumulation::max_total_qty,
-                    };
-
-                tick_aggr
-                    .data_points
-                    .iter()
-                    .rev()
-                    .enumerate()
-                    .filter(|(index, _)| *index <= latest && *index >= earliest)
-                    .for_each(|(_, dp)| {
-                        max_cluster_qty =
-                            max_cluster_qty.max(max_qty_fn(dp, rounded_highest, rounded_lowest));
-                    });
+                tick_aggr.max_qty_idx_range(
+                    cluster_kind,
+                    earliest,
+                    latest,
+                    rounded_highest,
+                    rounded_lowest,
+                )
             }
         }
-
-        (max_cluster_qty, max_volume)
     }
 
     fn render_start(&mut self) {
@@ -879,7 +854,7 @@ impl canvas::Program<Message> for KlineChart {
                 KlineChartKind::Footprint(cluster_kind) => {
                     let (highest, lowest) = chart.price_range(&region);
 
-                    let (max_cluster_qty, _) = self.calc_qty_scales(
+                    let max_cluster_qty = self.calc_qty_scales(
                         earliest,
                         latest,
                         highest,

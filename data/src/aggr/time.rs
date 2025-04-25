@@ -1,7 +1,4 @@
-use crate::chart::{
-    kline::{KlineTrades, NPoc},
-    round_to_tick,
-};
+use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
 use exchange::{Kline, Timeframe, Trade};
 
 use ordered_float::OrderedFloat;
@@ -13,33 +10,28 @@ pub struct DataPoint {
 }
 
 impl DataPoint {
-    fn max_qty_by<F>(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>, f: F) -> f32
-    where
-        F: Fn(f32, f32) -> f32,
-    {
-        let mut max_qty: f32 = 0.0;
-        for (price, (buy_qty, sell_qty)) in &self.footprint.trades {
-            if price >= &lowest && price <= &highest {
-                max_qty = max_qty.max(f(*buy_qty, *sell_qty));
+    pub fn max_cluster_qty(
+        &self,
+        cluster_kind: ClusterKind,
+        highest: OrderedFloat<f32>,
+        lowest: OrderedFloat<f32>,
+    ) -> f32 {
+        match cluster_kind {
+            ClusterKind::BidAsk => self
+                .footprint
+                .max_qty_by(highest, lowest, |buy, sell| buy.max(sell)),
+            ClusterKind::DeltaProfile => self
+                .footprint
+                .max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs()),
+            ClusterKind::VolumeProfile => {
+                self.footprint
+                    .max_qty_by(highest, lowest, |buy, sell| buy + sell)
             }
         }
-        max_qty
     }
 
-    pub fn max_bidask_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        self.max_qty_by(highest, lowest, |buy, sell| buy.max(sell))
-    }
-
-    pub fn max_delta_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        self.max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs())
-    }
-
-    pub fn max_total_qty(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>) -> f32 {
-        self.max_qty_by(highest, lowest, |buy, sell| buy + sell)
-    }
-
-    pub fn add_trade(&mut self, price_level: OrderedFloat<f32>, qty: f32, is_sell: bool) {
-        self.footprint.add_trade(price_level, qty, is_sell);
+    pub fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
+        self.footprint.add_trade_at_price_level(trade, tick_size);
     }
 
     pub fn poc_price(&self) -> Option<f32> {
@@ -89,22 +81,22 @@ impl TimeSeries {
         timeseries
     }
 
-    pub fn get_base_price(&self) -> f32 {
+    pub fn base_price(&self) -> f32 {
         self.data_points
             .values()
             .last()
             .map_or(0.0, |dp| dp.kline.close)
     }
 
-    pub fn get_latest_timestamp(&self) -> Option<u64> {
+    pub fn latest_timestamp(&self) -> Option<u64> {
         self.data_points.keys().last().copied()
     }
 
-    pub fn get_latest_kline(&self) -> Option<&Kline> {
+    pub fn latest_kline(&self) -> Option<&Kline> {
         self.data_points.values().last().map(|dp| &dp.kline)
     }
 
-    pub fn get_price_scale(&self, lookback: usize) -> (f32, f32) {
+    pub fn price_scale(&self, lookback: usize) -> (f32, f32) {
         let mut scale_high = 0.0f32;
         let mut scale_low = f32::MAX;
 
@@ -124,7 +116,7 @@ impl TimeSeries {
         self.into()
     }
 
-    pub fn get_kline_timerange(&self) -> (u64, u64) {
+    pub fn kline_timerange(&self) -> (u64, u64) {
         let earliest = self.data_points.keys().next().copied().unwrap_or(0);
         let latest = self.data_points.keys().last().copied().unwrap_or(0);
 
@@ -174,7 +166,6 @@ impl TimeSeries {
         buffer.iter().for_each(|trade| {
             let rounded_time =
                 rounded_update_t.unwrap_or((trade.time / aggregate_time) * aggregate_time);
-            let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
 
             if !updated_times.contains(&rounded_time) {
                 updated_times.push(rounded_time);
@@ -195,7 +186,7 @@ impl TimeSeries {
                     footprint: KlineTrades::new(),
                 });
 
-            entry.add_trade(price_level, trade.qty, trade.is_sell);
+            entry.add_trade(trade, tick_size);
         });
 
         for time in updated_times {
@@ -228,6 +219,26 @@ impl TimeSeries {
                 data_point.set_poc_status(npoc);
             }
         }
+    }
+
+    pub fn max_qty_ts_range(
+        &self,
+        cluster_kind: ClusterKind,
+        earliest: u64,
+        latest: u64,
+        highest: OrderedFloat<f32>,
+        lowest: OrderedFloat<f32>,
+    ) -> f32 {
+        let mut max_cluster_qty: f32 = 0.0;
+
+        self.data_points
+            .range(earliest..=latest)
+            .for_each(|(_, dp)| {
+                max_cluster_qty =
+                    max_cluster_qty.max(dp.max_cluster_qty(cluster_kind, highest, lowest));
+            });
+
+        max_cluster_qty
     }
 
     pub fn clear_trades(&mut self) {

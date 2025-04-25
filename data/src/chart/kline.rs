@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
+use exchange::Trade;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+
+use super::round_to_tick;
 
 #[derive(Debug, Clone, Default)]
 pub struct KlineTrades {
@@ -17,18 +20,33 @@ impl KlineTrades {
         }
     }
 
-    pub fn add_trade(&mut self, price_level: OrderedFloat<f32>, qty: f32, is_sell: bool) {
+    pub fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
+        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+
         if let Some((buy_qty, sell_qty)) = self.trades.get_mut(&price_level) {
-            if is_sell {
-                *sell_qty += qty;
+            if trade.is_sell {
+                *sell_qty += trade.qty;
             } else {
-                *buy_qty += qty;
+                *buy_qty += trade.qty;
             }
-        } else if is_sell {
-            self.trades.insert(price_level, (0.0, qty));
+        } else if trade.is_sell {
+            self.trades.insert(price_level, (0.0, trade.qty));
         } else {
-            self.trades.insert(price_level, (qty, 0.0));
+            self.trades.insert(price_level, (trade.qty, 0.0));
         }
+    }
+
+    pub fn max_qty_by<F>(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>, f: F) -> f32
+    where
+        F: Fn(f32, f32) -> f32,
+    {
+        let mut max_qty: f32 = 0.0;
+        for (price, (buy_qty, sell_qty)) in &self.trades {
+            if price >= &lowest && price <= &highest {
+                max_qty = max_qty.max(f(*buy_qty, *sell_qty));
+            }
+        }
+        max_qty
     }
 
     pub fn calculate_poc(&mut self) -> bool {

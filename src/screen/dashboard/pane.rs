@@ -8,7 +8,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    aggr::ticks::TickCount,
+    aggr::TickCount,
     chart::{
         Basis, ChartLayout, VisualConfig,
         indicators::{HeatmapIndicator, Indicator, KlineIndicator},
