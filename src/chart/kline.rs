@@ -84,7 +84,7 @@ impl Chart for KlineChart {
             ChartData::TickBased(tick_aggr) => tick_aggr
                 .data_points
                 .iter()
-                .map(|dp| dp.start_timestamp)
+                .map(|dp| dp.kline.time)
                 .collect(),
         }
     }
@@ -566,13 +566,13 @@ impl KlineChart {
                 {
                     let start_idx = old_dp_len.saturating_sub(1);
                     for (idx, dp) in tick_aggr.data_points.iter().enumerate().skip(start_idx) {
-                        data.insert(idx as u64, (dp.volume_buy, dp.volume_sell));
+                        data.insert(idx as u64, (dp.kline.volume.0, dp.kline.volume.1));
                     }
                 }
 
                 if let Some(last_dp) = tick_aggr.data_points.last() {
                     self.chart.last_price =
-                        Some(PriceInfoLabel::new(last_dp.close_price, last_dp.open_price));
+                        Some(PriceInfoLabel::new(last_dp.kline.close, last_dp.kline.open));
                 } else {
                     self.chart.last_price = None;
                 }
@@ -1069,12 +1069,7 @@ fn render_data_source<F>(
                 .for_each(|(index, tick_aggr)| {
                     let x_position = interval_to_x(index as u64);
 
-                    draw_fn(
-                        frame,
-                        x_position,
-                        &Kline::from(tick_aggr),
-                        &tick_aggr.footprint,
-                    );
+                    draw_fn(frame, x_position, &tick_aggr.kline, &tick_aggr.footprint);
                 });
         }
         ChartData::TimeBased(timeseries) => {
@@ -1381,11 +1376,11 @@ fn draw_crosshair_tooltip(
             if index < tick_aggr.data_points.len() {
                 let dp = &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];
 
-                let change_pct = ((dp.close_price - dp.open_price) / dp.open_price) * 100.0;
+                let change_pct = ((dp.kline.close - dp.kline.open) / dp.kline.open) * 100.0;
 
                 let tooltip_text = format!(
                     "O: {} H: {} L: {} C: {} {:+.2}%",
-                    dp.open_price, dp.high_price, dp.low_price, dp.close_price, change_pct
+                    dp.kline.open, dp.kline.high, dp.kline.low, dp.kline.close, change_pct
                 );
 
                 Some((

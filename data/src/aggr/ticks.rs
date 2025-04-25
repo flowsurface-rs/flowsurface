@@ -1,4 +1,4 @@
-use exchange::Trade;
+use exchange::{Kline, Trade};
 use ordered_float::OrderedFloat;
 use std::collections::{BTreeMap, HashMap};
 
@@ -10,14 +10,8 @@ use crate::chart::{
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
     pub tick_count: usize,
-    pub open_price: f32,
-    pub high_price: f32,
-    pub low_price: f32,
-    pub close_price: f32,
-    pub volume_buy: f32,
-    pub volume_sell: f32,
+    pub kline: Kline,
     pub footprint: KlineTrades,
-    pub start_timestamp: u64,
 }
 
 impl TickAccumulation {
@@ -31,29 +25,35 @@ impl TickAccumulation {
             trades.insert(price_level, (trade.qty, 0.0));
         }
 
+        let kline = Kline {
+            time: trade.time,
+            open: trade.price,
+            high: trade.price,
+            low: trade.price,
+            close: trade.price,
+            volume: (
+                if trade.is_sell { 0.0 } else { trade.qty },
+                if trade.is_sell { trade.qty } else { 0.0 },
+            ),
+        };
+
         Self {
             tick_count: 1,
-            open_price: trade.price,
-            high_price: trade.price,
-            low_price: trade.price,
-            close_price: trade.price,
-            volume_buy: if trade.is_sell { 0.0 } else { trade.qty },
-            volume_sell: if trade.is_sell { trade.qty } else { 0.0 },
+            kline,
             footprint: KlineTrades { trades, poc: None },
-            start_timestamp: trade.time,
         }
     }
 
     pub fn update_with_trade(&mut self, trade: &Trade, tick_size: f32) {
         self.tick_count += 1;
-        self.high_price = self.high_price.max(trade.price);
-        self.low_price = self.low_price.min(trade.price);
-        self.close_price = trade.price;
+        self.kline.high = self.kline.high.max(trade.price);
+        self.kline.low = self.kline.low.min(trade.price);
+        self.kline.close = trade.price;
 
         if trade.is_sell {
-            self.volume_sell += trade.qty;
+            self.kline.volume.1 += trade.qty;
         } else {
-            self.volume_buy += trade.qty;
+            self.kline.volume.0 += trade.qty;
         }
 
         self.add_trade(trade, tick_size);
@@ -190,7 +190,7 @@ impl TickAggr {
 
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.data_points[next_idx];
-                if next_dp.low_price <= poc_price && next_dp.high_price >= poc_price {
+                if next_dp.kline.low <= poc_price && next_dp.kline.high >= poc_price {
                     // while visualizing we use reversed index orders
                     let reversed_idx = (total_points - 1) - next_idx;
                     npoc.filled(reversed_idx as u64);
@@ -236,20 +236,7 @@ impl From<&TickAggr> for BTreeMap<u64, (f32, f32)> {
             .data_points
             .iter()
             .enumerate()
-            .map(|(idx, dp)| (idx as u64, (dp.volume_buy, dp.volume_sell)))
+            .map(|(idx, dp)| (idx as u64, (dp.kline.volume.0, dp.kline.volume.1)))
             .collect()
-    }
-}
-
-impl From<&TickAccumulation> for exchange::Kline {
-    fn from(dp: &TickAccumulation) -> exchange::Kline {
-        exchange::Kline {
-            time: dp.start_timestamp,
-            open: dp.open_price,
-            high: dp.high_price,
-            low: dp.low_price,
-            close: dp.close_price,
-            volume: (dp.volume_buy, dp.volume_sell),
-        }
     }
 }

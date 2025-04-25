@@ -569,8 +569,8 @@ impl ChartData {
                 -(y_low + y_high) / 2.0
             }),
             ChartData::TickBased(tick_aggr) => tick_aggr.latest_dp().map_or(0.0, |(dp, _)| {
-                let y_low = chart_state.price_to_y(dp.low_price);
-                let y_high = chart_state.price_to_y(dp.high_price);
+                let y_low = chart_state.price_to_y(dp.kline.low);
+                let y_high = chart_state.price_to_y(dp.kline.high);
                 -(y_low + y_high) / 2.0
             }),
         }
