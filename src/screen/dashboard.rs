@@ -361,24 +361,26 @@ impl Dashboard {
                                             }];
                                         }
                                     },
-                                    data::chart::KlineChartKind::Footprint(_) => match new_basis {
-                                        Basis::Time(interval) => {
-                                            state.streams = vec![
-                                                StreamType::Kline {
+                                    data::chart::KlineChartKind::Footprint { .. } => {
+                                        match new_basis {
+                                            Basis::Time(interval) => {
+                                                state.streams = vec![
+                                                    StreamType::Kline {
+                                                        exchange,
+                                                        ticker,
+                                                        timeframe: interval.into(),
+                                                    },
+                                                    StreamType::DepthAndTrades { exchange, ticker },
+                                                ];
+                                            }
+                                            Basis::Tick(_) => {
+                                                state.streams = vec![StreamType::DepthAndTrades {
                                                     exchange,
                                                     ticker,
-                                                    timeframe: interval.into(),
-                                                },
-                                                StreamType::DepthAndTrades { exchange, ticker },
-                                            ];
+                                                }];
+                                            }
                                         }
-                                        Basis::Tick(_) => {
-                                            state.streams = vec![StreamType::DepthAndTrades {
-                                                exchange,
-                                                ticker,
-                                            }];
-                                        }
-                                    },
+                                    }
                                 }
                             }
                         }
@@ -445,6 +447,13 @@ impl Dashboard {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             if let PaneContent::Kline(chart, _) = &mut pane_state.content {
                                 chart.set_cluster_kind(cluster_kind);
+                            }
+                        }
+                    }
+                    pane::Message::FootprintStudySelected(pane, study, is_selected) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                                chart.toggle_footprint_study(study, is_selected);
                             }
                         }
                     }

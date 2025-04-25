@@ -80,6 +80,7 @@ pub enum Message {
     DeleteNotification(pane_grid::Pane, usize),
     ReorderIndicator(pane_grid::Pane, column_drag::DragEvent),
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
+    FootprintStudySelected(pane_grid::Pane, data::chart::kline::FootprintStudy, bool),
 }
 
 pub struct PaneState {
@@ -267,9 +268,10 @@ impl PaneState {
                     "footprint" => (
                         Some(TickMultiplier(50)),
                         Timeframe::M5,
-                        data::chart::KlineChartKind::Footprint(
-                            data::chart::kline::ClusterKind::default(),
-                        ),
+                        data::chart::KlineChartKind::Footprint {
+                            clusters: data::chart::kline::ClusterKind::default(),
+                            studies: vec![],
+                        },
                     ),
                     _ => (None, Timeframe::M15, data::chart::KlineChartKind::Candles),
                 };
@@ -301,7 +303,6 @@ impl PaneState {
                     crosshair: true,
                     splits,
                 });
-                let config = self.settings.visual_config.and_then(|cfg| cfg.kline());
 
                 PaneContent::Kline(
                     KlineChart::new(
@@ -313,7 +314,6 @@ impl PaneState {
                         &enabled_indicators,
                         Some(ticker_info),
                         chart_kind,
-                        config,
                     ),
                     enabled_indicators,
                 )
@@ -372,7 +372,6 @@ impl PaneState {
                         indicators,
                         ticker_info,
                         chart.kind(),
-                        Some(*chart.visual_config()),
                     );
                 }
             }
@@ -442,7 +441,7 @@ impl PaneState {
                 );
             }
             PaneContent::Kline(chart, _) => match chart.kind() {
-                data::chart::KlineChartKind::Footprint(_) => {
+                data::chart::KlineChartKind::Footprint { .. } => {
                     stream_info_element = stream_info_element.push(
                         button(text(format!(
                             "{} - {}",
@@ -712,7 +711,7 @@ impl ChartView for KlineChart {
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
-        let settings_view = || config::kline_cfg_view(self.visual_config(), pane);
+        let settings_view = || config::kline_cfg_view(self.kind(), pane);
 
         handle_chart_view(
             base,
@@ -721,7 +720,7 @@ impl ChartView for KlineChart {
             indicators,
             settings_view,
             match self.kind() {
-                data::chart::KlineChartKind::Footprint(_) => StreamModifier::FootprintChart(
+                data::chart::KlineChartKind::Footprint { .. } => StreamModifier::FootprintChart(
                     state
                         .settings
                         .selected_basis

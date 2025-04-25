@@ -53,7 +53,6 @@ impl DataPoint {
 
 pub struct TimeSeries {
     pub data_points: BTreeMap<u64, DataPoint>,
-    next_buffer: Vec<Trade>,
     pub interval: Timeframe,
     pub tick_size: f32,
 }
@@ -67,7 +66,6 @@ impl TimeSeries {
     ) -> Self {
         let mut timeseries = Self {
             data_points: BTreeMap::new(),
-            next_buffer: Vec::new(),
             interval,
             tick_size,
         };
@@ -125,9 +123,7 @@ impl TimeSeries {
 
     pub fn change_tick_size(&mut self, tick_size: f32, all_raw_trades: &[Trade]) {
         self.tick_size = tick_size;
-
         self.clear_trades();
-        self.next_buffer.clear();
 
         if !all_raw_trades.is_empty() {
             self.insert_trades(all_raw_trades, None);
@@ -135,10 +131,6 @@ impl TimeSeries {
     }
 
     pub fn insert_klines(&mut self, klines: &[Kline]) {
-        if klines.is_empty() {
-            return;
-        }
-
         for kline in klines {
             let entry = self
                 .data_points
@@ -150,15 +142,16 @@ impl TimeSeries {
 
             entry.kline = *kline;
         }
+
+        self.update_poc_status();
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade], update_t: Option<u64>) {
-        if buffer.is_empty() && self.next_buffer.is_empty() {
+        if buffer.is_empty() {
             return;
         }
 
         let aggregate_time = self.interval.to_milliseconds();
-        let tick_size = self.tick_size;
         let rounded_update_t = update_t.map(|t| (t / aggregate_time) * aggregate_time);
 
         let mut updated_times = Vec::new();
@@ -186,7 +179,7 @@ impl TimeSeries {
                     footprint: KlineTrades::new(),
                 });
 
-            entry.add_trade(trade, tick_size);
+            entry.add_trade(trade, self.tick_size);
         });
 
         for time in updated_times {
@@ -194,8 +187,6 @@ impl TimeSeries {
                 data_point.calculate_poc();
             }
         }
-
-        self.update_poc_status();
     }
 
     pub fn update_poc_status(&mut self) {

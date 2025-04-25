@@ -629,7 +629,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
             settings,
             indicators,
         } => match kind {
-            data::chart::KlineChartKind::Footprint(_) => {
+            data::chart::KlineChartKind::Footprint { .. } => {
                 if let Some(ticker_info) = settings.ticker_info {
                     let tick_size = settings
                         .tick_multiply
@@ -638,8 +638,6 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                     let basis = settings
                         .selected_basis
                         .unwrap_or(Basis::Time(Timeframe::M5.into()));
-
-                    let config = settings.visual_config.and_then(|cfg| cfg.kline());
 
                     Configuration::Pane(PaneState::from_config(
                         PaneContent::Kline(
@@ -652,7 +650,6 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                                 &indicators,
                                 settings.ticker_info,
                                 kind,
-                                config,
                             ),
                             indicators,
                         ),
@@ -677,8 +674,6 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                         .unwrap_or(TickMultiplier(50))
                         .multiply_with_min_tick_size(ticker_info);
 
-                    let config = settings.visual_config.and_then(|cfg| cfg.kline());
-
                     Configuration::Pane(PaneState::from_config(
                         PaneContent::Kline(
                             KlineChart::new(
@@ -690,7 +685,6 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                                 &indicators,
                                 settings.ticker_info,
                                 kind,
-                                config,
                             ),
                             indicators,
                         ),

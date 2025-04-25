@@ -93,59 +93,62 @@ impl KlineTrades {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub enum KlineChartKind {
     #[default]
     Candles,
-    Footprint(ClusterKind),
+    Footprint {
+        clusters: ClusterKind,
+        studies: Vec<FootprintStudy>,
+    },
 }
 
 impl KlineChartKind {
     pub fn min_scaling(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 0.4,
+            KlineChartKind::Footprint { .. } => 0.4,
             KlineChartKind::Candles => 0.6,
         }
     }
 
     pub fn max_scaling(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 1.2,
+            KlineChartKind::Footprint { .. } => 1.2,
             KlineChartKind::Candles => 2.5,
         }
     }
 
     pub fn max_cell_width(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 360.0,
+            KlineChartKind::Footprint { .. } => 360.0,
             KlineChartKind::Candles => 16.0,
         }
     }
 
     pub fn min_cell_width(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 80.0,
+            KlineChartKind::Footprint { .. } => 80.0,
             KlineChartKind::Candles => 1.0,
         }
     }
 
     pub fn max_cell_height(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 90.0,
+            KlineChartKind::Footprint { .. } => 90.0,
             KlineChartKind::Candles => 8.0,
         }
     }
 
     pub fn min_cell_height(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 1.0,
+            KlineChartKind::Footprint { .. } => 1.0,
             KlineChartKind::Candles => 0.001,
         }
     }
 
     pub fn default_cell_width(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint(_) => 80.0,
+            KlineChartKind::Footprint { .. } => 80.0,
             KlineChartKind::Candles => 4.0,
         }
     }
@@ -178,18 +181,21 @@ impl std::fmt::Display for ClusterKind {
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {
-    pub cluster_kind: Option<ClusterKind>,
+pub struct Config {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum FootprintStudy {
+    NPoC,
 }
 
-impl Config {
-    pub fn new() -> Self {
-        Self { cluster_kind: None }
-    }
+impl FootprintStudy {
+    pub const ALL: [FootprintStudy; 1] = [FootprintStudy::NPoC];
+}
 
-    pub fn with_cluster_kind(cluster_kind: ClusterKind) -> Self {
-        Self {
-            cluster_kind: Some(cluster_kind),
+impl std::fmt::Display for FootprintStudy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FootprintStudy::NPoC => write!(f, "Naked Point of Control"),
         }
     }
 }

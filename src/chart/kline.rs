@@ -2,7 +2,7 @@ use data::UserTimezone;
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
 use data::chart::indicators::{Indicator, KlineIndicator};
-use data::chart::kline::{ClusterKind, Config, KlineTrades, NPoc};
+use data::chart::kline::{ClusterKind, FootprintStudy, KlineTrades, NPoc};
 use data::chart::{ChartLayout, KlineChartKind};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
@@ -169,7 +169,6 @@ pub struct KlineChart {
     fetching_trades: (bool, Option<Handle>),
     kind: KlineChartKind,
     request_handler: RequestHandler,
-    visual_config: Config,
 }
 
 impl KlineChart {
@@ -182,17 +181,7 @@ impl KlineChart {
         enabled_indicators: &[KlineIndicator],
         ticker_info: Option<TickerInfo>,
         kind: KlineChartKind,
-        visual_config: Option<Config>,
     ) -> Self {
-        let visual_config = if let Some(cfg) = visual_config {
-            cfg
-        } else {
-            match kind {
-                KlineChartKind::Footprint(cluster_kind) => Config::with_cluster_kind(cluster_kind),
-                KlineChartKind::Candles => Config::new(),
-            }
-        };
-
         match basis {
             Basis::Time(interval) => {
                 let timeseries =
@@ -202,7 +191,7 @@ impl KlineChart {
                 let latest_x = timeseries.latest_timestamp().unwrap_or(0);
                 let (scale_high, scale_low) = timeseries.price_scale({
                     match kind {
-                        KlineChartKind::Footprint(_) => 12,
+                        KlineChartKind::Footprint { .. } => 12,
                         KlineChartKind::Candles => 60,
                     }
                 });
@@ -230,11 +219,11 @@ impl KlineChart {
                 KlineChart {
                     chart: CommonChartData {
                         cell_width: match kind {
-                            KlineChartKind::Footprint(_) => 80.0,
+                            KlineChartKind::Footprint { .. } => 80.0,
                             KlineChartKind::Candles => 4.0,
                         },
                         cell_height: match kind {
-                            KlineChartKind::Footprint(_) => 800.0 / y_ticks,
+                            KlineChartKind::Footprint { .. } => 800.0 / y_ticks,
                             KlineChartKind::Candles => 200.0 / y_ticks,
                         },
                         base_price_y,
@@ -253,7 +242,6 @@ impl KlineChart {
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                     kind,
-                    visual_config,
                 }
             }
             Basis::Tick(interval) => {
@@ -280,11 +268,11 @@ impl KlineChart {
                 KlineChart {
                     chart: CommonChartData {
                         cell_width: match kind {
-                            KlineChartKind::Footprint(_) => 80.0,
+                            KlineChartKind::Footprint { .. } => 80.0,
                             KlineChartKind::Candles => 4.0,
                         },
                         cell_height: match kind {
-                            KlineChartKind::Footprint(_) => 90.0,
+                            KlineChartKind::Footprint { .. } => 90.0,
                             KlineChartKind::Candles => 8.0,
                         },
                         tick_size,
@@ -305,7 +293,6 @@ impl KlineChart {
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                     kind,
-                    visual_config,
                 }
             }
         }
@@ -342,7 +329,7 @@ impl KlineChart {
     }
 
     pub fn kind(&self) -> KlineChartKind {
-        self.kind
+        self.kind.clone()
     }
 
     fn missing_data_task(&mut self) -> Action {
@@ -490,16 +477,28 @@ impl KlineChart {
         self.chart.get_chart_layout()
     }
 
-    pub fn visual_config(&self) -> &Config {
-        &self.visual_config
-    }
-
-    pub fn set_cluster_kind(&mut self, cluster_kind: ClusterKind) {
-        if let KlineChartKind::Footprint(ref mut kind) = self.kind {
-            *kind = cluster_kind;
+    pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
+        if let KlineChartKind::Footprint {
+            ref mut clusters, ..
+        } = self.kind
+        {
+            *clusters = new_kind;
         }
 
-        self.visual_config.cluster_kind = Some(cluster_kind);
+        self.render_start();
+    }
+
+    pub fn toggle_footprint_study(&mut self, study: FootprintStudy, is_selected: bool) {
+        if let KlineChartKind::Footprint {
+            ref mut studies, ..
+        } = self.kind
+        {
+            if is_selected && !studies.contains(&study) {
+                studies.push(study);
+            } else {
+                studies.retain(|s| *s != study);
+            }
+        }
 
         self.render_start();
     }
@@ -687,7 +686,7 @@ impl KlineChart {
 
         if chart_state.autoscale {
             match &self.kind {
-                KlineChartKind::Footprint(_) => {
+                KlineChartKind::Footprint { .. } => {
                     chart_state.translation = Vector::new(
                         0.5 * (chart_state.bounds.width / chart_state.scaling)
                             - (chart_state.cell_width / chart_state.scaling),
@@ -850,8 +849,8 @@ impl canvas::Program<Message> for KlineChart {
             let price_to_y = |price: f32| chart.price_to_y(price);
             let interval_to_x = |interval: u64| chart.interval_to_x(interval);
 
-            match self.kind {
-                KlineChartKind::Footprint(cluster_kind) => {
+            match &self.kind {
+                KlineChartKind::Footprint { clusters, studies } => {
                     let (highest, lowest) = chart.price_range(&region);
 
                     let max_cluster_qty = self.calc_qty_scales(
@@ -860,7 +859,7 @@ impl canvas::Program<Message> for KlineChart {
                         highest,
                         lowest,
                         chart.tick_size,
-                        cluster_kind,
+                        *clusters,
                     );
 
                     let cell_height_unscaled = chart.cell_height * chart.scaling;
@@ -898,7 +897,8 @@ impl canvas::Program<Message> for KlineChart {
                                 text_size,
                                 kline,
                                 trades,
-                                cluster_kind,
+                                *clusters,
+                                studies,
                             );
                         },
                     );
@@ -1097,21 +1097,26 @@ fn draw_studies(
     palette: &Extended,
     x_position: f32,
     footprint: &KlineTrades,
+    studies: &Vec<FootprintStudy>,
 ) {
-    if let Some(poc) = footprint.poc {
-        let poc_y = price_to_y(poc.price);
+    if studies.contains(&FootprintStudy::NPoC) {
+        if let Some(poc) = footprint.poc {
+            let poc_y = price_to_y(poc.price);
 
-        let start_x = x_position + (candle_width / 4.0);
-        let (until_x, color) = match poc.status {
-            NPoc::Naked => (-x_position, palette.warning.weak.color),
-            NPoc::Filled { at } => (interval_to_x(at) - start_x, palette.background.strong.color),
-        };
+            let start_x = x_position + (candle_width / 4.0);
+            let (until_x, color) = match poc.status {
+                NPoc::Naked => (-x_position, palette.warning.weak.color),
+                NPoc::Filled { at } => {
+                    (interval_to_x(at) - start_x, palette.background.strong.color)
+                }
+            };
 
-        frame.fill_rectangle(
-            Point::new(start_x, poc_y - 1.0),
-            Size::new(until_x, 1.0),
-            color,
-        );
+            frame.fill_rectangle(
+                Point::new(start_x, poc_y - 1.0),
+                Size::new(until_x, 1.0),
+                color,
+            );
+        }
     }
 }
 
@@ -1131,6 +1136,7 @@ fn draw_clusters(
     kline: &Kline,
     footprint: &KlineTrades,
     cluster_kind: ClusterKind,
+    studies: &Vec<FootprintStudy>,
 ) {
     let text_color = palette.background.weakest.text;
 
@@ -1142,6 +1148,7 @@ fn draw_clusters(
         palette,
         x_position,
         footprint,
+        studies,
     );
 
     match cluster_kind {
