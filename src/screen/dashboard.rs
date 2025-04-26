@@ -976,10 +976,18 @@ impl Dashboard {
                     {
                         return Task::done(Message::ErrorOccurred(Some(pane_uid), reason));
                     }
-                } else if let Err(reason) =
-                    self.insert_fetched_trades(main_window, pane_uid, &trades, true)
-                {
-                    return Task::done(Message::ErrorOccurred(Some(pane_uid), reason));
+                } else {
+                    let filtered_batch = trades
+                        .iter()
+                        .filter(|trade| trade.time <= to_time)
+                        .cloned()
+                        .collect::<Vec<_>>();
+
+                    if let Err(reason) =
+                        self.insert_fetched_trades(main_window, pane_uid, &filtered_batch, true)
+                    {
+                        return Task::done(Message::ErrorOccurred(Some(pane_uid), reason));
+                    }
                 }
             }
             FetchedData::Klines(klines, req_id) => {

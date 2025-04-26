@@ -370,7 +370,7 @@ impl KlineChart {
                             .range(earliest_gap..)
                             .filter(|(_, dp)| !dp.footprint.trades.is_empty())
                             .min_by_key(|(time, _)| *time)
-                            .map_or(kline_latest, |(time, _)| *time);
+                            .map_or(kline_latest, |(time, _)| *time - 1);
 
                         let range = FetchRange::Trades(
                             last_kline_before_gap.max(visible_earliest),

@@ -146,7 +146,7 @@ pub fn kline_cfg_view<'a>(kind: KlineChartKind, pane: pane_grid::Pane) -> Elemen
 
                 studies_col =
                     studies_col.push(iced::widget::checkbox(label, is_selected).on_toggle(
-                        move |value| Message::FootprintStudySelected(pane, study.clone(), value),
+                        move |value| Message::FootprintStudySelected(pane, study, value),
                     ));
             }
 

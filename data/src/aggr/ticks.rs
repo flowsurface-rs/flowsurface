@@ -190,8 +190,10 @@ impl TickAggr {
 
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.data_points[next_idx];
-                if next_dp.kline.low <= poc_price && next_dp.kline.high >= poc_price {
-                    // while visualizing we use reversed index orders
+                if round_to_tick(next_dp.kline.low, self.tick_size) <= poc_price
+                    && round_to_tick(next_dp.kline.high, self.tick_size) >= poc_price
+                {
+                    // on render we reverse the order of the points
                     let reversed_idx = (total_points - 1) - next_idx;
                     npoc.filled(reversed_idx as u64);
                     break;
