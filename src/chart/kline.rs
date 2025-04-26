@@ -1094,6 +1094,7 @@ fn draw_studies(
     price_to_y: impl Fn(f32) -> f32,
     interval_to_x: impl Fn(u64) -> f32,
     candle_width: f32,
+    cell_width: f32,
     palette: &Extended,
     x_position: f32,
     footprint: &KlineTrades,
@@ -1107,7 +1108,11 @@ fn draw_studies(
             let (until_x, color) = match poc.status {
                 NPoc::Naked => (-x_position, palette.warning.weak.color),
                 NPoc::Filled { at } => {
-                    (interval_to_x(at) - start_x, palette.background.strong.color)
+                    let until_x = interval_to_x(at) - start_x;
+                    if until_x.abs() <= cell_width {
+                        return;
+                    }
+                    (until_x, palette.background.strong.color)
                 }
             };
 
@@ -1145,6 +1150,7 @@ fn draw_clusters(
         &price_to_y,
         &interval_to_x,
         candle_width,
+        cell_width,
         palette,
         x_position,
         footprint,
@@ -1160,6 +1166,29 @@ fn draw_clusters(
                 let y_position = price_to_y(**price);
                 let total_qty = buy_qty + sell_qty;
 
+                let total_bar_width = (total_qty / max_cluster_qty) * (cell_width * 0.8);
+                let buy_bar_width = (buy_qty / total_qty) * total_bar_width;
+                let sell_bar_width = (sell_qty / total_qty) * total_bar_width;
+
+                let start_x = x_position + (candle_width / 4.0);
+                let start_y = y_position - (cell_height / 2.0);
+
+                if *buy_qty > 0.0 {
+                    frame.fill_rectangle(
+                        Point::new(start_x, start_y),
+                        Size::new(buy_bar_width, cell_height),
+                        palette.success.base.color.scale_alpha(bar_color_alpha),
+                    );
+                }
+
+                if *sell_qty > 0.0 {
+                    frame.fill_rectangle(
+                        Point::new(start_x + buy_bar_width, start_y),
+                        Size::new(sell_bar_width, cell_height),
+                        palette.danger.base.color.scale_alpha(bar_color_alpha),
+                    );
+                }
+
                 if should_show_text {
                     draw_cluster_text(
                         frame,
@@ -1170,43 +1199,6 @@ fn draw_clusters(
                         Alignment::Start,
                         Alignment::Center,
                     );
-                }
-
-                let total_bar_width = (total_qty / max_cluster_qty) * (cell_width * 0.8);
-                let buy_bar_width = (buy_qty / total_qty) * total_bar_width;
-                let sell_bar_width = (sell_qty / total_qty) * total_bar_width;
-
-                let start_x = x_position + (candle_width / 4.0);
-                let start_y = y_position - (cell_height / 2.0);
-
-                if buy_qty >= sell_qty {
-                    frame.fill_rectangle(
-                        Point::new(start_x, start_y),
-                        Size::new(total_bar_width, cell_height),
-                        palette.success.base.color.scale_alpha(bar_color_alpha),
-                    );
-
-                    if *sell_qty > 0.0 {
-                        frame.fill_rectangle(
-                            Point::new(start_x, start_y),
-                            Size::new(sell_bar_width, cell_height),
-                            palette.danger.base.color.scale_alpha(bar_color_alpha),
-                        );
-                    }
-                } else {
-                    frame.fill_rectangle(
-                        Point::new(start_x, start_y),
-                        Size::new(total_bar_width, cell_height),
-                        palette.danger.base.color.scale_alpha(bar_color_alpha),
-                    );
-
-                    if *buy_qty > 0.0 {
-                        frame.fill_rectangle(
-                            Point::new(start_x, start_y),
-                            Size::new(buy_bar_width, cell_height),
-                            palette.success.base.color.scale_alpha(bar_color_alpha),
-                        );
-                    }
                 }
             }
         }
