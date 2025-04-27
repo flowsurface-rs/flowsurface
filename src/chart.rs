@@ -838,6 +838,51 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Acti
     }
 }
 
+pub fn draw_horizontal_volume_bars(
+    frame: &mut canvas::Frame,
+    start_x: f32,
+    y_position: f32,
+    buy_qty: f32,
+    sell_qty: f32,
+    max_qty: f32,
+    bar_height: f32,
+    width_factor: f32,
+    buy_color: iced::Color,
+    sell_color: iced::Color,
+    bar_color_alpha: f32,
+) {
+    let total_qty = buy_qty + sell_qty;
+    if total_qty <= 0.0 {
+        return;
+    }
+
+    let total_bar_width = (total_qty / max_qty) * width_factor;
+
+    let buy_proportion = buy_qty / total_qty;
+    let sell_proportion = sell_qty / total_qty;
+
+    let buy_bar_width = buy_proportion * total_bar_width;
+    let sell_bar_width = sell_proportion * total_bar_width;
+
+    let start_y = y_position - (bar_height / 2.0);
+
+    if sell_qty > 0.0 {
+        frame.fill_rectangle(
+            Point::new(start_x, start_y),
+            Size::new(sell_bar_width, bar_height),
+            sell_color.scale_alpha(bar_color_alpha),
+        );
+    }
+
+    if buy_qty > 0.0 {
+        frame.fill_rectangle(
+            Point::new(start_x + sell_bar_width, start_y),
+            Size::new(buy_bar_width, bar_height),
+            buy_color.scale_alpha(bar_color_alpha),
+        );
+    }
+}
+
 fn count_decimals(value: f32) -> usize {
     let value_str = value.to_string();
     if let Some(pos) = value_str.find('.') {

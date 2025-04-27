@@ -19,9 +19,11 @@ use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
 use crate::style;
 
-use super::scale::PriceInfoLabel;
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
-use super::{abbr_large_numbers, canvas_interaction, count_decimals, update_chart, view_chart};
+use super::{
+    abbr_large_numbers, canvas_interaction, count_decimals, draw_horizontal_volume_bars,
+    scale::PriceInfoLabel, update_chart, view_chart,
+};
 
 use ordered_float::OrderedFloat;
 
@@ -868,34 +870,19 @@ impl canvas::Program<Message> for HeatmapChart {
                     .for_each(|(price, (buy_v, sell_v))| {
                         let y_position = chart.price_to_y(**price);
 
-                        let buy_vpsr_width = (buy_v / max_vpsr) * max_bar_width;
-                        let sell_vpsr_width = (sell_v / max_vpsr) * max_bar_width;
-
-                        if buy_vpsr_width > sell_vpsr_width {
-                            frame.fill_rectangle(
-                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
-                                Size::new(buy_vpsr_width, vpsr_height),
-                                palette.success.weak.color,
-                            );
-
-                            frame.fill_rectangle(
-                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
-                                Size::new(sell_vpsr_width, vpsr_height),
-                                palette.danger.weak.color,
-                            );
-                        } else {
-                            frame.fill_rectangle(
-                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
-                                Size::new(sell_vpsr_width, vpsr_height),
-                                palette.danger.weak.color,
-                            );
-
-                            frame.fill_rectangle(
-                                Point::new(region.x, y_position - (vpsr_height / 2.0)),
-                                Size::new(buy_vpsr_width, vpsr_height),
-                                palette.success.weak.color,
-                            );
-                        }
+                        draw_horizontal_volume_bars(
+                            frame,
+                            region.x,
+                            y_position,
+                            *buy_v,
+                            *sell_v,
+                            max_vpsr,
+                            vpsr_height,
+                            max_bar_width,
+                            palette.success.weak.color,
+                            palette.danger.weak.color,
+                            1.0,
+                        );
                     });
 
                 if max_vpsr > 0.0 {

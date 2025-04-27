@@ -10,11 +10,11 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 use super::scale::PriceInfoLabel;
 use super::{
     Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
-    calc_splits, indicator,
+    indicator,
 };
 use super::{
-    abbr_large_numbers, canvas_interaction, count_decimals, request_fetch, round_to_tick,
-    update_chart, view_chart,
+    abbr_large_numbers, calc_splits, canvas_interaction, count_decimals,
+    draw_horizontal_volume_bars, request_fetch, round_to_tick, update_chart, view_chart,
 };
 
 use crate::style;
@@ -1164,35 +1164,26 @@ fn draw_clusters(
 
             for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
-                let total_qty = buy_qty + sell_qty;
-
-                let total_bar_width = (total_qty / max_cluster_qty) * (cell_width * 0.8);
-                let buy_bar_width = (buy_qty / total_qty) * total_bar_width;
-                let sell_bar_width = (sell_qty / total_qty) * total_bar_width;
-
                 let start_x = x_position + (candle_width / 4.0);
-                let start_y = y_position - (cell_height / 2.0);
 
-                if *buy_qty > 0.0 {
-                    frame.fill_rectangle(
-                        Point::new(start_x, start_y),
-                        Size::new(buy_bar_width, cell_height),
-                        palette.success.base.color.scale_alpha(bar_color_alpha),
-                    );
-                }
-
-                if *sell_qty > 0.0 {
-                    frame.fill_rectangle(
-                        Point::new(start_x + buy_bar_width, start_y),
-                        Size::new(sell_bar_width, cell_height),
-                        palette.danger.base.color.scale_alpha(bar_color_alpha),
-                    );
-                }
+                draw_horizontal_volume_bars(
+                    frame,
+                    start_x,
+                    y_position,
+                    *buy_qty,
+                    *sell_qty,
+                    max_cluster_qty,
+                    cell_height,
+                    cell_width * 0.8,
+                    palette.success.base.color,
+                    palette.danger.base.color,
+                    bar_color_alpha,
+                );
 
                 if should_show_text {
                     draw_cluster_text(
                         frame,
-                        &abbr_large_numbers(total_qty),
+                        &abbr_large_numbers(buy_qty + sell_qty),
                         Point::new(x_position + (candle_width / 4.0), y_position),
                         text_size,
                         text_color,
