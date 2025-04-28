@@ -503,6 +503,24 @@ impl KlineChart {
         self.render_start();
     }
 
+    pub fn change_imbalance_pct(&mut self, new_pct: f32) {
+        if let KlineChartKind::Footprint {
+            ref mut studies, ..
+        } = self.kind
+        {
+            studies.iter_mut().find_map(|study| {
+                if let FootprintStudy::Imbalance { threshold } = study {
+                    *threshold = new_pct as i32;
+                    Some(*threshold)
+                } else {
+                    None
+                }
+            });
+        }
+
+        self.render_start();
+    }
+
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
         let chart = self.common_data_mut();
 
@@ -875,6 +893,14 @@ impl canvas::Program<Message> for KlineChart {
 
                     let candle_width = 0.1 * chart.cell_width;
 
+                    let imb_threshold = studies.iter().find_map(|study| {
+                        if let FootprintStudy::Imbalance { threshold } = study {
+                            Some(*threshold)
+                        } else {
+                            None
+                        }
+                    });
+
                     render_data_source(
                         &self.data_source,
                         frame,
@@ -895,6 +921,8 @@ impl canvas::Program<Message> for KlineChart {
                                 max_cluster_qty,
                                 palette,
                                 text_size,
+                                self.tick_size(),
+                                imb_threshold,
                                 kline,
                                 trades,
                                 *clusters,
@@ -1138,6 +1166,8 @@ fn draw_clusters(
     max_cluster_qty: f32,
     palette: &Extended,
     text_size: f32,
+    tick_size: f32,
+    imb_threshold: Option<i32>,
     kline: &Kline,
     footprint: &KlineTrades,
     cluster_kind: ClusterKind,
@@ -1236,6 +1266,47 @@ fn draw_clusters(
 
             for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
+
+                if let Some(threshold) = imb_threshold {
+                    let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
+
+                    if let Some((diagonal_buy_qty, _)) = footprint.trades.get(&higher_price) {
+                        if diagonal_buy_qty >= sell_qty {
+                            let required_qty = *sell_qty * (100 + threshold) as f32 / 100.0;
+
+                            if *diagonal_buy_qty > required_qty {
+                                let y_position = price_to_y(*higher_price);
+                                let radius = (cell_height / 2.0).min(3.0);
+                                frame.fill(
+                                    &Path::circle(
+                                        Point::new(
+                                            x_position + (cell_width / 2.0) - (radius * 2.0),
+                                            y_position,
+                                        ),
+                                        radius,
+                                    ),
+                                    palette.success.strong.color,
+                                );
+                            }
+                        } else {
+                            let required_qty = *diagonal_buy_qty * (100 + threshold) as f32 / 100.0;
+
+                            if *sell_qty > required_qty {
+                                let radius = (cell_height / 2.0).min(3.0);
+                                frame.fill(
+                                    &Path::circle(
+                                        Point::new(
+                                            x_position - (cell_width / 2.0) + (radius * 2.0),
+                                            y_position,
+                                        ),
+                                        radius,
+                                    ),
+                                    palette.danger.strong.color,
+                                );
+                            }
+                        }
+                    }
+                }
 
                 if *buy_qty > 0.0 {
                     if should_show_text {

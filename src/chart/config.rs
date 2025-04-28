@@ -132,7 +132,10 @@ pub fn kline_cfg_view<'a>(kind: KlineChartKind, pane: pane_grid::Pane) -> Elemen
         .max_width(500)
         .style(style::chart_modal)
         .into(),
-        KlineChartKind::Footprint { clusters, studies } => {
+        KlineChartKind::Footprint {
+            clusters,
+            ref studies,
+        } => {
             let cluster_picklist =
                 pick_list(ClusterKind::ALL, Some(clusters), move |new_cluster_kind| {
                     Message::ClusterKindSelected(pane, new_cluster_kind)
@@ -142,12 +145,42 @@ pub fn kline_cfg_view<'a>(kind: KlineChartKind, pane: pane_grid::Pane) -> Elemen
 
             for study in FootprintStudy::ALL {
                 let is_selected = studies.contains(&study);
-                let label = study.to_string();
 
-                studies_col =
-                    studies_col.push(iced::widget::checkbox(label, is_selected).on_toggle(
-                        move |value| Message::FootprintStudySelected(pane, study, value),
-                    ));
+                match study {
+                    FootprintStudy::NPoC => {
+                        studies_col = studies_col.push(
+                            iced::widget::checkbox(study.to_string(), is_selected).on_toggle(
+                                move |value| Message::FootprintStudySelected(pane, study, value),
+                            ),
+                        );
+                    }
+                    FootprintStudy::Imbalance { .. } => {
+                        let mut row = row![
+                            iced::widget::checkbox(study.to_string(), is_selected).on_toggle(
+                                move |value| {
+                                    Message::FootprintStudySelected(pane, study, value)
+                                },
+                            ),
+                        ]
+                        .spacing(4);
+
+                        if let Some(threshold) = kind.get_imbalance_threshold() {
+                            let threshold_slider = create_slider_row(
+                                text("Threshold"),
+                                Slider::new(50.0..=800.0, threshold as f32, move |value| {
+                                    Message::ImbalancePctChanged(pane, value)
+                                })
+                                .step(1.0)
+                                .into(),
+                                text(format!("{}%", threshold)).size(13),
+                            );
+
+                            row = row.push(threshold_slider);
+                        };
+
+                        studies_col = studies_col.push(row);
+                    }
+                }
             }
 
             container(scrollable_content(

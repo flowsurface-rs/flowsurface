@@ -1,6 +1,6 @@
 use exchange::{Kline, Trade};
 use ordered_float::OrderedFloat;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::chart::{
     kline::{ClusterKind, KlineTrades, NPoc},
@@ -16,14 +16,8 @@ pub struct TickAccumulation {
 
 impl TickAccumulation {
     pub fn new(trade: &Trade, tick_size: f32) -> Self {
-        let mut trades = HashMap::new();
-        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
-
-        if trade.is_sell {
-            trades.insert(price_level, (0.0, trade.qty));
-        } else {
-            trades.insert(price_level, (trade.qty, 0.0));
-        }
+        let mut footprint = KlineTrades::new();
+        footprint.add_trade_at_price_level(trade, tick_size);
 
         let kline = Kline {
             time: trade.time,
@@ -40,7 +34,7 @@ impl TickAccumulation {
         Self {
             tick_count: 1,
             kline,
-            footprint: KlineTrades { trades, poc: None },
+            footprint,
         }
     }
 

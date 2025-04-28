@@ -1,3 +1,4 @@
+use data::chart::round_to_tick;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Stroke};
 use iced::widget::{center, horizontal_rule, mouse_area, vertical_rule};
@@ -911,10 +912,6 @@ fn abbr_large_numbers(value: f32) -> String {
     } else {
         format!("{}{:.3}", sign, abs_value)
     }
-}
-
-pub fn round_to_tick(value: f32, tick_size: f32) -> f32 {
-    (value / tick_size).round() * tick_size
 }
 
 pub fn format_with_commas(num: f32) -> String {

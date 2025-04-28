@@ -81,6 +81,7 @@ pub enum Message {
     ReorderIndicator(pane_grid::Pane, column_drag::DragEvent),
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
     FootprintStudySelected(pane_grid::Pane, data::chart::kline::FootprintStudy, bool),
+    ImbalancePctChanged(pane_grid::Pane, f32),
 }
 
 pub struct PaneState {

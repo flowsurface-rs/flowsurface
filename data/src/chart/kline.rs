@@ -152,6 +152,17 @@ impl KlineChartKind {
             KlineChartKind::Candles => 4.0,
         }
     }
+
+    pub fn get_imbalance_threshold(&self) -> Option<i32> {
+        if let KlineChartKind::Footprint { studies, .. } = self {
+            for study in studies {
+                if let FootprintStudy::Imbalance { threshold } = study {
+                    return Some(*threshold);
+                }
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -186,16 +197,21 @@ pub struct Config {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum FootprintStudy {
     NPoC,
+    Imbalance { threshold: i32 },
 }
 
 impl FootprintStudy {
-    pub const ALL: [FootprintStudy; 1] = [FootprintStudy::NPoC];
+    pub const ALL: [FootprintStudy; 2] = [
+        FootprintStudy::NPoC,
+        FootprintStudy::Imbalance { threshold: 200 },
+    ];
 }
 
 impl std::fmt::Display for FootprintStudy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FootprintStudy::NPoC => write!(f, "Naked Point of Control"),
+            FootprintStudy::Imbalance { .. } => write!(f, "Imbalance"),
         }
     }
 }

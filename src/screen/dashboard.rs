@@ -457,6 +457,13 @@ impl Dashboard {
                             }
                         }
                     }
+                    pane::Message::ImbalancePctChanged(pane, value) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                                chart.change_imbalance_pct(value);
+                            }
+                        }
+                    }
                 }
             }
             Message::LayoutFetchAll => {
