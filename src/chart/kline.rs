@@ -1207,6 +1207,24 @@ fn draw_clusters(
 
             for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
+
+                if let Some(threshold) = imb_threshold {
+                    let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
+
+                    draw_imbalance_marker(
+                        frame,
+                        &price_to_y,
+                        footprint,
+                        price,
+                        higher_price,
+                        threshold,
+                        cell_height,
+                        palette,
+                        x_position,
+                        cell_width,
+                    );
+                }
+
                 let start_x = x_position + (candle_width / 4.0);
 
                 draw_horizontal_volume_bars(
@@ -1242,6 +1260,24 @@ fn draw_clusters(
 
             for (price, (buy_qty, sell_qty)) in &footprint.trades {
                 let y_position = price_to_y(**price);
+
+                if let Some(threshold) = imb_threshold {
+                    let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
+
+                    draw_imbalance_marker(
+                        frame,
+                        &price_to_y,
+                        footprint,
+                        price,
+                        higher_price,
+                        threshold,
+                        cell_height,
+                        palette,
+                        x_position,
+                        cell_width,
+                    );
+                }
+
                 let delta_qty = buy_qty - sell_qty;
 
                 if should_show_text {
@@ -1283,42 +1319,18 @@ fn draw_clusters(
                 if let Some(threshold) = imb_threshold {
                     let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
 
-                    if let Some((diagonal_buy_qty, _)) = footprint.trades.get(&higher_price) {
-                        if diagonal_buy_qty >= sell_qty {
-                            let required_qty = *sell_qty * (100 + threshold) as f32 / 100.0;
-
-                            if *diagonal_buy_qty > required_qty {
-                                let y_position = price_to_y(*higher_price);
-                                let radius = (cell_height / 2.0).min(3.0);
-                                frame.fill(
-                                    &Path::circle(
-                                        Point::new(
-                                            x_position + (cell_width / 2.0) - (radius * 2.0),
-                                            y_position,
-                                        ),
-                                        radius,
-                                    ),
-                                    palette.success.strong.color,
-                                );
-                            }
-                        } else {
-                            let required_qty = *diagonal_buy_qty * (100 + threshold) as f32 / 100.0;
-
-                            if *sell_qty > required_qty {
-                                let radius = (cell_height / 2.0).min(3.0);
-                                frame.fill(
-                                    &Path::circle(
-                                        Point::new(
-                                            x_position - (cell_width / 2.0) + (radius * 2.0),
-                                            y_position,
-                                        ),
-                                        radius,
-                                    ),
-                                    palette.danger.strong.color,
-                                );
-                            }
-                        }
-                    }
+                    draw_imbalance_marker(
+                        frame,
+                        &price_to_y,
+                        footprint,
+                        price,
+                        higher_price,
+                        threshold,
+                        cell_height,
+                        palette,
+                        x_position,
+                        cell_width,
+                    );
                 }
 
                 if *buy_qty > 0.0 {
@@ -1373,6 +1385,53 @@ fn draw_clusters(
     }
 
     draw_footprint_kline(frame, &price_to_y, x_position, candle_width, kline, palette);
+}
+
+fn draw_imbalance_marker(
+    frame: &mut canvas::Frame,
+    price_to_y: &impl Fn(f32) -> f32,
+    footprint: &KlineTrades,
+    price: &OrderedFloat<f32>,
+    higher_price: OrderedFloat<f32>,
+    threshold: i32,
+    cell_height: f32,
+    palette: &Extended,
+    x_position: f32,
+    cell_width: f32,
+) {
+    if let Some((diagonal_buy_qty, _)) = footprint.trades.get(&higher_price) {
+        let (_, sell_qty) = footprint.trades.get(price).unwrap();
+
+        if diagonal_buy_qty >= sell_qty {
+            let required_qty = *sell_qty * (100 + threshold) as f32 / 100.0;
+
+            if *diagonal_buy_qty > required_qty {
+                let y_position = price_to_y(*higher_price);
+                let radius = (cell_height / 2.0).min(2.0);
+                frame.fill(
+                    &Path::circle(
+                        Point::new(x_position + (cell_width / 2.0) - (radius * 2.0), y_position),
+                        radius,
+                    ),
+                    palette.success.strong.color,
+                );
+            }
+        } else {
+            let required_qty = *diagonal_buy_qty * (100 + threshold) as f32 / 100.0;
+
+            if *sell_qty > required_qty {
+                let y_position = price_to_y(**price);
+                let radius = (cell_height / 2.0).min(2.0);
+                frame.fill(
+                    &Path::circle(
+                        Point::new(x_position - (cell_width / 2.0) + (radius * 2.0), y_position),
+                        radius,
+                    ),
+                    palette.danger.strong.color,
+                );
+            }
+        }
+    }
 }
 
 fn draw_cluster_text(
