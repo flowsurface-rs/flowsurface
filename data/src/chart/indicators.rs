@@ -6,7 +6,7 @@ use std::{
 use exchange::adapter::MarketType;
 use serde::{Deserialize, Serialize};
 
-pub trait Indicator: PartialEq + Display + Debug + 'static {
+pub trait Indicator: PartialEq + Display + 'static {
     fn get_available(market: MarketType) -> &'static [Self]
     where
         Self: Sized;

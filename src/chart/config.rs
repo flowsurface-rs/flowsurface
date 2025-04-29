@@ -1,15 +1,11 @@
-use super::format_with_commas;
+use super::{format_with_commas, study::ChartStudy};
 use crate::{
     screen::dashboard::pane::Message,
     style, tooltip,
     widget::{create_slider_row, scrollable_content},
 };
 
-use data::chart::{
-    KlineChartKind, VisualConfig, heatmap,
-    kline::{ClusterKind, FootprintStudy},
-    timeandsales,
-};
+use data::chart::{KlineChartKind, VisualConfig, heatmap, kline::ClusterKind, timeandsales};
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -122,7 +118,11 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
     .into()
 }
 
-pub fn kline_cfg_view<'a>(kind: KlineChartKind, pane: pane_grid::Pane) -> Element<'a, Message> {
+pub fn kline_cfg_view<'a>(
+    study_config: &'a ChartStudy,
+    kind: &'a KlineChartKind,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
     match kind {
         KlineChartKind::Candles => container(text(
             "This chart type doesn't have any configurations, WIP...",
@@ -132,69 +132,28 @@ pub fn kline_cfg_view<'a>(kind: KlineChartKind, pane: pane_grid::Pane) -> Elemen
         .max_width(500)
         .style(style::chart_modal)
         .into(),
-        KlineChartKind::Footprint {
-            clusters,
-            ref studies,
-        } => {
+        KlineChartKind::Footprint { clusters, studies } => {
             let cluster_picklist =
                 pick_list(ClusterKind::ALL, Some(clusters), move |new_cluster_kind| {
                     Message::ClusterKindSelected(pane, new_cluster_kind)
                 });
 
-            let mut studies_col = column![].spacing(2);
-
-            for study in FootprintStudy::ALL {
-                let is_selected = studies.contains(&study);
-
-                match study {
-                    FootprintStudy::NPoC => {
-                        studies_col = studies_col.push(
-                            iced::widget::checkbox(study.to_string(), is_selected).on_toggle(
-                                move |value| Message::FootprintStudySelected(pane, study, value),
-                            ),
-                        );
-                    }
-                    FootprintStudy::Imbalance { .. } => {
-                        let mut row = row![
-                            iced::widget::checkbox(study.to_string(), is_selected).on_toggle(
-                                move |value| {
-                                    Message::FootprintStudySelected(pane, study, value)
-                                },
-                            ),
-                        ]
-                        .spacing(4);
-
-                        if let Some(threshold) = kind.get_imbalance_threshold() {
-                            let threshold_slider = create_slider_row(
-                                text("Threshold"),
-                                Slider::new(50.0..=800.0, threshold as f32, move |value| {
-                                    Message::ImbalancePctChanged(pane, value)
-                                })
-                                .step(1.0)
-                                .into(),
-                                text(format!("{}%", threshold)).size(13),
-                            );
-
-                            row = row.push(threshold_slider);
-                        };
-
-                        studies_col = studies_col.push(row);
-                    }
-                }
-            }
+            let study_cfg = study_config
+                .view(studies)
+                .map(move |msg| Message::StudyConfigurator(pane, msg));
 
             container(scrollable_content(
                 column![
                     column![text("Clustering type").size(14), cluster_picklist].spacing(4),
-                    column![text("Footprint studies").size(14), studies_col].spacing(4),
+                    column![text("Footprint studies").size(14), study_cfg].spacing(4),
                 ]
                 .spacing(20)
                 .padding(16)
                 .align_x(Alignment::Start),
             ))
             .width(Length::Shrink)
+            .max_width(320)
             .padding(16)
-            .max_width(500)
             .style(style::chart_modal)
             .into()
         }

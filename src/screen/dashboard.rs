@@ -450,17 +450,10 @@ impl Dashboard {
                             }
                         }
                     }
-                    pane::Message::FootprintStudySelected(pane, study, is_selected) => {
+                    pane::Message::StudyConfigurator(pane, msg) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             if let PaneContent::Kline(chart, _) = &mut pane_state.content {
-                                chart.toggle_footprint_study(study, is_selected);
-                            }
-                        }
-                    }
-                    pane::Message::ImbalancePctChanged(pane, value) => {
-                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            if let PaneContent::Kline(chart, _) = &mut pane_state.content {
-                                chart.change_imbalance_pct(value);
+                                chart.update_study_configurator(msg);
                             }
                         }
                     }

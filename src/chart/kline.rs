@@ -8,6 +8,7 @@ use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
 use super::scale::PriceInfoLabel;
+use super::study::ChartStudy;
 use super::{
     Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
     indicator,
@@ -169,6 +170,7 @@ pub struct KlineChart {
     fetching_trades: (bool, Option<Handle>),
     kind: KlineChartKind,
     request_handler: RequestHandler,
+    study_configurator: ChartStudy,
 }
 
 impl KlineChart {
@@ -180,7 +182,7 @@ impl KlineChart {
         raw_trades: Vec<Trade>,
         enabled_indicators: &[KlineIndicator],
         ticker_info: Option<TickerInfo>,
-        kind: KlineChartKind,
+        kind: &KlineChartKind,
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
@@ -241,7 +243,8 @@ impl KlineChart {
                     indicators: enabled_indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
-                    kind,
+                    kind: kind.clone(),
+                    study_configurator: ChartStudy::new(),
                 }
             }
             Basis::Tick(interval) => {
@@ -292,7 +295,8 @@ impl KlineChart {
                     indicators: enabled_indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
-                    kind,
+                    kind: kind.clone(),
+                    study_configurator: ChartStudy::new(),
                 }
             }
         }
@@ -328,8 +332,8 @@ impl KlineChart {
         Action::None
     }
 
-    pub fn kind(&self) -> KlineChartKind {
-        self.kind.clone()
+    pub fn kind(&self) -> &KlineChartKind {
+        &self.kind
     }
 
     fn missing_data_task(&mut self) -> Action {
@@ -473,6 +477,48 @@ impl KlineChart {
         self.chart.tick_size
     }
 
+    pub fn study_configurator(&self) -> &ChartStudy {
+        &self.study_configurator
+    }
+
+    pub fn update_study_configurator(&mut self, message: super::study::Message) {
+        let action = self.study_configurator.update(message);
+
+        match action {
+            super::study::Action::None => {}
+            super::study::Action::ToggleStudy(study, is_selected) => {
+                if let KlineChartKind::Footprint {
+                    ref mut studies, ..
+                } = self.kind
+                {
+                    if is_selected {
+                        let already_exists = studies.iter().any(|s| s.is_same_type(&study));
+                        if !already_exists {
+                            studies.push(study);
+                        }
+                    } else {
+                        studies.retain(|s| !s.is_same_type(&study));
+                    }
+                }
+            }
+            super::study::Action::ConfigureStudy(study) => match study {
+                FootprintStudy::Imbalance { threshold } => match self.kind {
+                    KlineChartKind::Footprint {
+                        ref mut studies, ..
+                    } => {
+                        if let Some(study) = studies.iter_mut().find(|s| s.is_same_type(&study)) {
+                            *study = FootprintStudy::Imbalance { threshold };
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            },
+        }
+
+        self.render_start();
+    }
+
     pub fn chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
@@ -483,39 +529,6 @@ impl KlineChart {
         } = self.kind
         {
             *clusters = new_kind;
-        }
-
-        self.render_start();
-    }
-
-    pub fn toggle_footprint_study(&mut self, study: FootprintStudy, is_selected: bool) {
-        if let KlineChartKind::Footprint {
-            ref mut studies, ..
-        } = self.kind
-        {
-            if is_selected && !studies.contains(&study) {
-                studies.push(study);
-            } else {
-                studies.retain(|s| *s != study);
-            }
-        }
-
-        self.render_start();
-    }
-
-    pub fn change_imbalance_pct(&mut self, new_pct: f32) {
-        if let KlineChartKind::Footprint {
-            ref mut studies, ..
-        } = self.kind
-        {
-            studies.iter_mut().find_map(|study| {
-                if let FootprintStudy::Imbalance { threshold } = study {
-                    *threshold = new_pct as i32;
-                    Some(*threshold)
-                } else {
-                    None
-                }
-            });
         }
 
         self.render_start();
@@ -1126,7 +1139,7 @@ fn draw_studies(
     palette: &Extended,
     x_position: f32,
     footprint: &KlineTrades,
-    studies: &Vec<FootprintStudy>,
+    studies: &[FootprintStudy],
 ) {
     if studies.contains(&FootprintStudy::NPoC) {
         if let Some(poc) = footprint.poc {
@@ -1171,7 +1184,7 @@ fn draw_clusters(
     kline: &Kline,
     footprint: &KlineTrades,
     cluster_kind: ClusterKind,
-    studies: &Vec<FootprintStudy>,
+    studies: &[FootprintStudy],
 ) {
     let text_color = palette.background.weakest.text;
 

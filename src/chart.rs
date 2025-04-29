@@ -25,6 +25,7 @@ pub mod heatmap;
 pub mod indicator;
 pub mod kline;
 mod scale;
+pub mod study;
 pub mod timeandsales;
 
 #[derive(Default, Debug, Clone, Copy)]

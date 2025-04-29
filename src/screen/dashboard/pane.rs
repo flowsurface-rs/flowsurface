@@ -80,8 +80,7 @@ pub enum Message {
     DeleteNotification(pane_grid::Pane, usize),
     ReorderIndicator(pane_grid::Pane, column_drag::DragEvent),
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
-    FootprintStudySelected(pane_grid::Pane, data::chart::kline::FootprintStudy, bool),
-    ImbalancePctChanged(pane_grid::Pane, f32),
+    StudyConfigurator(pane_grid::Pane, chart::study::Message),
 }
 
 pub struct PaneState {
@@ -314,7 +313,7 @@ impl PaneState {
                         vec![],
                         &enabled_indicators,
                         Some(ticker_info),
-                        chart_kind,
+                        &chart_kind,
                     ),
                     enabled_indicators,
                 )
@@ -712,7 +711,9 @@ impl ChartView for KlineChart {
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
-        let settings_view = || config::kline_cfg_view(self.kind(), pane);
+        let chart_kind = self.kind();
+
+        let settings_view = || config::kline_cfg_view(self.study_configurator(), chart_kind, pane);
 
         handle_chart_view(
             base,
@@ -720,7 +721,7 @@ impl ChartView for KlineChart {
             pane,
             indicators,
             settings_view,
-            match self.kind() {
+            match chart_kind {
                 data::chart::KlineChartKind::Footprint { .. } => StreamModifier::FootprintChart(
                     state
                         .settings
@@ -1019,7 +1020,7 @@ pub enum PaneContent {
 impl PaneContent {
     pub fn chart_kind(&self) -> Option<data::chart::KlineChartKind> {
         match self {
-            PaneContent::Kline(chart, _) => Some(chart.kind()),
+            PaneContent::Kline(chart, _) => Some(chart.kind().clone()),
             _ => None,
         }
     }

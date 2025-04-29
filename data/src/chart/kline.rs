@@ -152,17 +152,6 @@ impl KlineChartKind {
             KlineChartKind::Candles => 4.0,
         }
     }
-
-    pub fn get_imbalance_threshold(&self) -> Option<i32> {
-        if let KlineChartKind::Footprint { studies, .. } = self {
-            for study in studies {
-                if let FootprintStudy::Imbalance { threshold } = study {
-                    return Some(*threshold);
-                }
-            }
-        }
-        None
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -198,6 +187,16 @@ pub struct Config {}
 pub enum FootprintStudy {
     NPoC,
     Imbalance { threshold: i32 },
+}
+
+impl FootprintStudy {
+    pub fn is_same_type(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FootprintStudy::NPoC, FootprintStudy::NPoC) => true,
+            (FootprintStudy::Imbalance { .. }, FootprintStudy::Imbalance { .. }) => true,
+            _ => false,
+        }
+    }
 }
 
 impl FootprintStudy {
