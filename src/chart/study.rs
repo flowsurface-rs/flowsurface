@@ -60,7 +60,7 @@ impl ChartStudy {
     }
 
     pub fn view(&self, studies: &Vec<FootprintStudy>) -> Element<Message> {
-        let mut content = column![].spacing(2);
+        let mut content = column![].spacing(4);
 
         for available_study in FootprintStudy::ALL {
             let (is_selected, value) = {

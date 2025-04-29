@@ -1222,6 +1222,7 @@ fn draw_clusters(
                         palette,
                         x_position,
                         cell_width,
+                        cluster_kind,
                     );
                 }
 
@@ -1275,6 +1276,7 @@ fn draw_clusters(
                         palette,
                         x_position,
                         cell_width,
+                        cluster_kind,
                     );
                 }
 
@@ -1330,6 +1332,7 @@ fn draw_clusters(
                         palette,
                         x_position,
                         cell_width,
+                        cluster_kind,
                     );
                 }
 
@@ -1398,21 +1401,30 @@ fn draw_imbalance_marker(
     palette: &Extended,
     x_position: f32,
     cell_width: f32,
+    cluster_kind: ClusterKind,
 ) {
     if let Some((diagonal_buy_qty, _)) = footprint.trades.get(&higher_price) {
         let (_, sell_qty) = footprint.trades.get(price).unwrap();
+        let radius = (cell_height / 2.0).min(2.0);
+
+        let (success_x, danger_x) = match cluster_kind {
+            ClusterKind::BidAsk => (
+                x_position + (cell_width / 2.0) - (radius * 2.0),
+                x_position - (cell_width / 2.0) + (radius * 2.0),
+            ),
+            ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => (
+                x_position - (radius * 2.0),
+                x_position - 2.0 * (radius * 2.0),
+            ),
+        };
 
         if diagonal_buy_qty >= sell_qty {
             let required_qty = *sell_qty * (100 + threshold) as f32 / 100.0;
 
             if *diagonal_buy_qty > required_qty {
                 let y_position = price_to_y(*higher_price);
-                let radius = (cell_height / 2.0).min(2.0);
                 frame.fill(
-                    &Path::circle(
-                        Point::new(x_position + (cell_width / 2.0) - (radius * 2.0), y_position),
-                        radius,
-                    ),
+                    &Path::circle(Point::new(success_x, y_position), radius),
                     palette.success.strong.color,
                 );
             }
@@ -1421,12 +1433,8 @@ fn draw_imbalance_marker(
 
             if *sell_qty > required_qty {
                 let y_position = price_to_y(**price);
-                let radius = (cell_height / 2.0).min(2.0);
                 frame.fill(
-                    &Path::circle(
-                        Point::new(x_position - (cell_width / 2.0) + (radius * 2.0), y_position),
-                        radius,
-                    ),
+                    &Path::circle(Point::new(danger_x, y_position), radius),
                     palette.danger.strong.color,
                 );
             }
