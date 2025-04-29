@@ -224,16 +224,25 @@ impl PaneState {
         ticker_info: TickerInfo,
         content_str: &str,
     ) -> Result<(), DashboardError> {
-        let (existing_indicators, existing_layout) = match (&self.content, content_str) {
+        let (existing_indicators, existing_layout, chart_kind) = match (&self.content, content_str)
+        {
             (PaneContent::Heatmap(chart, indicators), "heatmap") => (
                 Some(ExistingIndicators::Heatmap(indicators.clone())),
                 Some(chart.chart_layout()),
+                None,
             ),
             (PaneContent::Kline(chart, indicators), "footprint" | "candlestick") => (
                 Some(ExistingIndicators::Kline(indicators.clone())),
                 Some(chart.chart_layout()),
+                {
+                    let kind = chart.kind();
+                    match kind {
+                        data::chart::KlineChartKind::Footprint { .. } => Some(kind.clone()),
+                        data::chart::KlineChartKind::Candles => None,
+                    }
+                },
             ),
-            _ => (None, None),
+            _ => (None, None, None),
         };
 
         self.content = match content_str {
@@ -268,10 +277,10 @@ impl PaneState {
                     "footprint" => (
                         Some(TickMultiplier(50)),
                         Timeframe::M5,
-                        data::chart::KlineChartKind::Footprint {
+                        chart_kind.unwrap_or(data::chart::KlineChartKind::Footprint {
                             clusters: data::chart::kline::ClusterKind::default(),
                             studies: vec![],
-                        },
+                        }),
                     ),
                     _ => (None, Timeframe::M15, data::chart::KlineChartKind::Candles),
                 };
