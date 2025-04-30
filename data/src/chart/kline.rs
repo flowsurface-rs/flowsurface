@@ -191,11 +191,14 @@ pub enum FootprintStudy {
 
 impl FootprintStudy {
     pub fn is_same_type(&self, other: &Self) -> bool {
-        match (self, other) {
-            (FootprintStudy::NPoC, FootprintStudy::NPoC) => true,
-            (FootprintStudy::Imbalance { .. }, FootprintStudy::Imbalance { .. }) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (FootprintStudy::NPoC, FootprintStudy::NPoC)
+                | (
+                    FootprintStudy::Imbalance { .. },
+                    FootprintStudy::Imbalance { .. }
+                )
+        )
     }
 }
 

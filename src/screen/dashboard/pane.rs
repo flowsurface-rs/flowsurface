@@ -651,9 +651,9 @@ trait ChartView {
 
 #[derive(Debug, Clone, Copy)]
 enum StreamModifier {
-    CandlestickChart(Basis),
-    FootprintChart(Basis, TickMultiplier),
-    HeatmapChart(TickMultiplier),
+    Candlestick(Basis),
+    Footprint(Basis, TickMultiplier),
+    Heatmap(TickMultiplier),
 }
 
 fn handle_chart_view<'a, F>(
@@ -731,14 +731,14 @@ impl ChartView for KlineChart {
             indicators,
             settings_view,
             match chart_kind {
-                data::chart::KlineChartKind::Footprint { .. } => StreamModifier::FootprintChart(
+                data::chart::KlineChartKind::Footprint { .. } => StreamModifier::Footprint(
                     state
                         .settings
                         .selected_basis
                         .unwrap_or(Basis::Time(Timeframe::M5.into())),
                     state.settings.tick_multiply.unwrap_or(TickMultiplier(50)),
                 ),
-                data::chart::KlineChartKind::Candles => StreamModifier::CandlestickChart(
+                data::chart::KlineChartKind::Candles => StreamModifier::Candlestick(
                     state
                         .settings
                         .selected_basis
@@ -769,9 +769,7 @@ impl ChartView for HeatmapChart {
             pane,
             indicators,
             settings_view,
-            StreamModifier::HeatmapChart(
-                state.settings.tick_multiply.unwrap_or(TickMultiplier(10)),
-            ),
+            StreamModifier::Heatmap(state.settings.tick_multiply.unwrap_or(TickMultiplier(10))),
         )
     }
 }
@@ -868,9 +866,9 @@ fn stream_modifier_view<'a>(
     modifiers: StreamModifier,
 ) -> Element<'a, Message> {
     let (selected_basis, selected_ticksize) = match modifiers {
-        StreamModifier::CandlestickChart(basis) => (Some(basis), None),
-        StreamModifier::FootprintChart(basis, ticksize) => (Some(basis), Some(ticksize)),
-        StreamModifier::HeatmapChart(ticksize) => (None, Some(ticksize)),
+        StreamModifier::Candlestick(basis) => (Some(basis), None),
+        StreamModifier::Footprint(basis, ticksize) => (Some(basis), Some(ticksize)),
+        StreamModifier::Heatmap(ticksize) => (None, Some(ticksize)),
     };
 
     let create_button = |content: String, msg: Option<Message>, active: bool| {

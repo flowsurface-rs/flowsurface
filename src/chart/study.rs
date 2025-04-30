@@ -102,7 +102,7 @@ impl ChartStudy {
                     if is_selected {
                         checkbox_row = checkbox_row.push(
                             button(icon_text(Icon::Cog, 12))
-                                .on_press(Message::CardToggled(available_study.clone()))
+                                .on_press(Message::CardToggled(available_study))
                                 .style(move |theme, status| {
                                     style::button::transparent(theme, status, is_expanded)
                                 }),
@@ -114,10 +114,10 @@ impl ChartStudy {
                     if is_expanded {
                         if let Some(threshold) = value {
                             let threshold_slider =
-                                slider(50.0..=800.0, *threshold as f32, move |value| {
+                                slider(100.0..=800.0, *threshold as f32, move |value| {
                                     Message::ImbalancePctChanged(value)
                                 })
-                                .step(10.0);
+                                .step(25.0);
 
                             column = column.push(
                                 column![

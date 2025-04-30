@@ -550,6 +550,7 @@ impl KlineChart {
         }
 
         self.clear_trades(false);
+        self.render_start();
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
@@ -1130,42 +1131,6 @@ fn render_data_source<F>(
     }
 }
 
-fn draw_studies(
-    frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
-    interval_to_x: impl Fn(u64) -> f32,
-    candle_width: f32,
-    cell_width: f32,
-    palette: &Extended,
-    x_position: f32,
-    footprint: &KlineTrades,
-    studies: &[FootprintStudy],
-) {
-    if studies.contains(&FootprintStudy::NPoC) {
-        if let Some(poc) = footprint.poc {
-            let poc_y = price_to_y(poc.price);
-
-            let start_x = x_position + (candle_width / 4.0);
-            let (until_x, color) = match poc.status {
-                NPoc::Naked => (-x_position, palette.warning.weak.color),
-                NPoc::Filled { at } => {
-                    let until_x = interval_to_x(at) - start_x;
-                    if until_x.abs() <= cell_width {
-                        return;
-                    }
-                    (until_x, palette.background.strong.color)
-                }
-            };
-
-            frame.fill_rectangle(
-                Point::new(start_x, poc_y - 1.0),
-                Size::new(until_x, 1.0),
-                color,
-            );
-        }
-    }
-}
-
 fn draw_clusters(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(f32) -> f32,
@@ -1188,7 +1153,7 @@ fn draw_clusters(
 ) {
     let text_color = palette.background.weakest.text;
 
-    draw_studies(
+    draw_npoc(
         frame,
         &price_to_y,
         &interval_to_x,
@@ -1209,7 +1174,7 @@ fn draw_clusters(
                 let y_position = price_to_y(**price);
 
                 if let Some(threshold) = imb_threshold {
-                    let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
+                    let higher_price = OrderedFloat(round_to_tick(**price + tick_size, tick_size));
 
                     draw_imbalance_marker(
                         frame,
@@ -1263,7 +1228,7 @@ fn draw_clusters(
                 let y_position = price_to_y(**price);
 
                 if let Some(threshold) = imb_threshold {
-                    let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
+                    let higher_price = OrderedFloat(round_to_tick(**price + tick_size, tick_size));
 
                     draw_imbalance_marker(
                         frame,
@@ -1319,7 +1284,7 @@ fn draw_clusters(
                 let y_position = price_to_y(**price);
 
                 if let Some(threshold) = imb_threshold {
-                    let higher_price = OrderedFloat(round_to_tick(price.0 + tick_size, tick_size));
+                    let higher_price = OrderedFloat(round_to_tick(**price + tick_size, tick_size));
 
                     draw_imbalance_marker(
                         frame,
@@ -1414,7 +1379,7 @@ fn draw_imbalance_marker(
             ),
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => (
                 x_position - (radius * 2.0),
-                x_position - 2.0 * (radius * 2.0),
+                x_position - 2.0 * (radius * 2.0) - 1.0,
             ),
         };
 
@@ -1425,7 +1390,7 @@ fn draw_imbalance_marker(
                 let y_position = price_to_y(*higher_price);
                 frame.fill(
                     &Path::circle(Point::new(success_x, y_position), radius),
-                    palette.success.strong.color,
+                    palette.success.weak.color,
                 );
             }
         } else {
@@ -1435,9 +1400,45 @@ fn draw_imbalance_marker(
                 let y_position = price_to_y(**price);
                 frame.fill(
                     &Path::circle(Point::new(danger_x, y_position), radius),
-                    palette.danger.strong.color,
+                    palette.danger.weak.color,
                 );
             }
+        }
+    }
+}
+
+fn draw_npoc(
+    frame: &mut canvas::Frame,
+    price_to_y: impl Fn(f32) -> f32,
+    interval_to_x: impl Fn(u64) -> f32,
+    candle_width: f32,
+    cell_width: f32,
+    palette: &Extended,
+    x_position: f32,
+    footprint: &KlineTrades,
+    studies: &[FootprintStudy],
+) {
+    if studies.contains(&FootprintStudy::NPoC) {
+        if let Some(poc) = footprint.poc {
+            let poc_y = price_to_y(poc.price);
+
+            let start_x = x_position + (candle_width / 4.0);
+            let (until_x, color) = match poc.status {
+                NPoc::Naked => (-x_position, palette.warning.weak.color),
+                NPoc::Filled { at } => {
+                    let until_x = interval_to_x(at) - start_x;
+                    if until_x.abs() <= cell_width {
+                        return;
+                    }
+                    (until_x, palette.background.strong.color)
+                }
+            };
+
+            frame.fill_rectangle(
+                Point::new(start_x, poc_y - 1.0),
+                Size::new(until_x, 1.0),
+                color,
+            );
         }
     }
 }
