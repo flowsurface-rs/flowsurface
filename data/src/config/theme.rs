@@ -97,41 +97,53 @@ impl<'de> Deserialize<'de> for Theme {
     where
         D: serde::Deserializer<'de>,
     {
-        let serialized = SerializedTheme::deserialize(deserializer)?;
+        let value =
+            serde_json::Value::deserialize(deserializer).map_err(serde::de::Error::custom)?;
+
+        if let Some(s) = value.as_str() {
+            let theme = match s {
+                "ferra" => iced_core::Theme::Ferra,
+                "dark" => iced_core::Theme::Dark,
+                "light" => iced_core::Theme::Light,
+                "dracula" => iced_core::Theme::Dracula,
+                "nord" => iced_core::Theme::Nord,
+                "solarized_light" => iced_core::Theme::SolarizedLight,
+                "solarized_dark" => iced_core::Theme::SolarizedDark,
+                "gruvbox_light" => iced_core::Theme::GruvboxLight,
+                "gruvbox_dark" => iced_core::Theme::GruvboxDark,
+                "catppuccino_latte" => iced_core::Theme::CatppuccinLatte,
+                "catppuccino_frappe" => iced_core::Theme::CatppuccinFrappe,
+                "catppuccino_macchiato" => iced_core::Theme::CatppuccinMacchiato,
+                "catppuccino_mocha" => iced_core::Theme::CatppuccinMocha,
+                "tokyo_night" => iced_core::Theme::TokyoNight,
+                "tokyo_night_storm" => iced_core::Theme::TokyoNightStorm,
+                "tokyo_night_light" => iced_core::Theme::TokyoNightLight,
+                "kanagawa_wave" => iced_core::Theme::KanagawaWave,
+                "kanagawa_dragon" => iced_core::Theme::KanagawaDragon,
+                "kanagawa_lotus" => iced_core::Theme::KanagawaLotus,
+                "moonfly" => iced_core::Theme::Moonfly,
+                "nightfly" => iced_core::Theme::Nightfly,
+                "oxocarbon" => iced_core::Theme::Oxocarbon,
+                "flowsurface" => Theme::default().0,
+                _ => return Err(serde::de::Error::custom(format!("Invalid theme: {}", s))),
+            };
+            return Ok(Theme(theme));
+        }
+
+        let serialized: SerializedTheme =
+            SerializedTheme::deserialize(value).map_err(serde::de::Error::custom)?;
 
         let theme = match serialized.name.as_str() {
             "flowsurface" => Theme::default().0,
             "custom" => {
                 if let Some(palette) = serialized.palette {
-                    iced_core::Theme::custom("Custom".to_string(), palette)
+                    iced_core::Theme::Custom(Custom::new("Custom".to_string(), palette).into())
                 } else {
                     return Err(serde::de::Error::custom(
                         "Custom theme missing palette data",
                     ));
                 }
             }
-            "ferra" => iced_core::Theme::Ferra,
-            "dark" => iced_core::Theme::Dark,
-            "light" => iced_core::Theme::Light,
-            "dracula" => iced_core::Theme::Dracula,
-            "nord" => iced_core::Theme::Nord,
-            "solarized_light" => iced_core::Theme::SolarizedLight,
-            "solarized_dark" => iced_core::Theme::SolarizedDark,
-            "gruvbox_light" => iced_core::Theme::GruvboxLight,
-            "gruvbox_dark" => iced_core::Theme::GruvboxDark,
-            "catppuccino_latte" => iced_core::Theme::CatppuccinLatte,
-            "catppuccino_frappe" => iced_core::Theme::CatppuccinFrappe,
-            "catppuccino_macchiato" => iced_core::Theme::CatppuccinMacchiato,
-            "catppuccino_mocha" => iced_core::Theme::CatppuccinMocha,
-            "tokyo_night" => iced_core::Theme::TokyoNight,
-            "tokyo_night_storm" => iced_core::Theme::TokyoNightStorm,
-            "tokyo_night_light" => iced_core::Theme::TokyoNightLight,
-            "kanagawa_wave" => iced_core::Theme::KanagawaWave,
-            "kanagawa_dragon" => iced_core::Theme::KanagawaDragon,
-            "kanagawa_lotus" => iced_core::Theme::KanagawaLotus,
-            "moonfly" => iced_core::Theme::Moonfly,
-            "nightfly" => iced_core::Theme::Nightfly,
-            "oxocarbon" => iced_core::Theme::Oxocarbon,
             _ => return Err(serde::de::Error::custom("Invalid theme")),
         };
 

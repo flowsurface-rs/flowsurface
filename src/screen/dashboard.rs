@@ -1,4 +1,5 @@
 pub mod pane;
+pub mod theme_editor;
 pub mod tickers_table;
 
 use data::{UserTimezone, chart::Basis, layout::WindowSpec};

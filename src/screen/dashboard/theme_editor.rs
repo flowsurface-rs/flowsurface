@@ -50,25 +50,33 @@ pub enum Action {
 }
 
 pub struct ThemeEditor {
-    pub theme: iced_core::Theme,
-    pub hsv: (f32, f32, f32),
+    pub custom_theme: Option<iced_core::Theme>,
+    pub hsv: Option<(f32, f32, f32)>,
     pub focused_field: ThemeField,
 }
 
 impl ThemeEditor {
-    pub fn new(theme: data::Theme) -> Self {
-        let bg_color = theme.0.palette().background;
-        let initial_hsv = rgb_to_hsv(bg_color.r, bg_color.g, bg_color.b);
+    pub fn new(custom_theme: Option<data::Theme>) -> Self {
+        if let Some(theme) = custom_theme {
+            let bg_color = theme.0.palette().background;
+            let initial_hsv = rgb_to_hsv(bg_color.r, bg_color.g, bg_color.b);
 
-        Self {
-            theme: theme.0,
-            hsv: initial_hsv,
-            focused_field: ThemeField::Background,
+            Self {
+                custom_theme: Some(theme.0),
+                hsv: Some(initial_hsv),
+                focused_field: ThemeField::Background,
+            }
+        } else {
+            Self {
+                custom_theme: None,
+                hsv: None,
+                focused_field: ThemeField::Background,
+            }
         }
     }
 
-    fn focused_color(&self) -> iced_core::Color {
-        let palette = self.theme.palette();
+    fn focused_color(&self, theme: &iced_core::Theme) -> iced_core::Color {
+        let palette = theme.palette();
         match self.focused_field {
             ThemeField::Background => palette.background,
             ThemeField::Text => palette.text,
@@ -79,14 +87,14 @@ impl ThemeEditor {
         }
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
+    pub fn update(&mut self, message: Message, theme: iced_core::Theme) -> Action {
         match message {
             Message::HSVChanged((h, s, v)) => {
-                self.hsv = (h, s, v);
+                self.hsv = Some((h, s, v));
                 let (r, g, b) = hsv_to_rgb(h, s, v);
                 let color = iced_core::Color::from_rgb(r, g, b);
 
-                let mut new_palette = self.theme.palette();
+                let mut new_palette = theme.palette();
 
                 match self.focused_field {
                     ThemeField::Background => new_palette.background = color,
@@ -96,14 +104,16 @@ impl ThemeEditor {
                     ThemeField::Danger => new_palette.danger = color,
                     ThemeField::Warning => new_palette.warning = color,
                 }
-                self.theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
 
-                Action::UpdateTheme(self.theme.clone())
+                let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
+                self.custom_theme = Some(new_theme.clone());
+
+                Action::UpdateTheme(new_theme)
             }
             Message::FocusedFieldChanged(focused_field) => {
                 self.focused_field = focused_field;
-                let color = self.focused_color();
-                self.hsv = rgb_to_hsv(color.r, color.g, color.b);
+                let color = self.focused_color(&theme);
+                self.hsv = Some(rgb_to_hsv(color.r, color.g, color.b));
 
                 Action::None
             }
@@ -111,13 +121,16 @@ impl ThemeEditor {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, theme: &iced_core::Theme) -> Element<'_, Message> {
         let close_editor = button(icon_text(Icon::Return, 11))
             .on_press(Message::CloseRequested)
             .style(move |theme, status| style::button::transparent(theme, status, false));
 
         let color_editor = {
-            let (h, s, v) = self.hsv;
+            let (h, s, v) = {
+                let rgb = self.focused_color(theme);
+                rgb_to_hsv(rgb.r, rgb.g, rgb.b)
+            };
 
             let hue_slider = create_slider_row(
                 text("H"),
@@ -202,7 +215,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     }
 }
 
-fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+pub fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
 

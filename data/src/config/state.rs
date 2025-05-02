@@ -18,6 +18,7 @@ pub struct Layouts {
 pub struct State {
     pub layout_manager: Layouts,
     pub selected_theme: Theme,
+    pub custom_theme: Option<Theme>,
     pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub main_window: Option<WindowSpec>,
     pub timezone: UserTimezone,
@@ -30,6 +31,7 @@ impl State {
     pub fn from_parts(
         layout_manager: Layouts,
         selected_theme: Theme,
+        custom_theme: Option<Theme>,
         favorited_tickers: Vec<(Exchange, Ticker)>,
         main_window: Option<WindowSpec>,
         timezone: UserTimezone,
@@ -40,6 +42,7 @@ impl State {
         State {
             layout_manager,
             selected_theme: Theme(selected_theme.0),
+            custom_theme: custom_theme.map(|t| Theme(t.0)),
             favorited_tickers,
             main_window,
             timezone,

@@ -6,7 +6,6 @@ mod layout;
 mod logger;
 mod screen;
 mod style;
-mod theme;
 mod widget;
 mod window;
 
@@ -15,11 +14,11 @@ use screen::{
     create_button,
     dashboard::{
         self, Dashboard, pane,
+        theme_editor::{self, ThemeEditor},
         tickers_table::{self, TickersTable},
     },
 };
 use style::{Icon, icon_text};
-use theme::ThemeEditor;
 use widget::{
     confirm_dialog_container, dashboard_modal, main_dialog_modal,
     notification::{self, Toast},
@@ -71,7 +70,7 @@ struct Flowsurface {
     theme: data::Theme,
     notifications: Vec<Toast>,
     audio_stream: audio::AudioStream,
-    theme_editor: theme::ThemeEditor,
+    theme_editor: ThemeEditor,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +101,7 @@ enum Message {
     AddNotification(Toast),
     DeleteNotification(usize),
 
-    ThemeEditor(theme::Message),
+    ThemeEditor(theme_editor::Message),
 }
 
 impl Flowsurface {
@@ -135,10 +134,10 @@ impl Flowsurface {
                 timezone: saved_state.timezone,
                 scale_factor: saved_state.scale_factor,
                 sidebar: saved_state.sidebar,
-                theme: saved_state.theme,
+                theme: theme.clone(),
                 notifications: vec![],
                 audio_stream: audio::AudioStream::new(saved_state.audio_cfg),
-                theme_editor: theme::ThemeEditor::new(theme),
+                theme_editor: theme_editor::ThemeEditor::new(saved_state.custom_theme),
             },
             open_main_window
                 .then(|_| Task::none())
@@ -276,6 +275,7 @@ impl Flowsurface {
                 let layout = data::State::from_parts(
                     layouts,
                     self.theme.clone(),
+                    self.theme_editor.custom_theme.clone().map(data::Theme),
                     self.tickers_table.favorited_tickers(),
                     main_window,
                     self.timezone,
@@ -308,7 +308,11 @@ impl Flowsurface {
             }
             Message::ThemeSelected(theme) => {
                 self.theme = theme.clone();
-                self.theme_editor = ThemeEditor::new(theme);
+
+                let bg_color = theme.0.palette().background;
+                let initial_hsv = theme_editor::rgb_to_hsv(bg_color.r, bg_color.g, bg_color.b);
+
+                self.theme_editor.hsv = Some(initial_hsv);
             }
             Message::Dashboard(id, message) => {
                 let main_window = self.main_window;
@@ -461,13 +465,13 @@ impl Flowsurface {
                 }
             }
             Message::ThemeEditor(msg) => {
-                let action = self.theme_editor.update(msg);
+                let action = self.theme_editor.update(msg, self.theme.clone().into());
 
                 match action {
-                    theme::Action::Exit => {
+                    theme_editor::Action::Exit => {
                         self.sidebar.set_menu(sidebar::Menu::Settings);
                     }
-                    theme::Action::UpdateTheme(theme) => {
+                    theme_editor::Action::UpdateTheme(theme) => {
                         self.theme = data::Theme(theme);
 
                         let main_window = self.main_window.id;
@@ -480,7 +484,7 @@ impl Flowsurface {
                             )));
                         }
                     }
-                    theme::Action::None => {}
+                    theme_editor::Action::None => {}
                 }
             }
         }
@@ -650,21 +654,20 @@ impl Flowsurface {
             match self.sidebar.active_menu {
                 sidebar::Menu::Settings => {
                     let settings_modal = {
-                        let mut themes: Vec<iced::Theme> = iced_core::Theme::ALL.to_vec();
+                        let theme_picklist = {
+                            let mut themes: Vec<iced::Theme> = iced_core::Theme::ALL.to_vec();
 
-                        let default_theme = iced_core::Theme::Custom(default_theme().into());
-                        let custom_theme = iced_core::Theme::custom(
-                            "Custom".to_string(),
-                            self.theme.clone().0.palette(),
-                        );
+                            let default_theme = iced_core::Theme::Custom(default_theme().into());
+                            themes.push(default_theme);
 
-                        themes.push(default_theme);
-                        themes.push(custom_theme);
+                            if let Some(custom_theme) = self.theme_editor.custom_theme.clone() {
+                                themes.push(custom_theme);
+                            }
 
-                        let theme_picklist =
                             pick_list(themes, Some(self.theme.clone().0), |theme| {
                                 Message::ThemeSelected(data::Theme(theme))
-                            });
+                            })
+                        };
 
                         let toggle_theme_editor = button(text("Theme editor"))
                             .on_press(Message::ToggleSidebarMenu(sidebar::Menu::ThemeEditor));
@@ -926,7 +929,9 @@ impl Flowsurface {
 
                     dashboard_modal(
                         base,
-                        self.theme_editor.view().map(Message::ThemeEditor),
+                        self.theme_editor
+                            .view(&self.theme.0)
+                            .map(Message::ThemeEditor),
                         Message::ToggleSidebarMenu(sidebar::Menu::None),
                         padding,
                         Alignment::End,
