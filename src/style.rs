@@ -94,17 +94,10 @@ pub fn title_text(theme: &Theme) -> iced::widget::text::Style {
     let palette = theme.extended_palette();
 
     iced::widget::text::Style {
-        color: Some(
-            palette
-                .secondary
-                .weak
-                .color
-                .scale_alpha(if palette.is_dark { 0.1 } else { 0.6 }),
-        ),
+        color: Some(palette.background.weakest.color),
     }
 }
 
-// Tooltips
 pub fn tooltip(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 

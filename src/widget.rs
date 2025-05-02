@@ -150,11 +150,11 @@ where
     Message: Clone + 'a,
 {
     let slider = if let Some(placeholder) = placeholder {
-        row![slider, placeholder]
-            .align_y(Alignment::Center)
+        column![slider, placeholder]
             .spacing(2)
+            .align_x(Alignment::Center)
     } else {
-        row![slider]
+        column![slider]
     };
 
     container(

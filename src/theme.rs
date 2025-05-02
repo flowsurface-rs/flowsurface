@@ -1,6 +1,5 @@
 use iced::{
     Alignment, Element,
-    theme::Palette,
     widget::{Slider, button, column, container, horizontal_space, pick_list, row, text},
 };
 
@@ -9,22 +8,8 @@ use crate::{
     widget::create_slider_row,
 };
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    HSVChanged((f32, f32, f32)),
-    FocusedFieldChanged(FocusedField),
-    CloseRequested,
-}
-
 #[derive(Debug, Clone, PartialEq)]
-pub enum Action {
-    None,
-    UpdateTheme(iced_core::Theme),
-    Exit,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum FocusedField {
+pub enum ThemeField {
     Background,
     Text,
     Primary,
@@ -33,13 +18,13 @@ pub enum FocusedField {
     Warning,
 }
 
-impl std::fmt::Display for FocusedField {
+impl std::fmt::Display for ThemeField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
     }
 }
 
-impl FocusedField {
+impl ThemeField {
     const ALL: [Self; 6] = [
         Self::Background,
         Self::Text,
@@ -50,84 +35,78 @@ impl FocusedField {
     ];
 }
 
+#[derive(Debug, Clone)]
+pub enum Message {
+    HSVChanged((f32, f32, f32)),
+    FocusedFieldChanged(ThemeField),
+    CloseRequested,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    None,
+    UpdateTheme(iced_core::Theme),
+    Exit,
+}
+
 pub struct ThemeEditor {
     pub theme: iced_core::Theme,
-    pub palette: Palette,
-    pub hsv: Option<(f32, f32, f32)>,
-    pub focused_field: Option<FocusedField>,
+    pub hsv: (f32, f32, f32),
+    pub focused_field: ThemeField,
 }
 
 impl ThemeEditor {
     pub fn new(theme: data::Theme) -> Self {
-        let palette: Palette = theme.0.palette();
-
-        let bg_color = palette.background;
+        let bg_color = theme.0.palette().background;
         let initial_hsv = rgb_to_hsv(bg_color.r, bg_color.g, bg_color.b);
 
         Self {
             theme: theme.0,
-            palette,
-            hsv: Some(initial_hsv),
-            focused_field: Some(FocusedField::Background),
+            hsv: initial_hsv,
+            focused_field: ThemeField::Background,
+        }
+    }
+
+    fn focused_color(&self) -> iced_core::Color {
+        let palette = self.theme.palette();
+        match self.focused_field {
+            ThemeField::Background => palette.background,
+            ThemeField::Text => palette.text,
+            ThemeField::Primary => palette.primary,
+            ThemeField::Success => palette.success,
+            ThemeField::Danger => palette.danger,
+            ThemeField::Warning => palette.warning,
         }
     }
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::HSVChanged(hsv) => {
-                self.hsv = Some(hsv);
-                let (h, s, v) = hsv;
-
+            Message::HSVChanged((h, s, v)) => {
+                self.hsv = (h, s, v);
                 let (r, g, b) = hsv_to_rgb(h, s, v);
-                let new_color = iced_core::Color::from_rgb(r, g, b);
+                let color = iced_core::Color::from_rgb(r, g, b);
 
-                let mut new_palette = self.palette;
+                let mut new_palette = self.theme.palette();
 
-                if let Some(focused_field) = &mut self.focused_field {
-                    match focused_field {
-                        FocusedField::Background => {
-                            new_palette.background = new_color;
-                        }
-                        FocusedField::Text => {
-                            new_palette.text = new_color;
-                        }
-                        FocusedField::Primary => {
-                            new_palette.primary = new_color;
-                        }
-                        FocusedField::Success => {
-                            new_palette.success = new_color;
-                        }
-                        FocusedField::Danger => {
-                            new_palette.danger = new_color;
-                        }
-                        FocusedField::Warning => {
-                            new_palette.warning = new_color;
-                        }
-                    }
+                match self.focused_field {
+                    ThemeField::Background => new_palette.background = color,
+                    ThemeField::Text => new_palette.text = color,
+                    ThemeField::Primary => new_palette.primary = color,
+                    ThemeField::Success => new_palette.success = color,
+                    ThemeField::Danger => new_palette.danger = color,
+                    ThemeField::Warning => new_palette.warning = color,
                 }
-
-                self.palette = new_palette;
                 self.theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
 
                 Action::UpdateTheme(self.theme.clone())
             }
             Message::FocusedFieldChanged(focused_field) => {
-                self.focused_field = Some(focused_field.clone());
-
-                let color = match focused_field {
-                    FocusedField::Background => self.palette.background,
-                    FocusedField::Text => self.palette.text,
-                    FocusedField::Primary => self.palette.primary,
-                    FocusedField::Success => self.palette.success,
-                    FocusedField::Danger => self.palette.danger,
-                    FocusedField::Warning => self.palette.warning,
-                };
-
-                self.hsv = Some(rgb_to_hsv(color.r, color.g, color.b));
+                self.focused_field = focused_field;
+                let color = self.focused_color();
+                self.hsv = rgb_to_hsv(color.r, color.g, color.b);
 
                 Action::None
             }
-
             Message::CloseRequested => Action::Exit,
         }
     }
@@ -138,7 +117,7 @@ impl ThemeEditor {
             .style(move |theme, status| style::button::transparent(theme, status, false));
 
         let color_editor = {
-            let (h, s, v) = self.hsv.unwrap_or((0.0, 0.0, 0.0));
+            let (h, s, v) = self.hsv;
 
             let hue_slider = create_slider_row(
                 text("H"),
@@ -174,8 +153,8 @@ impl ThemeEditor {
         };
 
         let focused_field = pick_list(
-            FocusedField::ALL.to_vec(),
-            self.focused_field.clone(),
+            ThemeField::ALL.to_vec(),
+            Some(&self.focused_field),
             Message::FocusedFieldChanged,
         );
 
