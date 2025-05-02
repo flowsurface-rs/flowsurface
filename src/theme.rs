@@ -75,8 +75,6 @@ impl ThemeEditor {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::HSVChanged(hsv) => {
-                // let current_palette: Palette = self.theme.palette();
-
                 self.hsv = Some(hsv);
                 let (h, s, v) = hsv;
 

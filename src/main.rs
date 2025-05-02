@@ -480,7 +480,7 @@ impl Flowsurface {
                             )));
                         }
                     }
-                    _ => {}
+                    theme::Action::None => {}
                 }
             }
         }
@@ -650,35 +650,19 @@ impl Flowsurface {
             match self.sidebar.active_menu {
                 sidebar::Menu::Settings => {
                     let settings_modal = {
-                        let mut all_themes = iced_core::Theme::ALL.to_vec();
-                        all_themes.push(iced_core::Theme::Custom(default_theme().into()));
+                        let mut themes: Vec<iced::Theme> = iced_core::Theme::ALL.to_vec();
 
-                        let trade_fetch_checkbox = {
-                            let is_active = dashboard.trade_fetch_enabled;
+                        let default_theme = iced_core::Theme::Custom(default_theme().into());
+                        let custom_theme = iced_core::Theme::custom(
+                            "Custom".to_string(),
+                            self.theme.clone().0.palette(),
+                        );
 
-                            let checkbox =
-                                iced::widget::checkbox("Fetch trades (Binance)", is_active)
-                                    .on_toggle(|checked| {
-                                        if checked {
-                                            Message::ToggleDialogModal(Some((
-                                        "This might be unreliable and take some time to complete"
-                                            .to_string(),
-                                        Box::new(Message::ToggleTradeFetch(true)),
-                                    )))
-                                        } else {
-                                            Message::ToggleTradeFetch(false)
-                                        }
-                                    });
-
-                            tooltip(
-                                checkbox,
-                                Some("Try to fetch trades for footprint charts"),
-                                TooltipPosition::Top,
-                            )
-                        };
+                        themes.push(default_theme);
+                        themes.push(custom_theme);
 
                         let theme_picklist =
-                            pick_list(all_themes, Some(self.theme.clone().0), |theme| {
+                            pick_list(themes, Some(self.theme.clone().0), |theme| {
                                 Message::ThemeSelected(data::Theme(theme))
                             });
 
@@ -727,6 +711,30 @@ impl Flowsurface {
                                 .padding(4),
                             )
                             .style(style::modal_container)
+                        };
+
+                        let trade_fetch_checkbox = {
+                            let is_active = dashboard.trade_fetch_enabled;
+
+                            let checkbox =
+                                iced::widget::checkbox("Fetch trades (Binance)", is_active)
+                                    .on_toggle(|checked| {
+                                        if checked {
+                                            Message::ToggleDialogModal(Some((
+                                        "This might be unreliable and take some time to complete"
+                                            .to_string(),
+                                        Box::new(Message::ToggleTradeFetch(true)),
+                                    )))
+                                        } else {
+                                            Message::ToggleTradeFetch(false)
+                                        }
+                                    });
+
+                            tooltip(
+                                checkbox,
+                                Some("Try to fetch trades for footprint charts"),
+                                TooltipPosition::Top,
+                            )
                         };
 
                         let open_data_folder = {

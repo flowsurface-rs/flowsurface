@@ -1795,6 +1795,7 @@ dependencies = [
  "log",
  "num-traits",
  "rustc-hash 2.1.1",
+ "serde",
  "smol_str",
  "thiserror 1.0.69",
  "web-time",

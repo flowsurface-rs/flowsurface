@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub struct Theme(pub iced_core::Theme);
 
+#[derive(Serialize, Deserialize)]
+struct SerializedTheme {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    palette: Option<Palette>,
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self(iced_core::Theme::Custom(default_theme().into()))
@@ -33,41 +40,55 @@ pub fn default_theme() -> Custom {
     )
 }
 
-pub fn custom_theme(palette: Palette) -> Custom {
-    Custom::new("Flowsurface".to_string(), palette)
-}
-
 impl Serialize for Theme {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let theme_str = match self.0 {
-            iced_core::Theme::Ferra => "ferra",
-            iced_core::Theme::Dark => "dark",
-            iced_core::Theme::Light => "light",
-            iced_core::Theme::Dracula => "dracula",
-            iced_core::Theme::Nord => "nord",
-            iced_core::Theme::SolarizedLight => "solarized_light",
-            iced_core::Theme::SolarizedDark => "solarized_dark",
-            iced_core::Theme::GruvboxLight => "gruvbox_light",
-            iced_core::Theme::GruvboxDark => "gruvbox_dark",
-            iced_core::Theme::CatppuccinLatte => "catppuccino_latte",
-            iced_core::Theme::CatppuccinFrappe => "catppuccino_frappe",
-            iced_core::Theme::CatppuccinMacchiato => "catppuccino_macchiato",
-            iced_core::Theme::CatppuccinMocha => "catppuccino_mocha",
-            iced_core::Theme::TokyoNight => "tokyo_night",
-            iced_core::Theme::TokyoNightStorm => "tokyo_night_storm",
-            iced_core::Theme::TokyoNightLight => "tokyo_night_light",
-            iced_core::Theme::KanagawaWave => "kanagawa_wave",
-            iced_core::Theme::KanagawaDragon => "kanagawa_dragon",
-            iced_core::Theme::KanagawaLotus => "kanagawa_lotus",
-            iced_core::Theme::Moonfly => "moonfly",
-            iced_core::Theme::Nightfly => "nightfly",
-            iced_core::Theme::Oxocarbon => "oxocarbon",
-            iced_core::Theme::Custom(_) => "flowsurface",
-        };
-        theme_str.serialize(serializer)
+        match &self.0 {
+            iced_core::Theme::Custom(custom) => {
+                let serialized = if custom.to_string() == "Flowsurface" {
+                    SerializedTheme {
+                        name: "flowsurface".to_string(),
+                        palette: None,
+                    }
+                } else {
+                    SerializedTheme {
+                        name: "custom".to_string(),
+                        palette: Some(self.0.palette()),
+                    }
+                };
+                serialized.serialize(serializer)
+            }
+            _ => {
+                let theme_str = match self.0 {
+                    iced_core::Theme::Ferra => "ferra",
+                    iced_core::Theme::Dark => "dark",
+                    iced_core::Theme::Light => "light",
+                    iced_core::Theme::Dracula => "dracula",
+                    iced_core::Theme::Nord => "nord",
+                    iced_core::Theme::SolarizedLight => "solarized_light",
+                    iced_core::Theme::SolarizedDark => "solarized_dark",
+                    iced_core::Theme::GruvboxLight => "gruvbox_light",
+                    iced_core::Theme::GruvboxDark => "gruvbox_dark",
+                    iced_core::Theme::CatppuccinLatte => "catppuccino_latte",
+                    iced_core::Theme::CatppuccinFrappe => "catppuccino_frappe",
+                    iced_core::Theme::CatppuccinMacchiato => "catppuccino_macchiato",
+                    iced_core::Theme::CatppuccinMocha => "catppuccino_mocha",
+                    iced_core::Theme::TokyoNight => "tokyo_night",
+                    iced_core::Theme::TokyoNightStorm => "tokyo_night_storm",
+                    iced_core::Theme::TokyoNightLight => "tokyo_night_light",
+                    iced_core::Theme::KanagawaWave => "kanagawa_wave",
+                    iced_core::Theme::KanagawaDragon => "kanagawa_dragon",
+                    iced_core::Theme::KanagawaLotus => "kanagawa_lotus",
+                    iced_core::Theme::Moonfly => "moonfly",
+                    iced_core::Theme::Nightfly => "nightfly",
+                    iced_core::Theme::Oxocarbon => "oxocarbon",
+                    iced_core::Theme::Custom(_) => "flowsurface",
+                };
+                theme_str.serialize(serializer)
+            }
+        }
     }
 }
 
@@ -76,8 +97,19 @@ impl<'de> Deserialize<'de> for Theme {
     where
         D: serde::Deserializer<'de>,
     {
-        let theme_str = String::deserialize(deserializer)?;
-        let theme = match theme_str.as_str() {
+        let serialized = SerializedTheme::deserialize(deserializer)?;
+
+        let theme = match serialized.name.as_str() {
+            "flowsurface" => Theme::default().0,
+            "custom" => {
+                if let Some(palette) = serialized.palette {
+                    iced_core::Theme::custom("Custom".to_string(), palette)
+                } else {
+                    return Err(serde::de::Error::custom(
+                        "Custom theme missing palette data",
+                    ));
+                }
+            }
             "ferra" => iced_core::Theme::Ferra,
             "dark" => iced_core::Theme::Dark,
             "light" => iced_core::Theme::Light,
@@ -100,9 +132,9 @@ impl<'de> Deserialize<'de> for Theme {
             "moonfly" => iced_core::Theme::Moonfly,
             "nightfly" => iced_core::Theme::Nightfly,
             "oxocarbon" => iced_core::Theme::Oxocarbon,
-            "flowsurface" => Theme::default().0,
             _ => return Err(serde::de::Error::custom("Invalid theme")),
         };
+
         Ok(Theme(theme))
     }
 }
