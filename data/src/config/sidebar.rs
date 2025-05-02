@@ -52,6 +52,7 @@ pub enum Menu {
     Layout,
     Settings,
     Audio,
+    ThemeEditor,
     #[default]
     None,
 }

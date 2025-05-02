@@ -89,19 +89,19 @@ pub fn open_data_folder() -> Result<(), InternalError> {
 
     if pathbuf.exists() {
         if let Err(err) = open::that(&pathbuf) {
-            return Err(InternalError::Layout(format!(
+            Err(InternalError::Layout(format!(
                 "Failed to open data folder: {:?}, error: {}",
                 pathbuf, err
-            )));
+            )))
         } else {
             info!("Opened data folder: {:?}", pathbuf);
-            return Ok(());
+            Ok(())
         }
     } else {
-        return Err(InternalError::Layout(format!(
+        Err(InternalError::Layout(format!(
             "Data folder does not exist: {:?}",
             pathbuf
-        )));
+        )))
     }
 }
 

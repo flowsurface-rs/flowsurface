@@ -620,6 +620,10 @@ impl PaneState {
     pub fn matches_stream(&self, stream: &StreamType) -> bool {
         self.streams.iter().any(|existing| existing == stream)
     }
+
+    pub fn invalidate(&mut self) {
+        self.content.invalidate();
+    }
 }
 
 impl Default for PaneState {
@@ -1025,6 +1029,14 @@ pub enum PaneContent {
 }
 
 impl PaneContent {
+    pub fn invalidate(&mut self) {
+        match self {
+            PaneContent::Heatmap(chart, _) => chart.render_start(),
+            PaneContent::Kline(chart, _) => chart.render_start(),
+            PaneContent::Starter | PaneContent::TimeAndSales(_) => {}
+        }
+    }
+
     pub fn chart_kind(&self) -> Option<data::chart::KlineChartKind> {
         match self {
             PaneContent::Kline(chart, _) => Some(chart.kind().clone()),

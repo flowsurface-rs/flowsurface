@@ -1137,6 +1137,13 @@ impl Dashboard {
         }
     }
 
+    pub fn invalidate_all_panes(&mut self, main_window: window::Id) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                pane_state.invalidate();
+            });
+    }
+
     pub fn market_subscriptions<M>(
         &self,
         market_msg: impl Fn(exchange::Event) -> M + Clone + Send + 'static,

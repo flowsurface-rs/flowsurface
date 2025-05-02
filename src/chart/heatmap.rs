@@ -490,7 +490,7 @@ impl HeatmapChart {
         }
     }
 
-    fn render_start(&mut self) {
+    pub fn render_start(&mut self) {
         let chart_state = self.common_data_mut();
 
         if chart_state.autoscale {

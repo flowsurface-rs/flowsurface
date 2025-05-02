@@ -709,7 +709,7 @@ impl KlineChart {
         }
     }
 
-    fn render_start(&mut self) {
+    pub fn render_start(&mut self) {
         let chart_state = &mut self.chart;
 
         if chart_state.autoscale {

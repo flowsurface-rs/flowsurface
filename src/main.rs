@@ -6,6 +6,7 @@ mod layout;
 mod logger;
 mod screen;
 mod style;
+mod theme;
 mod widget;
 mod window;
 
@@ -18,6 +19,7 @@ use screen::{
     },
 };
 use style::{Icon, icon_text};
+use theme::ThemeEditor;
 use widget::{
     confirm_dialog_container, dashboard_modal, main_dialog_modal,
     notification::{self, Toast},
@@ -25,7 +27,7 @@ use widget::{
 };
 use window::{Window, window_events};
 
-use data::{InternalError, config::theme::custom_theme, layout::WindowSpec, sidebar};
+use data::{InternalError, config::theme::default_theme, layout::WindowSpec, sidebar};
 use exchange::adapter::{Exchange, StreamType, fetch_ticker_info};
 use iced::{
     Alignment, Element, Length, Subscription, Task, padding,
@@ -69,6 +71,7 @@ struct Flowsurface {
     theme: data::Theme,
     notifications: Vec<Toast>,
     audio_stream: audio::AudioStream,
+    theme_editor: theme::ThemeEditor,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +101,8 @@ enum Message {
 
     AddNotification(Toast),
     DeleteNotification(usize),
+
+    ThemeEditor(theme::Message),
 }
 
 impl Flowsurface {
@@ -119,6 +124,8 @@ impl Flowsurface {
         let active_layout = saved_state.layout_manager.active_layout();
         let (main_window_id, open_main_window) = window::open(main_window_cfg);
 
+        let theme = saved_state.theme.clone();
+
         (
             Self {
                 main_window: Window::new(main_window_id),
@@ -131,6 +138,7 @@ impl Flowsurface {
                 theme: saved_state.theme,
                 notifications: vec![],
                 audio_stream: audio::AudioStream::new(saved_state.audio_cfg),
+                theme_editor: theme::ThemeEditor::new(theme),
             },
             open_main_window
                 .then(|_| Task::none())
@@ -299,7 +307,8 @@ impl Flowsurface {
                 };
             }
             Message::ThemeSelected(theme) => {
-                self.theme = theme;
+                self.theme = theme.clone();
+                self.theme_editor = ThemeEditor::new(theme);
             }
             Message::Dashboard(id, message) => {
                 let main_window = self.main_window;
@@ -451,6 +460,29 @@ impl Flowsurface {
                     ))));
                 }
             }
+            Message::ThemeEditor(msg) => {
+                let action = self.theme_editor.update(msg);
+
+                match action {
+                    theme::Action::Exit => {
+                        self.sidebar.set_menu(sidebar::Menu::Settings);
+                    }
+                    theme::Action::UpdateTheme(theme) => {
+                        self.theme = data::Theme(theme);
+
+                        let main_window = self.main_window.id;
+
+                        if let Some(dashboard) = self.active_dashboard_mut() {
+                            dashboard.invalidate_all_panes(main_window)
+                        } else {
+                            return Task::done(Message::ErrorOccurred(InternalError::Layout(
+                                "No active dashboard".to_string(),
+                            )));
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         Task::none()
     }
@@ -483,7 +515,8 @@ impl Flowsurface {
 
                 let nav_buttons = {
                     let settings_modal_button = {
-                        let is_active = self.sidebar.is_menu_active(sidebar::Menu::Settings);
+                        let is_active = self.sidebar.is_menu_active(sidebar::Menu::Settings)
+                            || self.sidebar.is_menu_active(sidebar::Menu::ThemeEditor);
 
                         create_button(
                             icon_text(Icon::Cog, 14)
@@ -618,7 +651,7 @@ impl Flowsurface {
                 sidebar::Menu::Settings => {
                     let settings_modal = {
                         let mut all_themes = iced_core::Theme::ALL.to_vec();
-                        all_themes.push(iced_core::Theme::Custom(custom_theme().into()));
+                        all_themes.push(iced_core::Theme::Custom(default_theme().into()));
 
                         let trade_fetch_checkbox = {
                             let is_active = dashboard.trade_fetch_enabled;
@@ -648,6 +681,9 @@ impl Flowsurface {
                             pick_list(all_themes, Some(self.theme.clone().0), |theme| {
                                 Message::ThemeSelected(data::Theme(theme))
                             });
+
+                        let toggle_theme_editor = button(text("Theme editor"))
+                            .on_press(Message::ToggleSidebarMenu(sidebar::Menu::ThemeEditor));
 
                         let timezone_picklist = pick_list(
                             [data::UserTimezone::Utc, data::UserTimezone::Local],
@@ -711,8 +747,12 @@ impl Flowsurface {
                                 column![text("Time zone").size(14), timezone_picklist,].spacing(8),
                                 column![text("Theme").size(14), theme_picklist,].spacing(8),
                                 column![text("Interface scale").size(14), scale_factor,].spacing(8),
-                                column![text("Experimental").size(14), trade_fetch_checkbox,]
-                                    .spacing(8),
+                                column![
+                                    text("Experimental").size(14),
+                                    trade_fetch_checkbox,
+                                    toggle_theme_editor
+                                ]
+                                .spacing(8),
                             ]
                             .spacing(20),
                         )
@@ -867,6 +907,21 @@ impl Flowsurface {
                         Message::ToggleSidebarMenu(sidebar::Menu::None),
                         padding,
                         Alignment::Start,
+                        align_x,
+                    )
+                }
+                sidebar::Menu::ThemeEditor => {
+                    let (align_x, padding) = match sidebar_pos {
+                        sidebar::Position::Left => (Alignment::Start, padding::left(48).top(8)),
+                        sidebar::Position::Right => (Alignment::End, padding::right(48).top(8)),
+                    };
+
+                    dashboard_modal(
+                        base,
+                        self.theme_editor.view().map(Message::ThemeEditor),
+                        Message::ToggleSidebarMenu(sidebar::Menu::None),
+                        padding,
+                        Alignment::End,
                         align_x,
                     )
                 }

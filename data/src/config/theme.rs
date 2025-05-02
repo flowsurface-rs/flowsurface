@@ -9,7 +9,7 @@ pub struct Theme(pub iced_core::Theme);
 
 impl Default for Theme {
     fn default() -> Self {
-        Self(iced_core::Theme::Custom(custom_theme().into()))
+        Self(iced_core::Theme::Custom(default_theme().into()))
     }
 }
 
@@ -19,7 +19,7 @@ impl From<Theme> for iced_core::Theme {
     }
 }
 
-pub fn custom_theme() -> Custom {
+pub fn default_theme() -> Custom {
     Custom::new(
         "Flowsurface".to_string(),
         Palette {
@@ -31,6 +31,10 @@ pub fn custom_theme() -> Custom {
             warning: Color::from_rgb8(238, 216, 139),
         },
     )
+}
+
+pub fn custom_theme(palette: Palette) -> Custom {
+    Custom::new("Flowsurface".to_string(), palette)
 }
 
 impl Serialize for Theme {

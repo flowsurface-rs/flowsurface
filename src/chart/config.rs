@@ -31,7 +31,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             })
             .step(500.0)
             .into(),
-            text(format!("${}", format_with_commas(filter))).size(13),
+            Some(text(format!("${}", format_with_commas(filter))).size(13)),
         )
     };
     let order_size_slider = {
@@ -50,7 +50,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             })
             .step(1000.0)
             .into(),
-            text(format!("${}", format_with_commas(filter))).size(13),
+            Some(text(format!("${}", format_with_commas(filter))).size(13)),
         )
     };
     let circle_scaling_slider = {
@@ -69,7 +69,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             })
             .step(10)
             .into(),
-            text(format!("{}%", cfg.trade_size_scale)).size(13),
+            Some(text(format!("{}%", cfg.trade_size_scale)).size(13)),
         )
     };
 
@@ -179,7 +179,7 @@ pub fn timesales_cfg_view<'a>(
             })
             .step(500.0)
             .into(),
-            text(format!("${}", format_with_commas(filter))).size(13),
+            Some(text(format!("${}", format_with_commas(filter))).size(13)),
         )
     };
 

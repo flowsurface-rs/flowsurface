@@ -144,21 +144,24 @@ where
 pub fn create_slider_row<'a, Message>(
     label: Text<'a>,
     slider: Element<'a, Message>,
-    placeholder: Text<'a>,
+    placeholder: Option<Text<'a>>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
+    let slider = if let Some(placeholder) = placeholder {
+        row![slider, placeholder]
+            .align_y(Alignment::Center)
+            .spacing(2)
+    } else {
+        row![slider]
+    };
+
     container(
-        row![
-            label,
-            column![slider, placeholder,]
-                .spacing(2)
-                .align_x(Alignment::Center),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(8)
-        .padding(8),
+        row![label, slider]
+            .align_y(Alignment::Center)
+            .spacing(8)
+            .padding(8),
     )
     .style(style::modal_container)
     .into()

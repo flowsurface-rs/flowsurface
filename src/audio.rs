@@ -112,7 +112,7 @@ impl AudioStream {
                     })
                     .step(1.0)
                     .into(),
-                    text(format!("{volume_pct}%")).size(13),
+                    Some(text(format!("{volume_pct}%")).size(13)),
                 )
             };
 
