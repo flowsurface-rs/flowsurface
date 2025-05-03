@@ -308,11 +308,6 @@ impl Flowsurface {
             }
             Message::ThemeSelected(theme) => {
                 self.theme = theme.clone();
-
-                let bg_color = theme.0.palette().background;
-                let initial_hsv = theme_editor::rgb_to_hsv(bg_color.r, bg_color.g, bg_color.b);
-
-                self.theme_editor.hsv = Some(initial_hsv);
             }
             Message::Dashboard(id, message) => {
                 let main_window = self.main_window;

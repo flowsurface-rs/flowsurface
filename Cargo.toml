@@ -43,6 +43,7 @@ ordered-float.workspace = true
 log.workspace = true
 uuid.workspace = true
 fern = "0.7.1"
+palette = "0.7.6"
 
 exchange = { version = "0.1.0", path = "exchange" }
 data = { version = "0.1.0", path = "data" }
@@ -50,4 +51,3 @@ data = { version = "0.1.0", path = "data" }
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "bc66866bb81d0d477c7d0dd96cd54d1d7b443801" }
 iced_core = { git = "https://github.com/iced-rs/iced", rev = "bc66866bb81d0d477c7d0dd96cd54d1d7b443801"}
-

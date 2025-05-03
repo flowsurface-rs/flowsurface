@@ -1216,6 +1216,7 @@ dependencies = [
  "iced_futures 0.13.2",
  "log",
  "ordered-float 5.0.0",
+ "palette",
  "serde",
  "serde_json",
  "thiserror 2.0.12",

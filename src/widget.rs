@@ -8,7 +8,9 @@ use iced::{
     },
 };
 
+pub mod color_picker;
 pub mod column_drag;
+pub mod decorate;
 pub mod multi_split;
 pub mod notification;
 
