@@ -8,10 +8,9 @@ use iced::advanced::Layout;
 use iced::advanced::renderer::{Quad, Renderer as _};
 use iced::widget::{Container, Space, column, container, row};
 use iced::{Color, Element, Point, Rectangle, Renderer, Theme, advanced, border, mouse, touch};
-use palette::rgb::{Rgb, Rgba};
-use palette::{FromColor, Hsva, RgbHue};
 
 use super::decorate::decorate;
+use palette::{Hsva, RgbHue};
 
 const HANDLE_RADIUS: f32 = 10.0;
 const SLIDER_HEIGHT: f32 = 15.0;
@@ -54,7 +53,7 @@ fn bordered<'a, Message: 'a>(element: impl Into<Element<'a, Message>>) -> Contai
             background: None,
             border: border::rounded(2)
                 .width(1)
-                .color(theme.extended_palette().primary.weak.color),
+                .color(theme.extended_palette().background.strong.color),
             shadow: iced::Shadow::default(),
         })
 }
@@ -289,7 +288,7 @@ fn picker<'a, Message: 'a>(
     height: impl Into<Length>,
     handle_radius: f32,
 ) -> Element<'a, Message> {
-    let color = to_hsva(color);
+    let color = data::config::theme::to_hsva(color);
 
     decorate(Space::new(width, height))
         .update(
@@ -318,7 +317,7 @@ fn picker<'a, Message: 'a>(
                                 picker.handle_from_cursor(position, bounds, handle_radius);
                             let color = picker.color_at_handle(color, new_handle, bounds);
 
-                            shell.publish((on_color)(from_hsva(color)));
+                            shell.publish((on_color)(data::config::theme::from_hsva(color)));
 
                             *state = Some(new_handle);
                         }
@@ -330,7 +329,7 @@ fn picker<'a, Message: 'a>(
                         if let Some(last_handle) = state.take() {
                             let color = picker.color_at_handle(color, last_handle, bounds);
 
-                            shell.publish((on_color)(from_hsva(color)));
+                            shell.publish((on_color)(data::config::theme::from_hsva(color)));
                         }
                     }
                     iced::Event::Mouse(mouse::Event::CursorMoved { position })
@@ -356,7 +355,7 @@ fn picker<'a, Message: 'a>(
 
                             let color = picker.color_at_handle(color, *last_handle, bounds);
 
-                            shell.publish((on_color)(from_hsva(color)));
+                            shell.publish((on_color)(data::config::theme::from_hsva(color)));
                         }
                     }
                     _ => {}
@@ -393,7 +392,7 @@ fn picker<'a, Message: 'a>(
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
                         },
-                        from_hsva(color),
+                        data::config::theme::from_hsva(color),
                     );
                 });
 
@@ -412,37 +411,4 @@ fn picker<'a, Message: 'a>(
             },
         )
         .into()
-}
-
-pub fn from_hsva(color: Hsva) -> Color {
-    to_color(palette::Srgba::from_color(color))
-}
-
-fn to_color(rgba: Rgba) -> Color {
-    Color {
-        r: rgba.color.red,
-        g: rgba.color.green,
-        b: rgba.color.blue,
-        a: rgba.alpha,
-    }
-}
-
-pub fn to_hsva(color: Color) -> Hsva {
-    Hsva::from_color(to_rgba(color))
-}
-
-fn to_rgb(color: Color) -> Rgb {
-    Rgb {
-        red: color.r,
-        green: color.g,
-        blue: color.b,
-        ..Rgb::default()
-    }
-}
-
-fn to_rgba(color: Color) -> Rgba {
-    Rgba {
-        alpha: color.a,
-        color: to_rgb(color),
-    }
 }

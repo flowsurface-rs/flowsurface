@@ -2,6 +2,10 @@ use iced_core::{
     Color,
     theme::{Custom, Palette},
 };
+use palette::{
+    FromColor, Hsva,
+    rgb::{Rgb, Rgba},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -148,5 +152,87 @@ impl<'de> Deserialize<'de> for Theme {
         };
 
         Ok(Theme(theme))
+    }
+}
+
+pub fn hex_to_color(hex: &str) -> Option<Color> {
+    if hex.len() == 7 || hex.len() == 9 {
+        let hash = &hex[0..1];
+        let r = u8::from_str_radix(&hex[1..3], 16);
+        let g = u8::from_str_radix(&hex[3..5], 16);
+        let b = u8::from_str_radix(&hex[5..7], 16);
+        let a = (hex.len() == 9)
+            .then(|| u8::from_str_radix(&hex[7..9], 16).ok())
+            .flatten();
+
+        return match (hash, r, g, b, a) {
+            ("#", Ok(r), Ok(g), Ok(b), None) => Some(Color {
+                r: r as f32 / 255.0,
+                g: g as f32 / 255.0,
+                b: b as f32 / 255.0,
+                a: 1.0,
+            }),
+            ("#", Ok(r), Ok(g), Ok(b), Some(a)) => Some(Color {
+                r: r as f32 / 255.0,
+                g: g as f32 / 255.0,
+                b: b as f32 / 255.0,
+                a: a as f32 / 255.0,
+            }),
+            _ => None,
+        };
+    }
+
+    None
+}
+
+pub fn color_to_hex(color: Color) -> String {
+    use std::fmt::Write;
+
+    let mut hex = String::with_capacity(9);
+
+    let [r, g, b, a] = color.into_rgba8();
+
+    let _ = write!(&mut hex, "#");
+    let _ = write!(&mut hex, "{r:02X}");
+    let _ = write!(&mut hex, "{g:02X}");
+    let _ = write!(&mut hex, "{b:02X}");
+
+    if a < u8::MAX {
+        let _ = write!(&mut hex, "{a:02X}");
+    }
+
+    hex
+}
+
+pub fn from_hsva(color: Hsva) -> Color {
+    to_color(palette::Srgba::from_color(color))
+}
+
+fn to_color(rgba: Rgba) -> Color {
+    Color {
+        r: rgba.color.red,
+        g: rgba.color.green,
+        b: rgba.color.blue,
+        a: rgba.alpha,
+    }
+}
+
+pub fn to_hsva(color: Color) -> Hsva {
+    Hsva::from_color(to_rgba(color))
+}
+
+fn to_rgb(color: Color) -> Rgb {
+    Rgb {
+        red: color.r,
+        green: color.g,
+        blue: color.b,
+        ..Rgb::default()
+    }
+}
+
+fn to_rgba(color: Color) -> Rgba {
+    Rgba {
+        alpha: color.a,
+        color: to_rgb(color),
     }
 }

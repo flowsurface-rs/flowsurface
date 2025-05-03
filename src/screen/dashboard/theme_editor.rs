@@ -1,6 +1,6 @@
 use iced::{
     Alignment, Element,
-    widget::{button, column, container, horizontal_space, pick_list, row, text},
+    widget::{button, column, container, horizontal_space, pick_list, row, text_input::default},
 };
 
 use crate::{
@@ -40,6 +40,7 @@ pub enum Message {
     ComponentChanged(Component),
     CloseRequested,
     Color(iced::Color),
+    HexInput(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +52,8 @@ pub enum Action {
 
 pub struct ThemeEditor {
     pub custom_theme: Option<iced_core::Theme>,
-    pub component: Component,
+    component: Component,
+    hex_input: Option<String>,
 }
 
 impl ThemeEditor {
@@ -59,6 +61,7 @@ impl ThemeEditor {
         Self {
             custom_theme: custom_theme.map(|theme| theme.0),
             component: Component::Background,
+            hex_input: None,
         }
     }
 
@@ -77,6 +80,8 @@ impl ThemeEditor {
     pub fn update(&mut self, message: Message, theme: iced_core::Theme) -> Action {
         match message {
             Message::Color(color) => {
+                self.hex_input = None;
+
                 let mut new_palette = theme.palette();
 
                 match self.component {
@@ -97,14 +102,72 @@ impl ThemeEditor {
                 self.component = component;
                 Action::None
             }
+            Message::HexInput(input) => {
+                let mut action = Action::None;
+
+                if let Some(color) = data::config::theme::hex_to_color(&input) {
+                    let mut new_palette = theme.palette();
+
+                    match self.component {
+                        Component::Background => new_palette.background = color,
+                        Component::Text => new_palette.text = color,
+                        Component::Primary => new_palette.primary = color,
+                        Component::Success => new_palette.success = color,
+                        Component::Danger => new_palette.danger = color,
+                        Component::Warning => new_palette.warning = color,
+                    }
+
+                    let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
+                    self.custom_theme = Some(new_theme.clone());
+
+                    action = Action::UpdateTheme(new_theme);
+                }
+
+                self.hex_input = Some(input);
+                action
+            }
             Message::CloseRequested => Action::Exit,
         }
     }
 
     pub fn view(&self, theme: &iced_core::Theme) -> Element<'_, Message> {
+        let color = self.focused_color(theme);
+
         let close_editor = button(icon_text(Icon::Return, 11))
             .on_press(Message::CloseRequested)
             .style(move |theme, status| style::button::transparent(theme, status, false));
+
+        let is_input_valid = self.hex_input.is_none()
+            || self
+                .hex_input
+                .as_deref()
+                .and_then(data::config::theme::hex_to_color)
+                .is_some();
+
+        let hex_input = iced::widget::text_input(
+            "",
+            self.hex_input
+                .as_deref()
+                .unwrap_or(data::config::theme::color_to_hex(color).as_str()),
+        )
+        .on_input(Message::HexInput)
+        .width(80)
+        .style(move |theme: &iced::Theme, status| {
+            let palette = theme.extended_palette();
+
+            iced::widget::text_input::Style {
+                border: iced::Border {
+                    color: if is_input_valid {
+                        palette.background.strong.color
+                    } else {
+                        palette.danger.base.color
+                    },
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                ..default(theme, status)
+            }
+        });
 
         let focused_field = pick_list(
             Component::ALL.to_vec(),
@@ -115,13 +178,12 @@ impl ThemeEditor {
         let content = column![
             row![
                 close_editor,
-                text("Theme Editor"),
                 horizontal_space(),
-                focused_field,
+                row![hex_input, focused_field,].spacing(4),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            color_picker(self.focused_color(theme), Message::Color),
+            color_picker(color, Message::Color),
         ]
         .spacing(10);
 

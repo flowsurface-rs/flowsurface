@@ -902,6 +902,7 @@ dependencies = [
  "log",
  "open",
  "ordered-float 5.0.0",
+ "palette",
  "regex",
  "rodio",
  "serde",
