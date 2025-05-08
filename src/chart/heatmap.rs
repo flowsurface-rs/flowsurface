@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 
 use data::UserTimezone;
+use data::chart::heatmap::{GroupedTrade, HistoricalDepth, QtyScale};
 use data::chart::{
     Basis, ChartLayout,
     heatmap::Config,
@@ -102,169 +103,6 @@ impl ChartConstants for HeatmapChart {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
-struct OrderRun {
-    start_time: u64,
-    until_time: u64,
-    qty: OrderedFloat<f32>,
-    is_bid: bool,
-}
-
-impl OrderRun {
-    fn with_range(&self, earliest: u64, latest: u64) -> Option<&OrderRun> {
-        if self.start_time <= latest && self.until_time >= earliest {
-            Some(self)
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, PartialEq)]
-struct Orderbook {
-    price_levels: BTreeMap<OrderedFloat<f32>, Vec<OrderRun>>,
-    aggr_time: u64,
-    tick_size: f32,
-    min_order_qty: f32,
-}
-
-impl Orderbook {
-    fn new(min_order_qty: f32, tick_size: f32, basis: Basis) -> Self {
-        Self {
-            price_levels: BTreeMap::new(),
-            aggr_time: match basis {
-                Basis::Time(interval) => interval,
-                Basis::Tick(_) => unimplemented!(),
-            },
-            tick_size,
-            min_order_qty,
-        }
-    }
-
-    fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
-        let tick_size = self.tick_size;
-
-        self.process_side(&depth.bids, time, true, |price| {
-            ((price * (1.0 / tick_size)).floor()) * tick_size
-        });
-        self.process_side(&depth.asks, time, false, |price| {
-            ((price * (1.0 / tick_size)).ceil()) * tick_size
-        });
-    }
-
-    fn process_side<F>(
-        &mut self,
-        side: &BTreeMap<OrderedFloat<f32>, f32>,
-        time: u64,
-        is_bid: bool,
-        round_price: F,
-    ) where
-        F: Fn(f32) -> f32,
-    {
-        let mut current_price = None;
-        let mut current_qty = 0.0;
-
-        for (price, qty) in side {
-            let rounded_price = round_price(price.into_inner());
-
-            if Some(rounded_price) == current_price {
-                current_qty += qty;
-            } else {
-                if let Some(price) = current_price {
-                    self.update_price_level(time, price, current_qty, is_bid);
-                }
-                current_price = Some(rounded_price);
-                current_qty = *qty;
-            }
-        }
-
-        if let Some(price) = current_price {
-            self.update_price_level(time, price, current_qty, is_bid);
-        }
-    }
-
-    fn update_price_level(&mut self, time: u64, price: f32, qty: f32, is_bid: bool) {
-        let price_level = self.price_levels.entry(OrderedFloat(price)).or_default();
-
-        match price_level.last_mut() {
-            Some(last_run) if last_run.is_bid == is_bid => {
-                let last_qty = last_run.qty.0;
-                let qty_diff_pct = if last_qty > 0.0 {
-                    (qty - last_qty).abs() / last_qty
-                } else {
-                    f32::INFINITY
-                };
-
-                if qty_diff_pct <= self.min_order_qty || last_run.qty == OrderedFloat(qty) {
-                    last_run.until_time = time + self.aggr_time;
-                } else {
-                    price_level.push(OrderRun {
-                        start_time: time,
-                        until_time: time + self.aggr_time,
-                        qty: OrderedFloat(qty),
-                        is_bid,
-                    });
-                }
-            }
-            _ => {
-                price_level.push(OrderRun {
-                    start_time: time,
-                    until_time: time + self.aggr_time,
-                    qty: OrderedFloat(qty),
-                    is_bid,
-                });
-            }
-        }
-    }
-
-    fn iter_time_filtered(
-        &self,
-        earliest: u64,
-        latest: u64,
-        highest: f32,
-        lowest: f32,
-    ) -> impl Iterator<Item = (&OrderedFloat<f32>, &Vec<OrderRun>)> {
-        self.price_levels.iter().filter(move |(price, runs)| {
-            **price <= OrderedFloat(highest)
-                && **price >= OrderedFloat(lowest)
-                && runs
-                    .iter()
-                    .any(|run| run.until_time >= earliest && run.start_time <= latest)
-        })
-    }
-
-    fn latest_order_runs(
-        &self,
-        highest: f32,
-        lowest: f32,
-        latest_timestamp: u64,
-    ) -> impl Iterator<Item = (&OrderedFloat<f32>, &OrderRun)> {
-        self.price_levels.iter().filter_map(move |(price, runs)| {
-            if **price <= *OrderedFloat(highest) && **price >= *OrderedFloat(lowest) {
-                runs.last()
-                    .filter(|run| run.until_time >= latest_timestamp)
-                    .map(|run| (price, run))
-            } else {
-                None
-            }
-        })
-    }
-}
-
-#[derive(Default)]
-struct QtyScale {
-    max_trade_qty: f32,
-    max_aggr_volume: f32,
-    max_depth_qty: f32,
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupedTrade {
-    pub is_sell: bool,
-    pub price: f32,
-    pub qty: f32,
-}
-
 enum IndicatorData {
     Volume,
     SessionVolumeProfile(HashMap<OrderedFloat<f32>, (f32, f32)>),
@@ -275,7 +113,7 @@ pub struct HeatmapChart {
     timeseries: BTreeMap<u64, (Box<[GroupedTrade]>, (f32, f32))>,
     indicators: HashMap<HeatmapIndicator, IndicatorData>,
     pause_buffer: Vec<(u64, Box<[Trade]>, Depth)>,
-    orderbook: Orderbook,
+    heatmap: HistoricalDepth,
     visual_config: Config,
 }
 
@@ -315,7 +153,7 @@ impl HeatmapChart {
                     .collect()
             },
             pause_buffer: vec![],
-            orderbook: Orderbook::new(
+            heatmap: HistoricalDepth::new(
                 ticker_info.expect("basis set without ticker info").min_qty,
                 tick_size,
                 basis,
@@ -369,12 +207,7 @@ impl HeatmapChart {
             }
 
             if let Some(oldest_time) = self.timeseries.keys().next().cloned() {
-                self.orderbook
-                    .price_levels
-                    .iter_mut()
-                    .for_each(|(_, runs)| {
-                        runs.retain(|run| run.start_time >= oldest_time);
-                    });
+                self.heatmap.cleanup_old_price_levels(oldest_time);
             }
         }
     }
@@ -479,7 +312,7 @@ impl HeatmapChart {
             }
         };
 
-        self.orderbook
+        self.heatmap
             .insert_latest_depth(depth, rounded_depth_update);
 
         chart.latest_x = rounded_depth_update;
@@ -507,7 +340,7 @@ impl HeatmapChart {
         self.chart.basis = basis;
 
         self.timeseries.clear();
-        self.orderbook = Orderbook::new(
+        self.heatmap = HistoricalDepth::new(
             self.chart
                 .ticker_info
                 .expect("basis set without ticker info")
@@ -538,7 +371,7 @@ impl HeatmapChart {
         }
 
         self.timeseries.clear();
-        self.orderbook = Orderbook::new(
+        self.heatmap = HistoricalDepth::new(
             self.chart
                 .ticker_info
                 .expect("basis set without ticker info")
@@ -606,7 +439,7 @@ impl HeatmapChart {
                 max_aggr_volume = max_aggr_volume.max(buy_volume).max(sell_volume);
             });
 
-        self.orderbook
+        self.heatmap
             .iter_time_filtered(earliest, latest, highest, lowest)
             .for_each(|(price, runs)| {
                 runs.iter()
@@ -614,8 +447,8 @@ impl HeatmapChart {
                         let visible_run = run.with_range(earliest, latest)?;
 
                         let order_size = match market_type {
-                            MarketType::InversePerps => visible_run.qty.0,
-                            _ => **price * visible_run.qty.0,
+                            MarketType::InversePerps => visible_run.qty(),
+                            _ => **price * visible_run.qty(),
                         };
 
                         if order_size > self.visual_config.order_size_filter {
@@ -625,7 +458,7 @@ impl HeatmapChart {
                         }
                     })
                     .for_each(|run| {
-                        max_depth_qty = max_depth_qty.max(run.qty.0);
+                        max_depth_qty = max_depth_qty.max(run.qty());
                     });
             });
 
@@ -715,7 +548,7 @@ impl canvas::Program<Message> for HeatmapChart {
             let (max_aggr_volume, max_trade_qty) =
                 (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
 
-            self.orderbook
+            self.heatmap
                 .iter_time_filtered(earliest, latest, highest, lowest)
                 .for_each(|(price, runs)| {
                     let y_position = chart.price_to_y(price.0);
@@ -723,8 +556,8 @@ impl canvas::Program<Message> for HeatmapChart {
                     runs.iter()
                         .filter(|run| {
                             let order_size = match market_type {
-                                MarketType::InversePerps => run.qty.0,
-                                _ => **price * run.qty.0,
+                                MarketType::InversePerps => run.qty(),
+                                _ => **price * run.qty(),
                             };
                             order_size > self.visual_config.order_size_filter
                         })
@@ -735,7 +568,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             let width = end_x - start_x;
 
                             if width > 0.0 {
-                                let color_alpha = (run.qty.0 / max_depth_qty).min(1.0);
+                                let color_alpha = (run.qty() / max_depth_qty).min(1.0);
                                 let width_unscaled = width / chart.scaling;
 
                                 if width_unscaled > 40.0
@@ -743,7 +576,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     && color_alpha > 0.4
                                 {
                                     frame.fill_text(canvas::Text {
-                                        content: abbr_large_numbers(run.qty.0),
+                                        content: abbr_large_numbers(run.qty()),
                                         position: Point::new(
                                             start_x + (cell_height / 2.0),
                                             y_position,
@@ -779,9 +612,9 @@ impl canvas::Program<Message> for HeatmapChart {
 
             if let Some((latest_timestamp, _)) = self.timeseries.last_key_value() {
                 let max_qty = self
-                    .orderbook
+                    .heatmap
                     .latest_order_runs(highest, lowest, *latest_timestamp)
-                    .map(|(_, order_run)| order_run.qty.0)
+                    .map(|(_, run)| run.qty())
                     .fold(f32::MIN, f32::max)
                     .ceil()
                     * 5.0
@@ -790,11 +623,11 @@ impl canvas::Program<Message> for HeatmapChart {
                     return;
                 }
 
-                self.orderbook
+                self.heatmap
                     .latest_order_runs(highest, lowest, *latest_timestamp)
                     .for_each(|(price, run)| {
                         let y_position = chart.price_to_y(price.0);
-                        let bar_width = (run.qty.0 / max_qty) * 50.0;
+                        let bar_width = (run.qty() / max_qty) * 50.0;
 
                         frame.fill_rectangle(
                             Point::new(0.0, y_position - (cell_height / 2.0)),
