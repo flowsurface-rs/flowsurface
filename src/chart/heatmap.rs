@@ -125,11 +125,11 @@ struct Orderbook {
     price_levels: BTreeMap<OrderedFloat<f32>, Vec<OrderRun>>,
     aggr_time: u64,
     tick_size: f32,
-    pub qty_smoothing: f32,
+    min_order_qty: f32,
 }
 
 impl Orderbook {
-    fn new(tick_size: f32, basis: Basis) -> Self {
+    fn new(min_order_qty: f32, tick_size: f32, basis: Basis) -> Self {
         Self {
             price_levels: BTreeMap::new(),
             aggr_time: match basis {
@@ -137,21 +137,8 @@ impl Orderbook {
                 Basis::Tick(_) => unimplemented!(),
             },
             tick_size,
-            qty_smoothing: 1.0,
+            min_order_qty,
         }
-    }
-
-    fn with_qty_smoothing(
-        mut self,
-        threshold: Option<Config>,
-        min_qty: Option<TickerInfo>,
-    ) -> Self {
-        if let Some(info) = min_qty {
-            if let Some(config) = threshold {
-                self.qty_smoothing = config.qty_smoothing_pct as f32 * info.min_qty
-            }
-        }
-        self
     }
 
     fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
@@ -208,7 +195,7 @@ impl Orderbook {
                     f32::INFINITY
                 };
 
-                if qty_diff_pct <= self.qty_smoothing || last_run.qty == OrderedFloat(qty) {
+                if qty_diff_pct <= self.min_order_qty || last_run.qty == OrderedFloat(qty) {
                     last_run.until_time = time + self.aggr_time;
                 } else {
                     price_level.push(OrderRun {
@@ -328,7 +315,11 @@ impl HeatmapChart {
                     .collect()
             },
             pause_buffer: vec![],
-            orderbook: Orderbook::new(tick_size, basis).with_qty_smoothing(config, ticker_info),
+            orderbook: Orderbook::new(
+                ticker_info.expect("basis set without ticker info").min_qty,
+                tick_size,
+                basis,
+            ),
             timeseries: BTreeMap::new(),
             visual_config: config.unwrap_or_default(),
         }
@@ -365,19 +356,11 @@ impl HeatmapChart {
     }
 
     fn cleanup_old_data(&mut self) {
-        let aggregate_time: u64 = match &mut self.chart.basis {
-            Basis::Time(interval) => *interval,
-            Basis::Tick(_) => todo!(),
-        };
-
-        let time_window_to_keep = 240; // seconds
-        let max_items = (time_window_to_keep * 1000 / aggregate_time) as usize;
-
-        if self.timeseries.len() > max_items {
+        if self.timeseries.len() > 2800 {
             let keys_to_remove: Vec<u64> = self
                 .timeseries
                 .keys()
-                .take(self.timeseries.len() - max_items)
+                .take(self.timeseries.len() - 400)
                 .cloned()
                 .collect();
 
@@ -518,17 +501,20 @@ impl HeatmapChart {
 
     pub fn set_visual_config(&mut self, visual_config: Config) {
         self.visual_config = visual_config;
-
-        if let Some(info) = self.chart.ticker_info {
-            self.orderbook.qty_smoothing = visual_config.qty_smoothing_pct as f32 * info.min_qty;
-        }
     }
 
     pub fn set_basis(&mut self, basis: Basis) {
         self.chart.basis = basis;
-        self.orderbook = Orderbook::new(self.chart.tick_size, basis)
-            .with_qty_smoothing(Some(self.visual_config), self.chart.ticker_info);
+
         self.timeseries.clear();
+        self.orderbook = Orderbook::new(
+            self.chart
+                .ticker_info
+                .expect("basis set without ticker info")
+                .min_qty,
+            self.chart.tick_size,
+            basis,
+        );
     }
 
     pub fn chart_layout(&self) -> ChartLayout {
@@ -552,8 +538,14 @@ impl HeatmapChart {
         }
 
         self.timeseries.clear();
-        self.orderbook = Orderbook::new(new_tick_size, basis)
-            .with_qty_smoothing(Some(self.visual_config), self.chart.ticker_info);
+        self.orderbook = Orderbook::new(
+            self.chart
+                .ticker_info
+                .expect("basis set without ticker info")
+                .min_qty,
+            new_tick_size,
+            basis,
+        );
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
