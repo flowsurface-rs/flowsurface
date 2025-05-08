@@ -17,6 +17,7 @@ pub struct Config {
     pub order_size_filter: f32,
     pub dynamic_sized_trades: bool,
     pub trade_size_scale: i32,
+    pub qty_smoothing_pct: i32,
 }
 
 impl Default for Config {
@@ -26,6 +27,7 @@ impl Default for Config {
             order_size_filter: 0.0,
             dynamic_sized_trades: true,
             trade_size_scale: 100,
+            qty_smoothing_pct: 100,
         }
     }
 }

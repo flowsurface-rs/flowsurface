@@ -343,6 +343,14 @@ impl Dashboard {
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
                             state.settings.selected_basis = Some(new_basis);
 
+                            match state.content {
+                                PaneContent::Heatmap(ref mut chart, _) => {
+                                    chart.set_basis(new_basis);
+                                    return (Task::done(Message::RefreshStreams), None);
+                                }
+                                _ => {}
+                            }
+
                             if let Some((exchange, ticker)) = state.get_ticker_exchange() {
                                 let chart_kind = state.content.chart_kind().unwrap_or_default();
 

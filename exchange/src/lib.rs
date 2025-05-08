@@ -22,6 +22,10 @@ impl std::fmt::Display for Timeframe {
             f,
             "{}",
             match self {
+                Timeframe::MS100 => "100ms",
+                Timeframe::MS200 => "200ms",
+                Timeframe::MS500 => "500ms",
+                Timeframe::MS1000 => "1s",
                 Timeframe::M1 => "1m",
                 Timeframe::M3 => "3m",
                 Timeframe::M5 => "5m",
@@ -37,6 +41,10 @@ impl std::fmt::Display for Timeframe {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Timeframe {
+    MS100,
+    MS200,
+    MS500,
+    MS1000,
     M1,
     M3,
     M5,
@@ -48,7 +56,7 @@ pub enum Timeframe {
 }
 
 impl Timeframe {
-    pub const ALL: [Timeframe; 8] = [
+    pub const KLINE: [Timeframe; 8] = [
         Timeframe::M1,
         Timeframe::M3,
         Timeframe::M5,
@@ -57,6 +65,13 @@ impl Timeframe {
         Timeframe::H1,
         Timeframe::H2,
         Timeframe::H4,
+    ];
+
+    pub const HEATMAP: [Timeframe; 4] = [
+        Timeframe::MS100,
+        Timeframe::MS200,
+        Timeframe::MS500,
+        Timeframe::MS1000,
     ];
 
     pub fn to_minutes(self) -> u16 {
@@ -69,11 +84,21 @@ impl Timeframe {
             Timeframe::H1 => 60,
             Timeframe::H2 => 120,
             Timeframe::H4 => 240,
+            _ => panic!("Invalid timeframe: {:?}", self),
         }
     }
 
     pub fn to_milliseconds(self) -> u64 {
-        u64::from(self.to_minutes()) * 60_000
+        match self {
+            Timeframe::MS100 => 100,
+            Timeframe::MS200 => 200,
+            Timeframe::MS500 => 500,
+            Timeframe::MS1000 => 1_000,
+            _ => {
+                let minutes = self.to_minutes();
+                u64::from(minutes) * 60_000
+            }
+        }
     }
 }
 
@@ -92,6 +117,10 @@ impl From<Timeframe> for u64 {
 impl From<u64> for Timeframe {
     fn from(milliseconds: u64) -> Timeframe {
         match milliseconds {
+            100 => Timeframe::MS100,
+            200 => Timeframe::MS200,
+            500 => Timeframe::MS500,
+            1_000 => Timeframe::MS1000,
             60_000 => Timeframe::M1,
             180_000 => Timeframe::M3,
             300_000 => Timeframe::M5,
@@ -307,6 +336,7 @@ pub struct TickerInfo {
     pub ticker: Ticker,
     #[serde(rename = "tickSize")]
     pub min_ticksize: f32,
+    pub min_qty: f32,
 }
 
 impl TickerInfo {

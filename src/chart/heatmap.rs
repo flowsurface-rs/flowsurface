@@ -1,7 +1,4 @@
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, HashMap, hash_map::Entry},
-};
+use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 
 use data::UserTimezone;
 use data::chart::{
@@ -128,6 +125,7 @@ struct Orderbook {
     price_levels: BTreeMap<OrderedFloat<f32>, Vec<OrderRun>>,
     aggr_time: u64,
     tick_size: f32,
+    pub qty_smoothing: f32,
 }
 
 impl Orderbook {
@@ -139,7 +137,21 @@ impl Orderbook {
                 Basis::Tick(_) => unimplemented!(),
             },
             tick_size,
+            qty_smoothing: 1.0,
         }
+    }
+
+    fn with_qty_smoothing(
+        mut self,
+        threshold: Option<Config>,
+        min_qty: Option<TickerInfo>,
+    ) -> Self {
+        if let Some(info) = min_qty {
+            if let Some(config) = threshold {
+                self.qty_smoothing = config.qty_smoothing_pct as f32 * info.min_qty
+            }
+        }
+        self
     }
 
     fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
@@ -188,8 +200,24 @@ impl Orderbook {
         let price_level = self.price_levels.entry(OrderedFloat(price)).or_default();
 
         match price_level.last_mut() {
-            Some(last_run) if last_run.qty == OrderedFloat(qty) && last_run.is_bid == is_bid => {
-                last_run.until_time = time + self.aggr_time;
+            Some(last_run) if last_run.is_bid == is_bid => {
+                let last_qty = last_run.qty.0;
+                let qty_diff_pct = if last_qty > 0.0 {
+                    (qty - last_qty).abs() / last_qty
+                } else {
+                    f32::INFINITY
+                };
+
+                if qty_diff_pct <= self.qty_smoothing || last_run.qty == OrderedFloat(qty) {
+                    last_run.until_time = time + self.aggr_time;
+                } else {
+                    price_level.push(OrderRun {
+                        start_time: time,
+                        until_time: time + self.aggr_time,
+                        qty: OrderedFloat(qty),
+                        is_bid,
+                    });
+                }
             }
             _ => {
                 price_level.push(OrderRun {
@@ -257,7 +285,7 @@ enum IndicatorData {
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    timeseries: Vec<(u64, Box<[GroupedTrade]>, (f32, f32))>,
+    timeseries: BTreeMap<u64, (Box<[GroupedTrade]>, (f32, f32))>,
     indicators: HashMap<HeatmapIndicator, IndicatorData>,
     pause_buffer: Vec<(u64, Box<[Trade]>, Depth)>,
     orderbook: Orderbook,
@@ -300,8 +328,8 @@ impl HeatmapChart {
                     .collect()
             },
             pause_buffer: vec![],
-            orderbook: Orderbook::new(tick_size, basis),
-            timeseries: vec![],
+            orderbook: Orderbook::new(tick_size, basis).with_qty_smoothing(config, ticker_info),
+            timeseries: BTreeMap::new(),
             visual_config: config.unwrap_or_default(),
         }
     }
@@ -332,15 +360,32 @@ impl HeatmapChart {
             self.process_datapoint(trades_buffer, depth_update, depth);
             self.render_start();
         }
+
+        self.cleanup_old_data();
     }
 
-    fn process_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64, depth: &Depth) {
-        let chart = &mut self.chart;
+    fn cleanup_old_data(&mut self) {
+        let aggregate_time: u64 = match &mut self.chart.basis {
+            Basis::Time(interval) => *interval,
+            Basis::Tick(_) => todo!(),
+        };
 
-        if self.timeseries.len() > 2400 {
-            self.timeseries.drain(0..400);
+        let time_window_to_keep = 240; // seconds
+        let max_items = (time_window_to_keep * 1000 / aggregate_time) as usize;
 
-            if let Some(oldest_time) = self.timeseries.first().map(|(time, _, _)| *time) {
+        if self.timeseries.len() > max_items {
+            let keys_to_remove: Vec<u64> = self
+                .timeseries
+                .keys()
+                .take(self.timeseries.len() - max_items)
+                .cloned()
+                .collect();
+
+            for key in keys_to_remove {
+                self.timeseries.remove(&key);
+            }
+
+            if let Some(oldest_time) = self.timeseries.keys().next().cloned() {
                 self.orderbook
                     .price_levels
                     .iter_mut()
@@ -349,13 +394,14 @@ impl HeatmapChart {
                     });
             }
         }
+    }
+
+    fn process_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64, depth: &Depth) {
+        let chart = &mut self.chart;
 
         let aggregate_time: u64 = match chart.basis {
             Basis::Time(interval) => interval,
-            Basis::Tick(_) => {
-                // TODO: implement
-                unimplemented!()
-            }
+            Basis::Tick(_) => todo!(),
         };
 
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
@@ -383,7 +429,7 @@ impl HeatmapChart {
                         probe
                             .price
                             .partial_cmp(&grouped_price)
-                            .unwrap_or(Ordering::Equal)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
                         probe.is_sell.cmp(&trade.is_sell)
                     }
@@ -417,11 +463,37 @@ impl HeatmapChart {
                 }
             }
 
-            self.timeseries.push((
-                rounded_depth_update,
-                grouped_trades.into_boxed_slice(),
-                (buy_volume, sell_volume),
-            ));
+            match self.timeseries.entry(rounded_depth_update) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert((grouped_trades.into_boxed_slice(), (buy_volume, sell_volume)));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let (existing_trades, (existing_buy, existing_sell)) = entry.get_mut();
+
+                    *existing_buy += buy_volume;
+                    *existing_sell += sell_volume;
+
+                    let mut merged_trades = existing_trades.to_vec();
+
+                    for trade in grouped_trades {
+                        match merged_trades.binary_search_by(|probe| {
+                            if probe.is_sell == trade.is_sell {
+                                probe
+                                    .price
+                                    .partial_cmp(&trade.price)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            } else {
+                                probe.is_sell.cmp(&trade.is_sell)
+                            }
+                        }) {
+                            Ok(index) => merged_trades[index].qty += trade.qty,
+                            Err(index) => merged_trades.insert(index, trade),
+                        }
+                    }
+
+                    *existing_trades = merged_trades.into_boxed_slice();
+                }
+            }
         };
 
         self.orderbook
@@ -446,6 +518,17 @@ impl HeatmapChart {
 
     pub fn set_visual_config(&mut self, visual_config: Config) {
         self.visual_config = visual_config;
+
+        if let Some(info) = self.chart.ticker_info {
+            self.orderbook.qty_smoothing = visual_config.qty_smoothing_pct as f32 * info.min_qty;
+        }
+    }
+
+    pub fn set_basis(&mut self, basis: Basis) {
+        self.chart.basis = basis;
+        self.orderbook = Orderbook::new(self.chart.tick_size, basis)
+            .with_qty_smoothing(Some(self.visual_config), self.chart.ticker_info);
+        self.timeseries.clear();
     }
 
     pub fn chart_layout(&self) -> ChartLayout {
@@ -469,7 +552,8 @@ impl HeatmapChart {
         }
 
         self.timeseries.clear();
-        self.orderbook = Orderbook::new(new_tick_size, basis);
+        self.orderbook = Orderbook::new(new_tick_size, basis)
+            .with_qty_smoothing(Some(self.visual_config), self.chart.ticker_info);
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
@@ -503,16 +587,6 @@ impl HeatmapChart {
         chart_state.cache.clear_all();
     }
 
-    fn visible_data_iter(
-        &self,
-        earliest: u64,
-        latest: u64,
-    ) -> impl Iterator<Item = &(u64, Box<[GroupedTrade]>, (f32, f32))> {
-        self.timeseries
-            .iter()
-            .filter(move |(time, _, _)| *time >= earliest && *time <= latest)
-    }
-
     fn calc_qty_scales(&self, earliest: u64, latest: u64, highest: f32, lowest: f32) -> QtyScale {
         let market_type = match self.chart.ticker_info {
             Some(ref ticker_info) => ticker_info.get_market_type(),
@@ -522,8 +596,9 @@ impl HeatmapChart {
         let (mut max_aggr_volume, mut max_trade_qty) = (0.0f32, 0.0f32);
         let mut max_depth_qty = 0.0f32;
 
-        self.visible_data_iter(earliest, latest)
-            .for_each(|(_, trades, _)| {
+        self.timeseries
+            .range(earliest..=latest)
+            .for_each(|(_, (trades, _))| {
                 let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
 
                 trades.iter().for_each(|trade| {
@@ -710,7 +785,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         });
                 });
 
-            if let Some((latest_timestamp, _, _)) = self.timeseries.last() {
+            if let Some((latest_timestamp, _)) = self.timeseries.last_key_value() {
                 let max_qty = self
                     .orderbook
                     .latest_order_runs(highest, lowest, *latest_timestamp)
@@ -751,8 +826,8 @@ impl canvas::Program<Message> for HeatmapChart {
                 });
             };
 
-            self.visible_data_iter(earliest, latest).for_each(
-                |(time, trades, (buy_volume, sell_volume))| {
+            self.timeseries.range(earliest..=latest).for_each(
+                |(time, (trades, (buy_volume, sell_volume)))| {
                     let x_position = chart.interval_to_x(*time);
 
                     trades.iter().for_each(|trade| {

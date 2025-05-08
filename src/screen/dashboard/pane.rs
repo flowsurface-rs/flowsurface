@@ -442,12 +442,11 @@ impl PaneState {
             PaneContent::Starter | PaneContent::TimeAndSales(_) => {}
             PaneContent::Heatmap(_, _) => {
                 stream_info_element = stream_info_element.push(
-                    button(text(
-                        self.settings
-                            .tick_multiply
-                            .unwrap_or(TickMultiplier(5))
-                            .to_string(),
-                    ))
+                    button(text(format!(
+                        "{} - {}",
+                        self.settings.selected_basis.unwrap_or(Basis::Time(100)),
+                        self.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
+                    )))
                     .style(move |theme, status| {
                         style::button::modifier(theme, status, !is_stream_modifier)
                     })
@@ -662,7 +661,7 @@ trait ChartView {
 enum StreamModifier {
     Candlestick(Basis),
     Footprint(Basis, TickMultiplier),
-    Heatmap(TickMultiplier),
+    Heatmap(Basis, TickMultiplier),
 }
 
 fn handle_chart_view<'a, F>(
@@ -776,7 +775,10 @@ impl ChartView for HeatmapChart {
             pane,
             indicators,
             settings_view,
-            StreamModifier::Heatmap(state.settings.tick_multiply.unwrap_or(TickMultiplier(10))),
+            StreamModifier::Heatmap(
+                state.settings.selected_basis.unwrap_or(Basis::Time(100)),
+                state.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
+            ),
         )
     }
 }
@@ -875,7 +877,7 @@ fn stream_modifier_view<'a>(
     let (selected_basis, selected_ticksize) = match modifiers {
         StreamModifier::Candlestick(basis) => (Some(basis), None),
         StreamModifier::Footprint(basis, ticksize) => (Some(basis), Some(ticksize)),
-        StreamModifier::Heatmap(ticksize) => (None, Some(ticksize)),
+        StreamModifier::Heatmap(basis, ticksize) => (Some(basis), Some(ticksize)),
     };
 
     let create_button = |content: String, msg: Option<Message>, active: bool| {
@@ -893,13 +895,17 @@ fn stream_modifier_view<'a>(
     let mut content_row = row![].align_y(Vertical::Center).spacing(16);
 
     let mut timeframes_column = column![].padding(4).align_x(Horizontal::Center);
-
     let mut tick_basis_column = column![].padding(4).align_x(Horizontal::Center);
+
+    let is_kline_chart = match modifiers {
+        StreamModifier::Candlestick(_) | StreamModifier::Footprint(_, _) => true,
+        StreamModifier::Heatmap(_, _) => false,
+    };
 
     if let Some(basis) = selected_basis {
         match basis {
             Basis::Time(selected_timeframe) => {
-                timeframes_column = timeframes_column.push(
+                timeframes_column = timeframes_column.push(if is_kline_chart {
                     row![
                         create_button("Timeframe".to_string(), None, false,),
                         create_button(
@@ -909,20 +915,45 @@ fn stream_modifier_view<'a>(
                         ),
                     ]
                     .padding(padding::bottom(8))
-                    .spacing(4),
-                );
+                    .spacing(4)
+                } else {
+                    row![create_button("Timeframe".to_string(), None, false,),]
+                        .padding(padding::bottom(8))
+                        .spacing(4)
+                });
 
-                for timeframe in &Timeframe::ALL {
-                    let msg = if *timeframe == selected_timeframe.into() {
-                        None
-                    } else {
-                        Some(Message::BasisSelected(
-                            Basis::Time(u64::from(*timeframe)),
-                            pane,
-                        ))
-                    };
-                    timeframes_column =
-                        timeframes_column.push(create_button(timeframe.to_string(), msg, false));
+                if is_kline_chart {
+                    for timeframe in &Timeframe::KLINE {
+                        let msg = if *timeframe == selected_timeframe.into() {
+                            None
+                        } else {
+                            Some(Message::BasisSelected(
+                                Basis::Time(u64::from(*timeframe)),
+                                pane,
+                            ))
+                        };
+                        timeframes_column = timeframes_column.push(create_button(
+                            timeframe.to_string(),
+                            msg,
+                            false,
+                        ));
+                    }
+                } else {
+                    for timeframe in &Timeframe::HEATMAP {
+                        let msg = if *timeframe == selected_timeframe.into() {
+                            None
+                        } else {
+                            Some(Message::BasisSelected(
+                                Basis::Time(u64::from(*timeframe)),
+                                pane,
+                            ))
+                        };
+                        timeframes_column = timeframes_column.push(create_button(
+                            timeframe.to_string(),
+                            msg,
+                            false,
+                        ));
+                    }
                 }
 
                 content_row =
@@ -984,7 +1015,7 @@ fn stream_modifier_view<'a>(
     }
 
     container(scrollable::Scrollable::with_direction(
-        content_row,
+        content_row.align_y(Alignment::Start),
         scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(4).scroller_width(4)),
     ))
     .padding(16)

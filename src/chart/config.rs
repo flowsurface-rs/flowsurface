@@ -34,6 +34,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             Some(text(format!("${}", format_with_commas(filter))).size(13)),
         )
     };
+
     let order_size_slider = {
         let filter = cfg.order_size_filter;
 
@@ -53,6 +54,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             Some(text(format!("${}", format_with_commas(filter))).size(13)),
         )
     };
+
     let circle_scaling_slider = {
         let radius_scale = cfg.trade_size_scale;
 
@@ -70,6 +72,26 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             .step(10)
             .into(),
             Some(text(format!("{}%", cfg.trade_size_scale)).size(13)),
+        )
+    };
+
+    let qty_smoothing_slider = {
+        let smoothing_pct = cfg.qty_smoothing_pct;
+
+        create_slider_row(
+            text("Depth size smoothing"),
+            Slider::new(100..=20000, smoothing_pct, move |value| {
+                Message::VisualConfigChanged(
+                    Some(pane),
+                    VisualConfig::Heatmap(heatmap::Config {
+                        qty_smoothing_pct: value,
+                        ..cfg
+                    }),
+                )
+            })
+            .step(100)
+            .into(),
+            Some(text(format!("{}%", cfg.qty_smoothing_pct)).size(13)),
         )
     };
 
@@ -107,6 +129,10 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             .padding(16)
             .width(Length::Fill)
             .align_x(Alignment::Start),
+            column![text("Depth Size Smoothing").size(14), qty_smoothing_slider,]
+                .spacing(20)
+                .padding(16)
+                .align_x(Alignment::Start),
             sync_all_button(VisualConfig::Heatmap(cfg)),
         ]
         .spacing(8),

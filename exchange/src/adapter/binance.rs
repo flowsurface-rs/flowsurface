@@ -894,6 +894,16 @@ pub async fn fetch_ticksize(
             .iter()
             .find(|x| x["filterType"].as_str().unwrap_or_default() == "PRICE_FILTER");
 
+        let min_qty = filters
+            .iter()
+            .find(|x| x["filterType"].as_str().unwrap_or_default() == "LOT_SIZE")
+            .and_then(|x| x["minQty"].as_str())
+            .ok_or_else(|| {
+                StreamError::ParseError("Missing minQty in LOT_SIZE filter".to_string())
+            })?
+            .parse::<f32>()
+            .map_err(|e| StreamError::ParseError(format!("Failed to parse minQty: {e}")))?;
+
         if let Some(price_filter) = price_filter {
             let min_ticksize = price_filter["tickSize"]
                 .as_str()
@@ -908,6 +918,7 @@ pub async fn fetch_ticksize(
                 Some(TickerInfo {
                     ticker,
                     min_ticksize,
+                    min_qty,
                 }),
             );
         } else {

@@ -484,7 +484,7 @@ pub fn connect_kline_stream(
 }
 
 fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
-    Timeframe::ALL
+    Timeframe::KLINE
         .iter()
         .find(|&tf| tf.to_minutes().to_string() == interval)
         .copied()
@@ -718,6 +718,16 @@ pub async fn fetch_ticksize(
             }
         }
 
+        let lot_size_filter = item["lotSizeFilter"]
+            .as_object()
+            .ok_or_else(|| StreamError::ParseError("Lot size filter not found".to_string()))?;
+
+        let min_qty = lot_size_filter["minOrderQty"]
+            .as_str()
+            .ok_or_else(|| StreamError::ParseError("Min order qty not found".to_string()))?
+            .parse::<f32>()
+            .map_err(|_| StreamError::ParseError("Failed to parse min order qty".to_string()))?;
+
         let price_filter = item["priceFilter"]
             .as_object()
             .ok_or_else(|| StreamError::ParseError("Price filter not found".to_string()))?;
@@ -735,6 +745,7 @@ pub async fn fetch_ticksize(
             Some(TickerInfo {
                 ticker,
                 min_ticksize,
+                min_qty,
             }),
         );
     }
