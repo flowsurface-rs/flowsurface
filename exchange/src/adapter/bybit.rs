@@ -24,6 +24,14 @@ use super::{
     Connection, Event, StreamError,
 };
 
+fn exchange_from_market_type(market: MarketType) -> Exchange {
+    match market {
+        MarketType::Spot => Exchange::BybitSpot,
+        MarketType::LinearPerps => Exchange::BybitLinear,
+        MarketType::InversePerps => Exchange::BybitInverse,
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct SonicDepth {
     #[serde(rename = "u")]
@@ -83,7 +91,8 @@ impl StreamName {
         let parts: Vec<&str> = topic.split('.').collect();
 
         if let Some(ticker_str) = parts.last() {
-            let ticker = is_ticker.unwrap_or_else(|| Ticker::new(ticker_str, market_type));
+            let exchange = exchange_from_market_type(market_type);
+            let ticker = is_ticker.unwrap_or_else(|| Ticker::new(ticker_str, exchange));
 
             match parts.first() {
                 Some(&"publicTrade") => StreamName::Trade(ticker),
@@ -268,11 +277,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
         let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
-        let exchange = match market_type {
-            MarketType::Spot => Exchange::BybitSpot,
-            MarketType::LinearPerps => Exchange::BybitLinear,
-            MarketType::InversePerps => Exchange::BybitInverse,
-        };
+        let exchange = exchange_from_market_type(market_type);
 
         let stream_1 = format!("publicTrade.{symbol_str}");
         let stream_2 = format!(
@@ -392,11 +397,7 @@ pub fn connect_kline_stream(
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
-        let exchange = match market_type {
-            MarketType::Spot => Exchange::BybitSpot,
-            MarketType::LinearPerps => Exchange::BybitLinear,
-            MarketType::InversePerps => Exchange::BybitInverse,
-        };
+        let exchange = exchange_from_market_type(market_type);
 
         let stream_str = streams
             .iter()
@@ -680,6 +681,8 @@ pub async fn fetch_klines(
 pub async fn fetch_ticksize(
     market_type: MarketType,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
+    let exchange = exchange_from_market_type(market_type);
+
     let market = match market_type {
         MarketType::Spot => "spot",
         MarketType::LinearPerps => "linear",
@@ -738,7 +741,7 @@ pub async fn fetch_ticksize(
             .parse::<f32>()
             .map_err(|_| StreamError::ParseError("Failed to parse tick size".to_string()))?;
 
-        let ticker = Ticker::new(symbol, market_type);
+        let ticker = Ticker::new(symbol, exchange);
 
         ticker_info_map.insert(
             ticker,
@@ -760,6 +763,8 @@ const SPOT_FILTER_VOLUME: f32 = 4_000_000.0;
 pub async fn fetch_ticker_prices(
     market_type: MarketType,
 ) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
+    let exchange = exchange_from_market_type(market_type);
+
     let (market, volume_threshold) = match market_type {
         MarketType::Spot => ("spot", SPOT_FILTER_VOLUME),
         MarketType::LinearPerps => ("linear", LINEAR_FILTER_VOLUME),
@@ -820,7 +825,7 @@ pub async fn fetch_ticker_prices(
             daily_volume: volume_in_usd,
         };
 
-        ticker_prices_map.insert(Ticker::new(symbol, market_type), ticker_stats);
+        ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
     }
 
     Ok(ticker_prices_map)

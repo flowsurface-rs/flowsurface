@@ -602,7 +602,9 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                     .multiply_with_min_tick_size(ticker_info);
 
                 let config = settings.visual_config.and_then(|cfg| cfg.heatmap());
-                let basis = settings.selected_basis.unwrap_or(Basis::Time(100));
+                let basis = settings
+                    .selected_basis
+                    .unwrap_or(Basis::default_time(Some(ticker_info)));
 
                 Configuration::Pane(PaneState::from_config(
                     PaneContent::Heatmap(

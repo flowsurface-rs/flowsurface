@@ -262,7 +262,10 @@ impl PaneState {
                     splits: vec![],
                 });
 
-                let basis = self.settings.selected_basis.unwrap_or(Basis::Time(100));
+                let basis = self
+                    .settings
+                    .selected_basis
+                    .unwrap_or(Basis::default_time(Some(ticker_info)));
                 let config = self.settings.visual_config.and_then(|cfg| cfg.heatmap());
 
                 PaneContent::Heatmap(
@@ -298,7 +301,7 @@ impl PaneState {
 
                 let enabled_indicators = match existing_indicators {
                     Some(ExistingIndicators::Kline(indicators)) => indicators,
-                    _ => KlineIndicator::get_available(ticker_info.get_market_type()).to_vec(),
+                    _ => KlineIndicator::get_available(ticker_info.market_type()).to_vec(),
                 };
 
                 let splits = {
@@ -423,7 +426,7 @@ impl PaneState {
 
             let ticker_str = {
                 let symbol = ticker.display_symbol_and_type().0;
-                match ticker.get_market_type() {
+                match ticker.market_type() {
                     MarketType::Spot => symbol,
                     MarketType::LinearPerps | MarketType::InversePerps => symbol + " PERP",
                 }
@@ -444,7 +447,9 @@ impl PaneState {
                 stream_info_element = stream_info_element.push(
                     button(text(format!(
                         "{} - {}",
-                        self.settings.selected_basis.unwrap_or(Basis::Time(100)),
+                        self.settings
+                            .selected_basis
+                            .unwrap_or(Basis::default_time(self.settings.ticker_info)),
                         self.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
                     )))
                     .style(move |theme, status| {
@@ -684,7 +689,7 @@ where
     match state.modal {
         PaneModal::StreamModifier => pane_modal(
             base,
-            stream_modifier_view(pane, stream_modifier),
+            stream_modifier_view(pane, stream_modifier, state.get_ticker_exchange()),
             Message::ToggleModal(pane, PaneModal::None),
             padding::left(36),
             Alignment::Start,
@@ -693,10 +698,7 @@ where
             base,
             indicators_view(
                 pane,
-                state
-                    .settings
-                    .ticker_info
-                    .map(|info| info.get_market_type()),
+                state.settings.ticker_info.map(|info| info.market_type()),
                 indicators,
             ),
             Message::ToggleModal(pane, PaneModal::None),
@@ -873,6 +875,7 @@ fn indicators_view<I: Indicator>(
 fn stream_modifier_view<'a>(
     pane: pane_grid::Pane,
     modifiers: StreamModifier,
+    ticker_info: Option<(Exchange, Ticker)>,
 ) -> Element<'a, Message> {
     let (selected_basis, selected_ticksize) = match modifiers {
         StreamModifier::Candlestick(basis) => (Some(basis), None),
@@ -917,7 +920,7 @@ fn stream_modifier_view<'a>(
                     .padding(padding::bottom(8))
                     .spacing(4)
                 } else {
-                    row![create_button("Timeframe".to_string(), None, false,),]
+                    row![text("Aggregation")]
                         .padding(padding::bottom(8))
                         .spacing(4)
                 });
@@ -938,8 +941,12 @@ fn stream_modifier_view<'a>(
                             false,
                         ));
                     }
-                } else {
+                } else if let Some((exchange, _)) = ticker_info {
                     for timeframe in &Timeframe::HEATMAP {
+                        if exchange == Exchange::BybitSpot && timeframe == &Timeframe::MS100 {
+                            continue;
+                        }
+
                         let msg = if *timeframe == selected_timeframe.into() {
                             None
                         } else {

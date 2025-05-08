@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 
 use data::UserTimezone;
-use data::chart::heatmap::{GroupedTrade, HistoricalDepth, QtyScale};
 use data::chart::{
     Basis, ChartLayout,
-    heatmap::Config,
+    heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
     indicators::{HeatmapIndicator, Indicator},
 };
 use iced::widget::canvas::{self, Event, Geometry, Path};
@@ -414,7 +413,7 @@ impl HeatmapChart {
 
     fn calc_qty_scales(&self, earliest: u64, latest: u64, highest: f32, lowest: f32) -> QtyScale {
         let market_type = match self.chart.ticker_info {
-            Some(ref ticker_info) => ticker_info.get_market_type(),
+            Some(ref ticker_info) => ticker_info.market_type(),
             None => return QtyScale::default(),
         };
 
@@ -514,7 +513,7 @@ impl canvas::Program<Message> for HeatmapChart {
         }
 
         let market_type = match self.chart.ticker_info {
-            Some(ref ticker_info) => ticker_info.get_market_type(),
+            Some(ref ticker_info) => ticker_info.market_type(),
             None => return vec![],
         };
 

@@ -143,15 +143,13 @@ pub struct SerTicker {
 
 impl SerTicker {
     pub fn new(exchange: Exchange, ticker_str: &str) -> Self {
-        let market_type = exchange.get_market_type();
-        let ticker = Ticker::new(ticker_str, market_type);
-
+        let ticker = Ticker::new(ticker_str, exchange);
         Self { exchange, ticker }
     }
 
     pub fn from_parts(exchange: Exchange, ticker: Ticker) -> Self {
         assert_eq!(
-            ticker.market_type,
+            ticker.market_type(),
             exchange.get_market_type(),
             "Ticker market type must match Exchange market type"
         );
@@ -213,10 +211,8 @@ impl<'de> Deserialize<'de> for SerTicker {
         let exchange_str = parts[0];
         let exchange = Self::string_to_exchange(exchange_str).map_err(serde::de::Error::custom)?;
 
-        let market_type = exchange.get_market_type();
-
         let ticker_str = parts[1];
-        let ticker = Ticker::new(ticker_str, market_type);
+        let ticker = Ticker::new(ticker_str, exchange);
 
         Ok(SerTicker { exchange, ticker })
     }
@@ -234,11 +230,11 @@ impl fmt::Display for SerTicker {
 pub struct Ticker {
     data: [u64; 2],
     len: u8,
-    pub market_type: MarketType,
+    pub exchange: Exchange,
 }
 
 impl Ticker {
-    pub fn new<S: AsRef<str>>(ticker: S, market_type: MarketType) -> Self {
+    pub fn new<S: AsRef<str>>(ticker: S, exchange: Exchange) -> Self {
         let ticker = ticker.as_ref();
         let base_len = ticker.len();
 
@@ -268,7 +264,7 @@ impl Ticker {
         Ticker {
             data,
             len,
-            market_type,
+            exchange,
         }
     }
 
@@ -285,7 +281,7 @@ impl Ticker {
             result.push(c);
         }
 
-        (result, self.market_type)
+        (result, self.market_type())
     }
 
     pub fn display_symbol_and_type(&self) -> (String, MarketType) {
@@ -306,11 +302,11 @@ impl Ticker {
             result.push(c);
         }
 
-        (result, self.market_type)
+        (result, self.market_type())
     }
 
-    pub fn get_market_type(&self) -> MarketType {
-        self.market_type
+    pub fn market_type(&self) -> MarketType {
+        self.exchange.get_market_type()
     }
 }
 
@@ -340,13 +336,17 @@ pub struct TickerInfo {
 }
 
 impl TickerInfo {
-    pub fn get_market_type(&self) -> MarketType {
-        self.ticker.market_type
+    pub fn market_type(&self) -> MarketType {
+        self.ticker.market_type()
     }
 
     pub fn is_perps(&self) -> bool {
-        self.ticker.market_type == MarketType::LinearPerps
-            || self.ticker.market_type == MarketType::InversePerps
+        let market_type = self.ticker.market_type();
+        market_type == MarketType::LinearPerps || market_type == MarketType::InversePerps
+    }
+
+    pub fn exchange(&self) -> Exchange {
+        self.ticker.exchange
     }
 }
 

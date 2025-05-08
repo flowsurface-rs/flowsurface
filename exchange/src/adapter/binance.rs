@@ -24,6 +24,14 @@ use super::{
     Connection, Event, StreamError,
 };
 
+fn exchange_from_market_type(market: MarketType) -> Exchange {
+    match market {
+        MarketType::Spot => Exchange::BinanceSpot,
+        MarketType::LinearPerps => Exchange::BinanceLinear,
+        MarketType::InversePerps => Exchange::BinanceInverse,
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub struct FetchedPerpDepth {
     #[serde(rename = "lastUpdateId")]
@@ -148,6 +156,8 @@ impl StreamWrapper {
 }
 
 fn feed_de(slice: &[u8], market: MarketType) -> Result<StreamData, StreamError> {
+    let exchange = exchange_from_market_type(market);
+
     let mut stream_type: Option<StreamWrapper> = None;
     let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(slice) };
 
@@ -185,7 +195,7 @@ fn feed_de(slice: &[u8], market: MarketType) -> Result<StreamData, StreamError> 
                         .map_err(|e| StreamError::ParseError(e.to_string()))?;
 
                     return Ok(StreamData::Kline(
-                        Ticker::new(kline_wrap.symbol, market),
+                        Ticker::new(kline_wrap.symbol, exchange),
                         kline_wrap.kline,
                     ));
                 }
@@ -262,12 +272,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let mut state = State::Disconnected;
 
         let (symbol_str, market) = ticker.to_full_symbol_and_type();
-
-        let exchange = match market {
-            MarketType::Spot => Exchange::BinanceSpot,
-            MarketType::LinearPerps => Exchange::BinanceLinear,
-            MarketType::InversePerps => Exchange::BinanceInverse,
-        };
+        let exchange = exchange_from_market_type(market);
 
         let stream_1 = format!("{}@aggTrade", symbol_str.to_lowercase());
         let stream_2 = format!("{}@depth@100ms", symbol_str.to_lowercase());
@@ -521,11 +526,7 @@ pub fn connect_kline_stream(
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
-        let exchange = match market {
-            MarketType::Spot => Exchange::BinanceSpot,
-            MarketType::LinearPerps => Exchange::BinanceLinear,
-            MarketType::InversePerps => Exchange::BinanceInverse,
-        };
+        let exchange = exchange_from_market_type(market);
 
         let stream_str = streams
             .iter()
@@ -824,9 +825,11 @@ pub async fn fetch_klines(
 }
 
 pub async fn fetch_ticksize(
-    market_type: MarketType,
+    market: MarketType,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
-    let url = match market_type {
+    let exchange = exchange_from_market_type(market);
+
+    let url = match market {
         MarketType::Spot => "https://api.binance.com/api/v3/exchangeInfo".to_string(),
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string(),
         MarketType::InversePerps => "https://dapi.binance.com/dapi/v1/exchangeInfo".to_string(),
@@ -849,7 +852,7 @@ pub async fn fetch_ticksize(
 
     log::info!(
         "Binance req. weight limit per minute {}: {:?}",
-        match market_type {
+        match market {
             MarketType::Spot => "Spot",
             MarketType::LinearPerps => "Linear Perps",
             MarketType::InversePerps => "Inverse Perps",
@@ -911,10 +914,10 @@ pub async fn fetch_ticksize(
                 .parse::<f32>()
                 .map_err(|e| StreamError::ParseError(format!("Failed to parse tickSize: {e}")))?;
 
-            let ticker = Ticker::new(symbol_str, market_type);
+            let ticker = Ticker::new(symbol_str, exchange);
 
             ticker_info_map.insert(
-                Ticker::new(symbol_str, market_type),
+                Ticker::new(symbol_str, exchange),
                 Some(TickerInfo {
                     ticker,
                     min_ticksize,
@@ -922,7 +925,7 @@ pub async fn fetch_ticksize(
                 }),
             );
         } else {
-            ticker_info_map.insert(Ticker::new(symbol_str, market_type), None);
+            ticker_info_map.insert(Ticker::new(symbol_str, exchange), None);
         }
     }
 
@@ -936,6 +939,8 @@ const SPOT_FILTER_VOLUME: f32 = 9_000_000.0;
 pub async fn fetch_ticker_prices(
     market: MarketType,
 ) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
+    let exhange = exchange_from_market_type(market);
+
     let url = match market {
         MarketType::Spot => "https://api.binance.com/api/v3/ticker/24hr".to_string(),
         MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/ticker/24hr".to_string(),
@@ -1007,7 +1012,7 @@ pub async fn fetch_ticker_prices(
             },
         };
 
-        ticker_price_map.insert(Ticker::new(symbol, market), ticker_stats);
+        ticker_price_map.insert(Ticker::new(symbol, exhange), ticker_stats);
     }
 
     Ok(ticker_price_map)

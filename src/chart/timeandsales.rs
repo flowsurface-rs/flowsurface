@@ -50,7 +50,7 @@ impl TimeAndSales {
         let size_filter = self.config.trade_size_filter;
 
         let market_type = match self.ticker_info {
-            Some(ref ticker_info) => ticker_info.get_market_type(),
+            Some(ref ticker_info) => ticker_info.market_type(),
             None => return,
         };
 
@@ -95,7 +95,7 @@ impl TimeAndSales {
     pub fn view(&self, _timezone: UserTimezone) -> Element<'_, Message> {
         responsive(move |size| {
             let market_type = match self.ticker_info {
-                Some(ref ticker_info) => ticker_info.get_market_type(),
+                Some(ref ticker_info) => ticker_info.market_type(),
                 None => {
                     return center(container(
                         text("No ticker info. Resetting this pane should fix").size(14),

@@ -784,7 +784,7 @@ impl KlineChart {
         let mut indicators = vec![];
 
         let market = match chart_state.ticker_info {
-            Some(ref info) => info.get_market_type(),
+            Some(ref info) => info.market_type(),
             None => return indicators,
         };
 
