@@ -1,7 +1,7 @@
 use crate::{
     StreamType,
-    chart::{self, config, heatmap::HeatmapChart, kline::KlineChart, timeandsales::TimeAndSales},
-    screen::{DashboardError, create_button},
+    chart::{self, heatmap::HeatmapChart, kline::KlineChart},
+    screen::{DashboardError, create_button, dashboard::panel::timeandsales::TimeAndSales},
     style::{self, Icon, icon_text},
     widget::{self, column_drag, dragger_row, pane_modal, toast::Toast},
     window::{self, Window},
@@ -730,7 +730,8 @@ impl ChartView for KlineChart {
 
         let chart_kind = self.kind();
 
-        let settings_view = || config::kline_cfg_view(self.study_configurator(), chart_kind, pane);
+        let settings_view =
+            || super::panel::kline_cfg_view(self.study_configurator(), chart_kind, pane);
 
         handle_chart_view(
             base,
@@ -769,7 +770,7 @@ impl ChartView for HeatmapChart {
             .view(indicators, timezone)
             .map(move |message| Message::ChartUserUpdate(pane, message));
 
-        let settings_view = || config::heatmap_cfg_view(self.visual_config(), pane);
+        let settings_view = || super::panel::heatmap_cfg_view(self.visual_config(), pane);
 
         handle_chart_view(
             base,
@@ -809,7 +810,7 @@ impl PanelView for TimeAndSales {
     ) -> Element<Message> {
         let underlay = self.view(timezone);
 
-        let settings_view = config::timesales_cfg_view(self.get_config(), pane);
+        let settings_view = super::panel::timesales_cfg_view(self.get_config(), pane);
 
         match state.modal {
             PaneModal::Settings => pane_modal(

@@ -2,10 +2,8 @@ use exchange::{Kline, Trade};
 use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
-use crate::chart::{
-    kline::{ClusterKind, KlineTrades, NPoc},
-    round_to_tick,
-};
+use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
+use crate::util::round_to_tick;
 
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {

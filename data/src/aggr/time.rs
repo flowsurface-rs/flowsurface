@@ -1,7 +1,5 @@
-use crate::chart::{
-    kline::{ClusterKind, KlineTrades, NPoc},
-    round_to_tick,
-};
+use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
+use crate::util::round_to_tick;
 use exchange::{Kline, Timeframe, Trade};
 
 use ordered_float::OrderedFloat;

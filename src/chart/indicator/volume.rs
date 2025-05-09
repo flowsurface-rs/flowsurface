@@ -5,10 +5,10 @@ use iced::widget::{Canvas, container, row, vertical_rule};
 use iced::{Element, Length};
 use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
-use crate::chart::{
-    Basis, Caches, CommonChartData, Interaction, Message, format_with_commas, round_to_tick,
-};
+use crate::chart::{Basis, Caches, CommonChartData, Interaction, Message};
 use crate::style::{self, get_dashed_line};
+
+use data::util::{format_with_commas, round_to_tick};
 
 pub fn create_indicator_elem<'a>(
     chart_state: &'a CommonChartData,

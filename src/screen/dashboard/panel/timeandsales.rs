@@ -1,13 +1,11 @@
 use crate::screen::dashboard::pane::Message;
 use crate::style::{self, ts_table_container};
 use data::UserTimezone;
-use data::chart::timeandsales::Config;
+pub use data::chart::timeandsales::Config;
 use exchange::adapter::MarketType;
 use exchange::{TickerInfo, Trade};
 use iced::widget::{center, column, container, responsive, row, text};
 use iced::{Alignment, Element, Length};
-
-use super::abbr_large_numbers;
 
 const TARGET_SIZE: usize = 700;
 const MAX_SIZE: usize = 900;
@@ -132,7 +130,7 @@ impl TimeAndSales {
                     )
                     .width(Length::FillPortion(6)),
                     container(
-                        text(abbr_large_numbers(trade.qty))
+                        text(data::util::abbr_large_numbers(trade.qty))
                             .font(style::AZERET_MONO)
                             .size(iced::Pixels(11.0))
                     )

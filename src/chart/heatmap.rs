@@ -4,12 +4,13 @@ use data::chart::{
     heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
     indicators::{HeatmapIndicator, Indicator},
 };
+use data::util::{abbr_large_numbers, count_decimals};
 use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
 
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{
-    abbr_large_numbers, canvas_interaction, count_decimals, draw_horizontal_volume_bars,
-    scale::PriceInfoLabel, update_chart, view_chart,
+    canvas_interaction, draw_horizontal_volume_bars, scale::PriceInfoLabel, update_chart,
+    view_chart,
 };
 
 use iced::widget::canvas::{self, Event, Geometry, Path};

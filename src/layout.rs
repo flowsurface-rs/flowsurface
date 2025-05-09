@@ -1,5 +1,7 @@
-use crate::chart::{heatmap::HeatmapChart, kline::KlineChart, timeandsales::TimeAndSales};
-use crate::screen::dashboard::{Dashboard, PaneContent, PaneState};
+use crate::chart::{heatmap::HeatmapChart, kline::KlineChart};
+use crate::screen::dashboard::{
+    Dashboard, PaneContent, PaneState, panel::timeandsales::TimeAndSales,
+};
 use crate::style::icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::widget::dragger_row;

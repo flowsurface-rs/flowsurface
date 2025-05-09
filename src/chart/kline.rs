@@ -4,6 +4,7 @@ use data::aggr::time::TimeSeries;
 use data::chart::indicators::{Indicator, KlineIndicator};
 use data::chart::kline::{ClusterKind, FootprintStudy, KlineTrades, NPoc};
 use data::chart::{ChartLayout, KlineChartKind};
+use data::util::{abbr_large_numbers, count_decimals, round_to_tick};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
@@ -14,8 +15,8 @@ use super::{
     indicator,
 };
 use super::{
-    abbr_large_numbers, calc_splits, canvas_interaction, count_decimals,
-    draw_horizontal_volume_bars, request_fetch, round_to_tick, update_chart, view_chart,
+    calc_splits, canvas_interaction, draw_horizontal_volume_bars, request_fetch, update_chart,
+    view_chart,
 };
 
 use crate::style;

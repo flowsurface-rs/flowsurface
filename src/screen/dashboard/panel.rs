@@ -1,11 +1,14 @@
-use super::{format_with_commas, study::ChartStudy};
+pub mod timeandsales;
+
 use crate::{
+    chart::study::ChartStudy,
     screen::dashboard::pane::Message,
     style, tooltip,
     widget::{create_slider_row, scrollable_content},
 };
 
-use data::chart::{KlineChartKind, VisualConfig, heatmap, kline::ClusterKind, timeandsales};
+use data::chart::{KlineChartKind, VisualConfig, heatmap, kline::ClusterKind};
+use data::util::format_with_commas;
 use iced::{
     Alignment, Element, Length,
     widget::{

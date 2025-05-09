@@ -3,9 +3,10 @@ pub mod timeseries;
 
 use crate::style::AZERET_MONO;
 
-use super::{Basis, Interaction, Message, round_to_tick};
+use super::{Basis, Interaction, Message};
 use chrono::DateTime;
 use data::UserTimezone;
+use data::util::round_to_tick;
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,

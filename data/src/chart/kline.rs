@@ -4,7 +4,7 @@ use exchange::Trade;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
-use super::round_to_tick;
+use crate::util::round_to_tick;
 
 #[derive(Debug, Clone, Default)]
 pub struct KlineTrades {

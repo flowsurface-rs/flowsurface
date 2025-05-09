@@ -1,4 +1,5 @@
-use super::{super::abbr_large_numbers, AxisLabel, Label, calc_label_rect};
+use super::{AxisLabel, Label, calc_label_rect};
+use data::util::abbr_large_numbers;
 
 const MAX_ITERATIONS: usize = 1000;
 
