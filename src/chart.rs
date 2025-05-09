@@ -92,6 +92,8 @@ trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn interval_keys(&self) -> Option<Vec<u64>>;
 
+    fn autoscaled_coords(&self) -> Vector;
+
     fn is_empty(&self) -> bool;
 }
 

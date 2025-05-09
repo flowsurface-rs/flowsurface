@@ -63,6 +63,14 @@ impl Chart for HeatmapChart {
         None
     }
 
+    fn autoscaled_coords(&self) -> Vector {
+        let chart = self.common_data();
+        Vector::new(
+            0.5 * (chart.bounds.width / chart.scaling) - (90.0 / chart.scaling),
+            0.0,
+        )
+    }
+
     fn is_empty(&self) -> bool {
         self.timeseries.is_empty()
     }
@@ -347,6 +355,9 @@ impl HeatmapChart {
             self.chart.tick_size,
             basis,
         );
+
+        let autoscaled_coords = self.autoscaled_coords();
+        self.chart.translation = autoscaled_coords;
     }
 
     pub fn chart_layout(&self) -> ChartLayout {
@@ -398,17 +409,14 @@ impl HeatmapChart {
     }
 
     pub fn invalidate(&mut self) {
-        let chart_state = self.common_data_mut();
+        let autoscaled_coords = self.autoscaled_coords();
+        let chart = &mut self.chart;
 
-        if chart_state.autoscale {
-            chart_state.translation = Vector::new(
-                0.5 * (chart_state.bounds.width / chart_state.scaling)
-                    - (90.0 / chart_state.scaling),
-                0.0,
-            );
+        if chart.autoscale {
+            chart.translation = autoscaled_coords;
         }
 
-        chart_state.cache.clear_all();
+        chart.cache.clear_all();
     }
 
     fn calc_qty_scales(&self, earliest: u64, latest: u64, highest: f32, lowest: f32) -> QtyScale {

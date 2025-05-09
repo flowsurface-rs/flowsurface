@@ -89,6 +89,22 @@ impl Chart for KlineChart {
         }
     }
 
+    fn autoscaled_coords(&self) -> Vector {
+        let chart = self.common_data();
+
+        match &self.kind {
+            KlineChartKind::Footprint { .. } => Vector::new(
+                0.5 * (chart.bounds.width / chart.scaling) - (chart.cell_width / chart.scaling),
+                self.data_source.get_latest_price_range_y_midpoint(chart),
+            ),
+            KlineChartKind::Candles => Vector::new(
+                0.5 * (chart.bounds.width / chart.scaling)
+                    - (8.0 * chart.cell_width / chart.scaling),
+                self.data_source.get_latest_price_range_y_midpoint(chart),
+            ),
+        }
+    }
+
     fn is_empty(&self) -> bool {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => timeseries.data_points.is_empty(),
@@ -708,30 +724,14 @@ impl KlineChart {
     }
 
     pub fn invalidate(&mut self) {
-        let chart_state = &mut self.chart;
+        let autoscaled_coords = self.autoscaled_coords();
+        let chart = &mut self.chart;
 
-        if chart_state.autoscale {
-            match &self.kind {
-                KlineChartKind::Footprint { .. } => {
-                    chart_state.translation = Vector::new(
-                        0.5 * (chart_state.bounds.width / chart_state.scaling)
-                            - (chart_state.cell_width / chart_state.scaling),
-                        self.data_source
-                            .get_latest_price_range_y_midpoint(chart_state),
-                    );
-                }
-                KlineChartKind::Candles => {
-                    chart_state.translation = Vector::new(
-                        0.5 * (chart_state.bounds.width / chart_state.scaling)
-                            - (8.0 * chart_state.cell_width / chart_state.scaling),
-                        self.data_source
-                            .get_latest_price_range_y_midpoint(chart_state),
-                    );
-                }
-            }
+        if chart.autoscale {
+            chart.translation = autoscaled_coords;
         }
 
-        chart_state.cache.clear_all();
+        chart.cache.clear_all();
 
         self.indicators.iter_mut().for_each(|(_, data)| {
             data.clear_cache();
