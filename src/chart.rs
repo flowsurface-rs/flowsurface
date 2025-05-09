@@ -90,7 +90,7 @@ trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn visible_timerange(&self) -> (u64, u64);
 
-    fn interval_keys(&self) -> Vec<u64>;
+    fn interval_keys(&self) -> Option<Vec<u64>>;
 
     fn is_empty(&self) -> bool;
 }

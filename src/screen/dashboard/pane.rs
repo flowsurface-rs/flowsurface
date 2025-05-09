@@ -778,7 +778,10 @@ impl ChartView for HeatmapChart {
             indicators,
             settings_view,
             StreamModifier::Heatmap(
-                state.settings.selected_basis.unwrap_or(Basis::Time(100)),
+                state
+                    .settings
+                    .selected_basis
+                    .unwrap_or(Basis::default_time(state.settings.ticker_info)),
                 state.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
             ),
         )
@@ -1072,8 +1075,8 @@ pub enum PaneContent {
 impl PaneContent {
     pub fn invalidate(&mut self) {
         match self {
-            PaneContent::Heatmap(chart, _) => chart.render_start(),
-            PaneContent::Kline(chart, _) => chart.render_start(),
+            PaneContent::Heatmap(chart, _) => chart.invalidate(),
+            PaneContent::Kline(chart, _) => chart.invalidate(),
             PaneContent::Starter | PaneContent::TimeAndSales(_) => {}
         }
     }

@@ -1,20 +1,10 @@
-use std::collections::{BTreeMap, HashMap, hash_map::Entry};
-
-use data::UserTimezone;
+use crate::style;
 use data::chart::{
     Basis, ChartLayout,
     heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
     indicators::{HeatmapIndicator, Indicator},
 };
-use iced::widget::canvas::{self, Event, Geometry, Path};
-use iced::{
-    Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse,
-    theme::palette::Extended,
-};
-
 use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
-
-use crate::style;
 
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{
@@ -22,7 +12,14 @@ use super::{
     scale::PriceInfoLabel, update_chart, view_chart,
 };
 
+use iced::widget::canvas::{self, Event, Geometry, Path};
+use iced::{
+    Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse,
+    theme::palette::Extended,
+};
+
 use ordered_float::OrderedFloat;
+use std::collections::{BTreeMap, HashMap};
 
 impl Chart for HeatmapChart {
     fn common_data(&self) -> &CommonChartData {
@@ -35,7 +32,7 @@ impl Chart for HeatmapChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.render_start();
+        self.invalidate();
     }
 
     fn canvas_interaction(
@@ -62,9 +59,8 @@ impl Chart for HeatmapChart {
         )
     }
 
-    fn interval_keys(&self) -> Vec<u64> {
-        vec![]
-        //self.timeseries.iter().map(|(time, _, _)| *time).collect()
+    fn interval_keys(&self) -> Option<Vec<u64>> {
+        None
     }
 
     fn is_empty(&self) -> bool {
@@ -186,7 +182,8 @@ impl HeatmapChart {
             self.process_datapoint(trades_buffer, depth_update, depth);
         } else {
             self.process_datapoint(trades_buffer, depth_update, depth);
-            self.render_start();
+
+            self.invalidate();
         }
 
         self.cleanup_old_data();
@@ -382,10 +379,10 @@ impl HeatmapChart {
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
         match self.indicators.entry(indicator) {
-            Entry::Occupied(entry) => {
+            std::collections::hash_map::Entry::Occupied(entry) => {
                 entry.remove();
             }
-            Entry::Vacant(entry) => {
+            std::collections::hash_map::Entry::Vacant(entry) => {
                 let data = match indicator {
                     HeatmapIndicator::Volume => IndicatorData::Volume,
                     HeatmapIndicator::SessionVolumeProfile => {
@@ -397,7 +394,7 @@ impl HeatmapChart {
         }
     }
 
-    pub fn render_start(&mut self) {
+    pub fn invalidate(&mut self) {
         let chart_state = self.common_data_mut();
 
         if chart_state.autoscale {
@@ -479,7 +476,7 @@ impl HeatmapChart {
     pub fn view<'a, I: Indicator>(
         &'a self,
         indicators: &'a [I],
-        timezone: UserTimezone,
+        timezone: data::UserTimezone,
     ) -> Element<'a, Message> {
         view_chart(self, indicators, timezone)
     }

@@ -162,7 +162,7 @@ pub struct AxisLabelsX<'a> {
     pub cell_width: f32,
     pub timezone: UserTimezone,
     pub chart_bounds: Rectangle,
-    pub interval_keys: Vec<u64>,
+    pub interval_keys: Option<Vec<u64>>,
 }
 
 impl AxisLabelsX<'_> {
@@ -208,14 +208,15 @@ impl AxisLabelsX<'_> {
         palette: &Extended,
         x_labels_can_fit: i32,
     ) -> Vec<AxisLabel> {
-        if self.interval_keys.is_empty() {
-            return Vec::new();
-        }
+        let interval_keys = match &self.interval_keys {
+            Some(keys) => keys,
+            None => return Vec::new(),
+        };
 
         let chart_x_min = region.x;
         let chart_x_max = region.x + region.width;
 
-        let last_index = self.interval_keys.len() - 1;
+        let last_index = interval_keys.len() - 1;
 
         let min_cell = (chart_x_min / self.cell_width).floor() as i32;
         let max_cell = ((chart_x_max) / self.cell_width).ceil() as i32;
@@ -225,8 +226,7 @@ impl AxisLabelsX<'_> {
         let visible_cell_count = (max_cell - min_cell + 1).max(1) as f32;
         let step_size = (visible_cell_count / x_labels_can_fit as f32).ceil() as usize;
 
-        let mut labels =
-            Vec::with_capacity(self.interval_keys.len().min(x_labels_can_fit as usize));
+        let mut labels = Vec::with_capacity(interval_keys.len().min(x_labels_can_fit as usize));
         for cell_index in (min_cell..=max_cell).step_by(step_size.max(1)) {
             if cell_index > 0 {
                 continue;
@@ -243,7 +243,7 @@ impl AxisLabelsX<'_> {
             let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
             let snap_x = snap_ratio * bounds.width;
 
-            if let Some(timestamp) = self.interval_keys.get(array_index) {
+            if let Some(timestamp) = interval_keys.get(array_index) {
                 let label_text = self
                     .timezone
                     .format_timestamp((*timestamp / 1000) as i64, 100);
@@ -321,9 +321,10 @@ impl AxisLabelsX<'_> {
 
         match self.basis {
             Basis::Tick(interval) => {
-                if self.interval_keys.is_empty() {
-                    return None;
-                }
+                let interval_keys = match &self.interval_keys {
+                    Some(keys) => keys,
+                    None => return None,
+                };
 
                 let (crosshair_pos, _, cell_index) = self.calc_crosshair_pos(cursor_pos, region);
 
@@ -338,7 +339,7 @@ impl AxisLabelsX<'_> {
                     return None;
                 }
 
-                let last_index = self.interval_keys.len() - 1;
+                let last_index = interval_keys.len() - 1;
                 let offset = i64::from(-cell_index) as usize;
                 if offset > last_index {
                     return None;
@@ -346,7 +347,7 @@ impl AxisLabelsX<'_> {
 
                 let array_index = last_index - offset;
 
-                if let Some(timestamp) = self.interval_keys.get(array_index) {
+                if let Some(timestamp) = interval_keys.get(array_index) {
                     let text_content = self
                         .timezone
                         .format_crosshair_timestamp(*timestamp as i64, interval);
