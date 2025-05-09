@@ -20,9 +20,7 @@ pub enum Message {
     SetThreshold(Exchange, exchange::Ticker, data::audio::Threshold),
 }
 
-pub enum Action {
-    None,
-}
+pub enum Action {}
 
 pub struct AudioStream {
     cache: SoundCache,
@@ -52,7 +50,7 @@ impl AudioStream {
         }
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
+    pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::SoundLevelChanged(value) => {
                 self.cache.set_volume(value);
@@ -97,7 +95,7 @@ impl AudioStream {
             }
         }
 
-        Action::None
+        None
     }
 
     pub fn view(&self, active_streams: Vec<(Exchange, exchange::Ticker)>) -> Element<'_, Message> {

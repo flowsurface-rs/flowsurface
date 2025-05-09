@@ -25,7 +25,6 @@ pub enum Action {
     TickerSelected(TickerInfo, Exchange, String),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
-    None,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -328,7 +327,7 @@ impl TickersTable {
         self.update_table(exchange, filtered_tickers_stats);
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
+    pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::ChangeTickersTableTab(tab) => {
                 self.selected_tab = tab;
@@ -367,7 +366,7 @@ impl TickersTable {
                     .flatten();
 
                 if let Some(ticker_info) = ticker_info {
-                    return Action::TickerSelected(ticker_info, exchange, chart_type);
+                    return Some(Action::TickerSelected(ticker_info, exchange, chart_type));
                 } else {
                     log::warn!("Ticker info not found for {ticker:?} on {exchange:?}");
                 }
@@ -404,7 +403,7 @@ impl TickersTable {
                     Task::batch(fetch_tasks)
                 };
 
-                return Action::Fetch(task);
+                return Some(Action::Fetch(task));
             }
             Message::UpdateTickerStats(exchange, stats) => {
                 self.update_ticker_stats(exchange, stats);
@@ -419,15 +418,15 @@ impl TickersTable {
                         Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
                     });
 
-                return Action::Fetch(task);
+                return Some(Action::Fetch(task));
             }
             Message::ErrorOccurred(err) => {
                 log::error!("Error occurred: {err}");
-                return Action::ErrorOccurred(err);
+                return Some(Action::ErrorOccurred(err));
             }
         }
 
-        Action::None
+        None
     }
 
     pub fn view(&self, bounds: Size) -> Element<'_, Message> {

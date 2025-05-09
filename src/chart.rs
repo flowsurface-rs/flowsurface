@@ -2,7 +2,6 @@ pub mod heatmap;
 pub mod indicator;
 pub mod kline;
 mod scale;
-pub mod study;
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Stroke};
@@ -267,7 +266,6 @@ fn canvas_interaction<T: Chart>(
 pub enum Action {
     ErrorOccurred(data::InternalError),
     FetchRequested(uuid::Uuid, FetchRange),
-    None,
 }
 
 fn update_chart<T: Chart>(chart: &mut T, message: &Message) {

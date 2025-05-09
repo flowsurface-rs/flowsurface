@@ -80,7 +80,7 @@ pub enum Message {
     DeleteNotification(pane_grid::Pane, usize),
     ReorderIndicator(pane_grid::Pane, column_drag::DragEvent),
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
-    StudyConfigurator(pane_grid::Pane, chart::study::Message),
+    StudyConfigurator(pane_grid::Pane, super::panel::study::Message),
 }
 
 pub struct PaneState {

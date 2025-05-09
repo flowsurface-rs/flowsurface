@@ -336,33 +336,29 @@ impl Flowsurface {
                         .chain(event_task);
                 }
             }
-            Message::TickersTable(message) => {
-                let action = self.tickers_table.update(message);
+            Message::TickersTable(message) => match self.tickers_table.update(message) {
+                Some(tickers_table::Action::TickerSelected(ticker_info, exchange, content)) => {
+                    let main_window_id = self.main_window.id;
 
-                match action {
-                    tickers_table::Action::TickerSelected(ticker_info, exchange, content) => {
-                        let main_window_id = self.main_window.id;
+                    if let Some(dashboard) = self.active_dashboard_mut() {
+                        let task = dashboard.init_pane_task(
+                            main_window_id,
+                            ticker_info,
+                            exchange,
+                            &content,
+                        );
 
-                        if let Some(dashboard) = self.active_dashboard_mut() {
-                            let task = dashboard.init_pane_task(
-                                main_window_id,
-                                ticker_info,
-                                exchange,
-                                &content,
-                            );
-
-                            return task.map(move |msg| Message::Dashboard(None, msg));
-                        }
+                        return task.map(move |msg| Message::Dashboard(None, msg));
                     }
-                    tickers_table::Action::Fetch(task) => {
-                        return task.map(Message::TickersTable);
-                    }
-                    tickers_table::Action::ErrorOccurred(err) => {
-                        return Task::done(Message::ErrorOccurred(err));
-                    }
-                    tickers_table::Action::None => {}
                 }
-            }
+                Some(tickers_table::Action::Fetch(task)) => {
+                    return task.map(Message::TickersTable);
+                }
+                Some(tickers_table::Action::ErrorOccurred(err)) => {
+                    return Task::done(Message::ErrorOccurred(err));
+                }
+                None => {}
+            },
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
             }
@@ -394,39 +390,35 @@ impl Flowsurface {
             Message::ToggleDialogModal(dialog) => {
                 self.confirm_dialog = dialog;
             }
-            Message::Layouts(message) => {
-                let action = self.layout_manager.update(message);
+            Message::Layouts(message) => match self.layout_manager.update(message) {
+                Some(layout::Action::Select(layout)) => {
+                    if let Some(dashboard) = self.active_dashboard() {
+                        let active_popout_keys =
+                            dashboard.popout.keys().copied().collect::<Vec<_>>();
 
-                match action {
-                    layout::Action::Select(layout) => {
-                        if let Some(dashboard) = self.active_dashboard() {
-                            let active_popout_keys =
-                                dashboard.popout.keys().copied().collect::<Vec<_>>();
+                        let window_tasks = Task::batch(
+                            active_popout_keys
+                                .iter()
+                                .map(|&popout_id| window::close(popout_id))
+                                .collect::<Vec<_>>(),
+                        )
+                        .then(|_: Task<window::Id>| Task::none());
 
-                            let window_tasks = Task::batch(
-                                active_popout_keys
-                                    .iter()
-                                    .map(|&popout_id| window::close(popout_id))
-                                    .collect::<Vec<_>>(),
-                            )
-                            .then(|_: Task<window::Id>| Task::none());
-
-                            return window::collect_window_specs(
-                                active_popout_keys,
-                                dashboard::Message::SavePopoutSpecs,
-                            )
-                            .map(move |msg| Message::Dashboard(None, msg))
-                            .chain(window_tasks)
-                            .chain(Task::done(Message::LoadLayout(layout)));
-                        } else {
-                            return Task::done(Message::ErrorOccurred(InternalError::Layout(
-                                "Couldn't get active dashboard".to_string(),
-                            )));
-                        }
+                        return window::collect_window_specs(
+                            active_popout_keys,
+                            dashboard::Message::SavePopoutSpecs,
+                        )
+                        .map(move |msg| Message::Dashboard(None, msg))
+                        .chain(window_tasks)
+                        .chain(Task::done(Message::LoadLayout(layout)));
+                    } else {
+                        return Task::done(Message::ErrorOccurred(InternalError::Layout(
+                            "Couldn't get active dashboard".to_string(),
+                        )));
                     }
-                    layout::Action::None => {}
                 }
-            }
+                None => {}
+            },
             Message::LoadLayout(layout) => {
                 self.layout_manager.active_layout = layout.clone();
                 if let Some(dashboard) = self.active_dashboard_mut() {
@@ -444,13 +436,10 @@ impl Flowsurface {
                     self.notifications.remove(index);
                 }
             }
-            Message::AudioStream(message) => {
-                let action = self.audio_stream.update(message);
-
-                match action {
-                    audio::Action::None => {}
-                }
-            }
+            Message::AudioStream(message) => match self.audio_stream.update(message) {
+                Some(_) => unimplemented!(),
+                None => {}
+            },
             Message::DataFolderRequested => {
                 if let Err(err) = data::open_data_folder() {
                     return Task::done(Message::AddNotification(Toast::error(format!(
@@ -459,13 +448,11 @@ impl Flowsurface {
                 }
             }
             Message::ThemeEditor(msg) => {
-                let action = self.theme_editor.update(msg, &self.theme.clone().into());
-
-                match action {
-                    theme_editor::Action::Exit => {
+                match self.theme_editor.update(msg, &self.theme.clone().into()) {
+                    Some(theme_editor::Action::Exit) => {
                         self.sidebar.set_menu(sidebar::Menu::Settings);
                     }
-                    theme_editor::Action::UpdateTheme(theme) => {
+                    Some(theme_editor::Action::UpdateTheme(theme)) => {
                         self.theme = data::Theme(theme);
 
                         let main_window = self.main_window.id;
@@ -478,7 +465,7 @@ impl Flowsurface {
                             )));
                         }
                     }
-                    theme_editor::Action::None => {}
+                    None => {}
                 }
             }
         }

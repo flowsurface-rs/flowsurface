@@ -45,7 +45,6 @@ pub enum Message {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    None,
     UpdateTheme(iced_core::Theme),
     Exit,
 }
@@ -77,7 +76,7 @@ impl ThemeEditor {
         }
     }
 
-    pub fn update(&mut self, message: Message, theme: &iced_core::Theme) -> Action {
+    pub fn update(&mut self, message: Message, theme: &iced_core::Theme) -> Option<Action> {
         match message {
             Message::Color(color) => {
                 self.hex_input = None;
@@ -96,14 +95,14 @@ impl ThemeEditor {
                 let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
                 self.custom_theme = Some(new_theme.clone());
 
-                Action::UpdateTheme(new_theme)
+                Some(Action::UpdateTheme(new_theme))
             }
             Message::ComponentChanged(component) => {
                 self.component = component;
-                Action::None
+                None
             }
             Message::HexInput(input) => {
-                let mut action = Action::None;
+                let mut action = None;
 
                 if let Some(color) = data::config::theme::hex_to_color(&input) {
                     let mut new_palette = theme.palette();
@@ -120,13 +119,13 @@ impl ThemeEditor {
                     let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
                     self.custom_theme = Some(new_theme.clone());
 
-                    action = Action::UpdateTheme(new_theme);
+                    action = Some(Action::UpdateTheme(new_theme));
                 }
 
                 self.hex_input = Some(input);
                 action
             }
-            Message::CloseRequested => Action::Exit,
+            Message::CloseRequested => Some(Action::Exit),
         }
     }
 

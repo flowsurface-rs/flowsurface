@@ -1078,22 +1078,22 @@ impl Dashboard {
                 if pane_state.matches_stream(stream) {
                     let action = match &mut pane_state.content {
                         PaneContent::Kline(chart, _) => chart.update_latest_kline(kline),
-                        _ => chart::Action::None,
+                        _ => None,
                     };
 
                     match action {
-                        chart::Action::ErrorOccurred(err) => {
+                        Some(chart::Action::ErrorOccurred(err)) => {
                             tasks.push(Task::done(Message::ErrorOccurred(
                                 Some(pane_state.id),
                                 DashboardError::Unknown(err.to_string()),
                             )));
                         }
-                        chart::Action::FetchRequested(req_id, range) => {
+                        Some(chart::Action::FetchRequested(req_id, range)) => {
                             tasks.push(Task::done(Message::ChartRequestedFetch(
                                 pane, window, req_id, range,
                             )));
                         }
-                        chart::Action::None => {}
+                        None => {}
                     }
 
                     found_match = true;

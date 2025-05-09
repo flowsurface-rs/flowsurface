@@ -1,15 +1,16 @@
 use data::UserTimezone;
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
-use data::chart::indicators::{Indicator, KlineIndicator};
-use data::chart::kline::{ClusterKind, FootprintStudy, KlineTrades, NPoc};
-use data::chart::{ChartLayout, KlineChartKind};
+use data::chart::{
+    ChartLayout, KlineChartKind,
+    indicators::{Indicator, KlineIndicator},
+    kline::{ClusterKind, FootprintStudy, KlineTrades, NPoc},
+};
 use data::util::{abbr_large_numbers, count_decimals, round_to_tick};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Timeframe, Trade};
 
 use super::scale::PriceInfoLabel;
-use super::study::ChartStudy;
 use super::{
     Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
     indicator,
@@ -19,7 +20,7 @@ use super::{
     view_chart,
 };
 
-use crate::style;
+use crate::{dashboard::panel::study, style};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -185,7 +186,7 @@ pub struct KlineChart {
     fetching_trades: (bool, Option<Handle>),
     kind: KlineChartKind,
     request_handler: RequestHandler,
-    study_configurator: ChartStudy,
+    study_configurator: study::ChartStudy,
 }
 
 impl KlineChart {
@@ -259,7 +260,7 @@ impl KlineChart {
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                     kind: kind.clone(),
-                    study_configurator: ChartStudy::new(),
+                    study_configurator: study::ChartStudy::new(),
                 }
             }
             Basis::Tick(interval) => {
@@ -311,13 +312,13 @@ impl KlineChart {
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::new(),
                     kind: kind.clone(),
-                    study_configurator: ChartStudy::new(),
+                    study_configurator: study::ChartStudy::new(),
                 }
             }
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline) -> Action {
+    pub fn update_latest_kline(&mut self, kline: &Kline) -> Option<Action> {
         match self.data_source {
             ChartData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[kline.to_owned()]);
@@ -344,14 +345,14 @@ impl KlineChart {
             }
         }
 
-        Action::None
+        None
     }
 
     pub fn kind(&self) -> &KlineChartKind {
         &self.kind
     }
 
-    fn missing_data_task(&mut self) -> Action {
+    fn missing_data_task(&mut self) -> Option<Action> {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
@@ -365,7 +366,7 @@ impl KlineChart {
                     let range = FetchRange::Kline(earliest, kline_earliest);
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
-                        return action;
+                        return Some(action);
                     }
                 }
 
@@ -398,7 +399,7 @@ impl KlineChart {
 
                         if let Some(action) = request_fetch(&mut self.request_handler, range) {
                             self.fetching_trades = (true, None);
-                            return action;
+                            return Some(action);
                         }
                     }
                 }
@@ -417,7 +418,7 @@ impl KlineChart {
                                 if let Some(action) =
                                     request_fetch(&mut self.request_handler, range)
                                 {
-                                    return action;
+                                    return Some(action);
                                 }
                             }
 
@@ -428,7 +429,7 @@ impl KlineChart {
                                 if let Some(action) =
                                     request_fetch(&mut self.request_handler, range)
                                 {
-                                    return action;
+                                    return Some(action);
                                 }
                             }
                         }
@@ -446,7 +447,7 @@ impl KlineChart {
                     let range = FetchRange::Kline(earliest, latest);
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
-                        return action;
+                        return Some(action);
                     }
                 }
             }
@@ -455,7 +456,7 @@ impl KlineChart {
             }
         }
 
-        Action::None
+        None
     }
 
     pub fn reset_request_handler(&mut self) {
@@ -492,13 +493,11 @@ impl KlineChart {
         self.chart.tick_size
     }
 
-    pub fn study_configurator(&self) -> &ChartStudy {
+    pub fn study_configurator(&self) -> &study::ChartStudy {
         &self.study_configurator
     }
 
-    pub fn update_study_configurator(&mut self, message: super::study::Message) {
-        let action = self.study_configurator.update(message);
-
+    pub fn update_study_configurator(&mut self, message: study::Message) {
         let studies = if let KlineChartKind::Footprint {
             ref mut studies, ..
         } = self.kind
@@ -508,9 +507,8 @@ impl KlineChart {
             return;
         };
 
-        match action {
-            super::study::Action::None => return,
-            super::study::Action::ToggleStudy(study, is_selected) => {
+        match self.study_configurator.update(message) {
+            Some(study::Action::ToggleStudy(study, is_selected)) => {
                 if is_selected {
                     let already_exists = studies.iter().any(|s| s.is_same_type(&study));
                     if !already_exists {
@@ -520,11 +518,12 @@ impl KlineChart {
                     studies.retain(|s| !s.is_same_type(&study));
                 }
             }
-            super::study::Action::ConfigureStudy(study) => {
+            Some(study::Action::ConfigureStudy(study)) => {
                 if let Some(existing_study) = studies.iter_mut().find(|s| s.is_same_type(&study)) {
                     *existing_study = study;
                 }
             }
+            None => {}
         }
 
         self.invalidate();

@@ -50,7 +50,6 @@ pub enum Message {
 }
 
 pub enum Action {
-    None,
     Select(Layout),
 }
 
@@ -136,10 +135,10 @@ impl LayoutManager {
         self.active_layout.clone()
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
+    pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::SelectActive(layout) => {
-                return Action::Select(layout);
+                return Some(Action::Select(layout));
             }
             Message::ToggleEditMode(new_mode) => match (&new_mode, &self.edit_mode) {
                 (Editing::Preview, Editing::Preview) => {
@@ -164,7 +163,7 @@ impl LayoutManager {
                 self.layouts
                     .insert(new_layout.id, (new_layout.clone(), Dashboard::default()));
 
-                return Action::Select(new_layout);
+                return Some(Action::Select(new_layout));
             }
             Message::RemoveLayout(id) => {
                 self.layouts.remove(&id);
@@ -256,7 +255,7 @@ impl LayoutManager {
             },
         }
 
-        Action::None
+        None
     }
 
     pub fn view(&self) -> Element<'_, Message> {
