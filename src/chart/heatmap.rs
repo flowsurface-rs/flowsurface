@@ -158,35 +158,38 @@ impl HeatmapChart {
         }
     }
 
-    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64, depth: &Depth) {
-        let chart = &mut self.chart;
-
+    pub fn insert_datapoint(
+        &mut self,
+        trades_buffer: &[Trade],
+        depth_update_t: u64,
+        depth: &Depth,
+    ) {
         // if current orderbook not visible, pause the data insertion and buffer them instead
-        let is_paused = chart.translation.x * chart.scaling > chart.bounds.width / 2.0;
+        let is_paused = {
+            let chart = &mut self.chart;
+            chart.translation.x * chart.scaling > chart.bounds.width / 2.0
+        };
 
         if is_paused {
             self.pause_buffer.push((
-                depth_update,
+                depth_update_t,
                 trades_buffer.to_vec().into_boxed_slice(),
                 depth.clone(),
             ));
+
+            return;
         } else if !self.pause_buffer.is_empty() {
             self.pause_buffer.sort_by_key(|(time, _, _)| *time);
 
-            let buffered_data: Vec<_> = self.pause_buffer.drain(..).collect();
-
-            for (buffered_time, buffered_trades, buffered_depth) in buffered_data {
-                self.process_datapoint(&buffered_trades, buffered_time, &buffered_depth);
+            for (time, trades, depth) in std::mem::take(&mut self.pause_buffer) {
+                self.process_datapoint(&trades, time, &depth);
             }
-
-            self.process_datapoint(trades_buffer, depth_update, depth);
         } else {
-            self.process_datapoint(trades_buffer, depth_update, depth);
-
-            self.invalidate();
+            self.cleanup_old_data();
         }
 
-        self.cleanup_old_data();
+        self.process_datapoint(trades_buffer, depth_update_t, depth);
+        self.invalidate();
     }
 
     fn cleanup_old_data(&mut self) {
@@ -815,6 +818,34 @@ impl canvas::Program<Message> for HeatmapChart {
                     font: style::AZERET_MONO,
                     ..canvas::Text::default()
                 });
+            }
+
+            let is_paused = chart.translation.x * chart.scaling > chart.bounds.width / 2.0;
+            if is_paused {
+                let bar_width = 8.0 / chart.scaling;
+                let bar_height = 32.0 / chart.scaling;
+                let padding = 24.0 / chart.scaling;
+
+                let total_icon_width = bar_width * 3.0;
+
+                let pause_bar = Rectangle {
+                    x: (region.x + region.width) - total_icon_width - padding,
+                    y: region.y + padding,
+                    width: bar_width,
+                    height: bar_height,
+                };
+
+                frame.fill_rectangle(
+                    pause_bar.position(),
+                    pause_bar.size(),
+                    palette.background.base.text.scale_alpha(0.4),
+                );
+
+                frame.fill_rectangle(
+                    pause_bar.position() + Vector::new(pause_bar.width * 2.0, 0.0),
+                    pause_bar.size(),
+                    palette.background.base.text.scale_alpha(0.4),
+                );
             }
         });
 
