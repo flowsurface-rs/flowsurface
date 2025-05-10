@@ -67,6 +67,15 @@ impl Depth {
             .map(|order| (OrderedFloat(order.price), order.qty))
             .collect();
     }
+
+    pub fn mid_price(&self) -> Option<f32> {
+        match (self.asks.first_key_value(), self.bids.last_key_value()) {
+            (Some((ask_price, _)), Some((bid_price, _))) => {
+                Some((ask_price.into_inner() + bid_price.into_inner()) / 2.0)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]

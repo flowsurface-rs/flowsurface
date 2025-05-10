@@ -207,3 +207,15 @@ pub struct GroupedTrade {
     pub price: f32,
     pub qty: f32,
 }
+
+impl GroupedTrade {
+    pub fn compare_with(&self, price: f32, is_sell: bool) -> std::cmp::Ordering {
+        if self.is_sell == is_sell {
+            self.price
+                .partial_cmp(&price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            self.is_sell.cmp(&is_sell)
+        }
+    }
+}

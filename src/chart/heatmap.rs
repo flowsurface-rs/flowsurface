@@ -232,7 +232,6 @@ impl HeatmapChart {
 
         {
             let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
-
             let mut grouped_trades: Vec<GroupedTrade> = Vec::with_capacity(trades_buffer.len());
 
             for trade in trades_buffer {
@@ -248,16 +247,9 @@ impl HeatmapChart {
                     (trade.price * (1.0 / chart.tick_size)).ceil() * chart.tick_size
                 };
 
-                match grouped_trades.binary_search_by(|probe| {
-                    if probe.is_sell == trade.is_sell {
-                        probe
-                            .price
-                            .partial_cmp(&grouped_price)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        probe.is_sell.cmp(&trade.is_sell)
-                    }
-                }) {
+                match grouped_trades
+                    .binary_search_by(|probe| probe.compare_with(trade.price, trade.is_sell))
+                {
                     Ok(index) => grouped_trades[index].qty += trade.qty,
                     Err(index) => grouped_trades.insert(
                         index,
@@ -301,14 +293,7 @@ impl HeatmapChart {
 
                     for trade in grouped_trades {
                         match merged_trades.binary_search_by(|probe| {
-                            if probe.is_sell == trade.is_sell {
-                                probe
-                                    .price
-                                    .partial_cmp(&trade.price)
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            } else {
-                                probe.is_sell.cmp(&trade.is_sell)
-                            }
+                            probe.compare_with(trade.price, trade.is_sell)
                         }) {
                             Ok(index) => merged_trades[index].qty += trade.qty,
                             Err(index) => merged_trades.insert(index, trade),
@@ -323,17 +308,14 @@ impl HeatmapChart {
         self.heatmap
             .insert_latest_depth(depth, rounded_depth_update);
 
+        {
+            let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
+
+            chart.last_price = Some(PriceInfoLabel::Neutral(mid_price));
+            chart.base_price_y = (mid_price / (chart.tick_size)).round() * (chart.tick_size);
+        }
+
         chart.latest_x = rounded_depth_update;
-
-        let mid_price = match (depth.asks.first_key_value(), depth.bids.last_key_value()) {
-            (Some((ask_price, _)), Some((bid_price, _))) => {
-                (ask_price.into_inner() + bid_price.into_inner()) / 2.0
-            }
-            _ => chart.base_price_y,
-        };
-
-        chart.last_price = Some(PriceInfoLabel::Neutral(mid_price));
-        chart.base_price_y = (mid_price / (chart.tick_size)).round() * (chart.tick_size);
     }
 
     pub fn visual_config(&self) -> Config {
