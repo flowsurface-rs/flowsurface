@@ -162,13 +162,12 @@ impl HistoricalDepth {
         highest: f32,
         lowest: f32,
     ) -> impl Iterator<Item = (&OrderedFloat<f32>, &Vec<OrderRun>)> {
-        self.price_levels.iter().filter(move |(price, runs)| {
-            **price <= OrderedFloat(highest)
-                && **price >= OrderedFloat(lowest)
-                && runs
-                    .iter()
+        self.price_levels
+            .range(OrderedFloat(lowest)..=OrderedFloat(highest))
+            .filter(move |(_, runs)| {
+                runs.iter()
                     .any(|run| run.until_time >= earliest && run.start_time <= latest)
-        })
+            })
     }
 
     pub fn latest_order_runs(
@@ -177,15 +176,13 @@ impl HistoricalDepth {
         lowest: f32,
         latest_timestamp: u64,
     ) -> impl Iterator<Item = (&OrderedFloat<f32>, &OrderRun)> {
-        self.price_levels.iter().filter_map(move |(price, runs)| {
-            if **price <= *OrderedFloat(highest) && **price >= *OrderedFloat(lowest) {
+        self.price_levels
+            .range(OrderedFloat(lowest)..=OrderedFloat(highest))
+            .filter_map(move |(price, runs)| {
                 runs.last()
                     .filter(|run| run.until_time >= latest_timestamp)
                     .map(|run| (price, run))
-            } else {
-                None
-            }
-        })
+            })
     }
 
     pub fn cleanup_old_price_levels(&mut self, oldest_time: u64) {
