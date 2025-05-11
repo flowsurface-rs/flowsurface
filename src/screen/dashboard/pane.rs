@@ -34,7 +34,6 @@ pub enum InfoType {
     FetchingOI,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
     Ready,
@@ -47,7 +46,6 @@ pub enum Modal {
     StreamModifier,
     Settings,
     Indicators,
-    None,
 }
 
 enum ExistingIndicators {
@@ -82,7 +80,7 @@ pub enum Message {
 
 pub struct State {
     pub id: uuid::Uuid,
-    pub modal: Modal,
+    pub modal: Option<Modal>,
     pub content: Content,
     pub settings: Settings,
     pub notifications: Vec<Toast>,
@@ -432,7 +430,9 @@ impl State {
             );
         }
 
-        let is_stream_modifier = self.modal == Modal::StreamModifier;
+        let is_stream_modifier = self
+            .modal
+            .is_some_and(|m| matches!(m, Modal::StreamModifier));
 
         match &self.content {
             Content::Starter | Content::TimeAndSales(_) => {}
@@ -517,7 +517,7 @@ impl State {
             .controls(self.view_controls(id, panes, maximized, window != main_window.id))
             .style(style::pane_title_bar);
 
-        content.title_bar(if self.modal == Modal::None {
+        content.title_bar(if self.modal.is_none() {
             title_bar
         } else {
             title_bar.always_show_controls()
@@ -532,7 +532,7 @@ impl State {
         is_popout: bool,
     ) -> Element<Message> {
         let modal_btn_style = |modal: Modal| {
-            let is_active = self.modal == modal;
+            let is_active = self.modal == Some(modal);
             move |theme: &Theme, status: button::Status| {
                 style::button::transparent(theme, status, is_active)
             }
@@ -667,7 +667,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
-            modal: Modal::None,
+            modal: None,
             content: Content::Starter,
             settings: Settings::default(),
             streams: vec![],
@@ -712,32 +712,32 @@ where
         .into();
 
     match state.modal {
-        Modal::StreamModifier => pane_modal(
+        Some(Modal::StreamModifier) => pane_modal(
             base,
             super::panel::stream_modifier_view(pane, stream_modifier, state.get_ticker_exchange()),
-            Message::ToggleModal(pane, Modal::None),
+            Message::ToggleModal(pane, Modal::StreamModifier),
             padding::left(36),
             Alignment::Start,
         ),
-        Modal::Indicators => pane_modal(
+        Some(Modal::Indicators) => pane_modal(
             base,
             super::panel::indicators_view(
                 pane,
                 state.settings.ticker_info.map(|info| info.market_type()),
                 indicators,
             ),
-            Message::ToggleModal(pane, Modal::None),
+            Message::ToggleModal(pane, Modal::Indicators),
             padding::right(12).left(12),
             Alignment::End,
         ),
-        Modal::Settings => pane_modal(
+        Some(Modal::Settings) => pane_modal(
             base,
             settings_view(),
-            Message::ToggleModal(pane, Modal::None),
+            Message::ToggleModal(pane, Modal::Settings),
             padding::right(12).left(12),
             Alignment::End,
         ),
-        Modal::None => base,
+        None => base,
     }
 }
 

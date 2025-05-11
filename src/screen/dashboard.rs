@@ -234,10 +234,10 @@ impl Dashboard {
                     }
                     pane::Message::ToggleModal(pane, modal_type) => {
                         if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
-                            if modal_type == pane.modal {
-                                pane.modal = pane::Modal::None;
+                            if Some(modal_type) == pane.modal {
+                                pane.modal = None;
                             } else {
-                                pane.modal = modal_type;
+                                pane.modal = Some(modal_type);
                             }
                         };
                     }
