@@ -20,7 +20,10 @@ use iced::{
 };
 
 use ordered_float::OrderedFloat;
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Instant,
+};
 
 impl Chart for HeatmapChart {
     fn common_data(&self) -> &CommonChartData {
@@ -33,7 +36,7 @@ impl Chart for HeatmapChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.invalidate();
+        self.invalidate(Instant::now());
     }
 
     fn canvas_interaction(
@@ -119,6 +122,7 @@ pub struct HeatmapChart {
     pause_buffer: Vec<(u64, Box<[Trade]>, Depth)>,
     heatmap: HistoricalDepth,
     visual_config: Config,
+    last_tick: Instant,
 }
 
 impl HeatmapChart {
@@ -164,6 +168,7 @@ impl HeatmapChart {
             ),
             timeseries: BTreeMap::new(),
             visual_config: config.unwrap_or_default(),
+            last_tick: Instant::now(),
         }
     }
 
@@ -198,7 +203,6 @@ impl HeatmapChart {
         }
 
         self.process_datapoint(trades_buffer, depth_update_t, depth);
-        self.invalidate();
     }
 
     fn cleanup_old_data(&mut self) {
@@ -343,6 +347,13 @@ impl HeatmapChart {
         self.chart.translation = autoscaled_coords;
     }
 
+    pub fn basis_interval(&self) -> Option<u64> {
+        match self.chart.basis {
+            Basis::Time(interval) => Some(interval),
+            Basis::Tick(_) => None,
+        }
+    }
+
     pub fn chart_layout(&self) -> ChartLayout {
         self.chart.get_chart_layout()
     }
@@ -391,7 +402,9 @@ impl HeatmapChart {
         }
     }
 
-    pub fn invalidate(&mut self) {
+    pub fn invalidate(&mut self, now: Instant) {
+        self.last_tick = now;
+
         let autoscaled_coords = self.autoscaled_coords();
         let chart = &mut self.chart;
 
@@ -400,6 +413,10 @@ impl HeatmapChart {
         }
 
         chart.cache.clear_all();
+    }
+
+    pub fn last_update(&self) -> Instant {
+        self.last_tick
     }
 
     fn calc_qty_scales(&self, earliest: u64, latest: u64, highest: f32, lowest: f32) -> QtyScale {

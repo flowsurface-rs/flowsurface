@@ -30,6 +30,7 @@ use ordered_float::OrderedFloat;
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::time::Instant;
 
 impl Chart for KlineChart {
     fn common_data(&self) -> &CommonChartData {
@@ -42,7 +43,7 @@ impl Chart for KlineChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.invalidate();
+        self.invalidate(None);
     }
 
     fn canvas_interaction(
@@ -187,6 +188,7 @@ pub struct KlineChart {
     kind: KlineChartKind,
     request_handler: RequestHandler,
     study_configurator: study::ChartStudy,
+    last_tick: Instant,
 }
 
 impl KlineChart {
@@ -261,6 +263,7 @@ impl KlineChart {
                     request_handler: RequestHandler::new(),
                     kind: kind.clone(),
                     study_configurator: study::ChartStudy::new(),
+                    last_tick: Instant::now(),
                 }
             }
             Basis::Tick(interval) => {
@@ -313,6 +316,7 @@ impl KlineChart {
                     request_handler: RequestHandler::new(),
                     kind: kind.clone(),
                     study_configurator: study::ChartStudy::new(),
+                    last_tick: Instant::now(),
                 }
             }
         }
@@ -337,11 +341,11 @@ impl KlineChart {
 
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
 
-                self.invalidate();
+                self.invalidate(None);
                 return self.missing_data_task();
             }
             ChartData::TickBased(_) => {
-                self.invalidate();
+                self.invalidate(None);
             }
         }
 
@@ -526,7 +530,7 @@ impl KlineChart {
             None => {}
         }
 
-        self.invalidate();
+        self.invalidate(None);
     }
 
     pub fn chart_layout(&self) -> ChartLayout {
@@ -541,7 +545,7 @@ impl KlineChart {
             *clusters = new_kind;
         }
 
-        self.invalidate();
+        self.invalidate(None);
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
@@ -560,7 +564,7 @@ impl KlineChart {
         }
 
         self.clear_trades(false);
-        self.invalidate();
+        self.invalidate(None);
     }
 
     pub fn set_tick_basis(&mut self, tick_basis: u64) {
@@ -574,7 +578,7 @@ impl KlineChart {
 
         self.data_source = ChartData::TickBased(new_tick_aggr);
 
-        self.invalidate();
+        self.invalidate(None);
     }
 
     fn oi_timerange(&self, latest_kline: u64) -> (u64, u64) {
@@ -618,7 +622,7 @@ impl KlineChart {
                     self.chart.last_price = None;
                 }
 
-                self.invalidate();
+                self.invalidate(None);
             }
             ChartData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades(trades_buffer, Some(depth_update));
@@ -667,8 +671,6 @@ impl KlineChart {
             }
             ChartData::TickBased(_) => {}
         }
-
-        self.invalidate();
     }
 
     pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: &[OIData]) {
@@ -723,7 +725,13 @@ impl KlineChart {
         }
     }
 
-    pub fn invalidate(&mut self) {
+    pub fn last_update(&self) -> Instant {
+        self.last_tick
+    }
+
+    pub fn invalidate(&mut self, now: Option<Instant>) {
+        self.last_tick = if let Some(t) = now { t } else { Instant::now() };
+
         let autoscaled_coords = self.autoscaled_coords();
         let chart = &mut self.chart;
 

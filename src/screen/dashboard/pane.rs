@@ -29,6 +29,7 @@ use iced::{
     },
 };
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InfoType {
@@ -630,8 +631,46 @@ impl PaneState {
         self.streams.iter().any(|existing| existing == stream)
     }
 
-    pub fn invalidate(&mut self) {
-        self.content.invalidate();
+    pub fn invalidate(&mut self, now: Instant) {
+        self.content.invalidate(now);
+    }
+
+    pub fn basis_interval(&self) -> Option<u64> {
+        match &self.content {
+            PaneContent::Kline(_, _) => Some(1000),
+            PaneContent::Heatmap(chart, _) => chart.basis_interval(),
+            _ => None,
+        }
+    }
+
+    pub fn last_tick(&self) -> Option<Instant> {
+        match &self.content {
+            PaneContent::Heatmap(chart, _) => Some(chart.last_update()),
+            PaneContent::Kline(chart, _) => Some(chart.last_update()),
+            _ => None,
+        }
+    }
+
+    pub fn tick(&mut self, now: Instant) {
+        let invalidate_interval: Option<u64> = self.basis_interval();
+        let last_tick: Option<Instant> = self.last_tick();
+
+        match (invalidate_interval, last_tick) {
+            (Some(interval_ms), Some(previous_tick_time)) => {
+                if interval_ms > 0 {
+                    let interval_duration = std::time::Duration::from_millis(interval_ms as u64);
+                    if now.duration_since(previous_tick_time) >= interval_duration {
+                        self.invalidate(now);
+                    }
+                }
+            }
+            (Some(interval_ms), None) => {
+                if interval_ms > 0 {
+                    self.invalidate(now);
+                }
+            }
+            (None, _) => {}
+        }
     }
 }
 
@@ -1074,10 +1113,10 @@ pub enum PaneContent {
 }
 
 impl PaneContent {
-    pub fn invalidate(&mut self) {
+    pub fn invalidate(&mut self, now: Instant) {
         match self {
-            PaneContent::Heatmap(chart, _) => chart.invalidate(),
-            PaneContent::Kline(chart, _) => chart.invalidate(),
+            PaneContent::Heatmap(chart, _) => chart.invalidate(now),
+            PaneContent::Kline(chart, _) => chart.invalidate(Some(now)),
             PaneContent::Starter | PaneContent::TimeAndSales(_) => {}
         }
     }

@@ -35,7 +35,12 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use std::{borrow::Cow, collections::HashMap, vec};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    time::{Duration, Instant},
+    vec,
+};
 
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
@@ -86,6 +91,7 @@ enum Message {
     Dashboard(Option<uuid::Uuid>, dashboard::Message),
     TickersTable(tickers_table::Message),
 
+    Tick(Instant),
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
     ErrorOccurred(InternalError),
@@ -209,6 +215,13 @@ impl Flowsurface {
                                 .map(move |msg| Message::Dashboard(None, msg));
                         }
                     }
+                }
+            }
+            Message::Tick(now) => {
+                let main_window_id = self.main_window.id;
+
+                if let Some(dashboard) = self.active_dashboard_mut() {
+                    dashboard.tick(now, main_window_id);
                 }
             }
             Message::WindowEvent(event) => match event {
@@ -973,7 +986,14 @@ impl Flowsurface {
 
         let tickers_table_fetch = self.tickers_table.subscription().map(Message::TickersTable);
 
-        Subscription::batch(vec![exchange_streams, tickers_table_fetch, window_events])
+        let tick = iced::time::every(Duration::from_millis(100)).map(Message::Tick);
+
+        Subscription::batch(vec![
+            exchange_streams,
+            tickers_table_fetch,
+            window_events,
+            tick,
+        ])
     }
 
     fn active_dashboard(&self) -> Option<&Dashboard> {

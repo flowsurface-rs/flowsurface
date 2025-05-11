@@ -33,6 +33,7 @@ use iced_futures::futures::TryFutureExt;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    time::Instant,
     vec,
 };
 
@@ -1149,9 +1150,12 @@ impl Dashboard {
 
     pub fn invalidate_all_panes(&mut self, main_window: window::Id) {
         self.iter_all_panes_mut(main_window)
-            .for_each(|(_, _, pane_state)| {
-                pane_state.invalidate();
-            });
+            .for_each(|(_, _, state)| state.invalidate(Instant::now()));
+    }
+
+    pub fn tick(&mut self, now: Instant, main_window: window::Id) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| state.tick(now));
     }
 
     pub fn market_subscriptions<M>(
