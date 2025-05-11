@@ -23,28 +23,28 @@ pub enum StreamError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum MarketType {
+pub enum MarketKind {
     Spot,
     LinearPerps,
     InversePerps,
 }
 
-impl std::fmt::Display for MarketType {
+impl std::fmt::Display for MarketKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                MarketType::Spot => "Spot",
-                MarketType::LinearPerps => "Linear",
-                MarketType::InversePerps => "Inverse",
+                MarketKind::Spot => "Spot",
+                MarketKind::LinearPerps => "Linear",
+                MarketKind::InversePerps => "Inverse",
             }
         )
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum StreamType {
+pub enum StreamKind {
     Kline {
         exchange: Exchange,
         ticker: Ticker,
@@ -110,11 +110,11 @@ impl Exchange {
         Exchange::BybitSpot,
     ];
 
-    pub fn get_market_type(&self) -> MarketType {
+    pub fn get_market_type(&self) -> MarketKind {
         match self {
-            Exchange::BinanceLinear | Exchange::BybitLinear => MarketType::LinearPerps,
-            Exchange::BinanceInverse | Exchange::BybitInverse => MarketType::InversePerps,
-            Exchange::BinanceSpot | Exchange::BybitSpot => MarketType::Spot,
+            Exchange::BinanceLinear | Exchange::BybitLinear => MarketKind::LinearPerps,
+            Exchange::BinanceInverse | Exchange::BybitInverse => MarketKind::InversePerps,
+            Exchange::BinanceSpot | Exchange::BybitSpot => MarketKind::Spot,
         }
     }
 }
@@ -126,14 +126,14 @@ pub struct Connection;
 pub enum Event {
     Connected(Exchange, Connection),
     Disconnected(Exchange, String),
-    DepthReceived(StreamType, u64, Depth, Box<[Trade]>),
-    KlineReceived(StreamType, Kline),
+    DepthReceived(StreamKind, u64, Depth, Box<[Trade]>),
+    KlineReceived(StreamKind, Kline),
 }
 
 #[derive(Debug, Clone, Hash)]
 pub struct StreamConfig<I> {
     pub id: I,
-    pub market_type: MarketType,
+    pub market_type: MarketKind,
 }
 
 impl<I> StreamConfig<I> {

@@ -14,7 +14,7 @@ use iced_futures::{
 
 use super::{
     super::{
-        Exchange, Kline, MarketType, OpenInterest, StreamType, Ticker, TickerInfo, TickerStats,
+        Exchange, Kline, MarketKind, OpenInterest, StreamKind, Ticker, TickerInfo, TickerStats,
         Timeframe, Trade,
         connect::{State, setup_tcp_connection, setup_tls_connection, setup_websocket_connection},
         de_string_to_f32,
@@ -24,11 +24,11 @@ use super::{
     Connection, Event, StreamError,
 };
 
-fn exchange_from_market_type(market: MarketType) -> Exchange {
+fn exchange_from_market_type(market: MarketKind) -> Exchange {
     match market {
-        MarketType::Spot => Exchange::BinanceSpot,
-        MarketType::LinearPerps => Exchange::BinanceLinear,
-        MarketType::InversePerps => Exchange::BinanceInverse,
+        MarketKind::Spot => Exchange::BinanceSpot,
+        MarketKind::LinearPerps => Exchange::BinanceLinear,
+        MarketKind::InversePerps => Exchange::BinanceInverse,
     }
 }
 
@@ -155,7 +155,7 @@ impl StreamWrapper {
     }
 }
 
-fn feed_de(slice: &[u8], market: MarketType) -> Result<StreamData, StreamError> {
+fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, StreamError> {
     let exchange = exchange_from_market_type(market);
 
     let mut stream_type: Option<StreamWrapper> = None;
@@ -177,13 +177,13 @@ fn feed_de(slice: &[u8], market: MarketType) -> Result<StreamData, StreamError> 
                     return Ok(StreamData::Trade(trade));
                 }
                 Some(StreamWrapper::Depth) => match market {
-                    MarketType::Spot => {
+                    MarketKind::Spot => {
                         let depth: SpotDepth = sonic_rs::from_str(&v.as_raw_faststr())
                             .map_err(|e| StreamError::ParseError(e.to_string()))?;
 
                         return Ok(StreamData::Depth(SonicDepth::Spot(depth)));
                     }
-                    MarketType::LinearPerps | MarketType::InversePerps => {
+                    MarketKind::LinearPerps | MarketKind::InversePerps => {
                         let depth: PerpDepth = sonic_rs::from_str(&v.as_raw_faststr())
                             .map_err(|e| StreamError::ParseError(e.to_string()))?;
 
@@ -285,9 +285,9 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let streams = format!("{stream_1}/{stream_2}");
 
         let domain = match market {
-            MarketType::Spot => "stream.binance.com",
-            MarketType::LinearPerps => "fstream.binance.com",
-            MarketType::InversePerps => "dstream.binance.com",
+            MarketKind::Spot => "stream.binance.com",
+            MarketKind::LinearPerps => "fstream.binance.com",
+            MarketKind::InversePerps => "dstream.binance.com",
         };
 
         let contract_size = get_contract_size(&ticker, market);
@@ -404,7 +404,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
-                                                                StreamType::DepthAndTrades {
+                                                                StreamKind::DepthAndTrades {
                                                                     exchange,
                                                                     ticker,
                                                                 },
@@ -464,7 +464,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
-                                                                StreamType::DepthAndTrades {
+                                                                StreamKind::DepthAndTrades {
                                                                     exchange,
                                                                     ticker,
                                                                 },
@@ -521,7 +521,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
 pub fn connect_kline_stream(
     streams: Vec<(Ticker, Timeframe)>,
-    market: MarketType,
+    market: MarketKind,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
@@ -544,9 +544,9 @@ pub fn connect_kline_stream(
             match &mut state {
                 State::Disconnected => {
                     let domain = match market {
-                        MarketType::Spot => "stream.binance.com",
-                        MarketType::LinearPerps => "fstream.binance.com",
-                        MarketType::InversePerps => "dstream.binance.com",
+                        MarketKind::Spot => "stream.binance.com",
+                        MarketKind::LinearPerps => "fstream.binance.com",
+                        MarketKind::InversePerps => "dstream.binance.com",
                     };
 
                     if let Ok(websocket) = connect(domain, stream_str.as_str()).await {
@@ -595,7 +595,7 @@ pub fn connect_kline_stream(
                                 {
                                     let _ = output
                                         .send(Event::KlineReceived(
-                                            StreamType::Kline {
+                                            StreamKind::Kline {
                                                 exchange,
                                                 ticker,
                                                 timeframe: timeframe.1,
@@ -632,10 +632,10 @@ pub fn connect_kline_stream(
     })
 }
 
-fn get_contract_size(ticker: &Ticker, market_type: MarketType) -> Option<f32> {
+fn get_contract_size(ticker: &Ticker, market_type: MarketKind) -> Option<f32> {
     match market_type {
-        MarketType::Spot | MarketType::LinearPerps => None,
-        MarketType::InversePerps => {
+        MarketKind::Spot | MarketKind::LinearPerps => None,
+        MarketKind::InversePerps => {
             if ticker.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
                 Some(100.0)
             } else {
@@ -675,9 +675,9 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, StreamError> {
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let base_url = match market_type {
-        MarketType::Spot => "https://api.binance.com/api/v3/depth",
-        MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/depth",
-        MarketType::InversePerps => "https://dapi.binance.com/dapi/v1/depth",
+        MarketKind::Spot => "https://api.binance.com/api/v3/depth",
+        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/depth",
+        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/depth",
     };
 
     let url = format!(
@@ -690,7 +690,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, StreamError> {
     let text = response.text().await.map_err(StreamError::FetchError)?;
 
     match market_type {
-        MarketType::Spot => {
+        MarketKind::Spot => {
             let fetched_depth: FetchedSpotDepth =
                 serde_json::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
@@ -703,7 +703,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, StreamError> {
 
             Ok(depth)
         }
-        MarketType::LinearPerps | MarketType::InversePerps => {
+        MarketKind::LinearPerps | MarketKind::InversePerps => {
             let fetched_depth: FetchedPerpDepth =
                 serde_json::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
@@ -760,9 +760,9 @@ pub async fn fetch_klines(
     let timeframe_str = timeframe.to_string();
 
     let base_url = match market_type {
-        MarketType::Spot => "https://api.binance.com/api/v3/klines",
-        MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/klines",
-        MarketType::InversePerps => "https://dapi.binance.com/dapi/v1/klines",
+        MarketKind::Spot => "https://api.binance.com/api/v3/klines",
+        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/klines",
+        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/klines",
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&interval={timeframe_str}");
@@ -803,11 +803,11 @@ pub async fn fetch_klines(
             low: k.3,
             close: k.4,
             volume: match market_type {
-                MarketType::Spot | MarketType::LinearPerps => {
+                MarketKind::Spot | MarketKind::LinearPerps => {
                     let sell_volume = k.5 - k.9;
                     (k.9, sell_volume)
                 }
-                MarketType::InversePerps => {
+                MarketKind::InversePerps => {
                     let contract_size = if symbol_str == "BTCUSD_PERP" {
                         100.0
                     } else {
@@ -825,14 +825,14 @@ pub async fn fetch_klines(
 }
 
 pub async fn fetch_ticksize(
-    market: MarketType,
+    market: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
     let exchange = exchange_from_market_type(market);
 
     let url = match market {
-        MarketType::Spot => "https://api.binance.com/api/v3/exchangeInfo".to_string(),
-        MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string(),
-        MarketType::InversePerps => "https://dapi.binance.com/dapi/v1/exchangeInfo".to_string(),
+        MarketKind::Spot => "https://api.binance.com/api/v3/exchangeInfo".to_string(),
+        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string(),
+        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/exchangeInfo".to_string(),
     };
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
     let text = response.text().await.map_err(StreamError::FetchError)?;
@@ -853,9 +853,9 @@ pub async fn fetch_ticksize(
     log::info!(
         "Binance req. weight limit per minute {}: {:?}",
         match market {
-            MarketType::Spot => "Spot",
-            MarketType::LinearPerps => "Linear Perps",
-            MarketType::InversePerps => "Inverse Perps",
+            MarketKind::Spot => "Spot",
+            MarketKind::LinearPerps => "Linear Perps",
+            MarketKind::InversePerps => "Inverse Perps",
         },
         request_limit
     );
@@ -937,14 +937,14 @@ const INVERSE_FILTER_VOLUME: f32 = 4_000.0;
 const SPOT_FILTER_VOLUME: f32 = 9_000_000.0;
 
 pub async fn fetch_ticker_prices(
-    market: MarketType,
+    market: MarketKind,
 ) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
     let exhange = exchange_from_market_type(market);
 
     let url = match market {
-        MarketType::Spot => "https://api.binance.com/api/v3/ticker/24hr".to_string(),
-        MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/ticker/24hr".to_string(),
-        MarketType::InversePerps => "https://dapi.binance.com/dapi/v1/ticker/24hr".to_string(),
+        MarketKind::Spot => "https://api.binance.com/api/v3/ticker/24hr".to_string(),
+        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/ticker/24hr".to_string(),
+        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/ticker/24hr".to_string(),
     };
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
     let text = response.text().await.map_err(StreamError::FetchError)?;
@@ -955,9 +955,9 @@ pub async fn fetch_ticker_prices(
     let mut ticker_price_map = HashMap::new();
 
     let volume_threshold = match market {
-        MarketType::Spot => SPOT_FILTER_VOLUME,
-        MarketType::LinearPerps => LINEAR_FILTER_VOLUME,
-        MarketType::InversePerps => INVERSE_FILTER_VOLUME,
+        MarketKind::Spot => SPOT_FILTER_VOLUME,
+        MarketKind::LinearPerps => LINEAR_FILTER_VOLUME,
+        MarketKind::InversePerps => INVERSE_FILTER_VOLUME,
     };
 
     for item in value {
@@ -981,14 +981,14 @@ pub async fn fetch_ticker_prices(
 
         let volume = {
             match market {
-                MarketType::Spot | MarketType::LinearPerps => item["quoteVolume"]
+                MarketKind::Spot | MarketKind::LinearPerps => item["quoteVolume"]
                     .as_str()
                     .ok_or_else(|| StreamError::ParseError("Quote volume not found".to_string()))?
                     .parse::<f32>()
                     .map_err(|e| {
                         StreamError::ParseError(format!("Failed to parse quote volume: {e}"))
                     })?,
-                MarketType::InversePerps => item["volume"]
+                MarketKind::InversePerps => item["volume"]
                     .as_str()
                     .ok_or_else(|| StreamError::ParseError("Volume not found".to_string()))?
                     .parse::<f32>()
@@ -1004,8 +1004,8 @@ pub async fn fetch_ticker_prices(
             mark_price: last_price,
             daily_price_chg: price_change_pt,
             daily_volume: match market {
-                MarketType::Spot | MarketType::LinearPerps => volume,
-                MarketType::InversePerps => {
+                MarketKind::Spot | MarketKind::LinearPerps => volume,
+                MarketKind::InversePerps => {
                     let contract_size = if symbol == "BTCUSD_PERP" { 100.0 } else { 10.0 };
                     volume * contract_size
                 }
@@ -1038,11 +1038,11 @@ pub async fn fetch_historical_oi(
     let period_str = period.to_string();
 
     let (domain, pair_str) = match market {
-        MarketType::LinearPerps => (
+        MarketKind::LinearPerps => (
             "https://fapi.binance.com/futures/data/openInterestHist",
             format!("?symbol={ticker_str}",),
         ),
-        MarketType::InversePerps => (
+        MarketKind::InversePerps => (
             "https://dapi.binance.com/futures/data/openInterestHist",
             format!(
                 "?pair={}&contractType=PERPETUAL",
@@ -1192,9 +1192,9 @@ pub async fn fetch_trades(
 pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trade>, StreamError> {
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
     let base_url = match market_type {
-        MarketType::Spot => "https://api.binance.com/api/v3/aggTrades",
-        MarketType::LinearPerps => "https://fapi.binance.com/fapi/v1/aggTrades",
-        MarketType::InversePerps => "https://dapi.binance.com/dapi/v1/aggTrades",
+        MarketKind::Spot => "https://api.binance.com/api/v3/aggTrades",
+        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/aggTrades",
+        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/aggTrades",
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000",);
@@ -1206,8 +1206,8 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
     handle_rate_limit(
         response.headers(),
         match market_type {
-            MarketType::Spot => 6000.0,
-            MarketType::LinearPerps | MarketType::InversePerps => 2400.0,
+            MarketKind::Spot => 6000.0,
+            MarketKind::LinearPerps | MarketKind::InversePerps => 2400.0,
         },
     )
     .await?;
@@ -1240,9 +1240,9 @@ pub async fn get_hist_trades(
     let (symbol, market_type) = ticker.to_full_symbol_and_type();
 
     let market_subpath = match market_type {
-        MarketType::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
-        MarketType::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
-        MarketType::InversePerps => format!("data/futures/cm/daily/aggTrades/{symbol}"),
+        MarketKind::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
+        MarketKind::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
+        MarketKind::InversePerps => format!("data/futures/cm/daily/aggTrades/{symbol}"),
     };
 
     let zip_file_name = format!(

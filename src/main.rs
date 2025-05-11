@@ -27,7 +27,7 @@ use widget::{
 use window::{Window, window_events};
 
 use data::{InternalError, config::theme::default_theme, layout::WindowSpec, sidebar};
-use exchange::adapter::{Exchange, StreamType, fetch_ticker_info};
+use exchange::adapter::{Exchange, StreamKind, fetch_ticker_info};
 use iced::{
     Alignment, Element, Length, Subscription, Task, padding,
     widget::{
@@ -902,7 +902,7 @@ impl Flowsurface {
                             streams
                                 .iter()
                                 .filter(|(ticker, stream_types)| {
-                                    stream_types.contains(&StreamType::DepthAndTrades {
+                                    stream_types.contains(&StreamKind::DepthAndTrades {
                                         exchange: *exchange,
                                         ticker: **ticker,
                                     })

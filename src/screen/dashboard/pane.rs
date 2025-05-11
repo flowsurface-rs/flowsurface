@@ -1,5 +1,4 @@
 use crate::{
-    StreamType,
     chart::{self, heatmap::HeatmapChart, kline::KlineChart},
     screen::{DashboardError, create_button, dashboard::panel::timeandsales::TimeAndSales},
     style::{self, Icon, icon_text},
@@ -16,7 +15,7 @@ use data::{
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-    adapter::{Exchange, MarketType},
+    adapter::{Exchange, MarketKind, StreamKind},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Task, Theme,
@@ -65,7 +64,7 @@ pub enum Message {
     TicksizeSelected(TickMultiplier, pane_grid::Pane),
     BasisSelected(Basis, pane_grid::Pane),
     ToggleModal(pane_grid::Pane, Modal),
-    InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamType>, TickerInfo),
+    InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamKind>, TickerInfo),
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(pane_grid::Pane, chart::Message),
     VisualConfigChanged(Option<pane_grid::Pane>, VisualConfig),
@@ -84,7 +83,7 @@ pub struct State {
     pub content: Content,
     pub settings: Settings,
     pub notifications: Vec<Toast>,
-    pub streams: Vec<StreamType>,
+    pub streams: Vec<StreamKind>,
     pub status: Status,
 }
 
@@ -93,7 +92,7 @@ impl State {
         Self::default()
     }
 
-    pub fn from_config(content: Content, streams: Vec<StreamType>, settings: Settings) -> Self {
+    pub fn from_config(content: Content, streams: Vec<StreamKind>, settings: Settings) -> Self {
         Self {
             content,
             settings,
@@ -121,13 +120,13 @@ impl State {
     pub fn get_ticker_exchange(&self) -> Option<(Exchange, Ticker)> {
         for stream in &self.streams {
             match stream {
-                StreamType::DepthAndTrades { exchange, ticker }
-                | StreamType::Kline {
+                StreamKind::DepthAndTrades { exchange, ticker }
+                | StreamKind::Kline {
                     exchange, ticker, ..
                 } => {
                     return Some((*exchange, *ticker));
                 }
-                StreamType::None => {}
+                StreamKind::None => {}
             }
         }
         None
@@ -148,7 +147,7 @@ impl State {
 
         let streams = match content {
             "heatmap" | "time&sales" => {
-                vec![StreamType::DepthAndTrades {
+                vec![StreamKind::DepthAndTrades {
                     exchange,
                     ticker: ticker_info.ticker,
                 }]
@@ -162,11 +161,11 @@ impl State {
                 match basis {
                     Basis::Time(interval) => {
                         vec![
-                            StreamType::DepthAndTrades {
+                            StreamKind::DepthAndTrades {
                                 exchange,
                                 ticker: ticker_info.ticker,
                             },
-                            StreamType::Kline {
+                            StreamKind::Kline {
                                 exchange,
                                 ticker: ticker_info.ticker,
                                 timeframe: interval.into(),
@@ -174,7 +173,7 @@ impl State {
                         ]
                     }
                     Basis::Tick(_) => {
-                        vec![StreamType::DepthAndTrades {
+                        vec![StreamKind::DepthAndTrades {
                             exchange,
                             ticker: ticker_info.ticker,
                         }]
@@ -189,14 +188,14 @@ impl State {
 
                 match basis {
                     Basis::Time(interval) => {
-                        vec![StreamType::Kline {
+                        vec![StreamKind::Kline {
                             exchange,
                             ticker: ticker_info.ticker,
                             timeframe: interval.into(),
                         }]
                     }
                     Basis::Tick(_) => {
-                        vec![StreamType::DepthAndTrades {
+                        vec![StreamKind::DepthAndTrades {
                             exchange,
                             ticker: ticker_info.ticker,
                         }]
@@ -418,8 +417,8 @@ impl State {
             let ticker_str = {
                 let symbol = ticker.display_symbol_and_type().0;
                 match ticker.market_type() {
-                    MarketType::Spot => symbol,
-                    MarketType::LinearPerps | MarketType::InversePerps => symbol + " PERP",
+                    MarketKind::Spot => symbol,
+                    MarketKind::LinearPerps | MarketKind::InversePerps => symbol + " PERP",
                 }
             };
 
@@ -616,7 +615,7 @@ impl State {
             .into()
     }
 
-    pub fn matches_stream(&self, stream: &StreamType) -> bool {
+    pub fn matches_stream(&self, stream: &StreamKind) -> bool {
         self.streams.iter().any(|existing| existing == stream)
     }
 
@@ -633,11 +632,7 @@ impl State {
     }
 
     pub fn last_tick(&self) -> Option<Instant> {
-        match &self.content {
-            Content::Heatmap(chart, _) => Some(chart.last_update()),
-            Content::Kline(chart, _) => Some(chart.last_update()),
-            _ => None,
-        }
+        self.content.last_tick()
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -837,6 +832,14 @@ impl Content {
             Content::Heatmap(chart, _) => chart.invalidate(now),
             Content::Kline(chart, _) => chart.invalidate(Some(now)),
             Content::Starter | Content::TimeAndSales(_) => {}
+        }
+    }
+
+    pub fn last_tick(&self) -> Option<Instant> {
+        match self {
+            Content::Heatmap(chart, _) => Some(chart.last_update()),
+            Content::Kline(chart, _) => Some(chart.last_update()),
+            Content::Starter | Content::TimeAndSales(_) => None,
         }
     }
 

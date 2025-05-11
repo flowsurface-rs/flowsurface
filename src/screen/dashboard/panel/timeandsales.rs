@@ -2,7 +2,7 @@ use crate::screen::dashboard::pane::Message;
 use crate::style::{self, ts_table_container};
 use data::UserTimezone;
 pub use data::chart::timeandsales::Config;
-use exchange::adapter::MarketType;
+use exchange::adapter::MarketKind;
 use exchange::{TickerInfo, Trade};
 use iced::widget::{center, column, container, responsive, row, text};
 use iced::{Alignment, Element, Length};
@@ -65,7 +65,7 @@ impl TimeAndSales {
                 };
 
                 let trade_size = match market_type {
-                    MarketType::InversePerps => converted_trade.qty,
+                    MarketKind::InversePerps => converted_trade.qty,
                     _ => converted_trade.qty * converted_trade.price,
                 };
 
@@ -108,7 +108,7 @@ impl TimeAndSales {
 
             let filtered_trades_iter = self.recent_trades.iter().filter(|t| {
                 let trade_size = match market_type {
-                    MarketType::InversePerps => t.qty,
+                    MarketKind::InversePerps => t.qty,
                     _ => t.qty * t.price,
                 };
                 trade_size >= self.config.trade_size_filter

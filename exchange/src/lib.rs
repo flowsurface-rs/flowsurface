@@ -4,7 +4,7 @@ pub mod depth;
 pub mod fetcher;
 
 pub use adapter::Event;
-use adapter::{Exchange, MarketType, StreamType};
+use adapter::{Exchange, MarketKind, StreamKind};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
@@ -268,7 +268,7 @@ impl Ticker {
         }
     }
 
-    pub fn to_full_symbol_and_type(&self) -> (String, MarketType) {
+    pub fn to_full_symbol_and_type(&self) -> (String, MarketKind) {
         let mut result = String::with_capacity(self.len as usize);
         for i in 0..self.len {
             let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
@@ -284,7 +284,7 @@ impl Ticker {
         (result, self.market_type())
     }
 
-    pub fn display_symbol_and_type(&self) -> (String, MarketType) {
+    pub fn display_symbol_and_type(&self) -> (String, MarketKind) {
         let mut result = String::with_capacity(self.len as usize);
 
         for i in 0..self.len {
@@ -305,7 +305,7 @@ impl Ticker {
         (result, self.market_type())
     }
 
-    pub fn market_type(&self) -> MarketType {
+    pub fn market_type(&self) -> MarketKind {
         self.exchange.get_market_type()
     }
 }
@@ -336,13 +336,13 @@ pub struct TickerInfo {
 }
 
 impl TickerInfo {
-    pub fn market_type(&self) -> MarketType {
+    pub fn market_type(&self) -> MarketKind {
         self.ticker.market_type()
     }
 
     pub fn is_perps(&self) -> bool {
         let market_type = self.ticker.market_type();
-        market_type == MarketType::LinearPerps || market_type == MarketType::InversePerps
+        market_type == MarketKind::LinearPerps || market_type == MarketKind::InversePerps
     }
 
     pub fn exchange(&self) -> Exchange {

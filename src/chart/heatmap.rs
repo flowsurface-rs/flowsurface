@@ -5,7 +5,7 @@ use data::chart::{
     indicators::{HeatmapIndicator, Indicator},
 };
 use data::util::{abbr_large_numbers, count_decimals};
-use exchange::{TickerInfo, Trade, adapter::MarketType, depth::Depth};
+use exchange::{TickerInfo, Trade, adapter::MarketKind, depth::Depth};
 
 use super::{Chart, ChartConstants, CommonChartData, Interaction, Message};
 use super::{
@@ -454,7 +454,7 @@ impl HeatmapChart {
                         let visible_run = run.with_range(earliest, latest)?;
 
                         let order_size = match market_type {
-                            MarketType::InversePerps => visible_run.qty(),
+                            MarketKind::InversePerps => visible_run.qty(),
                             _ => **price * visible_run.qty(),
                         };
 
@@ -563,7 +563,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     runs.iter()
                         .filter(|run| {
                             let order_size = match market_type {
-                                MarketType::InversePerps => run.qty(),
+                                MarketKind::InversePerps => run.qty(),
                                 _ => **price * run.qty(),
                             };
                             order_size > self.visual_config.order_size_filter
@@ -666,7 +666,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         let y_position = chart.price_to_y(trade.price);
 
                         let trade_size = match market_type {
-                            MarketType::InversePerps => trade.qty,
+                            MarketKind::InversePerps => trade.qty,
                             _ => trade.qty * trade.price,
                         };
 

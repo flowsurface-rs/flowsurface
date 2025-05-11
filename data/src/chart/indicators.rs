@@ -3,15 +3,15 @@ use std::{
     fmt::{self, Debug, Display},
 };
 
-use exchange::adapter::MarketType;
+use exchange::adapter::MarketKind;
 use serde::{Deserialize, Serialize};
 
 pub trait Indicator: PartialEq + Display + 'static {
-    fn get_available(market: MarketType) -> &'static [Self]
+    fn get_available(market: MarketKind) -> &'static [Self]
     where
         Self: Sized;
 
-    fn get_enabled(indicators: &[Self], market: MarketType) -> impl Iterator<Item = &Self>
+    fn get_enabled(indicators: &[Self], market: MarketKind) -> impl Iterator<Item = &Self>
     where
         Self: Sized,
     {
@@ -29,10 +29,10 @@ pub enum KlineIndicator {
 }
 
 impl Indicator for KlineIndicator {
-    fn get_available(market_type: MarketType) -> &'static [Self] {
+    fn get_available(market_type: MarketKind) -> &'static [Self] {
         match market_type {
-            MarketType::Spot => &Self::SPOT,
-            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
+            MarketKind::Spot => &Self::SPOT,
+            MarketKind::LinearPerps | MarketKind::InversePerps => &Self::PERPS,
         }
     }
 
@@ -62,10 +62,10 @@ pub enum CandlestickIndicator {
 }
 
 impl Indicator for CandlestickIndicator {
-    fn get_available(market_type: MarketType) -> &'static [Self] {
+    fn get_available(market_type: MarketKind) -> &'static [Self] {
         match market_type {
-            MarketType::Spot => &Self::SPOT,
-            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
+            MarketKind::Spot => &Self::SPOT,
+            MarketKind::LinearPerps | MarketKind::InversePerps => &Self::PERPS,
         }
     }
 
@@ -98,10 +98,10 @@ pub enum HeatmapIndicator {
 }
 
 impl Indicator for HeatmapIndicator {
-    fn get_available(market_type: MarketType) -> &'static [Self] {
+    fn get_available(market_type: MarketKind) -> &'static [Self] {
         match market_type {
-            MarketType::Spot => &Self::SPOT,
-            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
+            MarketKind::Spot => &Self::SPOT,
+            MarketKind::LinearPerps | MarketKind::InversePerps => &Self::PERPS,
         }
     }
 
@@ -137,10 +137,10 @@ pub enum FootprintIndicator {
 }
 
 impl Indicator for FootprintIndicator {
-    fn get_available(market_type: MarketType) -> &'static [Self] {
+    fn get_available(market_type: MarketKind) -> &'static [Self] {
         match market_type {
-            MarketType::Spot => &Self::SPOT,
-            MarketType::LinearPerps | MarketType::InversePerps => &Self::PERPS,
+            MarketKind::Spot => &Self::SPOT,
+            MarketKind::LinearPerps | MarketKind::InversePerps => &Self::PERPS,
         }
     }
 

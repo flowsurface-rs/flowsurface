@@ -15,7 +15,7 @@ use data::util::format_with_commas;
 use exchange::Ticker;
 use exchange::{
     Timeframe,
-    adapter::{Exchange, MarketType},
+    adapter::{Exchange, MarketKind},
 };
 use iced::alignment::Vertical;
 use iced::widget::horizontal_space;
@@ -283,7 +283,7 @@ pub fn kline_cfg_view<'a>(
 // Modal views, overlay
 pub fn indicators_view<I: Indicator>(
     pane: pane_grid::Pane,
-    market_type: Option<MarketType>,
+    market_type: Option<MarketKind>,
     selected: &[I],
 ) -> Element<Message> {
     let mut indicators_column = column_drag::Column::new()

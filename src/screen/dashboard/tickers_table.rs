@@ -4,7 +4,7 @@ use crate::style::{self, ICONS_FONT, Icon, icon_text};
 use data::InternalError;
 use exchange::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{Exchange, MarketType, fetch_ticker_prices},
+    adapter::{Exchange, MarketKind, fetch_ticker_prices},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
@@ -62,7 +62,7 @@ pub enum Message {
     ExpandTickerCard(Option<(Ticker, Exchange)>),
     FavoriteTicker(Exchange, Ticker),
     Scrolled(scrollable::Viewport),
-    SetMarketFilter(Option<MarketType>),
+    SetMarketFilter(Option<MarketKind>),
     ToggleTable,
     FetchForTickerStats(Option<Exchange>),
     UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
@@ -79,7 +79,7 @@ pub struct TickersTable {
     search_query: String,
     show_sort_options: bool,
     selected_sort_option: SortOptions,
-    selected_market: Option<MarketType>,
+    selected_market: Option<MarketKind>,
     expand_ticker_card: Option<(Ticker, Exchange)>,
     scroll_offset: AbsoluteOffset,
     is_show: bool,
@@ -218,8 +218,8 @@ impl TickersTable {
         } else {
             ticker_str + {
                 match market {
-                    MarketType::Spot => "",
-                    MarketType::LinearPerps | MarketType::InversePerps => "P",
+                    MarketKind::Spot => "",
+                    MarketKind::LinearPerps | MarketKind::InversePerps => "P",
                 }
             }
         };
@@ -452,15 +452,15 @@ impl TickersTable {
 
         let sort_options_column = {
             let spot_market_button = button(text("Spot"))
-                .on_press(Message::SetMarketFilter(Some(MarketType::Spot)))
+                .on_press(Message::SetMarketFilter(Some(MarketKind::Spot)))
                 .style(move |theme, status| style::button::transparent(theme, status, false));
 
             let linear_markets_btn = button(text("Linear"))
-                .on_press(Message::SetMarketFilter(Some(MarketType::LinearPerps)))
+                .on_press(Message::SetMarketFilter(Some(MarketKind::LinearPerps)))
                 .style(move |theme, status| style::button::transparent(theme, status, false));
 
             let inverse_markets_btn = button(text("Inverse"))
-                .on_press(Message::SetMarketFilter(Some(MarketType::InversePerps)))
+                .on_press(Message::SetMarketFilter(Some(MarketKind::InversePerps)))
                 .style(move |theme, status| style::button::transparent(theme, status, false));
 
             let volume_sort_button = button(
@@ -529,7 +529,7 @@ impl TickersTable {
                         style::button::transparent(
                             theme,
                             status,
-                            matches!(self.selected_market, Some(MarketType::Spot)),
+                            matches!(self.selected_market, Some(MarketKind::Spot)),
                         )
                     }),
                     Space::new(Length::FillPortion(1), Length::Shrink),
@@ -537,7 +537,7 @@ impl TickersTable {
                         style::button::transparent(
                             theme,
                             status,
-                            matches!(self.selected_market, Some(MarketType::LinearPerps)),
+                            matches!(self.selected_market, Some(MarketKind::LinearPerps)),
                         )
                     }),
                     Space::new(Length::FillPortion(1), Length::Shrink),
@@ -545,7 +545,7 @@ impl TickersTable {
                         style::button::transparent(
                             theme,
                             status,
-                            matches!(self.selected_market, Some(MarketType::InversePerps)),
+                            matches!(self.selected_market, Some(MarketKind::InversePerps)),
                         )
                     }),
                     Space::new(Length::FillPortion(1), Length::Shrink),
@@ -775,8 +775,8 @@ fn create_expanded_ticker_card<'a>(
                     + " "
                     + &market.to_string()
                     + match market {
-                        MarketType::Spot => "",
-                        MarketType::LinearPerps | MarketType::InversePerps => " Perp",
+                        MarketKind::Spot => "",
+                        MarketKind::LinearPerps | MarketKind::InversePerps => " Perp",
                     }
             ),
         ]
