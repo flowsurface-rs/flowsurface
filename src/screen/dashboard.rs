@@ -3,14 +3,12 @@ pub mod panel;
 pub mod theme_editor;
 pub mod tickers_table;
 
-use data::{UserTimezone, chart::Basis, layout::WindowSpec};
-pub use pane::{PaneContent, PaneState};
-
 use crate::{
     StreamType, chart, style,
     widget::toast::Toast,
     window::{self, Window},
 };
+use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 
 use exchange::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
@@ -53,9 +51,9 @@ pub enum Message {
 }
 
 pub struct Dashboard {
-    pub panes: pane_grid::State<PaneState>,
+    pub panes: pane_grid::State<pane::State>,
     pub focus: Option<(window::Id, pane_grid::Pane)>,
-    pub popout: HashMap<window::Id, (pane_grid::State<PaneState>, WindowSpec)>,
+    pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
     pub trade_fetch_enabled: bool,
 }
@@ -79,7 +77,7 @@ pub enum Event {
 }
 
 impl Dashboard {
-    fn default_pane_config() -> Configuration<PaneState> {
+    fn default_pane_config() -> Configuration<pane::State> {
         Configuration::Split {
             axis: pane_grid::Axis::Vertical,
             ratio: 0.8,
@@ -89,23 +87,23 @@ impl Dashboard {
                 a: Box::new(Configuration::Split {
                     axis: pane_grid::Axis::Vertical,
                     ratio: 0.5,
-                    a: Box::new(Configuration::Pane(PaneState::default())),
-                    b: Box::new(Configuration::Pane(PaneState::default())),
+                    a: Box::new(Configuration::Pane(pane::State::default())),
+                    b: Box::new(Configuration::Pane(pane::State::default())),
                 }),
                 b: Box::new(Configuration::Split {
                     axis: pane_grid::Axis::Vertical,
                     ratio: 0.5,
-                    a: Box::new(Configuration::Pane(PaneState::default())),
-                    b: Box::new(Configuration::Pane(PaneState::default())),
+                    a: Box::new(Configuration::Pane(pane::State::default())),
+                    b: Box::new(Configuration::Pane(pane::State::default())),
                 }),
             }),
-            b: Box::new(Configuration::Pane(PaneState::default())),
+            b: Box::new(Configuration::Pane(pane::State::default())),
         }
     }
 
     pub fn from_config(
-        panes: Configuration<PaneState>,
-        popout_windows: Vec<(Configuration<PaneState>, WindowSpec)>,
+        panes: Configuration<pane::State>,
+        popout_windows: Vec<(Configuration<pane::State>, WindowSpec)>,
         trade_fetch_enabled: bool,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
@@ -207,7 +205,7 @@ impl Dashboard {
                     }
                     pane::Message::SplitPane(axis, pane) => {
                         let focus_pane = if let Some((new_pane, _)) =
-                            self.panes.split(axis, pane, PaneState::new())
+                            self.panes.split(axis, pane, pane::State::new())
                         {
                             Some(new_pane)
                         } else {
@@ -231,13 +229,13 @@ impl Dashboard {
                     }
                     pane::Message::ReplacePane(pane) => {
                         if let Some(pane) = self.panes.get_mut(pane) {
-                            *pane = PaneState::new();
+                            *pane = pane::State::new();
                         }
                     }
                     pane::Message::ToggleModal(pane, modal_type) => {
                         if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
                             if modal_type == pane.modal {
-                                pane.modal = pane::PaneModal::None;
+                                pane.modal = pane::Modal::None;
                             } else {
                                 pane.modal = modal_type;
                             }
@@ -246,10 +244,10 @@ impl Dashboard {
                     pane::Message::ChartUserUpdate(pane, msg) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             match pane_state.content {
-                                PaneContent::Heatmap(ref mut chart, _) => {
+                                pane::Content::Heatmap(ref mut chart, _) => {
                                     chart.update(&msg);
                                 }
-                                PaneContent::Kline(ref mut chart, _) => {
+                                pane::Content::Kline(ref mut chart, _) => {
                                     chart.update(&msg);
                                 }
                                 _ => {}
@@ -346,7 +344,7 @@ impl Dashboard {
                             state.settings.selected_basis = Some(new_basis);
 
                             match state.content {
-                                PaneContent::Heatmap(ref mut chart, _) => {
+                                pane::Content::Heatmap(ref mut chart, _) => {
                                     chart.set_basis(new_basis);
                                     return (Task::done(Message::RefreshStreams), None);
                                 }
@@ -428,7 +426,8 @@ impl Dashboard {
                                 if let Some(pane_state) =
                                     self.get_mut_pane(main_window.id, window, pane)
                                 {
-                                    if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                                    if let pane::Content::Kline(chart, _) = &mut pane_state.content
+                                    {
                                         chart.set_tick_basis(size);
                                     }
                                 }
@@ -456,14 +455,14 @@ impl Dashboard {
                     }
                     pane::Message::ClusterKindSelected(pane, cluster_kind) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                            if let pane::Content::Kline(chart, _) = &mut pane_state.content {
                                 chart.set_cluster_kind(cluster_kind);
                             }
                         }
                     }
                     pane::Message::StudyConfigurator(pane, msg) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                            if let pane::Content::Kline(chart, _) = &mut pane_state.content {
                                 chart.update_study_configurator(msg);
                             }
                         }
@@ -475,7 +474,7 @@ impl Dashboard {
 
                 self.iter_all_panes(main_window.id)
                     .for_each(|(window, pane, pane_state)| {
-                        if let PaneContent::Kline(_, _) = pane_state.content {
+                        if let pane::Content::Kline(_, _) = pane_state.content {
                             if pane_state
                                 .settings
                                 .selected_basis
@@ -601,7 +600,7 @@ impl Dashboard {
                             .abortable();
 
                             if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                                if let PaneContent::Kline(chart, _) = &mut state.content {
+                                if let pane::Content::Kline(chart, _) = &mut state.content {
                                     chart.set_handle(handle.abort_on_drop());
                                 }
                             };
@@ -637,7 +636,7 @@ impl Dashboard {
         &mut self,
         axis: pane_grid::Axis,
         main_window: &Window,
-        pane_state: Option<PaneState>,
+        pane_state: Option<pane::State>,
     ) -> Task<Message> {
         if self
             .focus
@@ -678,7 +677,7 @@ impl Dashboard {
     fn split_pane(&mut self, axis: pane_grid::Axis, main_window: &Window) -> Task<Message> {
         if let Some((window, pane)) = self.focus {
             if window == main_window.id {
-                let result = self.panes.split(axis, pane, PaneState::new());
+                let result = self.panes.split(axis, pane, pane::State::new());
 
                 if let Some((pane, _)) = result {
                     return self.focus_pane(main_window.id, pane);
@@ -736,7 +735,7 @@ impl Dashboard {
         main_window: window::Id,
         window: window::Id,
         pane: pane_grid::Pane,
-    ) -> Option<&PaneState> {
+    ) -> Option<&pane::State> {
         if main_window == window {
             self.panes.get(pane)
         } else {
@@ -751,7 +750,7 @@ impl Dashboard {
         main_window: window::Id,
         window: window::Id,
         pane: pane_grid::Pane,
-    ) -> Option<&mut PaneState> {
+    ) -> Option<&mut pane::State> {
         if main_window == window {
             self.panes.get_mut(pane)
         } else {
@@ -765,7 +764,7 @@ impl Dashboard {
         &mut self,
         main_window: window::Id,
         uuid: uuid::Uuid,
-    ) -> Option<&mut PaneState> {
+    ) -> Option<&mut pane::State> {
         self.iter_all_panes_mut(main_window)
             .find(|(_, _, state)| state.id == uuid)
             .map(|(_, _, state)| state)
@@ -774,7 +773,7 @@ impl Dashboard {
     fn iter_all_panes(
         &self,
         main_window: window::Id,
-    ) -> impl Iterator<Item = (window::Id, pane_grid::Pane, &PaneState)> {
+    ) -> impl Iterator<Item = (window::Id, pane_grid::Pane, &pane::State)> {
         self.panes
             .iter()
             .map(move |(pane, state)| (main_window, *pane, state))
@@ -786,7 +785,7 @@ impl Dashboard {
     fn iter_all_panes_mut(
         &mut self,
         main_window: window::Id,
-    ) -> impl Iterator<Item = (window::Id, pane_grid::Pane, &mut PaneState)> {
+    ) -> impl Iterator<Item = (window::Id, pane_grid::Pane, &mut pane::State)> {
         self.panes
             .iter_mut()
             .map(move |(pane, state)| (main_window, *pane, state))
@@ -871,14 +870,14 @@ impl Dashboard {
 
             if let Some(ticker_info) = pane_state.settings.ticker_info {
                 match pane_state.content {
-                    PaneContent::Kline(ref mut chart, _) => {
+                    pane::Content::Kline(ref mut chart, _) => {
                         chart.change_tick_size(
                             new_tick_multiply.multiply_with_min_tick_size(ticker_info),
                         );
 
                         chart.reset_request_handler();
                     }
-                    PaneContent::Heatmap(ref mut chart, _) => {
+                    pane::Content::Heatmap(ref mut chart, _) => {
                         chart.change_tick_size(
                             new_tick_multiply.multiply_with_min_tick_size(ticker_info),
                         );
@@ -927,7 +926,7 @@ impl Dashboard {
                     *timeframe = new_timeframe;
                 }
 
-                if let PaneContent::Kline(_, _) = &pane_state.content {
+                if let pane::Content::Kline(_, _) = &pane_state.content {
                     return Ok((stream_type, pane_state.id));
                 }
             }
@@ -964,7 +963,7 @@ impl Dashboard {
 
         self.iter_all_panes_mut(main_window.id)
             .for_each(|(_, _, pane_state)| {
-                if let PaneContent::Kline(chart, _) = &mut pane_state.content {
+                if let pane::Content::Kline(chart, _) = &mut pane_state.content {
                     chart.reset_request_handler();
                 }
             });
@@ -1050,7 +1049,7 @@ impl Dashboard {
         }
 
         match &mut pane_state.content {
-            PaneContent::Kline(chart, _) => {
+            pane::Content::Kline(chart, _) => {
                 chart.insert_raw_trades(trades.to_owned(), is_batches_done);
 
                 if is_batches_done {
@@ -1078,7 +1077,7 @@ impl Dashboard {
             .for_each(|(window, pane, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     let action = match &mut pane_state.content {
-                        PaneContent::Kline(chart, _) => chart.update_latest_kline(kline),
+                        pane::Content::Kline(chart, _) => chart.update_latest_kline(kline),
                         _ => None,
                     };
 
@@ -1123,13 +1122,13 @@ impl Dashboard {
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        PaneContent::Heatmap(chart, _) => {
+                        pane::Content::Heatmap(chart, _) => {
                             chart.insert_datapoint(trades_buffer, depth_update_t, depth);
                         }
-                        PaneContent::Kline(chart, _) => {
+                        pane::Content::Kline(chart, _) => {
                             chart.insert_trades_buffer(trades_buffer, depth_update_t);
                         }
-                        PaneContent::TimeAndSales(chart) => {
+                        pane::Content::TimeAndSales(chart) => {
                             chart.update(trades_buffer);
                         }
                         _ => {

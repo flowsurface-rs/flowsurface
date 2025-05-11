@@ -1,7 +1,6 @@
 use crate::chart::{heatmap::HeatmapChart, kline::KlineChart};
-use crate::screen::dashboard::{
-    Dashboard, PaneContent, PaneState, panel::timeandsales::TimeAndSales,
-};
+use crate::screen::dashboard::pane;
+use crate::screen::dashboard::{Dashboard, panel::timeandsales::TimeAndSales};
 use crate::style::icon_text;
 use crate::widget::column_drag::{self, DragEvent, DropPosition};
 use crate::widget::dragger_row;
@@ -208,7 +207,7 @@ impl LayoutManager {
 
                     let ser_dashboard = data::Dashboard::from(dashboard);
 
-                    let mut popout_windows: Vec<(Configuration<PaneState>, WindowSpec)> =
+                    let mut popout_windows: Vec<(Configuration<pane::State>, WindowSpec)> =
                         Vec::new();
 
                     for (pane, window_spec) in &ser_dashboard.popout {
@@ -511,7 +510,7 @@ impl From<&Dashboard> for data::Dashboard {
     fn from(dashboard: &Dashboard) -> Self {
         use pane_grid::Node;
 
-        fn from_layout(panes: &pane_grid::State<PaneState>, node: pane_grid::Node) -> data::Pane {
+        fn from_layout(panes: &pane_grid::State<pane::State>, node: pane_grid::Node) -> data::Pane {
             match node {
                 Node::Split {
                     axis, ratio, a, b, ..
@@ -551,26 +550,26 @@ impl From<&Dashboard> for data::Dashboard {
     }
 }
 
-impl From<&PaneState> for data::Pane {
-    fn from(pane: &PaneState) -> Self {
+impl From<&pane::State> for data::Pane {
+    fn from(pane: &pane::State) -> Self {
         let streams = pane.streams.clone();
 
         match &pane.content {
-            PaneContent::Starter => data::Pane::Starter,
-            PaneContent::Heatmap(chart, indicators) => data::Pane::HeatmapChart {
+            pane::Content::Starter => data::Pane::Starter,
+            pane::Content::Heatmap(chart, indicators) => data::Pane::HeatmapChart {
                 layout: chart.chart_layout(),
                 stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::Kline(chart, indicators) => data::Pane::KlineChart {
+            pane::Content::Kline(chart, indicators) => data::Pane::KlineChart {
                 layout: chart.chart_layout(),
                 kind: chart.kind().clone(),
                 stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
             },
-            PaneContent::TimeAndSales(_) => data::Pane::TimeAndSales {
+            pane::Content::TimeAndSales(_) => data::Pane::TimeAndSales {
                 stream_type: streams,
                 settings: pane.settings,
             },
@@ -578,7 +577,7 @@ impl From<&PaneState> for data::Pane {
     }
 }
 
-fn configuration(pane: data::Pane) -> Configuration<PaneState> {
+fn configuration(pane: data::Pane) -> Configuration<pane::State> {
     match pane {
         data::Pane::Split { axis, ratio, a, b } => Configuration::Split {
             axis: match axis {
@@ -589,7 +588,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
             a: Box::new(configuration(*a)),
             b: Box::new(configuration(*b)),
         },
-        data::Pane::Starter => Configuration::Pane(PaneState::new()),
+        data::Pane::Starter => Configuration::Pane(pane::State::new()),
         data::Pane::HeatmapChart {
             layout,
             stream_type,
@@ -607,8 +606,8 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                     .selected_basis
                     .unwrap_or(Basis::default_time(Some(ticker_info)));
 
-                Configuration::Pane(PaneState::from_config(
-                    PaneContent::Heatmap(
+                Configuration::Pane(pane::State::from_config(
+                    pane::Content::Heatmap(
                         HeatmapChart::new(
                             layout,
                             basis,
@@ -624,7 +623,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                 ))
             } else {
                 log::info!("Skipping a HeatmapChart initialization due to missing ticker info");
-                Configuration::Pane(PaneState::new())
+                Configuration::Pane(pane::State::new())
             }
         }
         data::Pane::KlineChart {
@@ -644,8 +643,8 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                         .selected_basis
                         .unwrap_or(Basis::Time(Timeframe::M5.into()));
 
-                    Configuration::Pane(PaneState::from_config(
-                        PaneContent::Kline(
+                    Configuration::Pane(pane::State::from_config(
+                        pane::Content::Kline(
                             KlineChart::new(
                                 layout,
                                 basis,
@@ -665,7 +664,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                     log::info!(
                         "Skipping a FootprintChart initialization due to missing ticker info"
                     );
-                    Configuration::Pane(PaneState::new())
+                    Configuration::Pane(pane::State::new())
                 }
             }
             data::chart::KlineChartKind::Candles => {
@@ -679,8 +678,8 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                         .unwrap_or(TickMultiplier(50))
                         .multiply_with_min_tick_size(ticker_info);
 
-                    Configuration::Pane(PaneState::from_config(
-                        PaneContent::Kline(
+                    Configuration::Pane(pane::State::from_config(
+                        pane::Content::Kline(
                             KlineChart::new(
                                 layout,
                                 basis,
@@ -700,7 +699,7 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
                     log::info!(
                         "Skipping a CandlestickChart initialization due to missing ticker info"
                     );
-                    Configuration::Pane(PaneState::new())
+                    Configuration::Pane(pane::State::new())
                 }
             }
         },
@@ -710,13 +709,13 @@ fn configuration(pane: data::Pane) -> Configuration<PaneState> {
         } => {
             if settings.ticker_info.is_none() {
                 log::info!("Skipping a TimeAndSales initialization due to missing ticker info");
-                return Configuration::Pane(PaneState::new());
+                return Configuration::Pane(pane::State::new());
             }
 
             let config = settings.visual_config.and_then(|cfg| cfg.time_and_sales());
 
-            Configuration::Pane(PaneState::from_config(
-                PaneContent::TimeAndSales(TimeAndSales::new(config, settings.ticker_info)),
+            Configuration::Pane(pane::State::from_config(
+                pane::Content::TimeAndSales(TimeAndSales::new(config, settings.ticker_info)),
                 stream_type,
                 settings,
             ))

@@ -1,20 +1,84 @@
 pub mod timeandsales;
 
+use crate::style::{Icon, icon_text};
+use crate::widget::{column_drag, dragger_row};
 use crate::{
     screen::dashboard::pane::Message,
     style, tooltip,
-    widget::{create_slider_row, scrollable_content},
+    widget::{self, create_slider_row, pane_modal, scrollable_content},
 };
 
-use data::chart::{KlineChartKind, VisualConfig, heatmap, kline::ClusterKind};
+use data::chart::{
+    Basis, KlineChartKind, VisualConfig, heatmap, indicators::Indicator, kline::ClusterKind,
+};
 use data::util::format_with_commas;
+use exchange::Ticker;
+use exchange::{
+    Timeframe,
+    adapter::{Exchange, MarketType},
+};
+use iced::alignment::Vertical;
+use iced::widget::horizontal_space;
 use iced::{
     Alignment, Element, Length,
+    alignment::Horizontal,
+    padding,
     widget::{
-        Slider, button, column, container, pane_grid, pick_list, row, text,
+        Slider, button, center, column, container, pane_grid, pick_list, row, scrollable, text,
         tooltip::Position as TooltipPosition,
     },
 };
+use timeandsales::TimeAndSales;
+
+use super::pane::{self, StreamModifier};
+
+pub trait PanelView {
+    fn view(
+        &self,
+        pane: pane_grid::Pane,
+        state: &pane::State,
+        timezone: data::UserTimezone,
+    ) -> Element<Message>;
+}
+
+impl PanelView for TimeAndSales {
+    fn view(
+        &self,
+        pane: pane_grid::Pane,
+        state: &pane::State,
+        timezone: data::UserTimezone,
+    ) -> Element<Message> {
+        let underlay = self.view(timezone);
+
+        let settings_view = super::panel::timesales_cfg_view(self.get_config(), pane);
+
+        match state.modal {
+            pane::Modal::Settings => pane_modal(
+                underlay,
+                settings_view,
+                Message::ToggleModal(pane, pane::Modal::None),
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            _ => underlay,
+        }
+    }
+}
+
+// Main pane content views, underlays
+pub fn view<'a, C: PanelView>(
+    pane: pane_grid::Pane,
+    state: &'a pane::State,
+    content: &'a C,
+    timezone: data::UserTimezone,
+) -> Element<'a, Message> {
+    let base = center(content.view(pane, state, timezone));
+
+    widget::toast::Manager::new(base, &state.notifications, Alignment::End, move |idx| {
+        Message::DeleteNotification(pane, idx)
+    })
+    .into()
+}
 
 pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
     let trade_size_slider = {
@@ -214,6 +278,222 @@ pub fn kline_cfg_view<'a>(
             .into()
         }
     }
+}
+
+// Modal views, overlay
+pub fn indicators_view<I: Indicator>(
+    pane: pane_grid::Pane,
+    market_type: Option<MarketType>,
+    selected: &[I],
+) -> Element<Message> {
+    let mut indicators_column = column_drag::Column::new()
+        .on_drag(move |event| Message::ReorderIndicator(pane, event))
+        .spacing(4);
+
+    if let Some(market) = market_type {
+        for indicator in selected {
+            let indicator_row = button(
+                row![
+                    text(indicator.to_string()),
+                    horizontal_space(),
+                    container(icon_text(Icon::Checkmark, 12)),
+                ]
+                .width(Length::Fill),
+            )
+            .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+            .style(move |theme, status| style::button::modifier(theme, status, true));
+
+            indicators_column = indicators_column.push(dragger_row(indicator_row.into()));
+        }
+
+        for indicator in I::get_available(market) {
+            if !selected.contains(indicator) {
+                let indicator_row = button(text(indicator.to_string()))
+                    .on_press(Message::ToggleIndicator(pane, indicator.to_string()))
+                    .width(Length::Fill)
+                    .style(move |theme, status| style::button::modifier(theme, status, false));
+
+                indicators_column = indicators_column.push(dragger_row(indicator_row.into()));
+            }
+        }
+    }
+
+    let content_row = column![
+        container(text("Indicators").size(14)).padding(padding::bottom(8)),
+        indicators_column
+    ]
+    .spacing(4);
+
+    container(content_row)
+        .max_width(200)
+        .padding(16)
+        .style(style::chart_modal)
+        .into()
+}
+
+pub fn stream_modifier_view<'a>(
+    pane: pane_grid::Pane,
+    modifiers: StreamModifier,
+    ticker_info: Option<(Exchange, Ticker)>,
+) -> Element<'a, Message> {
+    let (selected_basis, selected_ticksize) = match modifiers {
+        StreamModifier::Candlestick(basis) => (Some(basis), None),
+        StreamModifier::Footprint(basis, ticksize) => (Some(basis), Some(ticksize)),
+        StreamModifier::Heatmap(basis, ticksize) => (Some(basis), Some(ticksize)),
+    };
+
+    let create_button = |content: String, msg: Option<Message>, active: bool| {
+        let btn = button(container(text(content)).align_x(Horizontal::Center))
+            .width(Length::Fill)
+            .style(move |theme, status| style::button::transparent(theme, status, active));
+
+        if let Some(msg) = msg {
+            btn.on_press(msg)
+        } else {
+            btn
+        }
+    };
+
+    let mut content_row = row![].align_y(Vertical::Center).spacing(16);
+
+    let mut timeframes_column = column![].padding(4).align_x(Horizontal::Center);
+    let mut tick_basis_column = column![].padding(4).align_x(Horizontal::Center);
+
+    let is_kline_chart = match modifiers {
+        StreamModifier::Candlestick(_) | StreamModifier::Footprint(_, _) => true,
+        StreamModifier::Heatmap(_, _) => false,
+    };
+
+    if let Some(basis) = selected_basis {
+        match basis {
+            Basis::Time(selected_timeframe) => {
+                timeframes_column = timeframes_column.push(if is_kline_chart {
+                    row![
+                        create_button("Timeframe".to_string(), None, false,),
+                        create_button(
+                            "Ticks".to_string(),
+                            Some(Message::BasisSelected(Basis::Tick(200), pane,)),
+                            true,
+                        ),
+                    ]
+                    .padding(padding::bottom(8))
+                    .spacing(4)
+                } else {
+                    row![text("Aggregation")]
+                        .padding(padding::bottom(8))
+                        .spacing(4)
+                });
+
+                if is_kline_chart {
+                    for timeframe in &Timeframe::KLINE {
+                        let msg = if *timeframe == selected_timeframe.into() {
+                            None
+                        } else {
+                            Some(Message::BasisSelected(
+                                Basis::Time(u64::from(*timeframe)),
+                                pane,
+                            ))
+                        };
+                        timeframes_column = timeframes_column.push(create_button(
+                            timeframe.to_string(),
+                            msg,
+                            false,
+                        ));
+                    }
+                } else if let Some((exchange, _)) = ticker_info {
+                    for timeframe in &Timeframe::HEATMAP {
+                        if exchange == Exchange::BybitSpot && timeframe == &Timeframe::MS100 {
+                            continue;
+                        }
+
+                        let msg = if *timeframe == selected_timeframe.into() {
+                            None
+                        } else {
+                            Some(Message::BasisSelected(
+                                Basis::Time(u64::from(*timeframe)),
+                                pane,
+                            ))
+                        };
+                        timeframes_column = timeframes_column.push(create_button(
+                            timeframe.to_string(),
+                            msg,
+                            false,
+                        ));
+                    }
+                }
+
+                content_row =
+                    content_row.push(container(timeframes_column).style(style::modal_container));
+            }
+            Basis::Tick(selected_tick) => {
+                tick_basis_column = tick_basis_column.push(
+                    row![
+                        create_button(
+                            "Timeframe".to_string(),
+                            Some(Message::BasisSelected(
+                                Basis::Time(Timeframe::M5.into()),
+                                pane
+                            )),
+                            true,
+                        ),
+                        create_button("Ticks".to_string(), None, false,),
+                    ]
+                    .padding(padding::bottom(8))
+                    .spacing(4),
+                );
+
+                for tick_count in &data::aggr::TickCount::ALL {
+                    let msg = if *tick_count == selected_tick.into() {
+                        None
+                    } else {
+                        Some(Message::BasisSelected(
+                            Basis::Tick(u64::from(*tick_count)),
+                            pane,
+                        ))
+                    };
+                    tick_basis_column =
+                        tick_basis_column.push(create_button(tick_count.to_string(), msg, false));
+                }
+
+                content_row =
+                    content_row.push(container(tick_basis_column).style(style::modal_container));
+            }
+        }
+    }
+
+    let mut ticksizes_column = column![].padding(4).align_x(Horizontal::Center);
+
+    if selected_ticksize.is_some() {
+        ticksizes_column =
+            ticksizes_column.push(container(text("Ticksize Mltp.")).padding(padding::bottom(8)));
+
+        for ticksize in &exchange::TickMultiplier::ALL {
+            let msg = if selected_ticksize == Some(*ticksize) {
+                None
+            } else {
+                Some(Message::TicksizeSelected(*ticksize, pane))
+            };
+            ticksizes_column =
+                ticksizes_column.push(create_button(ticksize.to_string(), msg, false));
+        }
+
+        content_row = content_row.push(container(ticksizes_column).style(style::modal_container));
+    }
+
+    container(scrollable::Scrollable::with_direction(
+        content_row.align_y(Alignment::Start),
+        scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(4).scroller_width(4)),
+    ))
+    .padding(16)
+    .max_width(if selected_ticksize.is_some() && selected_basis.is_some() {
+        380
+    } else if selected_basis.is_some() {
+        200
+    } else {
+        120
+    })
+    .style(style::chart_modal)
+    .into()
 }
 
 pub mod study {

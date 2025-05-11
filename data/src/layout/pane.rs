@@ -29,7 +29,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default")]
         stream_type: Vec<StreamType>,
         #[serde(deserialize_with = "ok_or_default")]
-        settings: PaneSettings,
+        settings: Settings,
         indicators: Vec<HeatmapIndicator>,
     },
     KlineChart {
@@ -38,18 +38,18 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default")]
         stream_type: Vec<StreamType>,
         #[serde(deserialize_with = "ok_or_default")]
-        settings: PaneSettings,
+        settings: Settings,
         indicators: Vec<KlineIndicator>,
     },
     TimeAndSales {
         stream_type: Vec<StreamType>,
-        settings: PaneSettings,
+        settings: Settings,
     },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
 #[serde(default)]
-pub struct PaneSettings {
+pub struct Settings {
     pub ticker_info: Option<TickerInfo>,
     pub tick_multiply: Option<TickMultiplier>,
     pub visual_config: Option<VisualConfig>,
