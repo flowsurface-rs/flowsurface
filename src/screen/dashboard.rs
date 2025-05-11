@@ -351,7 +351,7 @@ impl Dashboard {
                                 _ => {}
                             }
 
-                            if let Some((exchange, ticker)) = state.get_ticker_exchange() {
+                            if let Some((exchange, ticker)) = state.stream_pair() {
                                 let chart_kind = state.content.chart_kind().unwrap_or_default();
 
                                 match &chart_kind {

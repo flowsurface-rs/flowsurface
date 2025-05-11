@@ -8,11 +8,12 @@ use crate::{
     widget::{self, create_slider_row, pane_modal, scrollable_content},
 };
 
+use super::pane;
 use data::chart::{
     Basis, KlineChartKind, VisualConfig, heatmap, indicators::Indicator, kline::ClusterKind,
 };
 use data::util::format_with_commas;
-use exchange::Ticker;
+use exchange::{TickMultiplier, Ticker};
 use exchange::{
     Timeframe,
     adapter::{Exchange, MarketKind},
@@ -29,8 +30,6 @@ use iced::{
     },
 };
 use timeandsales::TimeAndSales;
-
-use super::pane::{self, StreamModifier};
 
 pub trait PanelView {
     fn view(
@@ -65,7 +64,6 @@ impl PanelView for TimeAndSales {
     }
 }
 
-// Main pane content views, underlays
 pub fn view<'a, C: PanelView>(
     pane: pane_grid::Pane,
     state: &'a pane::State,
@@ -280,7 +278,6 @@ pub fn kline_cfg_view<'a>(
     }
 }
 
-// Modal views, overlay
 pub fn indicators_view<I: Indicator>(
     pane: pane_grid::Pane,
     market_type: Option<MarketKind>,
@@ -329,6 +326,13 @@ pub fn indicators_view<I: Indicator>(
         .padding(16)
         .style(style::chart_modal)
         .into()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum StreamModifier {
+    Candlestick(Basis),
+    Footprint(Basis, TickMultiplier),
+    Heatmap(Basis, TickMultiplier),
 }
 
 pub fn stream_modifier_view<'a>(

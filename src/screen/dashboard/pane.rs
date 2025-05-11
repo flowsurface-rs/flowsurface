@@ -26,6 +26,8 @@ use iced::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
+use super::panel::StreamModifier;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InfoType {
     FetchingKlines,
@@ -33,8 +35,9 @@ pub enum InfoType {
     FetchingOI,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum Status {
+    #[default]
     Ready,
     Loading(InfoType),
     Stale(String),
@@ -117,7 +120,7 @@ impl State {
         }
     }
 
-    pub fn get_ticker_exchange(&self) -> Option<(Exchange, Ticker)> {
+    pub fn stream_pair(&self) -> Option<(Exchange, Ticker)> {
         for stream in &self.streams {
             match stream {
                 StreamKind::DepthAndTrades { exchange, ticker }
@@ -404,7 +407,7 @@ impl State {
             .spacing(8)
             .height(Length::Fixed(32.0));
 
-        if let Some((exchange, ticker)) = self.get_ticker_exchange() {
+        if let Some((exchange, ticker)) = self.stream_pair() {
             let exchange_info = match exchange {
                 Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse => {
                     icon_text(Icon::BinanceLogo, 14)
@@ -500,17 +503,8 @@ impl State {
             Status::Ready => {}
         }
 
-        let content = pane_grid::Content::new(match &self.content {
-            Content::Starter => center(text("select a ticker to start").size(16)).into(),
-            Content::Heatmap(content, indicators) => {
-                view_chart(id, self, content, indicators, timezone)
-            }
-            Content::Kline(content, indicators) => {
-                view_chart(id, self, content, indicators, timezone)
-            }
-            Content::TimeAndSales(content) => super::panel::view(id, self, content, timezone),
-        })
-        .style(move |theme| style::pane_background(theme, is_focused));
+        let content = pane_grid::Content::new(self.content.view(id, self, timezone))
+            .style(move |theme| style::pane_background(theme, is_focused));
 
         let title_bar = pane_grid::TitleBar::new(stream_info_element)
             .controls(self.view_controls(id, panes, maximized, window != main_window.id))
@@ -627,7 +621,7 @@ impl State {
         match &self.content {
             Content::Kline(_, _) => Some(1000),
             Content::Heatmap(chart, _) => chart.basis_interval(),
-            _ => None,
+            Content::Starter | Content::TimeAndSales(_) => None,
         }
     }
 
@@ -672,154 +666,9 @@ impl Default for State {
     }
 }
 
-trait ChartView {
-    fn view<'a, I: Indicator>(
-        &'a self,
-        pane: pane_grid::Pane,
-        state: &'a State,
-        indicators: &'a [I],
-        timezone: UserTimezone,
-    ) -> Element<'a, Message>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum StreamModifier {
-    Candlestick(Basis),
-    Footprint(Basis, TickMultiplier),
-    Heatmap(Basis, TickMultiplier),
-}
-
-fn handle_chart_view<'a, F>(
-    base: Element<'a, Message>,
-    state: &'a State,
-    pane: pane_grid::Pane,
-    indicators: &'a [impl Indicator],
-    settings_view: F,
-    stream_modifier: StreamModifier,
-) -> Element<'a, Message>
-where
-    F: FnOnce() -> Element<'a, Message>,
-{
-    let base =
-        widget::toast::Manager::new(base, &state.notifications, Alignment::End, move |msg| {
-            Message::DeleteNotification(pane, msg)
-        })
-        .into();
-
-    match state.modal {
-        Some(Modal::StreamModifier) => pane_modal(
-            base,
-            super::panel::stream_modifier_view(pane, stream_modifier, state.get_ticker_exchange()),
-            Message::ToggleModal(pane, Modal::StreamModifier),
-            padding::left(36),
-            Alignment::Start,
-        ),
-        Some(Modal::Indicators) => pane_modal(
-            base,
-            super::panel::indicators_view(
-                pane,
-                state.settings.ticker_info.map(|info| info.market_type()),
-                indicators,
-            ),
-            Message::ToggleModal(pane, Modal::Indicators),
-            padding::right(12).left(12),
-            Alignment::End,
-        ),
-        Some(Modal::Settings) => pane_modal(
-            base,
-            settings_view(),
-            Message::ToggleModal(pane, Modal::Settings),
-            padding::right(12).left(12),
-            Alignment::End,
-        ),
-        None => base,
-    }
-}
-
-impl ChartView for KlineChart {
-    fn view<'a, I: Indicator>(
-        &'a self,
-        pane: pane_grid::Pane,
-        state: &'a State,
-        indicators: &'a [I],
-        timezone: UserTimezone,
-    ) -> Element<'a, Message> {
-        let base = self
-            .view(indicators, timezone)
-            .map(move |message| Message::ChartUserUpdate(pane, message));
-
-        let chart_kind = self.kind();
-
-        let settings_view =
-            || super::panel::kline_cfg_view(self.study_configurator(), chart_kind, pane);
-
-        handle_chart_view(
-            base,
-            state,
-            pane,
-            indicators,
-            settings_view,
-            match chart_kind {
-                data::chart::KlineChartKind::Footprint { .. } => StreamModifier::Footprint(
-                    state
-                        .settings
-                        .selected_basis
-                        .unwrap_or(Basis::Time(Timeframe::M5.into())),
-                    state.settings.tick_multiply.unwrap_or(TickMultiplier(50)),
-                ),
-                data::chart::KlineChartKind::Candles => StreamModifier::Candlestick(
-                    state
-                        .settings
-                        .selected_basis
-                        .unwrap_or(Basis::Time(Timeframe::M15.into())),
-                ),
-            },
-        )
-    }
-}
-
-impl ChartView for HeatmapChart {
-    fn view<'a, I: Indicator>(
-        &'a self,
-        pane: pane_grid::Pane,
-        state: &'a State,
-        indicators: &'a [I],
-        timezone: UserTimezone,
-    ) -> Element<'a, Message> {
-        let base = self
-            .view(indicators, timezone)
-            .map(move |message| Message::ChartUserUpdate(pane, message));
-
-        let settings_view = || super::panel::heatmap_cfg_view(self.visual_config(), pane);
-
-        handle_chart_view(
-            base,
-            state,
-            pane,
-            indicators,
-            settings_view,
-            StreamModifier::Heatmap(
-                state
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Basis::default_time(state.settings.ticker_info)),
-                state.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
-            ),
-        )
-    }
-}
-
-fn view_chart<'a, C: ChartView, I: Indicator>(
-    pane: pane_grid::Pane,
-    state: &'a State,
-    content: &'a C,
-    indicators: &'a [I],
-    timezone: UserTimezone,
-) -> Element<'a, Message> {
-    content.view(pane, state, indicators, timezone)
-}
-
+#[derive(Default)]
 pub enum Content {
+    #[default]
     Starter,
     Heatmap(HeatmapChart, Vec<HeatmapIndicator>),
     Kline(KlineChart, Vec<KlineIndicator>),
@@ -857,8 +706,7 @@ impl Content {
                     "Volume" => HeatmapIndicator::Volume,
                     "VPSR" => HeatmapIndicator::SessionVolumeProfile,
                     _ => {
-                        log::error!("indicator not found: {}", indicator_str);
-                        return;
+                        panic!("heatmap indicator requested to toggle not found: {indicator_str}",);
                     }
                 };
 
@@ -875,8 +723,7 @@ impl Content {
                     "Volume" => KlineIndicator::Volume,
                     "Open Interest" => KlineIndicator::OpenInterest,
                     _ => {
-                        log::error!("indicator not found: {}", indicator_str);
-                        return;
+                        panic!("kline indicator requested to toggle not found: {indicator_str}",);
                     }
                 };
 
@@ -888,7 +735,9 @@ impl Content {
 
                 chart.toggle_indicator(indicator);
             }
-            _ => {}
+            Content::Starter | Content::TimeAndSales(_) => {
+                panic!("indicator toggle on {} pane", self)
+            }
         }
     }
 
@@ -913,6 +762,73 @@ impl Content {
             _ => {}
         }
     }
+
+    pub fn view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        state: &'a State,
+        timezone: UserTimezone,
+    ) -> Element<'a, Message> {
+        match self {
+            Content::Starter => center(text("select a ticker to start").size(16)).into(),
+            Content::TimeAndSales(panel) => super::panel::view(pane, state, panel, timezone),
+            Content::Heatmap(chart, indicators) => {
+                let base = chart
+                    .view(indicators, timezone)
+                    .map(move |message| Message::ChartUserUpdate(pane, message));
+
+                let settings_view = || super::panel::heatmap_cfg_view(chart.visual_config(), pane);
+
+                compose_chart_view(
+                    base,
+                    state,
+                    pane,
+                    indicators,
+                    settings_view,
+                    StreamModifier::Heatmap(
+                        state
+                            .settings
+                            .selected_basis
+                            .unwrap_or(Basis::default_time(state.settings.ticker_info)),
+                        state.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
+                    ),
+                )
+            }
+            Content::Kline(chart, indicators) => {
+                let base = chart
+                    .view(indicators, timezone)
+                    .map(move |message| Message::ChartUserUpdate(pane, message));
+
+                let chart_kind = chart.kind();
+
+                let settings_view =
+                    || super::panel::kline_cfg_view(chart.study_configurator(), chart_kind, pane);
+
+                compose_chart_view(
+                    base,
+                    state,
+                    pane,
+                    indicators,
+                    settings_view,
+                    match chart_kind {
+                        data::chart::KlineChartKind::Footprint { .. } => StreamModifier::Footprint(
+                            state
+                                .settings
+                                .selected_basis
+                                .unwrap_or(Basis::Time(Timeframe::M5.into())),
+                            state.settings.tick_multiply.unwrap_or(TickMultiplier(50)),
+                        ),
+                        data::chart::KlineChartKind::Candles => StreamModifier::Candlestick(
+                            state
+                                .settings
+                                .selected_basis
+                                .unwrap_or(Basis::Time(Timeframe::M15.into())),
+                        ),
+                    },
+                )
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for Content {
@@ -923,5 +839,52 @@ impl std::fmt::Display for Content {
             Content::Kline(_, _) => write!(f, "Kline chart"),
             Content::TimeAndSales(_) => write!(f, "Time&Sales pane"),
         }
+    }
+}
+
+fn compose_chart_view<'a, F>(
+    base: Element<'a, Message>,
+    state: &'a State,
+    pane: pane_grid::Pane,
+    indicators: &'a [impl Indicator],
+    settings_view: F,
+    stream_modifier: StreamModifier,
+) -> Element<'a, Message>
+where
+    F: FnOnce() -> Element<'a, Message>,
+{
+    let base =
+        widget::toast::Manager::new(base, &state.notifications, Alignment::End, move |msg| {
+            Message::DeleteNotification(pane, msg)
+        })
+        .into();
+
+    match state.modal {
+        Some(Modal::StreamModifier) => pane_modal(
+            base,
+            super::panel::stream_modifier_view(pane, stream_modifier, state.stream_pair()),
+            Message::ToggleModal(pane, Modal::StreamModifier),
+            padding::left(36),
+            Alignment::Start,
+        ),
+        Some(Modal::Indicators) => pane_modal(
+            base,
+            super::panel::indicators_view(
+                pane,
+                state.settings.ticker_info.map(|info| info.market_type()),
+                indicators,
+            ),
+            Message::ToggleModal(pane, Modal::Indicators),
+            padding::right(12).left(12),
+            Alignment::End,
+        ),
+        Some(Modal::Settings) => pane_modal(
+            base,
+            settings_view(),
+            Message::ToggleModal(pane, Modal::Settings),
+            padding::right(12).left(12),
+            Alignment::End,
+        ),
+        None => base,
     }
 }
