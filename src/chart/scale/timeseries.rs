@@ -45,7 +45,9 @@ const HOURLY_TIME_STEPS: [u64; 8] = [
     1000 * 60 * 60,   // 1 hour
 ];
 
-const MS_TIME_STEPS: [u64; 8] = [
+const MS_TIME_STEPS: [u64; 10] = [
+    1000 * 120,
+    1000 * 60,
     1000 * 30,
     1000 * 10,
     1000 * 5,

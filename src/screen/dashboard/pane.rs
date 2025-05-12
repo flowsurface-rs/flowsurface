@@ -779,19 +779,21 @@ impl Content {
 
                 let settings_view = || super::panel::heatmap_cfg_view(chart.visual_config(), pane);
 
+                let stream_modifier = StreamModifier::Heatmap(
+                    state
+                        .settings
+                        .selected_basis
+                        .unwrap_or(Basis::default_time(state.settings.ticker_info)),
+                    state.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
+                );
+
                 compose_chart_view(
                     base,
                     state,
                     pane,
                     indicators,
                     settings_view,
-                    StreamModifier::Heatmap(
-                        state
-                            .settings
-                            .selected_basis
-                            .unwrap_or(Basis::default_time(state.settings.ticker_info)),
-                        state.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
-                    ),
+                    stream_modifier,
                 )
             }
             Content::Kline(chart, indicators) => {
@@ -804,27 +806,29 @@ impl Content {
                 let settings_view =
                     || super::panel::kline_cfg_view(chart.study_configurator(), chart_kind, pane);
 
+                let stream_modifier = match chart_kind {
+                    data::chart::KlineChartKind::Footprint { .. } => StreamModifier::Footprint(
+                        state
+                            .settings
+                            .selected_basis
+                            .unwrap_or(Basis::Time(Timeframe::M5.into())),
+                        state.settings.tick_multiply.unwrap_or(TickMultiplier(50)),
+                    ),
+                    data::chart::KlineChartKind::Candles => StreamModifier::Candlestick(
+                        state
+                            .settings
+                            .selected_basis
+                            .unwrap_or(Basis::Time(Timeframe::M15.into())),
+                    ),
+                };
+
                 compose_chart_view(
                     base,
                     state,
                     pane,
                     indicators,
                     settings_view,
-                    match chart_kind {
-                        data::chart::KlineChartKind::Footprint { .. } => StreamModifier::Footprint(
-                            state
-                                .settings
-                                .selected_basis
-                                .unwrap_or(Basis::Time(Timeframe::M5.into())),
-                            state.settings.tick_multiply.unwrap_or(TickMultiplier(50)),
-                        ),
-                        data::chart::KlineChartKind::Candles => StreamModifier::Candlestick(
-                            state
-                                .settings
-                                .selected_basis
-                                .unwrap_or(Basis::Time(Timeframe::M15.into())),
-                        ),
-                    },
+                    stream_modifier,
                 )
             }
         }
@@ -836,7 +840,10 @@ impl std::fmt::Display for Content {
         match self {
             Content::Starter => write!(f, "Starter pane"),
             Content::Heatmap(_, _) => write!(f, "Heatmap chart"),
-            Content::Kline(_, _) => write!(f, "Kline chart"),
+            Content::Kline(chart, _) => match chart.kind() {
+                data::chart::KlineChartKind::Footprint { .. } => write!(f, "Footprint chart"),
+                data::chart::KlineChartKind::Candles => write!(f, "Candlestick chart"),
+            },
             Content::TimeAndSales(_) => write!(f, "Time&Sales pane"),
         }
     }
