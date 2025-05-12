@@ -25,6 +25,8 @@ use std::{
     time::Instant,
 };
 
+const CLEANUP_THRESHOLD: usize = 4800;
+
 impl Chart for HeatmapChart {
     fn common_data(&self) -> &CommonChartData {
         &self.chart
@@ -206,13 +208,13 @@ impl HeatmapChart {
     }
 
     fn cleanup_old_data(&mut self) {
-        if self.timeseries.len() > 2800 {
-            let keys_to_remove: Vec<u64> = self
+        if self.timeseries.len() > CLEANUP_THRESHOLD {
+            let keys_to_remove = self
                 .timeseries
                 .keys()
-                .take(self.timeseries.len() - 400)
-                .cloned()
-                .collect();
+                .take(CLEANUP_THRESHOLD / 10)
+                .copied()
+                .collect::<Vec<u64>>();
 
             for key in keys_to_remove {
                 self.timeseries.remove(&key);
