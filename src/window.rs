@@ -27,7 +27,7 @@ pub enum Event {
     CloseRequested(window::Id),
 }
 
-pub fn window_events() -> Subscription<Event> {
+pub fn events() -> Subscription<Event> {
     iced::event::listen_with(filtered_events)
 }
 

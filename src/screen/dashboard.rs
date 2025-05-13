@@ -1157,16 +1157,8 @@ impl Dashboard {
             .for_each(|(_, _, state)| state.tick(now));
     }
 
-    pub fn market_subscriptions<M>(
-        &self,
-        market_msg: impl Fn(exchange::Event) -> M + Clone + Send + 'static,
-    ) -> Subscription<M>
-    where
-        M: 'static,
-    {
-        let mut market_subscriptions = Vec::with_capacity(
-            self.pane_streams.len() * 2, // worst case: both kline and depth per exchange
-        );
+    pub fn market_subscriptions(&self) -> Subscription<exchange::Event> {
+        let mut market_subscriptions = vec![];
 
         self.pane_streams.iter().for_each(|(exchange, stream)| {
             let (depth_count, kline_count) = stream
@@ -1194,7 +1186,6 @@ impl Dashboard {
                                     Subscription::run_with(config, move |cfg| {
                                         binance::connect_market_stream(cfg.id)
                                     })
-                                    .map(market_msg.clone())
                                 }
                                 Exchange::BybitSpot
                                 | Exchange::BybitLinear
@@ -1202,7 +1193,6 @@ impl Dashboard {
                                     Subscription::run_with(config, move |cfg| {
                                         bybit::connect_market_stream(cfg.id)
                                     })
-                                    .map(market_msg.clone())
                                 }
                             })
                         }
@@ -1232,13 +1222,11 @@ impl Dashboard {
                         Subscription::run_with(config, move |cfg| {
                             binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
                         })
-                        .map(market_msg.clone())
                     }
                     Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
                         Subscription::run_with(config, move |cfg| {
                             bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
                         })
-                        .map(market_msg.clone())
                     }
                 });
             }

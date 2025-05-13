@@ -24,7 +24,6 @@ use widget::{
     toast::{self, Toast},
     tooltip,
 };
-use window::{Window, window_events};
 
 use data::{InternalError, config::theme::default_theme, layout::WindowSpec, sidebar};
 use exchange::adapter::{Exchange, StreamKind, fetch_ticker_info};
@@ -65,7 +64,7 @@ fn main() {
 }
 
 struct Flowsurface {
-    main_window: Window,
+    main_window: window::Window,
     layout_manager: LayoutManager,
     tickers_table: TickersTable,
     confirm_dialog: Option<(String, Box<Message>)>,
@@ -133,7 +132,7 @@ impl Flowsurface {
 
         (
             Self {
-                main_window: Window::new(main_window_id),
+                main_window: window::Window::new(main_window_id),
                 layout_manager: saved_state.layout_manager,
                 tickers_table: TickersTable::new(saved_state.favorited_tickers),
                 confirm_dialog: None,
@@ -976,13 +975,13 @@ impl Flowsurface {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let window_events = window_events().map(Message::WindowEvent);
+        let window_events = window::events().map(Message::WindowEvent);
 
         let Some(dashboard) = self.active_dashboard() else {
             return window_events;
         };
 
-        let exchange_streams = dashboard.market_subscriptions(Message::MarketWsEvent);
+        let exchange_streams = dashboard.market_subscriptions().map(Message::MarketWsEvent);
 
         let tickers_table_fetch = self.tickers_table.subscription().map(Message::TickersTable);
 
