@@ -220,7 +220,7 @@ impl HeatmapChart {
                 self.timeseries.remove(&key);
             }
 
-            if let Some(oldest_time) = self.timeseries.keys().next().cloned() {
+            if let Some(oldest_time) = self.timeseries.keys().next().copied() {
                 self.heatmap.cleanup_old_price_levels(oldest_time);
             }
         }

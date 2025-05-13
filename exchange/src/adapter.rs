@@ -54,7 +54,6 @@ pub enum StreamKind {
         exchange: Exchange,
         ticker: Ticker,
     },
-    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]

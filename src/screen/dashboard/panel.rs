@@ -342,8 +342,9 @@ pub fn stream_modifier_view<'a>(
 ) -> Element<'a, Message> {
     let (selected_basis, selected_ticksize) = match modifiers {
         StreamModifier::Candlestick(basis) => (Some(basis), None),
-        StreamModifier::Footprint(basis, ticksize) => (Some(basis), Some(ticksize)),
-        StreamModifier::Heatmap(basis, ticksize) => (Some(basis), Some(ticksize)),
+        StreamModifier::Footprint(basis, ticksize) | StreamModifier::Heatmap(basis, ticksize) => {
+            (Some(basis), Some(ticksize))
+        }
     };
 
     let create_button = |content: String, msg: Option<Message>, active: bool| {

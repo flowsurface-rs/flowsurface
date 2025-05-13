@@ -121,18 +121,15 @@ impl State {
     }
 
     pub fn stream_pair(&self) -> Option<(Exchange, Ticker)> {
-        for stream in &self.streams {
-            match stream {
+        self.streams
+            .iter()
+            .map(|stream| match stream {
                 StreamKind::DepthAndTrades { exchange, ticker }
                 | StreamKind::Kline {
                     exchange, ticker, ..
-                } => {
-                    return Some((*exchange, *ticker));
-                }
-                StreamKind::None => {}
-            }
-        }
-        None
+                } => (*exchange, *ticker),
+            })
+            .next()
     }
 
     pub fn init_content_task(
@@ -636,7 +633,7 @@ impl State {
         match (invalidate_interval, last_tick) {
             (Some(interval_ms), Some(previous_tick_time)) => {
                 if interval_ms > 0 {
-                    let interval_duration = std::time::Duration::from_millis(interval_ms as u64);
+                    let interval_duration = std::time::Duration::from_millis(interval_ms);
                     if now.duration_since(previous_tick_time) >= interval_duration {
                         self.invalidate(now);
                     }

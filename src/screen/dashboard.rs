@@ -298,7 +298,6 @@ impl Dashboard {
                                         .or_default()
                                         .insert(*stream);
                                 }
-                                StreamKind::None => {}
                             }
                         }
 
@@ -1158,81 +1157,47 @@ impl Dashboard {
     }
 
     pub fn market_subscriptions(&self) -> Subscription<exchange::Event> {
-        let mut market_subscriptions = vec![];
-
-        self.pane_streams.iter().for_each(|(exchange, stream)| {
-            let (depth_count, kline_count) = stream
-                .values()
-                .flat_map(|stream_types| stream_types.iter())
-                .fold((0, 0), |(depths, klines), stream_type| match stream_type {
-                    StreamKind::DepthAndTrades { .. } => (depths + 1, klines),
-                    StreamKind::Kline { .. } => (depths, klines + 1),
-                    StreamKind::None => (depths, klines),
-                });
-
-            if depth_count > 0 {
-                let mut depth_streams = Vec::with_capacity(depth_count);
-
-                stream
-                    .values()
-                    .flat_map(|stream_types| stream_types.iter())
-                    .filter_map(|stream_type| match stream_type {
-                        StreamKind::DepthAndTrades { ticker, .. } => {
-                            let config = StreamConfig::new(*ticker, *exchange);
-                            Some(match exchange {
-                                Exchange::BinanceSpot
-                                | Exchange::BinanceInverse
-                                | Exchange::BinanceLinear => {
-                                    Subscription::run_with(config, move |cfg| {
-                                        binance::connect_market_stream(cfg.id)
-                                    })
-                                }
-                                Exchange::BybitSpot
-                                | Exchange::BybitLinear
-                                | Exchange::BybitInverse => {
-                                    Subscription::run_with(config, move |cfg| {
-                                        bybit::connect_market_stream(cfg.id)
-                                    })
-                                }
-                            })
-                        }
-                        _ => None,
-                    })
-                    .for_each(|stream| depth_streams.push(stream));
-
-                market_subscriptions.push(Subscription::batch(depth_streams));
-            }
-
-            if kline_count > 0 {
-                let kline_streams: Vec<_> = stream
-                    .values()
-                    .flat_map(|stream_types| stream_types.iter())
-                    .filter_map(|stream_type| match stream_type {
-                        StreamKind::Kline {
-                            ticker, timeframe, ..
-                        } => Some((*ticker, *timeframe)),
-                        _ => None,
-                    })
-                    .collect();
-
-                let config = StreamConfig::new(kline_streams, *exchange);
-
-                market_subscriptions.push(match exchange {
-                    Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
-                        Subscription::run_with(config, move |cfg| {
-                            binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+        let exchange_level_subscriptions = self
+            .pane_streams
+            .iter()
+            .flat_map(|(exchange, ticker_to_stream_kinds)| {
+                let depth_batch_opt = {
+                    let depth_specific_subs = ticker_to_stream_kinds
+                        .values()
+                        .flatten()
+                        .filter_map(|stream_kind| match stream_kind {
+                            StreamKind::DepthAndTrades { ticker, .. } => {
+                                Some(depth_subscription(*exchange, *ticker))
+                            }
+                            _ => None,
                         })
-                    }
-                    Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
-                        Subscription::run_with(config, move |cfg| {
-                            bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-                        })
-                    }
-                });
-            }
-        });
+                        .collect::<Vec<Subscription<exchange::Event>>>();
 
-        Subscription::batch(market_subscriptions)
+                    (!depth_specific_subs.is_empty())
+                        .then_some(Subscription::batch(depth_specific_subs))
+                };
+
+                let kline_sub_opt = {
+                    let kline_params = ticker_to_stream_kinds
+                        .values()
+                        .flatten()
+                        .filter_map(|stream_kind| match stream_kind {
+                            StreamKind::Kline {
+                                ticker, timeframe, ..
+                            } => Some((*ticker, *timeframe)),
+                            _ => None,
+                        })
+                        .collect::<Vec<(Ticker, Timeframe)>>();
+
+                    (!kline_params.is_empty())
+                        .then_some(kline_subscription(*exchange, kline_params))
+                };
+
+                depth_batch_opt.into_iter().chain(kline_sub_opt)
+            })
+            .collect::<Vec<Subscription<exchange::Event>>>();
+
+        Subscription::batch(exchange_level_subscriptions)
     }
 
     pub fn get_all_diff_streams(
@@ -1243,14 +1208,12 @@ impl Dashboard {
 
         self.iter_all_panes(main_window)
             .flat_map(|(_, _, pane_state)| &pane_state.streams)
-            .filter(|stream_type| !matches!(stream_type, StreamKind::None))
             .for_each(|stream_type| {
                 let (exchange, ticker) = match stream_type {
                     StreamKind::DepthAndTrades { exchange, ticker }
                     | StreamKind::Kline {
                         exchange, ticker, ..
                     } => (*exchange, *ticker),
-                    StreamKind::None => unreachable!(),
                 };
 
                 pane_streams
@@ -1422,4 +1385,35 @@ pub fn fetch_trades_batched(
 
         Ok(())
     })
+}
+
+fn depth_subscription(exchange: Exchange, ticker: Ticker) -> Subscription<exchange::Event> {
+    let config = StreamConfig::new(ticker, exchange);
+    match exchange {
+        Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
+            Subscription::run_with(config, move |cfg| binance::connect_market_stream(cfg.id))
+        }
+        Exchange::BybitSpot | Exchange::BybitLinear | Exchange::BybitInverse => {
+            Subscription::run_with(config, move |cfg| bybit::connect_market_stream(cfg.id))
+        }
+    }
+}
+
+fn kline_subscription(
+    exchange: Exchange,
+    kline_subs: Vec<(Ticker, Timeframe)>,
+) -> Subscription<exchange::Event> {
+    let config = StreamConfig::new(kline_subs, exchange);
+    match exchange {
+        Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
+            Subscription::run_with(config, move |cfg| {
+                binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+            })
+        }
+        Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
+            Subscription::run_with(config, move |cfg| {
+                bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+            })
+        }
+    }
 }
