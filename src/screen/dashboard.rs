@@ -12,7 +12,7 @@ use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 
 use exchange::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
-    adapter::{self, Exchange, StreamConfig, StreamError, binance, bybit},
+    adapter::{self, Exchange, StreamConfig, StreamError, UniqueStreams, binance, bybit},
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
 };
@@ -28,12 +28,7 @@ use iced::{
     },
 };
 use iced_futures::futures::TryFutureExt;
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    time::Instant,
-    vec,
-};
+use std::{collections::HashMap, path::PathBuf, time::Instant, vec};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -54,7 +49,7 @@ pub struct Dashboard {
     pub panes: pane_grid::State<pane::State>,
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
-    pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamKind>>>,
+    pub streams: UniqueStreams,
     pub trade_fetch_enabled: bool,
 }
 
@@ -63,7 +58,7 @@ impl Default for Dashboard {
         Self {
             panes: pane_grid::State::with_configuration(Self::default_pane_config()),
             focus: None,
-            pane_streams: HashMap::new(),
+            streams: UniqueStreams::default(),
             popout: HashMap::new(),
             trade_fetch_enabled: false,
         }
@@ -120,7 +115,7 @@ impl Dashboard {
         Self {
             panes,
             focus: None,
-            pane_streams: HashMap::new(),
+            streams: UniqueStreams::default(),
             popout,
             trade_fetch_enabled,
         }
@@ -231,6 +226,8 @@ impl Dashboard {
                         if let Some(pane) = self.panes.get_mut(pane) {
                             *pane = pane::State::new();
                         }
+
+                        return (Task::done(Message::RefreshStreams), None);
                     }
                     pane::Message::ToggleModal(pane, modal_type) => {
                         if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
@@ -278,7 +275,12 @@ impl Dashboard {
                         if let Some(parent_pane) = is_pane {
                             pane = parent_pane;
                         } else {
-                            pane = self.panes.iter().next().map(|(pane, _)| *pane).unwrap();
+                            pane = self
+                                .panes
+                                .iter()
+                                .next()
+                                .map(|(pane, _)| *pane)
+                                .expect("No pane found");
                         }
 
                         let err_occurred =
@@ -286,19 +288,7 @@ impl Dashboard {
 
                         // prepare unique streams for websocket
                         for stream in &pane_stream {
-                            match stream {
-                                StreamKind::Kline {
-                                    exchange, ticker, ..
-                                }
-                                | StreamKind::DepthAndTrades { exchange, ticker } => {
-                                    self.pane_streams
-                                        .entry(*exchange)
-                                        .or_default()
-                                        .entry(*ticker)
-                                        .or_default()
-                                        .insert(*stream);
-                                }
-                            }
+                            self.streams.add(*stream);
                         }
 
                         // set pane's stream and content identifiers
@@ -485,16 +475,16 @@ impl Dashboard {
                     });
 
                 return (
-                    Task::batch(self.klines_fetch_all_task(
-                        &self.pane_streams,
-                        *layout_id,
-                        main_window.id,
-                    )),
+                    Task::batch(self.klines_fetch_all_task(*layout_id, main_window.id)),
                     None,
                 );
             }
             Message::RefreshStreams => {
-                self.pane_streams = self.get_all_diff_streams(main_window.id);
+                let all_pane_streams = self
+                    .iter_all_panes(main_window.id)
+                    .flat_map(|(_, _, pane_state)| &pane_state.streams);
+
+                self.streams = UniqueStreams::from(all_pane_streams);
             }
             Message::ChartRequestedFetch(pane, window, req_id, fetch) => match fetch {
                 FetchRange::Kline(from, to) => {
@@ -1157,85 +1147,50 @@ impl Dashboard {
     }
 
     pub fn market_subscriptions(&self) -> Subscription<exchange::Event> {
-        let exchange_level_subscriptions = self
-            .pane_streams
+        let stream_specs = self.streams.combined();
+
+        let unique_streams = stream_specs
             .iter()
-            .flat_map(|(exchange, ticker_to_stream_kinds)| {
-                let depth_batch_opt = {
-                    let depth_specific_subs = ticker_to_stream_kinds
-                        .values()
-                        .flatten()
-                        .filter_map(|stream_kind| match stream_kind {
-                            StreamKind::DepthAndTrades { ticker, .. } => {
-                                Some(depth_subscription(*exchange, *ticker))
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<Subscription<exchange::Event>>>();
+            .flat_map(|(exchange, specs)| {
+                let mut subs = vec![];
 
-                    (!depth_specific_subs.is_empty())
-                        .then_some(Subscription::batch(depth_specific_subs))
-                };
+                if !specs.depth.is_empty() {
+                    let depth_subs = specs
+                        .depth
+                        .iter()
+                        .map(|(_, ticker)| depth_subscription(*exchange, *ticker))
+                        .collect::<Vec<_>>();
 
-                let kline_sub_opt = {
-                    let kline_params = ticker_to_stream_kinds
-                        .values()
-                        .flatten()
-                        .filter_map(|stream_kind| match stream_kind {
-                            StreamKind::Kline {
-                                ticker, timeframe, ..
-                            } => Some((*ticker, *timeframe)),
-                            _ => None,
-                        })
-                        .collect::<Vec<(Ticker, Timeframe)>>();
+                    if !depth_subs.is_empty() {
+                        subs.push(Subscription::batch(depth_subs));
+                    }
+                }
 
-                    (!kline_params.is_empty())
-                        .then_some(kline_subscription(*exchange, kline_params))
-                };
+                let kline_params = specs
+                    .kline
+                    .iter()
+                    .map(|(_, ticker, timeframe)| (*ticker, *timeframe))
+                    .collect::<Vec<_>>();
 
-                depth_batch_opt.into_iter().chain(kline_sub_opt)
+                if !kline_params.is_empty() {
+                    subs.push(kline_subscription(*exchange, kline_params));
+                }
+
+                subs
             })
             .collect::<Vec<Subscription<exchange::Event>>>();
 
-        Subscription::batch(exchange_level_subscriptions)
-    }
-
-    pub fn get_all_diff_streams(
-        &self,
-        main_window: window::Id,
-    ) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamKind>>> {
-        let mut pane_streams = HashMap::new();
-
-        self.iter_all_panes(main_window)
-            .flat_map(|(_, _, pane_state)| &pane_state.streams)
-            .for_each(|stream_type| {
-                let (exchange, ticker) = match stream_type {
-                    StreamKind::DepthAndTrades { exchange, ticker }
-                    | StreamKind::Kline {
-                        exchange, ticker, ..
-                    } => (*exchange, *ticker),
-                };
-
-                pane_streams
-                    .entry(exchange)
-                    .or_insert_with(HashMap::new)
-                    .entry(ticker)
-                    .or_insert_with(HashSet::new)
-                    .insert(*stream_type);
-            });
-
-        pane_streams
+        Subscription::batch(unique_streams)
     }
 
     fn klines_fetch_all_task(
         &self,
-        streams: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamKind>>>,
         layout_id: uuid::Uuid,
         main_window_id: window::Id,
     ) -> Vec<Task<Message>> {
         let mut tasks: Vec<Task<Message>> = vec![];
 
-        for (exchange, stream) in streams {
+        for (exchange, stream) in self.streams.iter() {
             let mut kline_fetches = Vec::new();
 
             for stream_types in stream.values() {
@@ -1387,7 +1342,7 @@ pub fn fetch_trades_batched(
     })
 }
 
-fn depth_subscription(exchange: Exchange, ticker: Ticker) -> Subscription<exchange::Event> {
+pub fn depth_subscription(exchange: Exchange, ticker: Ticker) -> Subscription<exchange::Event> {
     let config = StreamConfig::new(ticker, exchange);
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
@@ -1399,7 +1354,7 @@ fn depth_subscription(exchange: Exchange, ticker: Ticker) -> Subscription<exchan
     }
 }
 
-fn kline_subscription(
+pub fn kline_subscription(
     exchange: Exchange,
     kline_subs: Vec<(Ticker, Timeframe)>,
 ) -> Subscription<exchange::Event> {

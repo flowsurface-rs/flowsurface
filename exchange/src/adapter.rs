@@ -1,4 +1,7 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 use crate::{Kline, OpenInterest, TickerInfo, TickerStats, Trade, depth::Depth};
 
@@ -54,6 +57,140 @@ pub enum StreamKind {
         exchange: Exchange,
         ticker: Ticker,
     },
+}
+
+#[derive(Debug, Default)]
+pub struct UniqueStreams {
+    streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamKind>>>,
+    specs: HashMap<Exchange, StreamSpecs>,
+}
+
+impl UniqueStreams {
+    pub fn new() -> Self {
+        Self {
+            streams: HashMap::new(),
+            specs: HashMap::new(),
+        }
+    }
+
+    pub fn from<'a>(streams: impl Iterator<Item = &'a StreamKind>) -> Self {
+        let mut unique_streams = UniqueStreams::new();
+        for stream in streams {
+            unique_streams.add(*stream);
+        }
+        unique_streams
+    }
+
+    pub fn add(&mut self, stream: StreamKind) {
+        let (exchange, ticker) = match stream {
+            StreamKind::Kline {
+                exchange, ticker, ..
+            }
+            | StreamKind::DepthAndTrades { exchange, ticker } => (exchange, ticker),
+        };
+
+        self.streams
+            .entry(exchange)
+            .or_default()
+            .entry(ticker)
+            .or_default()
+            .insert(stream);
+
+        self.update_specs_for_exchange(exchange);
+    }
+
+    fn update_specs_for_exchange(&mut self, exchange: Exchange) {
+        let depth_streams = self.depth_streams(Some(exchange));
+        let kline_streams = self.kline_streams(Some(exchange));
+
+        self.specs.insert(
+            exchange,
+            StreamSpecs {
+                depth: depth_streams,
+                kline: kline_streams,
+            },
+        );
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Exchange, &HashMap<Ticker, HashSet<StreamKind>>)> {
+        self.streams.iter()
+    }
+
+    pub fn depth_streams(&self, exchange: Option<Exchange>) -> Vec<(Exchange, Ticker)> {
+        if let Some(exchange) = exchange {
+            if let Some(ticker_map) = self.streams.get(&exchange) {
+                ticker_map
+                    .values()
+                    .flatten()
+                    .filter_map(|stream_kind| match stream_kind {
+                        StreamKind::DepthAndTrades { ticker, .. } => Some((exchange, *ticker)),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        } else {
+            self.streams
+                .iter()
+                .flat_map(|(exchange, ticker_map)| {
+                    ticker_map
+                        .values()
+                        .flatten()
+                        .filter_map(|stream_kind| match stream_kind {
+                            StreamKind::DepthAndTrades { ticker, .. } => Some((*exchange, *ticker)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }
+    }
+
+    pub fn kline_streams(&self, exchange: Option<Exchange>) -> Vec<(Exchange, Ticker, Timeframe)> {
+        if let Some(exchange) = exchange {
+            if let Some(ticker_map) = self.streams.get(&exchange) {
+                ticker_map
+                    .values()
+                    .flatten()
+                    .filter_map(|stream_kind| match stream_kind {
+                        StreamKind::Kline {
+                            ticker, timeframe, ..
+                        } => Some((exchange, *ticker, *timeframe)),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        } else {
+            self.streams
+                .iter()
+                .flat_map(|(exchange, ticker_map)| {
+                    ticker_map
+                        .values()
+                        .flatten()
+                        .filter_map(|stream_kind| match stream_kind {
+                            StreamKind::Kline {
+                                ticker, timeframe, ..
+                            } => Some((*exchange, *ticker, *timeframe)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }
+    }
+
+    pub fn combined(&self) -> &HashMap<Exchange, StreamSpecs> {
+        &self.specs
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StreamSpecs {
+    pub depth: Vec<(Exchange, Ticker)>,
+    pub kline: Vec<(Exchange, Ticker, Timeframe)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]

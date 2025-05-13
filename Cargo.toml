@@ -11,7 +11,7 @@ repository = "https://github.com/akenshaw/flowsurface"
 members = [ "data", "exchange"]
 
 [workspace.dependencies]
-iced_futures = "0.13.2"
+iced_futures = { version = "0.14.0-dev" }
 iced_core = { version = "0.14.0-dev", features = ["serde"] }
 chrono = { version = "0.4.40", default-features = false, features = ["serde", "now", "clock"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -51,4 +51,5 @@ data = { version = "0.1.0", path = "data" }
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "6bf709e03efaf9ee477a742a13feb8e9262c647d" }
+iced_futures = { git = "https://github.com/iced-rs/iced", rev = "6bf709e03efaf9ee477a742a13feb8e9262c647d" }
 iced_core = { git = "https://github.com/iced-rs/iced", rev = "6bf709e03efaf9ee477a742a13feb8e9262c647d"}

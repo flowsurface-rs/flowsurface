@@ -898,7 +898,7 @@ dependencies = [
  "chrono",
  "dirs-next",
  "exchange",
- "iced_core 0.14.0-dev",
+ "iced_core",
  "log",
  "open",
  "ordered-float 5.0.0",
@@ -1111,7 +1111,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "iced_futures 0.13.2",
+ "iced_futures",
  "log",
  "ordered-float 5.0.0",
  "reqwest",
@@ -1213,8 +1213,8 @@ dependencies = [
  "exchange",
  "fern",
  "iced",
- "iced_core 0.14.0-dev",
- "iced_futures 0.13.2",
+ "iced_core",
+ "iced_futures",
  "log",
  "ordered-float 5.0.0",
  "palette",
@@ -1756,33 +1756,14 @@ name = "iced"
 version = "0.14.0-dev"
 source = "git+https://github.com/iced-rs/iced?rev=6bf709e03efaf9ee477a742a13feb8e9262c647d#6bf709e03efaf9ee477a742a13feb8e9262c647d"
 dependencies = [
- "iced_core 0.14.0-dev",
+ "iced_core",
  "iced_debug",
- "iced_futures 0.14.0-dev",
+ "iced_futures",
  "iced_renderer",
  "iced_runtime",
  "iced_widget",
  "iced_winit",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "iced_core"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0013a238275494641bf8f1732a23a808196540dc67b22ff97099c044ae4c8a1c"
-dependencies = [
- "bitflags 2.8.0",
- "bytes",
- "glam",
- "log",
- "num-traits",
- "once_cell",
- "palette",
- "rustc-hash 2.1.1",
- "smol_str",
- "thiserror 1.0.69",
- "web-time",
 ]
 
 [[package]]
@@ -1808,23 +1789,9 @@ name = "iced_debug"
 version = "0.14.0-dev"
 source = "git+https://github.com/iced-rs/iced?rev=6bf709e03efaf9ee477a742a13feb8e9262c647d#6bf709e03efaf9ee477a742a13feb8e9262c647d"
 dependencies = [
- "iced_core 0.14.0-dev",
- "iced_futures 0.14.0-dev",
+ "iced_core",
+ "iced_futures",
  "log",
-]
-
-[[package]]
-name = "iced_futures"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c04a6745ba2e80f32cf01e034fd00d853aa4f4cd8b91888099cb7aaee0d5d7c"
-dependencies = [
- "futures",
- "iced_core 0.13.2",
- "log",
- "rustc-hash 2.1.1",
- "wasm-bindgen-futures",
- "wasm-timer",
 ]
 
 [[package]]
@@ -1833,7 +1800,7 @@ version = "0.14.0-dev"
 source = "git+https://github.com/iced-rs/iced?rev=6bf709e03efaf9ee477a742a13feb8e9262c647d#6bf709e03efaf9ee477a742a13feb8e9262c647d"
 dependencies = [
  "futures",
- "iced_core 0.14.0-dev",
+ "iced_core",
  "log",
  "rustc-hash 2.1.1",
  "tokio",
@@ -1850,8 +1817,8 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "half",
- "iced_core 0.14.0-dev",
- "iced_futures 0.14.0-dev",
+ "iced_core",
+ "iced_futures",
  "log",
  "lyon_path",
  "raw-window-handle",
@@ -1887,9 +1854,9 @@ version = "0.14.0-dev"
 source = "git+https://github.com/iced-rs/iced?rev=6bf709e03efaf9ee477a742a13feb8e9262c647d#6bf709e03efaf9ee477a742a13feb8e9262c647d"
 dependencies = [
  "bytes",
- "iced_core 0.14.0-dev",
+ "iced_core",
  "iced_debug",
- "iced_futures 0.14.0-dev",
+ "iced_futures",
  "raw-window-handle",
  "sipper",
  "thiserror 1.0.69",
@@ -2119,15 +2086,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "instant"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
@@ -2986,37 +2944,12 @@ dependencies = [
 
 [[package]]
 name = "parking_lot"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d17b78036a60663b797adeaee46f5c9dfebb86948d1255007a1d6be0271ff99"
-dependencies = [
- "instant",
- "lock_api",
- "parking_lot_core 0.8.6",
-]
-
-[[package]]
-name = "parking_lot"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1bf18183cf54e8d6059647fc3063646a1801cf30896933ec2311622cc4b9a27"
 dependencies = [
  "lock_api",
- "parking_lot_core 0.9.10",
-]
-
-[[package]]
-name = "parking_lot_core"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a2cfe6f0ad2bfc16aefa463b497d5c7a5ecd44a23efa72aa342d90177356dc"
-dependencies = [
- "cfg-if",
- "instant",
- "libc",
- "redox_syscall 0.2.16",
- "smallvec",
- "winapi",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -3439,15 +3372,6 @@ checksum = "f6f9e8a4f503e5c8750e4cd3b32a4e090035c46374b305a15c70bad833dca05f"
 dependencies = [
  "bytemuck",
  "font-types",
-]
-
-[[package]]
-name = "redox_syscall"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb5a58c1855b4b6819d59012155603f0b22ad30cad752600aadfcb695265519a"
-dependencies = [
- "bitflags 1.3.2",
 ]
 
 [[package]]
@@ -4795,21 +4719,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-timer"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0ecb0db480561e9a7642b5d3e4187c128914e58aa84330b9493e3eb68c5e7f"
-dependencies = [
- "futures",
- "js-sys",
- "parking_lot 0.11.2",
- "pin-utils",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "wasmtimer"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4817,7 +4726,7 @@ checksum = "0048ad49a55b9deb3953841fa1fc5858f0efbcb7a18868c899a360269fac1b23"
 dependencies = [
  "futures",
  "js-sys",
- "parking_lot 0.12.3",
+ "parking_lot",
  "pin-utils",
  "slab",
  "wasm-bindgen",
@@ -4983,7 +4892,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
- "parking_lot 0.12.3",
+ "parking_lot",
  "profiling",
  "raw-window-handle",
  "smallvec",
@@ -5011,7 +4920,7 @@ dependencies = [
  "log",
  "naga",
  "once_cell",
- "parking_lot 0.12.3",
+ "parking_lot",
  "profiling",
  "raw-window-handle",
  "rustc-hash 1.1.0",
@@ -5052,7 +4961,7 @@ dependencies = [
  "objc",
  "once_cell",
  "ordered-float 4.6.0",
- "parking_lot 0.12.3",
+ "parking_lot",
  "profiling",
  "range-alloc",
  "raw-window-handle",

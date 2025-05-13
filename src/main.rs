@@ -894,21 +894,7 @@ impl Flowsurface {
                         sidebar::Position::Right => (Alignment::End, padding::right(48).top(64)),
                     };
 
-                    let depth_streams_list: Vec<(Exchange, exchange::Ticker)> = dashboard
-                        .pane_streams
-                        .iter()
-                        .flat_map(|(exchange, streams)| {
-                            streams
-                                .iter()
-                                .filter(|(ticker, stream_types)| {
-                                    stream_types.contains(&StreamKind::DepthAndTrades {
-                                        exchange: *exchange,
-                                        ticker: **ticker,
-                                    })
-                                })
-                                .map(|(ticker, _)| (*exchange, *ticker))
-                        })
-                        .collect();
+                    let depth_streams_list = dashboard.streams.depth_streams(None);
 
                     dashboard_modal(
                         base,
