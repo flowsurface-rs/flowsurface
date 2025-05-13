@@ -675,7 +675,7 @@ pub enum Content {
 impl Content {
     pub fn invalidate(&mut self, now: Instant) {
         match self {
-            Content::Heatmap(chart, _) => chart.invalidate(now),
+            Content::Heatmap(chart, _) => chart.invalidate(Some(now)),
             Content::Kline(chart, _) => chart.invalidate(Some(now)),
             Content::Starter | Content::TimeAndSales(_) => {}
         }

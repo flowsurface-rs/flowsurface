@@ -730,7 +730,9 @@ impl KlineChart {
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) {
-        self.last_tick = if let Some(t) = now { t } else { Instant::now() };
+        if let Some(t) = now {
+            self.last_tick = t;
+        }
 
         let autoscaled_coords = self.autoscaled_coords();
         let chart = &mut self.chart;

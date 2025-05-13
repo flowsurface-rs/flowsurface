@@ -38,7 +38,7 @@ impl Chart for HeatmapChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.invalidate(Instant::now());
+        self.invalidate(None);
     }
 
     fn canvas_interaction(
@@ -404,8 +404,10 @@ impl HeatmapChart {
         }
     }
 
-    pub fn invalidate(&mut self, now: Instant) {
-        self.last_tick = now;
+    pub fn invalidate(&mut self, now: Option<Instant>) {
+        if let Some(t) = now {
+            self.last_tick = t;
+        }
 
         let autoscaled_coords = self.autoscaled_coords();
         let chart = &mut self.chart;

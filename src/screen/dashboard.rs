@@ -1190,54 +1190,44 @@ impl Dashboard {
     ) -> Vec<Task<Message>> {
         let mut tasks: Vec<Task<Message>> = vec![];
 
-        for (exchange, stream) in self.streams.iter() {
-            let mut kline_fetches = Vec::new();
+        for (exchange, ticker, timeframe) in self.streams.kline_streams(None) {
+            let stream_kind = StreamKind::Kline {
+                exchange,
+                ticker,
+                timeframe,
+            };
 
-            for stream_types in stream.values() {
-                for stream_type in stream_types {
-                    if let StreamKind::Kline {
-                        ticker, timeframe, ..
-                    } = stream_type
-                    {
-                        kline_fetches.push((stream_type, *ticker, *timeframe));
-                    }
-                }
-            }
+            let matching_panes = self
+                .iter_all_panes(main_window_id)
+                .filter(|(_, _, pane_state)| pane_state.matches_stream(&stream_kind))
+                .map(|(_, _, state)| state.id)
+                .collect::<Vec<uuid::Uuid>>();
 
-            for (stream_type, ticker, timeframe) in kline_fetches {
-                let matching_panes: Vec<uuid::Uuid> = self
-                    .iter_all_panes(main_window_id)
-                    .filter(|(_, _, pane_state)| pane_state.matches_stream(stream_type))
-                    .map(|(_, _, state)| state.id)
-                    .collect();
-
-                if matching_panes.is_empty() {
-                    let exchange = *exchange;
-                    let fetch_task = Task::perform(
-                        adapter::fetch_klines(exchange, ticker, timeframe, None)
-                            .map_err(|err| format!("{err}")),
-                        move |result| match result {
-                            Ok(_) => Message::Notification(Toast::warn(format!(
-                                "Fetched klines for stream with no matching panes: {exchange:?} {:?} {timeframe:?}",
-                                ticker.to_full_symbol_and_type(),
-                            ))),
-                            Err(err) => Message::Notification(Toast::error(format!(
-                                "Failed to fetch klines for stream: {exchange:?} {:?} {timeframe:?} {err}",
-                                ticker.to_full_symbol_and_type(),
-                            ))),
-                        },
-                    );
-                    tasks.push(fetch_task);
-                } else {
-                    for pane_uid in matching_panes {
-                        tasks.push(kline_fetch_task(
-                            layout_id,
-                            pane_uid,
-                            *stream_type,
-                            None,
-                            None,
-                        ));
-                    }
+            if matching_panes.is_empty() {
+                let fetch_task = Task::perform(
+                    adapter::fetch_klines(exchange, ticker, timeframe, None)
+                        .map_err(|err| format!("{err}")),
+                    move |result| match result {
+                        Ok(_) => Message::Notification(Toast::warn(format!(
+                            "Fetched klines for stream with no matching panes: {exchange:?} {:?} {timeframe:?}",
+                            ticker.to_full_symbol_and_type(),
+                        ))),
+                        Err(err) => Message::Notification(Toast::error(format!(
+                            "Failed to fetch klines for stream: {exchange:?} {:?} {timeframe:?} {err}",
+                            ticker.to_full_symbol_and_type(),
+                        ))),
+                    },
+                );
+                tasks.push(fetch_task);
+            } else {
+                for pane_uid in matching_panes {
+                    tasks.push(kline_fetch_task(
+                        layout_id,
+                        pane_uid,
+                        stream_kind,
+                        None,
+                        None,
+                    ));
                 }
             }
         }
