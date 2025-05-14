@@ -1,7 +1,7 @@
 use crate::style;
 use data::chart::{
     Basis, ChartLayout,
-    heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
+    heatmap::{Config, GroupedTrade, HistoricalDepth, OrderRun, QtyScale},
     indicators::{HeatmapIndicator, Indicator},
 };
 use data::util::{abbr_large_numbers, count_decimals};
@@ -38,7 +38,7 @@ impl Chart for HeatmapChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.invalidate(None);
+        self.invalidate(Some(Instant::now()));
     }
 
     fn canvas_interaction(
@@ -559,67 +559,156 @@ impl canvas::Program<Message> for HeatmapChart {
             let (max_aggr_volume, max_trade_qty) =
                 (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
 
-            self.heatmap
-                .iter_time_filtered(earliest, latest, highest, lowest)
-                .for_each(|(price, runs)| {
-                    let y_position = chart.price_to_y(price.0);
+            if let Some(merge_qty_threshold) = self.visual_config().smoothing_pct {
+                self.heatmap
+                    .iter_time_filtered(earliest, latest, highest, lowest)
+                    .for_each(|(price, runs_at_price_level)| {
+                        let y_position = chart.price_to_y(price.0);
 
-                    runs.iter()
-                        .filter(|run| {
-                            let order_size = match market_type {
-                                MarketKind::InversePerps => run.qty(),
-                                _ => **price * run.qty(),
+                        let candidate_runs = runs_at_price_level
+                            .iter()
+                            .filter(|run| {
+                                if !(run.until_time >= earliest && run.start_time <= latest) {
+                                    return false;
+                                }
+                                let order_size = match market_type {
+                                    MarketKind::InversePerps => run.qty(),
+                                    _ => **price * run.qty(),
+                                };
+                                order_size > self.visual_config.order_size_filter
+                            })
+                            .collect::<Vec<&OrderRun>>();
+
+                        if candidate_runs.is_empty() {
+                            return;
+                        }
+
+                        let mut coalesced_to_draw: Vec<OrderRun> = vec![];
+                        let mut current_visual_run_opt: Option<OrderRun> = None;
+
+                        for run_ref in candidate_runs {
+                            let run_to_process = *run_ref;
+
+                            if current_visual_run_opt.is_none() {
+                                current_visual_run_opt = Some(run_to_process);
+                                continue;
+                            }
+
+                            let current_visual_run = current_visual_run_opt.as_mut().unwrap();
+
+                            let qty_diff_pct = if current_visual_run.qty() > 0.00001 {
+                                (run_to_process.qty() - current_visual_run.qty()).abs()
+                                    / current_visual_run.qty()
+                            } else if run_to_process.qty() > 0.00001 {
+                                f32::INFINITY
+                            } else {
+                                0.0
                             };
-                            order_size > self.visual_config.order_size_filter
-                        })
-                        .for_each(|run| {
-                            let start_x = chart.interval_to_x(run.start_time.max(earliest));
-                            let end_x = chart.interval_to_x(run.until_time.min(latest)).min(0.0);
+
+                            if run_to_process.start_time <= current_visual_run.until_time
+                                && run_to_process.is_bid == current_visual_run.is_bid
+                                && qty_diff_pct <= merge_qty_threshold
+                            {
+                                current_visual_run.until_time =
+                                    current_visual_run.until_time.max(run_to_process.until_time);
+                            } else {
+                                coalesced_to_draw.push(*current_visual_run);
+                                current_visual_run_opt = Some(run_to_process);
+                            }
+                        }
+
+                        if let Some(cvr) = current_visual_run_opt {
+                            coalesced_to_draw.push(cvr);
+                        }
+
+                        for visual_run in coalesced_to_draw {
+                            let run_start_time_clipped = visual_run.start_time.max(earliest);
+                            let run_until_time_clipped = visual_run.until_time.min(latest);
+
+                            if run_start_time_clipped >= run_until_time_clipped {
+                                continue;
+                            }
+
+                            let start_x = chart.interval_to_x(run_start_time_clipped);
+                            let end_x = chart.interval_to_x(run_until_time_clipped).min(0.0);
 
                             let width = end_x - start_x;
 
-                            if width > 0.0 {
-                                let color_alpha = (run.qty() / max_depth_qty).min(1.0);
-                                let width_unscaled = width / chart.scaling;
+                            if width > 0.001 {
+                                let color_alpha = (visual_run.qty() / max_depth_qty).min(1.0);
 
-                                if width_unscaled > 40.0
-                                    && cell_height_scaled >= 10.0
-                                    && color_alpha > 0.4
-                                {
-                                    frame.fill_text(canvas::Text {
-                                        content: abbr_large_numbers(run.qty()),
-                                        position: Point::new(
-                                            start_x + (cell_height / 2.0),
-                                            y_position,
-                                        ),
-                                        size: iced::Pixels(cell_height),
-                                        color: Color::WHITE,
-                                        align_y: Alignment::Center.into(),
-                                        font: style::AZERET_MONO,
-                                        ..canvas::Text::default()
-                                    });
-
-                                    frame.fill_rectangle(
-                                        Point::new(start_x, y_position - (cell_height / 2.0)),
-                                        Size::new(width, cell_height),
-                                        get_depth_color(palette, run.is_bid, color_alpha),
-                                    );
-
-                                    frame.fill_rectangle(
-                                        Point::new(start_x, y_position - (cell_height / 2.0)),
-                                        Size::new(1.0, cell_height),
-                                        Color::WHITE,
-                                    );
-                                } else {
-                                    frame.fill_rectangle(
-                                        Point::new(start_x, y_position - (cell_height / 2.0)),
-                                        Size::new(width, cell_height),
-                                        get_depth_color(palette, run.is_bid, color_alpha),
-                                    );
-                                }
+                                frame.fill_rectangle(
+                                    Point::new(start_x, y_position - (cell_height / 2.0)),
+                                    Size::new(width, cell_height),
+                                    depth_color(palette, visual_run.is_bid, color_alpha),
+                                );
                             }
-                        });
-                });
+                        }
+                    });
+            } else {
+                self.heatmap
+                    .iter_time_filtered(earliest, latest, highest, lowest)
+                    .for_each(|(price, runs)| {
+                        let y_position = chart.price_to_y(price.0);
+
+                        runs.iter()
+                            .filter(|run| {
+                                let order_size = match market_type {
+                                    MarketKind::InversePerps => run.qty(),
+                                    _ => **price * run.qty(),
+                                };
+                                order_size > self.visual_config.order_size_filter
+                            })
+                            .for_each(|run| {
+                                let start_x = chart.interval_to_x(run.start_time.max(earliest));
+                                let end_x =
+                                    chart.interval_to_x(run.until_time.min(latest)).min(0.0);
+
+                                let width = end_x - start_x;
+
+                                if width > 0.0 {
+                                    let color_alpha = (run.qty() / max_depth_qty).min(1.0);
+                                    let width_unscaled = width / chart.scaling;
+
+                                    if width_unscaled > 40.0
+                                        && cell_height_scaled >= 10.0
+                                        && color_alpha > 0.4
+                                    {
+                                        frame.fill_text(canvas::Text {
+                                            content: abbr_large_numbers(run.qty()),
+                                            position: Point::new(
+                                                start_x + (cell_height / 2.0),
+                                                y_position,
+                                            ),
+                                            size: iced::Pixels(cell_height),
+                                            color: Color::WHITE,
+                                            align_y: Alignment::Center.into(),
+                                            font: style::AZERET_MONO,
+                                            ..canvas::Text::default()
+                                        });
+
+                                        frame.fill_rectangle(
+                                            Point::new(start_x, y_position - (cell_height / 2.0)),
+                                            Size::new(width, cell_height),
+                                            depth_color(palette, run.is_bid, color_alpha),
+                                        );
+
+                                        frame.fill_rectangle(
+                                            Point::new(start_x, y_position - (cell_height / 2.0)),
+                                            Size::new(1.0, cell_height),
+                                            Color::WHITE,
+                                        );
+                                    } else {
+                                        frame.fill_rectangle(
+                                            Point::new(start_x, y_position - (cell_height / 2.0)),
+                                            Size::new(width, cell_height),
+                                            depth_color(palette, run.is_bid, color_alpha),
+                                        );
+                                    }
+                                }
+                            });
+                    });
+            }
 
             if let Some((latest_timestamp, _)) = self.timeseries.last_key_value() {
                 let max_qty = self
@@ -643,7 +732,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         frame.fill_rectangle(
                             Point::new(0.0, y_position - (cell_height / 2.0)),
                             Size::new(bar_width, cell_height),
-                            get_depth_color(palette, run.is_bid, 0.5),
+                            depth_color(palette, run.is_bid, 0.5),
                         );
                     });
 
@@ -893,7 +982,7 @@ impl canvas::Program<Message> for HeatmapChart {
     }
 }
 
-fn get_depth_color(palette: &Extended, is_bid: bool, alpha: f32) -> Color {
+fn depth_color(palette: &Extended, is_bid: bool, alpha: f32) -> Color {
     if is_bid {
         palette.success.strong.color.scale_alpha(alpha)
     } else {

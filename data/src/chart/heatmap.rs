@@ -23,6 +23,7 @@ pub struct Config {
     pub order_size_filter: f32,
     pub dynamic_sized_trades: bool,
     pub trade_size_scale: i32,
+    pub smoothing_pct: Option<f32>,
 }
 
 impl Default for Config {
@@ -32,11 +33,12 @@ impl Default for Config {
             order_size_filter: 0.0,
             dynamic_sized_trades: true,
             trade_size_scale: 100,
+            smoothing_pct: Some(0.15),
         }
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct OrderRun {
     pub start_time: u64,
     pub until_time: u64,

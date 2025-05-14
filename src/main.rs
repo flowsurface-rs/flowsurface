@@ -128,8 +128,6 @@ impl Flowsurface {
         let active_layout = saved_state.layout_manager.active_layout();
         let (main_window_id, open_main_window) = window::open(main_window_cfg);
 
-        let theme = saved_state.theme.clone();
-
         (
             Self {
                 main_window: window::Window::new(main_window_id),
@@ -139,7 +137,7 @@ impl Flowsurface {
                 timezone: saved_state.timezone,
                 scale_factor: saved_state.scale_factor,
                 sidebar: saved_state.sidebar,
-                theme: theme.clone(),
+                theme: saved_state.theme,
                 notifications: vec![],
                 audio_stream: audio::AudioStream::new(saved_state.audio_cfg),
                 theme_editor: theme_editor::ThemeEditor::new(saved_state.custom_theme),

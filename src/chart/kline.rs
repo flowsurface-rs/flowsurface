@@ -43,7 +43,7 @@ impl Chart for KlineChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.invalidate(None);
+        self.invalidate(Some(Instant::now()));
     }
 
     fn canvas_interaction(

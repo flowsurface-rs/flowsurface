@@ -83,7 +83,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
         let filter = cfg.trade_size_filter;
 
         create_slider_row(
-            text("Trade size"),
+            text("Trade"),
             Slider::new(0.0..=50000.0, filter, move |value| {
                 Message::VisualConfigChanged(
                     Some(pane),
@@ -103,7 +103,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
         let filter = cfg.order_size_filter;
 
         create_slider_row(
-            text("Order size"),
+            text("Order"),
             Slider::new(0.0..=500_000.0, filter, move |value| {
                 Message::VisualConfigChanged(
                     Some(pane),
@@ -139,12 +139,53 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
         )
     };
 
+    let smoothing_slider = {
+        if let Some(smoothing_pct) = cfg.smoothing_pct {
+            create_slider_row(
+                text("Size similarity pct"),
+                Slider::new(0.0..=0.8, smoothing_pct, move |value| {
+                    Message::VisualConfigChanged(
+                        Some(pane),
+                        VisualConfig::Heatmap(heatmap::Config {
+                            smoothing_pct: Some(value),
+                            ..cfg
+                        }),
+                    )
+                })
+                .step(0.01)
+                .into(),
+                Some(text(format!("{:.0}%", smoothing_pct * 100.0)).size(13)),
+            )
+        } else {
+            container(row![]).into()
+        }
+    };
+
     container(scrollable_content(
         column![
             column![
-                text("Size Filtering").size(14),
-                trade_size_slider,
-                order_size_slider,
+                text("Size filters").size(14),
+                row![trade_size_slider, order_size_slider].spacing(8)
+            ]
+            .spacing(20)
+            .padding(16)
+            .align_x(Alignment::Start),
+            column![
+                text("Noise filters").size(14),
+                iced::widget::checkbox(
+                    "Merge orders if sizes are similar",
+                    cfg.smoothing_pct.is_some(),
+                )
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        Some(pane),
+                        VisualConfig::Heatmap(heatmap::Config {
+                            smoothing_pct: if value { Some(0.15) } else { None },
+                            ..cfg
+                        }),
+                    )
+                }),
+                smoothing_slider,
             ]
             .spacing(20)
             .padding(16)
