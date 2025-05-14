@@ -21,8 +21,7 @@ pub const DEFAULT_CELL_WIDTH: f32 = 3.0;
 pub struct Config {
     pub trade_size_filter: f32,
     pub order_size_filter: f32,
-    pub dynamic_sized_trades: bool,
-    pub trade_size_scale: i32,
+    pub trade_size_scale: Option<i32>,
     pub smoothing_pct: Option<f32>,
 }
 
@@ -31,8 +30,7 @@ impl Default for Config {
         Config {
             trade_size_filter: 0.0,
             order_size_filter: 0.0,
-            dynamic_sized_trades: true,
-            trade_size_scale: 100,
+            trade_size_scale: Some(100),
             smoothing_pct: Some(0.15),
         }
     }

@@ -113,30 +113,32 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                     }),
                 )
             })
-            .step(1000.0)
+            .step(5000.0)
             .into(),
             Some(text(format!("${}", format_with_commas(filter))).size(13)),
         )
     };
 
     let circle_scaling_slider = {
-        let radius_scale = cfg.trade_size_scale;
-
-        create_slider_row(
-            text("Circle radius scaling"),
-            Slider::new(10..=200, radius_scale, move |value| {
-                Message::VisualConfigChanged(
-                    Some(pane),
-                    VisualConfig::Heatmap(heatmap::Config {
-                        trade_size_scale: value,
-                        ..cfg
-                    }),
-                )
-            })
-            .step(10)
-            .into(),
-            Some(text(format!("{}%", cfg.trade_size_scale)).size(13)),
-        )
+        if let Some(radius_scale) = cfg.trade_size_scale {
+            create_slider_row(
+                text("Circle radius scaling"),
+                Slider::new(10..=200, radius_scale, move |value| {
+                    Message::VisualConfigChanged(
+                        Some(pane),
+                        VisualConfig::Heatmap(heatmap::Config {
+                            trade_size_scale: Some(value),
+                            ..cfg
+                        }),
+                    )
+                })
+                .step(10)
+                .into(),
+                Some(text(format!("{}%", radius_scale)).size(13)),
+            )
+        } else {
+            container(row![]).into()
+        }
     };
 
     let smoothing_slider = {
@@ -152,7 +154,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                         }),
                     )
                 })
-                .step(0.01)
+                .step(0.05)
                 .into(),
                 Some(text(format!("{:.0}%", smoothing_pct * 100.0)).size(13)),
             )
@@ -192,23 +194,17 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             .align_x(Alignment::Start),
             column![
                 text("Trade visualization").size(14),
-                iced::widget::checkbox("Dynamic circle radius", cfg.dynamic_sized_trades,)
+                iced::widget::checkbox("Dynamic circle radius", cfg.trade_size_scale.is_some(),)
                     .on_toggle(move |value| {
                         Message::VisualConfigChanged(
                             Some(pane),
                             VisualConfig::Heatmap(heatmap::Config {
-                                dynamic_sized_trades: value,
+                                trade_size_scale: if value { Some(100) } else { None },
                                 ..cfg
                             }),
                         )
                     }),
-                {
-                    if cfg.dynamic_sized_trades {
-                        circle_scaling_slider
-                    } else {
-                        container(row![]).into()
-                    }
-                },
+                circle_scaling_slider,
             ]
             .spacing(20)
             .padding(16)

@@ -38,7 +38,10 @@ impl Chart for HeatmapChart {
 
     fn update_chart(&mut self, message: &Message) {
         update_chart(self, message);
-        self.invalidate(Some(Instant::now()));
+    }
+
+    fn invalidate(&mut self) {
+        self.invalidate(None);
     }
 
     fn canvas_interaction(
@@ -771,10 +774,9 @@ impl canvas::Program<Message> for HeatmapChart {
                             };
 
                             let radius = {
-                                if self.visual_config.dynamic_sized_trades {
-                                    // normalize range
-                                    let scale_factor =
-                                        (self.visual_config.trade_size_scale as f32) / 100.0;
+                                if let Some(trade_size_scale) = self.visual_config.trade_size_scale
+                                {
+                                    let scale_factor = (trade_size_scale as f32) / 100.0;
                                     1.0 + (trade.qty / max_trade_qty) * (28.0 - 1.0) * scale_factor
                                 } else {
                                     cell_height / 2.0

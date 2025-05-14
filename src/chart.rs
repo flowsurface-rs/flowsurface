@@ -74,6 +74,8 @@ trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn update_chart(&mut self, message: &Message);
 
+    fn invalidate(&mut self);
+
     fn canvas_interaction(
         &self,
         interaction: &mut Interaction,
@@ -108,15 +110,14 @@ fn canvas_interaction<T: Chart>(
         return Some(canvas::Action::publish(Message::BoundsChanged(bounds)));
     }
 
+    let cursor_position = cursor.position_in(bounds.shrink(4.0))?;
+
     match event {
         Event::Mouse(mouse_event) => {
             let chart_state = chart.common_data();
-            let cursor_pos_bounds = cursor.position_in(bounds.shrink(4.0));
 
             match mouse_event {
                 mouse::Event::ButtonPressed(button) => {
-                    let cursor_position = cursor_pos_bounds?;
-
                     let message = match button {
                         mouse::Button::Left => {
                             *interaction = Interaction::Panning {
@@ -135,43 +136,29 @@ fn canvas_interaction<T: Chart>(
                     )
                 }
                 mouse::Event::CursorMoved { .. } => {
-                    let cursor_pos_bounds = cursor.position_in(bounds.shrink(4.0));
-
-                    if let Some(cursor_position) = cursor_pos_bounds {
-                        let message = match *interaction {
-                            Interaction::Panning { translation, start } => {
-                                Some(Message::Translated(
-                                    translation
-                                        + (cursor_position - start) * (1.0 / chart_state.scaling),
-                                ))
+                    let message = match *interaction {
+                        Interaction::Panning { translation, start } => Some(Message::Translated(
+                            translation + (cursor_position - start) * (1.0 / chart_state.scaling),
+                        )),
+                        Interaction::None => {
+                            if chart_state.crosshair {
+                                Some(Message::CrosshairMoved)
+                            } else {
+                                None
                             }
-                            Interaction::None => {
-                                if chart_state.crosshair {
-                                    Some(Message::CrosshairMoved)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-
-                        let action = message
-                            .map_or(canvas::Action::request_redraw(), canvas::Action::publish);
-
-                        Some(match interaction {
-                            Interaction::None => action,
-                            _ => action.and_capture(),
-                        })
-                    } else {
-                        if chart_state.crosshair {
-                            return Some(canvas::Action::publish(Message::CrosshairMoved));
                         }
-                        Some(canvas::Action::capture())
-                    }
+                        _ => None,
+                    };
+
+                    let action =
+                        message.map_or(canvas::Action::request_redraw(), canvas::Action::publish);
+
+                    Some(match interaction {
+                        Interaction::None => action,
+                        _ => action.and_capture(),
+                    })
                 }
                 mouse::Event::WheelScrolled { delta } => {
-                    let _ = cursor_pos_bounds?;
-
                     let default_cell_width = T::default_cell_width(chart);
                     let min_cell_width = T::min_cell_width(chart);
                     let max_cell_width = T::max_cell_width(chart);
@@ -426,6 +413,8 @@ fn update_chart<T: Chart>(chart: &mut T, message: &Message) {
         }
         Message::CrosshairMoved => {}
     }
+
+    chart.invalidate();
 }
 
 fn view_chart<'a, T: Chart, I: Indicator>(
