@@ -233,7 +233,7 @@ impl HistoricalDepth {
             let mut current_accumulator_opt: Option<CoalescingRun> = None;
 
             for run_to_process_ref in candidate_runs {
-                let run_to_process = *run_to_process_ref; // Dereference to get OrderRun
+                let run_to_process = *run_to_process_ref;
 
                 if current_accumulator_opt.is_none() {
                     current_accumulator_opt = Some(CoalescingRun::new(&run_to_process));
@@ -252,7 +252,7 @@ impl HistoricalDepth {
                 };
 
                 if run_to_process.start_time <= current_accumulator.until_time
-                    && run_to_process.is_bid == current_accumulator.is_bid // Should generally hold true
+                    && run_to_process.is_bid == current_accumulator.is_bid
                     && qty_diff_pct <= threshold_pct
                 {
                     current_accumulator.merge_run(&run_to_process);

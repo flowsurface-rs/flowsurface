@@ -20,7 +20,7 @@ use exchange::{
     adapter::{Exchange, MarketKind},
 };
 use iced::alignment::Vertical;
-use iced::widget::{horizontal_space, radio};
+use iced::widget::{horizontal_rule, horizontal_space, radio};
 use iced::{
     Alignment, Element, Length,
     alignment::Horizontal,
@@ -142,7 +142,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
         }
     };
 
-    let coalescer_slider: Element<_> = {
+    let coalescer_cfg: Element<_> = {
         if let Some(coalescing) = cfg.coalescing {
             let threshold_pct = coalescing.threshold();
 
@@ -160,7 +160,8 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                             }),
                         )
                     },
-                );
+                )
+                .spacing(4);
 
                 let first = radio(
                     "First",
@@ -175,7 +176,8 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                             }),
                         )
                     },
-                );
+                )
+                .spacing(4);
 
                 let max = radio(
                     "Max",
@@ -190,17 +192,18 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                             }),
                         )
                     },
-                );
+                )
+                .spacing(4);
 
-                column![
-                    text("Coalescing").size(14),
+                row![
+                    text("Merge method: "),
                     row![average, first, max].spacing(12)
                 ]
-                .spacing(4)
+                .spacing(12)
             };
 
             let threshold_slider = create_slider_row(
-                text("Size similarity pct"),
+                text("Size similarity"),
                 Slider::new(0.05..=0.8, threshold_pct, move |value| {
                     Message::VisualConfigChanged(
                         Some(pane),
@@ -215,11 +218,12 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                 Some(text(format!("{:.0}%", threshold_pct * 100.0)).size(13)),
             );
 
-            column![coalescer_kinds, threshold_slider,]
-                .spacing(8)
+            container(column![coalescer_kinds, threshold_slider,].spacing(8))
+                .style(style::modal_container)
+                .padding(8)
                 .into()
         } else {
-            container(row![]).into()
+            row![].into()
         }
     };
 
@@ -227,11 +231,12 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
         column![
             column![
                 text("Size filters").size(14),
-                row![trade_size_slider, order_size_slider].spacing(8)
+                row![trade_size_slider, order_size_slider].spacing(8),
             ]
             .spacing(20)
             .padding(16)
             .align_x(Alignment::Start),
+            horizontal_rule(1),
             column![
                 text("Noise filters").size(14),
                 iced::widget::checkbox(
@@ -251,11 +256,12 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                         }),
                     )
                 }),
-                coalescer_slider,
+                coalescer_cfg,
             ]
             .spacing(20)
             .padding(16)
             .align_x(Alignment::Start),
+            horizontal_rule(1),
             column![
                 text("Trade visualization").size(14),
                 iced::widget::checkbox("Dynamic circle radius", cfg.trade_size_scale.is_some(),)
@@ -274,7 +280,11 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
             .padding(16)
             .width(Length::Fill)
             .align_x(Alignment::Start),
-            sync_all_button(VisualConfig::Heatmap(cfg)),
+            horizontal_rule(1),
+            row![
+                horizontal_space(),
+                sync_all_button(VisualConfig::Heatmap(cfg))
+            ],
         ]
         .spacing(8),
     ))
