@@ -1,7 +1,7 @@
 use crate::style;
 use data::chart::{
     Basis, ChartLayout,
-    heatmap::{Config, GroupedTrade, HistoricalDepth, OrderRun, QtyScale},
+    heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
     indicators::{HeatmapIndicator, Indicator},
 };
 use data::util::{abbr_large_numbers, count_decimals};
@@ -333,6 +333,7 @@ impl HeatmapChart {
 
     pub fn set_visual_config(&mut self, visual_config: Config) {
         self.visual_config = visual_config;
+        self.invalidate(Some(Instant::now()));
     }
 
     pub fn set_basis(&mut self, basis: Basis) {
@@ -562,92 +563,42 @@ impl canvas::Program<Message> for HeatmapChart {
             let (max_aggr_volume, max_trade_qty) =
                 (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
 
-            if let Some(merge_qty_threshold) = self.visual_config().smoothing_pct {
-                self.heatmap
-                    .iter_time_filtered(earliest, latest, highest, lowest)
-                    .for_each(|(price, runs_at_price_level)| {
-                        let y_position = chart.price_to_y(price.0);
+            if let Some(merge_strat) = self.visual_config().coalescing {
+                let coalesced_visual_runs = self.heatmap.coalesced_runs(
+                    earliest,
+                    latest,
+                    highest,
+                    lowest,
+                    market_type,
+                    self.visual_config.order_size_filter,
+                    merge_strat,
+                );
 
-                        let candidate_runs = runs_at_price_level
-                            .iter()
-                            .filter(|run| {
-                                if !(run.until_time >= earliest && run.start_time <= latest) {
-                                    return false;
-                                }
-                                let order_size = match market_type {
-                                    MarketKind::InversePerps => run.qty(),
-                                    _ => **price * run.qty(),
-                                };
-                                order_size > self.visual_config.order_size_filter
-                            })
-                            .collect::<Vec<&OrderRun>>();
+                for (price_of_run, visual_run) in coalesced_visual_runs {
+                    let y_position = chart.price_to_y(price_of_run.into_inner());
 
-                        if candidate_runs.is_empty() {
-                            return;
-                        }
+                    let run_start_time_clipped = visual_run.start_time.max(earliest);
+                    let run_until_time_clipped = visual_run.until_time.min(latest);
 
-                        let mut coalesced_to_draw: Vec<OrderRun> = vec![];
-                        let mut current_visual_run_opt: Option<OrderRun> = None;
+                    if run_start_time_clipped >= run_until_time_clipped {
+                        continue;
+                    }
 
-                        for run_ref in candidate_runs {
-                            let run_to_process = *run_ref;
+                    let start_x = chart.interval_to_x(run_start_time_clipped);
+                    let end_x = chart.interval_to_x(run_until_time_clipped).min(0.0);
 
-                            if current_visual_run_opt.is_none() {
-                                current_visual_run_opt = Some(run_to_process);
-                                continue;
-                            }
+                    let width = end_x - start_x;
 
-                            let current_visual_run = current_visual_run_opt.as_mut().unwrap();
+                    if width > 0.001 {
+                        let color_alpha = (visual_run.qty() / max_depth_qty).min(1.0);
 
-                            let qty_diff_pct = if current_visual_run.qty() > 0.00001 {
-                                (run_to_process.qty() - current_visual_run.qty()).abs()
-                                    / current_visual_run.qty()
-                            } else if run_to_process.qty() > 0.00001 {
-                                f32::INFINITY
-                            } else {
-                                0.0
-                            };
-
-                            if run_to_process.start_time <= current_visual_run.until_time
-                                && run_to_process.is_bid == current_visual_run.is_bid
-                                && qty_diff_pct <= merge_qty_threshold
-                            {
-                                current_visual_run.until_time =
-                                    current_visual_run.until_time.max(run_to_process.until_time);
-                            } else {
-                                coalesced_to_draw.push(*current_visual_run);
-                                current_visual_run_opt = Some(run_to_process);
-                            }
-                        }
-
-                        if let Some(cvr) = current_visual_run_opt {
-                            coalesced_to_draw.push(cvr);
-                        }
-
-                        for visual_run in coalesced_to_draw {
-                            let run_start_time_clipped = visual_run.start_time.max(earliest);
-                            let run_until_time_clipped = visual_run.until_time.min(latest);
-
-                            if run_start_time_clipped >= run_until_time_clipped {
-                                continue;
-                            }
-
-                            let start_x = chart.interval_to_x(run_start_time_clipped);
-                            let end_x = chart.interval_to_x(run_until_time_clipped).min(0.0);
-
-                            let width = end_x - start_x;
-
-                            if width > 0.001 {
-                                let color_alpha = (visual_run.qty() / max_depth_qty).min(1.0);
-
-                                frame.fill_rectangle(
-                                    Point::new(start_x, y_position - (cell_height / 2.0)),
-                                    Size::new(width, cell_height),
-                                    depth_color(palette, visual_run.is_bid, color_alpha),
-                                );
-                            }
-                        }
-                    });
+                        frame.fill_rectangle(
+                            Point::new(start_x, y_position - (cell_height / 2.0)),
+                            Size::new(width, cell_height),
+                            depth_color(palette, visual_run.is_bid, color_alpha),
+                        );
+                    }
+                }
             } else {
                 self.heatmap
                     .iter_time_filtered(earliest, latest, highest, lowest)

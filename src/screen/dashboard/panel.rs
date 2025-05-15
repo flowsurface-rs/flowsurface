@@ -9,6 +9,7 @@ use crate::{
 };
 
 use super::pane;
+use data::chart::heatmap::CoalesceKind;
 use data::chart::{
     Basis, KlineChartKind, VisualConfig, heatmap, indicators::Indicator, kline::ClusterKind,
 };
@@ -19,7 +20,7 @@ use exchange::{
     adapter::{Exchange, MarketKind},
 };
 use iced::alignment::Vertical;
-use iced::widget::horizontal_space;
+use iced::widget::{horizontal_space, radio};
 use iced::{
     Alignment, Element, Length,
     alignment::Horizontal,
@@ -141,23 +142,82 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
         }
     };
 
-    let smoothing_slider = {
-        if let Some(smoothing_pct) = cfg.smoothing_pct {
-            create_slider_row(
+    let coalescer_slider: Element<_> = {
+        if let Some(coalescing) = cfg.coalescing {
+            let threshold_pct = coalescing.threshold();
+
+            let coalescer_kinds = {
+                let average = radio(
+                    "Average",
+                    CoalesceKind::Average(threshold_pct),
+                    Some(coalescing),
+                    move |value| {
+                        Message::VisualConfigChanged(
+                            Some(pane),
+                            VisualConfig::Heatmap(heatmap::Config {
+                                coalescing: Some(value),
+                                ..cfg
+                            }),
+                        )
+                    },
+                );
+
+                let first = radio(
+                    "First",
+                    CoalesceKind::First(threshold_pct),
+                    Some(coalescing),
+                    move |value| {
+                        Message::VisualConfigChanged(
+                            Some(pane),
+                            VisualConfig::Heatmap(heatmap::Config {
+                                coalescing: Some(value),
+                                ..cfg
+                            }),
+                        )
+                    },
+                );
+
+                let max = radio(
+                    "Max",
+                    CoalesceKind::Max(threshold_pct),
+                    Some(coalescing),
+                    move |value| {
+                        Message::VisualConfigChanged(
+                            Some(pane),
+                            VisualConfig::Heatmap(heatmap::Config {
+                                coalescing: Some(value),
+                                ..cfg
+                            }),
+                        )
+                    },
+                );
+
+                column![
+                    text("Coalescing").size(14),
+                    row![average, first, max].spacing(12)
+                ]
+                .spacing(4)
+            };
+
+            let threshold_slider = create_slider_row(
                 text("Size similarity pct"),
-                Slider::new(0.0..=0.8, smoothing_pct, move |value| {
+                Slider::new(0.05..=0.8, threshold_pct, move |value| {
                     Message::VisualConfigChanged(
                         Some(pane),
                         VisualConfig::Heatmap(heatmap::Config {
-                            smoothing_pct: Some(value),
+                            coalescing: Some(coalescing.with_threshold(value)),
                             ..cfg
                         }),
                     )
                 })
                 .step(0.05)
                 .into(),
-                Some(text(format!("{:.0}%", smoothing_pct * 100.0)).size(13)),
-            )
+                Some(text(format!("{:.0}%", threshold_pct * 100.0)).size(13)),
+            );
+
+            column![coalescer_kinds, threshold_slider,]
+                .spacing(8)
+                .into()
         } else {
             container(row![]).into()
         }
@@ -176,18 +236,22 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                 text("Noise filters").size(14),
                 iced::widget::checkbox(
                     "Merge orders if sizes are similar",
-                    cfg.smoothing_pct.is_some(),
+                    cfg.coalescing.is_some(),
                 )
                 .on_toggle(move |value| {
                     Message::VisualConfigChanged(
                         Some(pane),
                         VisualConfig::Heatmap(heatmap::Config {
-                            smoothing_pct: if value { Some(0.15) } else { None },
+                            coalescing: if value {
+                                Some(CoalesceKind::Average(0.15))
+                            } else {
+                                None
+                            },
                             ..cfg
                         }),
                     )
                 }),
-                smoothing_slider,
+                coalescer_slider,
             ]
             .spacing(20)
             .padding(16)

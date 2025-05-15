@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use exchange::depth::Depth;
+use exchange::{adapter::MarketKind, depth::Depth};
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +22,7 @@ pub struct Config {
     pub trade_size_filter: f32,
     pub order_size_filter: f32,
     pub trade_size_scale: Option<i32>,
-    pub smoothing_pct: Option<f32>,
+    pub coalescing: Option<CoalesceKind>,
 }
 
 impl Default for Config {
@@ -31,7 +31,7 @@ impl Default for Config {
             trade_size_filter: 0.0,
             order_size_filter: 0.0,
             trade_size_scale: Some(100),
-            smoothing_pct: Some(0.15),
+            coalescing: Some(CoalesceKind::Average(0.15)),
         }
     }
 }
@@ -191,6 +191,182 @@ impl HistoricalDepth {
         });
 
         self.price_levels.retain(|_, runs| !runs.is_empty());
+    }
+
+    pub fn coalesced_runs(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: f32,
+        lowest: f32,
+        market_type: MarketKind,
+        order_size_filter: f32,
+        coalesce_kind: CoalesceKind,
+    ) -> Vec<(OrderedFloat<f32>, OrderRun)> {
+        let mut result_runs = Vec::new();
+
+        let threshold_pct = match coalesce_kind {
+            CoalesceKind::Average(t) | CoalesceKind::First(t) | CoalesceKind::Max(t) => t,
+        };
+
+        for (price_at_level, runs_at_price_level) in
+            self.iter_time_filtered(earliest, latest, highest, lowest)
+        {
+            let candidate_runs: Vec<&OrderRun> = runs_at_price_level
+                .iter()
+                .filter(|run_ref| {
+                    if !(run_ref.until_time >= earliest && run_ref.start_time <= latest) {
+                        return false;
+                    }
+                    let order_size = match market_type {
+                        MarketKind::InversePerps => run_ref.qty(),
+                        _ => price_at_level.into_inner() * run_ref.qty(),
+                    };
+                    order_size > order_size_filter
+                })
+                .collect();
+
+            if candidate_runs.is_empty() {
+                continue;
+            }
+
+            let mut current_accumulator_opt: Option<CoalescingRun> = None;
+
+            for run_to_process_ref in candidate_runs {
+                let run_to_process = *run_to_process_ref; // Dereference to get OrderRun
+
+                if current_accumulator_opt.is_none() {
+                    current_accumulator_opt = Some(CoalescingRun::new(&run_to_process));
+                    continue;
+                }
+
+                let current_accumulator = current_accumulator_opt.as_mut().unwrap();
+                let comparison_base_qty = current_accumulator.comparison_qty(&coalesce_kind);
+
+                let qty_diff_pct = if comparison_base_qty > 0.00001 {
+                    (run_to_process.qty() - comparison_base_qty).abs() / comparison_base_qty
+                } else if run_to_process.qty() > 0.00001 {
+                    f32::INFINITY
+                } else {
+                    0.0
+                };
+
+                if run_to_process.start_time <= current_accumulator.until_time
+                    && run_to_process.is_bid == current_accumulator.is_bid // Should generally hold true
+                    && qty_diff_pct <= threshold_pct
+                {
+                    current_accumulator.merge_run(&run_to_process);
+                } else {
+                    result_runs.push((
+                        *price_at_level,
+                        current_accumulator.to_order_run(&coalesce_kind),
+                    ));
+                    current_accumulator_opt = Some(CoalescingRun::new(&run_to_process));
+                }
+            }
+
+            if let Some(accumulator) = current_accumulator_opt {
+                result_runs.push((*price_at_level, accumulator.to_order_run(&coalesce_kind)));
+            }
+        }
+        result_runs
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum CoalesceKind {
+    First(f32),
+    Average(f32),
+    Max(f32),
+}
+
+impl CoalesceKind {
+    pub fn threshold(&self) -> f32 {
+        match self {
+            CoalesceKind::First(t) => *t,
+            CoalesceKind::Average(t) => *t,
+            CoalesceKind::Max(t) => *t,
+        }
+    }
+
+    pub fn with_threshold(&self, threshold: f32) -> Self {
+        match self {
+            CoalesceKind::First(_) => CoalesceKind::First(threshold),
+            CoalesceKind::Average(_) => CoalesceKind::Average(threshold),
+            CoalesceKind::Max(_) => CoalesceKind::Max(threshold),
+        }
+    }
+}
+
+impl PartialEq for CoalesceKind {
+    fn eq(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+impl Eq for CoalesceKind {}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+pub struct CoalescingRun {
+    pub start_time: u64,
+    pub until_time: u64,
+    pub is_bid: bool,
+    pub qty_sum: f32,
+    pub run_count: u32,
+    first_qty: f32,
+    max_qty: f32,
+}
+
+impl CoalescingRun {
+    pub fn new(run: &OrderRun) -> Self {
+        let run_qty = run.qty();
+        CoalescingRun {
+            start_time: run.start_time,
+            until_time: run.until_time,
+            is_bid: run.is_bid,
+            qty_sum: run_qty,
+            run_count: 1,
+            first_qty: run_qty,
+            max_qty: run_qty,
+        }
+    }
+
+    pub fn merge_run(&mut self, run: &OrderRun) {
+        self.until_time = self.until_time.max(run.until_time);
+        let run_qty = run.qty();
+        self.qty_sum += run_qty;
+        self.run_count += 1;
+        self.max_qty = self.max_qty.max(run_qty);
+    }
+
+    pub fn comparison_qty(&self, kind: &CoalesceKind) -> f32 {
+        match kind {
+            CoalesceKind::Average(_) => self.current_average_qty(),
+            CoalesceKind::First(_) => self.first_qty,
+            CoalesceKind::Max(_) => self.first_qty,
+        }
+    }
+
+    pub fn current_average_qty(&self) -> f32 {
+        if self.run_count == 0 {
+            0.0
+        } else {
+            self.qty_sum / self.run_count as f32
+        }
+    }
+
+    pub fn to_order_run(&self, kind: &CoalesceKind) -> OrderRun {
+        let final_qty = match kind {
+            CoalesceKind::Average(_) => self.current_average_qty(),
+            CoalesceKind::First(_) => self.first_qty,
+            CoalesceKind::Max(_) => self.max_qty,
+        };
+        OrderRun {
+            start_time: self.start_time,
+            until_time: self.until_time,
+            qty: OrderedFloat(final_qty),
+            is_bid: self.is_bid,
+        }
     }
 }
 
