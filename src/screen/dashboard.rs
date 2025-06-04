@@ -239,14 +239,15 @@ impl Dashboard {
 
                         return (Task::done(Message::RefreshStreams), None);
                     }
-                    pane::Message::ToggleModal(pane, modal_type) => {
-                        if let Some(pane) = self.get_mut_pane(main_window.id, window, pane) {
-                            if Some(modal_type) == pane.modal {
-                                pane.modal = None;
-                            } else {
-                                pane.modal = Some(modal_type);
-                            }
-                        };
+                    pane::Message::ShowModal(pane, modal) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            pane_state.modal = Some(modal);
+                        }
+                    }
+                    pane::Message::HideModal(pane) => {
+                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                            pane_state.modal = None;
+                        }
                     }
                     pane::Message::ChartUserUpdate(pane, msg) => {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {

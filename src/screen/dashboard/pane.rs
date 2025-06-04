@@ -4,7 +4,7 @@ use crate::{
         self, ModifierKind,
         pane::{
             settings::{heatmap_cfg_view, kline_cfg_view},
-            stack,
+            stack_modal,
         },
     },
     screen::{DashboardError, dashboard::panel::timeandsales::TimeAndSales},
@@ -64,7 +64,8 @@ pub enum Message {
     SplitPane(pane_grid::Axis, pane_grid::Pane),
     MaximizePane(pane_grid::Pane),
     Restore,
-    ToggleModal(pane_grid::Pane, Modal),
+    ShowModal(pane_grid::Pane, Modal),
+    HideModal(pane_grid::Pane),
     InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamKind>, TickerInfo),
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(pane_grid::Pane, chart::Message),
@@ -364,9 +365,9 @@ impl State {
 
                 let base = chart::view(chart, indicators, timezone)
                     .map(move |message| Message::ChartUserUpdate(id, message));
-                let settings_view = || heatmap_cfg_view(chart.visual_config(), id);
+                let settings_modal = || heatmap_cfg_view(chart.visual_config(), id);
 
-                self.compose_chart_view(base, id, indicators, settings_view)
+                self.compose_chart_view(base, id, indicators, settings_modal)
             }
             Content::Kline(chart, indicators) => {
                 let chart_kind = chart.kind();
@@ -401,9 +402,9 @@ impl State {
 
                 let base = chart::view(chart, indicators, timezone)
                     .map(move |message| Message::ChartUserUpdate(id, message));
-                let settings_view = || kline_cfg_view(chart.study_configurator(), chart_kind, id);
+                let settings_modal = || kline_cfg_view(chart.study_configurator(), chart_kind, id);
 
-                self.compose_chart_view(base, id, indicators, settings_view)
+                self.compose_chart_view(base, id, indicators, settings_modal)
             }
         };
 
@@ -464,7 +465,7 @@ impl State {
         if !matches!(&self.content, Content::Starter) {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::Cog, 12),
-                Message::ToggleModal(pane, Modal::Settings),
+                Message::ShowModal(pane, Modal::Settings),
                 None,
                 tooltip_pos,
                 modal_btn_style(Modal::Settings),
@@ -474,7 +475,7 @@ impl State {
         if matches!(&self.content, Content::Heatmap(_, _) | Content::Kline(_, _)) {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::ChartOutline, 12),
-                Message::ToggleModal(pane, Modal::Indicators),
+                Message::ShowModal(pane, Modal::Indicators),
                 Some("Indicators"),
                 tooltip_pos,
                 modal_btn_style(Modal::Indicators),
@@ -535,7 +536,7 @@ impl State {
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
         indicators: &'a [impl Indicator],
-        settings_view: F,
+        settings_modal: F,
     ) -> Element<'a, Message>
     where
         F: FnOnce() -> Element<'a, Message>,
@@ -549,26 +550,26 @@ impl State {
         let stack_padding = padding::right(12).left(12);
 
         match self.modal {
-            Some(Modal::StreamModifier(modifier)) => stack(
+            Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
                 modifier
                     .view(self.stream_pair())
                     .map(move |message| Message::StreamModifierChanged(pane, message)),
-                Message::ToggleModal(pane, Modal::StreamModifier(modifier)),
+                Message::HideModal(pane),
                 stack_padding,
                 Alignment::Start,
             ),
-            Some(Modal::Indicators) => stack(
+            Some(Modal::Indicators) => stack_modal(
                 base,
                 modal::indicators::view(pane, self, indicators),
-                Message::ToggleModal(pane, Modal::Indicators),
+                Message::HideModal(pane),
                 stack_padding,
                 Alignment::End,
             ),
-            Some(Modal::Settings) => stack(
+            Some(Modal::Settings) => stack_modal(
                 base,
-                settings_view(),
-                Message::ToggleModal(pane, Modal::Settings),
+                settings_modal(),
+                Message::HideModal(pane),
                 stack_padding,
                 Alignment::End,
             ),
@@ -886,11 +887,11 @@ fn ticksize_modifier<'a>(
     tick_multiply: TickMultiplier,
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
-) -> iced::Element<'a, Message> {
-    let modifier_modal = Modal::StreamModifier(modifier.unwrap_or({
+) -> Element<'a, Message> {
+    let modifier_modal = Modal::StreamModifier(
         modal::stream::Modifier::new(kind)
-            .with_view_mode(modal::stream::ViewMode::TicksizeSelection)
-    }));
+            .with_view_mode(modal::stream::ViewMode::TicksizeSelection),
+    );
 
     let is_active = modifier
         .map(|m| m.view_mode == modal::stream::ViewMode::TicksizeSelection)
@@ -898,7 +899,7 @@ fn ticksize_modifier<'a>(
 
     button(text(tick_multiply.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
-        .on_press(Message::ToggleModal(id, modifier_modal))
+        .on_press(Message::ShowModal(id, modifier_modal))
         .into()
 }
 
@@ -907,10 +908,10 @@ fn basis_modifier<'a>(
     selected_basis: Basis,
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
-) -> iced::Element<'a, Message> {
-    let modifier_modal = Modal::StreamModifier(modifier.unwrap_or(
+) -> Element<'a, Message> {
+    let modifier_modal = Modal::StreamModifier(
         modal::stream::Modifier::new(kind).with_view_mode(modal::stream::ViewMode::BasisSelection),
-    ));
+    );
 
     let is_active = modifier
         .map(|m| m.view_mode == modal::stream::ViewMode::BasisSelection)
@@ -918,6 +919,6 @@ fn basis_modifier<'a>(
 
     button(text(selected_basis.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
-        .on_press(Message::ToggleModal(id, modifier_modal))
+        .on_press(Message::ShowModal(id, modifier_modal))
         .into()
 }

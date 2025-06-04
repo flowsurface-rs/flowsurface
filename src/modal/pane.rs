@@ -7,7 +7,7 @@ pub mod indicators;
 pub mod settings;
 pub mod stream;
 
-pub fn stack<'a, Message>(
+pub fn stack_modal<'a, Message>(
     base: impl Into<Element<'a, Message>>,
     content: impl Into<Element<'a, Message>>,
     on_blur: Message,

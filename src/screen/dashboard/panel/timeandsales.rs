@@ -34,10 +34,10 @@ impl PanelView for TimeAndSales {
         let settings_view = timesales_cfg_view(self.config, pane);
 
         match state.modal {
-            Some(pane::Modal::Settings) => modal::pane::stack(
+            Some(pane::Modal::Settings) => modal::pane::stack_modal(
                 underlay,
                 settings_view,
-                Message::ToggleModal(pane, pane::Modal::Settings),
+                Message::ShowModal(pane, pane::Modal::Settings),
                 padding::right(12).left(12),
                 Alignment::End,
             ),
