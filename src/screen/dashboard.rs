@@ -7,7 +7,7 @@ pub use sidebar::Sidebar;
 
 use super::DashboardError;
 use crate::{
-    chart, style,
+    chart, modal, style,
     widget::toast::Toast,
     window::{self, Window},
 };
@@ -441,6 +441,33 @@ impl Dashboard {
                         if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                             if let pane::Content::Kline(chart, _) = &mut pane_state.content {
                                 chart.update_study_configurator(msg);
+                            }
+                        }
+                    }
+                    pane::Message::StreamModifierChanged(pane, message) => {
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            match state.modal {
+                                Some(pane::Modal::StreamModifier(mut modifier)) => {
+                                    let action = modifier.update(message);
+
+                                    match action {
+                                        Some(modal::stream::Action::TabSelected(tab)) => {
+                                            modifier.set_tab(tab);
+                                        }
+                                        _ => todo!(),
+                                    }
+                                }
+                                _ => {
+                                    return (
+                                        Task::done(Message::ErrorOccurred(
+                                            Some(state.unique_id()),
+                                            DashboardError::PaneSet(
+                                                "No stream modifier found".to_string(),
+                                            ),
+                                        )),
+                                        None,
+                                    );
+                                }
                             }
                         }
                     }

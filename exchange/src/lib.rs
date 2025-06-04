@@ -455,7 +455,7 @@ impl std::fmt::Display for TickMultiplier {
 }
 
 impl TickMultiplier {
-    pub const ALL: [TickMultiplier; 8] = [
+    pub const ALL: [TickMultiplier; 9] = [
         TickMultiplier(1),
         TickMultiplier(2),
         TickMultiplier(5),
@@ -464,6 +464,7 @@ impl TickMultiplier {
         TickMultiplier(50),
         TickMultiplier(100),
         TickMultiplier(200),
+        TickMultiplier(500),
     ];
 
     /// Returns the final tick size after applying the user selected multiplier
