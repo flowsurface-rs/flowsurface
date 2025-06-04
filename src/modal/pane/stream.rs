@@ -88,17 +88,18 @@ impl Modifier {
             }
         };
 
-        let create_button = |content: String, msg: Option<Message>, active: bool| {
-            let btn = button(container(text(content)).align_x(Horizontal::Center))
-                .width(Length::Fill)
-                .style(move |theme, status| style::button::transparent(theme, status, active));
+        let create_button =
+            |content: iced::widget::text::Text<'a>, msg: Option<Message>, active: bool| {
+                let btn = button(container(content).align_x(Horizontal::Center))
+                    .width(Length::Fill)
+                    .style(move |theme, status| style::button::transparent(theme, status, active));
 
-            if let Some(msg) = msg {
-                btn.on_press(msg)
-            } else {
-                btn
-            }
-        };
+                if let Some(msg) = msg {
+                    btn.on_press(msg)
+                } else {
+                    btn
+                }
+            };
 
         let mut content_row = row![].align_y(Vertical::Center).spacing(16);
 
@@ -115,31 +116,40 @@ impl Modifier {
                 SelectedTab::TickCount => (false, true),
             };
 
-            let tabs_row = row![
-                create_button(
-                    "Timeframe".to_string(),
-                    if timeframe_tab_is_selected {
-                        None
-                    } else {
-                        Some(Message::TabSelected(SelectedTab::Timeframe))
-                    },
-                    !timeframe_tab_is_selected,
-                ),
-                create_button(
-                    "Ticks".to_string(),
-                    if tick_count_tab_is_selected {
-                        None
-                    } else {
-                        Some(Message::TabSelected(SelectedTab::TickCount))
-                    },
-                    !tick_count_tab_is_selected,
-                ),
-            ]
-            .padding(padding::bottom(8))
-            .spacing(4);
-            basis_selection_column = basis_selection_column.push(tabs_row);
-            basis_selection_column =
-                basis_selection_column.push(horizontal_rule(1).style(style::split_ruler));
+            let tabs_row = {
+                if is_kline_chart {
+                    row![
+                        create_button(
+                            text("Timeframe"),
+                            if timeframe_tab_is_selected {
+                                None
+                            } else {
+                                Some(Message::TabSelected(SelectedTab::Timeframe))
+                            },
+                            !timeframe_tab_is_selected,
+                        ),
+                        create_button(
+                            text("Ticks"),
+                            if tick_count_tab_is_selected {
+                                None
+                            } else {
+                                Some(Message::TabSelected(SelectedTab::TickCount))
+                            },
+                            !tick_count_tab_is_selected,
+                        ),
+                    ]
+                    .padding(padding::bottom(8))
+                    .spacing(4)
+                } else {
+                    row![text("Aggregation")]
+                        .padding(padding::bottom(8))
+                        .spacing(4)
+                }
+            };
+
+            basis_selection_column = basis_selection_column
+                .push(tabs_row)
+                .push(horizontal_rule(1).style(style::split_ruler));
         }
 
         match self.tab {
@@ -160,7 +170,7 @@ impl Modifier {
                                 Some(Message::BasisSelected((*timeframe).into()))
                             };
                             button_row = button_row.push(create_button(
-                                timeframe.to_string(),
+                                text(timeframe.to_string()),
                                 msg,
                                 !is_selected,
                             ));
@@ -185,7 +195,7 @@ impl Modifier {
                                 Some(Message::BasisSelected(timeframe.into()))
                             };
                             button_row = button_row.push(create_button(
-                                timeframe.to_string(),
+                                text(timeframe.to_string()),
                                 msg,
                                 !is_selected,
                             ));
@@ -212,7 +222,7 @@ impl Modifier {
                             Some(Message::BasisSelected(Basis::Tick(current_tick_as_u64)))
                         };
                         button_row = button_row.push(create_button(
-                            tick_count.to_string(),
+                            text(tick_count.to_string()),
                             msg,
                             !is_selected,
                         ));
@@ -244,8 +254,11 @@ impl Modifier {
                     } else {
                         Some(Message::TicksizeSelected(*ticksize))
                     };
-                    button_row =
-                        button_row.push(create_button(ticksize.to_string(), msg, !is_selected));
+                    button_row = button_row.push(create_button(
+                        text(ticksize.to_string()),
+                        msg,
+                        !is_selected,
+                    ));
                 }
                 ticksizes_column = ticksizes_column.push(button_row.padding(padding::top(8)));
             }
