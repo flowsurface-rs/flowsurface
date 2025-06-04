@@ -6,7 +6,7 @@ use iced::{
     Alignment, Element, Length,
     alignment::{Horizontal, Vertical},
     padding,
-    widget::{button, column, container, horizontal_rule, pane_grid, row, scrollable, text},
+    widget::{button, column, container, horizontal_rule, row, scrollable, text},
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,15 +24,15 @@ pub enum SelectedTab {
 }
 
 pub enum Action {
-    BasisSelected(Basis, pane_grid::Pane),
-    TicksizeSelected(TickMultiplier, pane_grid::Pane),
+    BasisSelected(Basis),
+    TicksizeSelected(TickMultiplier),
     TabSelected(SelectedTab),
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    BasisSelected(Basis, pane_grid::Pane),
-    TicksizeSelected(TickMultiplier, pane_grid::Pane),
+    BasisSelected(Basis),
+    TicksizeSelected(TickMultiplier),
     TabSelected(SelectedTab),
 }
 
@@ -48,28 +48,37 @@ impl Modifier {
         Self { tab, kind }
     }
 
-    pub fn set_tab(&mut self, tab: SelectedTab) {
-        self.tab = tab;
-    }
-
-    pub fn update(&mut self, message: Message) -> Option<Action> {
-        match message {
-            Message::TabSelected(tab) => {
-                self.tab = tab;
-                Some(Action::TabSelected(tab))
+    pub fn update_kind_with_basis(&mut self, basis: Basis) {
+        match self.kind {
+            ModifierKind::Candlestick(_) => self.kind = ModifierKind::Candlestick(basis),
+            ModifierKind::Footprint(_, ticksize) => {
+                self.kind = ModifierKind::Footprint(basis, ticksize)
             }
-            Message::BasisSelected(basis, pane) => Some(Action::BasisSelected(basis, pane)),
-            Message::TicksizeSelected(ticksize, pane) => {
-                Some(Action::TicksizeSelected(ticksize, pane))
+            ModifierKind::Heatmap(_, ticksize) => {
+                self.kind = ModifierKind::Heatmap(basis, ticksize)
             }
         }
     }
 
-    pub fn view<'a>(
-        &self,
-        pane: pane_grid::Pane,
-        ticker_info: Option<(Exchange, Ticker)>,
-    ) -> Element<'a, Message> {
+    pub fn update_kind_with_multiplier(&mut self, ticksize: TickMultiplier) {
+        match self.kind {
+            ModifierKind::Footprint(basis, _) => {
+                self.kind = ModifierKind::Footprint(basis, ticksize)
+            }
+            ModifierKind::Heatmap(basis, _) => self.kind = ModifierKind::Heatmap(basis, ticksize),
+            _ => {}
+        }
+    }
+
+    pub fn update(&mut self, message: Message) -> Option<Action> {
+        match message {
+            Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
+            Message::BasisSelected(basis) => Some(Action::BasisSelected(basis)),
+            Message::TicksizeSelected(ticksize) => Some(Action::TicksizeSelected(ticksize)),
+        }
+    }
+
+    pub fn view<'a>(&self, ticker_info: Option<(Exchange, Ticker)>) -> Element<'a, Message> {
         let kind = self.kind;
 
         let (selected_basis_from_kind, selected_ticksize) = match kind {
@@ -148,7 +157,7 @@ impl Modifier {
                             let msg = if is_selected {
                                 None
                             } else {
-                                Some(Message::BasisSelected((*timeframe).into(), pane))
+                                Some(Message::BasisSelected((*timeframe).into()))
                             };
                             button_row = button_row.push(create_button(
                                 timeframe.to_string(),
@@ -173,7 +182,7 @@ impl Modifier {
                             let msg = if is_selected {
                                 None
                             } else {
-                                Some(Message::BasisSelected(timeframe.into(), pane))
+                                Some(Message::BasisSelected(timeframe.into()))
                             };
                             button_row = button_row.push(create_button(
                                 timeframe.to_string(),
@@ -200,10 +209,7 @@ impl Modifier {
                         let msg = if is_selected {
                             None
                         } else {
-                            Some(Message::BasisSelected(
-                                Basis::Tick(current_tick_as_u64),
-                                pane,
-                            ))
+                            Some(Message::BasisSelected(Basis::Tick(current_tick_as_u64)))
                         };
                         button_row = button_row.push(create_button(
                             tick_count.to_string(),
@@ -236,7 +242,7 @@ impl Modifier {
                     let msg = if is_selected {
                         None
                     } else {
-                        Some(Message::TicksizeSelected(*ticksize, pane))
+                        Some(Message::TicksizeSelected(*ticksize))
                     };
                     button_row =
                         button_row.push(create_button(ticksize.to_string(), msg, !is_selected));

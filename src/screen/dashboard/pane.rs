@@ -64,8 +64,6 @@ pub enum Message {
     SplitPane(pane_grid::Axis, pane_grid::Pane),
     MaximizePane(pane_grid::Pane),
     Restore,
-    TicksizeSelected(TickMultiplier, pane_grid::Pane),
-    BasisSelected(Basis, pane_grid::Pane),
     ToggleModal(pane_grid::Pane, Modal),
     InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamKind>, TickerInfo),
     ReplacePane(pane_grid::Pane),
@@ -369,17 +367,11 @@ impl State {
                     )));
 
                 stream_info_element = stream_info_element.push(
-                    button(text(format!(
-                        "{} - {}",
-                        self.settings
-                            .selected_basis
-                            .unwrap_or(Basis::default_heatmap_time(self.settings.ticker_info)),
-                        self.settings.tick_multiply.unwrap_or(TickMultiplier(5)),
-                    )))
-                    .style(move |theme, status| {
-                        style::button::modifier(theme, status, modifier.is_none())
-                    })
-                    .on_press(Message::ToggleModal(id, modifier_modal)),
+                    button(text(format!("{} - {}", selected_basis, tick_multiply,)))
+                        .style(move |theme, status| {
+                            style::button::modifier(theme, status, modifier.is_none())
+                        })
+                        .on_press(Message::ToggleModal(id, modifier_modal)),
                 );
 
                 let base = chart::view(chart, indicators, timezone)
@@ -387,10 +379,12 @@ impl State {
 
                 let settings_view = || heatmap_cfg_view(chart.visual_config(), id);
 
-                compose_chart_view(base, self, id, indicators, settings_view)
+                self.compose_chart_view(base, id, indicators, settings_view)
             }
             Content::Kline(chart, indicators) => {
-                match chart.kind() {
+                let chart_kind = chart.kind();
+
+                match chart_kind {
                     data::chart::KlineChartKind::Footprint { .. } => {
                         let selected_basis =
                             self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
@@ -436,11 +430,9 @@ impl State {
                 let base = chart::view(chart, indicators, timezone)
                     .map(move |message| Message::ChartUserUpdate(id, message));
 
-                let chart_kind = chart.kind();
-
                 let settings_view = || kline_cfg_view(chart.study_configurator(), chart_kind, id);
 
-                compose_chart_view(base, self, id, indicators, settings_view)
+                self.compose_chart_view(base, id, indicators, settings_view)
             }
         };
 
@@ -565,6 +557,52 @@ impl State {
             .align_y(Vertical::Center)
             .height(Length::Fixed(32.0))
             .into()
+    }
+
+    fn compose_chart_view<'a, F>(
+        &'a self,
+        base: Element<'a, Message>,
+        pane: pane_grid::Pane,
+        indicators: &'a [impl Indicator],
+        settings_view: F,
+    ) -> Element<'a, Message>
+    where
+        F: FnOnce() -> Element<'a, Message>,
+    {
+        let base =
+            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
+                Message::DeleteNotification(pane, msg)
+            })
+            .into();
+
+        let stack_padding = padding::right(12).left(12);
+
+        match self.modal {
+            Some(Modal::StreamModifier(modifier)) => stack(
+                base,
+                modifier
+                    .view(self.stream_pair())
+                    .map(move |message| Message::StreamModifierChanged(pane, message)),
+                Message::ToggleModal(pane, Modal::StreamModifier(modifier)),
+                stack_padding,
+                Alignment::Start,
+            ),
+            Some(Modal::Indicators) => stack(
+                base,
+                modal::indicators::view(pane, self, indicators),
+                Message::ToggleModal(pane, Modal::Indicators),
+                stack_padding,
+                Alignment::End,
+            ),
+            Some(Modal::Settings) => stack(
+                base,
+                settings_view(),
+                Message::ToggleModal(pane, Modal::Settings),
+                stack_padding,
+                Alignment::End,
+            ),
+            None => base,
+        }
     }
 
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
@@ -869,51 +907,5 @@ impl std::fmt::Display for Content {
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales pane"),
         }
-    }
-}
-
-fn compose_chart_view<'a, F>(
-    base: Element<'a, Message>,
-    state: &'a State,
-    pane: pane_grid::Pane,
-    indicators: &'a [impl Indicator],
-    settings_view: F,
-) -> Element<'a, Message>
-where
-    F: FnOnce() -> Element<'a, Message>,
-{
-    let base =
-        widget::toast::Manager::new(base, &state.notifications, Alignment::End, move |msg| {
-            Message::DeleteNotification(pane, msg)
-        })
-        .into();
-
-    let stack_padding = padding::right(12).left(12);
-
-    match state.modal {
-        Some(Modal::StreamModifier(modifier)) => stack(
-            base,
-            modifier
-                .view(pane, state.stream_pair())
-                .map(move |message| Message::StreamModifierChanged(pane, message)),
-            Message::ToggleModal(pane, Modal::StreamModifier(modifier)),
-            stack_padding,
-            Alignment::Start,
-        ),
-        Some(Modal::Indicators) => stack(
-            base,
-            modal::indicators::view(pane, state, indicators),
-            Message::ToggleModal(pane, Modal::Indicators),
-            stack_padding,
-            Alignment::End,
-        ),
-        Some(Modal::Settings) => stack(
-            base,
-            settings_view(),
-            Message::ToggleModal(pane, Modal::Settings),
-            stack_padding,
-            Alignment::End,
-        ),
-        None => base,
     }
 }
