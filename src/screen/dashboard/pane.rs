@@ -888,13 +888,20 @@ fn ticksize_modifier<'a>(
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
 ) -> Element<'a, Message> {
-    let modifier_modal = Modal::StreamModifier(
-        modal::stream::Modifier::new(kind)
-            .with_view_mode(modal::stream::ViewMode::TicksizeSelection),
-    );
+    let modifier_modal = Modal::StreamModifier(modal::stream::Modifier::new(kind).with_view_mode(
+        modal::stream::ViewMode::TicksizeSelection {
+            raw_input_buf: modal::stream::RawTickInput::default(),
+            parsed_input: None,
+        },
+    ));
 
     let is_active = modifier
-        .map(|m| m.view_mode == modal::stream::ViewMode::TicksizeSelection)
+        .map(|m| {
+            matches!(
+                m.view_mode,
+                modal::stream::ViewMode::TicksizeSelection { .. }
+            )
+        })
         .unwrap_or(false);
 
     button(text(tick_multiply.to_string()))

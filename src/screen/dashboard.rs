@@ -483,7 +483,9 @@ impl Dashboard {
                                             None,
                                         );
                                     }
-                                    None => {}
+                                    None => {
+                                        state.modal = Some(pane::Modal::StreamModifier(modifier));
+                                    }
                                 }
                             }
                         }

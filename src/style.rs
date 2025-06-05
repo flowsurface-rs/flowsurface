@@ -254,9 +254,8 @@ pub mod button {
             text_color: palette.background.base.text,
             border: Border {
                 radius: 3.0.into(),
-                width: if is_selected { 1.0 } else { 0.0 },
+                width: if is_selected { 2.0 } else { 0.0 },
                 color: palette.background.strong.color,
-                ..Default::default()
             },
             background: match status {
                 Status::Active => {

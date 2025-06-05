@@ -6,7 +6,7 @@ use iced::{
     Element, Length,
     alignment::Horizontal,
     padding,
-    widget::{button, column, container, horizontal_rule, row, scrollable, text},
+    widget::{button, column, container, horizontal_rule, row, scrollable, text, text_input},
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +17,72 @@ pub enum ModifierKind {
     Heatmap(Basis, TickMultiplier),
 }
 
+const RAW_TICK_INPUT_BUF_SIZE: usize = 5; // Max 5 digits for u16 (65535)
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RawTickInput {
+    buffer: [u8; RAW_TICK_INPUT_BUF_SIZE],
+    len: u8,
+}
+
+impl RawTickInput {
+    pub fn new() -> Self {
+        Self {
+            buffer: [0; RAW_TICK_INPUT_BUF_SIZE],
+            len: 0,
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        let mut buffer = [0; RAW_TICK_INPUT_BUF_SIZE];
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(RAW_TICK_INPUT_BUF_SIZE);
+        buffer[..len].copy_from_slice(&bytes[..len]);
+        Self {
+            buffer,
+            len: len as u8,
+        }
+    }
+
+    pub fn from_tick_multiplier(tm: TickMultiplier) -> Self {
+        Self::from_str(&tm.0.to_string())
+    }
+
+    pub fn to_display_string(&self) -> String {
+        if self.len == 0 {
+            return String::new();
+        }
+        String::from_utf8_lossy(&self.buffer[..self.len as usize]).into_owned()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn parse_tick_multiplier(&self) -> Option<TickMultiplier> {
+        if self.len == 0 {
+            return None;
+        }
+        std::str::from_utf8(&self.buffer[..self.len as usize])
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .map(TickMultiplier)
+    }
+}
+
+impl Default for RawTickInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum ViewMode {
     BasisSelection,
-    TicksizeSelection,
+    TicksizeSelection {
+        raw_input_buf: RawTickInput,
+        parsed_input: Option<TickMultiplier>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -40,6 +102,7 @@ pub enum Message {
     BasisSelected(Basis),
     TicksizeSelected(TickMultiplier),
     TabSelected(SelectedTab),
+    TicksizeInputChanged(String),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -91,7 +154,28 @@ impl Modifier {
         match message {
             Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
             Message::BasisSelected(basis) => Some(Action::BasisSelected(basis)),
-            Message::TicksizeSelected(ticksize) => Some(Action::TicksizeSelected(ticksize)),
+            Message::TicksizeSelected(ticksize) => {
+                if let ViewMode::TicksizeSelection {
+                    ref mut raw_input_buf,
+                    ref mut parsed_input,
+                } = self.view_mode
+                {
+                    *raw_input_buf = RawTickInput::from_tick_multiplier(ticksize);
+                    *parsed_input = Some(ticksize);
+                }
+                Some(Action::TicksizeSelected(ticksize))
+            }
+            Message::TicksizeInputChanged(value_str) => {
+                if let ViewMode::TicksizeSelection {
+                    ref mut raw_input_buf,
+                    ref mut parsed_input,
+                } = self.view_mode
+                {
+                    *raw_input_buf = RawTickInput::from_str(&value_str);
+                    *parsed_input = raw_input_buf.parse_tick_multiplier();
+                }
+                None
+            }
         }
     }
 
@@ -204,6 +288,8 @@ impl Modifier {
                         .push(horizontal_rule(1).style(style::split_ruler));
                 }
 
+                let mut modifiers = column![].spacing(4);
+
                 match self.tab {
                     SelectedTab::Timeframe => {
                         let selected_tf = match selected_basis {
@@ -214,6 +300,7 @@ impl Modifier {
                         if is_kline_chart {
                             for chunk in Timeframe::KLINE.chunks(3) {
                                 let mut button_row = row![].spacing(4);
+
                                 for timeframe in chunk {
                                     let is_selected = selected_tf == Some(*timeframe);
                                     let msg = if is_selected {
@@ -227,7 +314,8 @@ impl Modifier {
                                         is_selected,
                                     ));
                                 }
-                                basis_selection_column = basis_selection_column.push(button_row);
+
+                                modifiers = modifiers.push(button_row);
                             }
                         } else if let Some((exchange, _)) = ticker_info {
                             let heatmap_timeframes: Vec<_> = Timeframe::HEATMAP
@@ -255,7 +343,7 @@ impl Modifier {
                                     ));
                                 }
 
-                                basis_selection_column = basis_selection_column.push(button_row);
+                                modifiers = modifiers.push(button_row);
                             }
                         }
                     }
@@ -283,10 +371,12 @@ impl Modifier {
                                 ));
                             }
 
-                            basis_selection_column = basis_selection_column.push(button_row);
+                            modifiers = modifiers.push(button_row);
                         }
                     }
                 }
+
+                basis_selection_column = basis_selection_column.push(modifiers);
 
                 container(scrollable::Scrollable::with_direction(
                     basis_selection_column,
@@ -299,16 +389,23 @@ impl Modifier {
                 .style(style::chart_modal)
                 .into()
             }
-            ViewMode::TicksizeSelection => {
+            ViewMode::TicksizeSelection {
+                raw_input_buf,
+                parsed_input,
+            } => {
                 if let Some(ticksize) = selected_ticksize {
-                    let mut ticksizes_column = column![].padding(4).align_x(Horizontal::Center);
+                    let mut ticksizes_column =
+                        column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(container(text("Ticksize Mltp.")).padding(padding::bottom(8)))
+                        .push(text("Ticksize Mltp."))
                         .push(horizontal_rule(1).style(style::split_ruler));
+
+                    let mut modifiers = column![].spacing(4);
 
                     for chunk in exchange::TickMultiplier::ALL.chunks(3) {
                         let mut button_row = row![].spacing(4);
+
                         for ticksize_value in chunk {
                             let is_selected = ticksize == *ticksize_value;
                             let msg = if is_selected {
@@ -322,9 +419,16 @@ impl Modifier {
                                 is_selected,
                             ));
                         }
-                        ticksizes_column =
-                            ticksizes_column.push(button_row.padding(padding::top(8)));
+
+                        modifiers = modifiers.push(button_row);
                     }
+
+                    let custom_tsize =
+                        text_input("Custom Ticksize", &raw_input_buf.to_display_string())
+                            .on_input(Message::TicksizeInputChanged)
+                            .on_submit_maybe(parsed_input.map(Message::TicksizeSelected));
+
+                    ticksizes_column = ticksizes_column.push(modifiers).push(custom_tsize);
 
                     container(scrollable::Scrollable::with_direction(
                         ticksizes_column,
