@@ -1,4 +1,4 @@
-use crate::style;
+use crate::style::{self, icon_text};
 
 use data::chart::Basis;
 use exchange::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
@@ -98,36 +98,38 @@ impl Modifier {
     pub fn view<'a>(&self, ticker_info: Option<(Exchange, Ticker)>) -> Element<'a, Message> {
         let kind = self.kind;
 
-        let (selected_basis_from_kind, selected_ticksize) = match kind {
+        let (selected_basis, selected_ticksize) = match kind {
             ModifierKind::Candlestick(basis) => (Some(basis), None),
             ModifierKind::Footprint(basis, ticksize) | ModifierKind::Heatmap(basis, ticksize) => {
                 (Some(basis), Some(ticksize))
             }
         };
 
-        let create_button =
-            |content: iced::widget::text::Text<'a>, msg: Option<Message>, active: bool| {
-                let btn = button(container(content).align_x(Horizontal::Center))
-                    .width(Length::Fill)
-                    .style(move |theme, status| style::button::transparent(theme, status, active));
+        let create_button = |content: iced::widget::text::Text<'a>,
+                             msg: Option<Message>,
+                             is_selected: bool| {
+            let btn = button(content.align_x(iced::Alignment::Center))
+                .width(Length::Fill)
+                .style(move |theme, status| style::button::menu_body(theme, status, is_selected));
 
-                if let Some(msg) = msg {
-                    btn.on_press(msg)
-                } else {
-                    btn
-                }
-            };
+            if let Some(msg) = msg {
+                btn.on_press(msg)
+            } else {
+                btn
+            }
+        };
 
         match self.view_mode {
             ViewMode::BasisSelection => {
-                let mut basis_selection_column = column![].padding(4).align_x(Horizontal::Center);
+                let mut basis_selection_column =
+                    column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                 let is_kline_chart = match kind {
                     ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
                     ModifierKind::Heatmap(_, _) => false,
                 };
 
-                if selected_basis_from_kind.is_some() {
+                if selected_basis.is_some() {
                     let (timeframe_tab_is_selected, tick_count_tab_is_selected) = match self.tab {
                         SelectedTab::Timeframe => (true, false),
                         SelectedTab::TickCount => (false, true),
@@ -135,8 +137,40 @@ impl Modifier {
 
                     let tabs_row = {
                         if is_kline_chart {
+                            let is_timeframe_selected = match selected_basis {
+                                Some(Basis::Time(_)) => true,
+                                _ => false,
+                            };
+
+                            let tab_button =
+                                |content: iced::widget::text::Text<'a>,
+                                 msg: Option<Message>,
+                                 active: bool,
+                                 checkmark: bool| {
+                                    let content = if checkmark {
+                                        row![
+                                            content,
+                                            iced::widget::horizontal_space(),
+                                            icon_text(style::Icon::Checkmark, 12)
+                                        ]
+                                    } else {
+                                        row![content]
+                                    }
+                                    .width(Length::Fill);
+
+                                    let btn = button(content).style(move |theme, status| {
+                                        style::button::transparent(theme, status, active)
+                                    });
+
+                                    if let Some(msg) = msg {
+                                        btn.on_press(msg)
+                                    } else {
+                                        btn
+                                    }
+                                };
+
                             row![
-                                create_button(
+                                tab_button(
                                     text("Timeframe"),
                                     if timeframe_tab_is_selected {
                                         None
@@ -144,8 +178,9 @@ impl Modifier {
                                         Some(Message::TabSelected(SelectedTab::Timeframe))
                                     },
                                     !timeframe_tab_is_selected,
+                                    is_timeframe_selected,
                                 ),
-                                create_button(
+                                tab_button(
                                     text("Ticks"),
                                     if tick_count_tab_is_selected {
                                         None
@@ -153,9 +188,9 @@ impl Modifier {
                                         Some(Message::TabSelected(SelectedTab::TickCount))
                                     },
                                     !tick_count_tab_is_selected,
+                                    !is_timeframe_selected,
                                 ),
                             ]
-                            .padding(padding::bottom(8))
                             .spacing(4)
                         } else {
                             row![text("Aggregation")]
@@ -171,7 +206,7 @@ impl Modifier {
 
                 match self.tab {
                     SelectedTab::Timeframe => {
-                        let current_selected_tf = match selected_basis_from_kind {
+                        let selected_tf = match selected_basis {
                             Some(Basis::Time(tf)) => Some(tf),
                             _ => None,
                         };
@@ -180,7 +215,7 @@ impl Modifier {
                             for chunk in Timeframe::KLINE.chunks(3) {
                                 let mut button_row = row![].spacing(4);
                                 for timeframe in chunk {
-                                    let is_selected = current_selected_tf == Some(*timeframe);
+                                    let is_selected = selected_tf == Some(*timeframe);
                                     let msg = if is_selected {
                                         None
                                     } else {
@@ -189,11 +224,10 @@ impl Modifier {
                                     button_row = button_row.push(create_button(
                                         text(timeframe.to_string()),
                                         msg,
-                                        !is_selected,
+                                        is_selected,
                                     ));
                                 }
-                                basis_selection_column = basis_selection_column
-                                    .push(button_row.padding(padding::top(8)));
+                                basis_selection_column = basis_selection_column.push(button_row);
                             }
                         } else if let Some((exchange, _)) = ticker_info {
                             let heatmap_timeframes: Vec<_> = Timeframe::HEATMAP
@@ -205,9 +239,10 @@ impl Modifier {
 
                             for chunk in heatmap_timeframes.chunks(3) {
                                 let mut button_row = row![].spacing(4);
+
                                 for timeframe_ref in chunk {
                                     let timeframe = **timeframe_ref;
-                                    let is_selected = current_selected_tf == Some(timeframe);
+                                    let is_selected = selected_tf == Some(timeframe);
                                     let msg = if is_selected {
                                         None
                                     } else {
@@ -216,39 +251,39 @@ impl Modifier {
                                     button_row = button_row.push(create_button(
                                         text(timeframe.to_string()),
                                         msg,
-                                        !is_selected,
+                                        is_selected,
                                     ));
                                 }
-                                basis_selection_column = basis_selection_column
-                                    .push(button_row.padding(padding::top(8)));
+
+                                basis_selection_column = basis_selection_column.push(button_row);
                             }
                         }
                     }
                     SelectedTab::TickCount => {
-                        let current_selected_tick_count = match selected_basis_from_kind {
+                        let selected_tick_count = match selected_basis {
                             Some(Basis::Tick(tc)) => Some(tc),
                             _ => None,
                         };
 
                         for chunk in data::aggr::TickCount::ALL.chunks(3) {
                             let mut button_row = row![].spacing(4);
-                            for tick_count in chunk {
-                                let current_tick_as_u64 = u64::from(*tick_count);
-                                let is_selected =
-                                    current_selected_tick_count == Some(current_tick_as_u64);
+
+                            for &tick_count in chunk {
+                                let is_selected = selected_tick_count == Some(tick_count.into());
                                 let msg = if is_selected {
                                     None
                                 } else {
-                                    Some(Message::BasisSelected(Basis::Tick(current_tick_as_u64)))
+                                    Some(Message::BasisSelected(Basis::Tick(tick_count.into())))
                                 };
+
                                 button_row = button_row.push(create_button(
                                     text(tick_count.to_string()),
                                     msg,
-                                    !is_selected,
+                                    is_selected,
                                 ));
                             }
-                            basis_selection_column =
-                                basis_selection_column.push(button_row.padding(padding::top(8)));
+
+                            basis_selection_column = basis_selection_column.push(button_row);
                         }
                     }
                 }
@@ -264,16 +299,13 @@ impl Modifier {
                 .style(style::chart_modal)
                 .into()
             }
-
             ViewMode::TicksizeSelection => {
                 if let Some(ticksize) = selected_ticksize {
                     let mut ticksizes_column = column![].padding(4).align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(container(text("Ticksize Mltp.")).padding(padding::bottom(8)));
-
-                    ticksizes_column =
-                        ticksizes_column.push(horizontal_rule(1).style(style::split_ruler));
+                        .push(container(text("Ticksize Mltp.")).padding(padding::bottom(8)))
+                        .push(horizontal_rule(1).style(style::split_ruler));
 
                     for chunk in exchange::TickMultiplier::ALL.chunks(3) {
                         let mut button_row = row![].spacing(4);
@@ -287,7 +319,7 @@ impl Modifier {
                             button_row = button_row.push(create_button(
                                 text(ticksize_value.to_string()),
                                 msg,
-                                !is_selected,
+                                is_selected,
                             ));
                         }
                         ticksizes_column =
@@ -305,7 +337,6 @@ impl Modifier {
                     .style(style::chart_modal)
                     .into()
                 } else {
-                    // Fallback if there's no ticksize
                     container(text("No ticksize available for this chart type"))
                         .padding(16)
                         .style(style::chart_modal)
