@@ -569,7 +569,7 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    pub fn set_tick_basis(&mut self, tick_basis: u16) {
+    pub fn set_tick_basis(&mut self, tick_basis: data::aggr::TickCount) {
         self.chart.basis = Basis::Tick(tick_basis);
 
         let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
@@ -1548,7 +1548,7 @@ fn draw_crosshair_tooltip(
             }
         }
         ChartData::TickBased(tick_aggr) => {
-            let index = (at_interval / u64::from(tick_aggr.interval)) as usize;
+            let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
 
             if index < tick_aggr.data_points.len() {
                 let dp = &tick_aggr.data_points[tick_aggr.data_points.len() - 1 - index];

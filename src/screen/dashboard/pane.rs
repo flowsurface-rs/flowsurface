@@ -891,9 +891,9 @@ fn ticksize_modifier<'a>(
     let modifier_modal = Modal::StreamModifier(modal::stream::Modifier::new(kind).with_view_mode(
         modal::stream::ViewMode::TicksizeSelection {
             raw_input_buf: if tick_multiply.is_custom() {
-                modal::stream::RawTickInput::from_tick_multiplier(tick_multiply)
+                modal::stream::NumericInput::from_tick_multiplier(tick_multiply)
             } else {
-                modal::stream::RawTickInput::default()
+                modal::stream::NumericInput::default()
             },
             parsed_input: if tick_multiply.is_custom() {
                 Some(tick_multiply)

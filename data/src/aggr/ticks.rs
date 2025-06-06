@@ -2,6 +2,7 @@ use exchange::{Kline, Trade};
 use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
+use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
 use crate::util::round_to_tick;
 
@@ -73,8 +74,8 @@ impl TickAccumulation {
         }
     }
 
-    pub fn is_full(&self, interval: u16) -> bool {
-        self.tick_count >= interval as usize
+    pub fn is_full(&self, interval: aggr::TickCount) -> bool {
+        self.tick_count >= interval.0 as usize
     }
 
     pub fn poc_price(&self) -> Option<f32> {
@@ -92,12 +93,12 @@ impl TickAccumulation {
 
 pub struct TickAggr {
     pub data_points: Vec<TickAccumulation>,
-    pub interval: u16,
+    pub interval: aggr::TickCount,
     pub tick_size: f32,
 }
 
 impl TickAggr {
-    pub fn new(interval: u16, tick_size: f32, raw_trades: &[Trade]) -> Self {
+    pub fn new(interval: aggr::TickCount, tick_size: f32, raw_trades: &[Trade]) -> Self {
         let mut tick_aggr = Self {
             data_points: Vec::new(),
             interval,

@@ -804,7 +804,7 @@ impl CommonChartData {
 
                 let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
 
-                let rounded_tick = (-cell_index as u64) * (u64::from(aggregation));
+                let rounded_tick = (-cell_index as u64) * (u64::from(aggregation.0));
 
                 frame.stroke(
                     &Path::line(

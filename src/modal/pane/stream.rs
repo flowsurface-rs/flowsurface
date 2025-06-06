@@ -10,6 +10,14 @@ use iced::{
 };
 use serde::{Deserialize, Serialize};
 
+const NUMERIC_INPUT_BUF_SIZE: usize = 5; // Max 5 digits for u16 (65535)
+
+const TICK_COUNT_MIN: u16 = 4;
+const TICK_COUNT_MAX: u16 = 1000;
+
+const TICK_MULTIPLIER_MIN: u16 = 1;
+const TICK_MULTIPLIER_MAX: u16 = 2000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum ModifierKind {
     Candlestick(Basis),
@@ -17,26 +25,24 @@ pub enum ModifierKind {
     Heatmap(Basis, TickMultiplier),
 }
 
-const RAW_TICK_INPUT_BUF_SIZE: usize = 5; // Max 5 digits for u16 (65535)
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct RawTickInput {
-    buffer: [u8; RAW_TICK_INPUT_BUF_SIZE],
+pub struct NumericInput {
+    buffer: [u8; NUMERIC_INPUT_BUF_SIZE],
     len: u8,
 }
 
-impl RawTickInput {
+impl NumericInput {
     pub fn new() -> Self {
         Self {
-            buffer: [0; RAW_TICK_INPUT_BUF_SIZE],
+            buffer: [0; NUMERIC_INPUT_BUF_SIZE],
             len: 0,
         }
     }
 
     pub fn from_str(s: &str) -> Self {
-        let mut buffer = [0; RAW_TICK_INPUT_BUF_SIZE];
+        let mut buffer = [0; NUMERIC_INPUT_BUF_SIZE];
         let bytes = s.as_bytes();
-        let len = bytes.len().min(RAW_TICK_INPUT_BUF_SIZE);
+        let len = bytes.len().min(NUMERIC_INPUT_BUF_SIZE);
         buffer[..len].copy_from_slice(&bytes[..len]);
         Self {
             buffer,
@@ -46,6 +52,10 @@ impl RawTickInput {
 
     pub fn from_tick_multiplier(tm: TickMultiplier) -> Self {
         Self::from_str(&tm.0.to_string())
+    }
+
+    pub fn from_tick_count(tc: data::aggr::TickCount) -> Self {
+        Self::from_str(&tc.0.to_string())
     }
 
     pub fn to_display_string(&self) -> String {
@@ -68,9 +78,19 @@ impl RawTickInput {
             .and_then(|s| s.parse::<u16>().ok())
             .map(TickMultiplier)
     }
+
+    pub fn parse_tick_count(&self) -> Option<data::aggr::TickCount> {
+        if self.len == 0 {
+            return None;
+        }
+        std::str::from_utf8(&self.buffer[..self.len as usize])
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .map(data::aggr::TickCount)
+    }
 }
 
-impl Default for RawTickInput {
+impl Default for NumericInput {
     fn default() -> Self {
         Self::new()
     }
@@ -80,7 +100,7 @@ impl Default for RawTickInput {
 pub enum ViewMode {
     BasisSelection,
     TicksizeSelection {
-        raw_input_buf: RawTickInput,
+        raw_input_buf: NumericInput,
         parsed_input: Option<TickMultiplier>,
         is_input_valid: bool,
     },
@@ -89,7 +109,11 @@ pub enum ViewMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum SelectedTab {
     Timeframe,
-    TickCount,
+    TickCount {
+        raw_input_buf: NumericInput,
+        parsed_input: Option<data::aggr::TickCount>,
+        is_input_valid: bool,
+    },
 }
 
 pub enum Action {
@@ -101,9 +125,10 @@ pub enum Action {
 #[derive(Debug, Clone)]
 pub enum Message {
     BasisSelected(Basis),
-    TicksizeSelected(TickMultiplier),
     TabSelected(SelectedTab),
     TicksizeInputChanged(String),
+    TicksizeSelected(TickMultiplier),
+    TickCountInputChanged(String),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -154,7 +179,29 @@ impl Modifier {
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
-            Message::BasisSelected(basis) => Some(Action::BasisSelected(basis)),
+            Message::BasisSelected(basis) => match basis {
+                Basis::Time(_) => Some(Action::BasisSelected(basis)),
+                Basis::Tick(new_tc) => {
+                    if let SelectedTab::TickCount {
+                        raw_input_buf,
+                        parsed_input,
+                        is_input_valid,
+                    } = &mut self.tab
+                    {
+                        if *parsed_input == Some(new_tc) {
+                            *is_input_valid = true;
+                        } else {
+                            *raw_input_buf = NumericInput::default();
+                            *parsed_input = None;
+                            *is_input_valid = true;
+                        };
+
+                        Some(Action::BasisSelected(basis))
+                    } else {
+                        None
+                    }
+                }
+            },
             Message::TicksizeSelected(new_ticksize) => {
                 if let ViewMode::TicksizeSelection {
                     ref mut raw_input_buf,
@@ -165,10 +212,10 @@ impl Modifier {
                     if *parsed_input == Some(new_ticksize) {
                         *is_input_valid = true;
                     } else {
-                        *raw_input_buf = RawTickInput::default();
+                        *raw_input_buf = NumericInput::default();
                         *parsed_input = None;
                         *is_input_valid = true;
-                    }
+                    };
                 }
                 Some(Action::TicksizeSelected(new_ticksize))
             }
@@ -182,7 +229,7 @@ impl Modifier {
                     let numeric_value_str: String =
                         value_str.chars().filter(|c| c.is_ascii_digit()).collect();
 
-                    *raw_input_buf = RawTickInput::from_str(&numeric_value_str);
+                    *raw_input_buf = NumericInput::from_str(&numeric_value_str);
                     *parsed_input = raw_input_buf.parse_tick_multiplier();
 
                     if raw_input_buf.is_empty() {
@@ -190,7 +237,36 @@ impl Modifier {
                     } else {
                         match parsed_input {
                             Some(tm) => {
-                                *is_input_valid = tm.0 >= 1 && tm.0 <= 2000;
+                                *is_input_valid =
+                                    tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX;
+                            }
+                            None => {
+                                *is_input_valid = false;
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Message::TickCountInputChanged(value_str) => {
+                if let SelectedTab::TickCount {
+                    ref mut raw_input_buf,
+                    ref mut parsed_input,
+                    ref mut is_input_valid,
+                } = self.tab
+                {
+                    let numeric_value_str: String =
+                        value_str.chars().filter(|c| c.is_ascii_digit()).collect();
+
+                    *raw_input_buf = NumericInput::from_str(&numeric_value_str);
+                    *parsed_input = raw_input_buf.parse_tick_count();
+
+                    if raw_input_buf.is_empty() {
+                        *is_input_valid = true;
+                    } else {
+                        match parsed_input {
+                            Some(tc) => {
+                                *is_input_valid = tc.0 >= TICK_COUNT_MIN && tc.0 <= TICK_COUNT_MAX;
                             }
                             None => {
                                 *is_input_valid = false;
@@ -240,15 +316,13 @@ impl Modifier {
                 if selected_basis.is_some() {
                     let (timeframe_tab_is_selected, tick_count_tab_is_selected) = match self.tab {
                         SelectedTab::Timeframe => (true, false),
-                        SelectedTab::TickCount => (false, true),
+                        SelectedTab::TickCount { .. } => (false, true),
                     };
 
                     let tabs_row = {
                         if is_kline_chart {
-                            let is_timeframe_selected = match selected_basis {
-                                Some(Basis::Time(_)) => true,
-                                _ => false,
-                            };
+                            let is_timeframe_selected =
+                                matches!(selected_basis, Some(Basis::Time(_)));
 
                             let tab_button =
                                 |content: iced::widget::text::Text<'a>,
@@ -293,7 +367,23 @@ impl Modifier {
                                     if tick_count_tab_is_selected {
                                         None
                                     } else {
-                                        Some(Message::TabSelected(SelectedTab::TickCount))
+                                        let tick_count_tab = match self.tab {
+                                            SelectedTab::TickCount {
+                                                raw_input_buf,
+                                                parsed_input,
+                                                is_input_valid,
+                                            } => SelectedTab::TickCount {
+                                                raw_input_buf,
+                                                parsed_input,
+                                                is_input_valid,
+                                            },
+                                            _ => SelectedTab::TickCount {
+                                                raw_input_buf: NumericInput::default(),
+                                                parsed_input: None,
+                                                is_input_valid: true,
+                                            },
+                                        };
+                                        Some(Message::TabSelected(tick_count_tab))
                                     },
                                     !tick_count_tab_is_selected,
                                     !is_timeframe_selected,
@@ -301,9 +391,7 @@ impl Modifier {
                             ]
                             .spacing(4)
                         } else {
-                            row![text("Aggregation")]
-                                .padding(padding::bottom(8))
-                                .spacing(4)
+                            row![text("Aggregation").size(13)]
                         }
                     };
 
@@ -371,7 +459,11 @@ impl Modifier {
                             }
                         }
                     }
-                    SelectedTab::TickCount => {
+                    SelectedTab::TickCount {
+                        raw_input_buf,
+                        parsed_input,
+                        is_input_valid,
+                    } => {
                         let selected_tick_count = match selected_basis {
                             Some(Basis::Tick(tc)) => Some(tc),
                             _ => None,
@@ -381,11 +473,11 @@ impl Modifier {
                             let mut button_row = row![].spacing(4);
 
                             for &tick_count in chunk {
-                                let is_selected = selected_tick_count == Some(tick_count.0);
+                                let is_selected = selected_tick_count == Some(tick_count);
                                 let msg = if is_selected {
                                     None
                                 } else {
-                                    Some(Message::BasisSelected(Basis::Tick(tick_count.0)))
+                                    Some(Message::BasisSelected(Basis::Tick(tick_count)))
                                 };
 
                                 button_row = button_row.push(create_button(
@@ -397,6 +489,29 @@ impl Modifier {
 
                             modifiers = modifiers.push(button_row);
                         }
+
+                        let tick_count_to_submit = parsed_input
+                            .filter(|tc| tc.0 >= TICK_COUNT_MIN && tc.0 <= TICK_COUNT_MAX);
+
+                        let custom_tcount = text_input(
+                            &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
+                            &raw_input_buf.to_display_string(),
+                        )
+                        .on_input(Message::TickCountInputChanged)
+                        .on_submit_maybe(
+                            tick_count_to_submit.map(|tc| Message::BasisSelected(Basis::Tick(tc))),
+                        )
+                        .align_x(iced::Alignment::Center)
+                        .style(move |theme, status| {
+                            style::validated_text_input(theme, status, is_input_valid)
+                        });
+
+                        basis_selection_column = basis_selection_column.push(
+                            row![text("Custom: "), custom_tcount]
+                                .padding(padding::right(20).left(20))
+                                .spacing(4)
+                                .align_y(iced::Alignment::Center),
+                        );
                     }
                 }
 
@@ -423,7 +538,7 @@ impl Modifier {
                         column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(text("Ticksize Mltp."))
+                        .push(text("Tick size multiplier").size(13))
                         .push(horizontal_rule(1).style(style::split_ruler));
 
                     let mut modifiers = column![].spacing(4);
@@ -448,23 +563,28 @@ impl Modifier {
                         modifiers = modifiers.push(button_row);
                     }
 
-                    let tick_multiplier_to_submit =
-                        parsed_input.filter(|tm| tm.0 >= 1 && tm.0 <= 2000);
+                    let tick_multiplier_to_submit = parsed_input
+                        .filter(|tm| tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX);
 
-                    let custom_tsize = text_input("1-2000", &raw_input_buf.to_display_string())
-                        .on_input(Message::TicksizeInputChanged)
-                        .on_submit_maybe(tick_multiplier_to_submit.map(Message::TicksizeSelected))
-                        .align_x(iced::Alignment::Center)
-                        .style(move |theme, status| {
-                            style::validated_text_input(theme, status, is_input_valid)
-                        });
+                    let custom_tsize = text_input(
+                        &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
+                        &raw_input_buf.to_display_string(),
+                    )
+                    .on_input(Message::TicksizeInputChanged)
+                    .on_submit_maybe(tick_multiplier_to_submit.map(Message::TicksizeSelected))
+                    .align_x(iced::Alignment::Center)
+                    .style(move |theme, status| {
+                        style::validated_text_input(theme, status, is_input_valid)
+                    });
 
-                    ticksizes_column = ticksizes_column.push(modifiers).push(
-                        row![text("Custom: "), custom_tsize]
-                            .padding(padding::right(20).left(20))
-                            .spacing(4)
-                            .align_y(iced::Alignment::Center),
-                    );
+                    ticksizes_column = ticksizes_column
+                        .push(
+                            row![text("Custom: "), custom_tsize]
+                                .padding(padding::right(20).left(20))
+                                .spacing(4)
+                                .align_y(iced::Alignment::Center),
+                        )
+                        .push(modifiers);
 
                     container(scrollable::Scrollable::with_direction(
                         ticksizes_column,
@@ -494,7 +614,15 @@ impl From<&ModifierKind> for SelectedTab {
             | ModifierKind::Footprint(basis, _)
             | ModifierKind::Heatmap(basis, _) => match basis {
                 Basis::Time(_) => SelectedTab::Timeframe,
-                Basis::Tick(_) => SelectedTab::TickCount,
+                Basis::Tick(tc) => SelectedTab::TickCount {
+                    raw_input_buf: if tc.is_custom() {
+                        NumericInput::from_tick_count(*tc)
+                    } else {
+                        NumericInput::default()
+                    },
+                    parsed_input: if tc.is_custom() { Some(*tc) } else { None },
+                    is_input_valid: true,
+                },
             },
         }
     }

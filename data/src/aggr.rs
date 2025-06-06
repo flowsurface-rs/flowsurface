@@ -16,6 +16,10 @@ impl TickCount {
         TickCount(500),
         TickCount(1000),
     ];
+
+    pub fn is_custom(&self) -> bool {
+        !Self::ALL.contains(self)
+    }
 }
 
 impl std::fmt::Display for TickCount {
