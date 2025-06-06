@@ -499,9 +499,10 @@ pub fn ts_table_container(theme: &Theme, is_sell: bool, color_alpha: f32) -> Sty
 }
 
 // Tickers Table
-pub fn search_input(
+pub fn validated_text_input(
     theme: &Theme,
     status: widget::text_input::Status,
+    is_valid: bool,
 ) -> widget::text_input::Style {
     let palette = theme.extended_palette();
 
@@ -529,11 +530,15 @@ pub fn search_input(
         border: Border {
             radius: 3.0.into(),
             width: 1.0,
-            color: border_color,
+            color: if is_valid {
+                border_color
+            } else {
+                palette.danger.base.color
+            },
         },
         icon: palette.background.strong.text,
         placeholder,
-        value: palette.background.weak.text,
+        value: palette.background.base.text,
         selection: palette.background.strongest.color,
     }
 }

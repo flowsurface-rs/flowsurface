@@ -890,8 +890,17 @@ fn ticksize_modifier<'a>(
 ) -> Element<'a, Message> {
     let modifier_modal = Modal::StreamModifier(modal::stream::Modifier::new(kind).with_view_mode(
         modal::stream::ViewMode::TicksizeSelection {
-            raw_input_buf: modal::stream::RawTickInput::default(),
-            parsed_input: None,
+            raw_input_buf: if tick_multiply.is_custom() {
+                modal::stream::RawTickInput::from_tick_multiplier(tick_multiply)
+            } else {
+                modal::stream::RawTickInput::default()
+            },
+            parsed_input: if tick_multiply.is_custom() {
+                Some(tick_multiply)
+            } else {
+                None
+            },
+            is_input_valid: true,
         },
     ));
 

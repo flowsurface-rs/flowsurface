@@ -461,7 +461,7 @@ impl TickersTable {
 
         let search_bar_row = row![
             text_input("Search for a ticker...", &self.search_query)
-                .style(style::search_input)
+                .style(|theme, status| style::validated_text_input(theme, status, true))
                 .on_input(Message::UpdateSearchQuery)
                 .align_x(Horizontal::Left)
                 .padding(6),

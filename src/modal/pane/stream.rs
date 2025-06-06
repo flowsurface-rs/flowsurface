@@ -82,6 +82,7 @@ pub enum ViewMode {
     TicksizeSelection {
         raw_input_buf: RawTickInput,
         parsed_input: Option<TickMultiplier>,
+        is_input_valid: bool,
     },
 }
 
@@ -154,25 +155,48 @@ impl Modifier {
         match message {
             Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
             Message::BasisSelected(basis) => Some(Action::BasisSelected(basis)),
-            Message::TicksizeSelected(ticksize) => {
+            Message::TicksizeSelected(new_ticksize) => {
                 if let ViewMode::TicksizeSelection {
                     ref mut raw_input_buf,
                     ref mut parsed_input,
+                    ref mut is_input_valid,
                 } = self.view_mode
                 {
-                    *raw_input_buf = RawTickInput::from_tick_multiplier(ticksize);
-                    *parsed_input = Some(ticksize);
+                    if *parsed_input == Some(new_ticksize) {
+                        *is_input_valid = true;
+                    } else {
+                        *raw_input_buf = RawTickInput::default();
+                        *parsed_input = None;
+                        *is_input_valid = true;
+                    }
                 }
-                Some(Action::TicksizeSelected(ticksize))
+                Some(Action::TicksizeSelected(new_ticksize))
             }
             Message::TicksizeInputChanged(value_str) => {
                 if let ViewMode::TicksizeSelection {
                     ref mut raw_input_buf,
                     ref mut parsed_input,
+                    ref mut is_input_valid,
                 } = self.view_mode
                 {
-                    *raw_input_buf = RawTickInput::from_str(&value_str);
+                    let numeric_value_str: String =
+                        value_str.chars().filter(|c| c.is_ascii_digit()).collect();
+
+                    *raw_input_buf = RawTickInput::from_str(&numeric_value_str);
                     *parsed_input = raw_input_buf.parse_tick_multiplier();
+
+                    if raw_input_buf.is_empty() {
+                        *is_input_valid = true;
+                    } else {
+                        match parsed_input {
+                            Some(tm) => {
+                                *is_input_valid = tm.0 >= 1 && tm.0 <= 2000;
+                            }
+                            None => {
+                                *is_input_valid = false;
+                            }
+                        }
+                    }
                 }
                 None
             }
@@ -392,6 +416,7 @@ impl Modifier {
             ViewMode::TicksizeSelection {
                 raw_input_buf,
                 parsed_input,
+                is_input_valid,
             } => {
                 if let Some(ticksize) = selected_ticksize {
                     let mut ticksizes_column =
@@ -423,12 +448,23 @@ impl Modifier {
                         modifiers = modifiers.push(button_row);
                     }
 
-                    let custom_tsize =
-                        text_input("Custom Ticksize", &raw_input_buf.to_display_string())
-                            .on_input(Message::TicksizeInputChanged)
-                            .on_submit_maybe(parsed_input.map(Message::TicksizeSelected));
+                    let tick_multiplier_to_submit =
+                        parsed_input.filter(|tm| tm.0 >= 1 && tm.0 <= 2000);
 
-                    ticksizes_column = ticksizes_column.push(modifiers).push(custom_tsize);
+                    let custom_tsize = text_input("1-2000", &raw_input_buf.to_display_string())
+                        .on_input(Message::TicksizeInputChanged)
+                        .on_submit_maybe(tick_multiplier_to_submit.map(Message::TicksizeSelected))
+                        .align_x(iced::Alignment::Center)
+                        .style(move |theme, status| {
+                            style::validated_text_input(theme, status, is_input_valid)
+                        });
+
+                    ticksizes_column = ticksizes_column.push(modifiers).push(
+                        row![text("Custom: "), custom_tsize]
+                            .padding(padding::right(20).left(20))
+                            .spacing(4)
+                            .align_y(iced::Alignment::Center),
+                    );
 
                     container(scrollable::Scrollable::with_direction(
                         ticksizes_column,

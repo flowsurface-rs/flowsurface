@@ -467,6 +467,10 @@ impl TickMultiplier {
         TickMultiplier(500),
     ];
 
+    pub fn is_custom(&self) -> bool {
+        !Self::ALL.contains(self)
+    }
+
     /// Returns the final tick size after applying the user selected multiplier
     ///
     /// Usually used for price steps in chart scales
