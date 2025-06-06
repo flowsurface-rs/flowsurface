@@ -73,7 +73,7 @@ impl TickAccumulation {
         }
     }
 
-    pub fn is_full(&self, interval: u64) -> bool {
+    pub fn is_full(&self, interval: u16) -> bool {
         self.tick_count >= interval as usize
     }
 
@@ -92,12 +92,12 @@ impl TickAccumulation {
 
 pub struct TickAggr {
     pub data_points: Vec<TickAccumulation>,
-    pub interval: u64,
+    pub interval: u16,
     pub tick_size: f32,
 }
 
 impl TickAggr {
-    pub fn new(interval: u64, tick_size: f32, raw_trades: &[Trade]) -> Self {
+    pub fn new(interval: u16, tick_size: f32, raw_trades: &[Trade]) -> Self {
         let mut tick_aggr = Self {
             data_points: Vec::new(),
             interval,

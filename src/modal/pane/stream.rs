@@ -381,11 +381,11 @@ impl Modifier {
                             let mut button_row = row![].spacing(4);
 
                             for &tick_count in chunk {
-                                let is_selected = selected_tick_count == Some(tick_count.into());
+                                let is_selected = selected_tick_count == Some(tick_count.0);
                                 let msg = if is_selected {
                                     None
                                 } else {
-                                    Some(Message::BasisSelected(Basis::Tick(tick_count.into())))
+                                    Some(Message::BasisSelected(Basis::Tick(tick_count.0)))
                                 };
 
                                 button_row = button_row.push(create_button(

@@ -52,8 +52,8 @@ pub enum Basis {
 
     /// Trade-based aggregation where each datapoint represents a fixed number of trades.
     ///
-    /// The u64 value represents the number of trades per aggregation unit.
-    Tick(u64),
+    /// The u16 value represents the number of trades per aggregation unit.
+    Tick(u16),
 }
 
 impl Basis {

@@ -275,7 +275,7 @@ impl AxisLabelsX<'_> {
                 if let Some(timestamp) = interval_keys.get(array_index) {
                     let text_content = self
                         .timezone
-                        .format_crosshair_timestamp(*timestamp as i64, interval);
+                        .format_crosshair_timestamp(*timestamp as i64, interval.into());
 
                     return Some(AxisLabel::new_x(
                         snap_x,
