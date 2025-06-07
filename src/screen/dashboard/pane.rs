@@ -359,7 +359,7 @@ impl State {
                 let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
                 let kind = ModifierKind::Heatmap(selected_basis, tick_multiply);
 
-                let base_ticksize = chart.tick_size() / tick_multiply.0 as f32;
+                let base_ticksize = data::util::base_ticksize(chart.tick_size(), tick_multiply);
 
                 let modifiers = row![
                     basis_modifier(id, selected_basis, modifier, kind),
@@ -386,7 +386,8 @@ impl State {
                             self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
                         let kind = ModifierKind::Footprint(selected_basis, tick_multiply);
 
-                        let base_ticksize = chart.tick_size() / tick_multiply.0 as f32;
+                        let base_ticksize =
+                            data::util::base_ticksize(chart.tick_size(), tick_multiply);
 
                         let modifiers = row![
                             basis_modifier(id, selected_basis, modifier, kind),
