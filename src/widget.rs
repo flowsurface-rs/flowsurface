@@ -4,7 +4,7 @@ use iced::{
     Alignment::{self, Center},
     Color,
     Length::Fill,
-    Theme, border,
+    Theme, border, padding,
     widget::{
         button, column, container, horizontal_space, row, scrollable, slider, text,
         tooltip::Position,
@@ -195,4 +195,28 @@ where
             .align_y(Center),
     ]
     .into()
+}
+
+pub fn numeric_input_box<'a, F, Message: Clone + 'static>(
+    label: &'a str,
+    placeholder: &str,
+    raw_input_buf: &str,
+    is_input_valid: bool,
+    on_input_changed: F,
+    on_submit_maybe: Option<Message>,
+) -> Element<'a, Message>
+where
+    F: Fn(String) -> Message + 'static,
+{
+    let text_input_widget = iced::widget::text_input(placeholder, raw_input_buf)
+        .on_input(on_input_changed)
+        .on_submit_maybe(on_submit_maybe)
+        .align_x(iced::Alignment::Center)
+        .style(move |theme, status| style::validated_text_input(theme, status, is_input_valid));
+
+    row![text(label), text_input_widget]
+        .padding(padding::right(20).left(20))
+        .spacing(4)
+        .align_y(iced::Alignment::Center)
+        .into()
 }

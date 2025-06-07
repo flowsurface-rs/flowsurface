@@ -1,12 +1,14 @@
-use crate::style::{self, icon_text};
+use crate::{
+    style::{self, icon_text},
+    widget::numeric_input_box,
+};
 
 use data::chart::Basis;
 use exchange::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
 use iced::{
     Element, Length,
     alignment::Horizontal,
-    padding,
-    widget::{button, column, container, horizontal_rule, row, scrollable, text, text_input},
+    widget::{button, column, container, horizontal_rule, row, scrollable, text},
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,18 +60,18 @@ impl NumericInput {
         Self::from_str(&tc.0.to_string())
     }
 
-    pub fn to_display_string(&self) -> String {
+    pub fn to_display_string(self) -> String {
         if self.len == 0 {
             return String::new();
         }
         String::from_utf8_lossy(&self.buffer[..self.len as usize]).into_owned()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.len == 0
     }
 
-    pub fn parse_tick_multiplier(&self) -> Option<TickMultiplier> {
+    pub fn parse_tick_multiplier(self) -> Option<TickMultiplier> {
         if self.len == 0 {
             return None;
         }
@@ -79,7 +81,7 @@ impl NumericInput {
             .map(TickMultiplier)
     }
 
-    pub fn parse_tick_count(&self) -> Option<data::aggr::TickCount> {
+    pub fn parse_tick_count(self) -> Option<data::aggr::TickCount> {
         if self.len == 0 {
             return None;
         }
@@ -158,10 +160,10 @@ impl Modifier {
         match self.kind {
             ModifierKind::Candlestick(_) => self.kind = ModifierKind::Candlestick(basis),
             ModifierKind::Footprint(_, ticksize) => {
-                self.kind = ModifierKind::Footprint(basis, ticksize)
+                self.kind = ModifierKind::Footprint(basis, ticksize);
             }
             ModifierKind::Heatmap(_, ticksize) => {
-                self.kind = ModifierKind::Heatmap(basis, ticksize)
+                self.kind = ModifierKind::Heatmap(basis, ticksize);
             }
         }
     }
@@ -169,7 +171,7 @@ impl Modifier {
     pub fn update_kind_with_multiplier(&mut self, ticksize: TickMultiplier) {
         match self.kind {
             ModifierKind::Footprint(basis, _) => {
-                self.kind = ModifierKind::Footprint(basis, ticksize)
+                self.kind = ModifierKind::Footprint(basis, ticksize);
             }
             ModifierKind::Heatmap(basis, _) => self.kind = ModifierKind::Heatmap(basis, ticksize),
             _ => {}
@@ -227,7 +229,7 @@ impl Modifier {
                 } = self.view_mode
                 {
                     let numeric_value_str: String =
-                        value_str.chars().filter(|c| c.is_ascii_digit()).collect();
+                        value_str.chars().filter(char::is_ascii_digit).collect();
 
                     *raw_input_buf = NumericInput::from_str(&numeric_value_str);
                     *parsed_input = raw_input_buf.parse_tick_multiplier();
@@ -256,7 +258,7 @@ impl Modifier {
                 } = self.tab
                 {
                     let numeric_value_str: String =
-                        value_str.chars().filter(|c| c.is_ascii_digit()).collect();
+                        value_str.chars().filter(char::is_ascii_digit).collect();
 
                     *raw_input_buf = NumericInput::from_str(&numeric_value_str);
                     *parsed_input = raw_input_buf.parse_tick_count();
@@ -400,8 +402,6 @@ impl Modifier {
                         .push(horizontal_rule(1).style(style::split_ruler));
                 }
 
-                let mut modifiers = column![].spacing(4);
-
                 match self.tab {
                     SelectedTab::Timeframe => {
                         let selected_tf = match selected_basis {
@@ -410,53 +410,30 @@ impl Modifier {
                         };
 
                         if is_kline_chart {
-                            for chunk in Timeframe::KLINE.chunks(3) {
-                                let mut button_row = row![].spacing(4);
-
-                                for timeframe in chunk {
-                                    let is_selected = selected_tf == Some(*timeframe);
-                                    let msg = if is_selected {
-                                        None
-                                    } else {
-                                        Some(Message::BasisSelected((*timeframe).into()))
-                                    };
-                                    button_row = button_row.push(create_button(
-                                        text(timeframe.to_string()),
-                                        msg,
-                                        is_selected,
-                                    ));
-                                }
-
-                                modifiers = modifiers.push(button_row);
-                            }
+                            let kline_timeframe_grid = modifiers_grid(
+                                &Timeframe::KLINE,
+                                selected_tf,
+                                |tf| Message::BasisSelected(tf.into()),
+                                &create_button,
+                            );
+                            basis_selection_column =
+                                basis_selection_column.push(kline_timeframe_grid);
                         } else if let Some((exchange, _)) = ticker_info {
-                            let heatmap_timeframes: Vec<_> = Timeframe::HEATMAP
+                            let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
                                 .iter()
+                                .copied()
                                 .filter(|tf| {
-                                    !(exchange == Exchange::BybitSpot && *tf == &Timeframe::MS100)
+                                    !(exchange == Exchange::BybitSpot && *tf == Timeframe::MS100)
                                 })
                                 .collect();
-
-                            for chunk in heatmap_timeframes.chunks(3) {
-                                let mut button_row = row![].spacing(4);
-
-                                for timeframe_ref in chunk {
-                                    let timeframe = **timeframe_ref;
-                                    let is_selected = selected_tf == Some(timeframe);
-                                    let msg = if is_selected {
-                                        None
-                                    } else {
-                                        Some(Message::BasisSelected(timeframe.into()))
-                                    };
-                                    button_row = button_row.push(create_button(
-                                        text(timeframe.to_string()),
-                                        msg,
-                                        is_selected,
-                                    ));
-                                }
-
-                                modifiers = modifiers.push(button_row);
-                            }
+                            let heatmap_timeframe_grid = modifiers_grid(
+                                &heatmap_timeframes,
+                                selected_tf,
+                                |tf| Message::BasisSelected(tf.into()),
+                                &create_button,
+                            );
+                            basis_selection_column =
+                                basis_selection_column.push(heatmap_timeframe_grid);
                         }
                     }
                     SelectedTab::TickCount {
@@ -469,53 +446,31 @@ impl Modifier {
                             _ => None,
                         };
 
-                        for chunk in data::aggr::TickCount::ALL.chunks(3) {
-                            let mut button_row = row![].spacing(4);
-
-                            for &tick_count in chunk {
-                                let is_selected = selected_tick_count == Some(tick_count);
-                                let msg = if is_selected {
-                                    None
-                                } else {
-                                    Some(Message::BasisSelected(Basis::Tick(tick_count)))
-                                };
-
-                                button_row = button_row.push(create_button(
-                                    text(tick_count.to_string()),
-                                    msg,
-                                    is_selected,
-                                ));
-                            }
-
-                            modifiers = modifiers.push(button_row);
-                        }
-
-                        let tick_count_to_submit = parsed_input
-                            .filter(|tc| tc.0 >= TICK_COUNT_MIN && tc.0 <= TICK_COUNT_MAX);
-
-                        let custom_tcount = text_input(
-                            &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
-                            &raw_input_buf.to_display_string(),
-                        )
-                        .on_input(Message::TickCountInputChanged)
-                        .on_submit_maybe(
-                            tick_count_to_submit.map(|tc| Message::BasisSelected(Basis::Tick(tc))),
-                        )
-                        .align_x(iced::Alignment::Center)
-                        .style(move |theme, status| {
-                            style::validated_text_input(theme, status, is_input_valid)
-                        });
-
-                        basis_selection_column = basis_selection_column.push(
-                            row![text("Custom: "), custom_tcount]
-                                .padding(padding::right(20).left(20))
-                                .spacing(4)
-                                .align_y(iced::Alignment::Center),
+                        let tick_count_grid = modifiers_grid(
+                            &data::aggr::TickCount::ALL,
+                            selected_tick_count,
+                            |tc| Message::BasisSelected(Basis::Tick(tc)),
+                            &create_button,
                         );
+
+                        let custom_input = {
+                            let tick_count_to_submit = parsed_input
+                                .filter(|tc| tc.0 >= TICK_COUNT_MIN && tc.0 <= TICK_COUNT_MAX);
+
+                            numeric_input_box::<_, Message>(
+                                "Custom: ",
+                                &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
+                                &raw_input_buf.to_display_string(),
+                                is_input_valid,
+                                Message::TickCountInputChanged,
+                                tick_count_to_submit
+                                    .map(|tc| Message::BasisSelected(Basis::Tick(tc))),
+                            )
+                        };
+                        basis_selection_column = basis_selection_column.push(custom_input);
+                        basis_selection_column = basis_selection_column.push(tick_count_grid);
                     }
                 }
-
-                basis_selection_column = basis_selection_column.push(modifiers);
 
                 container(scrollable::Scrollable::with_direction(
                     basis_selection_column,
@@ -541,50 +496,30 @@ impl Modifier {
                         .push(text("Tick size multiplier").size(13))
                         .push(horizontal_rule(1).style(style::split_ruler));
 
-                    let mut modifiers = column![].spacing(4);
+                    let tick_multiplier_grid = modifiers_grid(
+                        &exchange::TickMultiplier::ALL,
+                        Some(ticksize),
+                        Message::TicksizeSelected,
+                        &create_button,
+                    );
 
-                    for chunk in exchange::TickMultiplier::ALL.chunks(3) {
-                        let mut button_row = row![].spacing(4);
+                    let custom_input = {
+                        let tick_multiplier_to_submit = parsed_input.filter(|tm| {
+                            tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX
+                        });
 
-                        for ticksize_value in chunk {
-                            let is_selected = ticksize == *ticksize_value;
-                            let msg = if is_selected {
-                                None
-                            } else {
-                                Some(Message::TicksizeSelected(*ticksize_value))
-                            };
-                            button_row = button_row.push(create_button(
-                                text(ticksize_value.to_string()),
-                                msg,
-                                is_selected,
-                            ));
-                        }
-
-                        modifiers = modifiers.push(button_row);
-                    }
-
-                    let tick_multiplier_to_submit = parsed_input
-                        .filter(|tm| tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX);
-
-                    let custom_tsize = text_input(
-                        &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
-                        &raw_input_buf.to_display_string(),
-                    )
-                    .on_input(Message::TicksizeInputChanged)
-                    .on_submit_maybe(tick_multiplier_to_submit.map(Message::TicksizeSelected))
-                    .align_x(iced::Alignment::Center)
-                    .style(move |theme, status| {
-                        style::validated_text_input(theme, status, is_input_valid)
-                    });
-
-                    ticksizes_column = ticksizes_column
-                        .push(
-                            row![text("Custom: "), custom_tsize]
-                                .padding(padding::right(20).left(20))
-                                .spacing(4)
-                                .align_y(iced::Alignment::Center),
+                        numeric_input_box::<_, Message>(
+                            "Custom: ",
+                            &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
+                            &raw_input_buf.to_display_string(),
+                            is_input_valid,
+                            Message::TicksizeInputChanged,
+                            tick_multiplier_to_submit.map(Message::TicksizeSelected),
                         )
-                        .push(modifiers);
+                    };
+
+                    ticksizes_column = ticksizes_column.push(custom_input);
+                    ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
 
                     container(scrollable::Scrollable::with_direction(
                         ticksizes_column,
@@ -605,6 +540,45 @@ impl Modifier {
             }
         }
     }
+}
+
+fn modifiers_grid<'a, T, FMsg>(
+    items_source: &[T],
+    selected_value: Option<T>,
+    to_message: FMsg,
+    create_button_fn: &impl Fn(
+        iced::widget::text::Text<'a>,
+        Option<Message>,
+        bool,
+    ) -> iced::widget::Button<'a, Message>,
+) -> iced::widget::Column<'a, Message>
+where
+    T: Copy + PartialEq + ToString,
+    FMsg: Fn(T) -> Message,
+{
+    let mut grid_column = column![].spacing(4);
+
+    for chunk in items_source.chunks(3) {
+        let mut button_row = row![].spacing(4);
+
+        for &item_value in chunk {
+            let is_selected = selected_value == Some(item_value);
+            let msg = if is_selected {
+                None
+            } else {
+                Some(to_message(item_value))
+            };
+            button_row = button_row.push(create_button_fn(
+                text(item_value.to_string()),
+                msg,
+                is_selected,
+            ));
+        }
+
+        grid_column = grid_column.push(button_row);
+    }
+
+    grid_column
 }
 
 impl From<&ModifierKind> for SelectedTab {

@@ -359,9 +359,13 @@ impl State {
                 let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
                 let kind = ModifierKind::Heatmap(selected_basis, tick_multiply);
 
-                stream_info_element = stream_info_element
-                    .push(basis_modifier(id, selected_basis, modifier, kind))
-                    .push(ticksize_modifier(id, tick_multiply, modifier, kind));
+                let modifiers = row![
+                    basis_modifier(id, selected_basis, modifier, kind),
+                    ticksize_modifier(id, tick_multiply, modifier, kind),
+                ]
+                .spacing(4);
+
+                stream_info_element = stream_info_element.push(modifiers);
 
                 let base = chart::view(chart, indicators, timezone)
                     .map(move |message| Message::ChartUserUpdate(id, message));
@@ -380,9 +384,13 @@ impl State {
                             self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
                         let kind = ModifierKind::Footprint(selected_basis, tick_multiply);
 
-                        stream_info_element = stream_info_element
-                            .push(basis_modifier(id, selected_basis, modifier, kind))
-                            .push(ticksize_modifier(id, tick_multiply, modifier, kind));
+                        let modifiers = row![
+                            basis_modifier(id, selected_basis, modifier, kind),
+                            ticksize_modifier(id, tick_multiply, modifier, kind),
+                        ]
+                        .spacing(4);
+
+                        stream_info_element = stream_info_element.push(modifiers);
                     }
                     data::chart::KlineChartKind::Candles => {
                         let selected_basis = self
@@ -391,12 +399,10 @@ impl State {
                             .unwrap_or(Timeframe::M15.into());
                         let kind = ModifierKind::Candlestick(selected_basis);
 
-                        stream_info_element = stream_info_element.push(basis_modifier(
-                            id,
-                            selected_basis,
-                            modifier,
-                            kind,
-                        ));
+                        let modifiers =
+                            row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
+
+                        stream_info_element = stream_info_element.push(modifiers);
                     }
                 }
 
@@ -904,14 +910,12 @@ fn ticksize_modifier<'a>(
         },
     ));
 
-    let is_active = modifier
-        .map(|m| {
-            matches!(
-                m.view_mode,
-                modal::stream::ViewMode::TicksizeSelection { .. }
-            )
-        })
-        .unwrap_or(false);
+    let is_active = modifier.is_some_and(|m| {
+        matches!(
+            m.view_mode,
+            modal::stream::ViewMode::TicksizeSelection { .. }
+        )
+    });
 
     button(text(tick_multiply.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
@@ -929,9 +933,8 @@ fn basis_modifier<'a>(
         modal::stream::Modifier::new(kind).with_view_mode(modal::stream::ViewMode::BasisSelection),
     );
 
-    let is_active = modifier
-        .map(|m| m.view_mode == modal::stream::ViewMode::BasisSelection)
-        .unwrap_or(false);
+    let is_active =
+        modifier.is_some_and(|m| m.view_mode == modal::stream::ViewMode::BasisSelection);
 
     button(text(selected_basis.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
