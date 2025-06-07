@@ -239,9 +239,16 @@ impl Dashboard {
 
                         return (Task::done(Message::RefreshStreams), None);
                     }
-                    pane::Message::ShowModal(pane, modal) => {
-                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            pane_state.modal = Some(modal);
+                    pane::Message::ShowModal(pane, requested_modal) => {
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            match &state.modal {
+                                Some(modal) if modal == &requested_modal => {
+                                    state.modal = None;
+                                }
+                                _ => {
+                                    state.modal = Some(requested_modal);
+                                }
+                            }
                         }
                     }
                     pane::Message::HideModal(pane) => {

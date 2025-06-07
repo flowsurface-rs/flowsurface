@@ -8,6 +8,7 @@ use exchange::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
 use iced::{
     Element, Length,
     alignment::Horizontal,
+    padding,
     widget::{button, column, container, horizontal_rule, row, scrollable, text},
 };
 use serde::{Deserialize, Serialize};
@@ -138,6 +139,7 @@ pub struct Modifier {
     pub tab: SelectedTab,
     pub view_mode: ViewMode,
     kind: ModifierKind,
+    base_ticksize: Option<f32>,
 }
 
 impl Modifier {
@@ -148,11 +150,30 @@ impl Modifier {
             tab,
             kind,
             view_mode: ViewMode::BasisSelection,
+            base_ticksize: None,
         }
     }
 
     pub fn with_view_mode(mut self, view_mode: ViewMode) -> Self {
         self.view_mode = view_mode;
+        self
+    }
+
+    pub fn with_ticksize_view(mut self, base_ticksize: f32, multiplier: TickMultiplier) -> Self {
+        self.view_mode = ViewMode::TicksizeSelection {
+            raw_input_buf: if multiplier.is_custom() {
+                NumericInput::from_tick_multiplier(multiplier)
+            } else {
+                NumericInput::default()
+            },
+            parsed_input: if multiplier.is_custom() {
+                Some(multiplier)
+            } else {
+                None
+            },
+            is_input_valid: true,
+        };
+        self.base_ticksize = Some(base_ticksize);
         self
     }
 
@@ -520,6 +541,24 @@ impl Modifier {
 
                     ticksizes_column = ticksizes_column.push(custom_input);
                     ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
+
+                    if let Some(base_ticksize) = self.base_ticksize {
+                        ticksizes_column = ticksizes_column.push(
+                            row![
+                                iced::widget::horizontal_space(),
+                                text(format!("Base: {}", base_ticksize)).style(
+                                    |theme: &iced::Theme| {
+                                        iced::widget::text::Style {
+                                            color: Some(
+                                                theme.extended_palette().background.strongest.color,
+                                            ),
+                                        }
+                                    }
+                                ),
+                            ]
+                            .padding(padding::top(8).right(4)),
+                        );
+                    }
 
                     container(scrollable::Scrollable::with_direction(
                         ticksizes_column,

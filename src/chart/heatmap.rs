@@ -378,6 +378,10 @@ impl HeatmapChart {
         );
     }
 
+    pub fn tick_size(&self) -> f32 {
+        self.chart.tick_size
+    }
+
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
         match self.indicators.entry(indicator) {
             std::collections::hash_map::Entry::Occupied(entry) => {

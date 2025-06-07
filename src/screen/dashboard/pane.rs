@@ -359,9 +359,11 @@ impl State {
                 let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
                 let kind = ModifierKind::Heatmap(selected_basis, tick_multiply);
 
+                let base_ticksize = chart.tick_size() / tick_multiply.0 as f32;
+
                 let modifiers = row![
                     basis_modifier(id, selected_basis, modifier, kind),
-                    ticksize_modifier(id, tick_multiply, modifier, kind),
+                    ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind),
                 ]
                 .spacing(4);
 
@@ -384,9 +386,11 @@ impl State {
                             self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
                         let kind = ModifierKind::Footprint(selected_basis, tick_multiply);
 
+                        let base_ticksize = chart.tick_size() / tick_multiply.0 as f32;
+
                         let modifiers = row![
                             basis_modifier(id, selected_basis, modifier, kind),
-                            ticksize_modifier(id, tick_multiply, modifier, kind),
+                            ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind),
                         ]
                         .spacing(4);
 
@@ -890,25 +894,14 @@ impl std::fmt::Display for Content {
 
 fn ticksize_modifier<'a>(
     id: pane_grid::Pane,
-    tick_multiply: TickMultiplier,
+    base_ticksize: f32,
+    multiplier: TickMultiplier,
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
 ) -> Element<'a, Message> {
-    let modifier_modal = Modal::StreamModifier(modal::stream::Modifier::new(kind).with_view_mode(
-        modal::stream::ViewMode::TicksizeSelection {
-            raw_input_buf: if tick_multiply.is_custom() {
-                modal::stream::NumericInput::from_tick_multiplier(tick_multiply)
-            } else {
-                modal::stream::NumericInput::default()
-            },
-            parsed_input: if tick_multiply.is_custom() {
-                Some(tick_multiply)
-            } else {
-                None
-            },
-            is_input_valid: true,
-        },
-    ));
+    let modifier_modal = Modal::StreamModifier(
+        modal::stream::Modifier::new(kind).with_ticksize_view(base_ticksize, multiplier),
+    );
 
     let is_active = modifier.is_some_and(|m| {
         matches!(
@@ -917,7 +910,7 @@ fn ticksize_modifier<'a>(
         )
     });
 
-    button(text(tick_multiply.to_string()))
+    button(text(multiplier.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::ShowModal(id, modifier_modal))
         .into()
