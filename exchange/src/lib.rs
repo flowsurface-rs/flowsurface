@@ -471,6 +471,13 @@ impl TickMultiplier {
         !Self::ALL.contains(self)
     }
 
+    pub fn base(&self, multiplied: f32) -> f32 {
+        let decimals = (-multiplied.log10()).ceil() as i32 + 2;
+        let multiplier = 10f32.powi(decimals);
+
+        ((multiplied * multiplier) / (self.0 as f32)).round() / multiplier
+    }
+
     /// Returns the final tick size after applying the user selected multiplier
     ///
     /// Usually used for price steps in chart scales

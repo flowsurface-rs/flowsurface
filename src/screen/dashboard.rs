@@ -1011,13 +1011,13 @@ impl Dashboard {
         self.iter_all_panes_mut(main_window.id)
             .for_each(|(_, _, state)| {
                 if let pane::Content::Kline(chart, _) = &mut state.content {
-                    chart.reset_request_handler();
+                    if matches!(chart.kind(), data::chart::KlineChartKind::Footprint { .. }) {
+                        chart.reset_request_handler();
 
-                    state.status = if is_enabled {
-                        pane::Status::Loading(pane::InfoType::FetchingTrades(0))
-                    } else {
-                        pane::Status::Ready
-                    };
+                        if !is_enabled {
+                            state.status = pane::Status::Ready;
+                        }
+                    }
                 }
             });
     }
