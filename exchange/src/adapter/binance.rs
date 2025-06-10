@@ -26,6 +26,10 @@ use super::{
     Connection, Event, StreamError,
 };
 
+const SPOT_HTTP_URL: &str = "https://api.binance.com/api/v3/";
+const LINEAR_PERP_HTTP_URL: &str = "https://fapi.binance.com/fapi/v1/";
+const INVERSE_PERP_HTTP_URL: &str = "https://dapi.binance.com/dapi/v1/";
+
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
     match market {
         MarketKind::Spot => Exchange::BinanceSpot,
@@ -859,15 +863,25 @@ pub async fn fetch_klines(
 pub async fn fetch_ticksize(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
-    let exchange = exchange_from_market_type(market);
-
-    let url = match market {
-        MarketKind::Spot => "https://api.binance.com/api/v3/exchangeInfo".to_string(),
-        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string(),
-        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/exchangeInfo".to_string(),
+    let (url, source, weight) = match market {
+        MarketKind::Spot => (
+            format!("{SPOT_HTTP_URL}exchangeInfo",),
+            SourceLimit::BinanceSpot,
+            20,
+        ),
+        MarketKind::LinearPerps => (
+            format!("{LINEAR_PERP_HTTP_URL}exchangeInfo",),
+            SourceLimit::BinancePerp,
+            1,
+        ),
+        MarketKind::InversePerps => (
+            format!("{INVERSE_PERP_HTTP_URL}exchangeInfo",),
+            SourceLimit::BinancePerp,
+            1,
+        ),
     };
-    let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
-    let text = response.text().await.map_err(StreamError::FetchError)?;
+
+    let text = crate::client::http_request(&url, source, Some(weight)).await?;
 
     let exchange_info: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse exchange info: {e}")))?;
@@ -882,20 +896,17 @@ pub async fn fetch_ticksize(
         .and_then(|x| x["limit"].as_i64())
         .ok_or_else(|| StreamError::ParseError("Missing request weight limit".to_string()))?;
 
-    log::info!(
-        "Binance req. weight limit per minute {}: {:?}",
-        match market {
-            MarketKind::Spot => "Spot",
-            MarketKind::LinearPerps => "Linear Perps",
-            MarketKind::InversePerps => "Inverse Perps",
-        },
-        request_limit
-    );
+    let source = match market {
+        MarketKind::Spot => SourceLimit::BinanceSpot,
+        MarketKind::LinearPerps | MarketKind::InversePerps => SourceLimit::BinancePerp,
+    };
+    limiter::update_rate_limit(source, request_limit as usize).await;
 
     let symbols = exchange_info["symbols"]
         .as_array()
         .ok_or_else(|| StreamError::ParseError("Missing symbols array".to_string()))?;
 
+    let exchange = exchange_from_market_type(market);
     let mut ticker_info_map = HashMap::new();
 
     for item in symbols {
@@ -971,19 +982,30 @@ pub async fn fetch_ticksize(
 pub async fn fetch_ticker_prices(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
-    let exchange = exchange_from_market_type(market);
-
-    let url = match market {
-        MarketKind::Spot => "https://api.binance.com/api/v3/ticker/24hr".to_string(),
-        MarketKind::LinearPerps => "https://fapi.binance.com/fapi/v1/ticker/24hr".to_string(),
-        MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/ticker/24hr".to_string(),
+    let (url, source, weight) = match market {
+        MarketKind::Spot => (
+            format!("{SPOT_HTTP_URL}ticker/24hr",),
+            SourceLimit::BinanceSpot,
+            80,
+        ),
+        MarketKind::LinearPerps => (
+            format!("{LINEAR_PERP_HTTP_URL}ticker/24hr",),
+            SourceLimit::BinancePerp,
+            40,
+        ),
+        MarketKind::InversePerps => (
+            format!("{INVERSE_PERP_HTTP_URL}ticker/24hr",),
+            SourceLimit::BinancePerp,
+            40,
+        ),
     };
-    let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
-    let text = response.text().await.map_err(StreamError::FetchError)?;
+
+    let text = crate::client::http_request(&url, source, Some(weight)).await?;
 
     let value: Vec<serde_json::Value> = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse prices: {e}")))?;
 
+    let exchange = exchange_from_market_type(market);
     let mut ticker_price_map = HashMap::new();
 
     for item in value {

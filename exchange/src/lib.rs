@@ -1,4 +1,5 @@
 pub mod adapter;
+mod client;
 pub mod connect;
 pub mod depth;
 pub mod fetcher;

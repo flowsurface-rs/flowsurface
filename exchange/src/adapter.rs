@@ -1,12 +1,11 @@
+use super::{Ticker, Timeframe};
+use crate::{Kline, OpenInterest, TickerInfo, TickerStats, Trade, depth::Depth};
+
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
 };
-
-use crate::{Kline, OpenInterest, TickerInfo, TickerStats, Trade, depth::Depth};
-
-use super::{Ticker, Timeframe};
-use serde::{Deserialize, Serialize};
 
 pub mod binance;
 pub mod bybit;

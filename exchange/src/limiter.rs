@@ -5,6 +5,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
+const BYBIT_LIMIT: usize = 600;
+const BYBIT_REFILL_RATE: Duration = Duration::from_secs(5);
+
+const BINANCE_SPOT_LIMIT: usize = 6000;
+const BINANCE_PERP_LIMIT: usize = 2400;
+const BINANCE_REFILL_RATE: Duration = Duration::from_secs(60);
+
 static RATE_LIMITER: Lazy<Arc<Mutex<RateLimiter>>> =
     Lazy::new(|| Arc::new(Mutex::new(RateLimiter::new())));
 
@@ -88,15 +95,15 @@ impl RateLimiter {
 
         buckets.insert(
             SourceLimit::BinanceSpot,
-            RateBucket::new(6000, Duration::from_secs(60)),
+            RateBucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
         );
         buckets.insert(
             SourceLimit::BinancePerp,
-            RateBucket::new(2400, Duration::from_secs(60)),
+            RateBucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
         );
         buckets.insert(
             SourceLimit::Bybit,
-            RateBucket::new(600, Duration::from_secs(5)),
+            RateBucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE),
         );
 
         Self { buckets }
@@ -104,7 +111,6 @@ impl RateLimiter {
 
     pub async fn acquire(&mut self, source: SourceLimit, weight: usize) {
         if let Some(bucket) = self.buckets.get_mut(&source) {
-            dbg!(source, weight, &bucket);
             bucket.acquire(weight).await;
         }
     }
