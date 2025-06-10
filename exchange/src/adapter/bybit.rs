@@ -1,17 +1,3 @@
-use serde_json::{Value, json};
-use sonic_rs::to_object_iter_unchecked;
-use sonic_rs::{Deserialize, JsonValueTrait};
-use std::collections::HashMap;
-
-use fastwebsockets::{FragmentCollector, Frame, OpCode};
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
-
-use iced_futures::{
-    futures::{SinkExt, Stream, channel::mpsc},
-    stream,
-};
-
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, StreamKind, Ticker, TickerInfo, TickerStats,
@@ -20,9 +6,23 @@ use super::{
         de_string_to_f32, de_string_to_u64,
         depth::{DepthPayload, DepthUpdate, LocalDepthCache, Order},
         is_symbol_supported,
+        limiter::SourceLimit,
     },
     Connection, Event, StreamError,
 };
+
+use fastwebsockets::{FragmentCollector, Frame, OpCode};
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
+use iced_futures::{
+    futures::{SinkExt, Stream, channel::mpsc},
+    stream,
+};
+use serde_json::{Value, json};
+use sonic_rs::to_object_iter_unchecked;
+use sonic_rs::{Deserialize, JsonValueTrait};
+
+use std::collections::HashMap;
 
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
     match market {
@@ -545,28 +545,20 @@ pub async fn fetch_historical_oi(
         url.push_str("&limit=200");
     }
 
-    let response = reqwest::get(&url).await.map_err(|e| {
-        log::error!("Failed to fetch from {}: {}", url, e);
-        StreamError::FetchError(e)
-    })?;
+    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
 
-    let text = response.text().await.map_err(|e| {
-        log::error!("Failed to get response text from {}: {}", url, e);
-        StreamError::FetchError(e)
-    })?;
-
-    let content: Value = sonic_rs::from_str(&text).map_err(|e| {
+    let content: Value = sonic_rs::from_str(&response_text).map_err(|e| {
         log::error!(
             "Failed to parse JSON from {}: {}\nResponse: {}",
             url,
             e,
-            text
+            response_text
         );
         StreamError::ParseError(e.to_string())
     })?;
 
     let result_list = content["result"]["list"].as_array().ok_or_else(|| {
-        log::error!("Result list is not an array in response: {}", text);
+        log::error!("Result list is not an array in response: {}", response_text);
         StreamError::ParseError("Result list is not an array".to_string())
     })?;
 
@@ -575,7 +567,7 @@ pub async fn fetch_historical_oi(
             log::error!(
                 "Failed to parse open interest array: {}\nResponse: {}",
                 e,
-                text
+                response_text
             );
             StreamError::ParseError(format!("Failed to parse open interest: {e}"))
         })?;
@@ -662,13 +654,12 @@ pub async fn fetch_klines(
         url.push_str(&format!("&limit={}", 200));
     }
 
-    let response: reqwest::Response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
-    let text = response.text().await.map_err(StreamError::FetchError)?;
+    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
 
-    let api_response: ApiResponse =
-        sonic_rs::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
+    let value: ApiResponse =
+        sonic_rs::from_str(&response_text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
-    let klines: Result<Vec<Kline>, StreamError> = api_response
+    let klines: Result<Vec<Kline>, StreamError> = value
         .result
         .list
         .iter()
@@ -708,11 +699,10 @@ pub async fn fetch_ticksize(
     let url =
         format!("https://api.bybit.com/v5/market/instruments-info?category={market}&limit=1000",);
 
-    let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
-    let text = response.text().await.map_err(StreamError::FetchError)?;
+    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
 
     let exchange_info: Value =
-        sonic_rs::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
+        sonic_rs::from_str(&response_text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
     let result_list: &Vec<Value> = exchange_info["result"]["list"]
         .as_array()
@@ -788,11 +778,11 @@ pub async fn fetch_ticker_prices(
     };
 
     let url = format!("https://api.bybit.com/v5/market/tickers?category={market}");
-    let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
-    let text = response.text().await.map_err(StreamError::FetchError)?;
+
+    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
 
     let exchange_info: Value =
-        sonic_rs::from_str(&text).map_err(|e| StreamError::ParseError(e.to_string()))?;
+        sonic_rs::from_str(&response_text).map_err(|e| StreamError::ParseError(e.to_string()))?;
 
     let result_list: &Vec<Value> = exchange_info["result"]["list"]
         .as_array()

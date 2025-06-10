@@ -3,7 +3,7 @@ use crate::limiter::{self, SourceLimit};
 use once_cell::sync::Lazy;
 use reqwest::Response;
 
-static HTTP_CLIENT: Lazy<RateLimitedClient> = Lazy::new(|| RateLimitedClient::new());
+static HTTP_CLIENT: Lazy<RateLimitedClient> = Lazy::new(RateLimitedClient::new);
 
 pub async fn http_request(
     url: &str,

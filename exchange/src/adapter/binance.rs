@@ -1,19 +1,3 @@
-use csv::ReaderBuilder;
-use serde::Deserialize;
-use std::{collections::HashMap, io::BufReader, path::PathBuf};
-
-use fastwebsockets::{FragmentCollector, OpCode};
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
-use sonic_rs::{FastStr, to_object_iter_unchecked};
-
-use iced_futures::{
-    futures::{SinkExt, Stream, channel::mpsc},
-    stream,
-};
-
-use crate::limiter::{self, SourceLimit};
-
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, StreamKind, Ticker, TickerInfo, TickerStats,
@@ -25,6 +9,20 @@ use super::{
     },
     Connection, Event, StreamError,
 };
+use crate::limiter::{self, SourceLimit};
+
+use csv::ReaderBuilder;
+use fastwebsockets::{FragmentCollector, OpCode};
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
+use iced_futures::{
+    futures::{SinkExt, Stream, channel::mpsc},
+    stream,
+};
+use serde::Deserialize;
+use sonic_rs::{FastStr, to_object_iter_unchecked};
+
+use std::{collections::HashMap, io::BufReader, path::PathBuf};
 
 const SPOT_DOMAIN: &str = "https://api.binance.com";
 const LINEAR_PERP_DOMAIN: &str = "https://fapi.binance.com";
@@ -681,9 +679,9 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, StreamError> {
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let base_url = match market_type {
-        MarketKind::Spot => format!("{SPOT_DOMAIN}/api/v3/depth"),
-        MarketKind::LinearPerps => format!("{LINEAR_PERP_DOMAIN}/fapi/v1/depth"),
-        MarketKind::InversePerps => format!("{INVERSE_PERP_DOMAIN}/dapi/v1/depth"),
+        MarketKind::Spot => SPOT_DOMAIN.to_string() + "/api/v3/depth",
+        MarketKind::LinearPerps => LINEAR_PERP_DOMAIN.to_string() + "/fapi/v1/depth",
+        MarketKind::InversePerps => INVERSE_PERP_DOMAIN.to_string() + "/dapi/v1/depth",
     };
 
     let depth_limit = match market_type {
@@ -793,9 +791,9 @@ pub async fn fetch_klines(
     let timeframe_str = timeframe.to_string();
 
     let base_url = match market_type {
-        MarketKind::Spot => format!("{SPOT_DOMAIN}/api/v3/klines"),
-        MarketKind::LinearPerps => format!("{LINEAR_PERP_DOMAIN}/fapi/v1/klines"),
-        MarketKind::InversePerps => format!("{INVERSE_PERP_DOMAIN}/dapi/v1/klines"),
+        MarketKind::Spot => SPOT_DOMAIN.to_string() + "/api/v3/klines",
+        MarketKind::LinearPerps => LINEAR_PERP_DOMAIN.to_string() + "/fapi/v1/klines",
+        MarketKind::InversePerps => INVERSE_PERP_DOMAIN.to_string() + "/dapi/v1/klines",
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&interval={timeframe_str}");
@@ -880,17 +878,17 @@ pub async fn fetch_ticksize(
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, StreamError> {
     let (url, source, weight) = match market {
         MarketKind::Spot => (
-            format!("{SPOT_DOMAIN}/api/v3/exchangeInfo",),
+            SPOT_DOMAIN.to_string() + "/api/v3/exchangeInfo",
             SourceLimit::BinanceSpot,
             20,
         ),
         MarketKind::LinearPerps => (
-            format!("{LINEAR_PERP_DOMAIN}/fapi/v1/exchangeInfo",),
+            LINEAR_PERP_DOMAIN.to_string() + "/fapi/v1/exchangeInfo",
             SourceLimit::BinancePerp,
             1,
         ),
         MarketKind::InversePerps => (
-            format!("{INVERSE_PERP_DOMAIN}/dapi/v1/exchangeInfo",),
+            INVERSE_PERP_DOMAIN.to_string() + "/dapi/v1/exchangeInfo",
             SourceLimit::BinancePerp,
             1,
         ),
@@ -999,17 +997,17 @@ pub async fn fetch_ticker_prices(
 ) -> Result<HashMap<Ticker, TickerStats>, StreamError> {
     let (url, source, weight) = match market {
         MarketKind::Spot => (
-            format!("{SPOT_DOMAIN}/api/v3/ticker/24hr",),
+            SPOT_DOMAIN.to_string() + "/api/v3/ticker/24hr",
             SourceLimit::BinanceSpot,
             80,
         ),
         MarketKind::LinearPerps => (
-            format!("{LINEAR_PERP_DOMAIN}/fapi/v1/ticker/24hr",),
+            LINEAR_PERP_DOMAIN.to_string() + "/fapi/v1/ticker/24hr",
             SourceLimit::BinancePerp,
             40,
         ),
         MarketKind::InversePerps => (
-            format!("{INVERSE_PERP_DOMAIN}/dapi/v1/ticker/24hr",),
+            INVERSE_PERP_DOMAIN.to_string() + "/dapi/v1/ticker/24hr",
             SourceLimit::BinancePerp,
             40,
         ),
@@ -1102,13 +1100,13 @@ pub async fn fetch_historical_oi(
 
     let (base_url, pair_str, source, weight) = match market {
         MarketKind::LinearPerps => (
-            format!("{LINEAR_PERP_DOMAIN}/futures/data/openInterestHist"),
+            LINEAR_PERP_DOMAIN.to_string() + "/futures/data/openInterestHist",
             format!("?symbol={ticker_str}",),
             SourceLimit::BinancePerp,
-            1,
+            12,
         ),
         MarketKind::InversePerps => (
-            format!("{INVERSE_PERP_DOMAIN}/futures/data/openInterestHist"),
+            INVERSE_PERP_DOMAIN.to_string() + "/futures/data/openInterestHist",
             format!(
                 "?pair={}&contractType=PERPETUAL",
                 ticker_str
@@ -1226,17 +1224,17 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
 
     let (base_url, source, weight) = match market_type {
         MarketKind::Spot => (
-            format!("{SPOT_DOMAIN}/api/v3/aggTrades",),
+            SPOT_DOMAIN.to_string() + "/api/v3/aggTrades",
             SourceLimit::BinanceSpot,
             4,
         ),
         MarketKind::LinearPerps => (
-            format!("{LINEAR_PERP_DOMAIN}/fapi/v1/aggTrades",),
+            LINEAR_PERP_DOMAIN.to_string() + "/fapi/v1/aggTrades",
             SourceLimit::BinancePerp,
             20,
         ),
         MarketKind::InversePerps => (
-            format!("{INVERSE_PERP_DOMAIN}/dapi/v1/aggTrades",),
+            INVERSE_PERP_DOMAIN.to_string() + "/dapi/v1/aggTrades",
             SourceLimit::BinancePerp,
             20,
         ),

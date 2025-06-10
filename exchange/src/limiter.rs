@@ -119,8 +119,13 @@ impl RateLimiter {
         if let Some(bucket) = self.buckets.get_mut(&source) {
             bucket.max_tokens = max_tokens;
         } else {
+            let refill_rate = match source {
+                SourceLimit::BinanceSpot | SourceLimit::BinancePerp => BINANCE_REFILL_RATE,
+                SourceLimit::Bybit => BYBIT_REFILL_RATE,
+            };
+
             self.buckets
-                .insert(source, RateBucket::new(max_tokens, Duration::from_secs(60)));
+                .insert(source, RateBucket::new(max_tokens, refill_rate));
         }
     }
 }
