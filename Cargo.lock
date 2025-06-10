@@ -1113,7 +1113,6 @@ dependencies = [
  "hyper-util",
  "iced_futures",
  "log",
- "once_cell",
  "ordered-float 5.0.0",
  "reqwest",
  "rust_decimal",

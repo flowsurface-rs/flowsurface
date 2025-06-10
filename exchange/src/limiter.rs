@@ -1,13 +1,12 @@
 use crate::adapter::StreamError;
 
-use once_cell::sync::Lazy;
 use reqwest::{Client, Response};
+use std::time::{Duration, Instant};
+use std::{collections::VecDeque, sync::LazyLock};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use std::time::{Duration, Instant};
-
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
 
 pub async fn http_request(
     url: &str,
@@ -30,6 +29,20 @@ async fn rate_limited_get(
         .send()
         .await
         .map_err(StreamError::FetchError)?;
+
+    if SourceLimit::BinancePerp == source || SourceLimit::BinanceSpot == source {
+        let headers = response.headers();
+
+        let weight = headers
+            .get("x-mbx-used-weight-1m")
+            .ok_or_else(|| StreamError::ParseError("Missing rate limit header".to_string()))?
+            .to_str()
+            .map_err(|e| StreamError::ParseError(format!("Invalid header value: {e}")))?
+            .parse::<i32>()
+            .map_err(|e| StreamError::ParseError(format!("Invalid weight value: {e}")))?;
+
+        log::debug!("used weight for binance: {weight}");
+    }
 
     let status = response.status();
     // These errors mostly related to IP/rate limiting/location restrictions
@@ -61,23 +74,18 @@ const BINANCE_SPOT_LIMIT: usize = 6000;
 const BINANCE_PERP_LIMIT: usize = 2400;
 const BINANCE_REFILL_RATE: Duration = Duration::from_secs(60);
 
-static RATE_LIMITER: Lazy<Mutex<RateLimiter>> = Lazy::new(|| Mutex::new(RateLimiter::new()));
+static RATE_LIMITER: LazyLock<Mutex<RateLimiter>> =
+    LazyLock::new(|| Mutex::new(RateLimiter::new()));
 
-pub async fn acquire_permit(source: SourceLimit, weight: usize) {
+async fn acquire_permit(source: SourceLimit, weight: usize) {
     let mut limiter = RATE_LIMITER.lock().await;
     limiter.acquire(source, weight).await;
 }
 
-pub async fn update_rate_limit(source: SourceLimit, max_tokens: usize) {
-    let mut limiter = RATE_LIMITER.lock().await;
-    limiter.update_limit(source, max_tokens);
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// API sources with different rate limits per IP
 pub enum SourceLimit {
     /// 6000 request WEIGHT within 1m sliding window
-    // TODO: handle sliding window properly
     BinanceSpot,
     /// 2400 request WEIGHT within 1m sliding window
     BinancePerp,
@@ -85,25 +93,46 @@ pub enum SourceLimit {
     Bybit,
 }
 
-impl SourceLimit {
-    const fn index(self) -> usize {
-        match self {
-            SourceLimit::BinanceSpot => 0,
-            SourceLimit::BinancePerp => 1,
-            SourceLimit::Bybit => 2,
+struct RateLimiter {
+    fixed_window: [FixedWindowBucket; 1],
+    sliding_window: [SlidingWindowBucket; 2],
+}
+
+impl RateLimiter {
+    fn new() -> Self {
+        Self {
+            fixed_window: [FixedWindowBucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE)],
+            sliding_window: [
+                SlidingWindowBucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
+                SlidingWindowBucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
+            ],
+        }
+    }
+
+    async fn acquire(&mut self, source: SourceLimit, weight: usize) {
+        match source {
+            SourceLimit::Bybit => {
+                self.fixed_window[0].acquire(weight).await;
+            }
+            SourceLimit::BinanceSpot => {
+                self.sliding_window[0].acquire(weight).await;
+            }
+            SourceLimit::BinancePerp => {
+                self.sliding_window[1].acquire(weight).await;
+            }
         }
     }
 }
 
 #[derive(Debug)]
-struct Bucket {
+struct FixedWindowBucket {
     max_tokens: usize,
     available_tokens: usize,
     last_refill: Instant,
     refill_rate: Duration,
 }
 
-impl Bucket {
+impl FixedWindowBucket {
     fn new(max_tokens: usize, refill_rate: Duration) -> Self {
         Self {
             max_tokens,
@@ -135,7 +164,7 @@ impl Bucket {
             .refill_rate
             .saturating_sub(Instant::now().duration_since(self.last_refill));
 
-        log::debug!("Rate limit approaching, waiting {:?}", wait_time);
+        log::warn!("Rate limit approaching, waiting {:?}", wait_time);
         sleep(wait_time).await;
 
         self.refill();
@@ -143,26 +172,76 @@ impl Bucket {
     }
 }
 
-pub struct RateLimiter {
-    buckets: [Bucket; 3],
+struct SlidingWindowBucket {
+    max_requests: usize,
+    window_duration: Duration,
+    request_timestamps: VecDeque<Instant>,
 }
 
-impl RateLimiter {
-    fn new() -> Self {
+impl SlidingWindowBucket {
+    fn new(max_requests: usize, window_duration: Duration) -> Self {
         Self {
-            buckets: [
-                Bucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
-                Bucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
-                Bucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE),
-            ],
+            max_requests,
+            window_duration,
+            request_timestamps: VecDeque::with_capacity(max_requests),
         }
     }
 
-    pub async fn acquire(&mut self, source: SourceLimit, weight: usize) {
-        self.buckets[source.index()].acquire(weight).await;
+    #[allow(dead_code)]
+    pub fn available_tokens(&mut self) -> usize {
+        let now = Instant::now();
+        let window_start = now - self.window_duration;
+
+        while let Some(timestamp) = self.request_timestamps.front() {
+            if *timestamp < window_start {
+                self.request_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        self.max_requests
+            .saturating_sub(self.request_timestamps.len())
     }
 
-    pub fn update_limit(&mut self, source: SourceLimit, max_tokens: usize) {
-        self.buckets[source.index()].max_tokens = max_tokens;
+    async fn acquire(&mut self, tokens: usize) {
+        let now = Instant::now();
+        let window_start = now - self.window_duration;
+
+        while let Some(timestamp) = self.request_timestamps.front() {
+            if *timestamp < window_start {
+                self.request_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        while self.request_timestamps.len() + tokens > self.max_requests {
+            if let Some(oldest) = self.request_timestamps.front() {
+                let exit_time = *oldest + self.window_duration;
+                let wait_time = exit_time
+                    .saturating_duration_since(now)
+                    .max(Duration::from_millis(10));
+
+                log::warn!("Rate limit hit, waiting {:?}", wait_time);
+                sleep(wait_time).await;
+
+                let window_start = Instant::now() - self.window_duration;
+
+                while let Some(timestamp) = self.request_timestamps.front() {
+                    if *timestamp < window_start {
+                        self.request_timestamps.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        for _ in 0..tokens {
+            self.request_timestamps.push_back(Instant::now());
+        }
     }
 }

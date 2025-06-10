@@ -9,7 +9,7 @@ use super::{
     },
     Connection, Event, StreamError,
 };
-use crate::limiter::{self, SourceLimit};
+use crate::limiter::SourceLimit;
 
 use csv::ReaderBuilder;
 use fastwebsockets::{FragmentCollector, OpCode};
@@ -898,22 +898,6 @@ pub async fn fetch_ticksize(
 
     let exchange_info: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse exchange info: {e}")))?;
-
-    let rate_limits = exchange_info["rateLimits"]
-        .as_array()
-        .ok_or_else(|| StreamError::ParseError("Missing rateLimits array".to_string()))?;
-
-    let request_limit = rate_limits
-        .iter()
-        .find(|x| x["rateLimitType"].as_str().unwrap_or_default() == "REQUEST_WEIGHT")
-        .and_then(|x| x["limit"].as_i64())
-        .ok_or_else(|| StreamError::ParseError("Missing request weight limit".to_string()))?;
-
-    let source = match market {
-        MarketKind::Spot => SourceLimit::BinanceSpot,
-        MarketKind::LinearPerps | MarketKind::InversePerps => SourceLimit::BinancePerp,
-    };
-    limiter::update_rate_limit(source, request_limit as usize).await;
 
     let symbols = exchange_info["symbols"]
         .as_array()
