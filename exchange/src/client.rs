@@ -3,70 +3,49 @@ use crate::limiter::{self, SourceLimit};
 use once_cell::sync::Lazy;
 use reqwest::Response;
 
-static HTTP_CLIENT: Lazy<RateLimitedClient> = Lazy::new(RateLimitedClient::new);
+static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
 
 pub async fn http_request(
     url: &str,
     source: SourceLimit,
     weight: Option<usize>,
 ) -> Result<String, StreamError> {
-    HTTP_CLIENT.get_text(url, source, weight.unwrap_or(1)).await
+    let response = rate_limited_get(url, source, weight.unwrap_or(1)).await?;
+    response.text().await.map_err(StreamError::FetchError)
 }
 
-pub struct RateLimitedClient {
-    client: reqwest::Client,
-}
+async fn rate_limited_get(
+    url: &str,
+    source: SourceLimit,
+    weight: usize,
+) -> Result<Response, StreamError> {
+    limiter::acquire_permit(source, weight).await;
 
-impl RateLimitedClient {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
-    }
+    let response = HTTP_CLIENT
+        .get(url)
+        .send()
+        .await
+        .map_err(StreamError::FetchError)?;
 
-    pub async fn get(
-        &self,
-        url: &str,
-        source: SourceLimit,
-        weight: usize,
-    ) -> Result<Response, StreamError> {
-        limiter::acquire_permit(source, weight).await;
-
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(StreamError::FetchError)?;
-
-        // These errors caused mostly by IP exceeding rate limits
-        // They may be serious as in repeating can lead to IP ban, so we just kill the app
-        // TODO: should probably handle this gracefully on higher level
-        match source {
-            SourceLimit::BinanceSpot | SourceLimit::BinancePerp => {
-                if response.status() == 429 {
-                    eprintln!("Binance API request returned 429 for: {}", url);
-                    std::process::exit(1);
-                }
-            }
-            SourceLimit::Bybit => {
-                if response.status() == 403 {
-                    eprintln!("Bybit API request returned 403 for: {}", url);
-                    std::process::exit(1);
-                }
+    let status = response.status();
+    // These errors mostly related to IP/rate limiting/location restrictions
+    // They may be serious as in they can act as a warning before IP ban;
+    // we shouldn't ever end up here, so currently we just terminate the whole app
+    // TODO: should probably handle this gracefully on higher level
+    match source {
+        SourceLimit::BinanceSpot | SourceLimit::BinancePerp => {
+            if status == 429 || status == 418 {
+                eprintln!("Binance API request returned {} for: {}", status, url);
+                std::process::exit(1);
             }
         }
-
-        Ok(response)
+        SourceLimit::Bybit => {
+            if status == 403 {
+                eprintln!("Bybit API request returned {} for: {}", status, url);
+                std::process::exit(1);
+            }
+        }
     }
 
-    pub async fn get_text(
-        &self,
-        url: &str,
-        source: SourceLimit,
-        weight: usize,
-    ) -> Result<String, StreamError> {
-        let response = self.get(url, source, weight).await?;
-        response.text().await.map_err(StreamError::FetchError)
-    }
+    Ok(response)
 }
