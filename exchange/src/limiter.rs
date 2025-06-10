@@ -1,14 +1,13 @@
 use crate::adapter::StreamError;
-use crate::limiter;
-use reqwest::Response;
 
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use reqwest::{Client, Response};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
+use std::time::{Duration, Instant};
+
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
 pub async fn http_request(
     url: &str,
@@ -24,7 +23,7 @@ async fn rate_limited_get(
     source: SourceLimit,
     weight: usize,
 ) -> Result<Response, StreamError> {
-    limiter::acquire_permit(source, weight).await;
+    acquire_permit(source, weight).await;
 
     let response = HTTP_CLIENT
         .get(url)
@@ -86,6 +85,16 @@ pub enum SourceLimit {
     Bybit,
 }
 
+impl SourceLimit {
+    const fn index(self) -> usize {
+        match self {
+            SourceLimit::BinanceSpot => 0,
+            SourceLimit::BinancePerp => 1,
+            SourceLimit::Bybit => 2,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Bucket {
     max_tokens: usize,
@@ -135,46 +144,25 @@ impl Bucket {
 }
 
 pub struct RateLimiter {
-    buckets: HashMap<SourceLimit, Bucket>,
+    buckets: [Bucket; 3],
 }
 
 impl RateLimiter {
     fn new() -> Self {
-        let mut buckets = HashMap::new();
-
-        buckets.insert(
-            SourceLimit::BinanceSpot,
-            Bucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
-        );
-        buckets.insert(
-            SourceLimit::BinancePerp,
-            Bucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
-        );
-        buckets.insert(
-            SourceLimit::Bybit,
-            Bucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE),
-        );
-
-        Self { buckets }
+        Self {
+            buckets: [
+                Bucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
+                Bucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
+                Bucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE),
+            ],
+        }
     }
 
     pub async fn acquire(&mut self, source: SourceLimit, weight: usize) {
-        if let Some(bucket) = self.buckets.get_mut(&source) {
-            bucket.acquire(weight).await;
-        }
+        self.buckets[source.index()].acquire(weight).await;
     }
 
     pub fn update_limit(&mut self, source: SourceLimit, max_tokens: usize) {
-        if let Some(bucket) = self.buckets.get_mut(&source) {
-            bucket.max_tokens = max_tokens;
-        } else {
-            let refill_rate = match source {
-                SourceLimit::BinanceSpot | SourceLimit::BinancePerp => BINANCE_REFILL_RATE,
-                SourceLimit::Bybit => BYBIT_REFILL_RATE,
-            };
-
-            self.buckets
-                .insert(source, Bucket::new(max_tokens, refill_rate));
-        }
+        self.buckets[source.index()].max_tokens = max_tokens;
     }
 }
