@@ -24,5 +24,6 @@ hyper = { version = "1", default-features = false, features = ["http1", "client"
 hyper-util = { version = "0.1.10", default-features = false }
 tokio-rustls = "0.24.1"
 webpki-roots = "0.23.1"
+once_cell = "1.21.3"
 zip = "2.3.0"
 csv = "1.3.1"

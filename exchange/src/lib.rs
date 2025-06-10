@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod connect;
 pub mod depth;
 pub mod fetcher;
+mod limiter;
 
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};

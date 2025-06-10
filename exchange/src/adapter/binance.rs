@@ -12,6 +12,8 @@ use iced_futures::{
     stream,
 };
 
+use crate::limiter::{self, SourceLimit};
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, StreamKind, Ticker, TickerInfo, TickerStats,
@@ -680,11 +682,41 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, StreamError> {
         MarketKind::InversePerps => "https://dapi.binance.com/dapi/v1/depth",
     };
 
+    let depth_limit = match market_type {
+        MarketKind::Spot => 5000,
+        MarketKind::LinearPerps | MarketKind::InversePerps => 1000,
+    };
+
     let url = format!(
-        "{}?symbol={}&limit=1000",
+        "{}?symbol={}&limit={}",
         base_url,
-        symbol_str.to_uppercase()
+        symbol_str.to_uppercase(),
+        depth_limit
     );
+
+    let weight = match market_type {
+        MarketKind::Spot => match depth_limit {
+            ..=100_i32 => 5,
+            101_i32..=500_i32 => 25,
+            501_i32..=1000_i32 => 50,
+            1001_i32..=5000_i32 => 250,
+            _ => panic!("Invalid depth limit for Spot market"),
+        },
+        MarketKind::LinearPerps | MarketKind::InversePerps => match depth_limit {
+            ..100 => 2,
+            100 => 5,
+            500 => 10,
+            1000 => 20,
+            _ => panic!("Invalid depth limit for Perp market"),
+        },
+    };
+
+    let source = match market_type {
+        MarketKind::Spot => SourceLimit::BinanceSpot,
+        MarketKind::LinearPerps | MarketKind::InversePerps => SourceLimit::BinancePerp,
+    };
+
+    limiter::acquire_permit(source, weight as usize).await;
 
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
     let text = response.text().await.map_err(StreamError::FetchError)?;
@@ -1122,36 +1154,6 @@ pub async fn fetch_historical_oi(
     Ok(open_interest)
 }
 
-async fn handle_rate_limit(headers: &hyper::HeaderMap, max_limit: f32) -> Result<(), StreamError> {
-    let weight = headers
-        .get("x-mbx-used-weight-1m")
-        .ok_or_else(|| StreamError::ParseError("Missing rate limit header".to_string()))?
-        .to_str()
-        .map_err(|e| StreamError::ParseError(format!("Invalid header value: {e}")))?
-        .parse::<i32>()
-        .map_err(|e| StreamError::ParseError(format!("Invalid weight value: {e}")))?;
-
-    let usage_percentage = (weight as f32 / max_limit) * 100.0;
-
-    match usage_percentage {
-        p if p >= 95.0 => {
-            log::warn!("Rate limit critical ({:.1}%), sleeping for 10s", p);
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-        }
-        p if p >= 90.0 => {
-            log::warn!("Rate limit high ({:.1}%), sleeping for 5s", p);
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        }
-        p if p >= 80.0 => {
-            log::warn!("Rate limit warning ({:.1}%), sleeping for 3s", p);
-            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-        }
-        _ => (),
-    }
-
-    Ok(())
-}
-
 pub async fn fetch_trades(
     ticker: Ticker,
     from_time: u64,
@@ -1192,19 +1194,21 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000",);
-
     url.push_str(&format!("&startTime={from}"));
 
     let response = reqwest::get(&url).await.map_err(StreamError::FetchError)?;
 
-    handle_rate_limit(
-        response.headers(),
-        match market_type {
-            MarketKind::Spot => 6000.0,
-            MarketKind::LinearPerps | MarketKind::InversePerps => 2400.0,
-        },
-    )
-    .await?;
+    let source = match market_type {
+        MarketKind::Spot => SourceLimit::BinanceSpot,
+        MarketKind::LinearPerps | MarketKind::InversePerps => SourceLimit::BinancePerp,
+    };
+
+    let weight = match market_type {
+        MarketKind::Spot => 4,
+        MarketKind::LinearPerps | MarketKind::InversePerps => 20,
+    };
+
+    limiter::acquire_permit(source, weight as usize).await;
 
     let text = response.text().await.map_err(StreamError::FetchError)?;
 
