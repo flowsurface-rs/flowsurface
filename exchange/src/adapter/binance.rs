@@ -718,7 +718,7 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, StreamError> {
         MarketKind::LinearPerps | MarketKind::InversePerps => SourceLimit::BinancePerp,
     };
 
-    let text = crate::client::http_request(&url, source, Some(weight)).await?;
+    let text = crate::limiter::http_request(&url, source, Some(weight)).await?;
 
     match market_type {
         MarketKind::Spot => {
@@ -838,7 +838,7 @@ pub async fn fetch_klines(
         MarketKind::LinearPerps | MarketKind::InversePerps => SourceLimit::BinancePerp,
     };
 
-    let text = crate::client::http_request(&url, source, Some(weight)).await?;
+    let text = crate::limiter::http_request(&url, source, Some(weight)).await?;
 
     let fetched_klines: Vec<FetchedKlines> = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse klines: {e}")))?;
@@ -894,7 +894,7 @@ pub async fn fetch_ticksize(
         ),
     };
 
-    let text = crate::client::http_request(&url, source, Some(weight)).await?;
+    let text = crate::limiter::http_request(&url, source, Some(weight)).await?;
 
     let exchange_info: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse exchange info: {e}")))?;
@@ -1013,7 +1013,7 @@ pub async fn fetch_ticker_prices(
         ),
     };
 
-    let text = crate::client::http_request(&url, source, Some(weight)).await?;
+    let text = crate::limiter::http_request(&url, source, Some(weight)).await?;
 
     let value: Vec<serde_json::Value> = serde_json::from_str(&text)
         .map_err(|e| StreamError::ParseError(format!("Failed to parse prices: {e}")))?;
@@ -1163,7 +1163,7 @@ pub async fn fetch_historical_oi(
         url.push_str("&limit=400");
     }
 
-    let text = crate::client::http_request(&url, source, Some(weight)).await?;
+    let text = crate::limiter::http_request(&url, source, Some(weight)).await?;
 
     let binance_oi: Vec<DeOpenInterest> = serde_json::from_str(&text).map_err(|e| {
         log::error!(
@@ -1243,7 +1243,7 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000",);
     url.push_str(&format!("&startTime={from}"));
 
-    let text = crate::client::http_request(&url, source, Some(weight)).await?;
+    let text = crate::limiter::http_request(&url, source, Some(weight)).await?;
 
     let trades: Vec<Trade> = {
         let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)

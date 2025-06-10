@@ -1,9 +1,59 @@
+use crate::adapter::StreamError;
+use crate::limiter;
+use reqwest::Response;
+
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
+
+pub async fn http_request(
+    url: &str,
+    source: SourceLimit,
+    weight: Option<usize>,
+) -> Result<String, StreamError> {
+    let response = rate_limited_get(url, source, weight.unwrap_or(1)).await?;
+    response.text().await.map_err(StreamError::FetchError)
+}
+
+async fn rate_limited_get(
+    url: &str,
+    source: SourceLimit,
+    weight: usize,
+) -> Result<Response, StreamError> {
+    limiter::acquire_permit(source, weight).await;
+
+    let response = HTTP_CLIENT
+        .get(url)
+        .send()
+        .await
+        .map_err(StreamError::FetchError)?;
+
+    let status = response.status();
+    // These errors mostly related to IP/rate limiting/location restrictions
+    // They may be serious as in they can act as a warning before IP ban;
+    // we shouldn't ever end up here, so currently we just terminate the whole app
+    // TODO: should probably handle this gracefully on higher level
+    match source {
+        SourceLimit::BinanceSpot | SourceLimit::BinancePerp => {
+            if status == 429 || status == 418 {
+                eprintln!("Binance API request returned {} for: {}", status, url);
+                std::process::exit(1);
+            }
+        }
+        SourceLimit::Bybit => {
+            if status == 403 {
+                eprintln!("Bybit API request returned {} for: {}", status, url);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    Ok(response)
+}
 
 const BYBIT_LIMIT: usize = 600;
 const BYBIT_REFILL_RATE: Duration = Duration::from_secs(5);
@@ -12,8 +62,7 @@ const BINANCE_SPOT_LIMIT: usize = 6000;
 const BINANCE_PERP_LIMIT: usize = 2400;
 const BINANCE_REFILL_RATE: Duration = Duration::from_secs(60);
 
-static RATE_LIMITER: Lazy<Arc<Mutex<RateLimiter>>> =
-    Lazy::new(|| Arc::new(Mutex::new(RateLimiter::new())));
+static RATE_LIMITER: Lazy<Mutex<RateLimiter>> = Lazy::new(|| Mutex::new(RateLimiter::new()));
 
 pub async fn acquire_permit(source: SourceLimit, weight: usize) {
     let mut limiter = RATE_LIMITER.lock().await;
@@ -38,14 +87,14 @@ pub enum SourceLimit {
 }
 
 #[derive(Debug)]
-struct RateBucket {
+struct Bucket {
     max_tokens: usize,
     available_tokens: usize,
     last_refill: Instant,
     refill_rate: Duration,
 }
 
-impl RateBucket {
+impl Bucket {
     fn new(max_tokens: usize, refill_rate: Duration) -> Self {
         Self {
             max_tokens,
@@ -86,7 +135,7 @@ impl RateBucket {
 }
 
 pub struct RateLimiter {
-    buckets: HashMap<SourceLimit, RateBucket>,
+    buckets: HashMap<SourceLimit, Bucket>,
 }
 
 impl RateLimiter {
@@ -95,15 +144,15 @@ impl RateLimiter {
 
         buckets.insert(
             SourceLimit::BinanceSpot,
-            RateBucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
+            Bucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
         );
         buckets.insert(
             SourceLimit::BinancePerp,
-            RateBucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
+            Bucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
         );
         buckets.insert(
             SourceLimit::Bybit,
-            RateBucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE),
+            Bucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE),
         );
 
         Self { buckets }
@@ -125,7 +174,7 @@ impl RateLimiter {
             };
 
             self.buckets
-                .insert(source, RateBucket::new(max_tokens, refill_rate));
+                .insert(source, Bucket::new(max_tokens, refill_rate));
         }
     }
 }

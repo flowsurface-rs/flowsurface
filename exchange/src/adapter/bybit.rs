@@ -545,7 +545,7 @@ pub async fn fetch_historical_oi(
         url.push_str("&limit=200");
     }
 
-    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
+    let response_text = crate::limiter::http_request(&url, SourceLimit::Bybit, None).await?;
 
     let content: Value = sonic_rs::from_str(&response_text).map_err(|e| {
         log::error!(
@@ -654,7 +654,7 @@ pub async fn fetch_klines(
         url.push_str(&format!("&limit={}", 200));
     }
 
-    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
+    let response_text = crate::limiter::http_request(&url, SourceLimit::Bybit, None).await?;
 
     let value: ApiResponse =
         sonic_rs::from_str(&response_text).map_err(|e| StreamError::ParseError(e.to_string()))?;
@@ -699,7 +699,7 @@ pub async fn fetch_ticksize(
     let url =
         format!("https://api.bybit.com/v5/market/instruments-info?category={market}&limit=1000",);
 
-    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
+    let response_text = crate::limiter::http_request(&url, SourceLimit::Bybit, None).await?;
 
     let exchange_info: Value =
         sonic_rs::from_str(&response_text).map_err(|e| StreamError::ParseError(e.to_string()))?;
@@ -779,7 +779,7 @@ pub async fn fetch_ticker_prices(
 
     let url = format!("https://api.bybit.com/v5/market/tickers?category={market}");
 
-    let response_text = crate::client::http_request(&url, SourceLimit::Bybit, None).await?;
+    let response_text = crate::limiter::http_request(&url, SourceLimit::Bybit, None).await?;
 
     let exchange_info: Value =
         sonic_rs::from_str(&response_text).map_err(|e| StreamError::ParseError(e.to_string()))?;
