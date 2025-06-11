@@ -32,48 +32,6 @@ static BINANCE_LINEAR_LIMITER: LazyLock<Mutex<DynamicBucket>> =
 static BINANCE_INVERSE_LIMITER: LazyLock<Mutex<DynamicBucket>> =
     LazyLock::new(|| Mutex::new(DynamicBucket::new(BINANCE_PERP_LIMIT)));
 
-async fn acquire_permit(source: SourceLimit, weight: usize) {
-    match source {
-        SourceLimit::Bybit => {
-            let (wait_time, need_to_wait) = {
-                let mut limiter = BYBIT_LIMITER.lock().await;
-                limiter.calculate_wait_time(weight)
-            };
-
-            if need_to_wait && wait_time > Duration::ZERO {
-                tokio::time::sleep(wait_time).await;
-
-                let mut limiter = BYBIT_LIMITER.lock().await;
-                limiter.consume_tokens(weight);
-            }
-        }
-        binance_source @ (SourceLimit::BinanceSpot
-        | SourceLimit::BinanceLinear
-        | SourceLimit::BinanceInverse) => {
-            let limiter_mutex = match binance_source {
-                SourceLimit::BinanceSpot => &BINANCE_SPOT_LIMITER,
-                SourceLimit::BinanceLinear => &BINANCE_LINEAR_LIMITER,
-                SourceLimit::BinanceInverse => &BINANCE_INVERSE_LIMITER,
-                _ => unreachable!(),
-            };
-
-            let (wait_time, reason_for_wait_opt) = {
-                let mut limiter = limiter_mutex.lock().await;
-                limiter.prepare_request(weight)
-            };
-
-            if let Some(reason_for_wait) = reason_for_wait_opt {
-                if wait_time > Duration::ZERO {
-                    tokio::time::sleep(wait_time).await;
-                }
-
-                let mut limiter = limiter_mutex.lock().await;
-                limiter.finalize_request_after_wait(weight, reason_for_wait);
-            }
-        }
-    }
-}
-
 async fn rate_limited_get(
     url: &str,
     source: SourceLimit,
@@ -93,7 +51,6 @@ async fn rate_limited_get(
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
-
             limiter.finalize_request_after_wait(weight, reason_for_wait);
         }
 
@@ -110,7 +67,7 @@ async fn rate_limited_get(
             .and_then(|str| str.parse::<usize>().ok())
         {
             Some(reported_weight) => {
-                println!("{:?}: {}", source, reported_weight);
+                //println!("{:?}: {}", source, reported_weight);
                 limiter.update_weight(reported_weight);
             }
             None => {
@@ -126,7 +83,17 @@ async fn rate_limited_get(
 
         Ok(response)
     } else {
-        acquire_permit(source, weight).await;
+        let (wait_time, need_to_wait) = {
+            let mut limiter = BYBIT_LIMITER.lock().await;
+            limiter.calculate_wait_time(weight)
+        };
+
+        if need_to_wait && wait_time > Duration::ZERO {
+            tokio::time::sleep(wait_time).await;
+
+            let mut limiter = BYBIT_LIMITER.lock().await;
+            limiter.consume_tokens(weight);
+        }
 
         let response = HTTP_CLIENT
             .get(url)
@@ -147,13 +114,13 @@ async fn rate_limited_get(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// API sources with different rate limits per IP
 pub enum SourceLimit {
-    /// 6000 request WEIGHT within 1m sliding window
+    /// 6000 request WEIGHT within 1m clock window
     BinanceSpot,
-    /// 2400 request WEIGHT within 1m sliding window
+    /// 2400 request WEIGHT within 1m clock window
     BinanceLinear,
-    /// 2400 request WEIGHT within 1m sliding window
+    /// 2400 request WEIGHT within 1m clock window
     BinanceInverse,
-    /// 600 total requests within 5s fixed window
+    /// 600 total requests within 5s ?? window
     Bybit,
 }
 
@@ -255,12 +222,16 @@ impl DynamicBucket {
     }
 
     fn refill_fixed_window(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_refill);
+        if let Ok(current_time) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        {
+            let now = Instant::now();
+            let seconds_in_current_minute = current_time.as_secs() % 60;
 
-        if elapsed >= self.window_duration {
-            self.available_tokens = self.max_weight;
-            self.last_refill = now;
+            let elapsed = now.duration_since(self.last_refill);
+            if elapsed >= Duration::from_secs(60) || seconds_in_current_minute < 1 {
+                self.available_tokens = self.max_weight;
+                self.last_refill = now;
+            }
         }
     }
 
@@ -273,19 +244,29 @@ impl DynamicBucket {
 
         if can_use_header_data {
             let available_weight = self.max_weight.saturating_sub(self.current_used_weight);
+
             if available_weight >= weight {
                 self.current_used_weight += weight;
                 self.last_updated = now;
                 (Duration::ZERO, None)
             } else {
-                let wait_time = self
-                    .window_duration
-                    .saturating_sub(elapsed_since_last_update)
-                    .saturating_add(Duration::from_millis(100));
-                (wait_time, Some(DynamicLimitReason::HeaderRate))
+                if let Ok(current_time) =
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                {
+                    let seconds_in_current_minute = current_time.as_secs() % 60;
+                    let time_until_next_minute =
+                        Duration::from_secs(60 - seconds_in_current_minute);
+
+                    let wait_time =
+                        time_until_next_minute.saturating_add(Duration::from_millis(100));
+                    (wait_time, Some(DynamicLimitReason::HeaderRate))
+                } else {
+                    (Duration::ZERO, Some(DynamicLimitReason::HeaderRate))
+                }
             }
         } else {
             self.refill_fixed_window();
+
             if self.available_tokens >= weight {
                 self.available_tokens -= weight;
                 (Duration::ZERO, None)
