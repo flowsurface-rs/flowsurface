@@ -1,10 +1,9 @@
 use crate::adapter::StreamError;
 
 use reqwest::{Client, Response};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use std::{collections::VecDeque, sync::LazyLock};
 use tokio::sync::Mutex;
-use tokio::time::sleep;
 
 static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
 
@@ -17,69 +16,132 @@ pub async fn http_request(
     response.text().await.map_err(StreamError::FetchError)
 }
 
+const BYBIT_LIMIT: usize = 600;
+const BYBIT_REFILL_RATE: Duration = Duration::from_secs(5);
+
+static BYBIT_LIMITER: LazyLock<Mutex<FixedWindowBucket>> =
+    LazyLock::new(|| Mutex::new(FixedWindowBucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE)));
+
+const BINANCE_SPOT_LIMIT: usize = 6000;
+const BINANCE_PERP_LIMIT: usize = 2400;
+
+static BINANCE_SPOT_LIMITER: LazyLock<Mutex<DynamicBucket>> =
+    LazyLock::new(|| Mutex::new(DynamicBucket::new(BINANCE_SPOT_LIMIT)));
+static BINANCE_LINEAR_LIMITER: LazyLock<Mutex<DynamicBucket>> =
+    LazyLock::new(|| Mutex::new(DynamicBucket::new(BINANCE_PERP_LIMIT)));
+static BINANCE_INVERSE_LIMITER: LazyLock<Mutex<DynamicBucket>> =
+    LazyLock::new(|| Mutex::new(DynamicBucket::new(BINANCE_PERP_LIMIT)));
+
+async fn acquire_permit(source: SourceLimit, weight: usize) {
+    match source {
+        SourceLimit::Bybit => {
+            let (wait_time, need_to_wait) = {
+                let mut limiter = BYBIT_LIMITER.lock().await;
+                limiter.calculate_wait_time(weight)
+            };
+
+            if need_to_wait && wait_time > Duration::ZERO {
+                tokio::time::sleep(wait_time).await;
+
+                let mut limiter = BYBIT_LIMITER.lock().await;
+                limiter.consume_tokens(weight);
+            }
+        }
+        binance_source @ (SourceLimit::BinanceSpot
+        | SourceLimit::BinanceLinear
+        | SourceLimit::BinanceInverse) => {
+            let limiter_mutex = match binance_source {
+                SourceLimit::BinanceSpot => &BINANCE_SPOT_LIMITER,
+                SourceLimit::BinanceLinear => &BINANCE_LINEAR_LIMITER,
+                SourceLimit::BinanceInverse => &BINANCE_INVERSE_LIMITER,
+                _ => unreachable!(),
+            };
+
+            let (wait_time, reason_for_wait_opt) = {
+                let mut limiter = limiter_mutex.lock().await;
+                limiter.prepare_request(weight)
+            };
+
+            if let Some(reason_for_wait) = reason_for_wait_opt {
+                if wait_time > Duration::ZERO {
+                    tokio::time::sleep(wait_time).await;
+                }
+
+                let mut limiter = limiter_mutex.lock().await;
+                limiter.finalize_request_after_wait(weight, reason_for_wait);
+            }
+        }
+    }
+}
+
 async fn rate_limited_get(
     url: &str,
     source: SourceLimit,
     weight: usize,
 ) -> Result<Response, StreamError> {
-    acquire_permit(source, weight).await;
+    if source.is_binance() {
+        let mut limiter = match source {
+            SourceLimit::BinanceSpot => BINANCE_SPOT_LIMITER.lock().await,
+            SourceLimit::BinanceInverse => BINANCE_INVERSE_LIMITER.lock().await,
+            SourceLimit::BinanceLinear => BINANCE_LINEAR_LIMITER.lock().await,
+            _ => unreachable!(),
+        };
 
-    let response = HTTP_CLIENT
-        .get(url)
-        .send()
-        .await
-        .map_err(StreamError::FetchError)?;
+        let (wait_time, reason_for_wait_opt) = limiter.prepare_request(weight);
 
-    if SourceLimit::BinancePerp == source || SourceLimit::BinanceSpot == source {
-        let headers = response.headers();
+        if let Some(reason_for_wait) = reason_for_wait_opt {
+            if wait_time > Duration::ZERO {
+                tokio::time::sleep(wait_time).await;
+            }
 
-        let weight = headers
+            limiter.finalize_request_after_wait(weight, reason_for_wait);
+        }
+
+        let response = HTTP_CLIENT
+            .get(url)
+            .send()
+            .await
+            .map_err(StreamError::FetchError)?;
+
+        match response
+            .headers()
             .get("x-mbx-used-weight-1m")
-            .ok_or_else(|| StreamError::ParseError("Missing rate limit header".to_string()))?
-            .to_str()
-            .map_err(|e| StreamError::ParseError(format!("Invalid header value: {e}")))?
-            .parse::<i32>()
-            .map_err(|e| StreamError::ParseError(format!("Invalid weight value: {e}")))?;
-
-        log::debug!("used weight for binance: {weight}");
-    }
-
-    let status = response.status();
-    // These errors mostly related to IP/rate limiting/location restrictions
-    // They may be serious as in they can act as a warning before IP ban;
-    // we shouldn't ever end up here, so currently we just terminate the whole app
-    // TODO: should probably handle this gracefully on higher level
-    match source {
-        SourceLimit::BinanceSpot | SourceLimit::BinancePerp => {
-            if status == 429 || status == 418 {
-                eprintln!("Binance API request returned {} for: {}", status, url);
-                std::process::exit(1);
+            .and_then(|header| header.to_str().ok())
+            .and_then(|str| str.parse::<usize>().ok())
+        {
+            Some(reported_weight) => {
+                println!("{:?}: {}", source, reported_weight);
+                limiter.update_weight(reported_weight);
+            }
+            None => {
+                log::warn!("Binance rate limit header missing or invalid for: {}", url);
             }
         }
-        SourceLimit::Bybit => {
-            if status == 403 {
-                eprintln!("Bybit API request returned {} for: {}", status, url);
-                std::process::exit(1);
-            }
+
+        let status = response.status();
+        if status == 429 || status == 418 {
+            eprintln!("Binance API request returned {} for: {}", status, url);
+            std::process::exit(1);
         }
+
+        Ok(response)
+    } else {
+        acquire_permit(source, weight).await;
+
+        let response = HTTP_CLIENT
+            .get(url)
+            .send()
+            .await
+            .map_err(StreamError::FetchError)?;
+
+        let status = response.status();
+        if source == SourceLimit::Bybit && status == 403 {
+            eprintln!("Bybit API request returned {} for: {}", status, url);
+            std::process::exit(1);
+        }
+
+        Ok(response)
     }
-
-    Ok(response)
-}
-
-const BYBIT_LIMIT: usize = 600;
-const BYBIT_REFILL_RATE: Duration = Duration::from_secs(5);
-
-const BINANCE_SPOT_LIMIT: usize = 6000;
-const BINANCE_PERP_LIMIT: usize = 2400;
-const BINANCE_REFILL_RATE: Duration = Duration::from_secs(60);
-
-static RATE_LIMITER: LazyLock<Mutex<RateLimiter>> =
-    LazyLock::new(|| Mutex::new(RateLimiter::new()));
-
-async fn acquire_permit(source: SourceLimit, weight: usize) {
-    let mut limiter = RATE_LIMITER.lock().await;
-    limiter.acquire(source, weight).await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,43 +150,23 @@ pub enum SourceLimit {
     /// 6000 request WEIGHT within 1m sliding window
     BinanceSpot,
     /// 2400 request WEIGHT within 1m sliding window
-    BinancePerp,
+    BinanceLinear,
+    /// 2400 request WEIGHT within 1m sliding window
+    BinanceInverse,
     /// 600 total requests within 5s fixed window
     Bybit,
 }
 
-struct RateLimiter {
-    fixed_window: [FixedWindowBucket; 1],
-    sliding_window: [SlidingWindowBucket; 2],
-}
-
-impl RateLimiter {
-    fn new() -> Self {
-        Self {
-            fixed_window: [FixedWindowBucket::new(BYBIT_LIMIT, BYBIT_REFILL_RATE)],
-            sliding_window: [
-                SlidingWindowBucket::new(BINANCE_SPOT_LIMIT, BINANCE_REFILL_RATE),
-                SlidingWindowBucket::new(BINANCE_PERP_LIMIT, BINANCE_REFILL_RATE),
-            ],
-        }
-    }
-
-    async fn acquire(&mut self, source: SourceLimit, weight: usize) {
-        match source {
-            SourceLimit::Bybit => {
-                self.fixed_window[0].acquire(weight).await;
-            }
-            SourceLimit::BinanceSpot => {
-                self.sliding_window[0].acquire(weight).await;
-            }
-            SourceLimit::BinancePerp => {
-                self.sliding_window[1].acquire(weight).await;
-            }
-        }
+impl SourceLimit {
+    pub fn is_binance(&self) -> bool {
+        matches!(
+            self,
+            SourceLimit::BinanceSpot | SourceLimit::BinanceLinear | SourceLimit::BinanceInverse
+        )
     }
 }
 
-#[derive(Debug)]
+/// Limiter for a fixed window rate that works on guesstimation
 struct FixedWindowBucket {
     max_tokens: usize,
     available_tokens: usize,
@@ -152,96 +194,120 @@ impl FixedWindowBucket {
         }
     }
 
-    async fn acquire(&mut self, tokens: usize) {
+    fn calculate_wait_time(&mut self, tokens: usize) -> (Duration, bool) {
         self.refill();
 
         if self.available_tokens >= tokens {
             self.available_tokens -= tokens;
-            return;
+            return (Duration::ZERO, false);
         }
 
         let wait_time = self
             .refill_rate
             .saturating_sub(Instant::now().duration_since(self.last_refill));
+        (wait_time, true)
+    }
 
-        log::warn!("Rate limit approaching, waiting {:?}", wait_time);
-        sleep(wait_time).await;
-
+    fn consume_tokens(&mut self, tokens: usize) {
         self.refill();
         self.available_tokens -= tokens.min(self.available_tokens);
     }
 }
 
-struct SlidingWindowBucket {
-    max_requests: usize,
-    window_duration: Duration,
-    request_timestamps: VecDeque<Instant>,
+#[derive(Debug, Clone, Copy)]
+enum DynamicLimitReason {
+    HeaderRate,
+    FixedWindowRate,
 }
 
-impl SlidingWindowBucket {
-    fn new(max_requests: usize, window_duration: Duration) -> Self {
+/// Limiter that can be used when source reports the rate-limit usage
+///
+/// Can fallback to fixed window bucket
+struct DynamicBucket {
+    max_weight: usize,
+    current_used_weight: usize,
+    last_updated: Instant,
+
+    // Fixed window fallback for endpoints that don't return headers
+    available_tokens: usize,
+    last_refill: Instant,
+    window_duration: Duration,
+}
+
+impl DynamicBucket {
+    fn new(max_weight: usize) -> Self {
         Self {
-            max_requests,
-            window_duration,
-            request_timestamps: VecDeque::with_capacity(max_requests),
+            max_weight,
+            current_used_weight: 0,
+            last_updated: Instant::now(),
+
+            available_tokens: max_weight,
+            last_refill: Instant::now(),
+            window_duration: Duration::from_secs(60),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn available_tokens(&mut self) -> usize {
-        let now = Instant::now();
-        let window_start = now - self.window_duration;
-
-        while let Some(timestamp) = self.request_timestamps.front() {
-            if *timestamp < window_start {
-                self.request_timestamps.pop_front();
-            } else {
-                break;
-            }
+    fn update_weight(&mut self, new_weight: usize) {
+        if new_weight > 0 {
+            self.current_used_weight = new_weight;
+            self.last_updated = Instant::now();
         }
-
-        self.max_requests
-            .saturating_sub(self.request_timestamps.len())
     }
 
-    async fn acquire(&mut self, tokens: usize) {
+    fn refill_fixed_window(&mut self) {
         let now = Instant::now();
-        let window_start = now - self.window_duration;
+        let elapsed = now.duration_since(self.last_refill);
 
-        while let Some(timestamp) = self.request_timestamps.front() {
-            if *timestamp < window_start {
-                self.request_timestamps.pop_front();
+        if elapsed >= self.window_duration {
+            self.available_tokens = self.max_weight;
+            self.last_refill = now;
+        }
+    }
+
+    fn prepare_request(&mut self, weight: usize) -> (Duration, Option<DynamicLimitReason>) {
+        let now = Instant::now();
+        let elapsed_since_last_update = now.duration_since(self.last_updated);
+
+        let can_use_header_data =
+            elapsed_since_last_update <= self.window_duration && self.current_used_weight > 0;
+
+        if can_use_header_data {
+            let available_weight = self.max_weight.saturating_sub(self.current_used_weight);
+            if available_weight >= weight {
+                self.current_used_weight += weight;
+                self.last_updated = now;
+                (Duration::ZERO, None)
             } else {
-                break;
+                let wait_time = self
+                    .window_duration
+                    .saturating_sub(elapsed_since_last_update)
+                    .saturating_add(Duration::from_millis(100));
+                (wait_time, Some(DynamicLimitReason::HeaderRate))
+            }
+        } else {
+            self.refill_fixed_window();
+            if self.available_tokens >= weight {
+                self.available_tokens -= weight;
+                (Duration::ZERO, None)
+            } else {
+                let wait_time = self
+                    .window_duration
+                    .saturating_sub(now.duration_since(self.last_refill));
+                (wait_time, Some(DynamicLimitReason::FixedWindowRate))
             }
         }
+    }
 
-        while self.request_timestamps.len() + tokens > self.max_requests {
-            if let Some(oldest) = self.request_timestamps.front() {
-                let exit_time = *oldest + self.window_duration;
-                let wait_time = exit_time
-                    .saturating_duration_since(now)
-                    .max(Duration::from_millis(10));
-
-                log::warn!("Rate limit hit, waiting {:?}", wait_time);
-                sleep(wait_time).await;
-
-                let window_start = Instant::now() - self.window_duration;
-
-                while let Some(timestamp) = self.request_timestamps.front() {
-                    if *timestamp < window_start {
-                        self.request_timestamps.pop_front();
-                    } else {
-                        break;
-                    }
-                }
-            } else {
-                break;
+    fn finalize_request_after_wait(&mut self, weight: usize, reason: DynamicLimitReason) {
+        match reason {
+            DynamicLimitReason::HeaderRate => {
+                self.current_used_weight = weight;
+                self.last_updated = Instant::now();
             }
-        }
-
-        for _ in 0..tokens {
-            self.request_timestamps.push_back(Instant::now());
+            DynamicLimitReason::FixedWindowRate => {
+                self.refill_fixed_window();
+                self.available_tokens -= weight.min(self.available_tokens);
+            }
         }
     }
 }
