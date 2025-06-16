@@ -1,7 +1,7 @@
 use super::{
     Chart, ChartConstants, CommonChartData, Interaction, Message, scale::linear::PriceInfoLabel,
 };
-use crate::style;
+use crate::{chart::TEXT_SIZE, style};
 use data::chart::{
     Basis, ChartLayout,
     heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
@@ -882,7 +882,123 @@ impl canvas::Program<Message> for HeatmapChart {
         if chart.crosshair & !self.timeseries.is_empty() {
             let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
-                    chart.draw_crosshair(frame, theme, bounds_size, cursor_position);
+                    let (cursor_at_price, cursor_at_time) =
+                        chart.draw_crosshair(frame, theme, bounds_size, cursor_position);
+
+                    let current_aggregate_time: u64 = match chart.basis {
+                        Basis::Time(interval) => interval.into(),
+                        Basis::Tick(_) => return,
+                    };
+                    let tick_size = chart.tick_size;
+
+                    let base_data_price = (cursor_at_price / tick_size).round() * tick_size;
+                    let base_data_time = cursor_at_time;
+
+                    let price_tick_offsets = [1i64, 0, -1];
+                    let time_interval_offsets = [-1i64, 0, 1, 2];
+
+                    let price_levels_for_display_lookup: Vec<f32> = price_tick_offsets
+                        .iter()
+                        .map(|offset| base_data_price + (*offset as f32 * tick_size))
+                        .collect();
+                    let time_intervals_for_display_lookup: Vec<u64> = time_interval_offsets
+                        .iter()
+                        .map(|offset| {
+                            base_data_time
+                                .saturating_add_signed(*offset * current_aggregate_time as i64)
+                        })
+                        .collect();
+
+                    let market_type = match self.chart.ticker_info {
+                        Some(ref ticker_info) => ticker_info.market_type(),
+                        None => return,
+                    };
+
+                    let display_grid_qtys = self.heatmap.query_grid_qtys(
+                        base_data_time,
+                        base_data_price,
+                        &time_interval_offsets,
+                        &price_tick_offsets,
+                        market_type,
+                        self.visual_config.order_size_filter,
+                        self.visual_config.coalescing,
+                    );
+
+                    if display_grid_qtys.is_empty() {
+                        return;
+                    }
+
+                    let overlay_width = 180.0;
+                    let overlay_height = 60.0;
+                    let overlay_padding = 12.0;
+
+                    let should_draw_below = cursor_position.y < overlay_height + overlay_padding;
+                    let should_draw_left =
+                        cursor_position.x > bounds.width - (overlay_width + overlay_padding);
+
+                    let overlay_top_left_x = if should_draw_left {
+                        cursor_position.x - overlay_width - overlay_padding
+                    } else {
+                        cursor_position.x + overlay_padding
+                    };
+
+                    let overlay_top_left_y = if should_draw_below {
+                        cursor_position.y + overlay_padding
+                    } else {
+                        cursor_position.y - overlay_height - overlay_padding
+                    };
+
+                    let overlay_background = Path::rectangle(
+                        Point::new(overlay_top_left_x, overlay_top_left_y),
+                        Size::new(overlay_width, overlay_height),
+                    );
+                    frame.fill(
+                        &overlay_background,
+                        palette.background.weakest.color.scale_alpha(0.9),
+                    );
+
+                    let cell_width_overlay = overlay_width / 4.0;
+                    let cell_height_overlay = overlay_height / 3.0;
+
+                    let palette = theme.extended_palette();
+
+                    for display_row_idx in 0..3 {
+                        let data_price_val = price_levels_for_display_lookup[display_row_idx];
+                        let data_price_key = OrderedFloat(data_price_val);
+
+                        for display_col_idx in 0..4 {
+                            let data_time_val = time_intervals_for_display_lookup[display_col_idx];
+
+                            if let Some((qty, is_bid)) =
+                                display_grid_qtys.get(&(data_time_val, data_price_key))
+                            {
+                                let text_content = abbr_large_numbers(*qty);
+                                let color = if *is_bid {
+                                    palette.success.base.color
+                                } else {
+                                    palette.danger.base.color
+                                };
+
+                                let text_pos_x = overlay_top_left_x
+                                    + (display_col_idx as f32 * cell_width_overlay)
+                                    + cell_width_overlay / 2.0;
+                                let text_pos_y = overlay_top_left_y
+                                    + (display_row_idx as f32 * cell_height_overlay)
+                                    + cell_height_overlay / 2.0;
+
+                                frame.fill_text(canvas::Text {
+                                    content: text_content,
+                                    position: Point::new(text_pos_x, text_pos_y),
+                                    size: iced::Pixels(TEXT_SIZE - 2.0),
+                                    color,
+                                    font: style::AZERET_MONO,
+                                    align_y: Alignment::Center.into(),
+                                    align_x: Alignment::Center.into(),
+                                    ..canvas::Text::default()
+                                });
+                            }
+                        }
+                    }
                 }
             });
 

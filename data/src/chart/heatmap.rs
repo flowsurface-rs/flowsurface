@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use exchange::{adapter::MarketKind, depth::Depth};
 use ordered_float::OrderedFloat;
@@ -268,6 +268,91 @@ impl HistoricalDepth {
             }
         }
         result_runs
+    }
+
+    pub fn query_grid_qtys(
+        &self,
+        center_time: u64,
+        center_price: f32,
+        time_interval_offsets: &[i64],
+        price_tick_offsets: &[i64],
+        market_type: MarketKind,
+        order_size_filter: f32,
+        coalesce_kind: Option<CoalesceKind>,
+    ) -> HashMap<(u64, OrderedFloat<f32>), (f32, bool)> {
+        let actual_aggregate_time = self.aggr_time;
+        let actual_tick_size = self.tick_size;
+
+        let target_time_intervals: Vec<u64> = time_interval_offsets
+            .iter()
+            .map(|offset| center_time.saturating_add_signed(*offset * actual_aggregate_time as i64))
+            .collect();
+
+        let target_price_levels: Vec<f32> = price_tick_offsets
+            .iter()
+            .map(|offset| center_price + (*offset as f32 * actual_tick_size))
+            .collect();
+
+        let query_earliest_time = target_time_intervals
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or(center_time);
+        let query_latest_time = target_time_intervals
+            .iter()
+            .max()
+            .copied()
+            .map_or(center_time, |t| t.saturating_add(actual_aggregate_time));
+
+        let query_lowest_price =
+            target_price_levels.iter().fold(f32::MAX, |a, &b| a.min(b)) - 0.1 * actual_tick_size;
+        let query_highest_price =
+            target_price_levels.iter().fold(f32::MIN, |a, &b| a.max(b)) + 0.1 * actual_tick_size;
+
+        let runs_in_vicinity = if let Some(ck) = coalesce_kind {
+            self.coalesced_runs(
+                query_earliest_time,
+                query_latest_time,
+                query_highest_price,
+                query_lowest_price,
+                market_type,
+                order_size_filter,
+                ck,
+            )
+        } else {
+            self.iter_time_filtered(
+                query_earliest_time,
+                query_latest_time,
+                query_highest_price,
+                query_lowest_price,
+            )
+            .flat_map(|(price_level, runs_at_price)| {
+                runs_at_price.iter().map(move |run| (*price_level, *run))
+            })
+            .collect()
+        };
+
+        let mut grid_quantities: HashMap<(u64, OrderedFloat<f32>), (f32, bool)> = HashMap::new();
+
+        for &target_price_val in &target_price_levels {
+            let target_price_key = OrderedFloat(target_price_val);
+            for &target_time_val in &target_time_intervals {
+                for (run_price_level, run_data) in &runs_in_vicinity {
+                    if (run_price_level.into_inner() - target_price_val).abs()
+                        < actual_tick_size * 0.1
+                        && run_data.start_time <= target_time_val
+                        && run_data.until_time > target_time_val
+                    {
+                        grid_quantities.insert(
+                            (target_time_val, target_price_key),
+                            (run_data.qty(), run_data.is_bid),
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        grid_quantities
     }
 }
 
