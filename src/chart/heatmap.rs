@@ -597,46 +597,13 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 let width = end_x - start_x;
 
-                                if width > 0.0 {
-                                    let color_alpha = (run.qty() / max_depth_qty).min(1.0);
-                                    let width_unscaled = width / chart.scaling;
+                                let color_alpha = (run.qty() / max_depth_qty).min(1.0);
 
-                                    if width_unscaled > 40.0
-                                        && cell_height_scaled >= 10.0
-                                        && color_alpha > 0.4
-                                    {
-                                        frame.fill_text(canvas::Text {
-                                            content: abbr_large_numbers(run.qty()),
-                                            position: Point::new(
-                                                start_x + (cell_height / 2.0),
-                                                y_position,
-                                            ),
-                                            size: iced::Pixels(cell_height),
-                                            color: Color::WHITE,
-                                            align_y: Alignment::Center.into(),
-                                            font: style::AZERET_MONO,
-                                            ..canvas::Text::default()
-                                        });
-
-                                        frame.fill_rectangle(
-                                            Point::new(start_x, y_position - (cell_height / 2.0)),
-                                            Size::new(width, cell_height),
-                                            depth_color(palette, run.is_bid, color_alpha),
-                                        );
-
-                                        frame.fill_rectangle(
-                                            Point::new(start_x, y_position - (cell_height / 2.0)),
-                                            Size::new(1.0, cell_height),
-                                            Color::WHITE,
-                                        );
-                                    } else {
-                                        frame.fill_rectangle(
-                                            Point::new(start_x, y_position - (cell_height / 2.0)),
-                                            Size::new(width, cell_height),
-                                            depth_color(palette, run.is_bid, color_alpha),
-                                        );
-                                    }
-                                }
+                                frame.fill_rectangle(
+                                    Point::new(start_x, y_position - (cell_height / 2.0)),
+                                    Size::new(width, cell_height),
+                                    depth_color(palette, run.is_bid, color_alpha),
+                                );
                             });
                     });
             }
@@ -897,32 +864,30 @@ impl canvas::Program<Message> for HeatmapChart {
                     let price_tick_offsets = [1i64, 0, -1];
                     let time_interval_offsets = [-1i64, 0, 1, 2];
 
-                    let price_levels_for_display_lookup: Vec<f32> = price_tick_offsets
-                        .iter()
-                        .map(|offset| base_data_price + (*offset as f32 * tick_size))
-                        .collect();
-                    let time_intervals_for_display_lookup: Vec<u64> = time_interval_offsets
-                        .iter()
-                        .map(|offset| {
-                            base_data_time
-                                .saturating_add_signed(*offset * current_aggregate_time as i64)
-                        })
-                        .collect();
+                    let prices_for_display_lookup: [f32; 3] = std::array::from_fn(|i| {
+                        let offset = price_tick_offsets[i];
+                        base_data_price + (offset as f32 * tick_size)
+                    });
+                    let times_for_display_lookup: [u64; 4] = std::array::from_fn(|i| {
+                        let offset = time_interval_offsets[i];
+                        base_data_time.saturating_add_signed(offset * current_aggregate_time as i64)
+                    });
 
                     let market_type = match self.chart.ticker_info {
                         Some(ref ticker_info) => ticker_info.market_type(),
                         None => return,
                     };
 
-                    let display_grid_qtys = self.heatmap.query_grid_qtys(
-                        base_data_time,
-                        base_data_price,
-                        &time_interval_offsets,
-                        &price_tick_offsets,
-                        market_type,
-                        self.visual_config.order_size_filter,
-                        self.visual_config.coalescing,
-                    );
+                    let display_grid_qtys: HashMap<(u64, OrderedFloat<f32>), (f32, bool)> =
+                        self.heatmap.query_grid_qtys(
+                            base_data_time,
+                            base_data_price,
+                            &time_interval_offsets,
+                            &price_tick_offsets,
+                            market_type,
+                            self.visual_config.order_size_filter,
+                            self.visual_config.coalescing,
+                        );
 
                     if display_grid_qtys.is_empty() {
                         return;
@@ -963,11 +928,11 @@ impl canvas::Program<Message> for HeatmapChart {
                     let palette = theme.extended_palette();
 
                     for display_row_idx in 0..3 {
-                        let data_price_val = price_levels_for_display_lookup[display_row_idx];
+                        let data_price_val = prices_for_display_lookup[display_row_idx];
                         let data_price_key = OrderedFloat(data_price_val);
 
                         for display_col_idx in 0..4 {
-                            let data_time_val = time_intervals_for_display_lookup[display_col_idx];
+                            let data_time_val = times_for_display_lookup[display_col_idx];
 
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
