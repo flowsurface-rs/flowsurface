@@ -856,14 +856,14 @@ impl canvas::Program<Message> for HeatmapChart {
                     let (cursor_at_price, cursor_at_time) =
                         chart.draw_crosshair(frame, theme, bounds_size, cursor_position);
 
-                    let current_aggregate_time: u64 = match chart.basis {
+                    let aggr_time: u64 = match chart.basis {
                         Basis::Time(interval) => interval.into(),
                         Basis::Tick(_) => return,
                     };
                     let tick_size = chart.tick_size;
 
                     let base_data_price = (cursor_at_price / tick_size).round() * tick_size;
-                    let base_data_time = cursor_at_time;
+                    let base_data_time = cursor_at_time.saturating_sub(aggr_time);
 
                     let price_tick_offsets = [1i64, 0, -1];
                     let time_interval_offsets = [-1i64, 0, 1, 2];
@@ -874,13 +874,8 @@ impl canvas::Program<Message> for HeatmapChart {
                     });
                     let times_for_display_lookup: [u64; 4] = std::array::from_fn(|i| {
                         let offset = time_interval_offsets[i];
-                        base_data_time.saturating_add_signed(offset * current_aggregate_time as i64)
+                        base_data_time.saturating_add_signed(offset * aggr_time as i64)
                     });
-
-                    let market_type = match self.chart.ticker_info {
-                        Some(ref ticker_info) => ticker_info.market_type(),
-                        None => return,
-                    };
 
                     let display_grid_qtys: HashMap<(u64, OrderedFloat<f32>), (f32, bool)> =
                         self.heatmap.query_grid_qtys(
