@@ -24,6 +24,10 @@ use std::{
 
 const CLEANUP_THRESHOLD: usize = 4800;
 
+const TOOLTIP_WIDTH: f32 = 180.0;
+const TOOLTIP_HEIGHT: f32 = 60.0;
+const TOOLTIP_PADDING: f32 = 12.0;
+
 impl Chart for HeatmapChart {
     type IndicatorType = HeatmapIndicator;
 
@@ -893,47 +897,44 @@ impl canvas::Program<Message> for HeatmapChart {
                         return;
                     }
 
-                    let overlay_width = 180.0;
-                    let overlay_height = 60.0;
-                    let overlay_padding = 12.0;
-
-                    let should_draw_below = cursor_position.y < overlay_height + overlay_padding;
+                    let should_draw_below = cursor_position.y < TOOLTIP_HEIGHT + TOOLTIP_PADDING;
                     let should_draw_left =
-                        cursor_position.x > bounds.width - (overlay_width + overlay_padding);
+                        cursor_position.x > bounds.width - (TOOLTIP_WIDTH + TOOLTIP_PADDING);
 
                     let overlay_top_left_x = if should_draw_left {
-                        cursor_position.x - overlay_width - overlay_padding
+                        cursor_position.x - TOOLTIP_WIDTH - TOOLTIP_PADDING
                     } else {
-                        cursor_position.x + overlay_padding
+                        cursor_position.x + TOOLTIP_PADDING
                     };
 
                     let overlay_top_left_y = if should_draw_below {
-                        cursor_position.y + overlay_padding
+                        cursor_position.y + TOOLTIP_PADDING
                     } else {
-                        cursor_position.y - overlay_height - overlay_padding
+                        cursor_position.y - TOOLTIP_HEIGHT - TOOLTIP_PADDING
                     };
 
                     let overlay_background = Path::rectangle(
                         Point::new(overlay_top_left_x, overlay_top_left_y),
-                        Size::new(overlay_width, overlay_height),
+                        Size::new(TOOLTIP_WIDTH, TOOLTIP_HEIGHT),
                     );
                     frame.fill(
                         &overlay_background,
                         palette.background.weakest.color.scale_alpha(0.9),
                     );
 
-                    let cell_width_overlay = overlay_width / 4.0;
-                    let cell_height_overlay = overlay_height / 3.0;
+                    let cell_width_overlay = TOOLTIP_WIDTH / 4.0;
+                    let cell_height_overlay = TOOLTIP_HEIGHT / 3.0;
 
                     let palette = theme.extended_palette();
 
-                    for display_row_idx in 0..3 {
-                        let data_price_val = prices_for_display_lookup[display_row_idx];
+                    for (display_row_idx, &data_price_val) in
+                        prices_for_display_lookup.iter().enumerate()
+                    {
                         let data_price_key = OrderedFloat(data_price_val);
 
-                        for display_col_idx in 0..4 {
-                            let data_time_val = times_for_display_lookup[display_col_idx];
-
+                        for (display_col_idx, &data_time_val) in
+                            times_for_display_lookup.iter().enumerate()
+                        {
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
