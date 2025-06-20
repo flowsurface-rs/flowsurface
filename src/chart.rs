@@ -298,6 +298,7 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
                 AxisScaleClicked::Y => {
                     if supports_fit_autoscaling {
                         chart_state.layout.autoscale = Some(Autoscale::FitToVisible);
+                        chart_state.scaling = 1.0;
                     } else {
                         chart_state.layout.autoscale = Some(Autoscale::CenterLatest);
                     }
