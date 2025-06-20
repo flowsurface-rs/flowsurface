@@ -92,6 +92,10 @@ pub trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn interval_keys(&self) -> Option<Vec<u64>>;
 
+    fn autoscaled_coords(&self) -> Vector;
+
+    fn supports_fit_autoscaling(&self) -> bool;
+
     fn is_empty(&self) -> bool;
 }
 
@@ -281,15 +285,22 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
     match message {
         Message::DoubleClick(scale) => {
             let default_chart_width = T::default_cell_width(chart);
+            let autoscaled_coords = chart.autoscaled_coords();
+            let supports_fit_autoscaling = chart.supports_fit_autoscaling();
 
             let chart_state = chart.common_data_mut();
 
             match scale {
                 AxisScaleClicked::X => {
                     chart_state.cell_width = default_chart_width;
+                    chart_state.translation = autoscaled_coords;
                 }
                 AxisScaleClicked::Y => {
-                    chart_state.layout.autoscale = Some(Autoscale::FitToVisible);
+                    if supports_fit_autoscaling {
+                        chart_state.layout.autoscale = Some(Autoscale::FitToVisible);
+                    } else {
+                        chart_state.layout.autoscale = Some(Autoscale::CenterLatest);
+                    }
                 }
             }
         }
@@ -311,11 +322,13 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
             chart_state.layout.autoscale = None;
         }
         Message::AutoscaleToggle => {
+            let supports_fit_autoscaling = chart.supports_fit_autoscaling();
             let chart_state = chart.common_data_mut();
 
             let current_autoscale = chart_state.layout.autoscale;
 
-            chart_state.layout.autoscale = Autoscale::next(current_autoscale);
+            chart_state.layout.autoscale =
+                Autoscale::next(current_autoscale, supports_fit_autoscaling);
             if chart_state.layout.autoscale.is_some() {
                 chart_state.scaling = 1.0;
             }
@@ -413,6 +426,10 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
             let max_cell_height = T::max_cell_height(chart);
 
             let chart_state = chart.common_data_mut();
+
+            if chart_state.layout.autoscale == Some(Autoscale::FitToVisible) {
+                chart_state.layout.autoscale = None;
+            }
 
             if delta < 0.0 && chart_state.cell_height > min_cell_height
                 || delta > 0.0 && chart_state.cell_height < max_cell_height
@@ -669,7 +686,7 @@ impl ChartData {
         }
     }
 
-    pub fn fit_visible_data(
+    pub fn visible_price_range(
         &self,
         chart: &CommonChartData,
     ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {

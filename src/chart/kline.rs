@@ -106,6 +106,24 @@ impl Chart for KlineChart {
         }
     }
 
+    fn autoscaled_coords(&self) -> Vector {
+        let chart = self.common_data();
+        let x_translation = match &self.kind {
+            KlineChartKind::Footprint { .. } => {
+                0.5 * (chart.bounds.width / chart.scaling) - (chart.cell_width / chart.scaling)
+            }
+            KlineChartKind::Candles => {
+                0.5 * (chart.bounds.width / chart.scaling)
+                    - (8.0 * chart.cell_width / chart.scaling)
+            }
+        };
+        Vector::new(x_translation, chart.translation.y)
+    }
+
+    fn supports_fit_autoscaling(&self) -> bool {
+        true
+    }
+
     fn is_empty(&self) -> bool {
         match &self.data_source {
             ChartData::TimeBased(timeseries) => timeseries.datapoints.is_empty(),
@@ -739,7 +757,7 @@ impl KlineChart {
                     chart.translation.y = self.data_source.latest_y_midpoint(chart);
                 }
                 super::Autoscale::FitToVisible => {
-                    if let Some((lowest, highest)) = self.data_source.fit_visible_data(chart) {
+                    if let Some((lowest, highest)) = self.data_source.visible_price_range(chart) {
                         let highest = *highest;
                         let lowest = *lowest;
 

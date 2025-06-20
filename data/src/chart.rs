@@ -25,10 +25,16 @@ pub enum Autoscale {
 }
 
 impl Autoscale {
-    pub fn next(current: Option<Autoscale>) -> Option<Autoscale> {
+    pub fn next(current: Option<Autoscale>, supports_fit_autoscaling: bool) -> Option<Autoscale> {
         match current {
             None => Some(Autoscale::CenterLatest),
-            Some(Autoscale::CenterLatest) => Some(Autoscale::FitToVisible),
+            Some(Autoscale::CenterLatest) => {
+                if supports_fit_autoscaling {
+                    Some(Autoscale::FitToVisible)
+                } else {
+                    None
+                }
+            }
             Some(Autoscale::FitToVisible) => None,
         }
     }

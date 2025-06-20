@@ -61,6 +61,18 @@ impl Chart for HeatmapChart {
         None
     }
 
+    fn autoscaled_coords(&self) -> Vector {
+        let chart = self.common_data();
+        Vector::new(
+            0.5 * (chart.bounds.width / chart.scaling) - (90.0 / chart.scaling),
+            chart.translation.y,
+        )
+    }
+
+    fn supports_fit_autoscaling(&self) -> bool {
+        false
+    }
+
     fn is_empty(&self) -> bool {
         self.timeseries.is_empty()
     }
