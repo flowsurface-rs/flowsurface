@@ -10,10 +10,28 @@ pub use kline::KlineChartKind;
 
 use crate::aggr;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChartLayout {
     pub crosshair: bool,
     pub splits: Vec<f32>,
+    pub autoscale: Option<Autoscale>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+pub enum Autoscale {
+    #[default]
+    CenterLatest,
+    FitToVisible,
+}
+
+impl Autoscale {
+    pub fn next(current: Option<Autoscale>) -> Option<Autoscale> {
+        match current {
+            None => Some(Autoscale::CenterLatest),
+            Some(Autoscale::CenterLatest) => Some(Autoscale::FitToVisible),
+            Some(Autoscale::FitToVisible) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]

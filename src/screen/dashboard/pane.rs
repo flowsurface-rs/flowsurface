@@ -674,6 +674,7 @@ impl Content {
                 ChartLayout {
                     crosshair: true,
                     splits: vec![],
+                    autoscale: Some(data::chart::Autoscale::CenterLatest),
                 },
             )
         };
@@ -773,6 +774,7 @@ impl Content {
             .unwrap_or(ChartLayout {
                 crosshair: true,
                 splits,
+                autoscale: Some(data::chart::Autoscale::FitToVisible),
             });
 
         Content::Kline(

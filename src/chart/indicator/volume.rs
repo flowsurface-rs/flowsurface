@@ -62,7 +62,7 @@ pub fn indicator_elem<'a>(
         label_cache: &cache.y_labels,
         max: max_volume,
         min: 0.0,
-        crosshair: chart_state.crosshair,
+        crosshair: chart_state.layout.crosshair,
         chart_bounds: chart_state.bounds,
     })
     .height(Length::Fill)
@@ -112,7 +112,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let message = match *interaction {
                     Interaction::None => {
-                        if self.chart_state.crosshair && cursor.is_over(bounds) {
+                        if self.chart_state.layout.crosshair && cursor.is_over(bounds) {
                             Some(Message::CrosshairMoved)
                         } else {
                             None
@@ -264,7 +264,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             }
         });
 
-        if chart_state.crosshair {
+        if chart_state.layout.crosshair {
             let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
                 let dashed_line = dashed_line(theme);
 
@@ -430,7 +430,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None if cursor.is_over(bounds) => {
-                if self.chart_state.crosshair {
+                if self.chart_state.layout.crosshair {
                     mouse::Interaction::Crosshair
                 } else {
                     mouse::Interaction::default()

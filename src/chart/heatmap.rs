@@ -61,14 +61,6 @@ impl Chart for HeatmapChart {
         None
     }
 
-    fn autoscaled_coords(&self) -> Vector {
-        let chart = self.common_data();
-        Vector::new(
-            0.5 * (chart.bounds.width / chart.scaling) - (90.0 / chart.scaling),
-            0.0,
-        )
-    }
-
     fn is_empty(&self) -> bool {
         self.timeseries.is_empty()
     }
@@ -134,8 +126,7 @@ impl HeatmapChart {
                 cell_height: 4.0,
                 tick_size,
                 decimals: count_decimals(tick_size),
-                crosshair: layout.crosshair,
-                splits: layout.splits,
+                layout,
                 ticker_info,
                 basis,
                 ..Default::default()
@@ -338,8 +329,11 @@ impl HeatmapChart {
             basis,
         );
 
-        let autoscaled_coords = self.autoscaled_coords();
-        self.chart.translation = autoscaled_coords;
+        let chart = &mut self.chart;
+        chart.translation = Vector::new(
+            0.5 * (chart.bounds.width / chart.scaling) - (90.0 / chart.scaling),
+            0.0,
+        );
 
         self.invalidate(None);
     }
@@ -404,11 +398,13 @@ impl HeatmapChart {
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
-        let autoscaled_coords = self.autoscaled_coords();
         let chart = &mut self.chart;
 
-        if chart.autoscale {
-            chart.translation = autoscaled_coords;
+        if chart.layout.autoscale.is_some() {
+            chart.translation = Vector::new(
+                0.5 * (chart.bounds.width / chart.scaling) - (90.0 / chart.scaling),
+                0.0,
+            );
         }
 
         chart.cache.clear_all();
@@ -850,7 +846,7 @@ impl canvas::Program<Message> for HeatmapChart {
             }
         });
 
-        if chart.crosshair & !self.timeseries.is_empty() {
+        if chart.layout.crosshair & !self.timeseries.is_empty() {
             let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
                     let (cursor_at_price, cursor_at_time) =
@@ -979,7 +975,7 @@ impl canvas::Program<Message> for HeatmapChart {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None => {
-                if cursor.is_over(bounds) && self.chart.crosshair {
+                if cursor.is_over(bounds) && self.chart.layout.crosshair {
                     return mouse::Interaction::Crosshair;
                 }
                 mouse::Interaction::default()

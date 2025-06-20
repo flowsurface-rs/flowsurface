@@ -7,9 +7,11 @@ use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::aggr::{ticks::TickAggr, time::TimeSeries};
+use data::chart::Autoscale;
 use data::chart::{Basis, ChartLayout, indicator::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{TickerInfo, Timeframe};
+use ordered_float::OrderedFloat;
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
 
@@ -90,8 +92,6 @@ pub trait Chart: ChartConstants + canvas::Program<Message> {
 
     fn interval_keys(&self) -> Option<Vec<u64>>;
 
-    fn autoscaled_coords(&self) -> Vector;
-
     fn is_empty(&self) -> bool;
 }
 
@@ -141,7 +141,7 @@ fn canvas_interaction<T: Chart>(
                             translation + (cursor_position - start) * (1.0 / chart_state.scaling),
                         )),
                         Interaction::None => {
-                            if chart_state.crosshair {
+                            if chart_state.layout.crosshair {
                                 Some(Message::CrosshairMoved)
                             } else {
                                 None
@@ -174,6 +174,17 @@ fn canvas_interaction<T: Chart>(
                         mouse::ScrollDelta::Lines { y, .. }
                         | mouse::ScrollDelta::Pixels { y, .. } => y,
                     };
+
+                    if let Some(Autoscale::FitToVisible) = chart_state.layout.autoscale {
+                        return Some(
+                            canvas::Action::publish(Message::XScaling(
+                                y / 2.0,
+                                cursor_to_center.x,
+                                false,
+                            ))
+                            .and_capture(),
+                        );
+                    }
 
                     let should_adjust_cell_width = match (y.signum(), chart_state.scaling) {
                         // zooming out at max scaling with increased cell width
@@ -278,32 +289,40 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
                     chart_state.cell_width = default_chart_width;
                 }
                 AxisScaleClicked::Y => {
-                    chart_state.autoscale = true;
+                    chart_state.layout.autoscale = Some(Autoscale::FitToVisible);
                 }
             }
         }
         Message::Translated(translation) => {
             let chart_state = chart.common_data_mut();
-            chart_state.translation = translation;
-            chart_state.autoscale = false;
+
+            if let Some(Autoscale::FitToVisible) = chart_state.layout.autoscale {
+                chart_state.translation.x = translation.x;
+            } else {
+                chart_state.translation = translation;
+                chart_state.layout.autoscale = None;
+            }
         }
         Message::Scaled(scaling, translation) => {
             let chart_state = chart.common_data_mut();
             chart_state.scaling = scaling;
             chart_state.translation = translation;
 
-            chart_state.autoscale = false;
+            chart_state.layout.autoscale = None;
         }
         Message::AutoscaleToggle => {
             let chart_state = chart.common_data_mut();
-            chart_state.autoscale = !chart_state.autoscale;
-            if chart_state.autoscale {
+
+            let current_autoscale = chart_state.layout.autoscale;
+
+            chart_state.layout.autoscale = Autoscale::next(current_autoscale);
+            if chart_state.layout.autoscale.is_some() {
                 chart_state.scaling = 1.0;
             }
         }
         Message::CrosshairToggle => {
             let chart_state = chart.common_data_mut();
-            chart_state.crosshair = !chart_state.crosshair;
+            chart_state.layout.crosshair = !chart_state.layout.crosshair;
         }
         Message::XScaling(delta, cursor_to_center_x, is_wheel_scroll) => {
             let min_cell_width = T::min_cell_width(chart);
@@ -311,20 +330,48 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
 
             let chart_state = chart.common_data_mut();
 
-            if delta < 0.0 && chart_state.cell_width > min_cell_width
-                || delta > 0.0 && chart_state.cell_width < max_cell_width
+            if !(delta < 0.0 && chart_state.cell_width > min_cell_width
+                || delta > 0.0 && chart_state.cell_width < max_cell_width)
             {
-                let (old_scaling, old_translation_x) =
-                    { (chart_state.scaling, chart_state.translation.x) };
+                return;
+            }
 
-                let zoom_factor = if is_wheel_scroll {
-                    ZOOM_SENSITIVITY
-                } else {
-                    ZOOM_SENSITIVITY * 3.0
+            let is_fit_to_visible_zoom = !is_wheel_scroll
+                && matches!(chart_state.layout.autoscale, Some(Autoscale::FitToVisible));
+
+            let zoom_factor = if is_fit_to_visible_zoom {
+                ZOOM_SENSITIVITY / 1.5
+            } else if is_wheel_scroll {
+                ZOOM_SENSITIVITY
+            } else {
+                ZOOM_SENSITIVITY * 3.0
+            };
+
+            let new_width = (chart_state.cell_width * (1.0 + delta / zoom_factor))
+                .clamp(min_cell_width, max_cell_width);
+
+            if is_fit_to_visible_zoom {
+                let anchor_interval = {
+                    let latest_x_coord = chart_state.interval_to_x(chart_state.latest_x);
+                    if chart_state.is_interval_x_visible(latest_x_coord) {
+                        chart_state.latest_x
+                    } else {
+                        let visible_region = chart_state.visible_region(chart_state.bounds.size());
+                        chart_state.x_to_interval(visible_region.x + visible_region.width)
+                    }
                 };
 
-                let new_width = (chart_state.cell_width * (1.0 + delta / zoom_factor))
-                    .clamp(min_cell_width, max_cell_width);
+                let old_anchor_chart_x = chart_state.interval_to_x(anchor_interval);
+
+                chart_state.cell_width = new_width;
+
+                let new_anchor_chart_x = chart_state.interval_to_x(anchor_interval);
+
+                let shift = new_anchor_chart_x - old_anchor_chart_x;
+                chart_state.translation.x -= shift;
+            } else {
+                let (old_scaling, old_translation_x) =
+                    { (chart_state.scaling, chart_state.translation.x) };
 
                 let latest_x = chart_state.interval_to_x(chart_state.latest_x);
                 let is_interval_x_visible = chart_state.is_interval_x_visible(latest_x);
@@ -357,7 +404,7 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
                         chart_state.translation.x -= new_cursor_x - cursor_chart_x;
                     }
 
-                    chart_state.autoscale = false;
+                    chart_state.layout.autoscale = None;
                 }
             }
         }
@@ -393,7 +440,7 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
                 chart_state.translation.y -= new_cursor_y - cursor_chart_y;
 
                 if is_wheel_scroll {
-                    chart_state.autoscale = false;
+                    chart_state.layout.autoscale = None;
                 }
             }
         }
@@ -407,14 +454,14 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
 
             chart_state.bounds = bounds;
 
-            if !chart_state.autoscale {
+            if chart_state.layout.autoscale != Some(Autoscale::CenterLatest) {
                 chart_state.translation.x += center_delta_x;
             }
         }
         Message::SplitDragged(split, size) => {
             let chart_state = chart.common_data_mut();
 
-            if let Some(split) = chart_state.splits.get_mut(split) {
+            if let Some(split) = chart_state.layout.splits.get_mut(split) {
                 *split = (size * 100.0).round() / 100.0;
             }
         }
@@ -440,7 +487,7 @@ pub fn view<'a, T: Chart>(
         scaling: chart_state.scaling,
         translation_x: chart_state.translation.x,
         max: chart_state.latest_x,
-        crosshair: chart_state.crosshair,
+        crosshair: chart_state.layout.crosshair,
         basis: chart_state.basis,
         cell_width: chart_state.cell_width,
         timezone,
@@ -451,26 +498,41 @@ pub fn view<'a, T: Chart>(
     .height(Length::Fill);
 
     let chart_controls = {
-        let center_button = button(text("C").size(10).align_x(alignment::Horizontal::Center))
-            .width(Length::Shrink)
-            .height(Length::Fill)
-            .on_press(Message::AutoscaleToggle)
-            .style(move |theme, status| {
-                style::button::transparent(theme, status, chart_state.autoscale)
-            });
+        let (autoscale_btn_placeholder, autoscale_btn_tooltip) = match chart_state.layout.autoscale
+        {
+            Some(Autoscale::CenterLatest) => (text("C"), Some("Center latest")),
+            Some(Autoscale::FitToVisible) => (text("A"), Some("Fit to visible")),
+            None => (text("C"), None),
+        };
+
+        let autoscale_button = button(
+            autoscale_btn_placeholder
+                .size(10)
+                .align_x(alignment::Horizontal::Center),
+        )
+        .width(Length::Shrink)
+        .height(Length::Fill)
+        .on_press(Message::AutoscaleToggle)
+        .style(move |theme, status| {
+            style::button::transparent(theme, status, chart_state.layout.autoscale.is_some())
+        });
 
         let crosshair_button = button(text("+").size(10).align_x(alignment::Horizontal::Center))
             .width(Length::Shrink)
             .height(Length::Fill)
             .on_press(Message::CrosshairToggle)
             .style(move |theme, status| {
-                style::button::transparent(theme, status, chart_state.crosshair)
+                style::button::transparent(theme, status, chart_state.layout.crosshair)
             });
 
         container(
             row![
                 Space::new(Length::Fill, Length::Fill),
-                tooltip(center_button, Some("Center Latest"), TooltipPosition::Top),
+                tooltip(
+                    autoscale_button,
+                    autoscale_btn_tooltip,
+                    TooltipPosition::Top
+                ),
                 tooltip(crosshair_button, Some("Crosshair"), TooltipPosition::Top),
             ]
             .spacing(2),
@@ -488,7 +550,7 @@ pub fn view<'a, T: Chart>(
             decimals: chart_state.decimals,
             min: chart_state.base_price_y,
             last_price: chart_state.last_price,
-            crosshair: chart_state.crosshair,
+            crosshair: chart_state.layout.crosshair,
             tick_size: chart_state.tick_size,
             cell_height: chart_state.cell_height,
             basis: chart_state.basis,
@@ -520,7 +582,7 @@ pub fn view<'a, T: Chart>(
                 .chain(indicators)
                 .collect::<Vec<_>>();
 
-            MultiSplit::new(panels, &chart_state.splits, |index, position| {
+            MultiSplit::new(panels, &chart_state.layout.splits, |index, position| {
                 Message::SplitDragged(index, position)
             })
             .into()
@@ -606,44 +668,51 @@ impl ChartData {
                 .map_or(0.0, |(dp, _)| calculate_target_y(dp.kline)),
         }
     }
+
+    pub fn fit_visible_data(
+        &self,
+        chart: &CommonChartData,
+    ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {
+        let visible_region = chart.visible_region(chart.bounds.size());
+        let (start_interval, end_interval) = chart.interval_range(&visible_region);
+
+        match self {
+            ChartData::TimeBased(timeseries) => {
+                timeseries.min_max_price_in_range(start_interval, end_interval)
+            }
+            ChartData::TickBased(tick_aggr) => {
+                tick_aggr.min_max_price_in_range(start_interval as usize, end_interval as usize)
+            }
+        }
+    }
 }
 
 pub struct CommonChartData {
     cache: Caches,
-
-    crosshair: bool,
     bounds: Rectangle,
-
-    autoscale: bool,
-
     translation: Vector,
     scaling: f32,
     cell_width: f32,
     cell_height: f32,
     basis: Basis,
-
     last_price: Option<PriceInfoLabel>,
-
     base_price_y: f32,
     latest_x: u64,
     tick_size: f32,
     decimals: usize,
     ticker_info: Option<TickerInfo>,
-
-    splits: Vec<f32>,
+    layout: ChartLayout,
 }
 
 impl Default for CommonChartData {
     fn default() -> Self {
         CommonChartData {
             cache: Caches::default(),
-            crosshair: true,
             translation: Vector::default(),
             bounds: Rectangle::default(),
             basis: Timeframe::M5.into(),
             last_price: None,
             scaling: 1.0,
-            autoscale: true,
             cell_width: DEFAULT_CELL_WIDTH,
             cell_height: DEFAULT_CELL_HEIGHT,
             base_price_y: 0.0,
@@ -651,7 +720,7 @@ impl Default for CommonChartData {
             tick_size: 0.0,
             decimals: 0,
             ticker_info: None,
-            splits: vec![],
+            layout: ChartLayout::default(),
         }
     }
 }
@@ -855,9 +924,11 @@ impl CommonChartData {
     }
 
     fn get_chart_layout(&self) -> ChartLayout {
+        let layout = &self.layout;
         ChartLayout {
-            crosshair: self.crosshair,
-            splits: self.splits.clone(),
+            crosshair: layout.crosshair,
+            splits: layout.splits.clone(),
+            autoscale: layout.autoscale,
         }
     }
 

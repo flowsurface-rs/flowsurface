@@ -201,6 +201,31 @@ impl TickAggr {
         }
     }
 
+    pub fn min_max_price_in_range(
+        &self,
+        earliest: usize,
+        latest: usize,
+    ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {
+        let mut min_price = OrderedFloat(f32::MAX);
+        let mut max_price = OrderedFloat(f32::MIN);
+
+        self.datapoints
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(index, _)| *index <= latest && *index >= earliest)
+            .for_each(|(_, dp)| {
+                min_price = min_price.min(OrderedFloat(dp.kline.low));
+                max_price = max_price.max(OrderedFloat(dp.kline.high));
+            });
+
+        if min_price.0 == f32::MAX || max_price.0 == f32::MIN {
+            None
+        } else {
+            Some((min_price, max_price))
+        }
+    }
+
     pub fn max_qty_idx_range(
         &self,
         cluster_kind: ClusterKind,
