@@ -518,8 +518,8 @@ pub fn view<'a, T: Chart>(
     let chart_controls = {
         let (autoscale_btn_placeholder, autoscale_btn_tooltip) = match chart_state.layout.autoscale
         {
-            Some(Autoscale::CenterLatest) => (text("C"), Some("Center latest")),
-            Some(Autoscale::FitToVisible) => (text("A"), Some("Fit to visible")),
+            Some(Autoscale::CenterLatest) => (text("C"), Some("Center last price")),
+            Some(Autoscale::FitToVisible) => (text("A"), Some("Auto")),
             None => (text("C"), None),
         };
 
