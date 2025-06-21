@@ -30,11 +30,11 @@ use std::time::Instant;
 impl Chart for KlineChart {
     type IndicatorType = KlineIndicator;
 
-    fn common_data(&self) -> &ViewState {
+    fn state(&self) -> &ViewState {
         &self.chart
     }
 
-    fn common_data_mut(&mut self) -> &mut ViewState {
+    fn mut_state(&mut self) -> &mut ViewState {
         &mut self.chart
     }
 
@@ -43,7 +43,7 @@ impl Chart for KlineChart {
     }
 
     fn view_indicators(&self, enabled: &[Self::IndicatorType]) -> Vec<Element<Message>> {
-        let chart_state: &ViewState = self.common_data();
+        let chart_state = self.state();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
         let (earliest, latest) = chart_state.interval_range(&visible_region);
@@ -73,7 +73,7 @@ impl Chart for KlineChart {
     }
 
     fn visible_timerange(&self) -> (u64, u64) {
-        let chart = self.common_data();
+        let chart = self.state();
         let region = chart.visible_region(chart.bounds.size());
 
         match &chart.basis {
@@ -107,7 +107,7 @@ impl Chart for KlineChart {
     }
 
     fn autoscaled_coords(&self) -> Vector {
-        let chart = self.common_data();
+        let chart = self.state();
         let x_translation = match &self.kind {
             KlineChartKind::Footprint { .. } => {
                 0.5 * (chart.bounds.width / chart.scaling) - (chart.cell_width / chart.scaling)
@@ -372,7 +372,7 @@ impl KlineChart {
                     data.insert(kline.time, (kline.volume.0, kline.volume.1));
                 };
 
-                let chart = self.common_data_mut();
+                let chart = self.mut_state();
 
                 if (kline.time) > chart.latest_x {
                     chart.latest_x = kline.time;
@@ -557,7 +557,7 @@ impl KlineChart {
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
-        let chart = self.common_data_mut();
+        let chart = self.mut_state();
 
         chart.cell_height *= new_tick_size / chart.tick_size;
         chart.tick_size = new_tick_size;
@@ -884,7 +884,7 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let chart = self.common_data();
+        let chart = self.state();
 
         if chart.bounds.width == 0.0 {
             return vec![];

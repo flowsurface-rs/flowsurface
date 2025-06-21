@@ -4,7 +4,7 @@ pub mod timeseries;
 use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 
 use super::{Basis, Interaction, Message};
-use data::util::round_to_tick;
+use data::{chart::Autoscale, util::round_to_tick};
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,
@@ -220,6 +220,7 @@ pub struct AxisLabelsX<'a> {
     pub timezone: data::UserTimezone,
     pub chart_bounds: Rectangle,
     pub interval_keys: Option<Vec<u64>>,
+    pub autoscaling: Option<Autoscale>,
 }
 
 impl AxisLabelsX<'_> {
@@ -392,7 +393,13 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                         if difference_x.abs() > 1.0 {
                             *last_position = cursor_position;
 
-                            let message = Message::XScaling(difference_x * 0.2, 0.0, false);
+                            let delta = if self.autoscaling == Some(Autoscale::FitToVisible) {
+                                difference_x * 0.05
+                            } else {
+                                difference_x * 0.2
+                            };
+
+                            let message = Message::XScaling(delta, 0.0, false);
 
                             return Some(canvas::Action::publish(message).and_capture());
                         }

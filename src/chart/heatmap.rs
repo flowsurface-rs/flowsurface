@@ -31,11 +31,11 @@ const TOOLTIP_PADDING: f32 = 12.0;
 impl Chart for HeatmapChart {
     type IndicatorType = HeatmapIndicator;
 
-    fn common_data(&self) -> &ViewState {
+    fn state(&self) -> &ViewState {
         &self.chart
     }
 
-    fn common_data_mut(&mut self) -> &mut ViewState {
+    fn mut_state(&mut self) -> &mut ViewState {
         &mut self.chart
     }
 
@@ -48,7 +48,7 @@ impl Chart for HeatmapChart {
     }
 
     fn visible_timerange(&self) -> (u64, u64) {
-        let chart = self.common_data();
+        let chart = self.state();
         let visible_region = chart.visible_region(chart.bounds.size());
 
         (
@@ -62,7 +62,7 @@ impl Chart for HeatmapChart {
     }
 
     fn autoscaled_coords(&self) -> Vector {
-        let chart = self.common_data();
+        let chart = self.state();
         Vector::new(
             0.5 * (chart.bounds.width / chart.scaling) - (90.0 / chart.scaling),
             chart.translation.y,
@@ -362,7 +362,7 @@ impl HeatmapChart {
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
-        let chart_state = self.common_data_mut();
+        let chart_state = self.mut_state();
 
         let basis = chart_state.basis;
 
@@ -511,7 +511,7 @@ impl canvas::Program<Message> for HeatmapChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let chart = self.common_data();
+        let chart = self.state();
 
         if chart.bounds.width == 0.0 {
             return vec![];
