@@ -1,5 +1,5 @@
 use super::{
-    Action, Basis, Caches, Chart, ChartConstants, ChartData, CommonChartData, Interaction, Message,
+    Action, Basis, Caches, Chart, ChartConstants, ChartData, Interaction, Message, ViewState,
     indicator, request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::{modal::pane::settings::study, style};
@@ -30,11 +30,11 @@ use std::time::Instant;
 impl Chart for KlineChart {
     type IndicatorType = KlineIndicator;
 
-    fn common_data(&self) -> &CommonChartData {
+    fn common_data(&self) -> &ViewState {
         &self.chart
     }
 
-    fn common_data_mut(&mut self) -> &mut CommonChartData {
+    fn common_data_mut(&mut self) -> &mut ViewState {
         &mut self.chart
     }
 
@@ -43,7 +43,7 @@ impl Chart for KlineChart {
     }
 
     fn view_indicators(&self, enabled: &[Self::IndicatorType]) -> Vec<Element<Message>> {
-        let chart_state: &CommonChartData = self.common_data();
+        let chart_state: &ViewState = self.common_data();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
         let (earliest, latest) = chart_state.interval_range(&visible_region);
@@ -148,7 +148,7 @@ impl IndicatorData {
 
     fn indicator_elem<'a>(
         &'a self,
-        chart: &'a CommonChartData,
+        chart: &'a ViewState,
         earliest: u64,
         latest: u64,
     ) -> Element<'a, Message> {
@@ -194,7 +194,7 @@ impl ChartConstants for KlineChart {
 }
 
 pub struct KlineChart {
-    chart: CommonChartData,
+    chart: ViewState,
     data_source: ChartData,
     raw_trades: Vec<Trade>,
     indicators: HashMap<KlineIndicator, IndicatorData>,
@@ -249,7 +249,7 @@ impl KlineChart {
                     })
                     .collect();
 
-                let mut chart = CommonChartData {
+                let mut chart = ViewState {
                     cell_width: match kind {
                         KlineChartKind::Footprint { .. } => 80.0,
                         KlineChartKind::Candles => 4.0,
@@ -313,7 +313,7 @@ impl KlineChart {
                     })
                     .collect();
 
-                let mut chart = CommonChartData {
+                let mut chart = ViewState {
                     cell_width: match kind {
                         KlineChartKind::Footprint { .. } => 80.0,
                         KlineChartKind::Candles => 4.0,
@@ -542,7 +542,7 @@ impl KlineChart {
     }
 
     pub fn chart_layout(&self) -> ChartLayout {
-        self.chart.get_chart_layout()
+        self.chart.layout()
     }
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
@@ -754,10 +754,43 @@ impl KlineChart {
                         }
                     };
                     chart.translation.x = x_translation;
-                    chart.translation.y = self.data_source.latest_y_midpoint(chart);
+
+                    let calculate_target_y = |kline: exchange::Kline| -> f32 {
+                        let y_low = chart.price_to_y(kline.low);
+                        let y_high = chart.price_to_y(kline.high);
+                        let y_close = chart.price_to_y(kline.close);
+
+                        let mut target_y_translation = -(y_low + y_high) / 2.0;
+
+                        if chart.bounds.height > f32::EPSILON && chart.scaling > f32::EPSILON {
+                            let visible_half_height = (chart.bounds.height / chart.scaling) / 2.0;
+
+                            let view_center_y_centered = -target_y_translation;
+
+                            let visible_y_top = view_center_y_centered - visible_half_height;
+                            let visible_y_bottom = view_center_y_centered + visible_half_height;
+
+                            let padding = chart.cell_height;
+
+                            if y_close < visible_y_top {
+                                target_y_translation = -(y_close - padding + visible_half_height);
+                            } else if y_close > visible_y_bottom {
+                                target_y_translation = -(y_close + padding - visible_half_height);
+                            }
+                        }
+                        target_y_translation
+                    };
+
+                    chart.translation.y = self.data_source.latest_y_midpoint(calculate_target_y);
                 }
                 super::Autoscale::FitToVisible => {
-                    if let Some((lowest, highest)) = self.data_source.visible_price_range(chart) {
+                    let visible_region = chart.visible_region(chart.bounds.size());
+                    let (start_interval, end_interval) = chart.interval_range(&visible_region);
+
+                    if let Some((lowest, highest)) = self
+                        .data_source
+                        .visible_price_range(start_interval, end_interval)
+                    {
                         let highest = *highest;
                         let lowest = *lowest;
 

@@ -1,5 +1,5 @@
 use super::{
-    Chart, ChartConstants, CommonChartData, Interaction, Message, scale::linear::PriceInfoLabel,
+    Chart, ChartConstants, Interaction, Message, ViewState, scale::linear::PriceInfoLabel,
 };
 use crate::{chart::TEXT_SIZE, style};
 use data::chart::{
@@ -31,11 +31,11 @@ const TOOLTIP_PADDING: f32 = 12.0;
 impl Chart for HeatmapChart {
     type IndicatorType = HeatmapIndicator;
 
-    fn common_data(&self) -> &CommonChartData {
+    fn common_data(&self) -> &ViewState {
         &self.chart
     }
 
-    fn common_data_mut(&mut self) -> &mut CommonChartData {
+    fn common_data_mut(&mut self) -> &mut ViewState {
         &mut self.chart
     }
 
@@ -114,7 +114,7 @@ enum IndicatorData {
 }
 
 pub struct HeatmapChart {
-    chart: CommonChartData,
+    chart: ViewState,
     timeseries: BTreeMap<u64, (Box<[GroupedTrade]>, (f32, f32))>,
     indicators: HashMap<HeatmapIndicator, IndicatorData>,
     pause_buffer: Vec<(u64, Box<[Trade]>, Depth)>,
@@ -133,7 +133,7 @@ impl HeatmapChart {
         config: Option<Config>,
     ) -> Self {
         HeatmapChart {
-            chart: CommonChartData {
+            chart: ViewState {
                 cell_width: data::chart::heatmap::DEFAULT_CELL_WIDTH,
                 cell_height: 4.0,
                 tick_size,
@@ -358,7 +358,7 @@ impl HeatmapChart {
     }
 
     pub fn chart_layout(&self) -> ChartLayout {
-        self.chart.get_chart_layout()
+        self.chart.layout()
     }
 
     pub fn change_tick_size(&mut self, new_tick_size: f32) {

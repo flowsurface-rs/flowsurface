@@ -6,12 +6,9 @@ mod scale;
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
-use data::aggr::{ticks::TickAggr, time::TimeSeries};
-use data::chart::Autoscale;
-use data::chart::{Basis, ChartLayout, indicator::Indicator};
+use data::chart::{Autoscale, Basis, ChartConstants, ChartData, ChartLayout, indicator::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{TickerInfo, Timeframe};
-use ordered_float::OrderedFloat;
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
 
@@ -47,20 +44,10 @@ pub enum Interaction {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum AxisScaleClicked {
     X,
     Y,
-}
-
-pub trait ChartConstants {
-    fn min_scaling(&self) -> f32;
-    fn max_scaling(&self) -> f32;
-    fn max_cell_width(&self) -> f32;
-    fn min_cell_width(&self) -> f32;
-    fn max_cell_height(&self) -> f32;
-    fn min_cell_height(&self) -> f32;
-    fn default_cell_width(&self) -> f32;
 }
 
 #[derive(Debug, Clone)]
@@ -80,9 +67,9 @@ pub enum Message {
 pub trait Chart: ChartConstants + canvas::Program<Message> {
     type IndicatorType: Indicator;
 
-    fn common_data(&self) -> &CommonChartData;
+    fn common_data(&self) -> &ViewState;
 
-    fn common_data_mut(&mut self) -> &mut CommonChartData;
+    fn common_data_mut(&mut self) -> &mut ViewState;
 
     fn invalidate(&mut self);
 
@@ -644,68 +631,7 @@ impl Caches {
     }
 }
 
-enum ChartData {
-    TimeBased(TimeSeries),
-    TickBased(TickAggr),
-}
-
-impl ChartData {
-    pub fn latest_y_midpoint(&self, chart: &CommonChartData) -> f32 {
-        let calculate_target_y = |kline: exchange::Kline| -> f32 {
-            let y_low = chart.price_to_y(kline.low);
-            let y_high = chart.price_to_y(kline.high);
-            let y_close = chart.price_to_y(kline.close);
-
-            let mut target_y_translation = -(y_low + y_high) / 2.0;
-
-            if chart.bounds.height > f32::EPSILON && chart.scaling > f32::EPSILON {
-                let visible_half_height = (chart.bounds.height / chart.scaling) / 2.0;
-
-                let view_center_y_centered = -target_y_translation;
-
-                let visible_y_top = view_center_y_centered - visible_half_height;
-                let visible_y_bottom = view_center_y_centered + visible_half_height;
-
-                let padding = chart.cell_height;
-
-                if y_close < visible_y_top {
-                    target_y_translation = -(y_close - padding + visible_half_height);
-                } else if y_close > visible_y_bottom {
-                    target_y_translation = -(y_close + padding - visible_half_height);
-                }
-            }
-            target_y_translation
-        };
-
-        match self {
-            ChartData::TimeBased(timeseries) => timeseries
-                .latest_kline()
-                .map_or(0.0, |kline| calculate_target_y(*kline)),
-            ChartData::TickBased(tick_aggr) => tick_aggr
-                .latest_dp()
-                .map_or(0.0, |(dp, _)| calculate_target_y(dp.kline)),
-        }
-    }
-
-    pub fn visible_price_range(
-        &self,
-        chart: &CommonChartData,
-    ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {
-        let visible_region = chart.visible_region(chart.bounds.size());
-        let (start_interval, end_interval) = chart.interval_range(&visible_region);
-
-        match self {
-            ChartData::TimeBased(timeseries) => {
-                timeseries.min_max_price_in_range(start_interval, end_interval)
-            }
-            ChartData::TickBased(tick_aggr) => {
-                tick_aggr.min_max_price_in_range(start_interval as usize, end_interval as usize)
-            }
-        }
-    }
-}
-
-pub struct CommonChartData {
+pub struct ViewState {
     cache: Caches,
     bounds: Rectangle,
     translation: Vector,
@@ -722,9 +648,9 @@ pub struct CommonChartData {
     layout: ChartLayout,
 }
 
-impl Default for CommonChartData {
+impl Default for ViewState {
     fn default() -> Self {
-        CommonChartData {
+        ViewState {
             cache: Caches::default(),
             translation: Vector::default(),
             bounds: Rectangle::default(),
@@ -743,7 +669,7 @@ impl Default for CommonChartData {
     }
 }
 
-impl CommonChartData {
+impl ViewState {
     fn visible_region(&self, size: Size) -> Rectangle {
         let width = size.width / self.scaling;
         let height = size.height / self.scaling;
@@ -941,7 +867,7 @@ impl CommonChartData {
         }
     }
 
-    fn get_chart_layout(&self) -> ChartLayout {
+    fn layout(&self) -> ChartLayout {
         let layout = &self.layout;
         ChartLayout {
             crosshair: layout.crosshair,
@@ -950,7 +876,7 @@ impl CommonChartData {
         }
     }
 
-    pub fn y_labels_width(&self) -> Length {
+    fn y_labels_width(&self) -> Length {
         let base_value = self.base_price_y;
         let decimals = self.decimals;
 

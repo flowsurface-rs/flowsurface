@@ -298,12 +298,12 @@ impl HistoricalDepth {
         let query_lowest_price = price_tick_offsets
             .iter()
             .map(|offset| center_price + (*offset as f32 * tick_size))
-            .fold(f32::INFINITY, |a, b| a.min(b))
+            .fold(f32::INFINITY, f32::min)
             - 0.1 * tick_size;
         let query_highest_price = price_tick_offsets
             .iter()
             .map(|offset| center_price + (*offset as f32 * tick_size))
-            .fold(f32::NEG_INFINITY, |a, b| a.max(b))
+            .fold(f32::NEG_INFINITY, f32::max)
             + 0.1 * tick_size;
 
         let runs_in_vicinity = if let Some(ck) = coalesce_kind {

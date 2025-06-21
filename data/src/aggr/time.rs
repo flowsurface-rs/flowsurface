@@ -256,12 +256,10 @@ impl TimeSeries {
                 let (kline_earliest, kline_latest) = self.kline_timerange();
 
                 let fetch_from = last_t_before_gap
-                    .map(|t| t.saturating_add(1))
-                    .unwrap_or(kline_earliest)
+                    .map_or(kline_earliest, |t| t.saturating_add(1))
                     .max(visible_earliest);
                 let fetch_to = first_t_after_gap
-                    .map(|t| t.saturating_sub(1))
-                    .unwrap_or(kline_latest)
+                    .map_or(kline_latest, |t| t.saturating_sub(1))
                     .min(visible_latest);
 
                 if fetch_from < fetch_to {

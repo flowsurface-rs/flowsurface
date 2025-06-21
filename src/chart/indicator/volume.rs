@@ -5,13 +5,13 @@ use iced::widget::{Canvas, container, row, vertical_rule};
 use iced::{Element, Length};
 use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
-use crate::chart::{Basis, Caches, CommonChartData, Interaction, Message};
+use crate::chart::{Basis, Caches, ViewState, Interaction, Message};
 use crate::style::{self, dashed_line};
 
 use data::util::{format_with_commas, round_to_tick};
 
 pub fn indicator_elem<'a>(
-    chart_state: &'a CommonChartData,
+    chart_state: &'a ViewState,
     cache: &'a Caches,
     datapoints: &'a BTreeMap<u64, (f32, f32)>,
     earliest: u64,
@@ -81,7 +81,7 @@ pub struct VolumeIndicator<'a> {
     pub crosshair_cache: &'a Cache,
     pub max_volume: f32,
     pub datapoints: &'a BTreeMap<u64, (f32, f32)>,
-    pub chart_state: &'a CommonChartData,
+    pub chart_state: &'a ViewState,
 }
 
 impl VolumeIndicator<'_> {
