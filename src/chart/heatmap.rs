@@ -1,9 +1,9 @@
 use super::{
-    Chart, ChartConstants, Interaction, Message, ViewState, scale::linear::PriceInfoLabel,
+    Chart, PlotConstants, Interaction, Message, ViewState, scale::linear::PriceInfoLabel,
 };
 use crate::{chart::TEXT_SIZE, style};
 use data::chart::{
-    Basis, ChartLayout,
+    Basis, ViewConfig,
     heatmap::{Config, GroupedTrade, HistoricalDepth, QtyScale},
     indicator::HeatmapIndicator,
 };
@@ -78,7 +78,7 @@ impl Chart for HeatmapChart {
     }
 }
 
-impl ChartConstants for HeatmapChart {
+impl PlotConstants for HeatmapChart {
     fn min_scaling(&self) -> f32 {
         data::chart::heatmap::MIN_SCALING
     }
@@ -125,7 +125,7 @@ pub struct HeatmapChart {
 
 impl HeatmapChart {
     pub fn new(
-        layout: ChartLayout,
+        layout: ViewConfig,
         basis: Basis,
         tick_size: f32,
         enabled_indicators: &[HeatmapIndicator],
@@ -357,7 +357,7 @@ impl HeatmapChart {
         }
     }
 
-    pub fn chart_layout(&self) -> ChartLayout {
+    pub fn chart_layout(&self) -> ViewConfig {
         self.chart.layout()
     }
 

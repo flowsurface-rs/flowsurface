@@ -15,7 +15,7 @@ use crate::{
 use data::{
     UserTimezone,
     chart::{
-        Basis, ChartLayout, VisualConfig,
+        Basis, ViewConfig, VisualConfig,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator},
     },
     layout::pane::Settings,
@@ -671,7 +671,7 @@ impl Content {
         } else {
             (
                 vec![HeatmapIndicator::Volume],
-                ChartLayout {
+                ViewConfig {
                     crosshair: true,
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
@@ -771,7 +771,7 @@ impl Content {
 
         let layout = prev_layout
             .filter(|l| l.splits.len() == splits.len())
-            .unwrap_or(ChartLayout {
+            .unwrap_or(ViewConfig {
                 crosshair: true,
                 splits,
                 autoscale: Some(data::chart::Autoscale::FitToVisible),

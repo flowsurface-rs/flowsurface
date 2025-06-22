@@ -6,7 +6,7 @@ mod scale;
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
-use data::chart::{Autoscale, Basis, ChartConstants, ChartData, ChartLayout, indicator::Indicator};
+use data::chart::{Autoscale, Basis, PlotConstants, PlotData, ViewConfig, indicator::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{TickerInfo, Timeframe};
 use scale::linear::PriceInfoLabel;
@@ -58,7 +58,7 @@ pub enum Message {
     DoubleClick(AxisScaleClicked),
 }
 
-pub trait Chart: ChartConstants + canvas::Program<Message> {
+pub trait Chart: PlotConstants + canvas::Program<Message> {
     type IndicatorType: Indicator;
 
     fn state(&self) -> &ViewState;
@@ -295,8 +295,20 @@ pub fn update<T: Chart>(chart: &mut T, message: Message) {
             let state = chart.mut_state();
 
             let current_autoscale = state.layout.autoscale;
+            state.layout.autoscale = {
+                match current_autoscale {
+                    None => Some(Autoscale::CenterLatest),
+                    Some(Autoscale::CenterLatest) => {
+                        if supports_fit_autoscaling {
+                            Some(Autoscale::FitToVisible)
+                        } else {
+                            None
+                        }
+                    }
+                    Some(Autoscale::FitToVisible) => None,
+                }
+            };
 
-            state.layout.autoscale = Autoscale::next(current_autoscale, supports_fit_autoscaling);
             if state.layout.autoscale.is_some() {
                 state.scaling = 1.0;
             }
@@ -619,7 +631,7 @@ pub struct ViewState {
     tick_size: f32,
     decimals: usize,
     ticker_info: Option<TickerInfo>,
-    layout: ChartLayout,
+    layout: ViewConfig,
 }
 
 impl Default for ViewState {
@@ -638,7 +650,7 @@ impl Default for ViewState {
             tick_size: 0.0,
             decimals: 0,
             ticker_info: None,
-            layout: ChartLayout::default(),
+            layout: ViewConfig::default(),
         }
     }
 }
@@ -841,9 +853,9 @@ impl ViewState {
         }
     }
 
-    fn layout(&self) -> ChartLayout {
+    fn layout(&self) -> ViewConfig {
         let layout = &self.layout;
-        ChartLayout {
+        ViewConfig {
             crosshair: layout.crosshair,
             splits: layout.splits.clone(),
             autoscale: layout.autoscale,

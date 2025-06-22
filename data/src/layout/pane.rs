@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::chart::{
-    Basis, ChartLayout, VisualConfig,
+    Basis, ViewConfig, VisualConfig,
     indicator::{HeatmapIndicator, KlineIndicator},
     kline::KlineChartKind,
 };
@@ -25,7 +25,7 @@ pub enum Pane {
     #[default]
     Starter,
     HeatmapChart {
-        layout: ChartLayout,
+        layout: ViewConfig,
         #[serde(deserialize_with = "ok_or_default")]
         stream_type: Vec<StreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
@@ -33,7 +33,7 @@ pub enum Pane {
         indicators: Vec<HeatmapIndicator>,
     },
     KlineChart {
-        layout: ChartLayout,
+        layout: ViewConfig,
         kind: KlineChartKind,
         #[serde(deserialize_with = "ok_or_default")]
         stream_type: Vec<StreamKind>,

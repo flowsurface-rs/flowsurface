@@ -1,12 +1,12 @@
 use super::{
-    Action, Basis, Caches, Chart, ChartConstants, ChartData, Interaction, Message, ViewState,
+    Action, Basis, Caches, Chart, Interaction, Message, PlotConstants, PlotData, ViewState,
     indicator, request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
 use data::chart::{
-    ChartLayout, KlineChartKind,
+    KlineChartKind, ViewConfig,
     indicator::{Indicator, KlineIndicator},
     kline::PointOfControl,
     kline::{ClusterKind, FootprintStudy, KlineTrades, NPoc},
@@ -95,8 +95,8 @@ impl Chart for KlineChart {
 
     fn interval_keys(&self) -> Option<Vec<u64>> {
         match &self.data_source {
-            ChartData::TimeBased(_) => None,
-            ChartData::TickBased(tick_aggr) => Some(
+            PlotData::TimeBased(_) => None,
+            PlotData::TickBased(tick_aggr) => Some(
                 tick_aggr
                     .datapoints
                     .iter()
@@ -126,8 +126,8 @@ impl Chart for KlineChart {
 
     fn is_empty(&self) -> bool {
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => timeseries.datapoints.is_empty(),
-            ChartData::TickBased(tick_aggr) => tick_aggr.datapoints.is_empty(),
+            PlotData::TimeBased(timeseries) => timeseries.datapoints.is_empty(),
+            PlotData::TickBased(tick_aggr) => tick_aggr.datapoints.is_empty(),
         }
     }
 }
@@ -163,7 +163,7 @@ impl IndicatorData {
     }
 }
 
-impl ChartConstants for KlineChart {
+impl PlotConstants for KlineChart {
     fn min_scaling(&self) -> f32 {
         self.kind.min_scaling()
     }
@@ -195,7 +195,7 @@ impl ChartConstants for KlineChart {
 
 pub struct KlineChart {
     chart: ViewState,
-    data_source: ChartData,
+    data_source: PlotData,
     raw_trades: Vec<Trade>,
     indicators: HashMap<KlineIndicator, IndicatorData>,
     fetching_trades: (bool, Option<Handle>),
@@ -207,7 +207,7 @@ pub struct KlineChart {
 
 impl KlineChart {
     pub fn new(
-        layout: ChartLayout,
+        layout: ViewConfig,
         basis: Basis,
         tick_size: f32,
         klines_raw: &[Kline],
@@ -282,7 +282,7 @@ impl KlineChart {
 
                 KlineChart {
                     chart,
-                    data_source: ChartData::TimeBased(timeseries),
+                    data_source: PlotData::TimeBased(timeseries),
                     raw_trades,
                     indicators: enabled_indicators,
                     fetching_trades: (false, None),
@@ -344,7 +344,7 @@ impl KlineChart {
 
                 KlineChart {
                     chart,
-                    data_source: ChartData::TickBased(TickAggr::new(
+                    data_source: PlotData::TickBased(TickAggr::new(
                         interval,
                         tick_size,
                         &raw_trades,
@@ -363,7 +363,7 @@ impl KlineChart {
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
         match self.data_source {
-            ChartData::TimeBased(ref mut timeseries) => {
+            PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[kline.to_owned()]);
 
                 if let Some(IndicatorData::Volume(_, data)) =
@@ -380,7 +380,7 @@ impl KlineChart {
 
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
             }
-            ChartData::TickBased(_) => {}
+            PlotData::TickBased(_) => {}
         }
     }
 
@@ -390,7 +390,7 @@ impl KlineChart {
 
     fn missing_data_task(&mut self) -> Option<Action> {
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => {
+            PlotData::TimeBased(timeseries) => {
                 let timeframe = timeseries.interval.to_milliseconds();
 
                 let (visible_earliest, visible_latest) = self.visible_timerange();
@@ -465,7 +465,7 @@ impl KlineChart {
                     }
                 }
             }
-            ChartData::TickBased(_) => {
+            PlotData::TickBased(_) => {
                 // TODO: implement trade fetch
             }
         }
@@ -484,7 +484,7 @@ impl KlineChart {
 
     pub fn clear_trades(&mut self, clear_raw: bool) {
         match self.data_source {
-            ChartData::TimeBased(ref mut source) => {
+            PlotData::TimeBased(ref mut source) => {
                 source.clear_trades();
 
                 if clear_raw {
@@ -493,7 +493,7 @@ impl KlineChart {
                     source.insert_trades(&self.raw_trades);
                 }
             }
-            ChartData::TickBased(_) => {
+            PlotData::TickBased(_) => {
                 // TODO: implement
             }
         }
@@ -541,7 +541,7 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    pub fn chart_layout(&self) -> ChartLayout {
+    pub fn chart_layout(&self) -> ViewConfig {
         self.chart.layout()
     }
 
@@ -563,10 +563,10 @@ impl KlineChart {
         chart.tick_size = new_tick_size;
 
         match self.data_source {
-            ChartData::TickBased(ref mut tick_aggr) => {
+            PlotData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.change_tick_size(new_tick_size, &self.raw_trades);
             }
-            ChartData::TimeBased(ref mut timeseries) => {
+            PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.change_tick_size(new_tick_size, &self.raw_trades);
             }
         }
@@ -584,7 +584,7 @@ impl KlineChart {
             *indicator = IndicatorData::Volume(Caches::default(), new_tick_aggr.volume_data());
         }
 
-        self.data_source = ChartData::TickBased(new_tick_aggr);
+        self.data_source = PlotData::TickBased(new_tick_aggr);
 
         self.invalidate(None);
     }
@@ -609,7 +609,7 @@ impl KlineChart {
         self.raw_trades.extend_from_slice(trades_buffer);
 
         match self.data_source {
-            ChartData::TickBased(ref mut tick_aggr) => {
+            PlotData::TickBased(ref mut tick_aggr) => {
                 let old_dp_len = tick_aggr.datapoints.len();
 
                 tick_aggr.insert_trades(trades_buffer);
@@ -632,7 +632,7 @@ impl KlineChart {
 
                 self.invalidate(None);
             }
-            ChartData::TimeBased(ref mut timeseries) => {
+            PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades(trades_buffer);
             }
         }
@@ -640,10 +640,10 @@ impl KlineChart {
 
     pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
         match self.data_source {
-            ChartData::TickBased(ref mut tick_aggr) => {
+            PlotData::TickBased(ref mut tick_aggr) => {
                 tick_aggr.insert_trades(&raw_trades);
             }
-            ChartData::TimeBased(ref mut timeseries) => {
+            PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades(&raw_trades);
             }
         }
@@ -657,7 +657,7 @@ impl KlineChart {
 
     pub fn insert_new_klines(&mut self, req_id: uuid::Uuid, klines_raw: &[Kline]) {
         match self.data_source {
-            ChartData::TimeBased(ref mut timeseries) => {
+            PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(klines_raw);
 
                 if let Some(IndicatorData::Volume(_, data)) =
@@ -677,7 +677,7 @@ impl KlineChart {
                     self.request_handler.mark_completed(req_id);
                 }
             }
-            ChartData::TickBased(_) => {}
+            PlotData::TickBased(_) => {}
         }
     }
 
@@ -711,14 +711,14 @@ impl KlineChart {
         let rounded_lowest = OrderedFloat(round_to_tick(lowest - tick_size, tick_size));
 
         match &self.data_source {
-            ChartData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
+            PlotData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
                 cluster_kind,
                 earliest,
                 latest,
                 rounded_highest,
                 rounded_lowest,
             ),
-            ChartData::TickBased(tick_aggr) => {
+            PlotData::TickBased(tick_aggr) => {
                 let earliest = earliest as usize;
                 let latest = latest as usize;
 
@@ -837,10 +837,10 @@ impl KlineChart {
             Entry::Vacant(entry) => {
                 let data = match indicator {
                     KlineIndicator::Volume => match &self.data_source {
-                        ChartData::TimeBased(timeseries) => {
+                        PlotData::TimeBased(timeseries) => {
                             IndicatorData::Volume(Caches::default(), timeseries.into())
                         }
-                        ChartData::TickBased(tick_aggr) => {
+                        PlotData::TickBased(tick_aggr) => {
                             IndicatorData::Volume(Caches::default(), tick_aggr.into())
                         }
                     },
@@ -1128,7 +1128,7 @@ fn draw_candle_dp(
 }
 
 fn render_data_source<F>(
-    data_source: &ChartData,
+    data_source: &PlotData,
     frame: &mut canvas::Frame,
     earliest: u64,
     latest: u64,
@@ -1138,7 +1138,7 @@ fn render_data_source<F>(
     F: Fn(&mut canvas::Frame, f32, &Kline, &KlineTrades),
 {
     match data_source {
-        ChartData::TickBased(tick_aggr) => {
+        PlotData::TickBased(tick_aggr) => {
             let earliest = earliest as usize;
             let latest = latest as usize;
 
@@ -1154,7 +1154,7 @@ fn render_data_source<F>(
                     draw_fn(frame, x_position, &tick_aggr.kline, &tick_aggr.footprint);
                 });
         }
-        ChartData::TimeBased(timeseries) => {
+        PlotData::TimeBased(timeseries) => {
             if latest < earliest {
                 return;
             }
@@ -1172,7 +1172,7 @@ fn render_data_source<F>(
 }
 
 fn draw_all_npocs(
-    data_source: &ChartData,
+    data_source: &PlotData,
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(f32) -> f32,
     interval_to_x: impl Fn(u64) -> f32,
@@ -1227,7 +1227,7 @@ fn draw_all_npocs(
     };
 
     match data_source {
-        ChartData::TickBased(tick_aggr) => {
+        PlotData::TickBased(tick_aggr) => {
             tick_aggr
                 .datapoints
                 .iter()
@@ -1237,7 +1237,7 @@ fn draw_all_npocs(
                 .filter_map(|(index, dp)| dp.footprint.poc.as_ref().map(|poc| (index as u64, poc)))
                 .for_each(|(interval, poc)| draw_the_line(interval, poc));
         }
-        ChartData::TimeBased(timeseries) => {
+        PlotData::TimeBased(timeseries) => {
             timeseries
                 .datapoints
                 .iter()
@@ -1576,13 +1576,13 @@ fn draw_cluster_text(
 }
 
 fn draw_crosshair_tooltip(
-    data: &ChartData,
+    data: &PlotData,
     frame: &mut canvas::Frame,
     palette: &Extended,
     at_interval: u64,
 ) {
     let tooltip = match data {
-        ChartData::TimeBased(timeseries) => {
+        PlotData::TimeBased(timeseries) => {
             let dp_opt = timeseries
                 .datapoints
                 .iter()
@@ -1623,7 +1623,7 @@ fn draw_crosshair_tooltip(
                 None
             }
         }
-        ChartData::TickBased(tick_aggr) => {
+        PlotData::TickBased(tick_aggr) => {
             let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
 
             if index < tick_aggr.datapoints.len() {

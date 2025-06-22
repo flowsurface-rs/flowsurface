@@ -10,18 +10,18 @@ use serde::{Deserialize, Serialize};
 
 pub use kline::KlineChartKind;
 
-pub enum ChartData {
+pub enum PlotData {
     TimeBased(TimeSeries),
     TickBased(TickAggr),
 }
 
-impl ChartData {
+impl PlotData {
     pub fn latest_y_midpoint(&self, calculate_target_y: impl Fn(exchange::Kline) -> f32) -> f32 {
         match self {
-            ChartData::TimeBased(timeseries) => timeseries
+            PlotData::TimeBased(timeseries) => timeseries
                 .latest_kline()
                 .map_or(0.0, |kline| calculate_target_y(*kline)),
-            ChartData::TickBased(tick_aggr) => tick_aggr
+            PlotData::TickBased(tick_aggr) => tick_aggr
                 .latest_dp()
                 .map_or(0.0, |(dp, _)| calculate_target_y(dp.kline)),
         }
@@ -33,17 +33,17 @@ impl ChartData {
         end_interval: u64,
     ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {
         match self {
-            ChartData::TimeBased(timeseries) => {
+            PlotData::TimeBased(timeseries) => {
                 timeseries.min_max_price_in_range(start_interval, end_interval)
             }
-            ChartData::TickBased(tick_aggr) => {
+            PlotData::TickBased(tick_aggr) => {
                 tick_aggr.min_max_price_in_range(start_interval as usize, end_interval as usize)
             }
         }
     }
 }
 
-pub trait ChartConstants {
+pub trait PlotConstants {
     fn min_scaling(&self) -> f32;
     fn max_scaling(&self) -> f32;
     fn max_cell_width(&self) -> f32;
@@ -54,7 +54,7 @@ pub trait ChartConstants {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct ChartLayout {
+pub struct ViewConfig {
     pub crosshair: bool,
     pub splits: Vec<f32>,
     pub autoscale: Option<Autoscale>,
@@ -65,22 +65,6 @@ pub enum Autoscale {
     #[default]
     CenterLatest,
     FitToVisible,
-}
-
-impl Autoscale {
-    pub fn next(current: Option<Autoscale>, supports_fit_autoscaling: bool) -> Option<Autoscale> {
-        match current {
-            None => Some(Autoscale::CenterLatest),
-            Some(Autoscale::CenterLatest) => {
-                if supports_fit_autoscaling {
-                    Some(Autoscale::FitToVisible)
-                } else {
-                    None
-                }
-            }
-            Some(Autoscale::FitToVisible) => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
