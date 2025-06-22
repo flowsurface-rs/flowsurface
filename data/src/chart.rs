@@ -5,7 +5,6 @@ pub mod timeandsales;
 
 use super::aggr::{self, ticks::TickAggr, time::TimeSeries};
 use exchange::{Timeframe, adapter::Exchange};
-use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
 pub use kline::KlineChartKind;
@@ -31,7 +30,7 @@ impl PlotData {
         &self,
         start_interval: u64,
         end_interval: u64,
-    ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {
+    ) -> Option<(f32, f32)> {
         match self {
             PlotData::TimeBased(timeseries) => {
                 timeseries.min_max_price_in_range(start_interval, end_interval)

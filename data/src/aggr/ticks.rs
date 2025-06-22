@@ -201,11 +201,7 @@ impl TickAggr {
         }
     }
 
-    pub fn min_max_price_in_range(
-        &self,
-        earliest: usize,
-        latest: usize,
-    ) -> Option<(OrderedFloat<f32>, OrderedFloat<f32>)> {
+    pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
         let mut min_price = OrderedFloat(f32::MAX);
         let mut max_price = OrderedFloat(f32::MIN);
 
@@ -222,7 +218,7 @@ impl TickAggr {
         if min_price.0 == f32::MAX || max_price.0 == f32::MIN {
             None
         } else {
-            Some((min_price, max_price))
+            Some((*min_price, *max_price))
         }
     }
 

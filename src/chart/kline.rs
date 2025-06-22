@@ -791,18 +791,15 @@ impl KlineChart {
                         .data_source
                         .visible_price_range(start_interval, end_interval)
                     {
-                        let highest = *highest;
-                        let lowest = *lowest;
-
                         let padding = (highest - lowest) * 0.05;
                         let price_span = (highest - lowest) + (2.0 * padding);
 
-                        if price_span > f32::EPSILON && chart.bounds.height > f32::EPSILON {
+                        if price_span > 0.0 && chart.bounds.height > f32::EPSILON {
                             let padded_highest = highest + padding;
                             let chart_height = chart.bounds.height;
                             let tick_size = chart.tick_size;
 
-                            if tick_size > f32::EPSILON {
+                            if tick_size > 0.0 {
                                 chart.cell_height = (chart_height * tick_size) / price_span;
                                 chart.base_price_y = padded_highest;
                                 chart.translation.y = -chart_height / 2.0;
