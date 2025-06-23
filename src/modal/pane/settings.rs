@@ -264,7 +264,7 @@ pub fn timesales_cfg_view<'a>(
 
         labeled_slider(
             "Count",
-            100.0..=5000.0,
+            400.0..=5000.0,
             buffer_size,
             move |value| {
                 Message::VisualConfigChanged(

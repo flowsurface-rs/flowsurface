@@ -257,9 +257,9 @@ impl Dashboard {
                             pane_state.modal = None;
                         }
                     }
-                    pane::Message::ChartUserUpdate(pane, msg) => {
-                        if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                            match pane_state.content {
+                    pane::Message::ChartInteraction(pane, msg) => {
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            match state.content {
                                 pane::Content::Heatmap(ref mut chart, _) => {
                                     chart::update(chart, msg);
                                 }
@@ -267,6 +267,13 @@ impl Dashboard {
                                     chart::update(chart, msg);
                                 }
                                 _ => {}
+                            }
+                        }
+                    }
+                    pane::Message::PanelInteraction(pane, msg) => {
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            if let pane::Content::TimeAndSales(ref mut panel) = state.content {
+                                panel::update(panel, msg);
                             }
                         }
                     }

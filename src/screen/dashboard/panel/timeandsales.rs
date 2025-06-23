@@ -1,16 +1,17 @@
-use crate::modal::{self, pane::settings::timesales_cfg_view};
-use crate::screen::dashboard::pane::{self, Message};
+use std::time::Instant;
+
+use super::Message;
 use crate::style;
-use data::UserTimezone;
 pub use data::chart::timeandsales::Config;
 use data::config::theme::{darken, lighten};
 use exchange::adapter::MarketKind;
 use exchange::{TickerInfo, Trade};
 
 use iced::widget::canvas;
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, mouse, padding};
+use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
+const HISTOGRAM_HEIGHT: f32 = 12.0;
 
 struct TradeDisplay {
     time_str: String,
@@ -21,48 +22,60 @@ struct TradeDisplay {
 
 const TRADE_ROW_HEIGHT: f32 = 14.0;
 
-impl super::PanelView for TimeAndSales {
-    fn view(
-        &self,
-        pane: iced::widget::pane_grid::Pane,
-        state: &pane::State,
-        timezone: data::UserTimezone,
-    ) -> Element<Message> {
-        let underlay = self.view(timezone);
+impl super::Panel for TimeAndSales {
+    fn scroll(&mut self, delta: f32) {
+        self.scroll_offset -= delta;
 
-        let settings_view = timesales_cfg_view(self.config, pane);
+        let total_content_height =
+            (self.recent_trades.len() as f32 * TRADE_ROW_HEIGHT) + HISTOGRAM_HEIGHT;
+        let max_scroll_offset = (total_content_height - TRADE_ROW_HEIGHT).max(0.0);
 
-        match state.modal {
-            Some(pane::Modal::Settings) => modal::pane::stack_modal(
-                underlay,
-                settings_view,
-                Message::ShowModal(pane, pane::Modal::Settings),
-                padding::right(12).left(12),
-                Alignment::End,
-            ),
-            _ => underlay,
+        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll_offset);
+
+        if self.scroll_offset > HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT {
+            self.is_paused = true;
+        } else if self.is_paused {
+            self.is_paused = false;
+            self.recent_trades.append(&mut self.paused_trades_buffer);
         }
+
+        self.invalidate();
+    }
+
+    fn reset_scroll_position(&mut self) {
+        self.scroll_offset = 0.0;
+        self.is_paused = false;
+
+        self.recent_trades.append(&mut self.paused_trades_buffer);
+
+        self.invalidate();
     }
 }
 
 pub struct TimeAndSales {
     recent_trades: Vec<TradeDisplay>,
+    paused_trades_buffer: Vec<TradeDisplay>,
+    is_paused: bool,
     max_filtered_qty: f32,
     ticker_info: Option<TickerInfo>,
     pub config: Config,
-    rows_cache: canvas::Cache,
-    histogram_cache: canvas::Cache,
+    cache: canvas::Cache,
+    last_tick: Instant,
+    scroll_offset: f32,
 }
 
 impl TimeAndSales {
     pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>) -> Self {
         Self {
             recent_trades: Vec::new(),
+            paused_trades_buffer: Vec::new(),
+            is_paused: false,
             config: config.unwrap_or_default(),
             max_filtered_qty: 0.0,
             ticker_info,
-            rows_cache: canvas::Cache::default(),
-            histogram_cache: canvas::Cache::default(),
+            cache: canvas::Cache::default(),
+            last_tick: Instant::now(),
+            scroll_offset: 0.0,
         }
     }
 
@@ -72,6 +85,12 @@ impl TimeAndSales {
         let market_type = match self.ticker_info {
             Some(ref ticker_info) => ticker_info.market_type(),
             None => return,
+        };
+
+        let target_buffer = if self.is_paused {
+            &mut self.paused_trades_buffer
+        } else {
+            &mut self.recent_trades
         };
 
         for trade in trades_buffer {
@@ -95,33 +114,40 @@ impl TimeAndSales {
                     self.max_filtered_qty = self.max_filtered_qty.max(converted_trade.qty);
                 }
 
-                self.recent_trades.push(converted_trade);
+                target_buffer.push(converted_trade);
             }
         }
 
-        let buffer_filter = self.config.buffer_filter;
+        if !self.is_paused {
+            let buffer_filter = self.config.buffer_filter;
 
-        if self.recent_trades.len() > buffer_filter {
-            let drain_amount = self.recent_trades.len() - (buffer_filter as f32 * 0.8) as usize;
+            if self.recent_trades.len() > buffer_filter {
+                let drain_amount = self.recent_trades.len() - (buffer_filter as f32 * 0.8) as usize;
 
-            self.max_filtered_qty = self.recent_trades[drain_amount..]
-                .iter()
-                .filter(|t| (t.qty * t.price) >= size_filter)
-                .map(|t| t.qty)
-                .fold(0.0, f32::max);
+                self.max_filtered_qty = self.recent_trades[drain_amount..]
+                    .iter()
+                    .filter(|t| {
+                        let trade_size = match market_type {
+                            MarketKind::InversePerps => t.qty,
+                            _ => t.qty * t.price,
+                        };
+                        trade_size >= size_filter
+                    })
+                    .map(|t| t.qty)
+                    .fold(0.0, f32::max);
 
-            self.recent_trades.drain(0..drain_amount);
+                self.recent_trades.drain(0..drain_amount);
+            }
         }
-
-        self.rows_cache.clear();
-        self.histogram_cache.clear();
     }
 
-    pub fn view(&self, _timezone: UserTimezone) -> Element<'_, Message> {
-        canvas(self)
-            .width(iced::Length::Fill)
-            .height(iced::Length::Fill)
-            .into()
+    pub fn last_update(&self) -> Instant {
+        self.last_tick
+    }
+
+    pub fn invalidate(&mut self) {
+        self.cache.clear();
+        self.last_tick = Instant::now();
     }
 }
 
@@ -131,11 +157,31 @@ impl canvas::Program<Message> for TimeAndSales {
     fn update(
         &self,
         _state: &mut Self::State,
-        _event: &iced::Event,
-        _bounds: iced::Rectangle,
-        _cursor: iced_core::mouse::Cursor,
+        event: &iced::Event,
+        bounds: iced::Rectangle,
+        cursor: iced_core::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        None
+        if !bounds.contains(cursor.position()?) {
+            return None;
+        }
+
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(mouse::Button::Middle) => {
+                    Some(canvas::Action::publish(Message::ResetScroll).and_capture())
+                }
+                mouse::Event::WheelScrolled { delta } => {
+                    let scroll_amount = match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => *y * TRADE_ROW_HEIGHT * 3.0,
+                        mouse::ScrollDelta::Pixels { y, .. } => *y,
+                    };
+
+                    Some(canvas::Action::publish(Message::Scrolled(scroll_amount)).and_capture())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn draw(
@@ -153,74 +199,87 @@ impl canvas::Program<Message> for TimeAndSales {
 
         let palette = theme.extended_palette();
 
-        let histogram_bounds = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: bounds.width,
-            height: 12.0,
-        };
+        let content = self.cache.draw(renderer, bounds.size(), |frame| {
+            let content_top_y = -self.scroll_offset;
 
-        let histogram = self.histogram_cache.draw(renderer, bounds.size(), |frame| {
-            let buy_count = self.recent_trades.iter().filter(|t| !t.is_sell).count();
-            let sell_count = self.recent_trades.iter().filter(|t| t.is_sell).count();
-
+            // Histogram
+            let (buy_count, sell_count) =
+                self.recent_trades.iter().fold((0, 0), |(buy, sell), t| {
+                    if t.is_sell {
+                        (buy, sell + 1)
+                    } else {
+                        (buy + 1, sell)
+                    }
+                });
             let total_count = buy_count + sell_count;
 
-            if total_count == 0 {
+            if total_count > 0 {
+                let buy_bar_width =
+                    (frame.width() * (buy_count as f32 / total_count as f32)).max(1.0);
+                let sell_bar_width =
+                    (frame.width() * (sell_count as f32 / total_count as f32)).max(1.0);
+
+                frame.fill_rectangle(
+                    Point {
+                        x: 0.0,
+                        y: content_top_y,
+                    },
+                    Size {
+                        width: buy_bar_width,
+                        height: HISTOGRAM_HEIGHT,
+                    },
+                    palette.success.weak.color,
+                );
+
+                frame.fill_rectangle(
+                    Point {
+                        x: buy_bar_width,
+                        y: content_top_y,
+                    },
+                    Size {
+                        width: sell_bar_width,
+                        height: HISTOGRAM_HEIGHT,
+                    },
+                    palette.danger.weak.color,
+                );
+            }
+
+            // Feed
+            let row_height = TRADE_ROW_HEIGHT;
+
+            let filtered_trades: Vec<_> = self
+                .recent_trades
+                .iter()
+                .filter(|t| {
+                    let trade_size = match market_type {
+                        MarketKind::InversePerps => t.qty,
+                        _ => t.qty * t.price,
+                    };
+                    trade_size >= self.config.trade_size_filter
+                })
+                .collect();
+
+            if filtered_trades.is_empty() {
                 return;
             }
 
-            let buy_bar_width = (bounds.width * (buy_count as f32 / total_count as f32)).max(1.0);
-            let sell_bar_width = (bounds.width * (sell_count as f32 / total_count as f32)).max(1.0);
+            let row_scroll_offset = (self.scroll_offset - HISTOGRAM_HEIGHT).max(0.0);
+            let start_index = (row_scroll_offset / row_height).floor() as usize;
+            let visible_rows = (frame.height() / row_height).ceil() as usize;
 
-            let bar_height = histogram_bounds.height;
-            let bar_y = (histogram_bounds.height - bar_height) / 2.0;
-
-            frame.fill_rectangle(
-                Point { x: 0.0, y: bar_y },
-                Size {
-                    width: buy_bar_width,
-                    height: bar_height,
-                },
-                palette.success.weak.color,
-            );
-
-            frame.fill_rectangle(
-                Point {
-                    x: buy_bar_width,
-                    y: bar_y,
-                },
-                Size {
-                    width: sell_bar_width,
-                    height: bar_height,
-                },
-                palette.danger.weak.color,
-            );
-        });
-
-        let rows_bounds = Rectangle {
-            x: 0.0,
-            y: histogram_bounds.height,
-            width: bounds.width,
-            height: (bounds.height - histogram_bounds.height),
-        };
-
-        let rows = self.rows_cache.draw(renderer, bounds.size(), |frame| {
-            let row_height = TRADE_ROW_HEIGHT;
-            let total_rows = (rows_bounds.height / row_height).floor() as usize;
-
-            let filtered_trades_iter = self.recent_trades.iter().filter(|t| {
-                let trade_size = match market_type {
-                    MarketKind::InversePerps => t.qty,
-                    _ => t.qty * t.price,
-                };
-                trade_size >= self.config.trade_size_filter
-            });
-
-            let trades_to_draw = filtered_trades_iter.rev().take(total_rows + 3);
+            let trades_to_draw = filtered_trades
+                .iter()
+                .rev()
+                .skip(start_index)
+                .take(visible_rows + 2);
 
             for (i, trade) in trades_to_draw.enumerate() {
-                let y_position = rows_bounds.y + i as f32 * row_height;
+                let y_position =
+                    content_top_y + HISTOGRAM_HEIGHT + ((start_index + i) as f32 * row_height);
+
+                if y_position + row_height < 0.0 || y_position > frame.height() {
+                    continue;
+                }
 
                 let (bg_color, base_text_color) = if trade.is_sell {
                     (palette.danger.base.color, palette.danger.strong.color)
@@ -238,11 +297,11 @@ impl canvas::Program<Message> for TimeAndSales {
 
                 frame.fill_rectangle(
                     Point {
-                        x: rows_bounds.x,
+                        x: 0.0,
                         y: y_position,
                     },
                     Size {
-                        width: rows_bounds.width,
+                        width: frame.width(),
                         height: row_height,
                     },
                     bg_color.scale_alpha(row_bg_color_alpha),
@@ -251,7 +310,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(iced::widget::canvas::Text {
                     content: trade.time_str.clone(),
                     position: Point {
-                        x: rows_bounds.x + rows_bounds.width * 0.1,
+                        x: frame.width() * 0.1,
                         y: y_position,
                     },
                     size: TEXT_SIZE,
@@ -264,7 +323,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(iced::widget::canvas::Text {
                     content: trade.price.to_string(),
                     position: Point {
-                        x: rows_bounds.x + rows_bounds.width * 0.65,
+                        x: frame.width() * 0.65,
                         y: y_position,
                     },
                     size: TEXT_SIZE,
@@ -277,7 +336,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(iced::widget::canvas::Text {
                     content: data::util::abbr_large_numbers(trade.qty),
                     position: Point {
-                        x: rows_bounds.x + rows_bounds.width * 0.9,
+                        x: frame.width() * 0.9,
                         y: y_position,
                     },
                     size: TEXT_SIZE,
@@ -289,7 +348,7 @@ impl canvas::Program<Message> for TimeAndSales {
             }
         });
 
-        vec![histogram, rows]
+        vec![content]
     }
 
     fn mouse_interaction(

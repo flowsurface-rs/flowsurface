@@ -7,7 +7,10 @@ use crate::{
             stack_modal,
         },
     },
-    screen::{DashboardError, dashboard::panel::timeandsales::TimeAndSales},
+    screen::{
+        DashboardError,
+        dashboard::panel::{self, timeandsales::TimeAndSales},
+    },
     style::{self, Icon, icon_text},
     widget::{self, button_with_tooltip, column_drag, toast::Toast},
     window::{self, Window},
@@ -68,7 +71,8 @@ pub enum Message {
     HideModal(pane_grid::Pane),
     InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamKind>, TickerInfo),
     ReplacePane(pane_grid::Pane),
-    ChartUserUpdate(pane_grid::Pane, chart::Message),
+    ChartInteraction(pane_grid::Pane, chart::Message),
+    PanelInteraction(pane_grid::Pane, panel::Message),
     VisualConfigChanged(Option<pane_grid::Pane>, VisualConfig),
     ToggleIndicator(pane_grid::Pane, String),
     Popout,
@@ -350,7 +354,14 @@ impl State {
 
         let body = match &self.content {
             Content::Starter => center(text("select a ticker to start").size(16)).into(),
-            Content::TimeAndSales(panel) => super::panel::view(id, self, panel, timezone),
+            Content::TimeAndSales(panel) => {
+                let base = panel::view(panel, timezone)
+                    .map(move |message| Message::PanelInteraction(id, message));
+
+                let settings_modal = || modal::pane::settings::timesales_cfg_view(panel.config, id);
+
+                self.compose_panel_view(base, id, settings_modal)
+            }
             Content::Heatmap(chart, indicators) => {
                 let selected_basis = self
                     .settings
@@ -370,7 +381,7 @@ impl State {
                 stream_info_element = stream_info_element.push(modifiers);
 
                 let base = chart::view(chart, indicators, timezone)
-                    .map(move |message| Message::ChartUserUpdate(id, message));
+                    .map(move |message| Message::ChartInteraction(id, message));
                 let settings_modal = || heatmap_cfg_view(chart.visual_config(), id);
 
                 self.compose_chart_view(base, id, indicators, settings_modal)
@@ -411,7 +422,7 @@ impl State {
                 }
 
                 let base = chart::view(chart, indicators, timezone)
-                    .map(move |message| Message::ChartUserUpdate(id, message));
+                    .map(move |message| Message::ChartInteraction(id, message));
                 let settings_modal = || kline_cfg_view(chart.study_configurator(), chart_kind, id);
 
                 self.compose_chart_view(base, id, indicators, settings_modal)
@@ -587,6 +598,37 @@ impl State {
         }
     }
 
+    fn compose_panel_view<'a, F>(
+        &'a self,
+        base: Element<'a, Message>,
+        pane: pane_grid::Pane,
+        settings_modal: F,
+    ) -> Element<'a, Message>
+    where
+        F: FnOnce() -> Element<'a, Message>,
+    {
+        let base: Element<_> =
+            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
+                Message::DeleteNotification(pane, msg)
+            })
+            .into();
+
+        let stack_padding = padding::right(12).left(12);
+
+        match self.modal {
+            Some(Modal::StreamModifier(_)) => unreachable!(),
+            Some(Modal::Indicators) => unreachable!(),
+            Some(Modal::Settings) => stack_modal(
+                base,
+                settings_modal(),
+                Message::HideModal(pane),
+                stack_padding,
+                Alignment::End,
+            ),
+            None => base,
+        }
+    }
+
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
         self.streams.iter().any(|existing| existing == stream)
     }
@@ -595,11 +637,12 @@ impl State {
         self.content.invalidate(now)
     }
 
-    pub fn basis_interval(&self) -> Option<u64> {
+    pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
             Content::Kline(_, _) => Some(1000),
             Content::Heatmap(chart, _) => chart.basis_interval(),
-            Content::Starter | Content::TimeAndSales(_) => None,
+            Content::TimeAndSales(_) => Some(100),
+            Content::Starter => None,
         }
     }
 
@@ -608,7 +651,7 @@ impl State {
     }
 
     pub fn tick(&mut self, now: Instant) -> Option<chart::Action> {
-        let invalidate_interval: Option<u64> = self.basis_interval();
+        let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
 
         match (invalidate_interval, last_tick) {
@@ -796,7 +839,11 @@ impl Content {
         match self {
             Content::Heatmap(chart, _) => chart.invalidate(Some(now)),
             Content::Kline(chart, _) => chart.invalidate(Some(now)),
-            Content::Starter | Content::TimeAndSales(_) => None,
+            Content::TimeAndSales(panel) => {
+                panel.invalidate();
+                None
+            }
+            Content::Starter => None,
         }
     }
 
@@ -804,7 +851,8 @@ impl Content {
         match self {
             Content::Heatmap(chart, _) => Some(chart.last_update()),
             Content::Kline(chart, _) => Some(chart.last_update()),
-            Content::Starter | Content::TimeAndSales(_) => None,
+            Content::TimeAndSales(panel) => Some(panel.last_update()),
+            Content::Starter => None,
         }
     }
 
