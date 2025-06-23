@@ -1,3 +1,7 @@
+/// Most of the stuff here is exact copy of some of the code from
+/// <https://github.com/iced-rs/iced/blob/master/core/src/theme/palette.rs> &
+/// <https://github.com/squidowl/halloy/blob/main/data/src/appearance/theme.rs>
+/// All credits and thanks to the authors of [`Halloy`] and [`iced_core`]
 use iced_core::{
     Color,
     theme::{Custom, Palette},
@@ -233,5 +237,98 @@ fn to_rgba(color: Color) -> Rgba {
     Rgba {
         alpha: color.a,
         color: to_rgb(color),
+    }
+}
+
+pub fn darken(color: Color, amount: f32) -> Color {
+    let mut hsl = to_hsl(color);
+
+    hsl.l = if hsl.l - amount < 0.0 {
+        0.0
+    } else {
+        hsl.l - amount
+    };
+
+    from_hsl(hsl)
+}
+
+pub fn lighten(color: Color, amount: f32) -> Color {
+    let mut hsl = to_hsl(color);
+
+    hsl.l = if hsl.l + amount > 1.0 {
+        1.0
+    } else {
+        hsl.l + amount
+    };
+
+    from_hsl(hsl)
+}
+
+fn to_hsl(color: Color) -> Hsl {
+    let x_max = color.r.max(color.g).max(color.b);
+    let x_min = color.r.min(color.g).min(color.b);
+    let c = x_max - x_min;
+    let l = x_max.midpoint(x_min);
+
+    let h = if c == 0.0 {
+        0.0
+    } else if x_max == color.r {
+        60.0 * ((color.g - color.b) / c).rem_euclid(6.0)
+    } else if x_max == color.g {
+        60.0 * (((color.b - color.r) / c) + 2.0)
+    } else {
+        // x_max == color.b
+        60.0 * (((color.r - color.g) / c) + 4.0)
+    };
+
+    let s = if l == 0.0 || l == 1.0 {
+        0.0
+    } else {
+        (x_max - l) / l.min(1.0 - l)
+    };
+
+    Hsl {
+        h,
+        s,
+        l,
+        a: color.a,
+    }
+}
+
+struct Hsl {
+    h: f32,
+    s: f32,
+    l: f32,
+    a: f32,
+}
+
+// https://en.wikipedia.org/wiki/HSL_and_HSV#HSL_to_RGB
+fn from_hsl(hsl: Hsl) -> Color {
+    let c = (1.0 - (2.0 * hsl.l - 1.0).abs()) * hsl.s;
+    let h = hsl.h / 60.0;
+    let x = c * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
+
+    let (r1, g1, b1) = if h < 1.0 {
+        (c, x, 0.0)
+    } else if h < 2.0 {
+        (x, c, 0.0)
+    } else if h < 3.0 {
+        (0.0, c, x)
+    } else if h < 4.0 {
+        (0.0, x, c)
+    } else if h < 5.0 {
+        (x, 0.0, c)
+    } else {
+        // h < 6.0
+        (c, 0.0, x)
+    };
+
+    let m = hsl.l - (c / 2.0);
+
+    Color {
+        r: r1 + m,
+        g: g1 + m,
+        b: b1 + m,
+        a: hsl.a,
     }
 }

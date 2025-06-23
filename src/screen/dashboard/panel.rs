@@ -8,7 +8,7 @@ use crate::{
 use super::pane;
 
 use iced::{
-    Alignment, Element,
+    Alignment, Element, padding,
     widget::{center, pane_grid},
 };
 
@@ -27,7 +27,8 @@ pub fn view<'a, C: PanelView>(
     content: &'a C,
     timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
-    let base = center(content.view(pane, state, timezone));
+    let base =
+        center(content.view(pane, state, timezone)).padding(padding::left(1).right(1).bottom(1));
 
     widget::toast::Manager::new(base, &state.notifications, Alignment::End, move |idx| {
         Message::DeleteNotification(pane, idx)

@@ -481,27 +481,6 @@ pub fn dragger_row_container(theme: &Theme) -> Style {
     }
 }
 
-// Time&Sales Table
-pub fn ts_table_container(theme: &Theme, is_sell: bool, color_alpha: f32) -> Style {
-    let palette = theme.extended_palette();
-
-    let color = if is_sell {
-        palette.danger.base.color
-    } else {
-        palette.success.base.color
-    };
-
-    Style {
-        text_color: color.into(),
-        border: Border {
-            width: 2.0,
-            color: color.scale_alpha(color_alpha),
-            radius: 2.0.into(),
-        },
-        ..Default::default()
-    }
-}
-
 // Tickers Table
 pub fn validated_text_input(
     theme: &Theme,

@@ -1,14 +1,18 @@
 use crate::modal::{self, pane::settings::timesales_cfg_view};
 use crate::screen::dashboard::pane::{self, Message};
-use crate::style::{self, ts_table_container};
+use crate::style;
 use data::UserTimezone;
 pub use data::chart::timeandsales::Config;
+use data::config::theme::{darken, lighten};
 use exchange::adapter::MarketKind;
 use exchange::{TickerInfo, Trade};
-use iced::widget::{center, column, container, row, text};
-use iced::{Alignment, Element, Length, padding};
+
+use iced::widget::canvas;
+use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, mouse, padding};
 
 use super::PanelView;
+
+const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
 
 const TARGET_SIZE: usize = 700;
 const MAX_SIZE: usize = 900;
@@ -29,7 +33,7 @@ impl PanelView for TimeAndSales {
         state: &pane::State,
         timezone: data::UserTimezone,
     ) -> Element<Message> {
-        let underlay = iced::widget::responsive(move |size| self.view(timezone, size));
+        let underlay = self.view(timezone);
 
         let settings_view = timesales_cfg_view(self.config, pane);
 
@@ -41,7 +45,7 @@ impl PanelView for TimeAndSales {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
-            _ => underlay.into(),
+            _ => underlay,
         }
     }
 }
@@ -51,6 +55,8 @@ pub struct TimeAndSales {
     max_filtered_qty: f32,
     ticker_info: Option<TickerInfo>,
     pub config: Config,
+    rows_cache: canvas::Cache,
+    histogram_cache: canvas::Cache,
 }
 
 impl TimeAndSales {
@@ -60,6 +66,8 @@ impl TimeAndSales {
             config: config.unwrap_or_default(),
             max_filtered_qty: 0.0,
             ticker_info,
+            rows_cache: canvas::Cache::default(),
+            histogram_cache: canvas::Cache::default(),
         }
     }
 
@@ -107,61 +115,192 @@ impl TimeAndSales {
 
             self.recent_trades.drain(0..drain_amount);
         }
+
+        self.rows_cache.clear();
+        self.histogram_cache.clear();
     }
 
-    pub fn view(&self, _timezone: UserTimezone, size: iced::Size) -> Element<'_, Message> {
+    pub fn view(&self, _timezone: UserTimezone) -> Element<'_, Message> {
+        canvas(self)
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into()
+    }
+}
+
+impl canvas::Program<Message> for TimeAndSales {
+    type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        _event: &iced::Event,
+        _bounds: iced::Rectangle,
+        _cursor: iced_core::mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        None
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let market_type = match self.ticker_info {
             Some(ref ticker_info) => ticker_info.market_type(),
-            None => {
-                return center(container(
-                    text("No ticker info. Resetting this pane should fix").size(14),
-                ))
-                .into();
-            }
+            None => return vec![],
         };
 
-        let mut content = column![].padding(4);
+        let palette = theme.extended_palette();
 
-        let filtered_trades_iter = self.recent_trades.iter().filter(|t| {
-            let trade_size = match market_type {
-                MarketKind::InversePerps => t.qty,
-                _ => t.qty * t.price,
-            };
-            trade_size >= self.config.trade_size_filter
+        let histogram_bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: bounds.width,
+            height: 12.0,
+        };
+
+        let histogram = self.histogram_cache.draw(renderer, bounds.size(), |frame| {
+            let buy_count = self.recent_trades.iter().filter(|t| !t.is_sell).count();
+            let sell_count = self.recent_trades.iter().filter(|t| t.is_sell).count();
+
+            let total_count = buy_count + sell_count;
+
+            if total_count == 0 {
+                return;
+            }
+
+            let buy_bar_width = (bounds.width * (buy_count as f32 / total_count as f32)).max(1.0);
+            let sell_bar_width = (bounds.width * (sell_count as f32 / total_count as f32)).max(1.0);
+
+            let bar_height = histogram_bounds.height;
+            let bar_y = (histogram_bounds.height - bar_height) / 2.0;
+
+            frame.fill_rectangle(
+                Point { x: 0.0, y: bar_y },
+                Size {
+                    width: buy_bar_width,
+                    height: bar_height,
+                },
+                palette.success.weak.color,
+            );
+
+            frame.fill_rectangle(
+                Point {
+                    x: buy_bar_width,
+                    y: bar_y,
+                },
+                Size {
+                    width: sell_bar_width,
+                    height: bar_height,
+                },
+                palette.danger.weak.color,
+            );
         });
 
-        let rows_can_fit = ((size.height / TRADE_ROW_HEIGHT).floor()) as usize;
+        let rows_bounds = Rectangle {
+            x: 0.0,
+            y: histogram_bounds.height,
+            width: bounds.width,
+            height: (bounds.height - histogram_bounds.height),
+        };
 
-        for trade in filtered_trades_iter.rev().take(rows_can_fit) {
-            let trade_row = row![
-                container(
-                    text(&trade.time_str)
-                        .font(style::AZERET_MONO)
-                        .size(iced::Pixels(11.0))
-                )
-                .width(Length::FillPortion(8))
-                .align_x(Alignment::Center),
-                container(
-                    text(trade.price)
-                        .font(style::AZERET_MONO)
-                        .size(iced::Pixels(11.0))
-                )
-                .width(Length::FillPortion(6)),
-                container(
-                    text(data::util::abbr_large_numbers(trade.qty))
-                        .font(style::AZERET_MONO)
-                        .size(iced::Pixels(11.0))
-                )
-                .width(Length::FillPortion(4))
-            ]
-            .align_y(Alignment::Center)
-            .height(Length::Fixed(TRADE_ROW_HEIGHT));
+        let rows = self.rows_cache.draw(renderer, bounds.size(), |frame| {
+            let row_height = TRADE_ROW_HEIGHT;
+            let total_rows = (rows_bounds.height / row_height).floor() as usize;
 
-            content = content.push(container(trade_row).padding(1).style(move |theme| {
-                ts_table_container(theme, trade.is_sell, trade.qty / self.max_filtered_qty)
-            }));
-        }
+            let filtered_trades_iter = self.recent_trades.iter().filter(|t| {
+                let trade_size = match market_type {
+                    MarketKind::InversePerps => t.qty,
+                    _ => t.qty * t.price,
+                };
+                trade_size >= self.config.trade_size_filter
+            });
 
-        content.into()
+            let trades_to_draw = filtered_trades_iter.rev().take(total_rows + 3);
+
+            for (i, trade) in trades_to_draw.enumerate() {
+                let y_position = rows_bounds.y + i as f32 * row_height;
+
+                let (bg_color, base_text_color) = if trade.is_sell {
+                    (palette.danger.base.color, palette.danger.strong.color)
+                } else {
+                    (palette.success.base.color, palette.success.strong.color)
+                };
+
+                let row_bg_color_alpha = (trade.qty / self.max_filtered_qty).clamp(0.05, 1.0);
+
+                let text_color = if palette.is_dark {
+                    lighten(base_text_color, row_bg_color_alpha * 0.5)
+                } else {
+                    darken(base_text_color, row_bg_color_alpha * 0.5)
+                };
+
+                frame.fill_rectangle(
+                    Point {
+                        x: rows_bounds.x,
+                        y: y_position,
+                    },
+                    Size {
+                        width: rows_bounds.width,
+                        height: row_height,
+                    },
+                    bg_color.scale_alpha(row_bg_color_alpha),
+                );
+
+                frame.fill_text(iced::widget::canvas::Text {
+                    content: trade.time_str.clone(),
+                    position: Point {
+                        x: rows_bounds.x + rows_bounds.width * 0.1,
+                        y: y_position,
+                    },
+                    size: TEXT_SIZE,
+                    font: style::AZERET_MONO,
+                    color: text_color,
+                    align_x: Alignment::Start.into(),
+                    ..Default::default()
+                });
+
+                frame.fill_text(iced::widget::canvas::Text {
+                    content: trade.price.to_string(),
+                    position: Point {
+                        x: rows_bounds.x + rows_bounds.width * 0.65,
+                        y: y_position,
+                    },
+                    size: TEXT_SIZE,
+                    font: style::AZERET_MONO,
+                    color: text_color,
+                    align_x: Alignment::End.into(),
+                    ..Default::default()
+                });
+
+                frame.fill_text(iced::widget::canvas::Text {
+                    content: data::util::abbr_large_numbers(trade.qty),
+                    position: Point {
+                        x: rows_bounds.x + rows_bounds.width * 0.9,
+                        y: y_position,
+                    },
+                    size: TEXT_SIZE,
+                    font: style::AZERET_MONO,
+                    color: text_color,
+                    align_x: Alignment::End.into(),
+                    ..Default::default()
+                });
+            }
+        });
+
+        vec![histogram, rows]
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        _bounds: iced::Rectangle,
+        _cursor: iced_core::mouse::Cursor,
+    ) -> iced_core::mouse::Interaction {
+        iced_core::mouse::Interaction::default()
     }
 }

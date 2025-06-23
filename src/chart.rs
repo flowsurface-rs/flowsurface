@@ -596,7 +596,7 @@ pub fn view<'a, T: Chart>(
             buttons.width(y_labels_width).height(Length::Fixed(26.0))
         ]
     ]
-    .padding(1)
+    .padding(padding::left(1).right(1).bottom(1))
     .into()
 }
 
