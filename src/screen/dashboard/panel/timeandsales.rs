@@ -10,12 +10,7 @@ use exchange::{TickerInfo, Trade};
 use iced::widget::canvas;
 use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, mouse, padding};
 
-use super::PanelView;
-
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
-
-const TARGET_SIZE: usize = 700;
-const MAX_SIZE: usize = 900;
 
 struct TradeDisplay {
     time_str: String,
@@ -26,7 +21,7 @@ struct TradeDisplay {
 
 const TRADE_ROW_HEIGHT: f32 = 14.0;
 
-impl PanelView for TimeAndSales {
+impl super::PanelView for TimeAndSales {
     fn view(
         &self,
         pane: iced::widget::pane_grid::Pane,
@@ -104,8 +99,10 @@ impl TimeAndSales {
             }
         }
 
-        if self.recent_trades.len() > MAX_SIZE {
-            let drain_amount = self.recent_trades.len() - TARGET_SIZE;
+        let buffer_filter = self.config.buffer_filter;
+
+        if self.recent_trades.len() > buffer_filter {
+            let drain_amount = self.recent_trades.len() - (buffer_filter as f32 * 0.8) as usize;
 
             self.max_filtered_qty = self.recent_trades[drain_amount..]
                 .iter()

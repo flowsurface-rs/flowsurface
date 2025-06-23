@@ -33,7 +33,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                     }),
                 )
             },
-            |value| format!("${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value)),
             Some(500.0),
         )
     };
@@ -54,7 +54,7 @@ pub fn heatmap_cfg_view<'a>(cfg: heatmap::Config, pane: pane_grid::Pane) -> Elem
                     }),
                 )
             },
-            |value| format!("${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value)),
             Some(5000.0),
         )
     };
@@ -250,11 +250,33 @@ pub fn timesales_cfg_view<'a>(
                     Some(pane),
                     VisualConfig::TimeAndSales(timeandsales::Config {
                         trade_size_filter: value,
+                        ..cfg
                     }),
                 )
             },
-            |value| format!("${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value)),
             Some(500.0),
+        )
+    };
+
+    let storage_buffer_slider = {
+        let buffer_size = cfg.buffer_filter as f32;
+
+        labeled_slider(
+            "Count",
+            100.0..=5000.0,
+            buffer_size,
+            move |value| {
+                Message::VisualConfigChanged(
+                    Some(pane),
+                    VisualConfig::TimeAndSales(timeandsales::Config {
+                        buffer_filter: value as usize,
+                        ..cfg
+                    }),
+                )
+            },
+            |value| format!("{}", *value as usize),
+            Some(100.0),
         )
     };
 
@@ -263,7 +285,12 @@ pub fn timesales_cfg_view<'a>(
             column![text("Size filter").size(14), trade_size_slider,]
                 .spacing(20)
                 .padding(16)
-                .align_x(Alignment::Center),
+                .align_x(Alignment::Start),
+            horizontal_rule(1).style(style::split_ruler),
+            column![text("Max trades stored").size(14), storage_buffer_slider,]
+                .spacing(20)
+                .padding(16)
+                .align_x(Alignment::Start),
             row![
                 horizontal_space(),
                 sync_all_button(VisualConfig::TimeAndSales(cfg))
