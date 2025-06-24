@@ -1,6 +1,9 @@
 pub mod timeandsales;
 
-use iced::{Element, widget::canvas};
+use iced::{
+    Element, padding,
+    widget::{canvas, container},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -15,10 +18,13 @@ pub trait Panel: canvas::Program<Message> {
 }
 
 pub fn view<T: Panel>(panel: &T, _timezone: data::UserTimezone) -> Element<Message> {
-    canvas(panel)
-        .height(iced::Length::Fill)
-        .width(iced::Length::Fill)
-        .into()
+    container(
+        canvas(panel)
+            .height(iced::Length::Fill)
+            .width(iced::Length::Fill),
+    )
+    .padding(padding::left(1).right(1).bottom(1))
+    .into()
 }
 
 pub fn update<T: Panel>(panel: &mut T, message: Message) {

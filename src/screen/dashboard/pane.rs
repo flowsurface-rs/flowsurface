@@ -615,17 +615,16 @@ impl State {
 
         let stack_padding = padding::right(12).left(12);
 
-        match self.modal {
-            Some(Modal::StreamModifier(_)) => unreachable!(),
-            Some(Modal::Indicators) => unreachable!(),
-            Some(Modal::Settings) => stack_modal(
+        if let Some(Modal::Settings) = self.modal {
+            stack_modal(
                 base,
                 settings_modal(),
                 Message::HideModal(pane),
                 stack_padding,
                 Alignment::End,
-            ),
-            None => base,
+            )
+        } else {
+            base
         }
     }
 

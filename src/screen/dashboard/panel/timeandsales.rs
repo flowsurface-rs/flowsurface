@@ -161,15 +161,30 @@ impl canvas::Program<Message> for TimeAndSales {
         bounds: iced::Rectangle,
         cursor: iced_core::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        if !bounds.contains(cursor.position()?) {
-            return None;
-        }
+        let cursor_position = cursor.position_in(bounds)?;
+
+        let paused_box = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: bounds.width,
+            height: HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT,
+        };
 
         match event {
             Event::Mouse(mouse_event) => match mouse_event {
-                mouse::Event::ButtonPressed(mouse::Button::Middle) => {
-                    Some(canvas::Action::publish(Message::ResetScroll).and_capture())
-                }
+                mouse::Event::ButtonPressed(button) => match button {
+                    mouse::Button::Middle => {
+                        Some(canvas::Action::publish(Message::ResetScroll).and_capture())
+                    }
+                    mouse::Button::Left => {
+                        if self.is_paused && paused_box.contains(cursor_position) {
+                            Some(canvas::Action::publish(Message::ResetScroll).and_capture())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
                 mouse::Event::WheelScrolled { delta } => {
                     let scroll_amount = match delta {
                         mouse::ScrollDelta::Lines { y, .. } => *y * TRADE_ROW_HEIGHT * 3.0,
@@ -177,6 +192,13 @@ impl canvas::Program<Message> for TimeAndSales {
                     };
 
                     Some(canvas::Action::publish(Message::Scrolled(scroll_amount)).and_capture())
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if self.is_paused {
+                        Some(canvas::Action::publish(Message::Scrolled(0.0)).and_capture())
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             },
@@ -190,7 +212,7 @@ impl canvas::Program<Message> for TimeAndSales {
         renderer: &Renderer,
         theme: &Theme,
         bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let market_type = match self.ticker_info {
             Some(ref ticker_info) => ticker_info.market_type(),
@@ -198,6 +220,8 @@ impl canvas::Program<Message> for TimeAndSales {
         };
 
         let palette = theme.extended_palette();
+
+        let is_scroll_paused = self.is_paused;
 
         let content = self.cache.draw(renderer, bounds.size(), |frame| {
             let content_top_y = -self.scroll_offset;
@@ -215,9 +239,9 @@ impl canvas::Program<Message> for TimeAndSales {
 
             if total_count > 0 {
                 let buy_bar_width =
-                    (frame.width() * (buy_count as f32 / total_count as f32)).max(1.0);
+                    (bounds.width * (buy_count as f32 / total_count as f32)).max(1.0);
                 let sell_bar_width =
-                    (frame.width() * (sell_count as f32 / total_count as f32)).max(1.0);
+                    (bounds.width * (sell_count as f32 / total_count as f32)).max(1.0);
 
                 frame.fill_rectangle(
                     Point {
@@ -247,7 +271,11 @@ impl canvas::Program<Message> for TimeAndSales {
             // Feed
             let row_height = TRADE_ROW_HEIGHT;
 
-            let filtered_trades: Vec<_> = self
+            let row_scroll_offset = (self.scroll_offset - HISTOGRAM_HEIGHT).max(0.0);
+            let start_index = (row_scroll_offset / row_height).floor() as usize;
+            let visible_rows = (bounds.height / row_height).ceil() as usize;
+
+            let trades_to_draw = self
                 .recent_trades
                 .iter()
                 .filter(|t| {
@@ -257,18 +285,6 @@ impl canvas::Program<Message> for TimeAndSales {
                     };
                     trade_size >= self.config.trade_size_filter
                 })
-                .collect();
-
-            if filtered_trades.is_empty() {
-                return;
-            }
-
-            let row_scroll_offset = (self.scroll_offset - HISTOGRAM_HEIGHT).max(0.0);
-            let start_index = (row_scroll_offset / row_height).floor() as usize;
-            let visible_rows = (frame.height() / row_height).ceil() as usize;
-
-            let trades_to_draw = filtered_trades
-                .iter()
                 .rev()
                 .skip(start_index)
                 .take(visible_rows + 2);
@@ -277,7 +293,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 let y_position =
                     content_top_y + HISTOGRAM_HEIGHT + ((start_index + i) as f32 * row_height);
 
-                if y_position + row_height < 0.0 || y_position > frame.height() {
+                if y_position + row_height < 0.0 || y_position > bounds.height {
                     continue;
                 }
 
@@ -289,11 +305,15 @@ impl canvas::Program<Message> for TimeAndSales {
 
                 let row_bg_color_alpha = (trade.qty / self.max_filtered_qty).clamp(0.05, 1.0);
 
-                let text_color = if palette.is_dark {
+                let mut text_color = if palette.is_dark {
                     lighten(base_text_color, row_bg_color_alpha * 0.5)
                 } else {
                     darken(base_text_color, row_bg_color_alpha * 0.5)
                 };
+
+                if is_scroll_paused && y_position < HISTOGRAM_HEIGHT + (TRADE_ROW_HEIGHT * 0.8) {
+                    text_color = text_color.scale_alpha(0.2);
+                }
 
                 frame.fill_rectangle(
                     Point {
@@ -346,6 +366,56 @@ impl canvas::Program<Message> for TimeAndSales {
                     ..Default::default()
                 });
             }
+
+            if is_scroll_paused {
+                let pause_box_height = HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT;
+                let pause_box_y = 0.0;
+
+                let cursor_position = cursor.position_in(bounds);
+
+                let paused_box = Rectangle {
+                    x: 0.0,
+                    y: pause_box_y,
+                    width: frame.width(),
+                    height: pause_box_height,
+                };
+
+                let bg_color = if let Some(cursor) = cursor_position {
+                    if paused_box.contains(cursor) {
+                        palette.background.strong.color
+                    } else {
+                        palette.background.weak.color
+                    }
+                } else {
+                    palette.background.strong.color
+                };
+
+                frame.fill_rectangle(
+                    Point {
+                        x: 0.0,
+                        y: pause_box_y,
+                    },
+                    Size {
+                        width: frame.width(),
+                        height: pause_box_height,
+                    },
+                    bg_color,
+                );
+
+                frame.fill_text(iced::widget::canvas::Text {
+                    content: "Paused".to_string(),
+                    position: Point {
+                        x: frame.width() * 0.5,
+                        y: pause_box_y + (pause_box_height / 2.0),
+                    },
+                    size: 12.0.into(),
+                    font: style::AZERET_MONO,
+                    color: palette.background.strong.text,
+                    align_x: Alignment::Center.into(),
+                    align_y: Alignment::Center.into(),
+                    ..Default::default()
+                });
+            }
         });
 
         vec![content]
@@ -354,9 +424,22 @@ impl canvas::Program<Message> for TimeAndSales {
     fn mouse_interaction(
         &self,
         _state: &Self::State,
-        _bounds: iced::Rectangle,
-        _cursor: iced_core::mouse::Cursor,
+        bounds: iced::Rectangle,
+        cursor: iced_core::mouse::Cursor,
     ) -> iced_core::mouse::Interaction {
-        iced_core::mouse::Interaction::default()
+        if self.is_paused {
+            let paused_box = Rectangle {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT,
+            };
+
+            if cursor.is_over(paused_box) {
+                return mouse::Interaction::Pointer;
+            }
+        }
+
+        mouse::Interaction::default()
     }
 }
