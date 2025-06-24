@@ -58,6 +58,11 @@ pub enum Modal {
     Indicators,
 }
 
+pub enum Action {
+    Chart(chart::Action),
+    Panel(panel::Action),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     PaneClicked(pane_grid::Pane),
@@ -632,8 +637,13 @@ impl State {
         self.streams.iter().any(|existing| existing == stream)
     }
 
-    pub fn invalidate(&mut self, now: Instant) -> Option<chart::Action> {
-        self.content.invalidate(now)
+    pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
+        match &mut self.content {
+            Content::Heatmap(chart, _) => chart.invalidate(Some(now)).map(Action::Chart),
+            Content::Kline(chart, _) => chart.invalidate(Some(now)).map(Action::Chart),
+            Content::TimeAndSales(panel) => panel.invalidate(Some(now)).map(Action::Panel),
+            Content::Starter => None,
+        }
     }
 
     pub fn update_interval(&self) -> Option<u64> {
@@ -649,7 +659,7 @@ impl State {
         self.content.last_tick()
     }
 
-    pub fn tick(&mut self, now: Instant) -> Option<chart::Action> {
+    pub fn tick(&mut self, now: Instant) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
 
@@ -832,18 +842,6 @@ impl Content {
             ),
             enabled_indicators,
         )
-    }
-
-    pub fn invalidate(&mut self, now: Instant) -> Option<chart::Action> {
-        match self {
-            Content::Heatmap(chart, _) => chart.invalidate(Some(now)),
-            Content::Kline(chart, _) => chart.invalidate(Some(now)),
-            Content::TimeAndSales(panel) => {
-                panel.invalidate();
-                None
-            }
-            Content::Starter => None,
-        }
     }
 
     pub fn last_tick(&self) -> Option<Instant> {

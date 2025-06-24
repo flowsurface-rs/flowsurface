@@ -11,7 +11,7 @@ use iced::widget::canvas;
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
-const HISTOGRAM_HEIGHT: f32 = 12.0;
+const HISTOGRAM_HEIGHT: f32 = 8.0;
 
 struct TradeDisplay {
     time_str: String,
@@ -39,16 +39,20 @@ impl super::Panel for TimeAndSales {
             self.recent_trades.append(&mut self.paused_trades_buffer);
         }
 
-        self.invalidate();
+        self.invalidate(Some(Instant::now()));
     }
 
-    fn reset_scroll_position(&mut self) {
+    fn reset_scroll(&mut self) {
         self.scroll_offset = 0.0;
         self.is_paused = false;
 
         self.recent_trades.append(&mut self.paused_trades_buffer);
 
-        self.invalidate();
+        self.invalidate(Some(Instant::now()));
+    }
+
+    fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
+        self.invalidate(now)
     }
 }
 
@@ -145,9 +149,12 @@ impl TimeAndSales {
         self.last_tick
     }
 
-    pub fn invalidate(&mut self) {
+    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         self.cache.clear();
-        self.last_tick = Instant::now();
+        if let Some(now) = now {
+            self.last_tick = now;
+        }
+        None
     }
 }
 
@@ -195,7 +202,8 @@ impl canvas::Program<Message> for TimeAndSales {
                 }
                 mouse::Event::CursorMoved { .. } => {
                     if self.is_paused {
-                        Some(canvas::Action::publish(Message::Scrolled(0.0)).and_capture())
+                        let now = Some(Instant::now());
+                        Some(canvas::Action::publish(Message::Invalidate(now)).and_capture())
                     } else {
                         None
                     }
@@ -387,7 +395,7 @@ impl canvas::Program<Message> for TimeAndSales {
                         palette.background.weak.color
                     }
                 } else {
-                    palette.background.strong.color
+                    palette.background.weak.color
                 };
 
                 frame.fill_rectangle(

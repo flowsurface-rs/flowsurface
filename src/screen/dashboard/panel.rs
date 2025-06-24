@@ -4,17 +4,23 @@ use iced::{
     Element, padding,
     widget::{canvas, container},
 };
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     Scrolled(f32),
     ResetScroll,
+    Invalidate(Option<Instant>),
 }
+
+pub enum Action {}
 
 pub trait Panel: canvas::Program<Message> {
     fn scroll(&mut self, scroll: f32);
 
-    fn reset_scroll_position(&mut self);
+    fn reset_scroll(&mut self);
+
+    fn invalidate(&mut self, now: Option<Instant>) -> Option<Action>;
 }
 
 pub fn view<T: Panel>(panel: &T, _timezone: data::UserTimezone) -> Element<Message> {
@@ -33,7 +39,10 @@ pub fn update<T: Panel>(panel: &mut T, message: Message) {
             panel.scroll(delta);
         }
         Message::ResetScroll => {
-            panel.reset_scroll_position();
+            panel.reset_scroll();
+        }
+        Message::Invalidate(now) => {
+            panel.invalidate(now);
         }
     }
 }

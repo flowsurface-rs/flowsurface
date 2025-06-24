@@ -1219,22 +1219,24 @@ impl Dashboard {
 
         self.iter_all_panes_mut(main_window)
             .for_each(|(window, pane, state)| match state.tick(now) {
-                Some(chart::Action::ErrorOccurred(err)) => {
-                    let pane_id = state.unique_id();
+                Some(pane::Action::Chart(chart_action)) => match chart_action {
+                    chart::Action::ErrorOccurred(err) => {
+                        let pane_id = state.unique_id();
 
-                    tasks.push(Task::done(Message::ErrorOccurred(
-                        Some(pane_id),
-                        DashboardError::Unknown(err.to_string()),
-                    )));
-                }
-                Some(chart::Action::FetchRequested(req_id, fetch)) => {
-                    tasks.push(Task::done(Message::ChartRequestedFetch {
-                        pane,
-                        window,
-                        req_id,
-                        fetch,
-                    }));
-                }
+                        tasks.push(Task::done(Message::ErrorOccurred(
+                            Some(pane_id),
+                            DashboardError::Unknown(err.to_string()),
+                        )));
+                    }
+                    chart::Action::FetchRequested(req_id, fetch) => {
+                        tasks.push(Task::done(Message::ChartRequestedFetch {
+                            pane,
+                            window,
+                            req_id,
+                            fetch,
+                        }));
+                    }
+                },
                 None => {}
             });
 
