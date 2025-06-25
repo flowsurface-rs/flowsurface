@@ -251,6 +251,20 @@ pub mod button {
         }
     }
 
+    pub fn info(theme: &Theme, _status: Status) -> Style {
+        let palette = theme.extended_palette();
+
+        Style {
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            background: Some(palette.background.weakest.color.into()),
+            ..Default::default()
+        }
+    }
+
     pub fn menu_body(theme: &Theme, status: Status, is_selected: bool) -> Style {
         let palette = theme.extended_palette();
 

@@ -1,7 +1,5 @@
 use chrono::{DateTime, Datelike, Timelike};
 
-const DECIMAL_PRECISION: usize = 3;
-
 pub fn abbr_large_numbers(value: f32) -> String {
     let abs_value = value.abs();
     let sign = if value < 0.0 { "-" } else { "" };
@@ -13,12 +11,15 @@ pub fn abbr_large_numbers(value: f32) -> String {
         v if v >= 100.0 => format!("{}{:.0}", sign, v),
         v if v >= 10.0 => format!("{}{:.1}", sign, v),
         v if v >= 1.0 => format!("{}{:.2}", sign, v),
+        v if v >= 0.001 => format!("{}{:.3}", sign, v),
+        v if v >= 0.0001 => format!("{}{:.4}", sign, v),
+        v if v >= 0.00001 => format!("{}{:.5}", sign, v),
         _ => {
-            let rounded = (abs_value * 10_f32.powi(DECIMAL_PRECISION as i32)).round();
-            if rounded == 0.0 {
+            if abs_value == 0.0 {
                 "0".to_string()
             } else {
-                format!("{}{:.DECIMAL_PRECISION$}", sign, abs_value)
+                let s = format!("{}{:.3}", sign, abs_value);
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
             }
         }
     }

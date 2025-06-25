@@ -253,16 +253,19 @@ impl LayoutManager {
 
         content = content.push(row![
             Space::with_width(iced::Length::Fill),
-            row![
-                tooltip(
-                    button("i")
-                        .style(move |theme, status| style::button::modifier(theme, status, true)),
-                    Some("Layouts won't be saved if app exits abruptly"),
-                    TooltipPosition::Top,
-                ),
-                edit_btn,
-            ]
-            .spacing(4),
+            if is_edit_mode {
+                row![edit_btn]
+            } else {
+                row![
+                    tooltip(
+                        button("i").style(style::button::info),
+                        Some("Layouts won't be saved if app exits abruptly"),
+                        TooltipPosition::Top,
+                    ),
+                    edit_btn,
+                ]
+                .spacing(4)
+            }
         ]);
 
         let mut layout_widgets: Vec<Element<'_, Message>> = vec![];

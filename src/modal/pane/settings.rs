@@ -294,19 +294,19 @@ pub fn timesales_cfg_view<'a>(
         };
 
         column![
-            text("Max trades stored").size(14),
             row![
-                slider,
+                text("Max trades stored").size(14),
                 tooltip(
-                    button("i")
-                        .style(move |theme, status| style::button::modifier(theme, status, true)),
-                    Some("Affects both the stacked bar and how much you can scroll down"),
+                    button("i").style(style::button::info),
+                    Some("Affects the stacked bar, colors and how much you can scroll down"),
                     TooltipPosition::Top,
                 ),
             ]
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .spacing(4),
+            row![slider,]
         ]
-        .spacing(8)
+        .spacing(4)
     };
 
     let content = column![
