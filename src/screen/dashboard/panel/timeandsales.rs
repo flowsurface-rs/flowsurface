@@ -7,7 +7,7 @@ use data::config::theme::{darken, lighten};
 use exchange::adapter::MarketKind;
 use exchange::{TickerInfo, Trade};
 
-use iced::widget::canvas;
+use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
@@ -278,6 +278,7 @@ impl canvas::Program<Message> for TimeAndSales {
 
             // Feed
             let row_height = TRADE_ROW_HEIGHT;
+            let row_width = bounds.width;
 
             let row_scroll_offset = (self.scroll_offset - HISTOGRAM_HEIGHT).max(0.0);
             let start_index = (row_scroll_offset / row_height).floor() as usize;
@@ -329,16 +330,16 @@ impl canvas::Program<Message> for TimeAndSales {
                         y: y_position,
                     },
                     Size {
-                        width: frame.width(),
+                        width: row_width,
                         height: row_height,
                     },
                     bg_color.scale_alpha(row_bg_color_alpha),
                 );
 
-                frame.fill_text(iced::widget::canvas::Text {
+                frame.fill_text(Text {
                     content: trade.time_str.clone(),
                     position: Point {
-                        x: frame.width() * 0.1,
+                        x: row_width * 0.1,
                         y: y_position,
                     },
                     size: TEXT_SIZE,
@@ -348,10 +349,10 @@ impl canvas::Program<Message> for TimeAndSales {
                     ..Default::default()
                 });
 
-                frame.fill_text(iced::widget::canvas::Text {
+                frame.fill_text(Text {
                     content: trade.price.to_string(),
                     position: Point {
-                        x: frame.width() * 0.65,
+                        x: row_width * 0.65,
                         y: y_position,
                     },
                     size: TEXT_SIZE,
@@ -361,10 +362,10 @@ impl canvas::Program<Message> for TimeAndSales {
                     ..Default::default()
                 });
 
-                frame.fill_text(iced::widget::canvas::Text {
+                frame.fill_text(Text {
                     content: data::util::abbr_large_numbers(trade.qty),
                     position: Point {
-                        x: frame.width() * 0.9,
+                        x: row_width * 0.9,
                         y: y_position,
                     },
                     size: TEXT_SIZE,
@@ -410,7 +411,7 @@ impl canvas::Program<Message> for TimeAndSales {
                     bg_color,
                 );
 
-                frame.fill_text(iced::widget::canvas::Text {
+                frame.fill_text(Text {
                     content: "Paused".to_string(),
                     position: Point {
                         x: frame.width() * 0.5,
