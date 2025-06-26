@@ -2,6 +2,7 @@ use crate::screen::dashboard::pane::Message;
 use crate::screen::dashboard::panel::timeandsales;
 use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
+use data::chart::timeandsales::StackedBarRatio;
 use data::chart::{
     KlineChartKind, VisualConfig,
     heatmap::{self, CoalesceKind},
@@ -309,10 +310,28 @@ pub fn timesales_cfg_view<'a>(
         .spacing(4)
     };
 
+    let stacked_bar_ratio = {
+        let ratio = cfg.stacked_bar_ratio;
+
+        let ratio_picklist = pick_list(StackedBarRatio::ALL, Some(ratio), move |new_ratio| {
+            Message::VisualConfigChanged(
+                Some(pane),
+                VisualConfig::TimeAndSales(timeandsales::Config {
+                    stacked_bar_ratio: new_ratio,
+                    ..cfg
+                }),
+            )
+        });
+
+        column![text("Stacked bar ratio").size(14), ratio_picklist].spacing(8)
+    };
+
     let content = column![
         trade_size_column,
         horizontal_rule(1).style(style::split_ruler),
         storage_buffer_column,
+        horizontal_rule(1).style(style::split_ruler),
+        stacked_bar_ratio,
         horizontal_rule(1).style(style::split_ruler),
         row![
             horizontal_space(),

@@ -3,6 +3,7 @@ use std::time::Instant;
 use super::Message;
 use crate::style;
 pub use data::chart::timeandsales::Config;
+use data::chart::timeandsales::StackedBarRatio;
 use data::config::theme::{darken, lighten};
 use exchange::adapter::MarketKind;
 use exchange::{TickerInfo, Trade};
@@ -235,45 +236,136 @@ impl canvas::Program<Message> for TimeAndSales {
             let content_top_y = -self.scroll_offset;
 
             // Histogram
-            let (buy_count, sell_count) =
-                self.recent_trades.iter().fold((0, 0), |(buy, sell), t| {
-                    if t.is_sell {
-                        (buy, sell + 1)
+            let (buy_ratio, sell_ratio) = match self.config.stacked_bar_ratio {
+                StackedBarRatio::TotalVolume => {
+                    let (buy_volume, sell_volume) =
+                        self.recent_trades
+                            .iter()
+                            .fold((0.0, 0.0), |(buy, sell), t| {
+                                if t.is_sell {
+                                    (buy, sell + t.qty)
+                                } else {
+                                    (buy + t.qty, sell)
+                                }
+                            });
+                    let total_volume = buy_volume + sell_volume;
+
+                    if total_volume > 0.0 {
+                        (buy_volume / total_volume, sell_volume / total_volume)
                     } else {
-                        (buy + 1, sell)
+                        (0.0, 0.0)
                     }
-                });
-            let total_count = buy_count + sell_count;
+                }
+                StackedBarRatio::Count => {
+                    let (buy_count, sell_count) =
+                        self.recent_trades.iter().fold((0, 0), |(buy, sell), t| {
+                            if t.is_sell {
+                                (buy, sell + 1)
+                            } else {
+                                (buy + 1, sell)
+                            }
+                        });
+                    let total_count = buy_count + sell_count;
 
-            if total_count > 0 {
-                let buy_bar_width =
-                    (bounds.width * (buy_count as f32 / total_count as f32)).max(1.0);
-                let sell_bar_width =
-                    (bounds.width * (sell_count as f32 / total_count as f32)).max(1.0);
+                    if total_count > 0 {
+                        (
+                            buy_count as f32 / total_count as f32,
+                            sell_count as f32 / total_count as f32,
+                        )
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
+                StackedBarRatio::AverageSize => {
+                    let (buy_volume, buy_count, sell_volume, sell_count) =
+                        self.recent_trades.iter().fold(
+                            (0.0, 0, 0.0, 0),
+                            |(b_volume, b_count, s_volume, s_count), t| {
+                                if t.is_sell {
+                                    (b_volume, b_count, s_volume + t.qty, s_count + 1)
+                                } else {
+                                    (b_volume + t.qty, b_count + 1, s_volume, s_count)
+                                }
+                            },
+                        );
 
-                frame.fill_rectangle(
-                    Point {
-                        x: 0.0,
-                        y: content_top_y,
-                    },
-                    Size {
-                        width: buy_bar_width,
-                        height: HISTOGRAM_HEIGHT,
-                    },
-                    palette.success.weak.color,
-                );
+                    let avg_buy_size = if buy_count > 0 {
+                        buy_volume / buy_count as f32
+                    } else {
+                        0.0
+                    };
 
-                frame.fill_rectangle(
-                    Point {
-                        x: buy_bar_width,
-                        y: content_top_y,
-                    },
-                    Size {
-                        width: sell_bar_width,
-                        height: HISTOGRAM_HEIGHT,
-                    },
-                    palette.danger.weak.color,
-                );
+                    let avg_sell_size = if sell_count > 0 {
+                        sell_volume / sell_count as f32
+                    } else {
+                        0.0
+                    };
+
+                    let total_avg_size = avg_buy_size + avg_sell_size;
+
+                    if total_avg_size > 0.0 {
+                        (
+                            avg_buy_size / total_avg_size,
+                            avg_sell_size / total_avg_size,
+                        )
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
+                StackedBarRatio::VolumeImbalance => {
+                    let (buy_volume, sell_volume) =
+                        self.recent_trades
+                            .iter()
+                            .fold((0.0, 0.0), |(buy, sell), t| {
+                                if t.is_sell {
+                                    (buy, sell + t.qty)
+                                } else {
+                                    (buy + t.qty, sell)
+                                }
+                            });
+                    let total_volume = buy_volume + sell_volume;
+                    if total_volume > 0.0 {
+                        let volume_imbalance = (buy_volume - sell_volume) / total_volume;
+                        let buy_ratio = (1.0 + volume_imbalance) / 2.0;
+                        (buy_ratio, 1.0 - buy_ratio)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
+            };
+
+            if buy_ratio > 0.0 || sell_ratio > 0.0 {
+                let draw_stacked_bar =
+                    |frame: &mut canvas::Frame, buy_bar_width: f32, sell_bar_width: f32| {
+                        frame.fill_rectangle(
+                            Point {
+                                x: 0.0,
+                                y: content_top_y,
+                            },
+                            Size {
+                                width: buy_bar_width,
+                                height: HISTOGRAM_HEIGHT,
+                            },
+                            palette.success.weak.color,
+                        );
+
+                        frame.fill_rectangle(
+                            Point {
+                                x: buy_bar_width,
+                                y: content_top_y,
+                            },
+                            Size {
+                                width: sell_bar_width,
+                                height: HISTOGRAM_HEIGHT,
+                            },
+                            palette.danger.weak.color,
+                        );
+                    };
+
+                let buy_bar_width = (bounds.width * buy_ratio).round();
+                let sell_bar_width = bounds.width - buy_bar_width;
+
+                draw_stacked_bar(frame, buy_bar_width, sell_bar_width);
             }
 
             // Feed
@@ -315,9 +407,9 @@ impl canvas::Program<Message> for TimeAndSales {
                 let row_bg_color_alpha = (trade.qty / self.max_filtered_qty).clamp(0.05, 1.0);
 
                 let mut text_color = if palette.is_dark {
-                    lighten(base_text_color, row_bg_color_alpha * 0.5)
+                    lighten(base_text_color, row_bg_color_alpha)
                 } else {
-                    darken(base_text_color, row_bg_color_alpha * 0.5)
+                    darken(base_text_color, row_bg_color_alpha)
                 };
 
                 if is_scroll_paused && y_position < HISTOGRAM_HEIGHT + (TRADE_ROW_HEIGHT * 0.8) {
