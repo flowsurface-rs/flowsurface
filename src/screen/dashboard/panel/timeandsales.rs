@@ -390,6 +390,17 @@ impl canvas::Program<Message> for TimeAndSales {
                 .skip(start_index)
                 .take(visible_rows + 2);
 
+            let create_text =
+                |content: String, position: Point, align_x: Alignment, color: iced::Color| Text {
+                    content,
+                    position,
+                    size: TEXT_SIZE,
+                    font: style::AZERET_MONO,
+                    color,
+                    align_x: align_x.into(),
+                    ..Default::default()
+                };
+
             for (i, trade) in trades_to_draw.enumerate() {
                 let y_position =
                     content_top_y + HISTOGRAM_HEIGHT + ((start_index + i) as f32 * row_height);
@@ -398,18 +409,18 @@ impl canvas::Program<Message> for TimeAndSales {
                     continue;
                 }
 
-                let (bg_color, base_text_color) = if trade.is_sell {
-                    (palette.danger.base.color, palette.danger.strong.color)
+                let bg_color = if trade.is_sell {
+                    palette.danger.base.color
                 } else {
-                    (palette.success.base.color, palette.success.strong.color)
+                    palette.success.base.color
                 };
 
                 let row_bg_color_alpha = (trade.qty / self.max_filtered_qty).clamp(0.05, 1.0);
 
                 let mut text_color = if palette.is_dark {
-                    lighten(base_text_color, row_bg_color_alpha)
+                    lighten(bg_color, row_bg_color_alpha)
                 } else {
-                    darken(base_text_color, row_bg_color_alpha)
+                    darken(bg_color, row_bg_color_alpha)
                 };
 
                 if is_scroll_paused && y_position < HISTOGRAM_HEIGHT + (TRADE_ROW_HEIGHT * 0.8) {
@@ -428,44 +439,38 @@ impl canvas::Program<Message> for TimeAndSales {
                     bg_color.scale_alpha(row_bg_color_alpha),
                 );
 
-                frame.fill_text(Text {
-                    content: trade.time_str.clone(),
-                    position: Point {
+                let trade_time = create_text(
+                    trade.time_str.clone(),
+                    Point {
                         x: row_width * 0.1,
                         y: y_position,
                     },
-                    size: TEXT_SIZE,
-                    font: style::AZERET_MONO,
-                    color: text_color,
-                    align_x: Alignment::Start.into(),
-                    ..Default::default()
-                });
+                    Alignment::Start,
+                    text_color,
+                );
+                frame.fill_text(trade_time);
 
-                frame.fill_text(Text {
-                    content: trade.price.to_string(),
-                    position: Point {
+                let trade_price = create_text(
+                    trade.price.to_string(),
+                    Point {
                         x: row_width * 0.65,
                         y: y_position,
                     },
-                    size: TEXT_SIZE,
-                    font: style::AZERET_MONO,
-                    color: text_color,
-                    align_x: Alignment::End.into(),
-                    ..Default::default()
-                });
+                    Alignment::End,
+                    text_color,
+                );
+                frame.fill_text(trade_price);
 
-                frame.fill_text(Text {
-                    content: data::util::abbr_large_numbers(trade.qty),
-                    position: Point {
+                let trade_qty = create_text(
+                    data::util::abbr_large_numbers(trade.qty),
+                    Point {
                         x: row_width * 0.9,
                         y: y_position,
                     },
-                    size: TEXT_SIZE,
-                    font: style::AZERET_MONO,
-                    color: text_color,
-                    align_x: Alignment::End.into(),
-                    ..Default::default()
-                });
+                    Alignment::End,
+                    text_color,
+                );
+                frame.fill_text(trade_qty);
             }
 
             if is_scroll_paused {

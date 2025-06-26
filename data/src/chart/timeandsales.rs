@@ -26,8 +26,8 @@ fn default_buffer_filter() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default, Copy)]
 pub enum StackedBarRatio {
-    #[default]
     TotalVolume,
+    #[default]
     Count,
     AverageSize,
     VolumeImbalance,

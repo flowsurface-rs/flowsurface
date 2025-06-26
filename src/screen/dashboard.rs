@@ -286,8 +286,14 @@ impl Dashboard {
                         } else {
                             self.iter_all_panes_mut(main_window.id)
                                 .for_each(|(_, _, state)| {
-                                    state.settings.visual_config = Some(cfg);
-                                    state.content.change_visual_config(cfg);
+                                    if let Some(current_cfg) = state.settings.visual_config {
+                                        if std::mem::discriminant(&current_cfg)
+                                            == std::mem::discriminant(&cfg)
+                                        {
+                                            state.settings.visual_config = Some(cfg);
+                                            state.content.change_visual_config(cfg);
+                                        }
+                                    }
                                 });
                         }
                     }
