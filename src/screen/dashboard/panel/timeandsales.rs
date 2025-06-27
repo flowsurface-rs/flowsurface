@@ -409,18 +409,18 @@ impl canvas::Program<Message> for TimeAndSales {
                     continue;
                 }
 
-                let bg_color = if trade.is_sell {
-                    palette.danger.base.color
+                let (bg_color, text_color) = if trade.is_sell {
+                    (palette.danger.weak.color, palette.danger.strong.color)
                 } else {
-                    palette.success.base.color
+                    (palette.success.weak.color, palette.success.strong.color)
                 };
 
-                let row_bg_color_alpha = (trade.qty / self.max_filtered_qty).clamp(0.05, 1.0);
+                let row_bg_color_alpha = (trade.qty / self.max_filtered_qty).clamp(0.04, 0.96);
 
                 let mut text_color = if palette.is_dark {
-                    lighten(bg_color, row_bg_color_alpha)
+                    lighten(text_color, row_bg_color_alpha)
                 } else {
-                    darken(bg_color, row_bg_color_alpha)
+                    darken(text_color, row_bg_color_alpha)
                 };
 
                 if is_scroll_paused && y_position < HISTOGRAM_HEIGHT + (TRADE_ROW_HEIGHT * 0.8) {
@@ -453,7 +453,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 let trade_price = create_text(
                     trade.price.to_string(),
                     Point {
-                        x: row_width * 0.65,
+                        x: row_width * 0.67,
                         y: y_position,
                     },
                     Alignment::End,

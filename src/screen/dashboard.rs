@@ -871,7 +871,7 @@ impl Dashboard {
                 timezone,
             )
         })
-        .min_size(200)
+        .min_size(240)
         .on_click(pane::Message::PaneClicked)
         .on_drag(pane::Message::PaneDragged)
         .on_resize(8, pane::Message::PaneResized)
