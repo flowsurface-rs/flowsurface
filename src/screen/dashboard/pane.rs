@@ -412,7 +412,21 @@ impl State {
         });
 
         let body = match &self.content {
-            Content::Starter => center(text("select a ticker to start").size(16)).into(),
+            Content::Starter => {
+                let base: Element<_> = widget::toast::Manager::new(
+                    center(text("select a ticker to start").size(16)),
+                    &self.notifications,
+                    Alignment::End,
+                    move |msg| Message::DeleteNotification(id, msg),
+                )
+                .into();
+
+                if let Some(Modal::LinkGroup) = self.modal {
+                    self.link_group_modal(base, id)
+                } else {
+                    base
+                }
+            }
             Content::TimeAndSales(panel) => {
                 let base = panel::view(panel, timezone)
                     .map(move |message| Message::PanelInteraction(id, message));
@@ -669,50 +683,7 @@ impl State {
                 stack_padding,
                 Alignment::End,
             ),
-            Some(Modal::LinkGroup) => {
-                let mut grid = column![].spacing(4);
-                let rows = LinkGroup::ALL.chunks(3);
-
-                let create_button =
-                    |content: iced::widget::text::Text<'a>, msg: Message, is_selected: bool| {
-                        button(content.align_x(iced::Alignment::Center))
-                            .width(Length::Fixed(26.0))
-                            .on_press(msg)
-                            .style(move |theme, status| {
-                                style::button::menu_body(theme, status, is_selected)
-                            })
-                    };
-
-                for row_groups in rows {
-                    let mut button_row = row![].spacing(4);
-                    for &group in row_groups {
-                        button_row = button_row.push(create_button(
-                            text(group.to_string()),
-                            if self.link_group == Some(group) {
-                                Message::SwitchLinkGroup(pane, None)
-                            } else {
-                                Message::SwitchLinkGroup(pane, Some(group))
-                            },
-                            self.link_group == Some(group),
-                        ));
-                    }
-                    grid = grid.push(button_row);
-                }
-
-                let content: Element<_> = container(grid)
-                    .max_width(240)
-                    .padding(16)
-                    .style(style::chart_modal)
-                    .into();
-
-                stack_modal(
-                    base,
-                    content,
-                    Message::HideModal(pane),
-                    padding::right(12).left(4),
-                    Alignment::Start,
-                )
-            }
+            Some(Modal::LinkGroup) => self.link_group_modal(base, pane),
             None => base,
         }
     }
@@ -742,9 +713,59 @@ impl State {
                 stack_padding,
                 Alignment::End,
             )
+        } else if let Some(Modal::LinkGroup) = self.modal {
+            self.link_group_modal(base, pane)
         } else {
             base
         }
+    }
+
+    fn link_group_modal<'a>(
+        &'a self,
+        base: Element<'a, Message>,
+        pane: pane_grid::Pane,
+    ) -> Element<'a, Message> {
+        let mut grid = column![].spacing(4);
+        let rows = LinkGroup::ALL.chunks(3);
+
+        let create_button = |content: iced::widget::text::Text<'a>,
+                             msg: Message,
+                             is_selected: bool| {
+            button(content.align_x(iced::Alignment::Center))
+                .width(Length::Fixed(26.0))
+                .on_press(msg)
+                .style(move |theme, status| style::button::menu_body(theme, status, is_selected))
+        };
+
+        for row_groups in rows {
+            let mut button_row = row![].spacing(4);
+            for &group in row_groups {
+                button_row = button_row.push(create_button(
+                    text(group.to_string()),
+                    if self.link_group == Some(group) {
+                        Message::SwitchLinkGroup(pane, None)
+                    } else {
+                        Message::SwitchLinkGroup(pane, Some(group))
+                    },
+                    self.link_group == Some(group),
+                ));
+            }
+            grid = grid.push(button_row);
+        }
+
+        let content: Element<_> = container(grid)
+            .max_width(240)
+            .padding(16)
+            .style(style::chart_modal)
+            .into();
+
+        stack_modal(
+            base,
+            content,
+            Message::HideModal(pane),
+            padding::right(12).left(4),
+            Alignment::Start,
+        )
     }
 
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
@@ -1106,8 +1127,9 @@ fn link_group_button<'a>(
     };
 
     button(link_group.map_or(icon, |g| text(g.to_string())))
-        .style(move |theme, status| style::button::modifier(theme, status, !is_active))
+        .style(move |theme, status| style::button::menu_body(theme, status, is_active))
         .on_press(Message::ShowModal(id, Modal::LinkGroup))
+        .width(26)
         .into()
 }
 
