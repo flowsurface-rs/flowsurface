@@ -31,7 +31,7 @@ use iced::{
     Alignment, Element, Length, Renderer, Task, Theme,
     alignment::Vertical,
     padding,
-    widget::{button, center, pane_grid, row, text, tooltip},
+    widget::{button, center, container, pane_grid, row, text, tooltip},
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -87,6 +87,65 @@ pub enum Message {
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
     StreamModifierChanged(pane_grid::Pane, modal::stream::Message),
     StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
+    SwitchLinkGroup(pane_grid::Pane),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinkGroup {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+}
+
+impl LinkGroup {
+    pub const ALL: [LinkGroup; 9] = [
+        LinkGroup::A,
+        LinkGroup::B,
+        LinkGroup::C,
+        LinkGroup::D,
+        LinkGroup::E,
+        LinkGroup::F,
+        LinkGroup::G,
+        LinkGroup::H,
+        LinkGroup::I,
+    ];
+
+    pub fn next(opt: Option<LinkGroup>) -> Option<LinkGroup> {
+        match opt {
+            None => Some(LinkGroup::A),
+            Some(current) => {
+                let idx = LinkGroup::ALL.iter().position(|&g| g == current).unwrap();
+                if idx + 1 < LinkGroup::ALL.len() {
+                    Some(LinkGroup::ALL[idx + 1])
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for LinkGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = match self {
+            LinkGroup::A => "1",
+            LinkGroup::B => "2",
+            LinkGroup::C => "3",
+            LinkGroup::D => "4",
+            LinkGroup::E => "5",
+            LinkGroup::F => "6",
+            LinkGroup::G => "7",
+            LinkGroup::H => "8",
+            LinkGroup::I => "9",
+        };
+        write!(f, "{c}")
+    }
 }
 
 pub struct State {
@@ -97,6 +156,7 @@ pub struct State {
     pub notifications: Vec<Toast>,
     pub streams: Vec<StreamKind>,
     pub status: Status,
+    pub link_group: Option<LinkGroup>,
 }
 
 impl State {
@@ -318,8 +378,25 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let mut stream_info_element = row![]
-            .padding(padding::left(8))
+        let link_group = container(
+            button(if let Some(group) = self.link_group {
+                text(group.to_string())
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center)
+            } else {
+                icon_text(Icon::Link, 13)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center)
+            })
+            .on_press(Message::SwitchLinkGroup(id))
+            .style(move |t, s| style::button::menu_body(t, s, self.link_group.is_some()))
+            .height(Length::Fixed(24.0))
+            .height(Length::Fixed(26.0)),
+        )
+        .width(26);
+
+        let mut stream_info_element = row![link_group]
+            .padding(padding::left(4).top(1))
             .align_y(Vertical::Center)
             .spacing(8)
             .height(Length::Fixed(32.0));
@@ -707,6 +784,7 @@ impl Default for State {
             streams: vec![],
             notifications: vec![],
             status: Status::Ready,
+            link_group: None,
         }
     }
 }

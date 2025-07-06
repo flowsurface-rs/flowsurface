@@ -337,6 +337,11 @@ impl Dashboard {
                             state.content.change_visual_config(cfg);
                         }
                     }
+                    pane::Message::SwitchLinkGroup(pane) => {
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            state.link_group = pane::LinkGroup::next(state.link_group);
+                        }
+                    }
                     pane::Message::InitPaneContent(
                         content_str,
                         is_pane,
@@ -1060,6 +1065,75 @@ impl Dashboard {
         }
 
         Task::none()
+    }
+
+    pub fn switch_tickers_in_group(
+        &mut self,
+        main_window: window::Id,
+        exchange: Exchange,
+        ticker_info: TickerInfo,
+    ) -> Task<Message> {
+        let link_group = self.focus.and_then(|(window, pane)| {
+            self.get_pane(main_window, window, pane)
+                .and_then(|state| state.link_group)
+        });
+
+        if let Some(group) = link_group {
+            let tasks: Vec<_> = self
+                .iter_all_panes_mut(main_window)
+                .filter_map(|(window, pane, state)| {
+                    if state.link_group == Some(group) {
+                        let content_kind = match &state.content {
+                            pane::Content::Heatmap(_, _) => "heatmap",
+                            pane::Content::Kline(chart, _) => match chart.kind() {
+                                data::chart::KlineChartKind::Candles => "candlestick",
+                                data::chart::KlineChartKind::Footprint { .. } => "footprint",
+                            },
+                            pane::Content::TimeAndSales(_) => "time&sales",
+                            _ => return None,
+                        };
+
+                        Some(
+                            state
+                                .init_content_task(content_kind, exchange, ticker_info, pane)
+                                .map(move |msg| Message::Pane(window, msg)),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            Task::batch(tasks)
+        } else if let Some((window, pane)) = self.focus {
+            if let Some(state) = self.get_mut_pane(main_window, window, pane) {
+                let content_kind = match &state.content {
+                    pane::Content::Heatmap(_, _) => "heatmap",
+                    pane::Content::Kline(chart, _) => match chart.kind() {
+                        data::chart::KlineChartKind::Candles => "candlestick",
+                        data::chart::KlineChartKind::Footprint { .. } => "footprint",
+                    },
+                    pane::Content::TimeAndSales(_) => "time&sales",
+                    _ => {
+                        return Task::done(Message::Notification(Toast::warn(
+                            "Focused pane does not support switching ticker".to_string(),
+                        )));
+                    }
+                };
+
+                state
+                    .init_content_task(content_kind, exchange, ticker_info, pane)
+                    .map(move |msg| Message::Pane(window, msg))
+            } else {
+                Task::done(Message::Notification(Toast::warn(
+                    "No focused pane found".to_string(),
+                )))
+            }
+        } else {
+            Task::done(Message::Notification(Toast::warn(
+                "No link group or focused pane found".to_string(),
+            )))
+        }
     }
 
     pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {

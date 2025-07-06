@@ -11,7 +11,8 @@ use iced::{
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
-        Button, Space, Text, button, column, container, horizontal_rule, horizontal_space, row,
+        Button, Space, Text, button, column, container, horizontal_rule, horizontal_space,
+        mouse_area, row,
         scrollable::{self, AbsoluteOffset},
         text, text_input,
     },
@@ -38,7 +39,7 @@ pub fn fetch_tickers_info() -> Task<Message> {
 }
 
 pub enum Action {
-    TickerSelected(TickerInfo, Exchange, String),
+    TickerSelected(TickerInfo, Exchange, Option<String>),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
 }
@@ -96,6 +97,7 @@ pub enum Message {
     UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
     UpdateTickerStats(Exchange, HashMap<Ticker, TickerStats>),
     ErrorOccurred(data::InternalError),
+    MouseMiddleClicked(Exchange, Ticker),
 }
 
 pub struct TickersTable {
@@ -329,7 +331,7 @@ impl TickersTable {
                     self.selected_market = market;
                 }
             }
-            Message::TickerSelected(ticker, exchange, chart_type) => {
+            Message::TickerSelected(ticker, exchange, content) => {
                 let ticker_info = self
                     .tickers_info
                     .get(&exchange)
@@ -338,7 +340,7 @@ impl TickersTable {
                     .flatten();
 
                 if let Some(ticker_info) = ticker_info {
-                    return Some(Action::TickerSelected(ticker_info, exchange, chart_type));
+                    return Some(Action::TickerSelected(ticker_info, exchange, Some(content)));
                 } else {
                     log::warn!("Ticker info not found for {ticker:?} on {exchange:?}");
                 }
@@ -405,6 +407,20 @@ impl TickersTable {
             Message::ErrorOccurred(err) => {
                 log::error!("Error occurred: {err}");
                 return Some(Action::ErrorOccurred(err));
+            }
+            Message::MouseMiddleClicked(exc, ticker) => {
+                let ticker_info = self
+                    .tickers_info
+                    .get(&exc)
+                    .and_then(|info| info.get(&ticker))
+                    .copied()
+                    .flatten();
+
+                if let Some(ticker_info) = ticker_info {
+                    return Some(Action::TickerSelected(ticker_info, exc, None));
+                } else {
+                    log::warn!("Ticker info not found for {ticker:?} on {exc:?}");
+                }
             }
         }
 
@@ -670,7 +686,7 @@ fn create_ticker_card<'a>(
 
     let icon = icon_text(style::exchange_icon(exchange), 12);
 
-    container(
+    let content = container(
         button(
             row![
                 color_column,
@@ -699,8 +715,11 @@ fn create_ticker_card<'a>(
         .style(style::button::ticker_card)
         .on_press(Message::ExpandTickerCard(Some((*ticker, exchange)))),
     )
-    .height(Length::Fixed(56.0))
-    .into()
+    .height(Length::Fixed(56.0));
+
+    mouse_area(content)
+        .on_middle_press(Message::MouseMiddleClicked(exchange, *ticker))
+        .into()
 }
 
 fn create_expanded_ticker_card<'a>(
@@ -828,7 +847,7 @@ fn sort_button(
 
 fn init_content_button<'a>(
     label: &'a str,
-    chart_type: &str,
+    content: &str,
     ticker: Ticker,
     exchange: Exchange,
     width: f32,
@@ -837,7 +856,7 @@ fn init_content_button<'a>(
         .on_press(Message::TickerSelected(
             ticker,
             exchange,
-            chart_type.to_string(),
+            content.to_string(),
         ))
         .width(Length::Fixed(width))
 }

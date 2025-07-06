@@ -405,12 +405,22 @@ impl Flowsurface {
                     )) => {
                         let main_window_id = self.main_window.id;
 
-                        let task = self.active_dashboard_mut().init_pane_task(
-                            main_window_id,
-                            ticker_info,
-                            exchange,
-                            &content,
-                        );
+                        let task = {
+                            if let Some(content_str) = content {
+                                self.active_dashboard_mut().init_pane_task(
+                                    main_window_id,
+                                    ticker_info,
+                                    exchange,
+                                    &content_str,
+                                )
+                            } else {
+                                self.active_dashboard_mut().switch_tickers_in_group(
+                                    main_window_id,
+                                    exchange,
+                                    ticker_info,
+                                )
+                            }
+                        };
 
                         return task.map(move |msg| Message::Dashboard(None, msg));
                     }
@@ -787,7 +797,7 @@ impl Flowsurface {
                                 tooltip(
                                     split_pane_button,
                                     if is_main_window {
-                                        Some("Split selected pane vertically")
+                                        Some("Split selected pane horizontally")
                                     } else {
                                         None
                                     },
