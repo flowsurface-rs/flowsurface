@@ -337,9 +337,9 @@ impl Dashboard {
                             state.content.change_visual_config(cfg);
                         }
                     }
-                    pane::Message::SwitchLinkGroup(pane) => {
+                    pane::Message::SwitchLinkGroup(pane, group) => {
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                            state.link_group = pane::LinkGroup::next(state.link_group);
+                            state.link_group = group;
                         }
                     }
                     pane::Message::InitPaneContent(

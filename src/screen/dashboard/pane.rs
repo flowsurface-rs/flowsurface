@@ -31,7 +31,7 @@ use iced::{
     Alignment, Element, Length, Renderer, Task, Theme,
     alignment::Vertical,
     padding,
-    widget::{button, center, container, pane_grid, row, text, tooltip},
+    widget::{button, center, column, container, pane_grid, row, text, tooltip},
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -56,6 +56,7 @@ pub enum Modal {
     StreamModifier(modal::stream::Modifier),
     Settings,
     Indicators,
+    LinkGroup,
 }
 
 pub enum Action {
@@ -87,7 +88,7 @@ pub enum Message {
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
     StreamModifierChanged(pane_grid::Pane, modal::stream::Message),
     StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
-    SwitchLinkGroup(pane_grid::Pane),
+    SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -378,24 +379,7 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let link_group = container(
-            button(if let Some(group) = self.link_group {
-                text(group.to_string())
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-            } else {
-                icon_text(Icon::Link, 13)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-            })
-            .on_press(Message::SwitchLinkGroup(id))
-            .style(move |t, s| style::button::menu_body(t, s, self.link_group.is_some()))
-            .height(Length::Fixed(24.0))
-            .height(Length::Fixed(26.0)),
-        )
-        .width(26);
-
-        let mut stream_info_element = row![link_group]
+        let mut stream_info_element = row![link_group_button(id, self.link_group)]
             .padding(padding::left(4).top(1))
             .align_y(Vertical::Center)
             .spacing(8)
@@ -685,6 +669,50 @@ impl State {
                 stack_padding,
                 Alignment::End,
             ),
+            Some(Modal::LinkGroup) => {
+                let mut grid = column![].spacing(4);
+                let rows = LinkGroup::ALL.chunks(3);
+
+                let create_button =
+                    |content: iced::widget::text::Text<'a>, msg: Message, is_selected: bool| {
+                        button(content.align_x(iced::Alignment::Center))
+                            .width(Length::Fixed(26.0))
+                            .on_press(msg)
+                            .style(move |theme, status| {
+                                style::button::menu_body(theme, status, is_selected)
+                            })
+                    };
+
+                for row_groups in rows {
+                    let mut button_row = row![].spacing(4);
+                    for &group in row_groups {
+                        button_row = button_row.push(create_button(
+                            text(group.to_string()),
+                            if self.link_group == Some(group) {
+                                Message::SwitchLinkGroup(pane, None)
+                            } else {
+                                Message::SwitchLinkGroup(pane, Some(group))
+                            },
+                            self.link_group == Some(group),
+                        ));
+                    }
+                    grid = grid.push(button_row);
+                }
+
+                let content: Element<_> = container(grid)
+                    .max_width(240)
+                    .padding(16)
+                    .style(style::chart_modal)
+                    .into();
+
+                stack_modal(
+                    base,
+                    content,
+                    Message::HideModal(pane),
+                    padding::right(12).left(4),
+                    Alignment::Start,
+                )
+            }
             None => base,
         }
     }
@@ -1059,6 +1087,28 @@ impl std::fmt::Display for Content {
             Content::TimeAndSales(_) => write!(f, "Time&Sales pane"),
         }
     }
+}
+
+fn link_group_button<'a>(
+    id: pane_grid::Pane,
+    link_group: Option<LinkGroup>,
+) -> Element<'a, Message> {
+    let is_active = link_group.is_some();
+
+    let icon = if let Some(group) = link_group {
+        text(group.to_string())
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+    } else {
+        icon_text(Icon::Link, 13)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+    };
+
+    button(link_group.map_or(icon, |g| text(g.to_string())))
+        .style(move |theme, status| style::button::modifier(theme, status, !is_active))
+        .on_press(Message::ShowModal(id, Modal::LinkGroup))
+        .into()
 }
 
 fn ticksize_modifier<'a>(
