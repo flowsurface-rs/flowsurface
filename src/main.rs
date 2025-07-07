@@ -501,8 +501,8 @@ impl Flowsurface {
             content,
             &self.notifications,
             match sidebar_pos {
-                sidebar::Position::Left => Alignment::End,
-                sidebar::Position::Right => Alignment::Start,
+                sidebar::Position::Left => Alignment::Start,
+                sidebar::Position::Right => Alignment::End,
             },
             Message::RemoveNotification,
         )

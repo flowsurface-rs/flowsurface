@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::style::{self, ICONS_FONT, Icon, icon_text};
+use crate::{
+    style::{self, ICONS_FONT, Icon, icon_text},
+    widget::button_with_tooltip,
+};
 use data::InternalError;
 use exchange::{
     Ticker, TickerInfo, TickerStats,
@@ -11,8 +14,7 @@ use iced::{
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
-        Button, Space, Text, button, column, container, horizontal_rule, horizontal_space,
-        mouse_area, row,
+        Button, Space, Text, button, column, container, horizontal_rule, horizontal_space, row,
         scrollable::{self, AbsoluteOffset},
         text, text_input,
     },
@@ -87,7 +89,7 @@ pub enum Message {
     UpdateSearchQuery(String),
     ChangeSortOption(SortOptions),
     ShowSortingOptions,
-    TickerSelected(Ticker, Exchange, String),
+    TickerSelected(Ticker, Exchange, Option<String>),
     ExpandTickerCard(Option<(Ticker, Exchange)>),
     FavoriteTicker(Exchange, Ticker),
     Scrolled(scrollable::Viewport),
@@ -97,7 +99,6 @@ pub enum Message {
     UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
     UpdateTickerStats(Exchange, HashMap<Ticker, TickerStats>),
     ErrorOccurred(data::InternalError),
-    MouseMiddleClicked(Exchange, Ticker),
 }
 
 pub struct TickersTable {
@@ -340,7 +341,7 @@ impl TickersTable {
                     .flatten();
 
                 if let Some(ticker_info) = ticker_info {
-                    return Some(Action::TickerSelected(ticker_info, exchange, Some(content)));
+                    return Some(Action::TickerSelected(ticker_info, exchange, content));
                 } else {
                     log::warn!("Ticker info not found for {ticker:?} on {exchange:?}");
                 }
@@ -407,20 +408,6 @@ impl TickersTable {
             Message::ErrorOccurred(err) => {
                 log::error!("Error occurred: {err}");
                 return Some(Action::ErrorOccurred(err));
-            }
-            Message::MouseMiddleClicked(exc, ticker) => {
-                let ticker_info = self
-                    .tickers_info
-                    .get(&exc)
-                    .and_then(|info| info.get(&ticker))
-                    .copied()
-                    .flatten();
-
-                if let Some(ticker_info) = ticker_info {
-                    return Some(Action::TickerSelected(ticker_info, exc, None));
-                } else {
-                    log::warn!("Ticker info not found for {ticker:?} on {exc:?}");
-                }
             }
         }
 
@@ -686,7 +673,7 @@ fn create_ticker_card<'a>(
 
     let icon = icon_text(style::exchange_icon(exchange), 12);
 
-    let content = container(
+    container(
         button(
             row![
                 color_column,
@@ -715,11 +702,8 @@ fn create_ticker_card<'a>(
         .style(style::button::ticker_card)
         .on_press(Message::ExpandTickerCard(Some((*ticker, exchange)))),
     )
-    .height(Length::Fixed(56.0));
-
-    mouse_area(content)
-        .on_middle_press(Message::MouseMiddleClicked(exchange, *ticker))
-        .into()
+    .height(Length::Fixed(56.0))
+    .into()
 }
 
 fn create_expanded_ticker_card<'a>(
@@ -742,6 +726,14 @@ fn create_expanded_ticker_card<'a>(
             })
             .on_press(Message::FavoriteTicker(exchange, *ticker))
             .style(move |theme, status| style::button::transparent(theme, status, false)),
+            horizontal_space(),
+            button_with_tooltip(
+                icon_text(Icon::Link, 11),
+                Message::TickerSelected(*ticker, exchange, None),
+                Some("Use this ticker on selected pane/group"),
+                iced::widget::tooltip::Position::Top,
+                move |theme, status| style::button::transparent(theme, status, false)
+            ),
         ]
         .spacing(2),
         row![
@@ -856,7 +848,7 @@ fn init_content_button<'a>(
         .on_press(Message::TickerSelected(
             ticker,
             exchange,
-            content.to_string(),
+            Some(content.to_string()),
         ))
         .width(Length::Fixed(width))
 }
