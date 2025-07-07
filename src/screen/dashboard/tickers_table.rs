@@ -41,7 +41,7 @@ pub fn fetch_tickers_info() -> Task<Message> {
 }
 
 pub enum Action {
-    TickerSelected(TickerInfo, Exchange, Option<String>),
+    TickerSelected(TickerInfo, Option<String>),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
 }
@@ -341,7 +341,7 @@ impl TickersTable {
                     .flatten();
 
                 if let Some(ticker_info) = ticker_info {
-                    return Some(Action::TickerSelected(ticker_info, exchange, content));
+                    return Some(Action::TickerSelected(ticker_info, content));
                 } else {
                     log::warn!("Ticker info not found for {ticker:?} on {exchange:?}");
                 }

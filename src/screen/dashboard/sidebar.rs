@@ -26,11 +26,7 @@ pub struct Sidebar {
 }
 
 pub enum Action {
-    TickerSelected(
-        exchange::TickerInfo,
-        exchange::adapter::Exchange,
-        Option<String>,
-    ),
+    TickerSelected(exchange::TickerInfo, Option<String>),
     ErrorOccurred(data::InternalError),
 }
 
@@ -59,10 +55,10 @@ impl Sidebar {
                 let action = self.tickers_table.update(msg);
 
                 match action {
-                    Some(tickers_table::Action::TickerSelected(ticker_info, exchange, content)) => {
+                    Some(tickers_table::Action::TickerSelected(ticker_info, content)) => {
                         return (
                             Task::none(),
-                            Some(Action::TickerSelected(ticker_info, exchange, content)),
+                            Some(Action::TickerSelected(ticker_info, content)),
                         );
                     }
                     Some(tickers_table::Action::Fetch(task)) => {

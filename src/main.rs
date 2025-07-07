@@ -398,11 +398,7 @@ impl Flowsurface {
                 let (task, action) = self.sidebar.update(message);
 
                 match action {
-                    Some(dashboard::sidebar::Action::TickerSelected(
-                        ticker_info,
-                        exchange,
-                        content,
-                    )) => {
+                    Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
 
                         let task = {
@@ -410,15 +406,11 @@ impl Flowsurface {
                                 self.active_dashboard_mut().init_pane_task(
                                     main_window_id,
                                     ticker_info,
-                                    exchange,
                                     &content_str,
                                 )
                             } else {
-                                self.active_dashboard_mut().switch_tickers_in_group(
-                                    main_window_id,
-                                    exchange,
-                                    ticker_info,
-                                )
+                                self.active_dashboard_mut()
+                                    .switch_tickers_in_group(main_window_id, ticker_info)
                             }
                         };
 

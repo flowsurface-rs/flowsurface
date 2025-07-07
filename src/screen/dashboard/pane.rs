@@ -138,10 +138,11 @@ impl State {
     pub fn init_content_task(
         &mut self,
         content: &str,
-        exchange: Exchange,
         ticker_info: TickerInfo,
         pane: pane_grid::Pane,
     ) -> Task<Message> {
+        let (exchange, ticker) = (ticker_info.exchange(), ticker_info.ticker);
+
         if (matches!(&self.content, Content::Heatmap(_, _)) && content != "heatmap")
             || (matches!(&self.content, Content::Kline(_, _)) && content == "heatmap")
         {
@@ -150,10 +151,7 @@ impl State {
 
         let streams = match content {
             "heatmap" | "time&sales" => {
-                vec![StreamKind::DepthAndTrades {
-                    exchange,
-                    ticker: ticker_info.ticker,
-                }]
+                vec![StreamKind::DepthAndTrades { exchange, ticker }]
             }
             "footprint" => {
                 let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
@@ -161,22 +159,16 @@ impl State {
                 match basis {
                     Basis::Time(timeframe) => {
                         vec![
-                            StreamKind::DepthAndTrades {
-                                exchange,
-                                ticker: ticker_info.ticker,
-                            },
+                            StreamKind::DepthAndTrades { exchange, ticker },
                             StreamKind::Kline {
                                 exchange,
-                                ticker: ticker_info.ticker,
+                                ticker,
                                 timeframe,
                             },
                         ]
                     }
                     Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades {
-                            exchange,
-                            ticker: ticker_info.ticker,
-                        }]
+                        vec![StreamKind::DepthAndTrades { exchange, ticker }]
                     }
                 }
             }
@@ -190,15 +182,12 @@ impl State {
                     Basis::Time(timeframe) => {
                         vec![StreamKind::Kline {
                             exchange,
-                            ticker: ticker_info.ticker,
+                            ticker,
                             timeframe,
                         }]
                     }
                     Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades {
-                            exchange,
-                            ticker: ticker_info.ticker,
-                        }]
+                        vec![StreamKind::DepthAndTrades { exchange, ticker }]
                     }
                 }
             }

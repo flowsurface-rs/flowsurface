@@ -338,8 +338,27 @@ impl Dashboard {
                         }
                     }
                     pane::Message::SwitchLinkGroup(pane, group) => {
+                        let maybe_ticker_info = self
+                            .iter_all_panes(main_window.id)
+                            .filter(|(w, p, _)| !(*w == window && *p == pane))
+                            .find_map(|(_, _, other_state)| {
+                                if other_state.link_group == group {
+                                    other_state.settings.ticker_info
+                                } else {
+                                    None
+                                }
+                            });
+
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
                             state.link_group = group;
+
+                            if let Some(ticker_info) = maybe_ticker_info {
+                                let content_kind = state.content.identifier_str();
+                                let task = state
+                                    .init_content_task(&content_kind, ticker_info, pane)
+                                    .map(move |msg| Message::Pane(window, msg));
+                                return (task, None);
+                            }
                         }
                     }
                     pane::Message::InitPaneContent(
@@ -1049,13 +1068,18 @@ impl Dashboard {
         &mut self,
         main_window: window::Id,
         ticker_info: TickerInfo,
-        exchange: Exchange,
         content: &str,
     ) -> Task<Message> {
         if let Some((window, selected_pane)) = self.focus {
             if let Some(pane_state) = self.get_mut_pane(main_window, window, selected_pane) {
+                let previous_ticker_info = pane_state.settings.ticker_info.as_ref();
+
+                if previous_ticker_info.is_some() && previous_ticker_info != Some(&ticker_info) {
+                    pane_state.link_group = None;
+                }
+
                 return pane_state
-                    .init_content_task(content, exchange, ticker_info, selected_pane)
+                    .init_content_task(content, ticker_info, selected_pane)
                     .map(move |msg| Message::Pane(window, msg));
             }
         } else {
@@ -1070,7 +1094,6 @@ impl Dashboard {
     pub fn switch_tickers_in_group(
         &mut self,
         main_window: window::Id,
-        exchange: Exchange,
         ticker_info: TickerInfo,
     ) -> Task<Message> {
         let link_group = self.focus.and_then(|(window, pane)| {
@@ -1087,7 +1110,7 @@ impl Dashboard {
 
                         Some(
                             state
-                                .init_content_task(content_kind, exchange, ticker_info, pane)
+                                .init_content_task(content_kind, ticker_info, pane)
                                 .map(move |msg| Message::Pane(window, msg)),
                         )
                     } else {
@@ -1102,7 +1125,7 @@ impl Dashboard {
                 let content_kind = &state.content.identifier_str();
 
                 state
-                    .init_content_task(content_kind, exchange, ticker_info, pane)
+                    .init_content_task(content_kind, ticker_info, pane)
                     .map(move |msg| Message::Pane(window, msg))
             } else {
                 Task::done(Message::Notification(Toast::warn(
