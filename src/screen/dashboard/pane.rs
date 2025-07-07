@@ -749,28 +749,31 @@ impl State {
         let mut grid = column![].spacing(4);
         let rows = LinkGroup::ALL.chunks(3);
 
-        let create_button = |content: iced::widget::text::Text<'a>,
-                             msg: Message,
-                             is_selected: bool| {
-            button(content.align_x(iced::Alignment::Center))
-                .width(Length::Fixed(26.0))
-                .on_press(msg)
-                .style(move |theme, status| style::button::menu_body(theme, status, is_selected))
-        };
-
         for row_groups in rows {
             let mut button_row = row![].spacing(4);
+
             for &group in row_groups {
-                button_row = button_row.push(create_button(
-                    text(group.to_string()),
-                    if self.link_group == Some(group) {
-                        Message::SwitchLinkGroup(pane, None)
-                    } else {
-                        Message::SwitchLinkGroup(pane, Some(group))
-                    },
-                    self.link_group == Some(group),
-                ));
+                let is_selected = self.link_group == Some(group);
+                let btn_content = text(group.to_string()).font(style::AZERET_MONO);
+
+                let btn = if is_selected {
+                    button_with_tooltip(
+                        btn_content.align_x(iced::Alignment::Center),
+                        Message::SwitchLinkGroup(pane, None),
+                        Some("Unlink"),
+                        tooltip::Position::Bottom,
+                        move |theme, status| style::button::menu_body(theme, status, true),
+                    )
+                } else {
+                    button(btn_content.align_x(iced::Alignment::Center))
+                        .on_press(Message::SwitchLinkGroup(pane, Some(group)))
+                        .style(move |theme, status| style::button::menu_body(theme, status, false))
+                        .into()
+                };
+
+                button_row = button_row.push(btn);
             }
+
             grid = grid.push(button_row);
         }
 
@@ -1139,7 +1142,8 @@ fn link_group_button<'a>(
 
     let icon = if let Some(group) = link_group {
         text(group.to_string())
-            .align_x(Alignment::Center)
+            .font(style::AZERET_MONO)
+            .align_x(Alignment::Start)
             .align_y(Alignment::Center)
     } else {
         icon_text(Icon::Link, 13)
@@ -1147,10 +1151,10 @@ fn link_group_button<'a>(
             .align_y(Alignment::Center)
     };
 
-    button(link_group.map_or(icon, |g| text(g.to_string())))
+    button(icon)
         .style(move |theme, status| style::button::menu_body(theme, status, is_active))
         .on_press(Message::ShowModal(id, Modal::LinkGroup))
-        .width(26)
+        .width(28)
         .into()
 }
 
