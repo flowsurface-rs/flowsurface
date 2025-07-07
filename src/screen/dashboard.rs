@@ -1083,15 +1083,7 @@ impl Dashboard {
                 .iter_all_panes_mut(main_window)
                 .filter_map(|(window, pane, state)| {
                     if state.link_group == Some(group) {
-                        let content_kind = match &state.content {
-                            pane::Content::Heatmap(_, _) => "heatmap",
-                            pane::Content::Kline(chart, _) => match chart.kind() {
-                                data::chart::KlineChartKind::Candles => "candlestick",
-                                data::chart::KlineChartKind::Footprint { .. } => "footprint",
-                            },
-                            pane::Content::TimeAndSales(_) => "time&sales",
-                            _ => return None,
-                        };
+                        let content_kind = &state.content.identifier_str();
 
                         Some(
                             state
@@ -1107,19 +1099,7 @@ impl Dashboard {
             Task::batch(tasks)
         } else if let Some((window, pane)) = self.focus {
             if let Some(state) = self.get_mut_pane(main_window, window, pane) {
-                let content_kind = match &state.content {
-                    pane::Content::Heatmap(_, _) => "heatmap",
-                    pane::Content::Kline(chart, _) => match chart.kind() {
-                        data::chart::KlineChartKind::Candles => "candlestick",
-                        data::chart::KlineChartKind::Footprint { .. } => "footprint",
-                    },
-                    pane::Content::TimeAndSales(_) => "time&sales",
-                    _ => {
-                        return Task::done(Message::Notification(Toast::warn(
-                            "Focused pane does not support switching ticker".to_string(),
-                        )));
-                    }
-                };
+                let content_kind = &state.content.identifier_str();
 
                 state
                     .init_content_task(content_kind, exchange, ticker_info, pane)

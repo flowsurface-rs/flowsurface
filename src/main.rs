@@ -745,7 +745,7 @@ impl Flowsurface {
                                     " - Group ".to_string() + &g.to_string()
                                 });
 
-                            state.content.name() + &link_group_name
+                            state.content.to_string() + &link_group_name
                         } else {
                             "".to_string()
                         };

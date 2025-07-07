@@ -381,7 +381,7 @@ impl State {
                 .into();
 
                 if let Some(Modal::LinkGroup) = self.modal {
-                    self.link_group_modal(base, id)
+                    link_group_modal(base, id, self.link_group)
                 } else if self.modal == Some(Modal::Controls) {
                     stack_modal(
                         base,
@@ -515,12 +515,8 @@ impl State {
             let compact_control = container(
                 button(text("...").size(13).align_y(Alignment::End))
                     .on_press(Message::ShowModal(id, Modal::Controls))
-                    .style(move |theme: &Theme, status: button::Status| {
-                        style::button::transparent(
-                            theme,
-                            status,
-                            self.modal == Some(Modal::Controls),
-                        )
+                    .style(move |theme, status| {
+                        style::button::transparent(theme, status, self.modal.is_some())
                     }),
             )
             .align_y(Alignment::Center)
@@ -683,7 +679,7 @@ impl State {
                 stack_padding,
                 Alignment::End,
             ),
-            Some(Modal::LinkGroup) => self.link_group_modal(base, pane),
+            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
             Some(Modal::Controls) => stack_modal(
                 base,
                 if let Some(controls) = compact_controls {
@@ -725,7 +721,7 @@ impl State {
                 stack_padding,
                 Alignment::End,
             ),
-            Some(Modal::LinkGroup) => self.link_group_modal(base, pane),
+            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
             Some(Modal::Controls) => stack_modal(
                 base,
                 if let Some(controls) = compact_controls {
@@ -739,57 +735,6 @@ impl State {
             ),
             _ => base,
         }
-    }
-
-    fn link_group_modal<'a>(
-        &'a self,
-        base: Element<'a, Message>,
-        pane: pane_grid::Pane,
-    ) -> Element<'a, Message> {
-        let mut grid = column![].spacing(4);
-        let rows = LinkGroup::ALL.chunks(3);
-
-        for row_groups in rows {
-            let mut button_row = row![].spacing(4);
-
-            for &group in row_groups {
-                let is_selected = self.link_group == Some(group);
-                let btn_content = text(group.to_string()).font(style::AZERET_MONO);
-
-                let btn = if is_selected {
-                    button_with_tooltip(
-                        btn_content.align_x(iced::Alignment::Center),
-                        Message::SwitchLinkGroup(pane, None),
-                        Some("Unlink"),
-                        tooltip::Position::Bottom,
-                        move |theme, status| style::button::menu_body(theme, status, true),
-                    )
-                } else {
-                    button(btn_content.align_x(iced::Alignment::Center))
-                        .on_press(Message::SwitchLinkGroup(pane, Some(group)))
-                        .style(move |theme, status| style::button::menu_body(theme, status, false))
-                        .into()
-                };
-
-                button_row = button_row.push(btn);
-            }
-
-            grid = grid.push(button_row);
-        }
-
-        let content: Element<_> = container(grid)
-            .max_width(240)
-            .padding(16)
-            .style(style::chart_modal)
-            .into();
-
-        stack_modal(
-            base,
-            content,
-            Message::HideModal(pane),
-            padding::right(12).left(4),
-            Alignment::Start,
-        )
     }
 
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
@@ -1107,15 +1052,15 @@ impl Content {
         }
     }
 
-    pub fn name(&self) -> String {
+    pub fn identifier_str(&self) -> String {
         match self {
-            Content::Heatmap(_, _) => "Heatmap chart".to_string(),
+            Content::Starter => "starter".to_string(),
+            Content::Heatmap(_, _) => "heatmap".to_string(),
             Content::Kline(chart, _) => match chart.kind() {
-                data::chart::KlineChartKind::Footprint { .. } => "Footprint chart".to_string(),
-                data::chart::KlineChartKind::Candles => "Candlestick chart".to_string(),
+                data::chart::KlineChartKind::Footprint { .. } => "footprint".to_string(),
+                data::chart::KlineChartKind::Candles => "candlestick".to_string(),
             },
-            Content::TimeAndSales(_) => "Time & Sales".to_string(),
-            Content::Starter => "Starter pane".to_string(),
+            Content::TimeAndSales(_) => "time&sales".to_string(),
         }
     }
 }
@@ -1129,9 +1074,60 @@ impl std::fmt::Display for Content {
                 data::chart::KlineChartKind::Footprint { .. } => write!(f, "Footprint chart"),
                 data::chart::KlineChartKind::Candles => write!(f, "Candlestick chart"),
             },
-            Content::TimeAndSales(_) => write!(f, "Time&Sales pane"),
+            Content::TimeAndSales(_) => write!(f, "Time&Sales"),
         }
     }
+}
+
+fn link_group_modal<'a>(
+    base: Element<'a, Message>,
+    pane: pane_grid::Pane,
+    selected_group: Option<LinkGroup>,
+) -> Element<'a, Message> {
+    let mut grid = column![].spacing(4);
+    let rows = LinkGroup::ALL.chunks(3);
+
+    for row_groups in rows {
+        let mut button_row = row![].spacing(4);
+
+        for &group in row_groups {
+            let is_selected = selected_group == Some(group);
+            let btn_content = text(group.to_string()).font(style::AZERET_MONO);
+
+            let btn = if is_selected {
+                button_with_tooltip(
+                    btn_content.align_x(iced::Alignment::Center),
+                    Message::SwitchLinkGroup(pane, None),
+                    Some("Unlink"),
+                    tooltip::Position::Bottom,
+                    move |theme, status| style::button::menu_body(theme, status, true),
+                )
+            } else {
+                button(btn_content.align_x(iced::Alignment::Center))
+                    .on_press(Message::SwitchLinkGroup(pane, Some(group)))
+                    .style(move |theme, status| style::button::menu_body(theme, status, false))
+                    .into()
+            };
+
+            button_row = button_row.push(btn);
+        }
+
+        grid = grid.push(button_row);
+    }
+
+    let content: Element<_> = container(grid)
+        .max_width(240)
+        .padding(16)
+        .style(style::chart_modal)
+        .into();
+
+    stack_modal(
+        base,
+        content,
+        Message::HideModal(pane),
+        padding::right(12).left(4),
+        Alignment::Start,
+    )
 }
 
 fn link_group_button<'a>(
