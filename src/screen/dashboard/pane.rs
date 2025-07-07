@@ -57,6 +57,7 @@ pub enum Modal {
     Settings,
     Indicators,
     LinkGroup,
+    Controls,
 }
 
 pub enum Action {
@@ -116,20 +117,6 @@ impl LinkGroup {
         LinkGroup::H,
         LinkGroup::I,
     ];
-
-    pub fn next(opt: Option<LinkGroup>) -> Option<LinkGroup> {
-        match opt {
-            None => Some(LinkGroup::A),
-            Some(current) => {
-                let idx = LinkGroup::ALL.iter().position(|&g| g == current).unwrap();
-                if idx + 1 < LinkGroup::ALL.len() {
-                    Some(LinkGroup::ALL[idx + 1])
-                } else {
-                    None
-                }
-            }
-        }
-    }
 }
 
 impl std::fmt::Display for LinkGroup {
@@ -411,6 +398,16 @@ impl State {
             }
         });
 
+        let compact_controls = if self.modal == Some(Modal::Controls) {
+            Some(
+                container(self.view_controls(id, panes, maximized, window != main_window.id))
+                    .style(style::chart_modal)
+                    .into(),
+            )
+        } else {
+            None
+        };
+
         let body = match &self.content {
             Content::Starter => {
                 let base: Element<_> = widget::toast::Manager::new(
@@ -423,6 +420,20 @@ impl State {
 
                 if let Some(Modal::LinkGroup) = self.modal {
                     self.link_group_modal(base, id)
+                } else if self.modal == Some(Modal::Controls) {
+                    stack_modal(
+                        base,
+                        container(self.view_controls(
+                            id,
+                            panes,
+                            maximized,
+                            window != main_window.id,
+                        ))
+                        .style(style::chart_modal),
+                        Message::HideModal(id),
+                        padding::right(2).left(12),
+                        Alignment::End,
+                    )
                 } else {
                     base
                 }
@@ -433,7 +444,7 @@ impl State {
 
                 let settings_modal = || modal::pane::settings::timesales_cfg_view(panel.config, id);
 
-                self.compose_panel_view(base, id, settings_modal)
+                self.compose_panel_view(base, id, compact_controls, settings_modal)
             }
             Content::Heatmap(chart, indicators) => {
                 let selected_basis = self
@@ -465,7 +476,7 @@ impl State {
                     )
                 };
 
-                self.compose_chart_view(base, id, indicators, settings_modal)
+                self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
             }
             Content::Kline(chart, indicators) => {
                 let chart_kind = chart.kind();
@@ -514,7 +525,7 @@ impl State {
                     )
                 };
 
-                self.compose_chart_view(base, id, indicators, settings_modal)
+                self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
             }
         };
 
@@ -538,8 +549,34 @@ impl State {
         let content = pane_grid::Content::new(body)
             .style(move |theme| style::pane_background(theme, is_focused));
 
+        let controls = {
+            let compact_control = container(
+                button(text("...").size(13).align_y(Alignment::End))
+                    .on_press(Message::ShowModal(id, Modal::Controls))
+                    .style(move |theme: &Theme, status: button::Status| {
+                        style::button::transparent(
+                            theme,
+                            status,
+                            self.modal == Some(Modal::Controls),
+                        )
+                    }),
+            )
+            .align_y(Alignment::Center)
+            .height(Length::Fixed(32.0))
+            .padding(4);
+
+            if self.modal == Some(Modal::Controls) {
+                pane_grid::Controls::new(compact_control)
+            } else {
+                pane_grid::Controls::dynamic(
+                    self.view_controls(id, panes, maximized, window != main_window.id),
+                    compact_control,
+                )
+            }
+        };
+
         let title_bar = pane_grid::TitleBar::new(stream_info_element)
-            .controls(self.view_controls(id, panes, maximized, window != main_window.id))
+            .controls(controls)
             .style(style::pane_title_bar);
 
         content.title_bar(if self.modal.is_none() {
@@ -635,7 +672,7 @@ impl State {
         }
 
         buttons
-            .padding(padding::right(4))
+            .padding(padding::right(4).left(4))
             .align_y(Vertical::Center)
             .height(Length::Fixed(32.0))
             .into()
@@ -646,6 +683,7 @@ impl State {
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
         indicators: &'a [impl Indicator],
+        compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
     ) -> Element<'a, Message>
     where
@@ -684,6 +722,17 @@ impl State {
                 Alignment::End,
             ),
             Some(Modal::LinkGroup) => self.link_group_modal(base, pane),
+            Some(Modal::Controls) => stack_modal(
+                base,
+                if let Some(controls) = compact_controls {
+                    controls
+                } else {
+                    column![].into()
+                },
+                Message::HideModal(pane),
+                padding::right(2).left(12),
+                Alignment::End,
+            ),
             None => base,
         }
     }
@@ -692,6 +741,7 @@ impl State {
         &'a self,
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
+        compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
     ) -> Element<'a, Message>
     where
@@ -705,18 +755,27 @@ impl State {
 
         let stack_padding = padding::right(12).left(12);
 
-        if let Some(Modal::Settings) = self.modal {
-            stack_modal(
+        match self.modal {
+            Some(Modal::Settings) => stack_modal(
                 base,
                 settings_modal(),
                 Message::HideModal(pane),
                 stack_padding,
                 Alignment::End,
-            )
-        } else if let Some(Modal::LinkGroup) = self.modal {
-            self.link_group_modal(base, pane)
-        } else {
-            base
+            ),
+            Some(Modal::LinkGroup) => self.link_group_modal(base, pane),
+            Some(Modal::Controls) => stack_modal(
+                base,
+                if let Some(controls) = compact_controls {
+                    controls
+                } else {
+                    column![].into()
+                },
+                Message::HideModal(pane),
+                padding::right(2).left(12),
+                Alignment::End,
+            ),
+            _ => base,
         }
     }
 
