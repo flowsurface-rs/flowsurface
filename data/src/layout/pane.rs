@@ -15,7 +15,7 @@ pub enum Axis {
     Vertical,
 }
 
-#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum Pane {
     Split {
         axis: Axis,
@@ -23,8 +23,10 @@ pub enum Pane {
         a: Box<Pane>,
         b: Box<Pane>,
     },
-    #[default]
-    Starter,
+    Starter {
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
     HeatmapChart {
         layout: ViewConfig,
         #[serde(deserialize_with = "ok_or_default", default)]
@@ -35,6 +37,8 @@ pub enum Pane {
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
         indicators: Vec<HeatmapIndicator>,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
     },
     KlineChart {
         layout: ViewConfig,
@@ -45,11 +49,21 @@ pub enum Pane {
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
         indicators: Vec<KlineIndicator>,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
     },
     TimeAndSales {
         stream_type: Vec<StreamKind>,
         settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
     },
+}
+
+impl Default for Pane {
+    fn default() -> Self {
+        Pane::Starter { link_group: None }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
@@ -59,6 +73,50 @@ pub struct Settings {
     pub tick_multiply: Option<TickMultiplier>,
     pub visual_config: Option<VisualConfig>,
     pub selected_basis: Option<Basis>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum LinkGroup {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+}
+
+impl LinkGroup {
+    pub const ALL: [LinkGroup; 9] = [
+        LinkGroup::A,
+        LinkGroup::B,
+        LinkGroup::C,
+        LinkGroup::D,
+        LinkGroup::E,
+        LinkGroup::F,
+        LinkGroup::G,
+        LinkGroup::H,
+        LinkGroup::I,
+    ];
+}
+
+impl std::fmt::Display for LinkGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = match self {
+            LinkGroup::A => "1",
+            LinkGroup::B => "2",
+            LinkGroup::C => "3",
+            LinkGroup::D => "4",
+            LinkGroup::E => "5",
+            LinkGroup::F => "6",
+            LinkGroup::G => "7",
+            LinkGroup::H => "8",
+            LinkGroup::I => "9",
+        };
+        write!(f, "{c}")
+    }
 }
 
 pub fn ok_or_default<'a, T, D>(deserializer: D) -> Result<T, D::Error>

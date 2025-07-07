@@ -21,7 +21,7 @@ use data::{
         Basis, ViewConfig, VisualConfig,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator},
     },
-    layout::pane::Settings,
+    layout::pane::{LinkGroup, Settings},
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
@@ -92,50 +92,6 @@ pub enum Message {
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LinkGroup {
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-    H,
-    I,
-}
-
-impl LinkGroup {
-    pub const ALL: [LinkGroup; 9] = [
-        LinkGroup::A,
-        LinkGroup::B,
-        LinkGroup::C,
-        LinkGroup::D,
-        LinkGroup::E,
-        LinkGroup::F,
-        LinkGroup::G,
-        LinkGroup::H,
-        LinkGroup::I,
-    ];
-}
-
-impl std::fmt::Display for LinkGroup {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let c = match self {
-            LinkGroup::A => "1",
-            LinkGroup::B => "2",
-            LinkGroup::C => "3",
-            LinkGroup::D => "4",
-            LinkGroup::E => "5",
-            LinkGroup::F => "6",
-            LinkGroup::G => "7",
-            LinkGroup::H => "8",
-            LinkGroup::I => "9",
-        };
-        write!(f, "{c}")
-    }
-}
-
 pub struct State {
     id: uuid::Uuid,
     pub modal: Option<Modal>,
@@ -152,11 +108,17 @@ impl State {
         Self::default()
     }
 
-    pub fn from_config(content: Content, streams: Vec<StreamKind>, settings: Settings) -> Self {
+    pub fn from_config(
+        content: Content,
+        streams: Vec<StreamKind>,
+        settings: Settings,
+        link_group: Option<LinkGroup>,
+    ) -> Self {
         Self {
             content,
             settings,
             streams,
+            link_group,
             ..Default::default()
         }
     }
@@ -431,7 +393,7 @@ impl State {
                         ))
                         .style(style::chart_modal),
                         Message::HideModal(id),
-                        padding::right(2).left(12),
+                        padding::left(12),
                         Alignment::End,
                     )
                 } else {
@@ -730,7 +692,7 @@ impl State {
                     column![].into()
                 },
                 Message::HideModal(pane),
-                padding::right(2).left(12),
+                padding::left(12),
                 Alignment::End,
             ),
             None => base,
@@ -772,7 +734,7 @@ impl State {
                     column![].into()
                 },
                 Message::HideModal(pane),
-                padding::right(2).left(12),
+                padding::left(12),
                 Alignment::End,
             ),
             _ => base,
