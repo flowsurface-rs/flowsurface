@@ -403,7 +403,7 @@ impl Flowsurface {
 
                         let task = {
                             if let Some(content_str) = content {
-                                self.active_dashboard_mut().init_pane_task(
+                                self.active_dashboard_mut().init_focused_pane(
                                     main_window_id,
                                     ticker_info,
                                     &content_str,

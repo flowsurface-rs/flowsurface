@@ -226,6 +226,7 @@ impl LayoutManager {
                     let dashboard = Dashboard::from_config(
                         configuration(ser_dashboard.pane.clone()),
                         popout_windows,
+                        layout.id,
                     );
 
                     self.layout_order.push(new_layout.id);

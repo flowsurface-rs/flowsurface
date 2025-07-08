@@ -295,7 +295,7 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
 pub fn load_saved_state() -> SavedState {
     match data::read_from_file(data::SAVED_STATE_PATH) {
         Ok(state) => {
-            let mut de_layouts: Vec<(String, Dashboard)> = vec![];
+            let mut de_layouts = vec![];
 
             for layout in &state.layout_manager.layouts {
                 let mut popout_windows = Vec::new();
@@ -305,12 +305,15 @@ pub fn load_saved_state() -> SavedState {
                     popout_windows.push((configuration, *window_spec));
                 }
 
+                let layout_id = Uuid::new_v4();
+
                 let dashboard = Dashboard::from_config(
                     configuration(layout.dashboard.pane.clone()),
                     popout_windows,
+                    layout_id,
                 );
 
-                de_layouts.push((layout.name.clone(), dashboard));
+                de_layouts.push((layout.name.clone(), layout_id, dashboard));
             }
 
             let layout_manager: LayoutManager = {
@@ -323,13 +326,13 @@ pub fn load_saved_state() -> SavedState {
 
                 let mut layout_order = vec![];
 
-                for (name, dashboard) in de_layouts {
+                for (name, layout_id, dashboard) in de_layouts {
                     let layout = Layout {
                         id: {
                             if name == active_layout.name {
                                 active_layout.id
                             } else {
-                                Uuid::new_v4()
+                                layout_id
                             }
                         },
                         name,

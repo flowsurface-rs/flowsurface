@@ -28,7 +28,7 @@ use exchange::{
     adapter::{Exchange, MarketKind, StreamKind},
 };
 use iced::{
-    Alignment, Element, Length, Renderer, Task, Theme,
+    Alignment, Element, Length, Renderer, Theme,
     alignment::Vertical,
     padding,
     widget::{button, center, column, container, pane_grid, row, text, tooltip},
@@ -76,7 +76,6 @@ pub enum Message {
     Restore,
     ShowModal(pane_grid::Pane, Modal),
     HideModal(pane_grid::Pane),
-    InitPaneContent(String, Option<pane_grid::Pane>, Vec<StreamKind>, TickerInfo),
     ReplacePane(pane_grid::Pane),
     ChartInteraction(pane_grid::Pane, chart::Message),
     PanelInteraction(pane_grid::Pane, panel::Message),
@@ -135,12 +134,7 @@ impl State {
             .next()
     }
 
-    pub fn init_content_task(
-        &mut self,
-        content: &str,
-        ticker_info: TickerInfo,
-        pane: pane_grid::Pane,
-    ) -> Task<Message> {
+    pub fn prepare_streams(&mut self, content: &str, ticker_info: TickerInfo) -> Vec<StreamKind> {
         let (exchange, ticker) = (ticker_info.exchange(), ticker_info.ticker);
 
         if (matches!(&self.content, Content::Heatmap(_, _)) && content != "heatmap")
@@ -196,12 +190,7 @@ impl State {
 
         self.streams.clone_from(&streams);
 
-        Task::done(Message::InitPaneContent(
-            content.to_string(),
-            Some(pane),
-            streams,
-            ticker_info,
-        ))
+        streams
     }
 
     pub fn set_content(
