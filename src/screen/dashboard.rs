@@ -333,6 +333,13 @@ impl Dashboard {
                     }
                 }
                 pane::Message::SwitchLinkGroup(pane, group) => {
+                    if group.is_none() {
+                        if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                            state.link_group = None;
+                        }
+                        return (Task::none(), None);
+                    }
+
                     let maybe_ticker_info = self
                         .iter_all_panes(main_window.id)
                         .filter(|(w, p, _)| !(*w == window && *p == pane))
@@ -346,6 +353,7 @@ impl Dashboard {
 
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
                         state.link_group = group;
+                        state.modal = None;
 
                         if let Some(ticker_info) = maybe_ticker_info {
                             if state.settings.ticker_info != Some(ticker_info) {
@@ -861,14 +869,7 @@ impl Dashboard {
         ticker_info: TickerInfo,
         content: &str,
     ) -> Task<Message> {
-        let layout_id = self.layout_id;
-
         if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            let previous_ticker = state.settings.ticker_info;
-            if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
-                state.link_group = None;
-            }
-
             match state.set_content_and_streams(ticker_info, content) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
@@ -876,7 +877,7 @@ impl Dashboard {
 
                     for stream in &streams {
                         if let StreamKind::Kline { .. } = stream {
-                            return kline_fetch_task(layout_id, pane_id, *stream, None, None);
+                            return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                         }
                     }
                 }
@@ -894,16 +895,39 @@ impl Dashboard {
         &mut self,
         main_window: window::Id,
         ticker_info: TickerInfo,
-        content_kind: &str,
+        content: &str,
     ) -> Task<Message> {
         if let Some((window, selected_pane)) = self.focus {
-            return self.init_pane(
-                main_window,
-                window,
-                selected_pane,
-                ticker_info,
-                content_kind,
-            );
+            if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
+                let previous_ticker = state.settings.ticker_info;
+                if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
+                    state.link_group = None;
+                }
+
+                match state.set_content_and_streams(ticker_info, content) {
+                    Ok(streams) => {
+                        let pane_id = state.unique_id();
+                        self.streams.extend(streams.iter());
+
+                        for stream in &streams {
+                            if let StreamKind::Kline { .. } = stream {
+                                return kline_fetch_task(
+                                    self.layout_id,
+                                    pane_id,
+                                    *stream,
+                                    None,
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        state.status = pane::Status::Ready;
+                        state.notifications.push(Toast::error(err.to_string()));
+                    }
+                }
+                return Task::none();
+            }
         }
 
         Task::done(Message::Notification(Toast::warn(

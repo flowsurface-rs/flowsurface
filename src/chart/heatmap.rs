@@ -42,6 +42,8 @@ const TOOLTIP_WIDTH: f32 = 180.0;
 const TOOLTIP_HEIGHT: f32 = 60.0;
 const TOOLTIP_PADDING: f32 = 12.0;
 
+const MAX_CIRCLE_RADIUS: f32 = 16.0;
+
 impl Chart for HeatmapChart {
     type IndicatorType = HeatmapIndicator;
 
@@ -698,7 +700,9 @@ impl canvas::Program<Message> for HeatmapChart {
                                 if let Some(trade_size_scale) = self.visual_config.trade_size_scale
                                 {
                                     let scale_factor = (trade_size_scale as f32) / 100.0;
-                                    1.0 + (trade.qty / max_trade_qty) * (28.0 - 1.0) * scale_factor
+                                    1.0 + (trade.qty / max_trade_qty)
+                                        * (MAX_CIRCLE_RADIUS - 1.0)
+                                        * scale_factor
                                 } else {
                                     cell_height / 2.0
                                 }

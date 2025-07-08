@@ -225,13 +225,9 @@ impl State {
                 let streams = vec![StreamKind::DepthAndTrades { exchange, ticker }];
                 Ok((content, streams))
             }
-            _ => {
-                log::error!("content not found: {}", content_str);
-                Err(DashboardError::PaneSet(format!(
-                    "content not found: {}",
-                    content_str
-                )))
-            }
+            _ => Err(DashboardError::PaneSet(format!(
+                "A content must be set first."
+            ))),
         };
 
         match result {
@@ -298,11 +294,11 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let mut stream_info_element = row![link_group_button(id, self.link_group)]
-            .padding(padding::left(4).top(1))
-            .align_y(Vertical::Center)
-            .spacing(8)
-            .height(Length::Fixed(32.0));
+        let mut stream_info_element = if Content::Starter == self.content {
+            row![]
+        } else {
+            row![link_group_button(id, self.link_group)]
+        };
 
         if let Some((exchange, ticker)) = self.stream_pair() {
             let exchange_icon = icon_text(style::exchange_icon(exchange), 14);
@@ -503,9 +499,15 @@ impl State {
             }
         };
 
-        let title_bar = pane_grid::TitleBar::new(stream_info_element)
-            .controls(controls)
-            .style(style::pane_title_bar);
+        let title_bar = pane_grid::TitleBar::new(
+            stream_info_element
+                .padding(padding::left(4).top(1))
+                .align_y(Vertical::Center)
+                .spacing(8)
+                .height(Length::Fixed(32.0)),
+        )
+        .controls(controls)
+        .style(style::pane_title_bar);
 
         content.title_bar(if self.modal.is_none() {
             title_bar
@@ -1045,6 +1047,18 @@ impl std::fmt::Display for Content {
                 data::chart::KlineChartKind::Candles => write!(f, "Candlestick chart"),
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales"),
+        }
+    }
+}
+
+impl PartialEq for Content {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Content::Starter, Content::Starter) => true,
+            (Content::Heatmap(_, _), Content::Heatmap(_, _)) => true,
+            (Content::Kline(_, _), Content::Kline(_, _)) => true,
+            (Content::TimeAndSales(_), Content::TimeAndSales(_)) => true,
+            _ => false,
         }
     }
 }
