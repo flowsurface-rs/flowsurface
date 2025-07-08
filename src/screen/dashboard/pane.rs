@@ -12,7 +12,7 @@ use crate::{
         dashboard::panel::{self, timeandsales::TimeAndSales},
     },
     style::{self, Icon, icon_text},
-    widget::{self, button_with_tooltip, column_drag, toast::Toast},
+    widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
     window::{self, Window},
 };
 use data::{
@@ -297,7 +297,9 @@ impl State {
         let mut stream_info_element = if Content::Starter == self.content {
             row![]
         } else {
-            row![link_group_button(id, self.link_group)]
+            row![link_group_button(id, self.link_group, |id| {
+                Message::ShowModal(id, Modal::LinkGroup)
+            })]
         };
 
         if let Some((exchange, ticker)) = self.stream_pair() {
@@ -1112,30 +1114,6 @@ fn link_group_modal<'a>(
         padding::right(12).left(4),
         Alignment::Start,
     )
-}
-
-fn link_group_button<'a>(
-    id: pane_grid::Pane,
-    link_group: Option<LinkGroup>,
-) -> Element<'a, Message> {
-    let is_active = link_group.is_some();
-
-    let icon = if let Some(group) = link_group {
-        text(group.to_string())
-            .font(style::AZERET_MONO)
-            .align_x(Alignment::Start)
-            .align_y(Alignment::Center)
-    } else {
-        icon_text(Icon::Link, 13)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-    };
-
-    button(icon)
-        .style(move |theme, status| style::button::menu_body(theme, status, is_active))
-        .on_press(Message::ShowModal(id, Modal::LinkGroup))
-        .width(28)
-        .into()
 }
 
 fn ticksize_modifier<'a>(

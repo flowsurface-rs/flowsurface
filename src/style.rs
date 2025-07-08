@@ -300,8 +300,8 @@ pub mod button {
                         Some(palette.background.weakest.color.into())
                     }
                 }
-                Status::Pressed => Some(palette.background.strongest.color.into()),
-                Status::Hovered => Some(palette.background.strong.color.into()),
+                Status::Pressed => Some(palette.background.base.color.into()),
+                Status::Hovered => Some(palette.background.weak.color.into()),
                 Status::Disabled => {
                     if is_selected {
                         None
