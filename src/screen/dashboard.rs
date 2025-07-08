@@ -349,15 +349,29 @@ impl Dashboard {
 
                         if let Some(ticker_info) = maybe_ticker_info {
                             if state.settings.ticker_info != Some(ticker_info) {
-                                let content_kind = state.content.identifier_str();
-                                return (
-                                    self.init_focused_pane(
-                                        main_window.id,
-                                        ticker_info,
-                                        &content_kind,
-                                    ),
-                                    None,
-                                );
+                                let content = state.content.identifier_str();
+
+                                match state.set_content_and_streams(ticker_info, &content) {
+                                    Ok(streams) => {
+                                        let pane_id = state.unique_id();
+                                        self.streams.extend(streams.iter());
+
+                                        for stream in &streams {
+                                            if let StreamKind::Kline { .. } = stream {
+                                                return (
+                                                    kline_fetch_task(
+                                                        *layout_id, pane_id, *stream, None, None,
+                                                    ),
+                                                    None,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        state.status = pane::Status::Ready;
+                                        state.notifications.push(Toast::error(err.to_string()));
+                                    }
+                                }
                             }
                         }
                     }
@@ -850,18 +864,25 @@ impl Dashboard {
         let layout_id = self.layout_id;
 
         if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            let pane_id = state.unique_id();
-            let pane_streams = state.prepare_streams(content, ticker_info);
-
-            if let Err(err) = state.set_content(ticker_info, &content) {
-                state.status = pane::Status::Ready;
-                state.notifications.push(Toast::error(err.to_string()));
+            let previous_ticker = state.settings.ticker_info;
+            if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
+                state.link_group = None;
             }
 
-            for stream in &pane_streams {
-                self.streams.add(*stream);
-                if let StreamKind::Kline { .. } = stream {
-                    return kline_fetch_task(layout_id, pane_id, *stream, None, None);
+            match state.set_content_and_streams(ticker_info, content) {
+                Ok(streams) => {
+                    let pane_id = state.unique_id();
+                    self.streams.extend(streams.iter());
+
+                    for stream in &streams {
+                        if let StreamKind::Kline { .. } = stream {
+                            return kline_fetch_task(layout_id, pane_id, *stream, None, None);
+                        }
+                    }
+                }
+                Err(err) => {
+                    state.status = pane::Status::Ready;
+                    state.notifications.push(Toast::error(err.to_string()));
                 }
             }
         }
@@ -915,7 +936,7 @@ impl Dashboard {
             let tasks: Vec<Task<Message>> = pane_infos
                 .iter()
                 .map(|(window, pane, content)| {
-                    self.init_pane(main_window, *window, *pane, ticker_info, &content)
+                    self.init_pane(main_window, *window, *pane, ticker_info, content)
                 })
                 .collect();
 

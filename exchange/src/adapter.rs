@@ -125,6 +125,12 @@ impl UniqueStreams {
         self.update_specs_for_exchange(exchange);
     }
 
+    pub fn extend<'a>(&mut self, streams: impl IntoIterator<Item = &'a StreamKind>) {
+        for stream in streams {
+            self.add(*stream);
+        }
+    }
+
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));

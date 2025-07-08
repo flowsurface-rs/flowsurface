@@ -134,73 +134,21 @@ impl State {
             .next()
     }
 
-    pub fn prepare_streams(&mut self, content: &str, ticker_info: TickerInfo) -> Vec<StreamKind> {
-        let (exchange, ticker) = (ticker_info.exchange(), ticker_info.ticker);
-
-        if (matches!(&self.content, Content::Heatmap(_, _)) && content != "heatmap")
-            || (matches!(&self.content, Content::Kline(_, _)) && content == "heatmap")
+    pub fn set_content_and_streams(
+        &mut self,
+        ticker_info: TickerInfo,
+        content_str: &str,
+    ) -> Result<Vec<StreamKind>, DashboardError> {
+        if (matches!(&self.content, Content::Heatmap(_, _)) && content_str != "heatmap")
+            || (matches!(&self.content, Content::Kline(_, _)) && content_str == "heatmap")
         {
             self.settings.selected_basis = None;
         }
 
-        let streams = match content {
-            "heatmap" | "time&sales" => {
-                vec![StreamKind::DepthAndTrades { exchange, ticker }]
-            }
-            "footprint" => {
-                let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
-
-                match basis {
-                    Basis::Time(timeframe) => {
-                        vec![
-                            StreamKind::DepthAndTrades { exchange, ticker },
-                            StreamKind::Kline {
-                                exchange,
-                                ticker,
-                                timeframe,
-                            },
-                        ]
-                    }
-                    Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades { exchange, ticker }]
-                    }
-                }
-            }
-            "candlestick" => {
-                let basis = self
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Timeframe::M15.into());
-
-                match basis {
-                    Basis::Time(timeframe) => {
-                        vec![StreamKind::Kline {
-                            exchange,
-                            ticker,
-                            timeframe,
-                        }]
-                    }
-                    Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades { exchange, ticker }]
-                    }
-                }
-            }
-            _ => vec![],
-        };
-
-        self.streams.clone_from(&streams);
-
-        streams
-    }
-
-    pub fn set_content(
-        &mut self,
-        ticker_info: TickerInfo,
-        content_str: &str,
-    ) -> Result<(), DashboardError> {
         self.settings.ticker_info = Some(ticker_info);
+        let (exchange, ticker) = (ticker_info.exchange(), ticker_info.ticker);
 
-        let new_content = match content_str {
+        let result = match content_str {
             "heatmap" => {
                 let tick_multiplier = Some(TickMultiplier(5));
                 self.settings.tick_multiply = tick_multiplier;
@@ -208,48 +156,92 @@ impl State {
                     tm.multiply_with_min_tick_size(ticker_info)
                 });
 
-                Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size)
+                let content =
+                    Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
+                let streams = vec![StreamKind::DepthAndTrades { exchange, ticker }];
+                Ok((content, streams))
             }
-            "footprint" | "candlestick" => {
-                let tick_multiplier = if content_str == "footprint" {
-                    Some(TickMultiplier(50))
-                } else {
-                    None
-                };
+            "footprint" => {
+                let tick_multiplier = Some(TickMultiplier(50));
                 self.settings.tick_multiply = tick_multiplier;
                 let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
                     tm.multiply_with_min_tick_size(ticker_info)
                 });
 
-                Content::new_kline(
+                let content = Content::new_kline(
                     content_str,
                     &self.content,
                     ticker_info,
                     &self.settings,
                     tick_size,
-                )
+                );
+
+                let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
+                let streams = match basis {
+                    Basis::Time(timeframe) => vec![
+                        StreamKind::DepthAndTrades { exchange, ticker },
+                        StreamKind::Kline {
+                            exchange,
+                            ticker,
+                            timeframe,
+                        },
+                    ],
+                    Basis::Tick(_) => vec![StreamKind::DepthAndTrades { exchange, ticker }],
+                };
+                Ok((content, streams))
+            }
+            "candlestick" => {
+                self.settings.tick_multiply = None;
+                let tick_size = ticker_info.min_ticksize;
+
+                let content = Content::new_kline(
+                    content_str,
+                    &self.content,
+                    ticker_info,
+                    &self.settings,
+                    tick_size,
+                );
+
+                let basis = self
+                    .settings
+                    .selected_basis
+                    .unwrap_or(Timeframe::M15.into());
+                let streams = match basis {
+                    Basis::Time(timeframe) => vec![StreamKind::Kline {
+                        exchange,
+                        ticker,
+                        timeframe,
+                    }],
+                    Basis::Tick(_) => vec![StreamKind::DepthAndTrades { exchange, ticker }],
+                };
+                Ok((content, streams))
             }
             "time&sales" => {
-                self.settings.ticker_info = Some(ticker_info);
-
                 let config = self
                     .settings
                     .visual_config
                     .and_then(|cfg| cfg.time_and_sales());
-
-                Content::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)))
+                let content = Content::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)));
+                let streams = vec![StreamKind::DepthAndTrades { exchange, ticker }];
+                Ok((content, streams))
             }
             _ => {
                 log::error!("content not found: {}", content_str);
-                return Err(DashboardError::PaneSet(format!(
+                Err(DashboardError::PaneSet(format!(
                     "content not found: {}",
                     content_str
-                )));
+                )))
             }
         };
 
-        self.content = new_content;
-        Ok(())
+        match result {
+            Ok((content, streams)) => {
+                self.content = content;
+                self.streams.clone_from(&streams);
+                Ok(streams)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
