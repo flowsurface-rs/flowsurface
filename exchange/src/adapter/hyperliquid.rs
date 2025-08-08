@@ -27,6 +27,19 @@ use tokio::sync::Mutex;
 const API_DOMAIN: &str = "https://api.hyperliquid.xyz";
 const WS_DOMAIN: &str = "api.hyperliquid.xyz";
 
+// Both Price (px) and Size (sz) have a maximum number of decimals that are accepted.
+// Prices can have up to 5 significant figures, but no more than MAX_DECIMALS - szDecimals decimal places where MAX_DECIMALS is 6 for perps and 8 for spot.
+// For example, for perps, 1234.5 is valid but 1234.56 is not (too many significant figures).
+// 0.001234 is valid, but 0.0012345 is not (more than 6 decimal places).
+// For spot, 0.0001234 is valid if szDecimals is 0 or 1, but not if szDecimals is greater than 2 (more than 8-2 decimal places).
+// Integer prices are always allowed, regardless of the number of significant figures. E.g. 123456.0 is a valid price even though 12345.6 is not.
+// Prices are precise to the lesser of 5 significant figures or 6 decimals.
+// Meta request to the info endpoint returns szDecimals for each asset
+const _MAX_DECIMALS_SPOT: u8 = 8;
+const MAX_DECIMALS_PERP: u8 = 6;
+
+const SIG_FIG_LIMIT: i32 = 5;
+
 #[allow(dead_code)]
 const LIMIT: usize = 1200; // Conservative rate limit
 
@@ -193,76 +206,84 @@ pub async fn fetch_ticksize(market: MarketKind) -> Result<HashMap<Ticker, Option
         if let Ok(asset_info) = serde_json::from_value::<HyperliquidAssetInfo>(asset.clone()) {
             let ticker = Ticker::new(&asset_info.name, Exchange::HyperliquidLinear);
 
-            // Calculate tick size using price data from corresponding asset context
-            let tick_size = if let Some(asset_ctx) = asset_contexts.get(index) {
-                calculate_optimal_tick_size(&asset_info.name, asset_ctx)
-            } else {
-                // Fallback if price data unavailable
-                log::warn!("No price data for {}, using fallback tick size", asset_info.name);
-                determine_tick_size_for_asset(&asset_info.name)
+            if let Some(asset_ctx) = asset_contexts.get(index) {
+                // Prefer midPx then markPx
+                let price = ["midPx", "markPx", "oraclePx"].iter().find_map(|k| {
+                    asset_ctx
+                        .get(k)
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f32>().ok())
+                });
+
+                // Skip ticker if we can't determine a ticksize from price
+                if let Some(p) = price {
+                    let tick_size = compute_tick_size(p, asset_info.sz_decimals, market);
+                    let min_qty = 10.0_f32.powi(-(asset_info.sz_decimals as i32));
+
+                    let ticker_info = TickerInfo {
+                        ticker,
+                        min_ticksize: tick_size,
+                        min_qty,
+                    };
+                    ticker_info_map.insert(ticker, Some(ticker_info));
+                }
             };
-
-            // Calculate min quantity from sz_decimals (this is correct usage)
-            let min_qty = 10.0_f32.powi(-(asset_info.sz_decimals as i32));
-
-            let ticker_info = TickerInfo {
-                ticker,
-                min_ticksize: tick_size,
-                min_qty,
-            };
-
-            ticker_info_map.insert(ticker, Some(ticker_info));
         }
     }
 
     Ok(ticker_info_map)
 }
 
-/// Calculate optimal tick size based on actual price data from Hyperliquid API
-fn calculate_optimal_tick_size(asset_name: &str, asset_ctx: &Value) -> f32 {
-    // Try multiple price sources for better accuracy
-    let price_sources = ["markPx", "midPx", "oraclePx"];
-
-    for price_field in &price_sources {
-        if let Some(price_str) = asset_ctx.get(price_field).and_then(|v| v.as_str()) {
-            if let Ok(price) = price_str.parse::<f32>() {
-                let tick_size = determine_tick_size_from_price(price);
-
-                return tick_size;
-            }
-        }
+fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
+    if price <= 0.0 {
+        return 0.001;
+    }
+    // Integer-only if price >= 100_000
+    if price >= 100_000.0 {
+        return 1.0;
     }
 
-    // If all price parsing fails, use fallback
-    log::warn!("Failed to parse price data for {}, using fallback", asset_name);
-    determine_tick_size_for_asset(asset_name)
-}
-
-/// Determine tick size based on price magnitude (better than hardcoding by symbol)
-fn determine_tick_size_from_price(price: f32) -> f32 {
-    match price {
-        p if p >= 10000.0 => 0.1,
-        p if p >= 1000.0 => 0.01,
-        p if p >= 100.0 => 0.001,
-        p if p >= 10.0 => 0.0001,
-        p if p >= 1.0 => 0.00001,
-        p if p >= 0.1 => 0.000001,
-        _ => 0.0000001,
+    let max_system_decimals = match market {
+        MarketKind::LinearPerps => MAX_DECIMALS_PERP as i32,
+        _ => MAX_DECIMALS_PERP as i32,
+    };
+    let decimal_cap = (max_system_decimals - sz_decimals as i32).max(0);
+    if decimal_cap == 0 {
+        return 1.0;
     }
-}
 
-/// Fallback tick size determination for when price data is unavailable
-fn determine_tick_size_for_asset(asset_name: &str) -> f32 {
-    match asset_name {
-        // Major cryptocurrencies typically have 0.1 tick size
-        "BTC" => 0.1,
-        "ETH" => 0.01,
-        // High-value alts might have 0.01 or 0.001
-        "BNB" | "SOL" | "ADA" | "AVAX" | "MATIC" | "DOT" => 0.001,
-        // Lower value tokens might have smaller ticks
-        "DOGE" | "SHIB" => 0.00001,
-        // Default to 0.001 for most altcoins
-        _ => 0.001,
+    let int_digits = if price >= 1.0 {
+        (price.abs().log10().floor() as i32 + 1).max(1)
+    } else {
+        0
+    };
+
+    // If integer digits already exceed 5 sig figs -> integer only
+    if int_digits >= 6 {
+        return 1.0;
+    }
+
+    let effective_decimals = if int_digits > 0 {
+        // Remaining sig figs go directly to fractional digits
+        let remaining_sig = (SIG_FIG_LIMIT - int_digits).max(0);
+        remaining_sig.min(decimal_cap)
+    } else {
+        // price < 1: leading zeros after decimal don't count toward sig figs
+        // leading_zeros = -floor(log10(price)) - 1
+        let leading_zeros = {
+            let lg = price.abs().log10().floor() as i32; // negative
+            (-lg - 1).max(0)
+        };
+        // We can have (leading_zeros + SIG_FIG_LIMIT) total decimal places,
+        // but cannot exceed decimal_cap
+        let allowed = leading_zeros + SIG_FIG_LIMIT;
+        allowed.min(decimal_cap)
+    };
+
+    if effective_decimals <= 0 {
+        1.0
+    } else {
+        10_f32.powi(-effective_decimals)
     }
 }
 
