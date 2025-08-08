@@ -9,6 +9,7 @@ use std::{
 
 pub mod binance;
 pub mod bybit;
+pub mod hyperliquid;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AdapterError {
@@ -211,6 +212,7 @@ pub enum Exchange {
     BybitLinear,
     BybitInverse,
     BybitSpot,
+    HyperliquidLinear,
 }
 
 impl std::fmt::Display for Exchange {
@@ -225,6 +227,7 @@ impl std::fmt::Display for Exchange {
                 Exchange::BybitLinear => "Bybit Linear",
                 Exchange::BybitInverse => "Bybit Inverse",
                 Exchange::BybitSpot => "Bybit Spot",
+                Exchange::HyperliquidLinear => "Hyperliquid Linear",
             }
         )
     }
@@ -241,24 +244,26 @@ impl FromStr for Exchange {
             "Bybit Linear" => Ok(Exchange::BybitLinear),
             "Bybit Inverse" => Ok(Exchange::BybitInverse),
             "Bybit Spot" => Ok(Exchange::BybitSpot),
+            "Hyperliquid Linear" => Ok(Exchange::HyperliquidLinear),
             _ => Err(format!("Invalid exchange: {}", s)),
         }
     }
 }
 
 impl Exchange {
-    pub const ALL: [Exchange; 6] = [
+    pub const ALL: [Exchange; 7] = [
         Exchange::BinanceLinear,
         Exchange::BinanceInverse,
         Exchange::BinanceSpot,
         Exchange::BybitLinear,
         Exchange::BybitInverse,
         Exchange::BybitSpot,
+        Exchange::HyperliquidLinear,
     ];
 
     pub fn market_type(&self) -> MarketKind {
         match self {
-            Exchange::BinanceLinear | Exchange::BybitLinear => MarketKind::LinearPerps,
+            Exchange::BinanceLinear | Exchange::BybitLinear | Exchange::HyperliquidLinear => MarketKind::LinearPerps,
             Exchange::BinanceInverse | Exchange::BybitInverse => MarketKind::InversePerps,
             Exchange::BinanceSpot | Exchange::BybitSpot => MarketKind::Spot,
         }
@@ -298,6 +303,9 @@ pub async fn fetch_ticker_info(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticksize(market_type).await
         }
+        Exchange::HyperliquidLinear => {
+            hyperliquid::fetch_ticksize(market_type).await
+        }
     }
 }
 
@@ -312,6 +320,9 @@ pub async fn fetch_ticker_prices(
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticker_prices(market_type).await
+        }
+        Exchange::HyperliquidLinear => {
+            hyperliquid::fetch_ticker_prices(market_type).await
         }
     }
 }
@@ -329,6 +340,9 @@ pub async fn fetch_klines(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_klines(ticker, timeframe, range).await
         }
+        Exchange::HyperliquidLinear => {
+            hyperliquid::fetch_klines(ticker, timeframe, range).await
+        }
     }
 }
 
@@ -343,6 +357,9 @@ pub async fn fetch_open_interest(
         }
         Exchange::BybitLinear | Exchange::BybitInverse => {
             bybit::fetch_historical_oi(ticker, range, timeframe).await
+        }
+        Exchange::HyperliquidLinear => {
+            hyperliquid::fetch_historical_oi(ticker, range, timeframe).await
         }
         _ => Err(AdapterError::InvalidRequest("Invalid exchange".to_string())),
     }

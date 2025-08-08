@@ -52,6 +52,7 @@ pub enum TickerTab {
     All,
     Bybit,
     Binance,
+    Hyperliquid,
     Favorites,
 }
 
@@ -249,6 +250,10 @@ impl TickersTable {
             TickerTab::Binance => matches!(
                 ex,
                 Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot
+            ),
+            TickerTab::Hyperliquid => matches!(
+                ex,
+                Exchange::HyperliquidLinear
             ),
             _ => false,
         }
@@ -511,6 +516,8 @@ impl TickersTable {
             let bybit_button = tab_button(text("Bybit"), &self.selected_tab, TickerTab::Bybit);
             let binance_button =
                 tab_button(text("Binance"), &self.selected_tab, TickerTab::Binance);
+            let hyperliquid_button =
+                tab_button(text("Hyperliquid"), &self.selected_tab, TickerTab::Hyperliquid);
             let favorites_button = tab_button(
                 text(char::from(Icon::StarFilled).to_string()).font(ICONS_FONT),
                 &self.selected_tab,
@@ -525,6 +532,8 @@ impl TickersTable {
                 bybit_button,
                 horizontal_space(),
                 binance_button,
+                horizontal_space(),
+                hyperliquid_button,
             ]
         };
 
@@ -751,6 +760,8 @@ fn create_expanded_ticker_card<'a>(
                     icon_text(Icon::BybitLogo, 12),
                 Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot =>
                     icon_text(Icon::BinanceLogo, 12),
+                Exchange::HyperliquidLinear =>
+                    icon_text(Icon::HyperliquidLogo, 12),
             },
             text(
                 ticker_str
