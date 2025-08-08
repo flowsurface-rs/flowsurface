@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     style::{self, ICONS_FONT, Icon, icon_text},
-    widget::button_with_tooltip,
+    widget::{button_with_tooltip, tooltip},
 };
 use data::InternalError;
 use exchange::{
@@ -251,10 +251,7 @@ impl TickersTable {
                 ex,
                 Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot
             ),
-            TickerTab::Hyperliquid => matches!(
-                ex,
-                Exchange::HyperliquidLinear
-            ),
+            TickerTab::Hyperliquid => matches!(ex, Exchange::HyperliquidLinear),
             _ => false,
         }
     }
@@ -512,16 +509,31 @@ impl TickersTable {
         };
 
         let exchange_filters_row = {
-            let all_button = tab_button(text("ALL"), &self.selected_tab, TickerTab::All);
-            let bybit_button = tab_button(text("Bybit"), &self.selected_tab, TickerTab::Bybit);
-            let binance_button =
-                tab_button(text("Binance"), &self.selected_tab, TickerTab::Binance);
-            let hyperliquid_button =
-                tab_button(text("Hyperliquid"), &self.selected_tab, TickerTab::Hyperliquid);
             let favorites_button = tab_button(
                 text(char::from(Icon::StarFilled).to_string()).font(ICONS_FONT),
                 &self.selected_tab,
                 TickerTab::Favorites,
+                Some("Show favorites"),
+            );
+            let all_button = tab_button(text("ALL"), &self.selected_tab, TickerTab::All, None);
+
+            let bybit_button = tab_button(
+                icon_text(style::exchange_icon(Exchange::BybitLinear), 12),
+                &self.selected_tab,
+                TickerTab::Bybit,
+                Some("Bybit"),
+            );
+            let binance_button = tab_button(
+                icon_text(style::exchange_icon(Exchange::BinanceLinear), 12),
+                &self.selected_tab,
+                TickerTab::Binance,
+                Some("Binance"),
+            );
+            let hyperliquid_button = tab_button(
+                icon_text(style::exchange_icon(Exchange::HyperliquidLinear), 12),
+                &self.selected_tab,
+                TickerTab::Hyperliquid,
+                Some("Hyperliquid"),
             );
 
             row![
@@ -760,8 +772,7 @@ fn create_expanded_ticker_card<'a>(
                     icon_text(Icon::BybitLogo, 12),
                 Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot =>
                     icon_text(Icon::BinanceLogo, 12),
-                Exchange::HyperliquidLinear =>
-                    icon_text(Icon::HyperliquidLogo, 12),
+                Exchange::HyperliquidLinear => icon_text(Icon::HyperliquidLogo, 12),
             },
             text(
                 ticker_str
@@ -819,13 +830,24 @@ fn tab_button<'a>(
     text: Text<'a, Theme, Renderer>,
     current_tab: &TickerTab,
     target_tab: TickerTab,
-) -> Button<'a, Message, Theme, Renderer> {
+    tooltip_text: Option<&'a str>,
+) -> Element<'a, Message, Theme, Renderer> {
     let mut btn =
         button(text).style(move |theme, status| style::button::transparent(theme, status, false));
     if *current_tab != target_tab {
         btn = btn.on_press(Message::ChangeTickersTableTab(target_tab));
     }
-    btn
+
+    tooltip(
+        btn,
+        if let Some(text) = tooltip_text {
+            Some(text)
+        } else {
+            None
+        },
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
 }
 
 fn sort_button(
