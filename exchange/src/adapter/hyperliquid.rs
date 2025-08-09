@@ -1,7 +1,7 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, StreamKind, Ticker, TickerInfo, TickerStats,
-        Timeframe, Trade,
+        Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
+        TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DepthPayload, DepthUpdate, LocalDepthCache, Order},
@@ -489,13 +489,21 @@ pub async fn fetch_klines(
     let mut klines = Vec::new();
     for kline_data in klines_data {
         if let Ok(hl_kline) = serde_json::from_value::<HyperliquidKline>(kline_data) {
+            let volume = if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                (hl_kline.volume * hl_kline.close).round()
+            } else {
+                hl_kline.volume
+            };
+
             let kline = Kline {
                 time: hl_kline.time,
                 open: hl_kline.open,
                 high: hl_kline.high,
                 low: hl_kline.low,
                 close: hl_kline.close,
-                volume: (hl_kline.volume, 0.0), // (base_volume, quote_volume)
+                // -1.0 for the sources that don't provide individual buy/sell volume,
+                // negative value indicates the other field is the total volume
+                volume: (-1.0, volume),
             };
             klines.push(kline);
         }
@@ -562,6 +570,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
         let mut local_depth_cache = LocalDepthCache::default();
         let mut trades_buffer = Vec::new();
+
+        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 
         loop {
             match &mut state {
@@ -630,7 +640,11 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                     time: hl_trade.time,
                                                     is_sell: hl_trade.side == "A", // A for Ask/Sell, B for Bid/Buy
                                                     price: hl_trade.px,
-                                                    qty: hl_trade.sz,
+                                                    qty: if size_in_quote_currency {
+                                                        (hl_trade.sz * hl_trade.px).round()
+                                                    } else {
+                                                        hl_trade.sz
+                                                    },
                                                 };
                                                 trades_buffer.push(trade);
                                             }
@@ -640,15 +654,22 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 .iter()
                                                 .map(|level| Order {
                                                     price: level.px,
-                                                    qty: level.sz,
+                                                    qty: if size_in_quote_currency {
+                                                        (level.sz * level.px).round()
+                                                    } else {
+                                                        level.sz
+                                                    },
                                                 })
                                                 .collect();
-
                                             let asks = depth.levels[1]
                                                 .iter()
                                                 .map(|level| Order {
                                                     price: level.px,
-                                                    qty: level.sz,
+                                                    qty: if size_in_quote_currency {
+                                                        (level.sz * level.px).round()
+                                                    } else {
+                                                        level.sz
+                                                    },
                                                 })
                                                 .collect();
 
@@ -719,6 +740,8 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
         let exchange = Exchange::HyperliquidLinear;
 
+        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -771,64 +794,67 @@ pub fn connect_kline_stream(
                         }
                     }
                 }
-                State::Connected(websocket) => {
-                    match websocket.read_frame().await {
-                        Ok(msg) => match msg.opcode {
-                            OpCode::Text => {
-                                if let Ok(StreamData::Kline(hl_kline)) =
-                                    parse_websocket_message(&msg.payload)
-                                {
-                                    let ticker = Ticker::new(&hl_kline.symbol, exchange);
-                                    let timeframe = match hl_kline.interval.as_str() {
-                                        "1m" => Timeframe::M1,
-                                        "5m" => Timeframe::M5,
-                                        "15m" => Timeframe::M15,
-                                        "30m" => Timeframe::M30,
-                                        "1h" => Timeframe::H1,
-                                        "4h" => Timeframe::H4,
-                                        "1d" => Timeframe::D1,
-                                        _ => continue,
-                                    };
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            if let Ok(StreamData::Kline(hl_kline)) =
+                                parse_websocket_message(&msg.payload)
+                            {
+                                let ticker = Ticker::new(&hl_kline.symbol, exchange);
+                                let timeframe = match hl_kline.interval.as_str() {
+                                    "1m" => Timeframe::M1,
+                                    "5m" => Timeframe::M5,
+                                    "15m" => Timeframe::M15,
+                                    "30m" => Timeframe::M30,
+                                    "1h" => Timeframe::H1,
+                                    "4h" => Timeframe::H4,
+                                    "1d" => Timeframe::D1,
+                                    _ => continue,
+                                };
 
-                                    let kline = Kline {
-                                        time: hl_kline.time,
-                                        open: hl_kline.open,
-                                        high: hl_kline.high,
-                                        low: hl_kline.low,
-                                        close: hl_kline.close,
-                                        volume: (hl_kline.volume, 0.0), // (base_volume, quote_volume)
-                                    };
+                                let volume = if size_in_quote_currency {
+                                    (hl_kline.volume * hl_kline.close).round()
+                                } else {
+                                    hl_kline.volume
+                                };
 
-                                    let stream_kind = StreamKind::Kline { ticker, timeframe };
-                                    let _ =
-                                        output.send(Event::KlineReceived(stream_kind, kline)).await;
-                                }
+                                let kline = Kline {
+                                    time: hl_kline.time,
+                                    open: hl_kline.open,
+                                    high: hl_kline.high,
+                                    low: hl_kline.low,
+                                    close: hl_kline.close,
+                                    volume: (-1.0, volume),
+                                };
+
+                                let stream_kind = StreamKind::Kline { ticker, timeframe };
+                                let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
                             }
-                            OpCode::Close => {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        exchange,
-                                        "WebSocket closed".to_string(),
-                                    ))
-                                    .await;
-                            }
-                            OpCode::Ping => {
-                                let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
+                        }
+                        OpCode::Close => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    format!("WebSocket error: {}", e),
+                                    "WebSocket closed".to_string(),
                                 ))
                                 .await;
                         }
+                        OpCode::Ping => {
+                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                format!("WebSocket error: {}", e),
+                            ))
+                            .await;
                     }
-                }
+                },
             }
         }
     })
