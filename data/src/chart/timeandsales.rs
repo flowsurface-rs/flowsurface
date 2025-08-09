@@ -90,12 +90,16 @@ impl StackedBarRatio {
                     },
                 );
 
-                let avg_buy_size = (buy_count > 0)
-                    .then(|| buy_volume / buy_count as f32)
-                    .unwrap_or(0.0);
-                let avg_sell_size = (sell_count > 0)
-                    .then(|| sell_volume / sell_count as f32)
-                    .unwrap_or(0.0);
+                let avg_buy_size = if buy_count > 0 {
+                    buy_volume / buy_count as f32
+                } else {
+                    0.0
+                };
+                let avg_sell_size = if sell_count > 0 {
+                    sell_volume / sell_count as f32
+                } else {
+                    0.0
+                };
 
                 let total_avg_size = avg_buy_size + avg_sell_size;
                 (total_avg_size > 0.0).then(|| {

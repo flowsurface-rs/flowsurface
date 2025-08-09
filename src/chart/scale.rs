@@ -502,10 +502,10 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                 }
             }
 
-            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
-                if let Some(label) = self.generate_crosshair(cursor_pos, region, bounds, palette) {
-                    labels.push(label);
-                }
+            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds)
+                && let Some(label) = self.generate_crosshair(cursor_pos, region, bounds, palette)
+            {
+                labels.push(label);
             }
 
             AxisLabel::filter_and_draw(&labels, frame);

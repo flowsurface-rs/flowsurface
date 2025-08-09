@@ -23,7 +23,7 @@ pub trait Panel: canvas::Program<Message> {
     fn invalidate(&mut self, now: Option<Instant>) -> Option<Action>;
 }
 
-pub fn view<T: Panel>(panel: &T, _timezone: data::UserTimezone) -> Element<Message> {
+pub fn view<T: Panel>(panel: &'_ T, _timezone: data::UserTimezone) -> Element<'_, Message> {
     container(
         canvas(panel)
             .height(iced::Length::Fill)

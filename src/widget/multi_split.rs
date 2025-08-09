@@ -94,7 +94,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     fn layout(&self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
         let max_limits = limits.max();
 
-        let panel_count = (self.panels.len() + 1) / 2;
+        let panel_count = self.panels.len().div_ceil(2);
 
         let mut children = Vec::with_capacity(self.panels.len());
         let mut current_y = 0.0;

@@ -48,7 +48,7 @@ impl Chart for KlineChart {
         self.invalidate(None);
     }
 
-    fn view_indicators(&self, enabled: &[Self::IndicatorType]) -> Vec<Element<Message>> {
+    fn view_indicators(&'_ self, enabled: &[Self::IndicatorType]) -> Vec<Element<'_, Message>> {
         let chart_state = self.state();
 
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
@@ -421,45 +421,40 @@ impl KlineChart {
                     }
                 }
 
-                if !self.fetching_trades.0 && exchange::fetcher::is_trade_fetch_enabled() {
-                    if let Some((fetch_from, fetch_to)) =
+                if !self.fetching_trades.0
+                    && exchange::fetcher::is_trade_fetch_enabled()
+                    && let Some((fetch_from, fetch_to)) =
                         timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
-                    {
-                        let range = FetchRange::Trades(fetch_from, fetch_to);
-                        if let Some(action) = request_fetch(&mut self.request_handler, range) {
-                            self.fetching_trades = (true, None);
-                            return Some(action);
-                        }
+                {
+                    let range = FetchRange::Trades(fetch_from, fetch_to);
+                    if let Some(action) = request_fetch(&mut self.request_handler, range) {
+                        self.fetching_trades = (true, None);
+                        return Some(action);
                     }
                 }
 
                 // priority 2, Open Interest data
                 for data in self.indicators.values() {
-                    if let IndicatorData::OpenInterest(_, _) = data {
-                        if timeframe >= Timeframe::M5.to_milliseconds()
-                            && self.chart.ticker_info.is_some_and(|t| t.is_perps())
-                        {
-                            let (oi_earliest, oi_latest) = self.oi_timerange(kline_latest);
+                    if let IndicatorData::OpenInterest(_, _) = data
+                        && timeframe >= Timeframe::M5.to_milliseconds()
+                        && self.chart.ticker_info.is_some_and(|t| t.is_perps())
+                    {
+                        let (oi_earliest, oi_latest) = self.oi_timerange(kline_latest);
 
-                            if visible_earliest < oi_earliest {
-                                let range = FetchRange::OpenInterest(earliest, oi_earliest);
+                        if visible_earliest < oi_earliest {
+                            let range = FetchRange::OpenInterest(earliest, oi_earliest);
 
-                                if let Some(action) =
-                                    request_fetch(&mut self.request_handler, range)
-                                {
-                                    return Some(action);
-                                }
+                            if let Some(action) = request_fetch(&mut self.request_handler, range) {
+                                return Some(action);
                             }
+                        }
 
-                            if oi_latest < kline_latest {
-                                let range =
-                                    FetchRange::OpenInterest(oi_latest.max(earliest), kline_latest);
+                        if oi_latest < kline_latest {
+                            let range =
+                                FetchRange::OpenInterest(oi_latest.max(earliest), kline_latest);
 
-                                if let Some(action) =
-                                    request_fetch(&mut self.request_handler, range)
-                                {
-                                    return Some(action);
-                                }
+                            if let Some(action) = request_fetch(&mut self.request_handler, range) {
+                                return Some(action);
                             }
                         }
                     }

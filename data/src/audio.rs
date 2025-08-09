@@ -64,7 +64,9 @@ impl SoundCache {
     pub fn new(volume: Option<f32>) -> Result<Self, String> {
         let (stream, stream_handle) = match OutputStream::try_default() {
             Ok(result) => result,
-            Err(err) => return Err(format!("Failed to open audio output: {}", err)),
+            Err(err) => {
+                return Err(format!("Failed to open audio output: {}", err));
+            }
         };
 
         Ok(SoundCache {
@@ -116,7 +118,9 @@ impl SoundCache {
         let cursor = std::io::Cursor::new(data.to_vec());
         let decoder = match Decoder::new(cursor) {
             Ok(decoder) => decoder,
-            Err(err) => return Err(format!("Failed to decode sound data: {}", err)),
+            Err(err) => {
+                return Err(format!("Failed to decode sound data: {}", err));
+            }
         };
 
         let sample_buffer = rodio::buffer::SamplesBuffer::new(
@@ -163,7 +167,9 @@ impl SoundCache {
 
         let sink = match rodio::Sink::try_new(&self.stream_handle) {
             Ok(sink) => sink,
-            Err(err) => return Err(format!("Failed to create audio sink: {}", err)),
+            Err(err) => {
+                return Err(format!("Failed to create audio sink: {}", err));
+            }
         };
 
         sink.set_volume(adjusted_volume / 100.0);

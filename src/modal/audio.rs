@@ -85,10 +85,10 @@ impl AudioStream {
                 };
             }
             Message::SetThreshold(exchange, ticker, threshold) => {
-                if let Some(streams) = self.streams.get_mut(&exchange) {
-                    if let Some(cfg) = streams.get_mut(&ticker) {
-                        cfg.threshold = threshold;
-                    }
+                if let Some(streams) = self.streams.get_mut(&exchange)
+                    && let Some(cfg) = streams.get_mut(&ticker)
+                {
+                    cfg.threshold = threshold;
                 }
             }
         }
@@ -153,36 +153,36 @@ impl AudioStream {
 
                     column = column.push(stream_row);
 
-                    if is_expanded && is_audio_enabled {
-                        if let Some(cfg) = self.streams.get(&exchange).and_then(|s| s.get(&ticker))
-                        {
-                            match cfg.threshold {
-                                data::audio::Threshold::Count(v) => {
-                                    let threshold_slider =
-                                        slider(1.0..=100.0, v as f32, move |value| {
-                                            Message::SetThreshold(
-                                                exchange,
-                                                ticker,
-                                                data::audio::Threshold::Count(value as usize),
-                                            )
-                                        });
+                    if is_expanded
+                        && is_audio_enabled
+                        && let Some(cfg) = self.streams.get(&exchange).and_then(|s| s.get(&ticker))
+                    {
+                        match cfg.threshold {
+                            data::audio::Threshold::Count(v) => {
+                                let threshold_slider =
+                                    slider(1.0..=100.0, v as f32, move |value| {
+                                        Message::SetThreshold(
+                                            exchange,
+                                            ticker,
+                                            data::audio::Threshold::Count(value as usize),
+                                        )
+                                    });
 
-                                    column = column.push(
-                                        column![
-                                            text(format!("Buy/sell trade count in buffer ≥ {}", v)),
-                                            threshold_slider
-                                        ]
+                                column = column.push(
+                                    column![
+                                        text(format!("Buy/sell trade count in buffer ≥ {}", v)),
+                                        threshold_slider
+                                    ]
+                                    .padding(8)
+                                    .spacing(4),
+                                );
+                            }
+                            data::audio::Threshold::Qty(v) => {
+                                column = column.push(
+                                    row![text(format!("Any trade's size in buffer ≥ {}", v))]
                                         .padding(8)
                                         .spacing(4),
-                                    );
-                                }
-                                data::audio::Threshold::Qty(v) => {
-                                    column = column.push(
-                                        row![text(format!("Any trade's size in buffer ≥ {}", v))]
-                                            .padding(8)
-                                            .spacing(4),
-                                    );
-                                }
+                                );
                             }
                         }
                     }

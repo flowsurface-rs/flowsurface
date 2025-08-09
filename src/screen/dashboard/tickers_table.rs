@@ -151,7 +151,7 @@ impl TickersTable {
                 let previous_price = Some(row.stats.mark_price);
                 row.previous_stats = Some(row.stats);
                 row.stats = new_stats;
-                (previous_price, row.clone())
+                (previous_price, *row)
             } else {
                 let new_row = TickerRowData {
                     exchange,
@@ -160,7 +160,7 @@ impl TickersTable {
                     previous_stats: None,
                     is_favorited: self.favorited_tickers.contains(&(exchange, ticker)),
                 };
-                self.ticker_rows.push(new_row.clone());
+                self.ticker_rows.push(new_row);
                 (None, new_row)
             };
 
@@ -607,24 +607,27 @@ impl TickersTable {
 
         let mut ticker_cards = column![top_space].spacing(4);
 
-        let mut filtered_index = 0;
-        for row in self.ticker_rows.iter().filter(|row| filter_predicate(row)) {
-            if filtered_index >= first_visible_index && filtered_index < last_visible_index {
-                if let Some(display_data) = self.display_cache.get(&(row.exchange, row.ticker)) {
-                    ticker_cards = ticker_cards.push(ticker_card_container(
-                        row.exchange,
-                        &row.ticker,
-                        display_data,
-                        expanded_card,
-                        row.is_favorited,
-                    ));
-                }
+        for (filtered_index, row) in self
+            .ticker_rows
+            .iter()
+            .filter(|row| filter_predicate(row))
+            .enumerate()
+        {
+            if filtered_index >= first_visible_index
+                && filtered_index < last_visible_index
+                && let Some(display_data) = self.display_cache.get(&(row.exchange, row.ticker))
+            {
+                ticker_cards = ticker_cards.push(ticker_card_container(
+                    row.exchange,
+                    &row.ticker,
+                    display_data,
+                    expanded_card,
+                    row.is_favorited,
+                ));
             }
-            filtered_index += 1;
         }
 
         ticker_cards = ticker_cards.push(bottom_space);
-
         content = content.push(ticker_cards);
 
         scrollable::Scrollable::with_direction(
@@ -755,7 +758,7 @@ fn create_expanded_ticker_card<'a>(
                 icon_text(Icon::Star, 11)
             })
             .on_press(Message::FavoriteTicker(exchange, *ticker))
-            .style(move |theme, status| style::button::transparent(theme, status, false)),
+            .style(move |theme, status| { style::button::transparent(theme, status, false) }),
             horizontal_space(),
             button_with_tooltip(
                 icon_text(Icon::Link, 11),

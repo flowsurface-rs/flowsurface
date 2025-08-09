@@ -1,6 +1,6 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, StreamKind, Ticker,
+        Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32,
@@ -19,7 +19,7 @@ use iced_futures::{
 };
 use reqwest::Method;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
 use tokio::sync::Mutex;
@@ -169,7 +169,9 @@ enum StreamData {
     Kline(HyperliquidKline),
 }
 
-pub async fn fetch_ticksize(market: MarketKind) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
+pub async fn fetch_ticksize(
+    market: MarketKind,
+) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     if market != MarketKind::LinearPerps {
         return Ok(HashMap::new());
     }
@@ -181,7 +183,14 @@ pub async fn fetch_ticksize(market: MarketKind) -> Result<HashMap<Ticker, Option
         "type": "metaAndAssetCtxs"
     });
 
-    let response_text = limiter::http_request_with_limiter(&url, &HYPERLIQUID_LIMITER, 1, Some(Method::POST), Some(&body)).await?;
+    let response_text = limiter::http_request_with_limiter(
+        &url,
+        &HYPERLIQUID_LIMITER,
+        1,
+        Some(Method::POST),
+        Some(&body),
+    )
+    .await?;
     let response_json: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
@@ -287,7 +296,9 @@ fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
     }
 }
 
-pub async fn fetch_ticker_prices(market: MarketKind) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
+pub async fn fetch_ticker_prices(
+    market: MarketKind,
+) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     if market != MarketKind::LinearPerps {
         return Ok(HashMap::new());
     }
@@ -297,29 +308,48 @@ pub async fn fetch_ticker_prices(market: MarketKind) -> Result<HashMap<Ticker, T
         "type": "allMids"
     });
 
-    let response_text = limiter::http_request_with_limiter(&url, &HYPERLIQUID_LIMITER, 1, Some(Method::POST), Some(&body)).await?;
-    
+    let response_text = limiter::http_request_with_limiter(
+        &url,
+        &HYPERLIQUID_LIMITER,
+        1,
+        Some(Method::POST),
+        Some(&body),
+    )
+    .await?;
+
     let mids: HashMap<String, String> = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
-    
+
     // Get 24hr stats
     let stats_body = json!({
         "type": "metaAndAssetCtxs"
     });
 
-    let stats_response_text = limiter::http_request_with_limiter(&url, &HYPERLIQUID_LIMITER, 1, Some(Method::POST), Some(&stats_body)).await?;
-    
+    let stats_response_text = limiter::http_request_with_limiter(
+        &url,
+        &HYPERLIQUID_LIMITER,
+        1,
+        Some(Method::POST),
+        Some(&stats_body),
+    )
+    .await?;
+
     let stats_json: Value = serde_json::from_str(&stats_response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
-    
+
     // Parse metadata and asset contexts - metaAndAssetCtxs returns [meta, [asset_ctx...]]
-    let meta = stats_json.get(0)
+    let meta = stats_json
+        .get(0)
         .ok_or_else(|| AdapterError::ParseError("Meta data not found".to_string()))?;
-    let asset_ctxs = stats_json.get(1).and_then(|v| v.as_array())
+    let asset_ctxs = stats_json
+        .get(1)
+        .and_then(|v| v.as_array())
         .ok_or_else(|| AdapterError::ParseError("Asset contexts not found".to_string()))?;
-    let universe = meta.get("universe").and_then(|v| v.as_array())
+    let universe = meta
+        .get("universe")
+        .and_then(|v| v.as_array())
         .ok_or_else(|| AdapterError::ParseError("Universe not found".to_string()))?;
-    
+
     let mut ticker_stats_map = HashMap::new();
 
     // Process each symbol from mids and match with asset context data
@@ -328,13 +358,15 @@ pub async fn fetch_ticker_prices(market: MarketKind) -> Result<HashMap<Ticker, T
         if symbol.starts_with('@') {
             continue;
         }
-        
-        let mid_price = mid_price_str.parse::<f32>()
+
+        let mid_price = mid_price_str
+            .parse::<f32>()
             .map_err(|_| AdapterError::ParseError("Failed to parse mid price".to_string()))?;
-        
+
         // Find the asset index for this symbol in the universe
         let asset_index = universe.iter().position(|asset| {
-            asset.get("name")
+            asset
+                .get("name")
                 .and_then(|n| n.as_str())
                 .map(|name| name == symbol)
                 .unwrap_or(false)
@@ -342,24 +374,32 @@ pub async fn fetch_ticker_prices(market: MarketKind) -> Result<HashMap<Ticker, T
 
         let (daily_price_chg, daily_volume) = if let Some(index) = asset_index {
             if let Some(asset_ctx) = asset_ctxs.get(index) {
-                let prev_day_px = asset_ctx.get("prevDayPx")
+                let prev_day_px = asset_ctx
+                    .get("prevDayPx")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| AdapterError::ParseError("Previous day price not found".to_string()))?
+                    .ok_or_else(|| {
+                        AdapterError::ParseError("Previous day price not found".to_string())
+                    })?
                     .parse::<f32>()
-                    .map_err(|_| AdapterError::ParseError("Failed to parse previous day price".to_string()))?;
-                
-                let day_ntl_vlm = asset_ctx.get("dayNtlVlm")
+                    .map_err(|_| {
+                        AdapterError::ParseError("Failed to parse previous day price".to_string())
+                    })?;
+
+                let day_ntl_vlm = asset_ctx
+                    .get("dayNtlVlm")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AdapterError::ParseError("Daily volume not found".to_string()))?
                     .parse::<f32>()
-                    .map_err(|_| AdapterError::ParseError("Failed to parse daily volume".to_string()))?;
-                
+                    .map_err(|_| {
+                        AdapterError::ParseError("Failed to parse daily volume".to_string())
+                    })?;
+
                 let price_change_pct = if prev_day_px > 0.0 {
                     ((mid_price - prev_day_px) / prev_day_px) * 100.0
                 } else {
                     0.0
                 };
-                
+
                 (price_change_pct, day_ntl_vlm)
             } else {
                 (0.0, 0.0)
@@ -367,14 +407,17 @@ pub async fn fetch_ticker_prices(market: MarketKind) -> Result<HashMap<Ticker, T
         } else {
             (0.0, 0.0)
         };
-        
+
         let ticker_stats = TickerStats {
             mark_price: mid_price,
             daily_price_chg,
             daily_volume,
         };
 
-        ticker_stats_map.insert(Ticker::new(symbol, Exchange::HyperliquidLinear), ticker_stats);
+        ticker_stats_map.insert(
+            Ticker::new(symbol, Exchange::HyperliquidLinear),
+            ticker_stats,
+        );
     }
 
     Ok(ticker_stats_map)
@@ -393,12 +436,16 @@ pub async fn fetch_klines(
         Timeframe::H1 => "1h",
         Timeframe::H4 => "4h",
         Timeframe::D1 => "1d",
-        _ => return Err(AdapterError::InvalidRequest("Unsupported timeframe".to_string())),
+        _ => {
+            return Err(AdapterError::InvalidRequest(
+                "Unsupported timeframe".to_string(),
+            ));
+        }
     };
 
     let url = format!("{}/info", API_DOMAIN);
     let (symbol_str, _) = ticker.to_full_symbol_and_type();
-    
+
     // Hyperliquid requires startTime and endTime - use provided range or default to 500 candles
     let (start_time, end_time) = if let Some((start, end)) = range {
         (start, end)
@@ -412,7 +459,7 @@ pub async fn fetch_klines(
         let candles_ago = now - (interval_ms * 500); // 500 candles ago
         (candles_ago, now)
     };
-    
+
     let body = json!({
         "type": "candleSnapshot",
         "req": {
@@ -423,21 +470,40 @@ pub async fn fetch_klines(
         }
     });
 
-    let response_text = limiter::http_request_with_limiter(&url, &HYPERLIQUID_LIMITER, 1, Some(Method::POST), Some(&body)).await?;
+    let response_text = limiter::http_request_with_limiter(
+        &url,
+        &HYPERLIQUID_LIMITER,
+        1,
+        Some(Method::POST),
+        Some(&body),
+    )
+    .await?;
 
-    let klines_data: Vec<Value> = serde_json::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(format!("Failed to parse response as Vec<Value>: {}. Response was: {}", e, response_text)))?;
+    let klines_data: Vec<Value> = serde_json::from_str(&response_text).map_err(|e| {
+        AdapterError::ParseError(format!(
+            "Failed to parse response as Vec<Value>: {}. Response was: {}",
+            e, response_text
+        ))
+    })?;
 
     let mut klines = Vec::new();
     for kline_data in klines_data {
         if let Ok(hl_kline) = serde_json::from_value::<HyperliquidKline>(kline_data) {
+            let volume = if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                (hl_kline.volume * hl_kline.close).round()
+            } else {
+                hl_kline.volume
+            };
+
             let kline = Kline {
                 time: hl_kline.time,
                 open: hl_kline.open,
                 high: hl_kline.high,
                 low: hl_kline.low,
                 close: hl_kline.close,
-                volume: (hl_kline.volume, 0.0), // (base_volume, quote_volume)
+                // -1.0 for the sources that don't provide individual buy/sell volume,
+                // negative value indicates the other field is the total volume
+                volume: (-1.0, volume),
             };
             klines.push(kline);
         }
@@ -457,14 +523,17 @@ pub async fn fetch_historical_oi(
     Ok(Vec::new())
 }
 
-async fn connect_websocket(domain: &str, path: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+async fn connect_websocket(
+    domain: &str,
+    path: &str,
+) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
     let url = format!("wss://{}{}", domain, path);
     connect_ws(domain, &url).await
 }
 
 fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
-    let json: Value = serde_json::from_slice(payload)
-        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    let json: Value =
+        serde_json::from_slice(payload).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
     let channel = json
         .get("channel")
@@ -487,7 +556,10 @@ fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
                 .map_err(|e| AdapterError::ParseError(e.to_string()))?;
             Ok(StreamData::Kline(kline))
         }
-        _ => Err(AdapterError::ParseError(format!("Unknown channel: {}", channel))),
+        _ => Err(AdapterError::ParseError(format!(
+            "Unknown channel: {}",
+            channel
+        ))),
     }
 }
 
@@ -498,6 +570,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
         let mut local_depth_cache = LocalDepthCache::default();
         let mut trades_buffer = Vec::new();
+
+        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 
         loop {
             match &mut state {
@@ -515,18 +589,28 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                             });
 
                             let trades_subscribe_msg = json!({
-                                "method": "subscribe", 
+                                "method": "subscribe",
                                 "subscription": {
                                     "type": "trades",
                                     "coin": symbol_str
                                 }
                             });
 
-                            if let Err(_) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(subscribe_msg.to_string().as_bytes()))).await {
+                            if let Err(_) = websocket
+                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                    subscribe_msg.to_string().as_bytes(),
+                                )))
+                                .await
+                            {
                                 continue;
                             }
 
-                            if let Err(_) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(trades_subscribe_msg.to_string().as_bytes()))).await {
+                            if let Err(_) = websocket
+                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                    trades_subscribe_msg.to_string().as_bytes(),
+                                )))
+                                .await
+                            {
                                 continue;
                             }
 
@@ -556,21 +640,38 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                     time: hl_trade.time,
                                                     is_sell: hl_trade.side == "A", // A for Ask/Sell, B for Bid/Buy
                                                     price: hl_trade.px,
-                                                    qty: hl_trade.sz,
+                                                    qty: if size_in_quote_currency {
+                                                        (hl_trade.sz * hl_trade.px).round()
+                                                    } else {
+                                                        hl_trade.sz
+                                                    },
                                                 };
                                                 trades_buffer.push(trade);
                                             }
                                         }
                                         StreamData::Depth(depth) => {
-                                            let bids = depth.levels[0].iter().map(|level| Order {
-                                                price: level.px,
-                                                qty: level.sz,
-                                            }).collect();
-
-                                            let asks = depth.levels[1].iter().map(|level| Order {
-                                                price: level.px,
-                                                qty: level.sz,
-                                            }).collect();
+                                            let bids = depth.levels[0]
+                                                .iter()
+                                                .map(|level| Order {
+                                                    price: level.px,
+                                                    qty: if size_in_quote_currency {
+                                                        (level.sz * level.px).round()
+                                                    } else {
+                                                        level.sz
+                                                    },
+                                                })
+                                                .collect();
+                                            let asks = depth.levels[1]
+                                                .iter()
+                                                .map(|level| Order {
+                                                    price: level.px,
+                                                    qty: if size_in_quote_currency {
+                                                        (level.sz * level.px).round()
+                                                    } else {
+                                                        level.sz
+                                                    },
+                                                })
+                                                .collect();
 
                                             let depth_payload = DepthPayload {
                                                 last_update_id: depth.time,
@@ -578,11 +679,13 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 bids,
                                                 asks,
                                             };
-                                            local_depth_cache.update(DepthUpdate::Snapshot(depth_payload));
+                                            local_depth_cache
+                                                .update(DepthUpdate::Snapshot(depth_payload));
 
                                             let stream_kind = StreamKind::DepthAndTrades { ticker };
                                             let current_depth = local_depth_cache.depth.clone();
-                                            let trades = std::mem::take(&mut trades_buffer).into_boxed_slice();
+                                            let trades = std::mem::take(&mut trades_buffer)
+                                                .into_boxed_slice();
 
                                             let _ = output
                                                 .send(Event::DepthReceived(
@@ -637,6 +740,8 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
         let exchange = Exchange::HyperliquidLinear;
 
+        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -665,7 +770,12 @@ pub fn connect_kline_stream(
                                     }
                                 });
 
-                                if let Err(_) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(subscribe_msg.to_string().as_bytes()))).await {
+                                if let Err(_) = websocket
+                                    .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                        subscribe_msg.to_string().as_bytes(),
+                                    )))
+                                    .await
+                                {
                                     break;
                                 }
                             }
@@ -684,61 +794,67 @@ pub fn connect_kline_stream(
                         }
                     }
                 }
-                State::Connected(websocket) => {
-                    match websocket.read_frame().await {
-                        Ok(msg) => match msg.opcode {
-                            OpCode::Text => {
-                                if let Ok(StreamData::Kline(hl_kline)) = parse_websocket_message(&msg.payload) {
-                                    let ticker = Ticker::new(&hl_kline.symbol, exchange);
-                                    let timeframe = match hl_kline.interval.as_str() {
-                                        "1m" => Timeframe::M1,
-                                        "5m" => Timeframe::M5,
-                                        "15m" => Timeframe::M15,
-                                        "30m" => Timeframe::M30,
-                                        "1h" => Timeframe::H1,
-                                        "4h" => Timeframe::H4,
-                                        "1d" => Timeframe::D1,
-                                        _ => continue,
-                                    };
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            if let Ok(StreamData::Kline(hl_kline)) =
+                                parse_websocket_message(&msg.payload)
+                            {
+                                let ticker = Ticker::new(&hl_kline.symbol, exchange);
+                                let timeframe = match hl_kline.interval.as_str() {
+                                    "1m" => Timeframe::M1,
+                                    "5m" => Timeframe::M5,
+                                    "15m" => Timeframe::M15,
+                                    "30m" => Timeframe::M30,
+                                    "1h" => Timeframe::H1,
+                                    "4h" => Timeframe::H4,
+                                    "1d" => Timeframe::D1,
+                                    _ => continue,
+                                };
 
-                                    let kline = Kline {
-                                        time: hl_kline.time,
-                                        open: hl_kline.open,
-                                        high: hl_kline.high,
-                                        low: hl_kline.low,
-                                        close: hl_kline.close,
-                                        volume: (hl_kline.volume, 0.0), // (base_volume, quote_volume)
-                                    };
+                                let volume = if size_in_quote_currency {
+                                    (hl_kline.volume * hl_kline.close).round()
+                                } else {
+                                    hl_kline.volume
+                                };
 
-                                    let stream_kind = StreamKind::Kline { ticker, timeframe };
-                                    let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
-                                }
+                                let kline = Kline {
+                                    time: hl_kline.time,
+                                    open: hl_kline.open,
+                                    high: hl_kline.high,
+                                    low: hl_kline.low,
+                                    close: hl_kline.close,
+                                    volume: (-1.0, volume),
+                                };
+
+                                let stream_kind = StreamKind::Kline { ticker, timeframe };
+                                let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
                             }
-                            OpCode::Close => {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        exchange,
-                                        "WebSocket closed".to_string(),
-                                    ))
-                                    .await;
-                            }
-                            OpCode::Ping => {
-                                let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
+                        }
+                        OpCode::Close => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    format!("WebSocket error: {}", e),
+                                    "WebSocket closed".to_string(),
                                 ))
                                 .await;
                         }
+                        OpCode::Ping => {
+                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                format!("WebSocket error: {}", e),
+                            ))
+                            .await;
                     }
-                }
+                },
             }
         }
     })

@@ -572,8 +572,7 @@ pub fn validated_text_input(
             palette.background.strong.color,
             palette.background.weak.text,
         ),
-        widget::text_input::Status::Focused { .. }
-        | widget::text_input::Status::Disabled { .. } => (
+        widget::text_input::Status::Focused { .. } | widget::text_input::Status::Disabled => (
             palette.background.base.color,
             palette.background.strong.color,
             palette.background.strong.color,
@@ -700,7 +699,7 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
 }
 
 // crosshair dashed line for charts
-pub fn dashed_line(theme: &Theme) -> Stroke {
+pub fn dashed_line(theme: &'_ Theme) -> Stroke<'_> {
     let palette = theme.extended_palette();
 
     Stroke::with_color(

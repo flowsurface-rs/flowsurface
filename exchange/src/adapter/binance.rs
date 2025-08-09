@@ -598,7 +598,7 @@ pub fn connect_kline_stream(
                             format!(
                                 "{}@kline_{}",
                                 ticker.to_full_symbol_and_type().0.to_lowercase(),
-                                timeframe.to_string()
+                                timeframe
                             )
                         })
                         .collect::<Vec<String>>()
@@ -1019,22 +1019,22 @@ pub async fn fetch_ticksize(
             continue;
         }
 
-        if let Some(contract_type) = item["contractType"].as_str() {
-            if contract_type != "PERPETUAL" {
-                continue;
-            }
+        if let Some(contract_type) = item["contractType"].as_str()
+            && contract_type != "PERPETUAL"
+        {
+            continue;
         }
-
-        if let Some(quote_asset) = item["quoteAsset"].as_str() {
-            if quote_asset != "USDT" && quote_asset != "USD" {
-                continue;
-            }
+        if let Some(quote_asset) = item["quoteAsset"].as_str()
+            && quote_asset != "USDT"
+            && quote_asset != "USD"
+        {
+            continue;
         }
-
-        if let Some(status) = item["status"].as_str() {
-            if status != "TRADING" && status != "HALT" {
-                continue;
-            }
+        if let Some(status) = item["status"].as_str()
+            && status != "TRADING"
+            && status != "HALT"
+        {
+            continue;
         }
 
         let filters = item["filters"]
@@ -1348,8 +1348,12 @@ pub async fn get_hist_trades(
 
     let market_subpath = match market_type {
         MarketKind::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
-        MarketKind::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
-        MarketKind::InversePerps => format!("data/futures/cm/daily/aggTrades/{symbol}"),
+        MarketKind::LinearPerps => {
+            format!("data/futures/um/daily/aggTrades/{symbol}")
+        }
+        MarketKind::InversePerps => {
+            format!("data/futures/cm/daily/aggTrades/{symbol}")
+        }
     };
 
     let zip_file_name = format!(

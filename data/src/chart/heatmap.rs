@@ -629,7 +629,9 @@ impl HeatmapStudy {
 impl std::fmt::Display for HeatmapStudy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HeatmapStudy::VolumeProfile(kind) => write!(f, "Volume Profile ({})", kind),
+            HeatmapStudy::VolumeProfile(kind) => {
+                write!(f, "Volume Profile ({})", kind)
+            }
         }
     }
 }

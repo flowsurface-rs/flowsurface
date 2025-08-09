@@ -70,7 +70,7 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
 
     fn invalidate_crosshair(&mut self);
 
-    fn view_indicators(&self, enabled: &[Self::IndicatorType]) -> Vec<Element<Message>>;
+    fn view_indicators(&'_ self, enabled: &[Self::IndicatorType]) -> Vec<Element<'_, Message>>;
 
     fn visible_timerange(&self) -> (u64, u64);
 
@@ -106,10 +106,10 @@ fn canvas_interaction<T: Chart>(
         }
     }
 
-    if let Interaction::Ruler { .. } = interaction {
-        if cursor_position.is_none() {
-            *interaction = Interaction::None;
-        }
+    if let Interaction::Ruler { .. } = interaction
+        && cursor_position.is_none()
+    {
+        *interaction = Interaction::None;
     }
 
     match event {
@@ -817,23 +817,14 @@ impl ViewState {
                     let (timestamp1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
                     let (timestamp2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
 
-                    let diff_ms: u64 = if timestamp1 > timestamp2 {
-                        timestamp1 - timestamp2
-                    } else {
-                        timestamp2 - timestamp1
-                    };
+                    let diff_ms: u64 = timestamp1.abs_diff(timestamp2);
                     data::util::format_duration_ms(diff_ms)
                 }
                 Basis::Tick(_) => {
                     let (tick1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
                     let (tick2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
 
-                    let tick_diff = if tick1 > tick2 {
-                        tick1 - tick2
-                    } else {
-                        tick2 - tick1
-                    };
-
+                    let tick_diff = tick1.abs_diff(tick2);
                     format!("{} ticks", tick_diff)
                 }
             };
@@ -882,22 +873,16 @@ impl ViewState {
                     let interval_ms = timeframe.to_milliseconds();
                     let (timestamp1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
                     let (timestamp2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
-                    let diff_ms = if timestamp1 > timestamp2 {
-                        timestamp1 - timestamp2
-                    } else {
-                        timestamp2 - timestamp1
-                    };
+
+                    let diff_ms = timestamp1.abs_diff(timestamp2);
                     let datapoints = (diff_ms / interval_ms).max(1);
                     format!("{} bars", datapoints)
                 }
                 Basis::Tick(aggregation) => {
                     let (tick1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
                     let (tick2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
-                    let tick_diff = if tick1 > tick2 {
-                        tick1 - tick2
-                    } else {
-                        tick2 - tick1
-                    };
+
+                    let tick_diff = tick1.abs_diff(tick2);
                     let datapoints = (tick_diff / u64::from(aggregation.0)).max(1);
                     format!("{} bars", datapoints)
                 }

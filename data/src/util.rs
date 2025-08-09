@@ -20,7 +20,9 @@ pub fn abbr_large_numbers(value: f32) -> String {
     let sign = if value < 0.0 { "-" } else { "" };
 
     match abs_value {
-        v if v >= 1_000_000_000.0 => format!("{}{:.3}b", sign, v / 100_000_000.0),
+        v if v >= 1_000_000_000.0 => {
+            format!("{}{:.3}b", sign, v / 100_000_000.0)
+        }
         v if v >= 1_000_000.0 => format!("{}{:.2}m", sign, v / 1_000_000.0),
         v if v >= 1_000.0 => format!("{}{:.1}k", sign, v / 1_000.0),
         v if v >= 100.0 => format!("{}{:.0}", sign, v),
@@ -192,16 +194,16 @@ pub fn calc_panel_splits(
 
     let mut main_split = initial_main_split;
 
-    if let Some(prev_inds) = previous_indicators {
-        if active_indicators > prev_inds {
-            let min_space_needed_all_indis = active_indicators as f32 * MIN_PANEL_HEIGHT;
+    if let Some(prev_inds) = previous_indicators
+        && active_indicators > prev_inds
+    {
+        let min_space_needed_all_indis = active_indicators as f32 * MIN_PANEL_HEIGHT;
 
-            let max_main_split_if_indis_get_min =
-                (TOTAL_HEIGHT - min_space_needed_all_indis).max(MIN_PANEL_HEIGHT);
+        let max_main_split_if_indis_get_min =
+            (TOTAL_HEIGHT - min_space_needed_all_indis).max(MIN_PANEL_HEIGHT);
 
-            if main_split > max_main_split_if_indis_get_min {
-                main_split = max_main_split_if_indis_get_min;
-            }
+        if main_split > max_main_split_if_indis_get_min {
+            main_split = max_main_split_if_indis_get_min;
         }
     }
 
