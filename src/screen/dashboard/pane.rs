@@ -179,7 +179,9 @@ impl State {
                         StreamKind::DepthAndTrades { ticker },
                         StreamKind::Kline { ticker, timeframe },
                     ],
-                    Basis::Tick(_) => vec![StreamKind::DepthAndTrades { ticker }],
+                    Basis::Tick(_) => {
+                        vec![StreamKind::DepthAndTrades { ticker }]
+                    }
                 };
                 Ok((content, streams))
             }
@@ -200,8 +202,12 @@ impl State {
                     .selected_basis
                     .unwrap_or(Timeframe::M15.into());
                 let streams = match basis {
-                    Basis::Time(timeframe) => vec![StreamKind::Kline { ticker, timeframe }],
-                    Basis::Tick(_) => vec![StreamKind::DepthAndTrades { ticker }],
+                    Basis::Time(timeframe) => {
+                        vec![StreamKind::Kline { ticker, timeframe }]
+                    }
+                    Basis::Tick(_) => {
+                        vec![StreamKind::DepthAndTrades { ticker }]
+                    }
                 };
                 Ok((content, streams))
             }
@@ -508,12 +514,12 @@ impl State {
     }
 
     fn view_controls(
-        &self,
+        &'_ self,
         pane: pane_grid::Pane,
         total_panes: usize,
         is_maximized: bool,
         is_popout: bool,
-    ) -> Element<Message> {
+    ) -> Element<'_, Message> {
         let modal_btn_style = |modal: Modal| {
             let is_active = self.modal == Some(modal);
             move |theme: &Theme, status: button::Status| {
@@ -1031,8 +1037,12 @@ impl std::fmt::Display for Content {
             Content::Starter => write!(f, "Starter pane"),
             Content::Heatmap(_, _) => write!(f, "Heatmap chart"),
             Content::Kline(chart, _) => match chart.kind() {
-                data::chart::KlineChartKind::Footprint { .. } => write!(f, "Footprint chart"),
-                data::chart::KlineChartKind::Candles => write!(f, "Candlestick chart"),
+                data::chart::KlineChartKind::Footprint { .. } => {
+                    write!(f, "Footprint chart")
+                }
+                data::chart::KlineChartKind::Candles => {
+                    write!(f, "Candlestick chart")
+                }
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales"),
         }

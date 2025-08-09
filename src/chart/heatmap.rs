@@ -62,7 +62,7 @@ impl Chart for HeatmapChart {
         self.invalidate(None);
     }
 
-    fn view_indicators(&self, _indicators: &[Self::IndicatorType]) -> Vec<Element<Message>> {
+    fn view_indicators(&'_ self, _indicators: &[Self::IndicatorType]) -> Vec<Element<'_, Message>> {
         vec![]
     }
 

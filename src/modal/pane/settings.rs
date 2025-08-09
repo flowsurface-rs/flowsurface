@@ -747,10 +747,8 @@ pub mod study {
 
             let mut column = column![checkbox_row];
 
-            if is_expanded {
-                if let Some(config) = study_config {
-                    column = column.push(config.view_config(basis, Message::StudyValueChanged));
-                }
+            if is_expanded && let Some(config) = study_config {
+                column = column.push(config.view_config(basis, Message::StudyValueChanged));
             }
 
             container(column).style(style::modal_container).into()

@@ -133,7 +133,9 @@ impl<'de> Deserialize<'de> for Theme {
                 "nightfly" => iced_core::Theme::Nightfly,
                 "oxocarbon" => iced_core::Theme::Oxocarbon,
                 "flowsurface" => Theme::default().0,
-                _ => return Err(serde::de::Error::custom(format!("Invalid theme: {}", s))),
+                _ => {
+                    return Err(serde::de::Error::custom(format!("Invalid theme: {}", s)));
+                }
             };
             return Ok(Theme(theme));
         }

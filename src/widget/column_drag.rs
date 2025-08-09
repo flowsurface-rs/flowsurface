@@ -25,16 +25,16 @@ pub fn reorder_vec<T>(vec: &mut Vec<T>, event: &DragEvent) {
         index,
         target_index,
     } = event
+        && vec.len() > 1
+        && target_index != index
     {
-        if vec.len() > 1 && target_index != index {
-            let item = vec.remove(*index);
-            let insert_index = if index < target_index {
-                *target_index - 1
-            } else {
-                *target_index
-            };
-            vec.insert(insert_index, item);
-        }
+        let item = vec.remove(*index);
+        let insert_index = if index < target_index {
+            *target_index - 1
+        } else {
+            *target_index
+        };
+        vec.insert(insert_index, item);
     }
 }
 

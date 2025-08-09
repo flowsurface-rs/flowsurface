@@ -153,16 +153,16 @@ fn cleanup_directory(data_path: &PathBuf) -> usize {
                 continue;
             };
 
-            if let Some(cap) = re.captures(filename) {
-                if let Ok(file_date) = chrono::NaiveDate::parse_from_str(&cap[1], "%Y-%m-%d") {
-                    let days_old = today.signed_duration_since(file_date).num_days();
-                    if days_old > 4 {
-                        if let Err(e) = std::fs::remove_file(&path) {
-                            error!("Failed to remove old file {}: {}", filename, e);
-                        } else {
-                            deleted_files.push(filename.to_string());
-                            info!("Removed old file: {}", filename);
-                        }
+            if let Some(cap) = re.captures(filename)
+                && let Ok(file_date) = chrono::NaiveDate::parse_from_str(&cap[1], "%Y-%m-%d")
+            {
+                let days_old = today.signed_duration_since(file_date).num_days();
+                if days_old > 4 {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        error!("Failed to remove old file {}: {}", filename, e);
+                    } else {
+                        deleted_files.push(filename.to_string());
+                        info!("Removed old file: {}", filename);
                     }
                 }
             }

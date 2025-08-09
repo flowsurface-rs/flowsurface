@@ -231,14 +231,14 @@ fn feed_de(
                     log::error!("Unknown stream type");
                 }
             }
-        } else if k == "cts" {
-            if let Some(dw) = depth_wrap {
-                let time: u64 = v
-                    .as_u64()
-                    .ok_or_else(|| AdapterError::ParseError("Failed to parse u64".to_string()))?;
+        } else if k == "cts"
+            && let Some(dw) = depth_wrap
+        {
+            let time: u64 = v
+                .as_u64()
+                .ok_or_else(|| AdapterError::ParseError("Failed to parse u64".to_string()))?;
 
-                return Ok(StreamData::Depth(dw, data_type.to_string(), time));
-            }
+            return Ok(StreamData::Depth(dw, data_type.to_string(), time));
         }
     }
 
@@ -778,16 +778,18 @@ pub async fn fetch_ticksize(
             continue;
         }
 
-        if let Some(contract_type) = item["contractType"].as_str() {
-            if contract_type != "LinearPerpetual" && contract_type != "InversePerpetual" {
-                continue;
-            }
+        if let Some(contract_type) = item["contractType"].as_str()
+            && contract_type != "LinearPerpetual"
+            && contract_type != "InversePerpetual"
+        {
+            continue;
         }
 
-        if let Some(quote_asset) = item["quoteCoin"].as_str() {
-            if quote_asset != "USDT" && quote_asset != "USD" {
-                continue;
-            }
+        if let Some(quote_asset) = item["quoteCoin"].as_str()
+            && quote_asset != "USDT"
+            && quote_asset != "USD"
+        {
+            continue;
         }
 
         let lot_size_filter = item["lotSizeFilter"]

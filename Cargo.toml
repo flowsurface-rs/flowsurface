@@ -56,6 +56,6 @@ data = { version = "0.1.0", path = "data" }
 debug = ["iced/hot"]
 
 [patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "3f22d5683a03f0bc7006744b04a50b4bc38f2918" }
-iced_futures = { git = "https://github.com/iced-rs/iced", rev = "3f22d5683a03f0bc7006744b04a50b4bc38f2918" }
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "3f22d5683a03f0bc7006744b04a50b4bc38f2918"}
+iced = { git = "https://github.com/iced-rs/iced", rev = "9d56b488cc08b7365fb1839ed47ef92f3ff0fa36" }
+iced_futures = { git = "https://github.com/iced-rs/iced", rev = "9d56b488cc08b7365fb1839ed47ef92f3ff0fa36" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "9d56b488cc08b7365fb1839ed47ef92f3ff0fa36"}

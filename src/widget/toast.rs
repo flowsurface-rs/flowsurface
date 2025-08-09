@@ -107,9 +107,9 @@ where
                             horizontal_space(),
                             button("X")
                                 .on_press((on_close)(index))
-                                .style(move |theme, status| style::button::transparent(
-                                    theme, status, true
-                                ))
+                                .style(move |theme, status| {
+                                    style::button::transparent(theme, status, true)
+                                })
                                 .padding(padding::right(6).left(6).top(2).bottom(2))
                         ]
                         .align_y(Center)
@@ -193,7 +193,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
                 instants.truncate(new);
             }
             (old, new) if old < new => {
-                instants.extend(std::iter::repeat(Some(Instant::now())).take(new - old));
+                instants.extend(std::iter::repeat_n(Some(Instant::now()), new - old));
             }
             _ => {}
         }
@@ -464,12 +464,11 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
                 child
                     .as_widget()
                     .mouse_interaction(state, layout, cursor, &self.viewport, renderer)
-                    .max(
-                        cursor
-                            .is_over(layout.bounds())
-                            .then_some(mouse::Interaction::Idle)
-                            .unwrap_or_default(),
-                    )
+                    .max(if cursor.is_over(layout.bounds()) {
+                        mouse::Interaction::Idle
+                    } else {
+                        Default::default()
+                    })
             })
             .max()
             .unwrap_or_default()
