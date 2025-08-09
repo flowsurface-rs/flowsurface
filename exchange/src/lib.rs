@@ -274,9 +274,11 @@ impl Ticker {
 
         assert!(base_len <= 20, "Ticker too long");
         assert!(
-            ticker
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/'),
+            ticker.chars().all(|c| c.is_ascii_alphanumeric()
+                || c == '_'
+                || c == '-'
+                || c == '.'
+                || c == '/'),
             "Ticker must contain only ASCII alphanumeric characters, underscores, hyphens, dots, and slashes: {ticker:?}"
         );
 

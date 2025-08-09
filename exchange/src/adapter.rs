@@ -263,7 +263,9 @@ impl Exchange {
 
     pub fn market_type(&self) -> MarketKind {
         match self {
-            Exchange::BinanceLinear | Exchange::BybitLinear | Exchange::HyperliquidLinear => MarketKind::LinearPerps,
+            Exchange::BinanceLinear | Exchange::BybitLinear | Exchange::HyperliquidLinear => {
+                MarketKind::LinearPerps
+            }
             Exchange::BinanceInverse | Exchange::BybitInverse => MarketKind::InversePerps,
             Exchange::BinanceSpot | Exchange::BybitSpot => MarketKind::Spot,
         }
@@ -303,9 +305,7 @@ pub async fn fetch_ticker_info(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticksize(market_type).await
         }
-        Exchange::HyperliquidLinear => {
-            hyperliquid::fetch_ticksize(market_type).await
-        }
+        Exchange::HyperliquidLinear => hyperliquid::fetch_ticksize(market_type).await,
     }
 }
 
@@ -321,9 +321,7 @@ pub async fn fetch_ticker_prices(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticker_prices(market_type).await
         }
-        Exchange::HyperliquidLinear => {
-            hyperliquid::fetch_ticker_prices(market_type).await
-        }
+        Exchange::HyperliquidLinear => hyperliquid::fetch_ticker_prices(market_type).await,
     }
 }
 
@@ -340,9 +338,7 @@ pub async fn fetch_klines(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_klines(ticker, timeframe, range).await
         }
-        Exchange::HyperliquidLinear => {
-            hyperliquid::fetch_klines(ticker, timeframe, range).await
-        }
+        Exchange::HyperliquidLinear => hyperliquid::fetch_klines(ticker, timeframe, range).await,
     }
 }
 

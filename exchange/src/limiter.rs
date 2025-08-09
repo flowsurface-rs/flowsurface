@@ -26,7 +26,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
     json_body: Option<&Value>,
 ) -> Result<String, AdapterError> {
     let method = method.unwrap_or(Method::GET);
-    
+
     let mut limiter_guard = limiter.lock().await;
 
     if let Some(wait_time) = limiter_guard.prepare_request(weight) {
@@ -35,7 +35,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
     }
 
     let mut request_builder = HTTP_CLIENT.request(method, url);
-    
+
     if let Some(body) = json_body {
         request_builder = request_builder.json(body);
     }

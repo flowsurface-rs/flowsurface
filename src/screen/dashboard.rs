@@ -17,7 +17,8 @@ use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 use exchange::{
     Kline, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{
-        self, AdapterError, Exchange, StreamConfig, StreamKind, UniqueStreams, binance, bybit, hyperliquid,
+        self, AdapterError, Exchange, StreamConfig, StreamKind, UniqueStreams, binance, bybit,
+        hyperliquid,
     },
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
