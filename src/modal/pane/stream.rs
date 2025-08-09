@@ -445,8 +445,9 @@ impl Modifier {
                                 .iter()
                                 .copied()
                                 .filter(|tf| {
-                                    !(ticker.exchange == Exchange::BybitSpot && *tf == Timeframe::MS100)
-                                        && !(ticker.exchange == Exchange::HyperliquidLinear 
+                                    !(ticker.exchange == Exchange::BybitSpot
+                                        && *tf == Timeframe::MS100)
+                                        && !(ticker.exchange == Exchange::HyperliquidLinear
                                             && (*tf == Timeframe::MS100 || *tf == Timeframe::MS200))
                                 })
                                 .collect();
@@ -523,13 +524,16 @@ impl Modifier {
                         .push(horizontal_rule(1).style(style::split_ruler));
 
                     // Filter tick multipliers based on exchange
-                    let tick_multipliers: Vec<exchange::TickMultiplier> = exchange::TickMultiplier::ALL
-                        .iter()
-                        .copied()
-                        .filter(|tm| {
-                            !(ticker.map_or(false, |t| t.exchange == Exchange::HyperliquidLinear && tm.0 != 1))
-                        })
-                        .collect();
+                    let tick_multipliers: Vec<exchange::TickMultiplier> =
+                        exchange::TickMultiplier::ALL
+                            .iter()
+                            .copied()
+                            .filter(|tm| {
+                                !(ticker.map_or(false, |t| {
+                                    t.exchange == Exchange::HyperliquidLinear && tm.0 != 1
+                                }))
+                            })
+                            .collect();
 
                     let tick_multiplier_grid = modifiers_grid(
                         &tick_multipliers,
@@ -543,7 +547,9 @@ impl Modifier {
                         let tick_multiplier_to_submit = parsed_input.filter(|tm| {
                             tm.0 >= TICK_MULTIPLIER_MIN
                                 && tm.0 <= TICK_MULTIPLIER_MAX
-                                && !(ticker.map_or(false, |t| t.exchange == Exchange::HyperliquidLinear && tm.0 != 1))
+                                && !(ticker.map_or(false, |t| {
+                                    t.exchange == Exchange::HyperliquidLinear && tm.0 != 1
+                                }))
                         });
 
                         numeric_input_box::<_, Message>(
