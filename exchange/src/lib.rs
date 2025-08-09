@@ -340,7 +340,17 @@ impl Ticker {
             result.push(c);
         }
 
-        (result, self.market_type())
+        let market_kind = self.market_type();
+        // Transform Hyperliquid symbols to standardized display format
+        if matches!(self.exchange, Exchange::HyperliquidLinear) {
+            // For Hyperliquid Linear Perps, append USDT to match other exchanges' format
+            // The "P" suffix will be added later in compute_display_data for all perpetual contracts
+            if market_kind == MarketKind::LinearPerps {
+                result.push_str("USDT");
+            }
+        }
+
+        (result, market_kind)
     }
 
     pub fn market_type(&self) -> MarketKind {
