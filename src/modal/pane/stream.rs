@@ -447,8 +447,6 @@ impl Modifier {
                                 .filter(|tf| {
                                     !(ticker.exchange == Exchange::BybitSpot
                                         && *tf == Timeframe::MS100)
-                                        && !(ticker.exchange == Exchange::HyperliquidLinear
-                                            && (*tf == Timeframe::MS100 || *tf == Timeframe::MS200))
                                 })
                                 .collect();
                             let heatmap_timeframe_grid = modifiers_grid(
@@ -523,20 +521,8 @@ impl Modifier {
                         .push(text("Tick size multiplier").size(13))
                         .push(horizontal_rule(1).style(style::split_ruler));
 
-                    // Filter tick multipliers based on exchange
-                    let tick_multipliers: Vec<exchange::TickMultiplier> =
-                        exchange::TickMultiplier::ALL
-                            .iter()
-                            .copied()
-                            .filter(|tm| {
-                                !(ticker.map_or(false, |t| {
-                                    t.exchange == Exchange::HyperliquidLinear && tm.0 != 1
-                                }))
-                            })
-                            .collect();
-
                     let tick_multiplier_grid = modifiers_grid(
-                        &tick_multipliers,
+                        &exchange::TickMultiplier::ALL,
                         Some(ticksize),
                         Message::TicksizeSelected,
                         &create_button,
@@ -545,11 +531,7 @@ impl Modifier {
 
                     let custom_input = {
                         let tick_multiplier_to_submit = parsed_input.filter(|tm| {
-                            tm.0 >= TICK_MULTIPLIER_MIN
-                                && tm.0 <= TICK_MULTIPLIER_MAX
-                                && !(ticker.map_or(false, |t| {
-                                    t.exchange == Exchange::HyperliquidLinear && tm.0 != 1
-                                }))
+                            tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX
                         });
 
                         numeric_input_box::<_, Message>(
