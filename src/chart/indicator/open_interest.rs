@@ -19,6 +19,18 @@ pub fn indicator_elem<'a>(
     let (mut max_value, mut min_value) = {
         match chart_state.basis {
             Basis::Time(timeframe) => {
+                let Some(ticker_info) = chart_state.ticker_info else {
+                    return row![].into();
+                };
+
+                let exchange = ticker_info.exchange();
+                if exchange == exchange::adapter::Exchange::HyperliquidLinear {
+                    return center(text(format!(
+                        "WIP: Open Interest is not available for {exchange}",
+                    )))
+                    .into();
+                }
+
                 if timeframe < Timeframe::M5
                     || timeframe == Timeframe::H2
                     || timeframe > Timeframe::H4

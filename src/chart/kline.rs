@@ -421,6 +421,7 @@ impl KlineChart {
                     }
                 }
 
+                // priority 2, trades fetch
                 if !self.fetching_trades.0
                     && exchange::fetcher::is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
@@ -433,11 +434,14 @@ impl KlineChart {
                     }
                 }
 
-                // priority 2, Open Interest data
+                // priority 3, Open Interest data
                 for data in self.indicators.values() {
                     if let IndicatorData::OpenInterest(_, _) = data
                         && timeframe >= Timeframe::M5.to_milliseconds()
-                        && self.chart.ticker_info.is_some_and(|t| t.is_perps())
+                        && self.chart.ticker_info.is_some_and(|t| {
+                            t.is_perps()
+                                && t.exchange() != exchange::adapter::Exchange::HyperliquidLinear
+                        })
                     {
                         let (oi_earliest, oi_latest) = self.oi_timerange(kline_latest);
 
@@ -460,7 +464,7 @@ impl KlineChart {
                     }
                 }
 
-                // priority 3, missing klines & integrity check
+                // priority 4, missing klines & integrity check
                 if let Some(missing_keys) =
                     timeseries.check_kline_integrity(kline_earliest, kline_latest, timeframe)
                 {
