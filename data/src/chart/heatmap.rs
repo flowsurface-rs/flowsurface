@@ -8,6 +8,9 @@ use super::Basis;
 use super::aggr::time::DataPoint;
 
 pub const CLEANUP_THRESHOLD: usize = 4800;
+
+/// Allow up to 500ms delay in order updates before starting a new order run.
+/// Prevents fragmentation(e.g. network latency) when qty and is_bid remain unchanged.
 const GRACE_PERIOD_MS: u64 = 500;
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
@@ -113,6 +116,15 @@ pub struct OrderRun {
 }
 
 impl OrderRun {
+    pub fn new(start_time: u64, aggr_time: u64, qty: f32, is_bid: bool) -> Self {
+        OrderRun {
+            start_time,
+            until_time: start_time + aggr_time,
+            qty: OrderedFloat(qty),
+            is_bid,
+        }
+    }
+
     pub fn qty(&self) -> f32 {
         self.qty.into_inner()
     }
@@ -191,23 +203,16 @@ impl HistoricalDepth {
 
     fn update_price_level(&mut self, time: u64, price: f32, qty: f32, is_bid: bool) {
         let price_level = self.price_levels.entry(OrderedFloat(price)).or_default();
+        let aggr_time = self.aggr_time;
 
         match price_level.last_mut() {
             Some(last_run) if last_run.is_bid == is_bid => {
                 if time > last_run.until_time + GRACE_PERIOD_MS {
-                    last_run.until_time = last_run.start_time + self.aggr_time;
-
-                    price_level.push(OrderRun {
-                        start_time: time,
-                        until_time: time + self.aggr_time,
-                        qty: OrderedFloat(qty),
-                        is_bid,
-                    });
+                    price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
                     return;
                 }
 
                 let last_qty = last_run.qty.0;
-
                 let qty_diff_pct = if last_qty > 0.0 {
                     (qty - last_qty).abs() / last_qty
                 } else {
@@ -215,40 +220,25 @@ impl HistoricalDepth {
                 };
 
                 if qty_diff_pct <= self.min_order_qty || last_run.qty == OrderedFloat(qty) {
-                    last_run.until_time = time + self.aggr_time;
+                    let new_until = time + aggr_time;
+                    if new_until > last_run.until_time {
+                        last_run.until_time = new_until;
+                    }
                 } else {
                     if last_run.until_time > time {
                         last_run.until_time = time;
                     }
-                    price_level.push(OrderRun {
-                        start_time: time,
-                        until_time: time + self.aggr_time,
-                        qty: OrderedFloat(qty),
-                        is_bid,
-                    });
+                    price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
                 }
             }
             Some(last_run) => {
-                // side has flipped, end the previous run
                 if last_run.until_time > time {
                     last_run.until_time = time;
                 }
-                // start a new run for the new side
-                price_level.push(OrderRun {
-                    start_time: time,
-                    until_time: time + self.aggr_time,
-                    qty: OrderedFloat(qty),
-                    is_bid,
-                });
+                price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
             }
             None => {
-                // no previous runs at this price level
-                price_level.push(OrderRun {
-                    start_time: time,
-                    until_time: time + self.aggr_time,
-                    qty: OrderedFloat(qty),
-                    is_bid,
-                });
+                price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
             }
         }
     }
