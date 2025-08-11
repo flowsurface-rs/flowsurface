@@ -447,6 +447,8 @@ impl Modifier {
                                 .filter(|tf| {
                                     !(ticker.exchange == Exchange::BybitSpot
                                         && *tf == Timeframe::MS100)
+                                        && !(ticker.exchange == Exchange::HyperliquidLinear
+                                            && (*tf == Timeframe::MS100 || *tf == Timeframe::MS200))
                                 })
                                 .collect();
                             let heatmap_timeframe_grid = modifiers_grid(

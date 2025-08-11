@@ -584,7 +584,9 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                 "method": "subscribe",
                                 "subscription": {
                                     "type": "l2Book",
-                                    "coin": symbol_str
+                                    "coin": symbol_str,
+                                    "nSigFigs": 5,
+                                    "mantissa": 5
                                 }
                             });
 
