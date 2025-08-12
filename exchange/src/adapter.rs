@@ -181,17 +181,11 @@ impl UniqueStreams {
         &self,
         exchange_filter: Option<Exchange>,
     ) -> Vec<(Ticker, StreamTicksize)> {
-        self.streams(exchange_filter, |_, stream| {
-            stream.as_depth_stream().map(|ticker| ticker)
-        })
+        self.streams(exchange_filter, |_, stream| stream.as_depth_stream())
     }
 
     pub fn kline_streams(&self, exchange_filter: Option<Exchange>) -> Vec<(Ticker, Timeframe)> {
-        self.streams(exchange_filter, |_, stream| {
-            stream
-                .as_kline_stream()
-                .map(|(ticker, timeframe)| (ticker, timeframe))
-        })
+        self.streams(exchange_filter, |_, stream| stream.as_kline_stream())
     }
 
     pub fn combined(&self) -> &HashMap<Exchange, StreamSpecs> {

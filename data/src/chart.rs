@@ -107,12 +107,10 @@ impl Basis {
     }
 
     pub fn default_heatmap_time(ticker_info: Option<exchange::TickerInfo>) -> Self {
-        let interval = ticker_info.map_or(Timeframe::MS100, |info| {
-            if info.exchange() == Exchange::BybitSpot {
-                Timeframe::MS200
-            } else {
-                Timeframe::MS100
-            }
+        let interval = ticker_info.map_or(Timeframe::MS100, |info| match info.exchange() {
+            Exchange::BybitSpot => Timeframe::MS200,
+            Exchange::HyperliquidLinear => Timeframe::MS500,
+            _ => Timeframe::MS100,
         });
 
         interval.into()

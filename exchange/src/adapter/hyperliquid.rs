@@ -708,19 +708,14 @@ pub fn connect_market_stream(
                             // Only attach mantissa if > 0 (we now treat 0 as “omit / implies 1”)
                             if depth_cfg.mantissa > 0
                                 && ALLOWED_MANTISSA.contains(&depth_cfg.mantissa)
-                            {
-                                if let Some(obj) = depth_subscription
+                                && let Some(obj) = depth_subscription
                                     .get_mut("subscription")
                                     .and_then(|v| v.as_object_mut())
-                                {
-                                    obj.insert("mantissa".to_string(), json!(depth_cfg.mantissa));
-                                }
+                            {
+                                obj.insert("mantissa".to_string(), json!(depth_cfg.mantissa));
                             }
 
-                            log::debug!(
-                                "Subscribing to depth stream: {}",
-                                depth_subscription.to_string()
-                            );
+                            log::debug!("Subscribing to depth stream: {}", depth_subscription);
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -913,11 +908,12 @@ pub fn connect_kline_stream(
                                     }
                                 });
 
-                                if let Err(_) = websocket
+                                if (websocket
                                     .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
                                         subscribe_msg.to_string().as_bytes(),
                                     )))
-                                    .await
+                                    .await)
+                                    .is_err()
                                 {
                                     break;
                                 }
