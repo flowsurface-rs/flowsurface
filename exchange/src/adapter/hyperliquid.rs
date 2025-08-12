@@ -45,17 +45,6 @@ const LIMITER_BUFFER_PCT: f32 = 0.05;
 static HYPERLIQUID_LIMITER: LazyLock<Mutex<HyperliquidLimiter>> =
     LazyLock::new(|| Mutex::new(HyperliquidLimiter::new(LIMIT, REFILL_RATE)));
 
-// Temporary fix: globally store ticker prices for mantissa & nSigFigs calculation.
-static TICKER_PRICE_MAP: LazyLock<Mutex<HashMap<Ticker, f32>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-pub async fn register_ticker_prices(prices: &HashMap<Ticker, f32>) {
-    let mut guard = TICKER_PRICE_MAP.lock().await;
-    for (t, p) in prices {
-        guard.insert(*t, *p);
-    }
-}
-
 pub struct HyperliquidLimiter {
     bucket: limiter::FixedWindowBucket,
 }
@@ -248,8 +237,6 @@ pub async fn fetch_ticksize(
             };
         }
     }
-
-    register_ticker_prices(&ticker_prices).await;
 
     Ok(ticker_info_map)
 }
@@ -674,16 +661,18 @@ pub fn connect_market_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    // Wait until we have a cached price for this ticker
-                    let price_opt = {
-                        let guard = TICKER_PRICE_MAP.lock().await;
-                        guard.get(&ticker).copied()
+                    let price = match fetch_orderbook(ticker).await {
+                        Ok(depth) => depth.bids.first().map(|o| o.price),
+                        Err(e) => {
+                            log::error!("Failed to fetch orderbook for price: {}", e);
+                            None
+                        }
                     };
-                    if price_opt.is_none() {
+                    if price.is_none() {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
-                    let price = price_opt.unwrap();
+                    let price = price.unwrap();
 
                     log::debug!(
                         "Connecting to Hyperliquid market stream with price {} and multiplier {}",
@@ -715,7 +704,7 @@ pub fn connect_market_stream(
                                 obj.insert("mantissa".to_string(), json!(depth_cfg.mantissa));
                             }
 
-                            log::debug!("Subscribing to depth stream: {}", depth_subscription);
+                            log::debug!("Subscribing to depth stream: {}", &depth_subscription);
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -996,5 +985,57 @@ pub fn connect_kline_stream(
                 },
             }
         }
+    })
+}
+
+pub async fn fetch_orderbook(ticker: Ticker) -> Result<DepthPayload, AdapterError> {
+    let url = format!("{}/info", API_DOMAIN);
+    let (symbol_str, _) = ticker.to_full_symbol_and_type();
+
+    let body = json!({
+        "type": "l2Book",
+        "coin": symbol_str,
+    });
+
+    let response_text = limiter::http_request_with_limiter(
+        &url,
+        &HYPERLIQUID_LIMITER,
+        1,
+        Some(Method::POST),
+        Some(&body),
+    )
+    .await?;
+
+    let depth: HyperliquidDepth = serde_json::from_str(&response_text)
+        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+
+    let bids = depth.levels[0]
+        .iter()
+        .map(|level| Order {
+            price: level.px,
+            qty: if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                (level.sz * level.px).round()
+            } else {
+                level.sz
+            },
+        })
+        .collect();
+    let asks = depth.levels[1]
+        .iter()
+        .map(|level| Order {
+            price: level.px,
+            qty: if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                (level.sz * level.px).round()
+            } else {
+                level.sz
+            },
+        })
+        .collect();
+
+    Ok(DepthPayload {
+        last_update_id: depth.time,
+        time: depth.time,
+        bids,
+        asks,
     })
 }
