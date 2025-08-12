@@ -15,10 +15,10 @@ use crate::{
 };
 use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 use exchange::{
-    Kline, Ticker, TickerInfo, Timeframe, Trade,
+    Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{
-        self, AdapterError, Exchange, StreamConfig, StreamKind, UniqueStreams, binance, bybit,
-        hyperliquid,
+        self, AdapterError, Exchange, StreamConfig, StreamKind, StreamTicksize, UniqueStreams,
+        binance, bybit, hyperliquid,
     },
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
@@ -467,7 +467,22 @@ impl Dashboard {
                                             }];
 
                                             if is_footprint {
-                                                streams.push(StreamKind::DepthAndTrades { ticker });
+                                                streams.push(StreamKind::DepthAndTrades {
+                                                    ticker,
+                                                    depth_aggr: if ticker
+                                                        .exchange
+                                                        .is_depth_client_aggr()
+                                                    {
+                                                        StreamTicksize::Client
+                                                    } else {
+                                                        StreamTicksize::ServerSide(
+                                                            state
+                                                                .settings
+                                                                .tick_multiply
+                                                                .unwrap_or(TickMultiplier(1)),
+                                                        )
+                                                    },
+                                                });
                                             }
 
                                             state.streams = streams;
@@ -513,8 +528,20 @@ impl Dashboard {
                                             }
                                         }
                                         Basis::Tick(interval) => {
-                                            state.streams =
-                                                vec![StreamKind::DepthAndTrades { ticker }];
+                                            let exchange = ticker.exchange;
+                                            state.streams = vec![StreamKind::DepthAndTrades {
+                                                ticker,
+                                                depth_aggr: if exchange.is_depth_client_aggr() {
+                                                    StreamTicksize::Client
+                                                } else {
+                                                    StreamTicksize::ServerSide(
+                                                        state
+                                                            .settings
+                                                            .tick_multiply
+                                                            .unwrap_or(TickMultiplier(1)),
+                                                    )
+                                                },
+                                            }];
 
                                             if let Some(pane_state) =
                                                 self.get_mut_pane(main_window.id, window, pane)
@@ -553,6 +580,31 @@ impl Dashboard {
                                         }
                                         _ => {}
                                     }
+                                }
+
+                                let is_clientside_aggr = state
+                                    .stream_pair()
+                                    .map(|ticker| ticker.exchange.is_depth_client_aggr())
+                                    .unwrap_or(false);
+
+                                if is_clientside_aggr {
+                                    state.streams.iter_mut().for_each(|stream| {
+                                        if let StreamKind::DepthAndTrades { depth_aggr, .. } =
+                                            stream
+                                        {
+                                            *depth_aggr = StreamTicksize::Client;
+                                        }
+                                    });
+                                } else {
+                                    state.streams.iter_mut().for_each(|stream| {
+                                        if let StreamKind::DepthAndTrades { depth_aggr, .. } =
+                                            stream
+                                        {
+                                            *depth_aggr =
+                                                StreamTicksize::ServerSide(new_multiplier);
+                                        }
+                                    });
+                                    return (self.refresh_streams(main_window.id), None);
                                 }
                             }
                             None => {
@@ -1181,7 +1233,12 @@ impl Dashboard {
                     let depth_subs = specs
                         .depth
                         .iter()
-                        .map(|(_, ticker)| depth_subscription(*ticker))
+                        .map(|(ticker, aggr)| match aggr {
+                            StreamTicksize::Client => depth_subscription(*ticker, None),
+                            StreamTicksize::ServerSide(mltp) => {
+                                depth_subscription(*ticker, Some(*mltp))
+                            }
+                        })
                         .collect::<Vec<_>>();
 
                     if !depth_subs.is_empty() {
@@ -1192,7 +1249,7 @@ impl Dashboard {
                 let kline_params = specs
                     .kline
                     .iter()
-                    .map(|(_, ticker, timeframe)| (*ticker, *timeframe))
+                    .map(|(ticker, timeframe)| (*ticker, *timeframe))
                     .collect::<Vec<_>>();
 
                 if !kline_params.is_empty() {
@@ -1222,8 +1279,9 @@ impl Dashboard {
     ) -> Task<Message> {
         let mut tasks: Vec<Task<Message>> = vec![];
 
-        for (exchange, ticker, timeframe) in self.streams.kline_streams(None) {
+        for (ticker, timeframe) in self.streams.kline_streams(None) {
             let stream_kind = StreamKind::Kline { ticker, timeframe };
+            let exchange = ticker.exchange;
 
             let matching_panes = self
                 .iter_all_panes(main_window_id)
@@ -1307,7 +1365,7 @@ fn request_fetch(
         }
         FetchRange::Trades(from_time, to_time) => {
             let trade_info = state.streams.iter().find_map(|stream| {
-                if let StreamKind::DepthAndTrades { ticker } = stream {
+                if let StreamKind::DepthAndTrades { ticker, .. } = stream {
                     Some((*ticker, pane_id, *stream))
                 } else {
                     None
@@ -1460,9 +1518,12 @@ pub fn fetch_trades_batched(
     })
 }
 
-pub fn depth_subscription(ticker: Ticker) -> Subscription<exchange::Event> {
+pub fn depth_subscription(
+    ticker: Ticker,
+    tick_mlpt: Option<TickMultiplier>,
+) -> Subscription<exchange::Event> {
     let exchange = ticker.exchange;
-    let config = StreamConfig::new(ticker, exchange);
+    let config = StreamConfig::new(ticker, exchange, tick_mlpt);
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
             let builder = |cfg: &StreamConfig<Ticker>| binance::connect_market_stream(cfg.id);
@@ -1473,7 +1534,9 @@ pub fn depth_subscription(ticker: Ticker) -> Subscription<exchange::Event> {
             Subscription::run_with(config, builder)
         }
         Exchange::HyperliquidLinear => {
-            let builder = |cfg: &StreamConfig<Ticker>| hyperliquid::connect_market_stream(cfg.id);
+            let builder = |cfg: &StreamConfig<Ticker>| {
+                hyperliquid::connect_market_stream(cfg.id, cfg.tick_mltp)
+            };
             Subscription::run_with(config, builder)
         }
     }
@@ -1483,7 +1546,7 @@ pub fn kline_subscription(
     exchange: Exchange,
     kline_subs: Vec<(Ticker, Timeframe)>,
 ) -> Subscription<exchange::Event> {
-    let config = StreamConfig::new(kline_subs, exchange);
+    let config = StreamConfig::new(kline_subs, exchange, None);
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
             let builder = |cfg: &StreamConfig<Vec<(Ticker, Timeframe)>>| {

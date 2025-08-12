@@ -25,7 +25,7 @@ use data::{
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-    adapter::{MarketKind, StreamKind},
+    adapter::{MarketKind, StreamKind, StreamTicksize},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -126,7 +126,9 @@ impl State {
         self.streams
             .iter()
             .map(|stream| match stream {
-                StreamKind::DepthAndTrades { ticker } | StreamKind::Kline { ticker, .. } => *ticker,
+                StreamKind::DepthAndTrades { ticker, .. } | StreamKind::Kline { ticker, .. } => {
+                    *ticker
+                }
             })
             .next()
     }
@@ -155,7 +157,14 @@ impl State {
 
                 let content =
                     Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
-                let streams = vec![StreamKind::DepthAndTrades { ticker }];
+                let streams = vec![StreamKind::DepthAndTrades {
+                    ticker,
+                    depth_aggr: if ticker.exchange.is_depth_client_aggr() {
+                        StreamTicksize::Client
+                    } else {
+                        StreamTicksize::ServerSide(TickMultiplier(5))
+                    },
+                }];
                 Ok((content, streams))
             }
             "footprint" => {
@@ -176,11 +185,25 @@ impl State {
                 let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
                 let streams = match basis {
                     Basis::Time(timeframe) => vec![
-                        StreamKind::DepthAndTrades { ticker },
+                        StreamKind::DepthAndTrades {
+                            ticker,
+                            depth_aggr: if ticker.exchange.is_depth_client_aggr() {
+                                StreamTicksize::Client
+                            } else {
+                                StreamTicksize::ServerSide(TickMultiplier(50))
+                            },
+                        },
                         StreamKind::Kline { ticker, timeframe },
                     ],
                     Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades { ticker }]
+                        vec![StreamKind::DepthAndTrades {
+                            ticker,
+                            depth_aggr: if ticker.exchange.is_depth_client_aggr() {
+                                StreamTicksize::Client
+                            } else {
+                                StreamTicksize::ServerSide(TickMultiplier(50))
+                            },
+                        }]
                     }
                 };
                 Ok((content, streams))
@@ -206,7 +229,14 @@ impl State {
                         vec![StreamKind::Kline { ticker, timeframe }]
                     }
                     Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades { ticker }]
+                        vec![StreamKind::DepthAndTrades {
+                            ticker,
+                            depth_aggr: if ticker.exchange.is_depth_client_aggr() {
+                                StreamTicksize::Client
+                            } else {
+                                StreamTicksize::ServerSide(TickMultiplier(50))
+                            },
+                        }]
                     }
                 };
                 Ok((content, streams))
@@ -217,7 +247,14 @@ impl State {
                     .visual_config
                     .and_then(|cfg| cfg.time_and_sales());
                 let content = Content::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)));
-                let streams = vec![StreamKind::DepthAndTrades { ticker }];
+                let streams = vec![StreamKind::DepthAndTrades {
+                    ticker,
+                    depth_aggr: if ticker.exchange.is_depth_client_aggr() {
+                        StreamTicksize::Client
+                    } else {
+                        StreamTicksize::ServerSide(TickMultiplier(50))
+                    },
+                }];
                 Ok((content, streams))
             }
             _ => Err(DashboardError::PaneSet(

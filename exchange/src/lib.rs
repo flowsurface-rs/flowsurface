@@ -483,7 +483,7 @@ fn str_f32_parse(s: &str) -> f32 {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub struct TickMultiplier(pub u16);
 
 impl std::fmt::Display for TickMultiplier {

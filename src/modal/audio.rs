@@ -2,7 +2,7 @@ use crate::TooltipPosition;
 use crate::style::{self, icon_text};
 use crate::widget::{labeled_slider, tooltip};
 use data::audio::{SoundCache, SoundType, StreamCfg};
-use exchange::adapter::{Exchange, StreamKind};
+use exchange::adapter::{Exchange, StreamKind, StreamTicksize};
 
 use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
@@ -94,7 +94,10 @@ impl AudioStream {
         }
     }
 
-    pub fn view(&self, active_streams: Vec<(Exchange, exchange::Ticker)>) -> Element<'_, Message> {
+    pub fn view(
+        &self,
+        active_streams: Vec<(exchange::Ticker, StreamTicksize)>,
+    ) -> Element<'_, Message> {
         let volume_container = {
             let volume_slider = {
                 let volume_pct = self.cache.get_volume().unwrap_or(0.0);
@@ -118,11 +121,15 @@ impl AudioStream {
             if active_streams.is_empty() {
                 available_streams = available_streams.push(text("No trade streams found"));
             } else {
-                for (exchange, ticker) in active_streams {
+                for (ticker, depth_aggr) in active_streams {
+                    let exchange = ticker.exchange;
                     let mut column = column![].padding(padding::left(4));
 
                     let is_audio_enabled =
-                        self.is_stream_audio_enabled(&StreamKind::DepthAndTrades { ticker });
+                        self.is_stream_audio_enabled(&StreamKind::DepthAndTrades {
+                            ticker,
+                            depth_aggr,
+                        });
 
                     let stream_checkbox =
                         checkbox(format!("{exchange} - {ticker}"), is_audio_enabled).on_toggle(
@@ -212,7 +219,7 @@ impl AudioStream {
 
     pub fn is_stream_audio_enabled(&self, stream: &StreamKind) -> bool {
         match stream {
-            StreamKind::DepthAndTrades { ticker } => self
+            StreamKind::DepthAndTrades { ticker, .. } => self
                 .streams
                 .get(&ticker.exchange)
                 .and_then(|streams| streams.get(ticker))
@@ -226,7 +233,7 @@ impl AudioStream {
             return None;
         }
 
-        let StreamKind::DepthAndTrades { ticker } = stream else {
+        let StreamKind::DepthAndTrades { ticker, .. } = stream else {
             return None;
         };
 

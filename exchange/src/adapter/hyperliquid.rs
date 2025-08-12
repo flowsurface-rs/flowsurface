@@ -1,3 +1,5 @@
+use crate::TickMultiplier;
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
@@ -27,14 +29,6 @@ use tokio::sync::Mutex;
 const API_DOMAIN: &str = "https://api.hyperliquid.xyz";
 const WS_DOMAIN: &str = "api.hyperliquid.xyz";
 
-// Both Price (px) and Size (sz) have a maximum number of decimals that are accepted.
-// Prices can have up to 5 significant figures, but no more than MAX_DECIMALS - szDecimals decimal places where MAX_DECIMALS is 6 for perps and 8 for spot.
-// For example, for perps, 1234.5 is valid but 1234.56 is not (too many significant figures).
-// 0.001234 is valid, but 0.0012345 is not (more than 6 decimal places).
-// For spot, 0.0001234 is valid if szDecimals is 0 or 1, but not if szDecimals is greater than 2 (more than 8-2 decimal places).
-// Integer prices are always allowed, regardless of the number of significant figures. E.g. 123456.0 is a valid price even though 12345.6 is not.
-// Prices are precise to the lesser of 5 significant figures or 6 decimals.
-// Meta request to the info endpoint returns szDecimals for each asset
 const _MAX_DECIMALS_SPOT: u8 = 8;
 const MAX_DECIMALS_PERP: u8 = 6;
 
@@ -50,6 +44,17 @@ const LIMITER_BUFFER_PCT: f32 = 0.05;
 #[allow(dead_code)]
 static HYPERLIQUID_LIMITER: LazyLock<Mutex<HyperliquidLimiter>> =
     LazyLock::new(|| Mutex::new(HyperliquidLimiter::new(LIMIT, REFILL_RATE)));
+
+// Temporary fix: globally store ticker prices for mantissa & nSigFigs calculation.
+static TICKER_PRICE_MAP: LazyLock<Mutex<HashMap<Ticker, f32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub async fn register_ticker_prices(prices: &HashMap<Ticker, f32>) {
+    let mut guard = TICKER_PRICE_MAP.lock().await;
+    for (t, p) in prices {
+        guard.insert(*t, *p);
+    }
+}
 
 pub struct HyperliquidLimiter {
     bucket: limiter::FixedWindowBucket,
@@ -211,6 +216,8 @@ pub async fn fetch_ticksize(
 
     let mut ticker_info_map = HashMap::new();
 
+    let mut ticker_prices = HashMap::new();
+
     for (index, asset) in universe.iter().enumerate() {
         if let Ok(asset_info) = serde_json::from_value::<HyperliquidAssetInfo>(asset.clone()) {
             let ticker = Ticker::new(&asset_info.name, Exchange::HyperliquidLinear);
@@ -235,21 +242,116 @@ pub async fn fetch_ticksize(
                         min_qty,
                     };
                     ticker_info_map.insert(ticker, Some(ticker_info));
+
+                    ticker_prices.insert(ticker, p);
                 }
             };
         }
     }
 
+    register_ticker_prices(&ticker_prices).await;
+
     Ok(ticker_info_map)
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DepthFeedConfig {
+    pub n_sig_figs: i32,
+    pub mantissa: i32,
+}
+
+impl DepthFeedConfig {
+    pub fn new(n_sig_figs: i32, mantissa: i32) -> Self {
+        Self {
+            n_sig_figs,
+            mantissa,
+        }
+    }
+}
+
+impl Default for DepthFeedConfig {
+    fn default() -> Self {
+        Self {
+            n_sig_figs: SIG_FIG_LIMIT,
+            mantissa: 1,
+        }
+    }
+}
+
+const ALLOWED_MANTISSA: [i32; 3] = [1, 2, 5];
+fn config_from_multiplier(price: f32, multiplier: u16) -> DepthFeedConfig {
+    if price <= 0.0 {
+        return DepthFeedConfig::default();
+    }
+
+    let int_digits = if price >= 1.0 {
+        (price.abs().log10().floor() as i32 + 1).max(1)
+    } else {
+        return DepthFeedConfig::new(SIG_FIG_LIMIT, 0);
+    };
+
+    // Integer region
+    if int_digits > SIG_FIG_LIMIT {
+        // Scale determines the coarse base tick unit (exchange internal)
+        let scale = 10_f32.powi(int_digits - SIG_FIG_LIMIT); // e.g. 118_000 => scale = 10
+        let target = multiplier as f32;
+
+        let ratio = target / scale;
+
+        //   ratio < 2  -> base mantissa = 1 (omit sending to avoid issues)
+        //   2 <= ratio < 5 -> mantissa = 2
+        //   ratio >= 5 -> mantissa = 5
+        let mantissa = if ratio < 2.0 {
+            0 // omit (implies 1)
+        } else if ratio < 5.0 {
+            2
+        } else {
+            5
+        };
+        return DepthFeedConfig::new(SIG_FIG_LIMIT, mantissa);
+    }
+
+    // Fractional / boundary region
+    let finest_decimals = SIG_FIG_LIMIT - int_digits;
+    let finest_tick = if finest_decimals > 0 {
+        10_f32.powi(-finest_decimals)
+    } else {
+        1.0
+    };
+    let desired_tick = finest_tick * multiplier as f32;
+
+    // Enumerate n_sig_figs candidates
+    let mut best_leq: Option<(i32, f32)> = None;
+    let mut best_gt: Option<(i32, f32)> = None;
+    for n in 1..=SIG_FIG_LIMIT {
+        let decimals = (n - int_digits).max(0);
+        let tick = if decimals == 0 {
+            1.0
+        } else {
+            10_f32.powi(-decimals)
+        };
+        if tick <= desired_tick {
+            match best_leq {
+                None => best_leq = Some((n, tick)),
+                Some((_, prev_tick)) if tick > prev_tick => best_leq = Some((n, tick)),
+                _ => {}
+            }
+        } else {
+            match best_gt {
+                None => best_gt = Some((n, tick)),
+                Some((_, prev_tick)) if tick < prev_tick => best_gt = Some((n, tick)),
+                _ => {}
+            }
+        }
+    }
+    let chosen = best_leq.or(best_gt).unwrap();
+    DepthFeedConfig::new(chosen.0, 0)
+}
+
+// Only when mantissa (1,2,5) is provided does tick become mantissa * 10^(int_digits - SIG_FIG_LIMIT).
 fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
     if price <= 0.0 {
         return 0.001;
-    }
-    // Integer-only if price >= 100_000
-    if price >= 100_000.0 {
-        return 1.0;
     }
 
     let max_system_decimals = match market {
@@ -257,9 +359,6 @@ fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
         _ => MAX_DECIMALS_PERP as i32,
     };
     let decimal_cap = (max_system_decimals - sz_decimals as i32).max(0);
-    if decimal_cap == 0 {
-        return 1.0;
-    }
 
     let int_digits = if price >= 1.0 {
         (price.abs().log10().floor() as i32 + 1).max(1)
@@ -267,32 +366,27 @@ fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
         0
     };
 
-    // If integer digits already exceed 5 sig figs -> integer only
-    if int_digits >= 6 {
+    if int_digits > SIG_FIG_LIMIT {
         return 1.0;
     }
 
-    let effective_decimals = if int_digits > 0 {
-        // Remaining sig figs go directly to fractional digits
+    // int_digits <= SIG_FIG_LIMIT: fractional (or boundary) region
+    if price >= 1.0 {
         let remaining_sig = (SIG_FIG_LIMIT - int_digits).max(0);
-        remaining_sig.min(decimal_cap)
+        if remaining_sig == 0 || decimal_cap == 0 {
+            1.0
+        } else {
+            10_f32.powi(-remaining_sig.min(decimal_cap))
+        }
     } else {
-        // price < 1: leading zeros after decimal don't count toward sig figs
-        // leading_zeros = -floor(log10(price)) - 1
-        let leading_zeros = {
-            let lg = price.abs().log10().floor() as i32; // negative
-            (-lg - 1).max(0)
-        };
-        // We can have (leading_zeros + SIG_FIG_LIMIT) total decimal places,
-        // but cannot exceed decimal_cap
-        let allowed = leading_zeros + SIG_FIG_LIMIT;
-        allowed.min(decimal_cap)
-    };
-
-    if effective_decimals <= 0 {
-        1.0
-    } else {
-        10_f32.powi(-effective_decimals)
+        let lg = price.abs().log10().floor() as i32; // negative
+        let leading_zeros = (-lg - 1).max(0);
+        let total_decimals = (leading_zeros + SIG_FIG_LIMIT).min(decimal_cap);
+        if total_decimals <= 0 {
+            1.0
+        } else {
+            10_f32.powi(-total_decimals)
+        }
     }
 }
 
@@ -563,7 +657,10 @@ fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
     }
 }
 
-pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
+pub fn connect_market_stream(
+    ticker: Ticker,
+    tick_multiplier: Option<TickMultiplier>,
+) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
         let exchange = Exchange::HyperliquidLinear;
@@ -572,23 +669,69 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let mut trades_buffer = Vec::new();
 
         let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         loop {
             match &mut state {
                 State::Disconnected => {
+                    // Wait until we have a cached price for this ticker
+                    let price_opt = {
+                        let guard = TICKER_PRICE_MAP.lock().await;
+                        guard.get(&ticker).copied()
+                    };
+                    if price_opt.is_none() {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    let price = price_opt.unwrap();
+
+                    log::debug!(
+                        "Connecting to Hyperliquid market stream with price {} and multiplier {}",
+                        price,
+                        user_multiplier
+                    );
+
+                    let depth_cfg = config_from_multiplier(price, user_multiplier);
+
                     match connect_websocket(WS_DOMAIN, "/ws").await {
                         Ok(mut websocket) => {
-                            // Subscribe to depth and trades
                             let (symbol_str, _) = ticker.to_full_symbol_and_type();
-                            let subscribe_msg = json!({
+                            let mut depth_subscription = json!({
                                 "method": "subscribe",
                                 "subscription": {
                                     "type": "l2Book",
                                     "coin": symbol_str,
-                                    "nSigFigs": 5,
-                                    "mantissa": 5
+                                    "nSigFigs": depth_cfg.n_sig_figs,
                                 }
                             });
+
+                            // Only attach mantissa if > 0 (we now treat 0 as “omit / implies 1”)
+                            if depth_cfg.mantissa > 0
+                                && ALLOWED_MANTISSA.contains(&depth_cfg.mantissa)
+                            {
+                                if let Some(obj) = depth_subscription
+                                    .get_mut("subscription")
+                                    .and_then(|v| v.as_object_mut())
+                                {
+                                    obj.insert("mantissa".to_string(), json!(depth_cfg.mantissa));
+                                }
+                            }
+
+                            log::debug!(
+                                "Subscribing to depth stream: {}",
+                                depth_subscription.to_string()
+                            );
+
+                            if websocket
+                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                    depth_subscription.to_string().as_bytes(),
+                                )))
+                                .await
+                                .is_err()
+                            {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
 
                             let trades_subscribe_msg = json!({
                                 "method": "subscribe",
@@ -598,21 +741,14 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                 }
                             });
 
-                            if let Err(_) = websocket
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    subscribe_msg.to_string().as_bytes(),
-                                )))
-                                .await
-                            {
-                                continue;
-                            }
-
-                            if let Err(_) = websocket
+                            if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
                                     trades_subscribe_msg.to_string().as_bytes(),
                                 )))
                                 .await
+                                .is_err()
                             {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
                                 continue;
                             }
 
@@ -684,7 +820,12 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                             local_depth_cache
                                                 .update(DepthUpdate::Snapshot(depth_payload));
 
-                                            let stream_kind = StreamKind::DepthAndTrades { ticker };
+                                            let stream_kind = StreamKind::DepthAndTrades {
+                                                ticker,
+                                                depth_aggr: super::StreamTicksize::ServerSide(
+                                                    TickMultiplier(user_multiplier),
+                                                ),
+                                            };
                                             let current_depth = local_depth_cache.depth.clone();
                                             let trades = std::mem::take(&mut trades_buffer)
                                                 .into_boxed_slice();

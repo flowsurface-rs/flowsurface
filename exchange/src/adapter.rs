@@ -1,5 +1,5 @@
 use super::{Ticker, Timeframe};
-use crate::{Kline, OpenInterest, TickerInfo, TickerStats, Trade, depth::Depth};
+use crate::{Kline, OpenInterest, TickMultiplier, TickerInfo, TickerStats, Trade, depth::Depth};
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -67,19 +67,20 @@ pub enum StreamKind {
     },
     DepthAndTrades {
         ticker: Ticker,
+        depth_aggr: StreamTicksize,
     },
 }
 
 impl StreamKind {
     pub fn ticker(&self) -> Ticker {
         match self {
-            StreamKind::Kline { ticker, .. } | StreamKind::DepthAndTrades { ticker } => *ticker,
+            StreamKind::Kline { ticker, .. } | StreamKind::DepthAndTrades { ticker, .. } => *ticker,
         }
     }
 
-    pub fn as_depth_stream(&self) -> Option<Ticker> {
+    pub fn as_depth_stream(&self) -> Option<(Ticker, StreamTicksize)> {
         match self {
-            StreamKind::DepthAndTrades { ticker } => Some(*ticker),
+            StreamKind::DepthAndTrades { ticker, depth_aggr } => Some((*ticker, *depth_aggr)),
             _ => None,
         }
     }
@@ -116,7 +117,7 @@ impl UniqueStreams {
 
     pub fn add(&mut self, stream: StreamKind) {
         let (exchange, ticker) = match stream {
-            StreamKind::Kline { ticker, .. } | StreamKind::DepthAndTrades { ticker } => {
+            StreamKind::Kline { ticker, .. } | StreamKind::DepthAndTrades { ticker, .. } => {
                 (ticker.exchange, ticker)
             }
         };
@@ -176,20 +177,20 @@ impl UniqueStreams {
         }
     }
 
-    pub fn depth_streams(&self, exchange_filter: Option<Exchange>) -> Vec<(Exchange, Ticker)> {
-        self.streams(exchange_filter, |exchange, stream| {
-            stream.as_depth_stream().map(|ticker| (exchange, ticker))
+    pub fn depth_streams(
+        &self,
+        exchange_filter: Option<Exchange>,
+    ) -> Vec<(Ticker, StreamTicksize)> {
+        self.streams(exchange_filter, |_, stream| {
+            stream.as_depth_stream().map(|ticker| ticker)
         })
     }
 
-    pub fn kline_streams(
-        &self,
-        exchange_filter: Option<Exchange>,
-    ) -> Vec<(Exchange, Ticker, Timeframe)> {
-        self.streams(exchange_filter, |exchange, stream| {
+    pub fn kline_streams(&self, exchange_filter: Option<Exchange>) -> Vec<(Ticker, Timeframe)> {
+        self.streams(exchange_filter, |_, stream| {
             stream
                 .as_kline_stream()
-                .map(|(ticker, timeframe)| (exchange, ticker, timeframe))
+                .map(|(ticker, timeframe)| (ticker, timeframe))
         })
     }
 
@@ -198,10 +199,16 @@ impl UniqueStreams {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum StreamTicksize {
+    ServerSide(TickMultiplier),
+    Client,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StreamSpecs {
-    pub depth: Vec<(Exchange, Ticker)>,
-    pub kline: Vec<(Exchange, Ticker, Timeframe)>,
+    pub depth: Vec<(Ticker, StreamTicksize)>,
+    pub kline: Vec<(Ticker, Timeframe)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -270,6 +277,16 @@ impl Exchange {
             Exchange::BinanceSpot | Exchange::BybitSpot => MarketKind::Spot,
         }
     }
+
+    pub fn is_depth_client_aggr(&self) -> bool {
+        matches!(
+            self,
+            Exchange::BinanceLinear
+                | Exchange::BinanceInverse
+                | Exchange::BybitLinear
+                | Exchange::BybitInverse
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -284,12 +301,17 @@ pub enum Event {
 pub struct StreamConfig<I> {
     pub id: I,
     pub market_type: MarketKind,
+    pub tick_mltp: Option<TickMultiplier>,
 }
 
 impl<I> StreamConfig<I> {
-    pub fn new(id: I, exchange: Exchange) -> Self {
+    pub fn new(id: I, exchange: Exchange, tick_mltp: Option<TickMultiplier>) -> Self {
         let market_type = exchange.market_type();
-        Self { id, market_type }
+        Self {
+            id,
+            market_type,
+            tick_mltp,
+        }
     }
 }
 

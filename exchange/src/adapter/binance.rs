@@ -1,3 +1,5 @@
+use crate::adapter::StreamTicksize;
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
@@ -469,6 +471,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                             .send(Event::DepthReceived(
                                                                 StreamKind::DepthAndTrades {
                                                                     ticker,
+                                                                    depth_aggr:
+                                                                        StreamTicksize::Client,
                                                                 },
                                                                 de_depth.time,
                                                                 orderbook.depth.clone(),
@@ -529,6 +533,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                             .send(Event::DepthReceived(
                                                                 StreamKind::DepthAndTrades {
                                                                     ticker,
+                                                                    depth_aggr:
+                                                                        StreamTicksize::Client,
                                                                 },
                                                                 de_depth.time,
                                                                 orderbook.depth.clone(),

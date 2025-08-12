@@ -1,3 +1,5 @@
+use crate::adapter::StreamTicksize;
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
@@ -389,7 +391,10 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
                                             let _ = output
                                                 .send(Event::DepthReceived(
-                                                    StreamKind::DepthAndTrades { ticker },
+                                                    StreamKind::DepthAndTrades {
+                                                        ticker,
+                                                        depth_aggr: StreamTicksize::Client,
+                                                    },
                                                     time,
                                                     orderbook.depth.clone(),
                                                     std::mem::take(&mut trades_buffer)
