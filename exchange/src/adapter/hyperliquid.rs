@@ -243,62 +243,101 @@ pub async fn fetch_ticksize(
 
 #[derive(Clone, Copy, Debug)]
 pub struct DepthFeedConfig {
-    pub n_sig_figs: i32,
-    pub mantissa: i32,
+    // Optional field to aggregate levels to nSigFigs significant figures.
+    // Valid values are 2, 3, 4, 5, and null, which means full precision
+    pub n_sig_figs: Option<i32>,
+    // Optional field to aggregate levels.
+    // This field is only allowed if nSigFigs is 5. Accepts values of 1, 2 or 5.
+    pub mantissa: Option<i32>,
 }
 
 impl DepthFeedConfig {
-    pub fn new(n_sig_figs: i32, mantissa: i32) -> Self {
+    pub fn new(n_sig_figs: Option<i32>, mantissa: Option<i32>) -> Self {
         Self {
             n_sig_figs,
             mantissa,
         }
+    }
+    pub fn full_precision() -> Self {
+        Self {
+            n_sig_figs: None,
+            mantissa: None,
+        }
+    }
+    pub fn is_full(&self) -> bool {
+        self.n_sig_figs.is_none()
     }
 }
 
 impl Default for DepthFeedConfig {
     fn default() -> Self {
         Self {
-            n_sig_figs: SIG_FIG_LIMIT,
-            mantissa: 1,
+            n_sig_figs: Some(SIG_FIG_LIMIT),
+            mantissa: Some(1),
         }
+    }
+}
+
+pub fn depth_tick_from_cfg(price: f32, cfg: DepthFeedConfig) -> f32 {
+    if price <= 0.0 {
+        return 0.0;
+    }
+    if cfg.is_full() {
+        return 1.0;
+    }
+    let n_sig = cfg.n_sig_figs.unwrap();
+    let int_digits = if price >= 1.0 {
+        (price.abs().log10().floor() as i32 + 1).max(1)
+    } else {
+        0
+    };
+
+    // Integer overflow, need mantissa scaling
+    if int_digits > SIG_FIG_LIMIT {
+        let m = cfg.mantissa.unwrap_or(1);
+        return (m as f32) * 10_f32.powi(int_digits - SIG_FIG_LIMIT);
+    }
+
+    // n < int_digits  -> coarsen integer part: 10^(int_digits - n)
+    // n == int_digits -> 1
+    // n > int_digits  -> fractional: 10^-(n - int_digits)
+    if n_sig < int_digits {
+        10_f32.powi(int_digits - n_sig)
+    } else if n_sig == int_digits {
+        1.0
+    } else {
+        10_f32.powi(-(n_sig - int_digits))
     }
 }
 
 const ALLOWED_MANTISSA: [i32; 3] = [1, 2, 5];
 fn config_from_multiplier(price: f32, multiplier: u16) -> DepthFeedConfig {
     if price <= 0.0 {
-        return DepthFeedConfig::default();
+        return DepthFeedConfig::full_precision();
     }
-
     let int_digits = if price >= 1.0 {
         (price.abs().log10().floor() as i32 + 1).max(1)
     } else {
-        return DepthFeedConfig::new(SIG_FIG_LIMIT, 0);
+        return DepthFeedConfig::new(Some(SIG_FIG_LIMIT), None);
     };
 
-    // Integer region
     if int_digits > SIG_FIG_LIMIT {
-        // Scale determines the coarse base tick unit (exchange internal)
-        let scale = 10_f32.powi(int_digits - SIG_FIG_LIMIT); // e.g. 118_000 => scale = 10
-        let target = multiplier as f32;
-
-        let ratio = target / scale;
-
-        //   ratio < 2  -> base mantissa = 1 (omit sending to avoid issues)
-        //   2 <= ratio < 5 -> mantissa = 2
-        //   ratio >= 5 -> mantissa = 5
+        if multiplier <= 5 {
+            return DepthFeedConfig::full_precision();
+        }
+        let scale = 10_f32.powi(int_digits - SIG_FIG_LIMIT);
+        let ratio = (multiplier as f32) / scale;
         let mantissa = if ratio < 2.0 {
-            0 // omit (implies 1)
+            1
         } else if ratio < 5.0 {
             2
         } else {
             5
         };
-        return DepthFeedConfig::new(SIG_FIG_LIMIT, mantissa);
+        return DepthFeedConfig::new(Some(SIG_FIG_LIMIT), Some(mantissa));
     }
 
-    // Fractional / boundary region
+    // Finest tick at max sig figs
     let finest_decimals = SIG_FIG_LIMIT - int_digits;
     let finest_tick = if finest_decimals > 0 {
         10_f32.powi(-finest_decimals)
@@ -307,32 +346,36 @@ fn config_from_multiplier(price: f32, multiplier: u16) -> DepthFeedConfig {
     };
     let desired_tick = finest_tick * multiplier as f32;
 
-    // Enumerate n_sig_figs candidates
+    // Enumerate allowed nSigFigs (2..=5)
     let mut best_leq: Option<(i32, f32)> = None;
     let mut best_gt: Option<(i32, f32)> = None;
-    for n in 1..=SIG_FIG_LIMIT {
-        let decimals = (n - int_digits).max(0);
-        let tick = if decimals == 0 {
+    for n in 2..=SIG_FIG_LIMIT {
+        let tick = if n < int_digits {
+            10_f32.powi(int_digits - n)
+        } else if n == int_digits {
             1.0
         } else {
-            10_f32.powi(-decimals)
+            10_f32.powi(-(n - int_digits))
         };
+
         if tick <= desired_tick {
             match best_leq {
                 None => best_leq = Some((n, tick)),
-                Some((_, prev_tick)) if tick > prev_tick => best_leq = Some((n, tick)),
+                Some((_, prev)) if tick > prev => best_leq = Some((n, tick)),
                 _ => {}
             }
         } else {
             match best_gt {
                 None => best_gt = Some((n, tick)),
-                Some((_, prev_tick)) if tick < prev_tick => best_gt = Some((n, tick)),
+                Some((_, prev)) if tick < prev => best_gt = Some((n, tick)),
                 _ => {}
             }
         }
     }
-    let chosen = best_leq.or(best_gt).unwrap();
-    DepthFeedConfig::new(chosen.0, 0)
+
+    let (chosen_n, _) = best_leq.or(best_gt).unwrap();
+
+    DepthFeedConfig::new(Some(chosen_n), None)
 }
 
 // Only when mantissa (1,2,5) is provided does tick become mantissa * 10^(int_digits - SIG_FIG_LIMIT).
@@ -658,10 +701,12 @@ pub fn connect_market_stream(
         let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
+        let (symbol_str, _) = ticker.to_full_symbol_and_type();
+
         loop {
             match &mut state {
                 State::Disconnected => {
-                    let price = match fetch_orderbook(ticker).await {
+                    let price = match fetch_orderbook(&symbol_str, None).await {
                         Ok(depth) => depth.bids.first().map(|o| o.price),
                         Err(e) => {
                             log::error!("Failed to fetch orderbook for price: {}", e);
@@ -684,24 +729,18 @@ pub fn connect_market_stream(
 
                     match connect_websocket(WS_DOMAIN, "/ws").await {
                         Ok(mut websocket) => {
-                            let (symbol_str, _) = ticker.to_full_symbol_and_type();
                             let mut depth_subscription = json!({
                                 "method": "subscribe",
                                 "subscription": {
                                     "type": "l2Book",
                                     "coin": symbol_str,
-                                    "nSigFigs": depth_cfg.n_sig_figs,
                                 }
                             });
-
-                            // Only attach mantissa if > 0 (we now treat 0 as “omit / implies 1”)
-                            if depth_cfg.mantissa > 0
-                                && ALLOWED_MANTISSA.contains(&depth_cfg.mantissa)
-                                && let Some(obj) = depth_subscription
-                                    .get_mut("subscription")
-                                    .and_then(|v| v.as_object_mut())
-                            {
-                                obj.insert("mantissa".to_string(), json!(depth_cfg.mantissa));
+                            if let Some(n) = depth_cfg.n_sig_figs {
+                                depth_subscription["subscription"]["nSigFigs"] = json!(n);
+                            }
+                            if let (Some(m), Some(5)) = (depth_cfg.mantissa, depth_cfg.n_sig_figs) {
+                                depth_subscription["subscription"]["mantissa"] = json!(m);
                             }
 
                             log::debug!("Subscribing to depth stream: {}", &depth_subscription);
@@ -988,14 +1027,33 @@ pub fn connect_kline_stream(
     })
 }
 
-pub async fn fetch_orderbook(ticker: Ticker) -> Result<DepthPayload, AdapterError> {
+async fn fetch_orderbook(
+    symbol: &str,
+    cfg: Option<DepthFeedConfig>,
+) -> Result<DepthPayload, AdapterError> {
     let url = format!("{}/info", API_DOMAIN);
-    let (symbol_str, _) = ticker.to_full_symbol_and_type();
 
-    let body = json!({
+    let mut body = json!({
         "type": "l2Book",
-        "coin": symbol_str,
+        "coin": symbol,
     });
+
+    if let Some(cfg) = cfg {
+        if let Some(obj) = body.as_object_mut() {
+            if let Some(n) = cfg.n_sig_figs {
+                obj.insert("nSigFigs".into(), json!(n));
+            }
+            // Only send mantissa if:
+            // - nSigFigs == 5
+            // - mantissa is 2 or 5
+            // (mantissa=1 is redundant and can trigger null responses on some assets)
+            if let (Some(m), Some(5)) = (cfg.mantissa, cfg.n_sig_figs) {
+                if m != 1 && ALLOWED_MANTISSA.contains(&m) {
+                    obj.insert("mantissa".into(), json!(m));
+                }
+            }
+        }
+    }
 
     let response_text = limiter::http_request_with_limiter(
         &url,
@@ -1038,4 +1096,92 @@ pub async fn fetch_orderbook(ticker: Ticker) -> Result<DepthPayload, AdapterErro
         bids,
         asks,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn smallest_positive_gap(mut prices: Vec<f32>) -> Option<f32> {
+        prices.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let mut best: Option<f32> = None;
+        for w in prices.windows(2) {
+            if w[0] != w[1] {
+                let gap = (w[0] - w[1]).abs();
+                if gap > 0.0 && (best.is_none() || gap < best.unwrap()) {
+                    best = Some(gap);
+                }
+            }
+        }
+        best
+    }
+
+    #[tokio::test]
+    async fn manual_depth_cfg() {
+        let symbol = "BTC";
+        let depth_config = DepthFeedConfig::new(Some(5), Some(1));
+
+        let depth = fetch_orderbook(symbol, Some(depth_config))
+            .await
+            .expect("Failed to fetch orderbook with config");
+
+        for (i, order) in depth.bids.iter().take(5).enumerate() {
+            println!("Bid {}: Price: {}", i + 1, order.price);
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_depth_config_precision() {
+        let symbols = ["BTC", "ETH", "HYPE"];
+        let multipliers = [1u16, 2u16, 5u16, 10u16, 25u16, 50u16, 100u16];
+
+        // Tolerances for floating errors
+        const REL_EPS: f32 = 5e-3; // 0.5%
+        const ABS_EPS_MIN: f32 = 1e-6; // floor to ignore tiny fp noise
+
+        for sym in symbols {
+            let baseline = fetch_orderbook(sym, None).await.expect("baseline fetch");
+            let top_price = match baseline.bids.first() {
+                Some(o) => o.price,
+                None => continue,
+            };
+            for m in multipliers {
+                let cfg = super::config_from_multiplier(top_price, m);
+                let constrained = match fetch_orderbook(sym, Some(cfg)).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        println!("SYM {sym} m {m} cfg {:?} fetch error: {e}", cfg);
+                        continue;
+                    }
+                };
+
+                let bid_prices: Vec<f32> =
+                    constrained.bids.iter().take(25).map(|o| o.price).collect();
+                if bid_prices.len() < 2 {
+                    println!("SYM {sym} m {m} cfg {:?} insufficient levels", cfg);
+                    continue;
+                }
+
+                let expected_tick = depth_tick_from_cfg(top_price, cfg);
+                if expected_tick == 0.0 {
+                    println!("SYM {sym} m {m} cfg {:?} expected_tick=0 skipped", cfg);
+                    continue;
+                }
+
+                if let Some(gap) = smallest_positive_gap(bid_prices.clone()) {
+                    let abs_diff = (gap - expected_tick).abs();
+                    let rel_diff = abs_diff / expected_tick;
+                    let passes = abs_diff <= ABS_EPS_MIN.max(expected_tick * REL_EPS);
+
+                    let status = if passes { "OK" } else { "DRIFT" };
+                    println!(
+                        "SYM {sym:>6} m {m:>2} cfg {:?} top_px {:>12.6} exp_tick {:>10.8} gap {:>10.8} abs_diff {:>10.8} rel_diff {:>8.5} {status}",
+                        cfg, top_price, expected_tick, gap, abs_diff, rel_diff
+                    );
+                } else {
+                    println!("SYM {sym} m {m} cfg {:?} no distinct gap found", cfg);
+                }
+            }
+        }
+    }
 }
