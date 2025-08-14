@@ -566,8 +566,10 @@ impl TickersTable {
             let search_match = if self.search_query.is_empty() {
                 true
             } else {
-                let (ticker_str, _market) = row.ticker.to_full_symbol_and_type();
-                ticker_str.contains(&self.search_query)
+                let (display_str, _market) = row.ticker.display_symbol_and_type();
+                let (raw_str, _) = row.ticker.to_full_symbol_and_type();
+                // Search both display symbol and raw symbol for maximum compatibility
+                display_str.contains(&self.search_query) || raw_str.contains(&self.search_query)
             };
 
             let market_match = match self.selected_market {
@@ -853,7 +855,6 @@ fn tab_button<'a>(
         },
         iced::widget::tooltip::Position::Top,
     )
-    .into()
 }
 
 fn sort_button(
