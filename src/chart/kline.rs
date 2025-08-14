@@ -410,7 +410,7 @@ impl KlineChart {
 
                 let (visible_earliest, visible_latest) = self.visible_timerange();
                 let (kline_earliest, kline_latest) = timeseries.timerange();
-                let earliest = visible_earliest - (visible_latest - visible_earliest);
+                let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
 
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
@@ -1658,7 +1658,7 @@ fn draw_crosshair_tooltip(
             (&kline.low.to_string(), change_color, true),
             ("C", base_color, false),
             (&kline.close.to_string(), change_color, true),
-            (&format!("{:+.2}%", change_pct), change_color, true),
+            (&format!("{change_pct:+.2}%"), change_color, true),
         ];
 
         let total_width: f32 = segments
