@@ -251,7 +251,9 @@ impl TickersTable {
                 ex,
                 Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot
             ),
-            TickerTab::Hyperliquid => matches!(ex, Exchange::HyperliquidLinear | Exchange::HyperliquidSpot),
+            TickerTab::Hyperliquid => {
+                matches!(ex, Exchange::HyperliquidLinear | Exchange::HyperliquidSpot)
+            }
             _ => false,
         }
     }
@@ -775,7 +777,8 @@ fn create_expanded_ticker_card<'a>(
                     icon_text(Icon::BybitLogo, 12),
                 Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot =>
                     icon_text(Icon::BinanceLogo, 12),
-                Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => icon_text(Icon::HyperliquidLogo, 12),
+                Exchange::HyperliquidLinear | Exchange::HyperliquidSpot =>
+                    icon_text(Icon::HyperliquidLogo, 12),
             },
             text(
                 ticker_str

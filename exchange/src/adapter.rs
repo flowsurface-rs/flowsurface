@@ -229,14 +229,14 @@ impl std::fmt::Display for Exchange {
             f,
             "{}",
             match self {
-                            Exchange::BinanceLinear => "Binance Linear",
-            Exchange::BinanceInverse => "Binance Inverse",
-            Exchange::BinanceSpot => "Binance Spot",
-            Exchange::BybitLinear => "Bybit Linear",
-            Exchange::BybitInverse => "Bybit Inverse",
-            Exchange::BybitSpot => "Bybit Spot",
-            Exchange::HyperliquidLinear => "Hyperliquid Linear",
-            Exchange::HyperliquidSpot => "Hyperliquid Spot",
+                Exchange::BinanceLinear => "Binance Linear",
+                Exchange::BinanceInverse => "Binance Inverse",
+                Exchange::BinanceSpot => "Binance Spot",
+                Exchange::BybitLinear => "Bybit Linear",
+                Exchange::BybitInverse => "Bybit Inverse",
+                Exchange::BybitSpot => "Bybit Spot",
+                Exchange::HyperliquidLinear => "Hyperliquid Linear",
+                Exchange::HyperliquidSpot => "Hyperliquid Spot",
             }
         )
     }
@@ -262,14 +262,14 @@ impl FromStr for Exchange {
 
 impl Exchange {
     pub const ALL: [Exchange; 8] = [
-            Exchange::BinanceLinear,
-    Exchange::BinanceInverse,
-    Exchange::BinanceSpot,
-    Exchange::BybitLinear,
-    Exchange::BybitInverse,
-    Exchange::BybitSpot,
-    Exchange::HyperliquidLinear,
-    Exchange::HyperliquidSpot,
+        Exchange::BinanceLinear,
+        Exchange::BinanceInverse,
+        Exchange::BinanceSpot,
+        Exchange::BybitLinear,
+        Exchange::BybitInverse,
+        Exchange::BybitSpot,
+        Exchange::HyperliquidLinear,
+        Exchange::HyperliquidSpot,
     ];
 
     pub fn market_type(&self) -> MarketKind {
@@ -278,7 +278,9 @@ impl Exchange {
                 MarketKind::LinearPerps
             }
             Exchange::BinanceInverse | Exchange::BybitInverse => MarketKind::InversePerps,
-            Exchange::BinanceSpot | Exchange::BybitSpot | Exchange::HyperliquidSpot => MarketKind::Spot,
+            Exchange::BinanceSpot | Exchange::BybitSpot | Exchange::HyperliquidSpot => {
+                MarketKind::Spot
+            }
         }
     }
 
@@ -331,7 +333,9 @@ pub async fn fetch_ticker_info(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticksize(market_type).await
         }
-        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => hyperliquid::fetch_ticksize(market_type).await,
+        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
+            hyperliquid::fetch_ticksize(market_type).await
+        }
     }
 }
 
@@ -347,7 +351,9 @@ pub async fn fetch_ticker_prices(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticker_prices(market_type).await
         }
-        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => hyperliquid::fetch_ticker_prices(market_type).await,
+        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
+            hyperliquid::fetch_ticker_prices(market_type).await
+        }
     }
 }
 
@@ -364,7 +370,9 @@ pub async fn fetch_klines(
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_klines(ticker, timeframe, range).await
         }
-        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => hyperliquid::fetch_klines(ticker, timeframe, range).await,
+        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
+            hyperliquid::fetch_klines(ticker, timeframe, range).await
+        }
     }
 }
 

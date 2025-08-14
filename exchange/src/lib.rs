@@ -279,7 +279,11 @@ impl Ticker {
         Self::new_with_display(ticker, exchange, None)
     }
 
-    pub fn new_with_display(ticker: &str, exchange: Exchange, display_symbol: Option<&str>) -> Self {
+    pub fn new_with_display(
+        ticker: &str,
+        exchange: Exchange,
+        display_symbol: Option<&str>,
+    ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
         assert!(
             ticker.is_ascii()
@@ -295,7 +299,10 @@ impl Ticker {
 
         let mut display_bytes = [0u8; Self::MAX_LEN as usize];
         let has_display_symbol = if let Some(display) = display_symbol {
-            assert!(display.len() <= Self::MAX_LEN as usize, "Display symbol too long");
+            assert!(
+                display.len() <= Self::MAX_LEN as usize,
+                "Display symbol too long"
+            );
             assert!(
                 display.is_ascii()
                     && display
@@ -310,9 +317,9 @@ impl Ticker {
             false
         };
 
-        Ticker { 
-            bytes, 
-            exchange, 
+        Ticker {
+            bytes,
+            exchange,
             display_bytes,
             has_display_symbol,
         }
@@ -357,7 +364,7 @@ impl Ticker {
 
     pub fn display_symbol_and_type(&self) -> (String, MarketKind) {
         let market_kind = self.market_type();
-        
+
         let result = if self.has_display_symbol {
             // Use the custom display symbol (e.g., "HYPEUSDC" for Hyperliquid spot)
             self.display_as_str().to_owned()
