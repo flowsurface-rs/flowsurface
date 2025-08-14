@@ -4,7 +4,10 @@ use crate::{
 };
 
 use data::chart::Basis;
-use exchange::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
+use exchange::{
+    TickMultiplier, Ticker, Timeframe,
+    adapter::{Exchange, hyperliquid::allowed_multipliers_for_base_tick},
+};
 use iced::{
     Element, Length,
     alignment::Horizontal,
@@ -140,6 +143,7 @@ pub struct Modifier {
     pub view_mode: ViewMode,
     kind: ModifierKind,
     base_ticksize: Option<f32>,
+    exchange: Option<Exchange>,
 }
 
 impl Modifier {
@@ -151,6 +155,7 @@ impl Modifier {
             kind,
             view_mode: ViewMode::BasisSelection,
             base_ticksize: None,
+            exchange: None,
         }
     }
 
@@ -159,7 +164,12 @@ impl Modifier {
         self
     }
 
-    pub fn with_ticksize_view(mut self, base_ticksize: f32, multiplier: TickMultiplier) -> Self {
+    pub fn with_ticksize_view(
+        mut self,
+        base_ticksize: f32,
+        multiplier: TickMultiplier,
+        exchange: Option<Exchange>,
+    ) -> Self {
         self.view_mode = ViewMode::TicksizeSelection {
             raw_input_buf: if multiplier.is_custom() {
                 NumericInput::from_tick_multiplier(multiplier)
@@ -174,6 +184,7 @@ impl Modifier {
             is_input_valid: true,
         };
         self.base_ticksize = Some(base_ticksize);
+        self.exchange = exchange;
         self
     }
 
@@ -515,6 +526,13 @@ impl Modifier {
                 parsed_input,
                 is_input_valid,
             } => {
+                let Some(exchange) = self.exchange else {
+                    return container(text("Exchange information is not available"))
+                        .padding(16)
+                        .style(style::chart_modal)
+                        .into();
+                };
+
                 if let Some(ticksize) = selected_ticksize {
                     let mut ticksizes_column =
                         column![].padding(4).spacing(8).align_x(Horizontal::Center);
@@ -523,30 +541,47 @@ impl Modifier {
                         .push(text("Tick size multiplier").size(13))
                         .push(horizontal_rule(1).style(style::split_ruler));
 
+                    let allows_custom_tsizes = exchange != Exchange::HyperliquidLinear
+                        || matches!(kind, ModifierKind::Footprint(_, _));
+
+                    let allowed_tm = if allows_custom_tsizes {
+                        exchange::TickMultiplier::ALL.to_vec()
+                    } else {
+                        let base = self.base_ticksize.unwrap_or(0.0);
+                        let allow = allowed_multipliers_for_base_tick(base);
+                        exchange::TickMultiplier::ALL
+                            .iter()
+                            .copied()
+                            .filter(|tm| allow.contains(&tm.0))
+                            .collect()
+                    };
+
                     let tick_multiplier_grid = modifiers_grid(
-                        &exchange::TickMultiplier::ALL,
+                        &allowed_tm,
                         Some(ticksize),
                         Message::TicksizeSelected,
                         &create_button,
                         3,
                     );
 
-                    let custom_input = {
-                        let tick_multiplier_to_submit = parsed_input.filter(|tm| {
-                            tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX
-                        });
+                    if allows_custom_tsizes {
+                        let custom_input = {
+                            let tick_multiplier_to_submit = parsed_input.filter(|tm| {
+                                tm.0 >= TICK_MULTIPLIER_MIN && tm.0 <= TICK_MULTIPLIER_MAX
+                            });
 
-                        numeric_input_box::<_, Message>(
-                            "Custom: ",
-                            &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
-                            &raw_input_buf.to_display_string(),
-                            is_input_valid,
-                            Message::TicksizeInputChanged,
-                            tick_multiplier_to_submit.map(Message::TicksizeSelected),
-                        )
-                    };
+                            numeric_input_box::<_, Message>(
+                                "Custom: ",
+                                &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
+                                &raw_input_buf.to_display_string(),
+                                is_input_valid,
+                                Message::TicksizeInputChanged,
+                                tick_multiplier_to_submit.map(Message::TicksizeSelected),
+                            )
+                        };
 
-                    ticksizes_column = ticksizes_column.push(custom_input);
+                        ticksizes_column = ticksizes_column.push(custom_input);
+                    }
                     ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
 
                     if let Some(base_ticksize) = self.base_ticksize {
