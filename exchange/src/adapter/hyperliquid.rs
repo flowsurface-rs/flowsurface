@@ -32,7 +32,42 @@ const WS_DOMAIN: &str = "api.hyperliquid.xyz";
 const _MAX_DECIMALS_SPOT: u8 = 8;
 const MAX_DECIMALS_PERP: u8 = 6;
 
+const ALLOWED_MANTISSA: [i32; 3] = [1, 2, 5];
 const SIG_FIG_LIMIT: i32 = 5;
+
+const MULTS_OVERFLOW: &[u16] = &[1, 10, 20, 50, 100, 1000, 10000];
+const MULTS_FRACTIONAL: &[u16] = &[1, 2, 5, 10, 100, 1000];
+
+// safe intersection when base_ticksize == 1.0 but we can't disambiguate
+const MULTS_SAFE: &[u16] = &[1, 10, 100, 1000];
+
+pub fn allowed_multipliers_for_base_tick(base_ticksize: f32) -> &'static [u16] {
+    if base_ticksize < 1.0 {
+        // int_digits <= 4 (fractional/boundary region)
+        MULTS_FRACTIONAL
+    } else if base_ticksize > 1.0 {
+        MULTS_OVERFLOW
+    } else {
+        // base_ticksize == 1.0: could be exactly 5 digits or overflow (>=6).
+        MULTS_SAFE
+    }
+}
+
+pub fn exact_multipliers_for_price(price: f32) -> &'static [u16] {
+    if price <= 0.0 {
+        return MULTS_FRACTIONAL;
+    }
+    let int_digits = if price >= 1.0 {
+        (price.abs().log10().floor() as i32 + 1).max(1)
+    } else {
+        0
+    };
+    if int_digits > SIG_FIG_LIMIT {
+        MULTS_OVERFLOW
+    } else {
+        MULTS_FRACTIONAL
+    }
+}
 
 #[allow(dead_code)]
 const LIMIT: usize = 1200; // Conservative rate limit
@@ -320,7 +355,10 @@ fn create_display_symbol(
 
 #[derive(Clone, Copy, Debug)]
 pub struct DepthFeedConfig {
+    // allowed significant figures (2..=5)
     pub n_sig_figs: Option<i32>,
+    // only allowed if n_sig_figs is set
+    // can be 1, 2, or 5
     pub mantissa: Option<i32>,
 }
 
@@ -355,100 +393,123 @@ pub fn depth_tick_from_cfg(price: f32, cfg: DepthFeedConfig) -> f32 {
     if price <= 0.0 {
         return 0.0;
     }
-    if cfg.is_full() {
-        return 1.0;
-    }
-    let n_sig = cfg.n_sig_figs.unwrap();
     let int_digits = if price >= 1.0 {
         (price.abs().log10().floor() as i32 + 1).max(1)
     } else {
         0
     };
 
-    // Integer overflow, need mantissa scaling
-    if int_digits > SIG_FIG_LIMIT {
-        let m = cfg.mantissa.unwrap_or(1);
-        return (m as f32) * 10_f32.powi(int_digits - SIG_FIG_LIMIT);
+    if cfg.is_full() {
+        // server's "full precision"
+        if int_digits > SIG_FIG_LIMIT {
+            return 1.0;
+        }
+        if price >= 1.0 {
+            let remaining = (SIG_FIG_LIMIT - int_digits).max(0);
+            return 10_f32.powi(-remaining);
+        } else {
+            // price < 1: account for leading zeros before first significant digit
+            let lg = price.abs().log10().floor() as i32; // negative
+            let leading_zeros = (-lg - 1).max(0);
+            let total_decimals = leading_zeros + SIG_FIG_LIMIT;
+            return 10_f32.powi(-total_decimals);
+        }
     }
 
+    let n_sig = cfg.n_sig_figs.unwrap();
+
+    // significant-figures tick rule
     // n < int_digits  -> coarsen integer part: 10^(int_digits - n)
     // n == int_digits -> 1
-    // n > int_digits  -> fractional: 10^-(n - int_digits)
-    if n_sig < int_digits {
+    // n > int_digits  -> fractional:
+    //   - price >= 1: 10^-(n - int_digits)
+    //   - price < 1:  10^-(leading_zeros + (n - int_digits))
+    let mut tick = if n_sig < int_digits {
         10_f32.powi(int_digits - n_sig)
     } else if n_sig == int_digits {
         1.0
     } else {
-        10_f32.powi(-(n_sig - int_digits))
+        let frac_power = n_sig - int_digits;
+        if price >= 1.0 {
+            10_f32.powi(-frac_power)
+        } else {
+            let lg = price.abs().log10().floor() as i32; // negative
+            let leading_zeros = (-lg - 1).max(0);
+            10_f32.powi(-(leading_zeros + frac_power))
+        }
+    };
+
+    if n_sig == SIG_FIG_LIMIT {
+        if let Some(m) = cfg.mantissa.filter(|m| ALLOWED_MANTISSA.contains(m)) {
+            tick *= m as f32;
+        }
     }
+
+    tick
 }
 
-const ALLOWED_MANTISSA: [i32; 3] = [1, 2, 5];
+// snap to nearest 1–2–5 × 10^k
+fn snap_multiplier_to_125(multiplier: u16) -> (i32, i32) {
+    // boundaries between {1,2,5,10} in log-space
+    const SQRT2: f32 = 1.41421356;
+    const SQRT10: f32 = 3.16227766;
+    const SQRT50: f32 = 7.07106781;
+
+    let m = (multiplier as f32).max(1.0);
+    let mut kf = m.log10().floor();
+    let rem = m / 10_f32.powf(kf);
+
+    // nearest of {1,2,5,10} using boundaries
+    let (mantissa, bump) = if rem < SQRT2 {
+        (1, false)
+    } else if rem < SQRT10 {
+        (2, false)
+    } else if rem < SQRT50 {
+        (5, false)
+    } else {
+        (1, true) // closer to 10: bump decade
+    };
+    if bump {
+        kf += 1.0;
+    }
+    (kf as i32, mantissa)
+}
+
 fn config_from_multiplier(price: f32, multiplier: u16) -> DepthFeedConfig {
     if price <= 0.0 {
         return DepthFeedConfig::full_precision();
     }
+    if multiplier <= 1 {
+        return DepthFeedConfig::full_precision();
+    }
+
     let int_digits = if price >= 1.0 {
         (price.abs().log10().floor() as i32 + 1).max(1)
     } else {
-        return DepthFeedConfig::new(Some(SIG_FIG_LIMIT), None);
+        0
     };
 
-    if int_digits > SIG_FIG_LIMIT {
-        if multiplier <= 5 {
-            return DepthFeedConfig::full_precision();
-        }
-        let scale = 10_f32.powi(int_digits - SIG_FIG_LIMIT);
-        let ratio = (multiplier as f32) / scale;
-        let mantissa = if ratio < 2.0 {
-            1
-        } else if ratio < 5.0 {
-            2
-        } else {
-            5
-        };
-        return DepthFeedConfig::new(Some(SIG_FIG_LIMIT), Some(mantissa));
-    }
+    // Decompose multiplier into mantissa ∈ {1,2,5} and decade k
+    let (k, m125) = snap_multiplier_to_125(multiplier);
 
-    // Finest tick at max sig figs
-    let finest_decimals = SIG_FIG_LIMIT - int_digits;
-    let finest_tick = if finest_decimals > 0 {
-        10_f32.powi(-finest_decimals)
+    // Multiplier mapping (unchanged for 10^k):
+    // - overflow (int_digits > 5): n = int_digits - k
+    // - fractional/boundary (int_digits <= 5): n = 5 - k
+    let mut n = if int_digits > SIG_FIG_LIMIT {
+        int_digits - k
     } else {
-        1.0
+        SIG_FIG_LIMIT - k
     };
-    let desired_tick = finest_tick * multiplier as f32;
+    n = n.clamp(2, SIG_FIG_LIMIT);
 
-    // Enumerate allowed nSigFigs (2..=5)
-    let mut best_leq: Option<(i32, f32)> = None;
-    let mut best_gt: Option<(i32, f32)> = None;
-    for n in 2..=SIG_FIG_LIMIT {
-        let tick = if n < int_digits {
-            10_f32.powi(int_digits - n)
-        } else if n == int_digits {
-            1.0
-        } else {
-            10_f32.powi(-(n - int_digits))
-        };
+    // Only set mantissa when n == 5 and m ∈ {2,5}. Otherwise omit.
+    let mantissa = if n == SIG_FIG_LIMIT && (m125 == 2 || m125 == 5) {
+        Some(m125)
+    } else {
+        None
+    };
 
-        if tick <= desired_tick {
-            match best_leq {
-                None => best_leq = Some((n, tick)),
-                Some((_, prev)) if tick > prev => best_leq = Some((n, tick)),
-                _ => {}
-            }
-        } else {
-            match best_gt {
-                None => best_gt = Some((n, tick)),
-                Some((_, prev)) if tick < prev => best_gt = Some((n, tick)),
-                _ => {}
-            }
-        }
-    }
-
-    let (chosen_n, _) = best_leq.or(best_gt).unwrap();
-
-    DepthFeedConfig::new(Some(chosen_n), None)
+    DepthFeedConfig::new(Some(n), mantissa)
 }
 
 // Only when mantissa (1,2,5) is provided does tick become mantissa * 10^(int_digits - SIG_FIG_LIMIT).
