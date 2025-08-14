@@ -2,8 +2,8 @@ use crate::TickMultiplier;
 
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
-        TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker, TickerInfo,
+        TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DepthPayload, DepthUpdate, LocalDepthCache, Order},
@@ -243,11 +243,7 @@ pub async fn fetch_ticksize(
 
 #[derive(Clone, Copy, Debug)]
 pub struct DepthFeedConfig {
-    // Optional field to aggregate levels to nSigFigs significant figures.
-    // Valid values are 2, 3, 4, 5, and null, which means full precision
     pub n_sig_figs: Option<i32>,
-    // Optional field to aggregate levels.
-    // This field is only allowed if nSigFigs is 5. Accepts values of 1, 2 or 5.
     pub mantissa: Option<i32>,
 }
 
@@ -569,7 +565,7 @@ pub async fn fetch_klines(
 
     let url = format!("{}/info", API_DOMAIN);
     let (symbol_str, _) = ticker.to_full_symbol_and_type();
-    
+
     log::debug!("Fetching klines for ticker symbol: '{}'", symbol_str);
 
     // Hyperliquid requires startTime and endTime - use provided range or default to 500 candles
@@ -638,17 +634,6 @@ pub async fn fetch_klines(
     Ok(klines)
 }
 
-pub async fn fetch_historical_oi(
-    _ticker: Ticker,
-    _range: Option<(u64, u64)>,
-    _timeframe: Timeframe,
-) -> Result<Vec<OpenInterest>, AdapterError> {
-    // Hyperliquid doesn't provide historical OI data in the same way
-    // We can only get current OI from the allMids endpoint
-    // For now, return empty vector
-    Ok(Vec::new())
-}
-
 async fn connect_websocket(
     domain: &str,
     path: &str,
@@ -704,8 +689,11 @@ pub fn connect_market_stream(
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
-        
-        log::debug!("Connecting market stream for ticker symbol: '{}'", symbol_str);
+
+        log::debug!(
+            "Connecting market stream for ticker symbol: '{}'",
+            symbol_str
+        );
 
         loop {
             match &mut state {
@@ -747,7 +735,11 @@ pub fn connect_market_stream(
                                 depth_subscription["subscription"]["mantissa"] = json!(m);
                             }
 
-                            log::debug!("Hyperliquid WS Depth Subscription: {}", serde_json::to_string_pretty(&depth_subscription).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                            log::debug!(
+                                "Hyperliquid WS Depth Subscription: {}",
+                                serde_json::to_string_pretty(&depth_subscription)
+                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
+                            );
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -768,7 +760,11 @@ pub fn connect_market_stream(
                                 }
                             });
 
-                            log::debug!("Hyperliquid WS Trades Subscription: {}", serde_json::to_string_pretty(&trades_subscribe_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                            log::debug!(
+                                "Hyperliquid WS Trades Subscription: {}",
+                                serde_json::to_string_pretty(&trades_subscribe_msg)
+                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
+                            );
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -942,7 +938,11 @@ pub fn connect_kline_stream(
                                     }
                                 });
 
-                                log::debug!("Hyperliquid WS Kline Subscription: {}", serde_json::to_string_pretty(&subscribe_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                                log::debug!(
+                                    "Hyperliquid WS Kline Subscription: {}",
+                                    serde_json::to_string_pretty(&subscribe_msg)
+                                        .unwrap_or_else(|_| "Failed to serialize".to_string())
+                                );
 
                                 if (websocket
                                     .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(

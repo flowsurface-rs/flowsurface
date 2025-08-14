@@ -376,9 +376,6 @@ pub async fn fetch_open_interest(
         Exchange::BybitLinear | Exchange::BybitInverse => {
             bybit::fetch_historical_oi(ticker, range, timeframe).await
         }
-        Exchange::HyperliquidLinear => {
-            hyperliquid::fetch_historical_oi(ticker, range, timeframe).await
-        }
         _ => Err(AdapterError::InvalidRequest("Invalid exchange".to_string())),
     }
 }
