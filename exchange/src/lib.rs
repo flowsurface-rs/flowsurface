@@ -196,6 +196,7 @@ impl SerTicker {
             Exchange::BybitInverse => "BybitInverse",
             Exchange::BybitSpot => "BybitSpot",
             Exchange::HyperliquidLinear => "HyperliquidLinear",
+            Exchange::HyperliquidSpot => "HyperliquidSpot",
         }
     }
 
@@ -208,6 +209,7 @@ impl SerTicker {
             "BybitInverse" => Ok(Exchange::BybitInverse),
             "BybitSpot" => Ok(Exchange::BybitSpot),
             "HyperliquidLinear" => Ok(Exchange::HyperliquidLinear),
+            "HyperliquidSpot" => Ok(Exchange::HyperliquidSpot),
             _ => Err(format!("Unknown exchange: {}", s)),
         }
     }
@@ -262,12 +264,22 @@ impl fmt::Display for SerTicker {
 pub struct Ticker {
     bytes: [u8; Ticker::MAX_LEN as usize],
     pub exchange: Exchange,
+    // Optional display symbol for UI, mainly used for Hyperliquid spot markets
+    // to show "HYPEUSDC" instead of "@107"
+    // Using Option<[u8; N]> would require heap allocation, so we use a flag pattern
+    // but could be refactored to use a smart enum if needed
+    display_bytes: [u8; Ticker::MAX_LEN as usize],
+    has_display_symbol: bool,
 }
 
 impl Ticker {
     const MAX_LEN: u8 = 28;
 
     pub fn new(ticker: &str, exchange: Exchange) -> Self {
+        Self::new_with_display(ticker, exchange, None)
+    }
+
+    pub fn new_with_display(ticker: &str, exchange: Exchange, display_symbol: Option<&str>) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
         assert!(
             ticker.is_ascii()
@@ -281,7 +293,29 @@ impl Ticker {
         let mut bytes = [0u8; Self::MAX_LEN as usize];
         bytes[..ticker.len()].copy_from_slice(ticker.as_bytes());
 
-        Ticker { bytes, exchange }
+        let mut display_bytes = [0u8; Self::MAX_LEN as usize];
+        let has_display_symbol = if let Some(display) = display_symbol {
+            assert!(display.len() <= Self::MAX_LEN as usize, "Display symbol too long");
+            assert!(
+                display.is_ascii()
+                    && display
+                        .as_bytes()
+                        .iter()
+                        .all(|&b| b.is_ascii_graphic() && b != b':'),
+                "Display symbol must be printable ASCII and must not contain ':': {display:?}"
+            );
+            display_bytes[..display.len()].copy_from_slice(display.as_bytes());
+            true
+        } else {
+            false
+        };
+
+        Ticker { 
+            bytes, 
+            exchange, 
+            display_bytes,
+            has_display_symbol,
+        }
     }
 
     #[inline]
@@ -294,22 +328,51 @@ impl Ticker {
         std::str::from_utf8(&self.bytes[..end]).unwrap()
     }
 
+    #[inline]
+    fn display_as_str(&self) -> &str {
+        if self.has_display_symbol {
+            let end = self
+                .display_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(Self::MAX_LEN as usize);
+            std::str::from_utf8(&self.display_bytes[..end]).unwrap()
+        } else {
+            self.as_str()
+        }
+    }
+
+    /// Get the display symbol if it exists, otherwise None
+    pub fn display_symbol(&self) -> Option<&str> {
+        if self.has_display_symbol {
+            Some(self.display_as_str())
+        } else {
+            None
+        }
+    }
+
     pub fn to_full_symbol_and_type(&self) -> (String, MarketKind) {
         (self.as_str().to_owned(), self.market_type())
     }
 
     pub fn display_symbol_and_type(&self) -> (String, MarketKind) {
-        let mut result = self.as_str().to_owned();
-
         let market_kind = self.market_type();
-        // Transform Hyperliquid symbols to standardized display format
-        if matches!(self.exchange, Exchange::HyperliquidLinear)
-            && market_kind == MarketKind::LinearPerps
-        {
-            // For Hyperliquid Linear Perps, append USDT to match other exchanges' format
-            // The "P" suffix will be added later in compute_display_data for all perpetual contracts
-            result.push_str("USDT");
-        }
+        
+        let result = if self.has_display_symbol {
+            // Use the custom display symbol (e.g., "HYPEUSDC" for Hyperliquid spot)
+            self.display_as_str().to_owned()
+        } else {
+            let mut result = self.as_str().to_owned();
+            // Transform Hyperliquid symbols to standardized display format
+            if matches!(self.exchange, Exchange::HyperliquidLinear)
+                && market_kind == MarketKind::LinearPerps
+            {
+                // For Hyperliquid Linear Perps, append USDT to match other exchanges' format
+                // The "P" suffix will be added later in compute_display_data for all perpetual contracts
+                result.push_str("USDT");
+            }
+            result
+        };
 
         (result, market_kind)
     }
@@ -328,13 +391,25 @@ impl fmt::Display for Ticker {
 impl fmt::Debug for Ticker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (sym, kind) = self.display_symbol_and_type();
-        write!(
-            f,
-            "Ticker({}:{}, {:?})",
-            SerTicker::exchange_to_string(self.exchange),
-            sym,
-            kind
-        )
+        let internal_sym = self.as_str();
+        if self.has_display_symbol && internal_sym != sym {
+            write!(
+                f,
+                "Ticker({}:{}[{}], {:?})",
+                SerTicker::exchange_to_string(self.exchange),
+                sym,
+                internal_sym,
+                kind
+            )
+        } else {
+            write!(
+                f,
+                "Ticker({}:{}, {:?})",
+                SerTicker::exchange_to_string(self.exchange),
+                sym,
+                kind
+            )
+        }
     }
 }
 
@@ -374,6 +449,8 @@ impl<'de> Deserialize<'de> for Ticker {
                 let exchange = SerTicker::string_to_exchange(exchange_str)
                     .map_err(serde::de::Error::custom)?;
 
+                // For backwards compatibility, we don't deserialize display symbols
+                // They should be set when creating new tickers with spot metadata
                 Ok(Ticker::new(symbol, exchange))
             }
             TickerDe::Old {
@@ -407,6 +484,7 @@ impl<'de> Deserialize<'de> for Ticker {
                 let exchange_enum =
                     SerTicker::string_to_exchange(&exchange).map_err(serde::de::Error::custom)?;
 
+                // For backwards compatibility with old format
                 Ok(Ticker::new(&symbol, exchange_enum))
             }
         }

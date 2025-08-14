@@ -1533,7 +1533,7 @@ pub fn depth_subscription(
             let builder = |cfg: &StreamConfig<Ticker>| bybit::connect_market_stream(cfg.id);
             Subscription::run_with(config, builder)
         }
-        Exchange::HyperliquidLinear => {
+        Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
             let builder = |cfg: &StreamConfig<Ticker>| {
                 hyperliquid::connect_market_stream(cfg.id, cfg.tick_mltp)
             };
@@ -1560,7 +1560,7 @@ pub fn kline_subscription(
             };
             Subscription::run_with(config, builder)
         }
-        Exchange::HyperliquidLinear => {
+        Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
             let builder = |cfg: &StreamConfig<Vec<(Ticker, Timeframe)>>| {
                 hyperliquid::connect_kline_stream(cfg.id.clone(), cfg.market_type)
             };
