@@ -67,6 +67,7 @@ pub enum StreamKind {
     },
     DepthAndTrades {
         ticker: Ticker,
+        #[serde(default = "default_depth_aggr")]
         depth_aggr: StreamTicksize,
     },
 }
@@ -193,10 +194,15 @@ impl UniqueStreams {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum StreamTicksize {
     ServerSide(TickMultiplier),
+    #[default]
     Client,
+}
+
+fn default_depth_aggr() -> StreamTicksize {
+    StreamTicksize::Client
 }
 
 #[derive(Debug, Clone, Default)]
