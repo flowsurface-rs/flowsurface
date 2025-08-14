@@ -569,6 +569,8 @@ pub async fn fetch_klines(
 
     let url = format!("{}/info", API_DOMAIN);
     let (symbol_str, _) = ticker.to_full_symbol_and_type();
+    
+    log::debug!("Fetching klines for ticker symbol: '{}'", symbol_str);
 
     // Hyperliquid requires startTime and endTime - use provided range or default to 500 candles
     let (start_time, end_time) = if let Some((start, end)) = range {
@@ -702,6 +704,8 @@ pub fn connect_market_stream(
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
+        
+        log::debug!("Connecting market stream for ticker symbol: '{}'", symbol_str);
 
         loop {
             match &mut state {
@@ -743,7 +747,7 @@ pub fn connect_market_stream(
                                 depth_subscription["subscription"]["mantissa"] = json!(m);
                             }
 
-                            log::debug!("Subscribing to depth stream: {}", &depth_subscription);
+                            log::debug!("Hyperliquid WS Depth Subscription: {}", serde_json::to_string_pretty(&depth_subscription).unwrap_or_else(|_| "Failed to serialize".to_string()));
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -763,6 +767,8 @@ pub fn connect_market_stream(
                                     "coin": symbol_str
                                 }
                             });
+
+                            log::debug!("Hyperliquid WS Trades Subscription: {}", serde_json::to_string_pretty(&trades_subscribe_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -936,6 +942,8 @@ pub fn connect_kline_stream(
                                     }
                                 });
 
+                                log::debug!("Hyperliquid WS Kline Subscription: {}", serde_json::to_string_pretty(&subscribe_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
+
                                 if (websocket
                                     .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
                                         subscribe_msg.to_string().as_bytes(),
@@ -1031,6 +1039,7 @@ async fn fetch_orderbook(
     symbol: &str,
     cfg: Option<DepthFeedConfig>,
 ) -> Result<DepthPayload, AdapterError> {
+    log::debug!("Fetching orderbook for symbol: '{}'", symbol);
     let url = format!("{}/info", API_DOMAIN);
 
     let mut body = json!({

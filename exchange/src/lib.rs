@@ -287,13 +287,16 @@ impl Ticker {
 
         for (i, c) in ticker.bytes().enumerate() {
             let value = match c {
-                b'0'..=b'9' => c - b'0',
-                b'A'..=b'Z' => c - b'A' + 10,
-                b'a'..=b'z' => c - b'a' + 10, // Convert lowercase to same as uppercase
-                b'_' => 36,
-                b'-' => 37, // Hyphen for symbols like ATOM-USD
-                b'.' => 38, // Dot for symbols like 1000LUNC.P
-                b'/' => 39, // Slash for symbols like PURR/USDC
+                b'0'..=b'9' => c - b'0',           // 0-9
+                b'A'..=b'Z' => c - b'A' + 10,      // 10-35  
+                b'a'..=b'z' => c - b'a' + 36,      // 36-61 (lowercase letters)
+                b'_' => 62,                        // 62
+                b'-' => 63,                        // 63 (only 4 special chars fit in 6-bit)
+                b'.' | b'/' => {
+                    // For now, map . and / to the same values as - and _
+                    // This is a temporary limitation of the 6-bit encoding
+                    if c == b'.' { 62 } else { 63 }
+                },
                 _ => unreachable!(),
             };
             let shift = (i % 10) * 6;
@@ -313,9 +316,11 @@ impl Ticker {
         for i in 0..self.len {
             let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
             let c = match value {
-                0..=9 => (b'0' + value as u8) as char,
-                10..=35 => (b'A' + (value as u8 - 10)) as char,
-                36 => '_',
+                0..=9 => (b'0' + value as u8) as char,           // digits 0-9
+                10..=35 => (b'A' + (value as u8 - 10)) as char, // uppercase A-Z
+                36..=61 => (b'a' + (value as u8 - 36)) as char, // lowercase a-z
+                62 => '_',                                       // underscore or dot (ambiguous)
+                63 => '-',                                       // hyphen or slash (ambiguous)
                 _ => unreachable!(),
             };
             result.push(c);
@@ -331,12 +336,9 @@ impl Ticker {
             let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
 
             let c = match value {
-                0..=9 => (b'0' + value as u8) as char,
-                10..=35 => (b'A' + (value as u8 - 10)) as char,
-                36 => '_',
-                37 => '-',
-                38 => '.',
-                39 => '/',
+                0..=9 => (b'0' + value as u8) as char,           // digits 0-9
+                10..=35 => (b'A' + (value as u8 - 10)) as char, // uppercase A-Z
+                36..=61 => (b'a' + (value as u8 - 36)) as char, // lowercase a-z
                 _ => unreachable!(),
             };
             result.push(c);
@@ -365,12 +367,9 @@ impl fmt::Display for Ticker {
         for i in 0..self.len {
             let value = (self.data[i as usize / 10] >> ((i % 10) * 6)) & 0x3F;
             let c = match value {
-                0..=9 => (b'0' + value as u8) as char,
-                10..=35 => (b'A' + (value as u8 - 10)) as char,
-                36 => '_',
-                37 => '-',
-                38 => '.',
-                39 => '/',
+                0..=9 => (b'0' + value as u8) as char,           // digits 0-9
+                10..=35 => (b'A' + (value as u8 - 10)) as char, // uppercase A-Z
+                36..=61 => (b'a' + (value as u8 - 36)) as char, // lowercase a-z
                 _ => unreachable!(),
             };
             f.write_char(c)?;
