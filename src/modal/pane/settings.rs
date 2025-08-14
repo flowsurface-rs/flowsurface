@@ -99,7 +99,7 @@ pub fn heatmap_cfg_view<'a>(
                 })
                 .step(10)
                 .into(),
-                Some(text(format!("{}%", radius_scale)).size(13)),
+                Some(text(format!("{radius_scale}%")).size(13)),
             )
         } else {
             container(row![]).into()
@@ -576,14 +576,14 @@ pub mod study {
                         let min_range = CLEANUP_THRESHOLD / 20;
 
                         let duration_text = if duration_secs < 60 {
-                            format!("{} seconds", duration_secs)
+                            format!("{duration_secs} seconds")
                         } else {
                             let minutes = duration_secs / 60;
                             let seconds = duration_secs % 60;
                             if seconds == 0 {
-                                format!("{} minutes", minutes)
+                                format!("{minutes} minutes")
                             } else {
-                                format!("{}m {}s", minutes, seconds)
+                                format!("{minutes}m {seconds}s")
                             }
                         };
 
@@ -605,8 +605,7 @@ pub mod study {
                         column![
                             row![horizontal_space(), switch_kind,],
                             text(format!(
-                                "Window: {} datapoints ({})",
-                                datapoint_count, duration_text
+                                "Window: {datapoint_count} datapoints ({duration_text})"
                             )),
                             slider,
                         ]

@@ -98,7 +98,7 @@ impl BackgroundLogger {
                 let mut logger = match Logger::new(&path) {
                     Ok(logger) => logger,
                     Err(e) => {
-                        eprintln!("Failed to initialize logger: {}", e);
+                        eprintln!("Failed to initialize logger: {e}");
                         return;
                     }
                 };
@@ -107,12 +107,12 @@ impl BackgroundLogger {
                     match receiver.recv() {
                         Ok(LogMessage::Content(data)) => {
                             if let Err(e) = logger.write_all(&data) {
-                                eprintln!("Logging error: {}", e);
+                                eprintln!("Logging error: {e}");
                             }
                         }
                         Ok(LogMessage::Flush) => {
                             if let Err(e) = logger.flush() {
-                                eprintln!("Error flushing logs: {}", e);
+                                eprintln!("Error flushing logs: {e}");
                             }
                         }
                         Ok(LogMessage::Shutdown) | Err(_) => break,
@@ -178,8 +178,7 @@ impl Write for Logger {
         if self.current_size + buf_len > MAX_LOG_FILE_SIZE {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
             let error_msg = format!(
-                "\n{}:FATAL -- Log file size would exceed the maximum allowed size of {} bytes\n",
-                timestamp, MAX_LOG_FILE_SIZE
+                "\n{timestamp}:FATAL -- Log file size would exceed the maximum allowed size of {MAX_LOG_FILE_SIZE} bytes\n"
             );
 
             eprintln!("{error_msg}");

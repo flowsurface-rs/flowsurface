@@ -810,7 +810,7 @@ impl ViewState {
             } else {
                 ((price2 - price1) / price1) * 100.0
             };
-            let pct_text = format!("{:.2}%", pct);
+            let pct_text = format!("{pct:.2}%");
 
             let interval_diff: String = match self.basis {
                 Basis::Time(_) => {
@@ -825,7 +825,7 @@ impl ViewState {
                     let (tick2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
 
                     let tick_diff = tick1.abs_diff(tick2);
-                    format!("{} ticks", tick_diff)
+                    format!("{tick_diff} ticks")
                 }
             };
 
@@ -876,7 +876,7 @@ impl ViewState {
 
                     let diff_ms = timestamp1.abs_diff(timestamp2);
                     let datapoints = (diff_ms / interval_ms).max(1);
-                    format!("{} bars", datapoints)
+                    format!("{datapoints} bars")
                 }
                 Basis::Tick(aggregation) => {
                     let (tick1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
@@ -884,11 +884,11 @@ impl ViewState {
 
                     let tick_diff = tick1.abs_diff(tick2);
                     let datapoints = (tick_diff / u64::from(aggregation.0)).max(1);
-                    format!("{} bars", datapoints)
+                    format!("{datapoints} bars")
                 }
             };
 
-            let label_text = format!("{}, {} | {}", datapoints_text, interval_diff, pct_text);
+            let label_text = format!("{datapoints_text}, {interval_diff} | {pct_text}");
 
             let text_width = (label_text.len() as f32) * TEXT_SIZE * 0.6;
             let text_height = TEXT_SIZE * 1.2;
@@ -1093,7 +1093,7 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Acti
         Ok(Some(req_id)) => Some(Action::FetchRequested(req_id, range)),
         Ok(None) => None,
         Err(reason) => {
-            log::error!("Failed to request {:?}: {}", range, reason);
+            log::error!("Failed to request {range:?}: {reason}");
             // TODO: handle this more explicitly, maybe by returning Action::ErrorOccurred
             None
         }

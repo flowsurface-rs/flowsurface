@@ -127,7 +127,7 @@ impl AudioStream {
                 streams.retain(|pair| {
                     let t = pair.0;
                     let key = (t.exchange, t);
-                    if seen.iter().any(|k| *k == key) {
+                    if seen.contains(&key) {
                         false
                     } else {
                         seen.push(key);
@@ -192,7 +192,7 @@ impl AudioStream {
 
                                 column = column.push(
                                     column![
-                                        text(format!("Buy/sell trade count in buffer ≥ {}", v)),
+                                        text(format!("Buy/sell trade count in buffer ≥ {v}")),
                                         threshold_slider
                                     ]
                                     .padding(8)
@@ -201,7 +201,7 @@ impl AudioStream {
                             }
                             data::audio::Threshold::Qty(v) => {
                                 column = column.push(
-                                    row![text(format!("Any trade's size in buffer ≥ {}", v))]
+                                    row![text(format!("Any trade's size in buffer ≥ {v}"))]
                                         .padding(8)
                                         .spacing(4),
                                 );
