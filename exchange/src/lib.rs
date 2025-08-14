@@ -274,12 +274,8 @@ impl Ticker {
 
         assert!(base_len <= 20, "Ticker too long");
         assert!(
-            ticker.chars().all(|c| c.is_ascii_alphanumeric()
-                || c == '_'
-                || c == '-'
-                || c == '.'
-                || c == '/'),
-            "Ticker must contain only ASCII alphanumeric characters, underscores, hyphens, dots, and slashes: {ticker:?}"
+            ticker.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "Ticker must contain only ASCII alphanumeric characters, underscores: {ticker:?}"
         );
 
         let mut data = [0u64; 2];
@@ -288,15 +284,8 @@ impl Ticker {
         for (i, c) in ticker.bytes().enumerate() {
             let value = match c {
                 b'0'..=b'9' => c - b'0',           // 0-9
-                b'A'..=b'Z' => c - b'A' + 10,      // 10-35  
-                b'a'..=b'z' => c - b'a' + 36,      // 36-61 (lowercase letters)
-                b'_' => 62,                        // 62
-                b'-' => 63,                        // 63 (only 4 special chars fit in 6-bit)
-                b'.' | b'/' => {
-                    // For now, map . and / to the same values as - and _
-                    // This is a temporary limitation of the 6-bit encoding
-                    if c == b'.' { 62 } else { 63 }
-                },
+                b'A'..=b'Z' => c - b'A' + 10,      // 10-35
+                b'a'..=b'z' => c - b'a' + 36,      // 36-61
                 _ => unreachable!(),
             };
             let shift = (i % 10) * 6;
@@ -319,8 +308,6 @@ impl Ticker {
                 0..=9 => (b'0' + value as u8) as char,           // digits 0-9
                 10..=35 => (b'A' + (value as u8 - 10)) as char, // uppercase A-Z
                 36..=61 => (b'a' + (value as u8 - 36)) as char, // lowercase a-z
-                62 => '_',                                       // underscore or dot (ambiguous)
-                63 => '-',                                       // hyphen or slash (ambiguous)
                 _ => unreachable!(),
             };
             result.push(c);

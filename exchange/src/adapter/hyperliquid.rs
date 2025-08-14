@@ -478,8 +478,8 @@ pub async fn fetch_ticker_prices(
 
     // Process each symbol from mids and match with asset context data
     for (symbol, mid_price_str) in &mids {
-        // Skip internal asset IDs like @128, @1, etc.
-        if symbol.starts_with('@') {
+        // Skip internal asset IDs like @128, @1, etc. and specific symbols
+        if symbol.starts_with('@') || symbol == "PURR/USDC" {
             continue;
         }
 
