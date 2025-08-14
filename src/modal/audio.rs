@@ -121,8 +121,23 @@ impl AudioStream {
             if active_streams.is_empty() {
                 available_streams = available_streams.push(text("No trade streams found"));
             } else {
-                for (ticker, depth_aggr) in active_streams {
+                // de-dup by (exchange, ticker), ignoring depth_aggr
+                let mut streams = active_streams;
+                let mut seen = Vec::with_capacity(streams.len());
+                streams.retain(|pair| {
+                    let t = pair.0;
+                    let key = (t.exchange, t);
+                    if seen.iter().any(|k| *k == key) {
+                        false
+                    } else {
+                        seen.push(key);
+                        true
+                    }
+                });
+
+                for (ticker, depth_aggr) in streams {
                     let exchange = ticker.exchange;
+
                     let mut column = column![].padding(padding::left(4));
 
                     let is_audio_enabled =
