@@ -290,8 +290,8 @@ impl Ticker {
                 && ticker
                     .as_bytes()
                     .iter()
-                    .all(|&b| b.is_ascii_graphic() && b != b':'),
-            "Ticker must be printable ASCII and must not contain ':': {ticker:?}"
+                    .all(|&b| b.is_ascii_graphic() && b != b':' && b != b'|'),
+            "Ticker must be printable ASCII and must not contain ':' or '|': {ticker:?}"
         );
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
@@ -308,8 +308,8 @@ impl Ticker {
                     && display
                         .as_bytes()
                         .iter()
-                        .all(|&b| b.is_ascii_graphic() && b != b':'),
-                "Display symbol must be printable ASCII and must not contain ':': {display:?}"
+                        .all(|&b| b.is_ascii_graphic() && b != b':' && b != b'|'),
+                "Display symbol must be printable ASCII and must not contain ':' or '|': {display:?}"
             );
             display_bytes[..display.len()].copy_from_slice(display.as_bytes());
             true
@@ -425,8 +425,14 @@ impl Serialize for Ticker {
     where
         S: serde::Serializer,
     {
-        let (sym, _) = self.to_full_symbol_and_type();
-        let s = format!("{}:{}", SerTicker::exchange_to_string(self.exchange), sym);
+        let internal = self.as_str();
+        let exchange = SerTicker::exchange_to_string(self.exchange);
+        let s = if self.has_display_symbol {
+            let display = self.display_as_str();
+            format!("{exchange}:{internal}|{display}")
+        } else {
+            format!("{exchange}:{internal}")
+        };
         serializer.serialize_str(&s)
     }
 }
@@ -450,15 +456,18 @@ impl<'de> Deserialize<'de> for Ticker {
     {
         match TickerDe::deserialize(deserializer)? {
             TickerDe::Str(s) => {
-                let (exchange_str, symbol) = s
+                let (exchange_str, rest) = s
                     .split_once(':')
                     .ok_or_else(|| serde::de::Error::custom("expected \"Exchange:Symbol\""))?;
                 let exchange = SerTicker::string_to_exchange(exchange_str)
                     .map_err(serde::de::Error::custom)?;
 
-                // For backwards compatibility, we don't deserialize display symbols
-                // They should be set when creating new tickers with spot metadata
-                Ok(Ticker::new(symbol, exchange))
+                let (symbol, display) = if let Some((sym, disp)) = rest.split_once('|') {
+                    (sym, Some(disp))
+                } else {
+                    (rest, None)
+                };
+                Ok(Ticker::new_with_display(symbol, exchange, display))
             }
             TickerDe::Old {
                 data,
@@ -491,7 +500,6 @@ impl<'de> Deserialize<'de> for Ticker {
                 let exchange_enum =
                     SerTicker::string_to_exchange(&exchange).map_err(serde::de::Error::custom)?;
 
-                // For backwards compatibility with old format
                 Ok(Ticker::new(&symbol, exchange_enum))
             }
         }
