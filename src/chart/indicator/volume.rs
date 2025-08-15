@@ -399,7 +399,7 @@ impl canvas::Program<Message> for VolumeIndicator<'_> {
 
                         let bg_width = buy_volume.len().max(sell_volume.len()) as f32 * 8.0;
 
-                        let text = format!("{buy_volume}{sell_volume}");
+                        let text = format!("{}{}", buy_volume, sell_volume);
                         (text, bg_width)
                     };
 

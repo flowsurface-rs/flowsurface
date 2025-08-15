@@ -1034,7 +1034,7 @@ impl Content {
                 chart.toggle_indicator(indicator);
             }
             Content::Starter | Content::TimeAndSales(_) => {
-                panic!("indicator toggle on {self} pane")
+                panic!("indicator toggle on {} pane", self)
             }
         }
     }
@@ -1044,7 +1044,7 @@ impl Content {
             Content::Heatmap(_, indicator) => column_drag::reorder_vec(indicator, event),
             Content::Kline(_, indicator) => column_drag::reorder_vec(indicator, event),
             Content::TimeAndSales(_) | Content::Starter => {
-                panic!("indicator reorder on {self} pane")
+                panic!("indicator reorder on {} pane", self)
             }
         }
     }

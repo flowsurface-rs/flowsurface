@@ -492,7 +492,7 @@ impl Modifier {
 
                             numeric_input_box::<_, Message>(
                                 "Custom: ",
-                                &format!("{TICK_COUNT_MIN}-{TICK_COUNT_MAX}"),
+                                &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
                                 &raw_input_buf.to_display_string(),
                                 is_input_valid,
                                 Message::TickCountInputChanged,
@@ -567,7 +567,7 @@ impl Modifier {
 
                             numeric_input_box::<_, Message>(
                                 "Custom: ",
-                                &format!("{TICK_MULTIPLIER_MIN}-{TICK_MULTIPLIER_MAX}"),
+                                &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
                                 &raw_input_buf.to_display_string(),
                                 is_input_valid,
                                 Message::TicksizeInputChanged,
@@ -583,7 +583,7 @@ impl Modifier {
                         ticksizes_column = ticksizes_column.push(
                             row![
                                 iced::widget::horizontal_space(),
-                                text(format!("Base: {base_ticksize}")).style(
+                                text(format!("Base: {}", base_ticksize)).style(
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
                                             color: Some(

@@ -255,12 +255,12 @@ impl Flowsurface {
                         let file_name = data::SAVED_STATE_PATH;
 
                         if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
-                            log::error!("Failed to write layout state to file: {e}");
+                            log::error!("Failed to write layout state to file: {}", e);
                         } else {
                             log::info!("Successfully wrote layout state to {file_name}");
                         }
                     }
-                    Err(e) => log::error!("Failed to serialize layout: {e}"),
+                    Err(e) => log::error!("Failed to serialize layout: {}", e),
                 }
 
                 return iced::exit();

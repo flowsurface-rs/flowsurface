@@ -296,7 +296,7 @@ impl canvas::Program<Message> for OpenInterest<'_> {
                     };
                     let value_text = format!("Value: {}", format_with_commas(*oi_value));
 
-                    let tooltip_text = format!("{value_text}\n{change_text}");
+                    let tooltip_text = format!("{}\n{}", value_text, change_text);
                     let tooltip_bg_width = value_text.len().max(change_text.len()) as f32 * 8.0;
 
                     frame.fill_rectangle(
