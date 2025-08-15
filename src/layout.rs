@@ -371,9 +371,7 @@ pub fn load_saved_state() -> SavedState {
             }
         }
         Err(e) => {
-            log::error!(
-                "Failed to load/find layout state: {e}. Starting with a new layout."
-            );
+            log::error!("Failed to load/find layout state: {e}. Starting with a new layout.");
 
             SavedState::default()
         }
