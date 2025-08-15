@@ -3,7 +3,7 @@ pub mod indicator;
 pub mod kline;
 pub mod timeandsales;
 
-use exchange::{Timeframe, adapter::Exchange};
+use exchange::Timeframe;
 use serde::{Deserialize, Serialize};
 
 use super::aggr::{
@@ -107,10 +107,15 @@ impl Basis {
     }
 
     pub fn default_heatmap_time(ticker_info: Option<exchange::TickerInfo>) -> Self {
-        let interval = ticker_info.map_or(Timeframe::MS100, |info| match info.exchange() {
-            Exchange::BybitSpot => Timeframe::MS200,
-            Exchange::HyperliquidLinear => Timeframe::MS500,
-            _ => Timeframe::MS100,
+        let fallback = Timeframe::MS500;
+
+        let interval = ticker_info.map_or(fallback, |info| {
+            let ex = info.exchange();
+            Timeframe::HEATMAP
+                .iter()
+                .copied()
+                .find(|tf| ex.supports_heatmap_timeframe(*tf))
+                .unwrap_or(fallback)
         });
 
         interval.into()

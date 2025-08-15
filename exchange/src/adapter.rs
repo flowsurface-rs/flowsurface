@@ -291,7 +291,19 @@ impl Exchange {
                 | Exchange::BinanceInverse
                 | Exchange::BybitLinear
                 | Exchange::BybitInverse
+                | Exchange::BinanceSpot
+                | Exchange::BybitSpot
         )
+    }
+
+    pub fn supports_heatmap_timeframe(&self, tf: Timeframe) -> bool {
+        match self {
+            Exchange::BybitSpot => tf != Timeframe::MS100,
+            Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
+                tf != Timeframe::MS100 && tf != Timeframe::MS200
+            }
+            _ => true,
+        }
     }
 }
 

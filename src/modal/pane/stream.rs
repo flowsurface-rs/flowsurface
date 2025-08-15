@@ -455,12 +455,7 @@ impl Modifier {
                             let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
                                 .iter()
                                 .copied()
-                                .filter(|tf| {
-                                    !(ticker.exchange == Exchange::BybitSpot
-                                        && *tf == Timeframe::MS100)
-                                        && !(ticker.exchange == Exchange::HyperliquidLinear
-                                            && (*tf == Timeframe::MS100 || *tf == Timeframe::MS200))
-                                })
+                                .filter(|tf| ticker.exchange.supports_heatmap_timeframe(*tf))
                                 .collect();
                             let heatmap_timeframe_grid = modifiers_grid(
                                 &heatmap_timeframes,
@@ -541,7 +536,7 @@ impl Modifier {
                         .push(text("Tick size multiplier").size(13))
                         .push(horizontal_rule(1).style(style::split_ruler));
 
-                    let allows_custom_tsizes = exchange != Exchange::HyperliquidLinear
+                    let allows_custom_tsizes = exchange.is_depth_client_aggr()
                         || matches!(kind, ModifierKind::Footprint(_, _));
 
                     let allowed_tm = if allows_custom_tsizes {
