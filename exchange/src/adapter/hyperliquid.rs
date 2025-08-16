@@ -271,16 +271,16 @@ async fn process_perp_assets(
         if let Ok(asset_info) = serde_json::from_value::<HyperliquidAssetInfo>(asset.clone()) {
             let ticker = Ticker::new(&asset_info.name, exchange);
 
-            if let Some(asset_ctx) = asset_contexts.get(index) {
-                if let Some(price) = extract_price_from_context(asset_ctx) {
-                    let ticker_info = create_ticker_info(
-                        ticker,
-                        price,
-                        asset_info.sz_decimals,
-                        MarketKind::LinearPerps,
-                    );
-                    ticker_info_map.insert(ticker, Some(ticker_info));
-                }
+            if let Some(asset_ctx) = asset_contexts.get(index)
+                && let Some(price) = extract_price_from_context(asset_ctx)
+            {
+                let ticker_info = create_ticker_info(
+                    ticker,
+                    price,
+                    asset_info.sz_decimals,
+                    MarketKind::LinearPerps,
+                );
+                ticker_info_map.insert(ticker, Some(ticker_info));
             }
         }
     }
@@ -299,33 +299,27 @@ async fn process_spot_assets(
     let mut ticker_info_map = HashMap::new();
 
     for pair in &spot_meta.universe {
-        if let Some(asset_ctx) = asset_contexts.get(pair.index as usize) {
-            if let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone()) {
-                let price = if ctx.mid_price > 0.0 {
-                    ctx.mid_price
-                } else {
-                    ctx.mark_price
-                };
+        if let Some(asset_ctx) = asset_contexts.get(pair.index as usize)
+            && let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
+        {
+            let price = if ctx.mid_price > 0.0 {
+                ctx.mid_price
+            } else {
+                ctx.mark_price
+            };
 
-                if price > 0.0 {
-                    if let Some(base_token) =
-                        spot_meta.tokens.iter().find(|t| t.index == pair.tokens[0])
-                    {
-                        let display_symbol =
-                            create_display_symbol(&pair.name, &spot_meta.tokens, &pair.tokens);
+            if price > 0.0
+                && let Some(base_token) =
+                    spot_meta.tokens.iter().find(|t| t.index == pair.tokens[0])
+            {
+                let display_symbol =
+                    create_display_symbol(&pair.name, &spot_meta.tokens, &pair.tokens);
 
-                        let ticker =
-                            Ticker::new_with_display(&pair.name, exchange, Some(&display_symbol));
+                let ticker = Ticker::new_with_display(&pair.name, exchange, Some(&display_symbol));
 
-                        let ticker_info = create_ticker_info(
-                            ticker,
-                            price,
-                            base_token.sz_decimals,
-                            MarketKind::Spot,
-                        );
-                        ticker_info_map.insert(ticker, Some(ticker_info));
-                    }
-                }
+                let ticker_info =
+                    create_ticker_info(ticker, price, base_token.sz_decimals, MarketKind::Spot);
+                ticker_info_map.insert(ticker, Some(ticker_info));
             }
         }
     }
@@ -467,10 +461,10 @@ pub fn depth_tick_from_cfg(price: f32, cfg: DepthFeedConfig) -> f32 {
         }
     };
 
-    if n_sig == SIG_FIG_LIMIT {
-        if let Some(m) = cfg.mantissa.filter(|m| ALLOWED_MANTISSA.contains(m)) {
-            tick *= m as f32;
-        }
+    if n_sig == SIG_FIG_LIMIT
+        && let Some(m) = cfg.mantissa.filter(|m| ALLOWED_MANTISSA.contains(m))
+    {
+        tick *= m as f32;
     }
 
     tick
@@ -479,9 +473,9 @@ pub fn depth_tick_from_cfg(price: f32, cfg: DepthFeedConfig) -> f32 {
 // snap to nearest 1–2–5 × 10^k
 fn snap_multiplier_to_125(multiplier: u16) -> (i32, i32) {
     // boundaries between {1,2,5,10} in log-space
-    const SQRT2: f32 = 1.41421356;
-    const SQRT10: f32 = 3.16227766;
-    const SQRT50: f32 = 7.07106781;
+    const SQRT2: f32 = std::f32::consts::SQRT_2;
+    const SQRT10: f32 = 3.162_277_7;
+    const SQRT50: f32 = 7.071_068;
 
     let m = (multiplier as f32).max(1.0);
     let mut kf = m.log10().floor();
@@ -682,7 +676,6 @@ async fn process_spot_ticker_stats(
     metadata: &Value,
     exchange: Exchange,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
-    // Parse metadata for spot: [spot_meta, [asset_contexts...]]
     let spot_meta = metadata
         .get(0)
         .ok_or_else(|| AdapterError::ParseError("Missing spot meta data".to_string()))?;
@@ -696,36 +689,30 @@ async fn process_spot_ticker_stats(
 
     let mut ticker_stats_map = HashMap::new();
 
-    // Process spot symbols from metadata (use mids for verification)
+    // use mids for verification
     for pair in &spot_meta.universe {
-        // Check if this pair has a price in allMids
-        if mids.contains_key(&pair.name) {
-            if let Some(asset_ctx) = asset_contexts.get(pair.index as usize) {
-                if let Ok(ctx) =
-                    serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
-                {
-                    let display_symbol =
-                        create_display_symbol(&pair.name, &spot_meta.tokens, &pair.tokens);
+        if mids.contains_key(&pair.name)
+            && let Some(asset_ctx) = asset_contexts.get(pair.index as usize)
+            && let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
+        {
+            let display_symbol = create_display_symbol(&pair.name, &spot_meta.tokens, &pair.tokens);
 
-                    let daily_price_chg = if ctx.prev_day_price > 0.0 {
-                        ((ctx.mid_price - ctx.prev_day_price) / ctx.prev_day_price) * 100.0
-                    } else {
-                        0.0
-                    };
+            let daily_price_chg = if ctx.prev_day_price > 0.0 {
+                ((ctx.mid_price - ctx.prev_day_price) / ctx.prev_day_price) * 100.0
+            } else {
+                0.0
+            };
 
-                    let ticker =
-                        Ticker::new_with_display(&pair.name, exchange, Some(&display_symbol));
+            let ticker = Ticker::new_with_display(&pair.name, exchange, Some(&display_symbol));
 
-                    ticker_stats_map.insert(
-                        ticker,
-                        TickerStats {
-                            mark_price: ctx.mark_price,
-                            daily_price_chg,
-                            daily_volume: ctx.day_notional_volume,
-                        },
-                    );
-                }
-            }
+            ticker_stats_map.insert(
+                ticker,
+                TickerStats {
+                    mark_price: ctx.mark_price,
+                    daily_price_chg,
+                    daily_volume: ctx.day_notional_volume,
+                },
+            );
         }
     }
 
@@ -747,40 +734,36 @@ fn find_asset_stats(
             .unwrap_or(false)
     });
 
-    if let Some(index) = asset_index {
-        if let Some(asset_ctx) = asset_ctxs.get(index) {
-            let prev_day_px = asset_ctx
-                .get("prevDayPx")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    AdapterError::ParseError("Previous day price not found".to_string())
-                })?
-                .parse::<f32>()
-                .map_err(|_| {
-                    AdapterError::ParseError("Failed to parse previous day price".to_string())
-                })?;
+    if let Some(index) = asset_index
+        && let Some(asset_ctx) = asset_ctxs.get(index)
+    {
+        let prev_day_px = asset_ctx
+            .get("prevDayPx")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::ParseError("Previous day price not found".to_string()))?
+            .parse::<f32>()
+            .map_err(|_| {
+                AdapterError::ParseError("Failed to parse previous day price".to_string())
+            })?;
 
-            let day_ntl_vlm = asset_ctx
-                .get("dayNtlVlm")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AdapterError::ParseError("Daily volume not found".to_string()))?
-                .parse::<f32>()
-                .map_err(|_| {
-                    AdapterError::ParseError("Failed to parse daily volume".to_string())
-                })?;
+        let day_ntl_vlm = asset_ctx
+            .get("dayNtlVlm")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::ParseError("Daily volume not found".to_string()))?
+            .parse::<f32>()
+            .map_err(|_| AdapterError::ParseError("Failed to parse daily volume".to_string()))?;
 
-            let daily_price_chg = if prev_day_px > 0.0 {
-                ((mid_price - prev_day_px) / prev_day_px) * 100.0
-            } else {
-                0.0
-            };
+        let daily_price_chg = if prev_day_px > 0.0 {
+            ((mid_price - prev_day_px) / prev_day_px) * 100.0
+        } else {
+            0.0
+        };
 
-            return Ok(Some(TickerStats {
-                mark_price: mid_price,
-                daily_price_chg,
-                daily_volume: day_ntl_vlm,
-            }));
-        }
+        return Ok(Some(TickerStats {
+            mark_price: mid_price,
+            daily_price_chg,
+            daily_volume: day_ntl_vlm,
+        }));
     }
 
     Ok(None)
@@ -1300,20 +1283,21 @@ async fn fetch_orderbook(
         "coin": symbol,
     });
 
-    if let Some(cfg) = cfg {
-        if let Some(obj) = body.as_object_mut() {
-            if let Some(n) = cfg.n_sig_figs {
-                obj.insert("nSigFigs".into(), json!(n));
-            }
-            // Only send mantissa if:
-            // - nSigFigs == 5
-            // - mantissa is 2 or 5
-            // (mantissa=1 is redundant and can trigger null responses on some assets)
-            if let (Some(m), Some(5)) = (cfg.mantissa, cfg.n_sig_figs) {
-                if m != 1 && ALLOWED_MANTISSA.contains(&m) {
-                    obj.insert("mantissa".into(), json!(m));
-                }
-            }
+    if let Some(cfg) = cfg
+        && let Some(obj) = body.as_object_mut()
+    {
+        if let Some(n) = cfg.n_sig_figs {
+            obj.insert("nSigFigs".into(), json!(n));
+        }
+        // Only send mantissa if:
+        // - nSigFigs == 5
+        // - mantissa is 2 or 5
+        // (mantissa=1 is redundant and can trigger null responses on some assets)
+        if let (Some(m), Some(5)) = (cfg.mantissa, cfg.n_sig_figs)
+            && m != 1
+            && ALLOWED_MANTISSA.contains(&m)
+        {
+            obj.insert("mantissa".into(), json!(m));
         }
     }
 

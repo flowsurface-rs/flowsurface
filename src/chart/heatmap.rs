@@ -693,9 +693,13 @@ impl canvas::Program<Message> for HeatmapChart {
                 });
             }
 
-            let volume_profile = self.studies.iter().find_map(|study| match study {
-                HeatmapStudy::VolumeProfile(profile) => Some(profile),
-            });
+            let volume_profile: Option<&ProfileKind> = self
+                .studies
+                .iter()
+                .map(|study| match study {
+                    HeatmapStudy::VolumeProfile(profile) => profile,
+                })
+                .next();
 
             if let Some(profile_kind) = volume_profile {
                 let area_width = (bounds.width / chart.scaling) * 0.1;

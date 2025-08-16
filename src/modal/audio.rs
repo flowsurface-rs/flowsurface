@@ -127,7 +127,7 @@ impl AudioStream {
                 streams.retain(|pair| {
                     let t = pair.0;
                     let key = (t.exchange, t);
-                    if seen.iter().any(|k| *k == key) {
+                    if seen.contains(&key) {
                         false
                     } else {
                         seen.push(key);

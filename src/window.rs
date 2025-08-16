@@ -50,7 +50,7 @@ where
     M: MaybeSend + 'static,
 {
     // Create a task that collects specs for each window
-    let window_spec_tasks: Vec<Task<(window::Id, (Option<Point>, Size))>> = window_ids
+    let window_spec_tasks = window_ids
         .into_iter()
         .map(|window_id| {
             // Map both tasks to produce an enum or tuple to distinguish them
@@ -72,7 +72,7 @@ where
                     (window_id, (position, size))
                 })
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     // Batch all window tasks together and collect results
     Task::batch(window_spec_tasks)
