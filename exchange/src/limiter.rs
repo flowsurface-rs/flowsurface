@@ -37,15 +37,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
     let mut request_builder = HTTP_CLIENT.request(method, url);
 
     if let Some(body) = json_body {
-        log::debug!(
-            "Hyperliquid HTTP Request to {}: {}",
-            url,
-            serde_json::to_string_pretty(body)
-                .unwrap_or_else(|_| "Failed to serialize".to_string())
-        );
         request_builder = request_builder.json(body);
-    } else {
-        log::debug!("Hyperliquid HTTP Request to {} (no body)", url);
     }
 
     let response = request_builder

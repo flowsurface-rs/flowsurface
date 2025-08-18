@@ -31,6 +31,12 @@ pub enum MarketKind {
 }
 
 impl MarketKind {
+    pub const ALL: [MarketKind; 3] = [
+        MarketKind::Spot,
+        MarketKind::LinearPerps,
+        MarketKind::InversePerps,
+    ];
+
     pub fn qty_in_quote_value(&self, qty: f32, price: f32, size_in_quote_currency: bool) -> f32 {
         match self {
             MarketKind::InversePerps => qty,
@@ -209,6 +215,31 @@ fn default_depth_aggr() -> StreamTicksize {
 pub struct StreamSpecs {
     pub depth: Vec<(Ticker, StreamTicksize)>,
     pub kline: Vec<(Ticker, Timeframe)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExchangeInclusive {
+    Bybit,
+    Binance,
+    Hyperliquid,
+}
+
+impl ExchangeInclusive {
+    pub const ALL: [ExchangeInclusive; 3] = [
+        ExchangeInclusive::Bybit,
+        ExchangeInclusive::Binance,
+        ExchangeInclusive::Hyperliquid,
+    ];
+
+    pub fn of(ex: Exchange) -> Self {
+        match ex {
+            Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => Self::Bybit,
+            Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
+                Self::Binance
+            }
+            Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Self::Hyperliquid,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
