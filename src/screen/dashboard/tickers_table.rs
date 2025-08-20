@@ -468,6 +468,9 @@ impl TickersTable {
 
     pub fn view(&self, bounds: Size) -> Element<'_, Message> {
         let matches_search = |row: &TickerRowData| {
+            if self.search_query.is_empty() {
+                return true;
+            }
             let (display_str, _) = row.ticker.display_symbol_and_type();
             let (raw_str, _) = row.ticker.to_full_symbol_and_type();
             display_str.contains(&self.search_query) || raw_str.contains(&self.search_query)
@@ -483,10 +486,10 @@ impl TickersTable {
             .ticker_rows
             .iter()
             .filter(|row| {
-                matches_search(row)
+                (!self.show_favorites || !row.is_favorited)
                     && matches_market(row)
                     && matches_exchange(row)
-                    && (!self.show_favorites || !row.is_favorited)
+                    && matches_search(row)
             })
             .collect();
 
@@ -497,9 +500,9 @@ impl TickersTable {
                 .iter()
                 .filter(|row| {
                     row.is_favorited
-                        && matches_search(row)
                         && matches_market(row)
                         && matches_exchange(row)
+                        && matches_search(row)
                 })
                 .collect();
         }
@@ -609,14 +612,23 @@ impl TickersTable {
                 horizontal_rule(1.0).style(style::split_ruler),
                 exchange_filters,
                 horizontal_rule(1.0).style(style::split_ruler),
-                text(if rest_n == 0 && fav_n == 0 {
-                    "No tickers match filters".to_string()
-                } else {
-                    format!(
-                        "Showing {} tickers from {} exchanges",
-                        rest_n + fav_n,
-                        self.selected_exchanges.len()
-                    )
+                text({
+                    let total = rest_n + fav_n;
+                    if total == 0 {
+                        "No tickers match filters".to_string()
+                    } else {
+                        let ticker_str = if total == 1 { "ticker" } else { "tickers" };
+                        let exchanges = self.selected_exchanges.len();
+                        let exchange_str = if exchanges == 1 {
+                            "exchange"
+                        } else {
+                            "exchanges"
+                        };
+                        format!(
+                            "Showing {} {} from {} {}",
+                            total, ticker_str, exchanges, exchange_str
+                        )
+                    }
                 })
                 .align_x(Alignment::Center),
                 horizontal_rule(2.0).style(style::split_ruler),
