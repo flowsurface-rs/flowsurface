@@ -412,6 +412,13 @@ impl Dashboard {
                         chart.set_cluster_kind(cluster_kind);
                     }
                 }
+                pane::Message::ClusterScalingSelected(pane, scaling) => {
+                    if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Kline(chart, _) = &mut pane_state.content
+                    {
+                        chart.set_cluster_scaling(scaling);
+                    }
+                }
                 pane::Message::StudyConfigurator(pane, study_msg) => {
                     if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
                         match study_msg {

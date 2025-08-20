@@ -86,6 +86,7 @@ pub enum Message {
     DeleteNotification(pane_grid::Pane, usize),
     ReorderIndicator(pane_grid::Pane, column_drag::DragEvent),
     ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
+    ClusterScalingSelected(pane_grid::Pane, data::chart::kline::ClusterScaling),
     StreamModifierChanged(pane_grid::Pane, modal::stream::Message),
     StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
@@ -913,6 +914,7 @@ impl Content {
                     .filter(|k| matches!(k, data::chart::KlineChartKind::Footprint { .. }))
                     .unwrap_or_else(|| data::chart::KlineChartKind::Footprint {
                         clusters: data::chart::kline::ClusterKind::default(),
+                        scaling: data::chart::kline::ClusterScaling::default(),
                         studies: vec![],
                     }),
             ),

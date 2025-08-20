@@ -225,6 +225,8 @@ pub enum KlineChartKind {
     Candles,
     Footprint {
         clusters: ClusterKind,
+        #[serde(default)]
+        scaling: ClusterScaling,
         studies: Vec<FootprintStudy>,
     },
 }
@@ -308,6 +310,38 @@ impl std::fmt::Display for ClusterKind {
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub enum ClusterScaling {
+    #[default]
+    /// Scale based on the maximum quantity in the visible range.
+    VisibleRange,
+    /// Blend global VisibleRange and per-cluster Individual using a weight in [0.0, 1.0].
+    /// weight = fraction of global contribution (1.0 == all-global, 0.0 == all-individual).
+    Hybrid { weight: f32 },
+    /// Scale based only on the maximum quantity inside the datapoint (per-candle).
+    Datapoint,
+}
+
+impl ClusterScaling {
+    pub const ALL: [ClusterScaling; 3] = [
+        ClusterScaling::VisibleRange,
+        ClusterScaling::Hybrid { weight: 0.2 },
+        ClusterScaling::Datapoint,
+    ];
+}
+
+impl std::fmt::Display for ClusterScaling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClusterScaling::VisibleRange => write!(f, "Visible Range"),
+            ClusterScaling::Hybrid { weight } => write!(f, "Hybrid (weight: {:.2})", weight),
+            ClusterScaling::Datapoint => write!(f, "Per-candle"),
+        }
+    }
+}
+
+impl std::cmp::Eq for ClusterScaling {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum FootprintStudy {

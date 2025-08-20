@@ -5,6 +5,7 @@ use super::{
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
+use data::chart::kline::ClusterScaling;
 use data::chart::{
     KlineChartKind, ViewConfig,
     indicator::{Indicator, KlineIndicator},
@@ -570,6 +571,17 @@ impl KlineChart {
         self.invalidate(None);
     }
 
+    pub fn set_cluster_scaling(&mut self, new_scaling: ClusterScaling) {
+        if let KlineChartKind::Footprint {
+            ref mut scaling, ..
+        } = self.kind
+        {
+            *scaling = new_scaling;
+        }
+
+        self.invalidate(None);
+    }
+
     pub fn basis(&self) -> Basis {
         self.chart.basis
     }
@@ -939,7 +951,11 @@ impl canvas::Program<Message> for KlineChart {
             let interval_to_x = |interval: u64| chart.interval_to_x(interval);
 
             match &self.kind {
-                KlineChartKind::Footprint { clusters, studies } => {
+                KlineChartKind::Footprint {
+                    clusters,
+                    scaling,
+                    studies,
+                } => {
                     let (highest, lowest) = chart.price_range(&region);
 
                     let max_cluster_qty = self.calc_qty_scales(
@@ -996,6 +1012,9 @@ impl canvas::Program<Message> for KlineChart {
                         latest,
                         interval_to_x,
                         |frame, x_position, kline, trades| {
+                            let cluster_scaling =
+                                effective_cluster_qty(*scaling, max_cluster_qty, trades, *clusters);
+
                             draw_clusters(
                                 frame,
                                 price_to_y,
@@ -1005,7 +1024,7 @@ impl canvas::Program<Message> for KlineChart {
                                 candle_width,
                                 cell_height_unscaled,
                                 cell_width_unscaled,
-                                max_cluster_qty,
+                                cluster_scaling,
                                 palette,
                                 text_size,
                                 self.tick_size(),
@@ -1276,6 +1295,42 @@ fn draw_all_npocs(
                     dp.footprint.poc.as_ref().map(|poc| (*timestamp, poc))
                 })
                 .for_each(|(interval, poc)| draw_the_line(interval, poc));
+        }
+    }
+}
+
+fn effective_cluster_qty(
+    scaling: ClusterScaling,
+    visible_max: f32,
+    footprint: &KlineTrades,
+    cluster_kind: ClusterKind,
+) -> f32 {
+    let individual_max = match cluster_kind {
+        ClusterKind::BidAsk => footprint
+            .trades
+            .values()
+            .map(|g| g.buy_qty.max(g.sell_qty))
+            .fold(0.0_f32, f32::max),
+        ClusterKind::DeltaProfile => footprint
+            .trades
+            .values()
+            .map(|g| (g.buy_qty - g.sell_qty).abs())
+            .fold(0.0_f32, f32::max),
+        ClusterKind::VolumeProfile => footprint
+            .trades
+            .values()
+            .map(|g| g.buy_qty + g.sell_qty)
+            .fold(0.0_f32, f32::max),
+    };
+
+    let safe = |v: f32| if v <= f32::EPSILON { 1.0 } else { v };
+
+    match scaling {
+        ClusterScaling::VisibleRange => safe(visible_max),
+        ClusterScaling::Datapoint => safe(individual_max),
+        ClusterScaling::Hybrid { weight } => {
+            let w = weight.clamp(0.0, 1.0);
+            safe(visible_max * w + individual_max * (1.0 - w))
         }
     }
 }

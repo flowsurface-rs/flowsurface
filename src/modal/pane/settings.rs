@@ -373,11 +373,42 @@ pub fn kline_cfg_view<'a>(
         KlineChartKind::Candles => column![text(
             "This chart type doesn't have any configurations, WIP..."
         )],
-        KlineChartKind::Footprint { clusters, studies } => {
+        KlineChartKind::Footprint {
+            clusters,
+            scaling,
+            studies,
+        } => {
             let cluster_picklist =
                 pick_list(ClusterKind::ALL, Some(clusters), move |new_cluster_kind| {
                     Message::ClusterKindSelected(pane, new_cluster_kind)
                 });
+
+            let scaling = {
+                let picklist = pick_list(
+                    data::chart::kline::ClusterScaling::ALL,
+                    Some(scaling),
+                    move |new_scaling| Message::ClusterScalingSelected(pane, new_scaling),
+                );
+
+                if let data::chart::kline::ClusterScaling::Hybrid { weight } = scaling {
+                    let hybrid_slider = slider(0.0..=1.0, *weight, move |new_weight| {
+                        Message::ClusterScalingSelected(
+                            pane,
+                            data::chart::kline::ClusterScaling::Hybrid { weight: new_weight },
+                        )
+                    })
+                    .step(0.05);
+
+                    column![
+                        picklist,
+                        hybrid_slider,
+                        text("Blend visible-range and per-candle scaling"),
+                    ]
+                    .spacing(8)
+                } else {
+                    column![picklist].spacing(8)
+                }
+            };
 
             let study_cfg = study_config.view(studies, basis).map(move |msg| {
                 Message::StudyConfigurator(pane, study::StudyMessage::Footprint(msg))
@@ -385,6 +416,7 @@ pub fn kline_cfg_view<'a>(
 
             split_column![
                 column![text("Cluster type").size(14), cluster_picklist].spacing(8),
+                column![text("Cluster scaling").size(14), scaling].spacing(8),
                 column![text("Studies").size(14), study_cfg].spacing(8),
                 row![
                     horizontal_space(),
