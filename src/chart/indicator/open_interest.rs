@@ -14,16 +14,21 @@ pub fn indicator_elem<'a>(
 ) -> iced::Element<'a, Message> {
     match chart_state.basis {
         Basis::Time(timeframe) => {
-            let Some(ticker_info) = chart_state.ticker_info else {
+            if latest < earliest {
                 return row![].into();
+            }
+
+            let exchange = match chart_state.ticker_info.as_ref() {
+                Some(info) => info.exchange(),
+                None => return row![].into(),
             };
-            let exchange = ticker_info.exchange();
             if exchange == exchange::adapter::Exchange::HyperliquidLinear {
                 return center(text(format!(
                     "WIP: Open Interest is not available for {exchange}"
                 )))
                 .into();
             }
+
             if timeframe < Timeframe::M5 || timeframe == Timeframe::H2 || timeframe > Timeframe::H4
             {
                 return center(text(format!(
@@ -31,33 +36,29 @@ pub fn indicator_elem<'a>(
                 )))
                 .into();
             }
-            if latest < earliest {
-                return row![].into();
-            }
         }
         Basis::Tick(_) => {
             return center(text("WIP: Open Interest is not available for tick charts.")).into();
         }
     }
 
-    let plot = LinePlot::new(
-        |v: &f32| *v,
-        |v: &f32, next: Option<&f32>| {
-            let value_text = format!("Value: {}", format_with_commas(*v));
-            let change_text = if let Some(n) = next {
-                let d = *n - *v;
-                let sign = if d >= 0.0 { "+" } else { "" };
-                format!("Change: {}{}", sign, format_with_commas(d))
-            } else {
-                "Change: N/A".to_string()
-            };
-            PlotTooltip::new(format!("{value_text}\n{change_text}"))
-        },
-    )
-    .stroke_width(1.0)
-    .show_points(true)
-    .point_radius_factor(0.2)
-    .padding(0.08);
+    let tooltip = |v: &f32, next: Option<&f32>| {
+        let value_text = format!("Open Interest: {}", format_with_commas(*v));
+        let change_text = if let Some(n) = next {
+            let d = *n - *v;
+            let sign = if d >= 0.0 { "+" } else { "" };
+            format!("Change: {}{}", sign, format_with_commas(d))
+        } else {
+            "Change: N/A".to_string()
+        };
+        PlotTooltip::new(format!("{value_text}\n{change_text}"))
+    };
+
+    let plot = LinePlot::new(|v: &f32| *v, tooltip)
+        .stroke_width(1.0)
+        .show_points(true)
+        .point_radius_factor(0.2)
+        .padding(0.08);
 
     indicator_row(chart_state, cache, plot, datapoints, earliest..=latest)
 }
