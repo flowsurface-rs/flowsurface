@@ -16,7 +16,9 @@ pub trait Series {
         Self: 'a;
 
     fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a>;
+
     fn at(&self, x: u64) -> Option<&Self::Y>;
+
     fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
     where
         Self: 'a;
@@ -27,6 +29,7 @@ pub struct BTreeRangeIter<'a, Y> {
 }
 impl<'a, Y> Iterator for BTreeRangeIter<'a, Y> {
     type Item = (u64, &'a Y);
+
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|(k, v)| (*k, v))
     }
@@ -44,9 +47,11 @@ impl<Y> Series for BTreeMap<u64, Y> {
             inner: self.range(range),
         }
     }
+
     fn at(&self, x: u64) -> Option<&Self::Y> {
         self.get(&x)
     }
+
     fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
     where
         Self: 'a,
@@ -70,11 +75,6 @@ impl YScale {
     }
 }
 
-pub struct PlotCtx<'a> {
-    pub theme: &'a Theme,
-    pub chart_state: &'a ViewState,
-}
-
 pub trait Plot<S: Series> {
     fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)>;
 
@@ -82,10 +82,11 @@ pub trait Plot<S: Series> {
         (min, max)
     }
 
-    fn draw(
-        &self,
-        frame: &mut canvas::Frame,
-        ctx: &PlotCtx<'_>,
+    fn draw<'a>(
+        &'a self,
+        frame: &'a mut canvas::Frame,
+        ctx: &'a ViewState,
+        theme: &Theme,
         s: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
@@ -101,7 +102,7 @@ where
 {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
-    pub chart_state: &'a ViewState,
+    pub ctx: &'a ViewState,
     pub plot: P,
     pub series: &'a S,
     pub max_for_labels: f32,
@@ -145,28 +146,28 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let cs = self.chart_state;
-        if cs.bounds.width == 0.0 {
+        let ctx = &self.ctx;
+        if ctx.bounds.width == 0.0 {
             return vec![];
         }
 
         let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
             frame.translate(center);
-            frame.scale(cs.scaling);
+            frame.scale(ctx.scaling);
             frame.translate(Vector::new(
-                cs.translation.x,
-                (-bounds.height / cs.scaling) / 2.0,
+                ctx.translation.x,
+                (-bounds.height / ctx.scaling) / 2.0,
             ));
 
-            let width = frame.width() / cs.scaling;
+            let width = frame.width() / ctx.scaling;
             let region = Rectangle {
-                x: -cs.translation.x - width / 2.0,
+                x: -ctx.translation.x - width / 2.0,
                 y: 0.0,
                 width,
-                height: frame.height() / cs.scaling,
+                height: frame.height() / ctx.scaling,
             };
-            let (earliest, latest) = cs.interval_range(&region);
+            let (earliest, latest) = ctx.interval_range(&region);
             if latest < earliest {
                 return;
             }
@@ -174,33 +175,29 @@ where
             let scale = YScale {
                 min: self.min_for_labels,
                 max: self.max_for_labels,
-                px_height: frame.height() / cs.scaling,
+                px_height: frame.height() / ctx.scaling,
             };
 
-            let ctx = PlotCtx {
-                theme,
-                chart_state: cs,
-            };
             self.plot
-                .draw(frame, &ctx, self.series, earliest..=latest, &scale);
+                .draw(frame, ctx, theme, self.series, earliest..=latest, &scale);
         });
 
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             let dashed = dashed_line(theme);
-            if let Some(cursor_position) = cursor.position_in(cs.bounds) {
+            if let Some(cursor_position) = cursor.position_in(ctx.bounds) {
                 // vertical snap by basis
-                let width = frame.width() / cs.scaling;
+                let width = frame.width() / ctx.scaling;
                 let region = Rectangle {
-                    x: -cs.translation.x - width / 2.0,
+                    x: -ctx.translation.x - width / 2.0,
                     y: 0.0,
                     width,
-                    height: frame.height() / cs.scaling,
+                    height: frame.height() / ctx.scaling,
                 };
-                let earliest = cs.x_to_interval(region.x) as f64;
-                let latest = cs.x_to_interval(region.x + region.width) as f64;
+                let earliest = ctx.x_to_interval(region.x) as f64;
+                let latest = ctx.x_to_interval(region.x + region.width) as f64;
 
                 let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
-                let rounded_x = match cs.basis {
+                let rounded_x = match ctx.basis {
                     Basis::Time(tf) => {
                         let step = tf.to_milliseconds() as f64;
                         ((earliest + crosshair_ratio * (latest - earliest)) / step).round() as u64
@@ -209,8 +206,8 @@ where
                     Basis::Tick(_) => {
                         let chart_x_min = region.x;
                         let crosshair_pos = chart_x_min + (crosshair_ratio as f32) * region.width;
-                        let idx = (crosshair_pos / cs.cell_width).round();
-                        cs.x_to_interval(idx * cs.cell_width)
+                        let idx = (crosshair_pos / ctx.cell_width).round();
+                        ctx.x_to_interval(idx * ctx.cell_width)
                     }
                 };
                 let snap_ratio = ((rounded_x as f64 - earliest) / (latest - earliest)) as f32;
@@ -227,8 +224,8 @@ where
                 if let Some(y) = self.series.at(rounded_x) {
                     let next = self.series.next_after(rounded_x).map(|(_, v)| v);
 
-                    let tip = self.plot.tooltip(y, next, theme);
-                    let (tooltip_w, tooltip_h) = tip.measure();
+                    let plot_tooltip = self.plot.tooltip(y, next, theme);
+                    let (tooltip_w, tooltip_h) = plot_tooltip.guesstimate();
 
                     let palette = theme.extended_palette();
 
@@ -238,7 +235,7 @@ where
                         palette.background.weakest.color.scale_alpha(0.9),
                     );
                     frame.fill_text(canvas::Text {
-                        content: tip.text,
+                        content: plot_tooltip.text,
                         position: Point::new(8.0, 2.0),
                         size: iced::Pixels(10.0),
                         color: palette.background.base.text,
@@ -304,7 +301,7 @@ where
     let canvas = Canvas::new(ChartCanvas::<P, S> {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
-        chart_state,
+        ctx: chart_state,
         plot,
         series,
         max_for_labels: max,
@@ -436,16 +433,17 @@ where
         (min, max)
     }
 
-    fn draw(
+    fn draw<'a>(
         &self,
         frame: &mut canvas::Frame,
-        ctx: &PlotCtx<'_>,
+        ctx: &'a ViewState,
+        theme: &Theme,
         s: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        let palette = ctx.theme.extended_palette();
-        let bar_width = ctx.chart_state.cell_width * self.bar_width_factor;
+        let palette = theme.extended_palette();
+        let bar_width = ctx.cell_width * self.bar_width_factor;
 
         let baseline_value = match self.baseline {
             Baseline::Zero => 0.0,
@@ -455,12 +453,11 @@ where
         let y_base = scale.to_y(baseline_value);
 
         for (x, y) in s.range_iter(range.clone()) {
-            let left = ctx.chart_state.interval_to_x(x) - (ctx.chart_state.cell_width / 2.0);
+            let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
 
             let total = (self.main_height)(y);
             let rel = total - baseline_value;
 
-            // Only upward bars are rendered (consistent with previous behavior)
             let (top_y, h_total) = if rel > 0.0 {
                 let y_total = scale.to_y(total);
                 let h = (y_base - y_total).max(0.0);
@@ -474,7 +471,6 @@ where
 
             match (self.classify)(y) {
                 BarClass::Single => {
-                    // Single bar: draw using secondary strong color; no overlay
                     frame.fill_rectangle(
                         Point::new(left, top_y),
                         Size::new(bar_width, h_total),
@@ -482,7 +478,6 @@ where
                     );
                 }
                 BarClass::Overlay { overlay } => {
-                    // Overlay: signed value; sign selects up/down color
                     let up = overlay >= 0.0;
                     let base_color = if up {
                         palette.success.base.color
@@ -490,14 +485,12 @@ where
                         palette.danger.base.color
                     };
 
-                    // Base (total) with alpha
                     frame.fill_rectangle(
                         Point::new(left, top_y),
                         Size::new(bar_width, h_total),
                         base_color.scale_alpha(0.3),
                     );
 
-                    // Overlay magnitude (always drawn upward from baseline in current UI)
                     let ov_abs = overlay.abs().max(0.0);
                     if ov_abs > 0.0 {
                         let y_overlay = scale.to_y(baseline_value + ov_abs);
@@ -520,7 +513,6 @@ where
     }
 }
 
-// Generic line plot: handles the whole draw loop and points.
 pub struct LinePlot<M, TT> {
     pub map_y: M,
     pub tooltip: TT,
@@ -597,45 +589,47 @@ where
         }
     }
 
-    fn draw(
+    fn draw<'a>(
         &self,
         frame: &mut canvas::Frame,
-        ctx: &PlotCtx<'_>,
+        ctx: &'a ViewState,
+        theme: &Theme,
         s: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        let palette = ctx.theme.extended_palette();
+        let palette = theme.extended_palette();
         let color = palette.secondary.strong.color;
+
+        let stroke = Stroke::with_color(
+            Stroke {
+                width: self.stroke_width,
+                ..Stroke::default()
+            },
+            color,
+        );
 
         // Polyline
         let mut prev: Option<(f32, f32)> = None;
         for (x, y) in s.range_iter(range.clone()) {
-            let sx = ctx.chart_state.interval_to_x(x) - (ctx.chart_state.cell_width / 2.0);
+            let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
             let vy = (self.map_y)(y);
             let sy = scale.to_y(vy);
             if let Some((px, py)) = prev {
                 frame.stroke(
                     &Path::line(iced::Point::new(px, py), iced::Point::new(sx, sy)),
-                    Stroke::with_color(
-                        Stroke {
-                            width: self.stroke_width,
-                            ..Stroke::default()
-                        },
-                        color,
-                    ),
+                    stroke,
                 );
             }
             prev = Some((sx, sy));
         }
 
-        // Points
         if self.show_points {
-            let r = (ctx.chart_state.cell_width * self.point_radius_factor).min(5.0);
+            let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
             for (x, y) in s.range_iter(range) {
-                let sx = ctx.chart_state.interval_to_x(x) - (ctx.chart_state.cell_width / 2.0);
+                let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
                 let sy = scale.to_y((self.map_y)(y));
-                frame.fill(&Path::circle(iced::Point::new(sx, sy), r), color);
+                frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
             }
         }
     }
@@ -650,35 +644,29 @@ pub struct PlotTooltip {
 }
 
 impl PlotTooltip {
+    const TOOLTIP_CHAR_W: f32 = 8.0;
+    const TOOLTIP_LINE_H: f32 = 14.0;
+    const TOOLTIP_PAD_X: f32 = 8.0; // left+right padding total
+    const TOOLTIP_PAD_Y: f32 = 6.0; // top+bottom padding total
+
     pub fn new<T: Into<String>>(text: T) -> Self {
         Self { text: text.into() }
     }
 
-    // Measure based on a fixed font metrics guess.
-    pub fn measure(&self) -> (f32, f32) {
-        measure_tooltip_text(&self.text)
-    }
-}
+    pub fn guesstimate(&self) -> (f32, f32) {
+        let mut max_cols: usize = 0;
+        let mut lines: usize = 0;
 
-// Reasonable defaults; tweak if you change font or size.
-const TOOLTIP_CHAR_W: f32 = 8.0;
-const TOOLTIP_LINE_H: f32 = 14.0;
-const TOOLTIP_PAD_X: f32 = 8.0; // left+right padding total
-const TOOLTIP_PAD_Y: f32 = 6.0; // top+bottom padding total
-
-pub fn measure_tooltip_text(text: &str) -> (f32, f32) {
-    let mut max_cols: usize = 0;
-    let mut lines: usize = 0;
-
-    for line in text.split('\n') {
-        lines += 1;
-        let cols = line.chars().count(); // naive width; good enough for monospace-ish UI
-        if cols > max_cols {
-            max_cols = cols;
+        for line in self.text.split('\n') {
+            lines += 1;
+            let cols = line.chars().count();
+            if cols > max_cols {
+                max_cols = cols;
+            }
         }
-    }
 
-    let width = (max_cols as f32) * TOOLTIP_CHAR_W + TOOLTIP_PAD_X;
-    let height = (lines.max(1) as f32) * TOOLTIP_LINE_H + TOOLTIP_PAD_Y;
-    (width, height)
+        let width = (max_cols as f32) * Self::TOOLTIP_CHAR_W + Self::TOOLTIP_PAD_X;
+        let height = (lines.max(1) as f32) * Self::TOOLTIP_LINE_H + Self::TOOLTIP_PAD_Y;
+        (width, height)
+    }
 }
