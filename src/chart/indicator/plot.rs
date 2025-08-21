@@ -24,17 +24,6 @@ pub trait Series {
         Self: 'a;
 }
 
-pub struct BTreeRangeIter<'a, Y> {
-    inner: std::collections::btree_map::Range<'a, u64, Y>,
-}
-impl<'a, Y> Iterator for BTreeRangeIter<'a, Y> {
-    type Item = (u64, &'a Y);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(k, v)| (*k, v))
-    }
-}
-
 impl<Y> Series for BTreeMap<u64, Y> {
     type Y = Y;
     type RangeIter<'a>
@@ -60,11 +49,109 @@ impl<Y> Series for BTreeMap<u64, Y> {
     }
 }
 
+impl<Y> Series for &BTreeMap<u64, Y> {
+    type Y = Y;
+    type RangeIter<'a>
+        = BTreeRangeIter<'a, Y>
+    where
+        Self: 'a;
+
+    fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a> {
+        BTreeRangeIter {
+            inner: (**self).range(range),
+        }
+    }
+
+    fn at(&self, x: u64) -> Option<&Self::Y> {
+        (**self).get(&x)
+    }
+
+    fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        (**self).range((x + 1)..).next().map(|(k, v)| (*k, v))
+    }
+}
+
+pub struct RevBTreeRangeIter<'a, Y> {
+    inner: std::iter::Rev<std::collections::btree_map::Range<'a, u64, Y>>,
+    offset: u64,
+}
+
+impl<'a, Y> Iterator for RevBTreeRangeIter<'a, Y> {
+    type Item = (u64, &'a Y);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, v)| (self.offset - *k, v))
+    }
+}
+
+pub struct ReversedBTreeSeries<'a, Y> {
+    inner: &'a BTreeMap<u64, Y>,
+    offset: u64, // largest key in inner
+}
+
+impl<'a, Y> ReversedBTreeSeries<'a, Y> {
+    pub fn new(inner: &'a BTreeMap<u64, Y>) -> Self {
+        let offset = inner.last_key_value().map(|(k, _)| *k).unwrap_or(0);
+        Self { inner, offset }
+    }
+}
+
+impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
+    type Y = Y;
+    type RangeIter<'a>
+        = RevBTreeRangeIter<'a, Y>
+    where
+        Self: 'a;
+
+    fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a> {
+        let a = *range.start();
+        let b = *range.end();
+        let lo = self.offset.saturating_sub(b);
+        let hi = self.offset.saturating_sub(a);
+        let inner = self.inner.range(lo..=hi).rev();
+        RevBTreeRangeIter {
+            inner,
+            offset: self.offset,
+        }
+    }
+
+    fn at(&self, x: u64) -> Option<&Self::Y> {
+        let k = self.offset.checked_sub(x)?;
+        self.inner.get(&k)
+    }
+
+    fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let k = self.offset.checked_sub(x)?;
+        self.inner
+            .range(..k)
+            .next_back()
+            .map(|(kk, v)| (self.offset - *kk, v))
+    }
+}
+
+pub struct BTreeRangeIter<'a, Y> {
+    inner: std::collections::btree_map::Range<'a, u64, Y>,
+}
+impl<'a, Y> Iterator for BTreeRangeIter<'a, Y> {
+    type Item = (u64, &'a Y);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, v)| (*k, v))
+    }
+}
+
 pub struct YScale {
     pub min: f32,
     pub max: f32,
     pub px_height: f32,
 }
+
 impl YScale {
     pub fn to_y(&self, v: f32) -> f32 {
         if self.max <= self.min {
@@ -104,7 +191,7 @@ where
     pub crosshair_cache: &'a Cache,
     pub ctx: &'a ViewState,
     pub plot: P,
-    pub series: &'a S,
+    pub series: S,
     pub max_for_labels: f32,
     pub min_for_labels: f32,
 }
@@ -151,8 +238,9 @@ where
             return vec![];
         }
 
-        let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
         let indicator = self.indicator_cache.draw(renderer, bounds.size(), |frame| {
+            let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
+
             frame.translate(center);
             frame.scale(ctx.scaling);
             frame.translate(Vector::new(
@@ -179,7 +267,7 @@ where
             };
 
             self.plot
-                .draw(frame, ctx, theme, self.series, earliest..=latest, &scale);
+                .draw(frame, ctx, theme, &self.series, earliest..=latest, &scale);
         });
 
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
@@ -197,20 +285,31 @@ where
                 let latest = ctx.x_to_interval(region.x + region.width) as f64;
 
                 let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
-                let rounded_x = match ctx.basis {
+                let (rounded_x, snap_ratio) = match ctx.basis {
                     Basis::Time(tf) => {
                         let step = tf.to_milliseconds() as f64;
-                        ((earliest + crosshair_ratio * (latest - earliest)) / step).round() as u64
-                            * step as u64
+                        let rx = ((earliest + crosshair_ratio * (latest - earliest)) / step).round()
+                            as u64
+                            * step as u64;
+
+                        let sr = if latest <= earliest {
+                            0.5
+                        } else {
+                            ((rx as f64 - earliest) / (latest - earliest)) as f32
+                        };
+                        (rx, sr)
                     }
                     Basis::Tick(_) => {
+                        let snapped_x =
+                            (cursor_position.x / ctx.cell_width).round() * ctx.cell_width;
+                        let sr = snapped_x / bounds.width;
+
                         let chart_x_min = region.x;
-                        let crosshair_pos = chart_x_min + (crosshair_ratio as f32) * region.width;
-                        let idx = (crosshair_pos / ctx.cell_width).round();
-                        ctx.x_to_interval(idx * ctx.cell_width)
+                        let crosshair_pos = chart_x_min + sr * region.width;
+                        let rx = ctx.x_to_interval(crosshair_pos);
+                        (rx, sr)
                     }
                 };
-                let snap_ratio = ((rounded_x as f64 - earliest) / (latest - earliest)) as f32;
 
                 frame.stroke(
                     &Path::line(
@@ -286,7 +385,7 @@ pub fn indicator_row<'a, P, S>(
     chart_state: &'a ViewState,
     cache: &'a Caches,
     plot: P,
-    series: &'a S,
+    series: S,
     visible_range: RangeInclusive<u64>,
 ) -> Element<'a, Message>
 where
@@ -294,7 +393,7 @@ where
     S: Series + 'a,
 {
     let (min, max) = plot
-        .y_extents(series, visible_range)
+        .y_extents(&series, visible_range)
         .map(|(min, max)| plot.adjust_extents(min, max))
         .unwrap_or((0.0, 0.0));
 
@@ -420,23 +519,23 @@ where
             Baseline::Fixed(v) => v,
         };
 
-        let lo = min_ext;
-        let mut hi = max_v.max(min_ext + f32::EPSILON);
-        if hi > lo && self.padding > 0.0 {
-            hi *= 1.0 + self.padding;
+        let low = min_ext;
+        let mut high = max_v.max(min_ext + f32::EPSILON);
+        if high > low && self.padding > 0.0 {
+            high *= 1.0 + self.padding;
         }
 
-        Some((lo, hi))
+        Some((low, high))
     }
 
     fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
         (min, max)
     }
 
-    fn draw<'a>(
+    fn draw(
         &self,
         frame: &mut canvas::Frame,
-        ctx: &'a ViewState,
+        ctx: &ViewState,
         theme: &Theme,
         s: &S,
         range: RangeInclusive<u64>,
@@ -523,6 +622,7 @@ pub struct LinePlot<M, TT> {
 }
 
 impl<M, TT> LinePlot<M, TT> {
+    /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
     pub fn new(map_y: M, tooltip: TT) -> Self {
         Self {
             map_y,
@@ -589,10 +689,10 @@ where
         }
     }
 
-    fn draw<'a>(
+    fn draw(
         &self,
         frame: &mut canvas::Frame,
-        ctx: &'a ViewState,
+        ctx: &ViewState,
         theme: &Theme,
         s: &S,
         range: RangeInclusive<u64>,

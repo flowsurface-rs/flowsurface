@@ -42,12 +42,12 @@ pub fn indicator_elem<'a>(
         }
     }
 
-    let tooltip = |v: &f32, next: Option<&f32>| {
-        let value_text = format!("Open Interest: {}", format_with_commas(*v));
-        let change_text = if let Some(n) = next {
-            let d = *n - *v;
-            let sign = if d >= 0.0 { "+" } else { "" };
-            format!("Change: {}{}", sign, format_with_commas(d))
+    let tooltip = |value: &f32, next: Option<&f32>| {
+        let value_text = format!("Open Interest: {}", format_with_commas(*value));
+        let change_text = if let Some(next_value) = next {
+            let delta = next_value - *value;
+            let sign = if delta >= 0.0 { "+" } else { "" };
+            format!("Change: {}{}", sign, format_with_commas(delta))
         } else {
             "Change: N/A".to_string()
         };
