@@ -1,4 +1,5 @@
 pub mod open_interest;
+pub mod plot;
 pub mod volume;
 
 use iced::{
