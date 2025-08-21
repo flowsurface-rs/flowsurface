@@ -87,11 +87,11 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         tree::State::new(State::default())
     }
 
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.panels);
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(&mut self.panels);
     }
 
-    fn layout(&self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
         let max_limits = limits.max();
 
         let panel_count = self.panels.len().div_ceil(2);
@@ -119,7 +119,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                 );
 
                 let panel_node = self.panels[i]
-                    .as_widget()
+                    .as_widget_mut()
                     .layout(&mut tree.children[i], renderer, &panel_limits)
                     .translate(Vector::new(0.0, current_y));
 
@@ -135,7 +135,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                 );
 
                 let ruler_node = self.panels[i]
-                    .as_widget()
+                    .as_widget_mut()
                     .layout(&mut tree.children[i], renderer, &ruler_limits)
                     .translate(Vector::new(0.0, current_y));
 
@@ -317,7 +317,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
@@ -325,12 +325,12 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     ) {
         operation.container(None, layout.bounds(), &mut |operation| {
             self.panels
-                .iter()
+                .iter_mut()
                 .zip(&mut tree.children)
                 .zip(layout.children())
                 .for_each(|((child, state), layout)| {
                     child
-                        .as_widget()
+                        .as_widget_mut()
                         .operate(state, layout, renderer, operation);
                 });
         });
