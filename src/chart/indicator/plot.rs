@@ -55,12 +55,6 @@ impl<Y> Series for BTreeMap<u64, Y> {
     }
 }
 
-pub struct Tooltip {
-    pub text: String,
-    pub width: f32,
-    pub height: f32,
-}
-
 pub struct YScale {
     pub min: f32,
     pub max: f32,
@@ -97,7 +91,7 @@ pub trait Plot<S: Series> {
         scale: &YScale,
     );
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, theme: &Theme) -> Tooltip;
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, theme: &Theme) -> PlotTooltip;
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -232,11 +226,15 @@ where
                 // tooltip text
                 if let Some(y) = self.series.at(rounded_x) {
                     let next = self.series.next_after(rounded_x).map(|(_, v)| v);
+
                     let tip = self.plot.tooltip(y, next, theme);
+                    let (tooltip_w, tooltip_h) = tip.measure();
+
                     let palette = theme.extended_palette();
+
                     frame.fill_rectangle(
                         Point::new(4.0, 0.0),
-                        Size::new(tip.width, tip.height),
+                        Size::new(tooltip_w, tooltip_h),
                         palette.background.weakest.color.scale_alpha(0.9),
                     );
                     frame.fill_text(canvas::Text {
@@ -397,7 +395,7 @@ where
     S: Series,
     MH: Fn(&S::Y) -> f32 + Copy,
     CL: Fn(&S::Y) -> BarClass + Copy,
-    TT: Fn(&S::Y, Option<&S::Y>) -> Tooltip + Copy,
+    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
 {
     fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min_v = f32::MAX;
@@ -517,7 +515,7 @@ where
         }
     }
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> Tooltip {
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
         (self.tooltip)(y, next)
     }
 }
@@ -568,7 +566,7 @@ impl<S, M, TT> Plot<S> for LinePlot<M, TT>
 where
     S: Series,
     M: Fn(&S::Y) -> f32 + Copy,
-    TT: Fn(&S::Y, Option<&S::Y>) -> Tooltip + Copy,
+    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
 {
     fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min = f32::MAX;
@@ -642,7 +640,45 @@ where
         }
     }
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> Tooltip {
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
         (self.tooltip)(y, next)
     }
+}
+
+pub struct PlotTooltip {
+    pub text: String,
+}
+
+impl PlotTooltip {
+    pub fn new<T: Into<String>>(text: T) -> Self {
+        Self { text: text.into() }
+    }
+
+    // Measure based on a fixed font metrics guess.
+    pub fn measure(&self) -> (f32, f32) {
+        measure_tooltip_text(&self.text)
+    }
+}
+
+// Reasonable defaults; tweak if you change font or size.
+const TOOLTIP_CHAR_W: f32 = 8.0;
+const TOOLTIP_LINE_H: f32 = 14.0;
+const TOOLTIP_PAD_X: f32 = 8.0; // left+right padding total
+const TOOLTIP_PAD_Y: f32 = 6.0; // top+bottom padding total
+
+pub fn measure_tooltip_text(text: &str) -> (f32, f32) {
+    let mut max_cols: usize = 0;
+    let mut lines: usize = 0;
+
+    for line in text.split('\n') {
+        lines += 1;
+        let cols = line.chars().count(); // naive width; good enough for monospace-ish UI
+        if cols > max_cols {
+            max_cols = cols;
+        }
+    }
+
+    let width = (max_cols as f32) * TOOLTIP_CHAR_W + TOOLTIP_PAD_X;
+    let height = (lines.max(1) as f32) * TOOLTIP_LINE_H + TOOLTIP_PAD_Y;
+    (width, height)
 }

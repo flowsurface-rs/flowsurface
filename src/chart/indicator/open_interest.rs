@@ -1,20 +1,17 @@
-use std::collections::BTreeMap;
-
-use iced::Element;
-use iced::widget::{center, row, text};
-
-use super::plot::{LinePlot, Tooltip, indicator_row};
+use super::plot::{LinePlot, PlotTooltip, indicator_row};
 use crate::chart::{Basis, Caches, Message, ViewState};
 use data::util::format_with_commas;
 use exchange::Timeframe;
 
+use iced::widget::{center, row, text};
+
 pub fn indicator_elem<'a>(
     chart_state: &'a ViewState,
     cache: &'a Caches,
-    datapoints: &'a BTreeMap<u64, f32>,
+    datapoints: &'a std::collections::BTreeMap<u64, f32>,
     earliest: u64,
     latest: u64,
-) -> Element<'a, Message> {
+) -> iced::Element<'a, Message> {
     match chart_state.basis {
         Basis::Time(timeframe) => {
             let Some(ticker_info) = chart_state.ticker_info else {
@@ -54,12 +51,7 @@ pub fn indicator_elem<'a>(
             } else {
                 "Change: N/A".to_string()
             };
-            let width = (value_text.len().max(change_text.len()) as f32) * 8.0;
-            Tooltip {
-                text: format!("{}\n{}", value_text, change_text),
-                width,
-                height: 28.0,
-            }
+            PlotTooltip::new(format!("{value_text}\n{change_text}"))
         },
     )
     .stroke_width(1.0)
