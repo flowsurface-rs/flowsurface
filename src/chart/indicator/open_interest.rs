@@ -1,5 +1,5 @@
-use super::plot::{PlotTooltip, indicator_row, line::LinePlot};
-use crate::chart::{Basis, Caches, Message, ViewState};
+use super::plot::{PlotTooltip, line::LinePlot};
+use crate::chart::{Basis, Caches, Message, ViewState, indicator::IndicatorMap};
 use data::util::format_with_commas;
 use exchange::Timeframe;
 
@@ -8,7 +8,7 @@ use iced::widget::{center, row, text};
 pub fn indicator_elem<'a>(
     chart_state: &'a ViewState,
     cache: &'a Caches,
-    datapoints: &'a std::collections::BTreeMap<u64, f32>,
+    datapoints: &'a IndicatorMap<f32>,
     earliest: u64,
     latest: u64,
 ) -> iced::Element<'a, Message> {
@@ -60,5 +60,5 @@ pub fn indicator_elem<'a>(
         .point_radius_factor(0.2)
         .padding(0.08);
 
-    indicator_row(chart_state, cache, plot, datapoints, earliest..=latest)
+    super::indicator_row(chart_state, cache, plot, datapoints, earliest..=latest)
 }

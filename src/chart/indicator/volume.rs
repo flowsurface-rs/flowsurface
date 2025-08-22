@@ -1,14 +1,20 @@
-use super::plot::{PlotTooltip, indicator_row};
+use super::plot::PlotTooltip;
 use crate::chart::{
     Caches, Message, ViewState,
-    indicator::plot::{ReversedBTreeSeries, bar::BarClass, bar::BarPlot},
+    indicator::{
+        IndicatorMap,
+        plot::{
+            ReversedBTreeSeries,
+            bar::{BarClass, BarPlot},
+        },
+    },
 };
 use data::{chart::Basis, util::format_with_commas};
 
 pub fn indicator_elem<'a>(
     chart_state: &'a ViewState,
     cache: &'a Caches,
-    datapoints: &'a std::collections::BTreeMap<u64, (f32, f32)>,
+    datapoints: &'a IndicatorMap<(f32, f32)>,
     earliest: u64,
     latest: u64,
 ) -> iced::Element<'a, Message> {
@@ -39,16 +45,17 @@ pub fn indicator_elem<'a>(
         bar_plot_kind,
         tooltip,
     )
-    .bar_width_factor(0.9)
-    .padding(0.0);
+    .bar_width_factor(0.9);
 
     match chart_state.basis {
         Basis::Tick(_) => {
             // temporary workaround
             // tick based data is reversed, index=0 is the latest datapoint
             let reversed = ReversedBTreeSeries::new(datapoints);
-            indicator_row(chart_state, cache, plot, reversed, earliest..=latest)
+            super::indicator_row(chart_state, cache, plot, reversed, earliest..=latest)
         }
-        Basis::Time(_) => indicator_row(chart_state, cache, plot, datapoints, earliest..=latest),
+        Basis::Time(_) => {
+            super::indicator_row(chart_state, cache, plot, datapoints, earliest..=latest)
+        }
     }
 }

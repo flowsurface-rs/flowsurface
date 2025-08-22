@@ -1,10 +1,9 @@
-use crate::chart::{Basis, Caches, Interaction, Message, ViewState};
+use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
 
 use iced::widget::canvas::{self, Cache, Geometry, Path};
-use iced::widget::{Canvas, container, row, vertical_rule};
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -12,59 +11,10 @@ use std::ops::RangeInclusive;
 pub mod bar;
 pub mod line;
 
-/// Creates an `iced::Element`(row) containing the indicator plot and its labels.
-pub fn indicator_row<'a, P, S>(
-    chart_state: &'a ViewState,
-    cache: &'a Caches,
-    plot: P,
-    series: S,
-    visible_range: RangeInclusive<u64>,
-) -> Element<'a, Message>
-where
-    P: Plot<S> + 'a,
-    S: Series + 'a,
-{
-    let (min, max) = plot
-        .y_extents(&series, visible_range)
-        .map(|(min, max)| plot.adjust_extents(min, max))
-        .unwrap_or((0.0, 0.0));
-
-    let canvas = Canvas::new(ChartCanvas::<P, S> {
-        indicator_cache: &cache.main,
-        crosshair_cache: &cache.crosshair,
-        ctx: chart_state,
-        plot,
-        series,
-        max_for_labels: max,
-        min_for_labels: min,
-    })
-    .height(Length::Fill)
-    .width(Length::Fill);
-
-    let labels = Canvas::new(super::IndicatorLabel {
-        label_cache: &cache.y_labels,
-        max,
-        min,
-        chart_bounds: chart_state.bounds,
-    })
-    .height(Length::Fill)
-    .width(chart_state.y_labels_width());
-
-    row![
-        canvas,
-        vertical_rule(1).style(style::split_ruler),
-        container(labels),
-    ]
-    .into()
-}
-
 pub trait Series {
     type Y;
-    type RangeIter<'a>: Iterator<Item = (u64, &'a Self::Y)>
-    where
-        Self: 'a;
 
-    fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a>;
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, f: F);
 
     fn at(&self, x: u64) -> Option<&Self::Y>;
 
@@ -73,41 +23,12 @@ pub trait Series {
         Self: 'a;
 }
 
-impl<Y> Series for BTreeMap<u64, Y> {
-    type Y = Y;
-    type RangeIter<'a>
-        = BTreeRangeIter<'a, Y>
-    where
-        Self: 'a;
-
-    fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a> {
-        BTreeRangeIter {
-            inner: self.range(range),
-        }
-    }
-
-    fn at(&self, x: u64) -> Option<&Self::Y> {
-        self.get(&x)
-    }
-
-    fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
-    where
-        Self: 'a,
-    {
-        self.range((x + 1)..).next().map(|(k, v)| (*k, v))
-    }
-}
-
 impl<Y> Series for &BTreeMap<u64, Y> {
     type Y = Y;
-    type RangeIter<'a>
-        = BTreeRangeIter<'a, Y>
-    where
-        Self: 'a;
 
-    fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a> {
-        BTreeRangeIter {
-            inner: (**self).range(range),
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
+        for (k, v) in (**self).range(range) {
+            f(*k, v);
         }
     }
 
@@ -120,19 +41,6 @@ impl<Y> Series for &BTreeMap<u64, Y> {
         Self: 'a,
     {
         (**self).range((x + 1)..).next().map(|(k, v)| (*k, v))
-    }
-}
-
-pub struct RevBTreeRangeIter<'a, Y> {
-    inner: std::iter::Rev<std::collections::btree_map::Range<'a, u64, Y>>,
-    offset: u64,
-}
-
-impl<'a, Y> Iterator for RevBTreeRangeIter<'a, Y> {
-    type Item = (u64, &'a Y);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(k, v)| (self.offset - *k, v))
     }
 }
 
@@ -150,20 +58,13 @@ impl<'a, Y> ReversedBTreeSeries<'a, Y> {
 
 impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
     type Y = Y;
-    type RangeIter<'a>
-        = RevBTreeRangeIter<'a, Y>
-    where
-        Self: 'a;
 
-    fn range_iter<'a>(&'a self, range: RangeInclusive<u64>) -> Self::RangeIter<'a> {
-        let a = *range.start();
-        let b = *range.end();
-        let lo = self.offset.saturating_sub(b);
-        let hi = self.offset.saturating_sub(a);
-        let inner = self.inner.range(lo..=hi).rev();
-        RevBTreeRangeIter {
-            inner,
-            offset: self.offset,
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
+        let earliest = self.offset.saturating_sub(*range.end());
+        let latest = self.offset.saturating_sub(*range.start());
+
+        for (k, v) in self.inner.range(earliest..=latest).rev() {
+            f(self.offset - *k, v);
         }
     }
 
@@ -181,17 +82,6 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
             .range(..k)
             .next_back()
             .map(|(kk, v)| (self.offset - *kk, v))
-    }
-}
-
-pub struct BTreeRangeIter<'a, Y> {
-    inner: std::collections::btree_map::Range<'a, u64, Y>,
-}
-impl<'a, Y> Iterator for BTreeRangeIter<'a, Y> {
-    type Item = (u64, &'a Y);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(k, v)| (*k, v))
     }
 }
 

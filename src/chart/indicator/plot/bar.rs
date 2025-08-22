@@ -38,6 +38,7 @@ pub struct BarPlot<MH, CL, TT> {
     pub baseline: Baseline,
 }
 
+#[allow(dead_code)]
 impl<MH, CL, TT> BarPlot<MH, CL, TT> {
     pub fn new(main_height: MH, classify: CL, tooltip: TT) -> Self {
         Self {
@@ -60,7 +61,6 @@ impl<MH, CL, TT> BarPlot<MH, CL, TT> {
         self
     }
 
-    #[allow(unused)]
     pub fn baseline(mut self, b: Baseline) -> Self {
         self.baseline = b;
         self
@@ -79,7 +79,7 @@ where
         let mut max_v = f32::MIN;
         let mut n = 0u32;
 
-        for (_, y) in s.range_iter(range.clone()) {
+        s.for_each_in(range, |_, y| {
             let v = (self.main_height)(y);
             if v < min_v {
                 min_v = v;
@@ -88,7 +88,7 @@ where
                 max_v = v;
             }
             n += 1;
-        }
+        });
 
         if n == 0 || (max_v <= 0.0 && matches!(self.baseline, Baseline::Zero)) {
             return None;
@@ -107,10 +107,6 @@ where
         }
 
         Some((low, high))
-    }
-
-    fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
-        (min, max)
     }
 
     fn draw(
@@ -132,7 +128,7 @@ where
         };
         let y_base = scale.to_y(baseline_value);
 
-        for (x, y) in s.range_iter(range.clone()) {
+        s.for_each_in(range, |x, y| {
             let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
 
             let total = (self.main_height)(y);
@@ -146,7 +142,7 @@ where
                 (y_base, 0.0)
             };
             if h_total <= 0.0 {
-                continue;
+                return;
             }
 
             match (self.classify)(y) {
@@ -185,7 +181,7 @@ where
                     }
                 }
             }
-        }
+        });
     }
 
     fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {

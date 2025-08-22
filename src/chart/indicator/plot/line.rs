@@ -19,6 +19,7 @@ pub struct LinePlot<M, TT> {
     pub point_radius_factor: f32,
 }
 
+#[allow(dead_code)]
 impl<M, TT> LinePlot<M, TT> {
     /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
     pub fn new(map_y: M, tooltip: TT) -> Self {
@@ -61,7 +62,8 @@ where
     fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min = f32::MAX;
         let mut max = f32::MIN;
-        for (_, y) in s.range_iter(range) {
+
+        s.for_each_in(range, |_, y| {
             let v = (self.map_y)(y);
             if v < min {
                 min = v;
@@ -69,7 +71,8 @@ where
             if v > max {
                 max = v;
             }
-        }
+        });
+
         if min == f32::MAX {
             None
         } else {
@@ -109,7 +112,7 @@ where
 
         // Polyline
         let mut prev: Option<(f32, f32)> = None;
-        for (x, y) in s.range_iter(range.clone()) {
+        s.for_each_in(range.clone(), |x, y| {
             let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
             let vy = (self.map_y)(y);
             let sy = scale.to_y(vy);
@@ -120,15 +123,15 @@ where
                 );
             }
             prev = Some((sx, sy));
-        }
+        });
 
         if self.show_points {
             let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
-            for (x, y) in s.range_iter(range) {
+            s.for_each_in(range, |x, y| {
                 let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
                 let sy = scale.to_y((self.map_y)(y));
                 frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
-            }
+            });
         }
     }
 
