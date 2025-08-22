@@ -1,0 +1,194 @@
+use std::ops::RangeInclusive;
+
+use iced::{Point, Size, Theme, widget::canvas};
+
+use crate::chart::{
+    ViewState,
+    indicator::plot::{Plot, PlotTooltip, Series, YScale},
+};
+
+#[derive(Clone, Copy)]
+#[allow(unused)]
+/// How to anchor bar heights.
+pub enum Baseline {
+    /// Use zero as baseline (classic volume). Extents: [0, max].
+    Zero,
+    /// Use the minimum value in the visible range. Extents: [min, max].
+    Min,
+    /// Use a fixed numeric baseline.
+    Fixed(f32),
+}
+
+#[derive(Clone, Copy)]
+/// What kind of bar to render, and whether it carries a signed overlay.
+/// The sign of `overlay` selects up (success) vs down (danger).
+pub enum BarClass {
+    /// draw a single bar using secondary strong color
+    Single,
+    /// draw two bars, a success/danger colored (alpha) and an overlay using full color.
+    Overlay { overlay: f32 }, // signed; sign decides color
+}
+
+pub struct BarPlot<MH, CL, TT> {
+    pub bar_width_factor: f32,
+    pub padding: f32,
+    pub main_height: MH, // main/total value
+    pub classify: CL,    // Single vs Overlay with signed overlay
+    pub tooltip: TT,     // tooltip formatter
+    pub baseline: Baseline,
+}
+
+impl<MH, CL, TT> BarPlot<MH, CL, TT> {
+    pub fn new(main_height: MH, classify: CL, tooltip: TT) -> Self {
+        Self {
+            bar_width_factor: 0.9,
+            padding: 0.0,
+            main_height,
+            classify,
+            tooltip,
+            baseline: Baseline::Zero,
+        }
+    }
+
+    pub fn bar_width_factor(mut self, f: f32) -> Self {
+        self.bar_width_factor = f;
+        self
+    }
+
+    pub fn padding(mut self, p: f32) -> Self {
+        self.padding = p;
+        self
+    }
+
+    #[allow(unused)]
+    pub fn baseline(mut self, b: Baseline) -> Self {
+        self.baseline = b;
+        self
+    }
+}
+
+impl<S, MH, CL, TT> Plot<S> for BarPlot<MH, CL, TT>
+where
+    S: Series,
+    MH: Fn(&S::Y) -> f32 + Copy,
+    CL: Fn(&S::Y) -> BarClass + Copy,
+    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
+{
+    fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
+        let mut min_v = f32::MAX;
+        let mut max_v = f32::MIN;
+        let mut n = 0u32;
+
+        for (_, y) in s.range_iter(range.clone()) {
+            let v = (self.main_height)(y);
+            if v < min_v {
+                min_v = v;
+            }
+            if v > max_v {
+                max_v = v;
+            }
+            n += 1;
+        }
+
+        if n == 0 || (max_v <= 0.0 && matches!(self.baseline, Baseline::Zero)) {
+            return None;
+        }
+
+        let min_ext = match self.baseline {
+            Baseline::Zero => 0.0,
+            Baseline::Min => min_v,
+            Baseline::Fixed(v) => v,
+        };
+
+        let low = min_ext;
+        let mut high = max_v.max(min_ext + f32::EPSILON);
+        if high > low && self.padding > 0.0 {
+            high *= 1.0 + self.padding;
+        }
+
+        Some((low, high))
+    }
+
+    fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
+        (min, max)
+    }
+
+    fn draw(
+        &self,
+        frame: &mut canvas::Frame,
+        ctx: &ViewState,
+        theme: &Theme,
+        s: &S,
+        range: RangeInclusive<u64>,
+        scale: &YScale,
+    ) {
+        let palette = theme.extended_palette();
+        let bar_width = ctx.cell_width * self.bar_width_factor;
+
+        let baseline_value = match self.baseline {
+            Baseline::Zero => 0.0,
+            Baseline::Min => scale.min, // extents min
+            Baseline::Fixed(v) => v,
+        };
+        let y_base = scale.to_y(baseline_value);
+
+        for (x, y) in s.range_iter(range.clone()) {
+            let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
+
+            let total = (self.main_height)(y);
+            let rel = total - baseline_value;
+
+            let (top_y, h_total) = if rel > 0.0 {
+                let y_total = scale.to_y(total);
+                let h = (y_base - y_total).max(0.0);
+                (y_total, h)
+            } else {
+                (y_base, 0.0)
+            };
+            if h_total <= 0.0 {
+                continue;
+            }
+
+            match (self.classify)(y) {
+                BarClass::Single => {
+                    frame.fill_rectangle(
+                        Point::new(left, top_y),
+                        Size::new(bar_width, h_total),
+                        palette.secondary.strong.color,
+                    );
+                }
+                BarClass::Overlay { overlay } => {
+                    let up = overlay >= 0.0;
+                    let base_color = if up {
+                        palette.success.base.color
+                    } else {
+                        palette.danger.base.color
+                    };
+
+                    frame.fill_rectangle(
+                        Point::new(left, top_y),
+                        Size::new(bar_width, h_total),
+                        base_color.scale_alpha(0.3),
+                    );
+
+                    let ov_abs = overlay.abs().max(0.0);
+                    if ov_abs > 0.0 {
+                        let y_overlay = scale.to_y(baseline_value + ov_abs);
+                        let h_overlay = (y_base - y_overlay).max(0.0);
+                        if h_overlay > 0.0 {
+                            frame.fill_rectangle(
+                                Point::new(left, y_overlay),
+                                Size::new(bar_width, h_overlay),
+                                base_color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
+        (self.tooltip)(y, next)
+    }
+}

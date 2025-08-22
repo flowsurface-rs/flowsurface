@@ -1,4 +1,4 @@
-use super::plot::{LinePlot, PlotTooltip, indicator_row};
+use super::plot::{PlotTooltip, indicator_row, line::LinePlot};
 use crate::chart::{Basis, Caches, Message, ViewState};
 use data::util::format_with_commas;
 use exchange::Timeframe;

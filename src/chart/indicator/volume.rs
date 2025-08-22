@@ -1,7 +1,7 @@
 use super::plot::{PlotTooltip, indicator_row};
 use crate::chart::{
     Caches, Message, ViewState,
-    indicator::plot::{BarClass, BarPlot, ReversedBTreeSeries},
+    indicator::plot::{ReversedBTreeSeries, bar::BarClass, bar::BarPlot},
 };
 use data::{chart::Basis, util::format_with_commas};
 
@@ -44,12 +44,11 @@ pub fn indicator_elem<'a>(
 
     match chart_state.basis {
         Basis::Tick(_) => {
+            // temporary workaround
+            // tick based data is reversed, index=0 is the latest datapoint
             let reversed = ReversedBTreeSeries::new(datapoints);
             indicator_row(chart_state, cache, plot, reversed, earliest..=latest)
         }
-        Basis::Time(_) => {
-            // Normal left-to-right
-            indicator_row(chart_state, cache, plot, datapoints, earliest..=latest)
-        }
+        Basis::Time(_) => indicator_row(chart_state, cache, plot, datapoints, earliest..=latest),
     }
 }

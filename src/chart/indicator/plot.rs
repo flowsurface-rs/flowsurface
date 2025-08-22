@@ -2,12 +2,61 @@ use crate::chart::{Basis, Caches, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
 
-use iced::widget::canvas::{self, Cache, Geometry, Path, Stroke};
+use iced::widget::canvas::{self, Cache, Geometry, Path};
 use iced::widget::{Canvas, container, row, vertical_rule};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
+
+pub mod bar;
+pub mod line;
+
+/// Creates an `iced::Element`(row) containing the indicator plot and its labels.
+pub fn indicator_row<'a, P, S>(
+    chart_state: &'a ViewState,
+    cache: &'a Caches,
+    plot: P,
+    series: S,
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<S> + 'a,
+    S: Series + 'a,
+{
+    let (min, max) = plot
+        .y_extents(&series, visible_range)
+        .map(|(min, max)| plot.adjust_extents(min, max))
+        .unwrap_or((0.0, 0.0));
+
+    let canvas = Canvas::new(ChartCanvas::<P, S> {
+        indicator_cache: &cache.main,
+        crosshair_cache: &cache.crosshair,
+        ctx: chart_state,
+        plot,
+        series,
+        max_for_labels: max,
+        min_for_labels: min,
+    })
+    .height(Length::Fill)
+    .width(Length::Fill);
+
+    let labels = Canvas::new(super::IndicatorLabel {
+        label_cache: &cache.y_labels,
+        max,
+        min,
+        chart_bounds: chart_state.bounds,
+    })
+    .height(Length::Fill)
+    .width(chart_state.y_labels_width());
+
+    row![
+        canvas,
+        vertical_rule(1).style(style::split_ruler),
+        container(labels),
+    ]
+    .into()
+}
 
 pub trait Series {
     type Y;
@@ -378,364 +427,6 @@ where
             Interaction::None if cursor.is_over(bounds) => mouse::Interaction::Crosshair,
             _ => mouse::Interaction::default(),
         }
-    }
-}
-
-pub fn indicator_row<'a, P, S>(
-    chart_state: &'a ViewState,
-    cache: &'a Caches,
-    plot: P,
-    series: S,
-    visible_range: RangeInclusive<u64>,
-) -> Element<'a, Message>
-where
-    P: Plot<S> + 'a,
-    S: Series + 'a,
-{
-    let (min, max) = plot
-        .y_extents(&series, visible_range)
-        .map(|(min, max)| plot.adjust_extents(min, max))
-        .unwrap_or((0.0, 0.0));
-
-    let canvas = Canvas::new(ChartCanvas::<P, S> {
-        indicator_cache: &cache.main,
-        crosshair_cache: &cache.crosshair,
-        ctx: chart_state,
-        plot,
-        series,
-        max_for_labels: max,
-        min_for_labels: min,
-    })
-    .height(Length::Fill)
-    .width(Length::Fill);
-
-    let labels = Canvas::new(super::IndicatorLabel {
-        label_cache: &cache.y_labels,
-        max,
-        min,
-        chart_bounds: chart_state.bounds,
-    })
-    .height(Length::Fill)
-    .width(chart_state.y_labels_width());
-
-    row![
-        canvas,
-        vertical_rule(1).style(style::split_ruler),
-        container(labels),
-    ]
-    .into()
-}
-
-#[derive(Clone, Copy)]
-/// What kind of bar to render, and whether it carries a signed overlay.
-/// The sign of `overlay` selects up (success) vs down (danger).
-pub enum BarClass {
-    /// draw a single bar using secondary strong color
-    Single,
-    /// draw two bars, a success/danger colored (alpha) and an overlay using full color.
-    Overlay { overlay: f32 }, // signed; sign decides color
-}
-
-#[derive(Clone, Copy)]
-#[allow(unused)]
-/// How to anchor bar heights.
-pub enum Baseline {
-    /// Use zero as baseline (classic volume). Extents: [0, max].
-    Zero,
-    /// Use the minimum value in the visible range. Extents: [min, max].
-    Min,
-    /// Use a fixed numeric baseline.
-    Fixed(f32),
-}
-
-pub struct BarPlot<MH, CL, TT> {
-    pub bar_width_factor: f32,
-    pub padding: f32,
-    pub main_height: MH, // main/total value
-    pub classify: CL,    // Single vs Overlay with signed overlay
-    pub tooltip: TT,     // tooltip formatter
-    pub baseline: Baseline,
-}
-
-impl<MH, CL, TT> BarPlot<MH, CL, TT> {
-    pub fn new(main_height: MH, classify: CL, tooltip: TT) -> Self {
-        Self {
-            bar_width_factor: 0.9,
-            padding: 0.0,
-            main_height,
-            classify,
-            tooltip,
-            baseline: Baseline::Zero,
-        }
-    }
-
-    pub fn bar_width_factor(mut self, f: f32) -> Self {
-        self.bar_width_factor = f;
-        self
-    }
-
-    pub fn padding(mut self, p: f32) -> Self {
-        self.padding = p;
-        self
-    }
-
-    #[allow(unused)]
-    pub fn baseline(mut self, b: Baseline) -> Self {
-        self.baseline = b;
-        self
-    }
-}
-
-impl<S, MH, CL, TT> Plot<S> for BarPlot<MH, CL, TT>
-where
-    S: Series,
-    MH: Fn(&S::Y) -> f32 + Copy,
-    CL: Fn(&S::Y) -> BarClass + Copy,
-    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
-{
-    fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
-        let mut min_v = f32::MAX;
-        let mut max_v = f32::MIN;
-        let mut n = 0u32;
-
-        for (_, y) in s.range_iter(range.clone()) {
-            let v = (self.main_height)(y);
-            if v < min_v {
-                min_v = v;
-            }
-            if v > max_v {
-                max_v = v;
-            }
-            n += 1;
-        }
-
-        if n == 0 || (max_v <= 0.0 && matches!(self.baseline, Baseline::Zero)) {
-            return None;
-        }
-
-        let min_ext = match self.baseline {
-            Baseline::Zero => 0.0,
-            Baseline::Min => min_v,
-            Baseline::Fixed(v) => v,
-        };
-
-        let low = min_ext;
-        let mut high = max_v.max(min_ext + f32::EPSILON);
-        if high > low && self.padding > 0.0 {
-            high *= 1.0 + self.padding;
-        }
-
-        Some((low, high))
-    }
-
-    fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
-        (min, max)
-    }
-
-    fn draw(
-        &self,
-        frame: &mut canvas::Frame,
-        ctx: &ViewState,
-        theme: &Theme,
-        s: &S,
-        range: RangeInclusive<u64>,
-        scale: &YScale,
-    ) {
-        let palette = theme.extended_palette();
-        let bar_width = ctx.cell_width * self.bar_width_factor;
-
-        let baseline_value = match self.baseline {
-            Baseline::Zero => 0.0,
-            Baseline::Min => scale.min, // extents min
-            Baseline::Fixed(v) => v,
-        };
-        let y_base = scale.to_y(baseline_value);
-
-        for (x, y) in s.range_iter(range.clone()) {
-            let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
-
-            let total = (self.main_height)(y);
-            let rel = total - baseline_value;
-
-            let (top_y, h_total) = if rel > 0.0 {
-                let y_total = scale.to_y(total);
-                let h = (y_base - y_total).max(0.0);
-                (y_total, h)
-            } else {
-                (y_base, 0.0)
-            };
-            if h_total <= 0.0 {
-                continue;
-            }
-
-            match (self.classify)(y) {
-                BarClass::Single => {
-                    frame.fill_rectangle(
-                        Point::new(left, top_y),
-                        Size::new(bar_width, h_total),
-                        palette.secondary.strong.color,
-                    );
-                }
-                BarClass::Overlay { overlay } => {
-                    let up = overlay >= 0.0;
-                    let base_color = if up {
-                        palette.success.base.color
-                    } else {
-                        palette.danger.base.color
-                    };
-
-                    frame.fill_rectangle(
-                        Point::new(left, top_y),
-                        Size::new(bar_width, h_total),
-                        base_color.scale_alpha(0.3),
-                    );
-
-                    let ov_abs = overlay.abs().max(0.0);
-                    if ov_abs > 0.0 {
-                        let y_overlay = scale.to_y(baseline_value + ov_abs);
-                        let h_overlay = (y_base - y_overlay).max(0.0);
-                        if h_overlay > 0.0 {
-                            frame.fill_rectangle(
-                                Point::new(left, y_overlay),
-                                Size::new(bar_width, h_overlay),
-                                base_color,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
-        (self.tooltip)(y, next)
-    }
-}
-
-pub struct LinePlot<M, TT> {
-    pub map_y: M,
-    pub tooltip: TT,
-    pub padding: f32,
-    pub stroke_width: f32,
-    pub show_points: bool,
-    pub point_radius_factor: f32,
-}
-
-impl<M, TT> LinePlot<M, TT> {
-    /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
-    pub fn new(map_y: M, tooltip: TT) -> Self {
-        Self {
-            map_y,
-            tooltip,
-            padding: 0.08,
-            stroke_width: 1.0,
-            show_points: true,
-            point_radius_factor: 0.2,
-        }
-    }
-    pub fn padding(mut self, p: f32) -> Self {
-        self.padding = p;
-        self
-    }
-
-    pub fn stroke_width(mut self, w: f32) -> Self {
-        self.stroke_width = w;
-        self
-    }
-
-    pub fn show_points(mut self, on: bool) -> Self {
-        self.show_points = on;
-        self
-    }
-
-    pub fn point_radius_factor(mut self, f: f32) -> Self {
-        self.point_radius_factor = f;
-        self
-    }
-}
-
-impl<S, M, TT> Plot<S> for LinePlot<M, TT>
-where
-    S: Series,
-    M: Fn(&S::Y) -> f32 + Copy,
-    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
-{
-    fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
-        let mut min = f32::MAX;
-        let mut max = f32::MIN;
-        for (_, y) in s.range_iter(range) {
-            let v = (self.map_y)(y);
-            if v < min {
-                min = v;
-            }
-            if v > max {
-                max = v;
-            }
-        }
-        if min == f32::MAX {
-            None
-        } else {
-            Some((min, max))
-        }
-    }
-
-    fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
-        if self.padding > 0.0 && max > min {
-            let range = max - min;
-            let pad = range * self.padding;
-            (min - pad, max + pad)
-        } else {
-            (min, max)
-        }
-    }
-
-    fn draw(
-        &self,
-        frame: &mut canvas::Frame,
-        ctx: &ViewState,
-        theme: &Theme,
-        s: &S,
-        range: RangeInclusive<u64>,
-        scale: &YScale,
-    ) {
-        let palette = theme.extended_palette();
-        let color = palette.secondary.strong.color;
-
-        let stroke = Stroke::with_color(
-            Stroke {
-                width: self.stroke_width,
-                ..Stroke::default()
-            },
-            color,
-        );
-
-        // Polyline
-        let mut prev: Option<(f32, f32)> = None;
-        for (x, y) in s.range_iter(range.clone()) {
-            let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
-            let vy = (self.map_y)(y);
-            let sy = scale.to_y(vy);
-            if let Some((px, py)) = prev {
-                frame.stroke(
-                    &Path::line(iced::Point::new(px, py), iced::Point::new(sx, sy)),
-                    stroke,
-                );
-            }
-            prev = Some((sx, sy));
-        }
-
-        if self.show_points {
-            let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
-            for (x, y) in s.range_iter(range) {
-                let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
-                let sy = scale.to_y((self.map_y)(y));
-                frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
-            }
-        }
-    }
-
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
-        (self.tooltip)(y, next)
     }
 }
 
