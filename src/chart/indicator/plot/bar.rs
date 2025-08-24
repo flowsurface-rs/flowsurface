@@ -35,19 +35,19 @@ pub struct BarPlot<V, CL, TT> {
     pub bar_width_factor: f32,
     pub padding: f32,
     pub classify: CL, // Single vs Overlay with signed overlay
-    pub tooltip: TT,  // tooltip formatter
+    pub tooltip: Option<TT>,
     pub baseline: Baseline,
 }
 
 #[allow(dead_code)]
 impl<V, CL, TT> BarPlot<V, CL, TT> {
-    pub fn new(value: V, classify: CL, tooltip: TT) -> Self {
+    pub fn new(value: V, classify: CL) -> Self {
         Self {
             value,
             bar_width_factor: 0.9,
             padding: 0.0,
             classify,
-            tooltip,
+            tooltip: None,
             baseline: Baseline::Zero,
         }
     }
@@ -66,6 +66,11 @@ impl<V, CL, TT> BarPlot<V, CL, TT> {
         self.baseline = b;
         self
     }
+
+    pub fn with_tooltip(mut self, tooltip: TT) -> Self {
+        self.tooltip = Some(tooltip);
+        self
+    }
 }
 
 impl<S, V, CL, TT> Plot<S> for BarPlot<V, CL, TT>
@@ -75,12 +80,12 @@ where
     CL: Fn(&S::Y) -> BarClass,
     TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip,
 {
-    fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
+    fn y_extents(&self, datapoints: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min_v = f32::MAX;
         let mut max_v = f32::MIN;
         let mut n = 0u32;
 
-        s.for_each_in(range, |_, y| {
+        datapoints.for_each_in(range, |_, y| {
             let v = (self.value)(y);
             if v < min_v {
                 min_v = v;
@@ -115,7 +120,7 @@ where
         frame: &mut canvas::Frame,
         ctx: &ViewState,
         theme: &Theme,
-        s: &S,
+        datapoints: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
@@ -129,7 +134,7 @@ where
         };
         let y_base = scale.to_y(baseline_value);
 
-        s.for_each_in(range, |x, y| {
+        datapoints.for_each_in(range, |x, y| {
             let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
 
             let total = (self.value)(y);
@@ -184,7 +189,7 @@ where
         });
     }
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
-        (self.tooltip)(y, next)
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> Option<PlotTooltip> {
+        self.tooltip.as_ref().map(|tt| tt(y, next))
     }
 }

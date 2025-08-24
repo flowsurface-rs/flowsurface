@@ -7,13 +7,13 @@ use crate::chart::{
     },
 };
 use data::util::format_with_commas;
+use std::ops::RangeInclusive;
 
 pub fn indicator_elem<'a>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
     datapoints: &'a SeriesMap<(f32, f32)>,
-    earliest: u64,
-    latest: u64,
+    visible_range: RangeInclusive<u64>,
 ) -> iced::Element<'a, Message> {
     let tooltip = |&(buy, sell): &(f32, f32), _next: Option<&(f32, f32)>| {
         if buy == -1.0 {
@@ -39,7 +39,9 @@ pub fn indicator_elem<'a>(
         if buy == -1.0 { sell } else { buy + sell }
     };
 
-    let plot = BarPlot::new(y_value, bar_kind, tooltip).bar_width_factor(0.9);
+    let plot = BarPlot::new(y_value, bar_kind)
+        .bar_width_factor(0.9)
+        .with_tooltip(tooltip);
 
-    super::indicator_row(main_chart, cache, plot, datapoints, earliest..=latest)
+    super::indicator_row(main_chart, cache, plot, datapoints, visible_range)
 }

@@ -12,7 +12,8 @@ use crate::chart::{
 
 pub struct LinePlot<V, TT> {
     pub value: V,
-    pub tooltip: TT,
+    pub tooltip: Option<TT>,
+    // padding in percentage of the value range, applies both top and bottom
     pub padding: f32,
     pub stroke_width: f32,
     pub show_points: bool,
@@ -22,10 +23,10 @@ pub struct LinePlot<V, TT> {
 #[allow(dead_code)]
 impl<V, TT> LinePlot<V, TT> {
     /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
-    pub fn new(value: V, tooltip: TT) -> Self {
+    pub fn new(value: V) -> Self {
         Self {
             value,
-            tooltip,
+            tooltip: None,
             padding: 0.08,
             stroke_width: 1.0,
             show_points: true,
@@ -42,13 +43,22 @@ impl<V, TT> LinePlot<V, TT> {
         self
     }
 
+    /// whether to draw a circle on each datapoint
+    /// usually visible only when zoomed in
     pub fn show_points(mut self, on: bool) -> Self {
         self.show_points = on;
         self
     }
 
+    /// circle radius drawn on each datapoint
+    /// as a factor of cell width, e.g. 0.2 means 20% of cell width, capped at 5px
     pub fn point_radius_factor(mut self, f: f32) -> Self {
         self.point_radius_factor = f;
+        self
+    }
+
+    pub fn with_tooltip(mut self, tooltip: TT) -> Self {
+        self.tooltip = Some(tooltip);
         self
     }
 }
@@ -59,11 +69,11 @@ where
     V: Fn(&S::Y) -> f32,
     TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip,
 {
-    fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
+    fn y_extents(&self, datapoints: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min_v = f32::MAX;
         let mut max_v = f32::MIN;
 
-        s.for_each_in(range, |_, y| {
+        datapoints.for_each_in(range, |_, y| {
             let v = (self.value)(y);
             if v < min_v {
                 min_v = v;
@@ -95,7 +105,7 @@ where
         frame: &mut canvas::Frame,
         ctx: &ViewState,
         theme: &Theme,
-        s: &S,
+        datapoints: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
@@ -112,7 +122,7 @@ where
 
         // Polyline
         let mut prev: Option<(f32, f32)> = None;
-        s.for_each_in(range.clone(), |x, y| {
+        datapoints.for_each_in(range.clone(), |x, y| {
             let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
             let vy = (self.value)(y);
             let sy = scale.to_y(vy);
@@ -127,7 +137,7 @@ where
 
         if self.show_points {
             let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
-            s.for_each_in(range, |x, y| {
+            datapoints.for_each_in(range, |x, y| {
                 let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
                 let sy = scale.to_y((self.value)(y));
                 frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
@@ -135,7 +145,7 @@ where
         }
     }
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> PlotTooltip {
-        (self.tooltip)(y, next)
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> Option<PlotTooltip> {
+        self.tooltip.as_ref().map(|tt| tt(y, next))
     }
 }

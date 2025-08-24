@@ -2,7 +2,14 @@ pub mod open_interest;
 pub mod plot;
 pub mod volume;
 
-use std::{collections::BTreeMap, ops::RangeInclusive};
+use super::scale::linear;
+use super::{Interaction, Message};
+use crate::chart::{
+    Caches, TEXT_SIZE, ViewState,
+    indicator::plot::{AnySeries, ChartCanvas, Plot},
+    scale::{AxisLabel, LabelContent, calc_label_rect},
+};
+use data::util::{abbr_large_numbers, round_to_tick};
 
 use iced::{
     Element, Event, Length, Rectangle, Renderer, Theme, mouse,
@@ -12,22 +19,13 @@ use iced::{
         container, row, vertical_rule,
     },
 };
-
-use super::scale::linear;
-use crate::chart::{
-    Caches, TEXT_SIZE, ViewState,
-    indicator::plot::{AnySeries, ChartCanvas, Plot},
-    scale::{AxisLabel, LabelContent, calc_label_rect},
-};
-use data::util::{abbr_large_numbers, round_to_tick};
-
-use super::{Interaction, Message};
+use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub type SeriesMap<T> = BTreeMap<u64, T>;
 
 /// Creates the indicator plot and its labels. Wraps it under `iced::Element`(row).
 pub fn indicator_row<'a, P, Y>(
-    chart_state: &'a ViewState,
+    main_chart: &'a ViewState,
     cache: &'a Caches,
     plot: P,
     datapoints: &'a SeriesMap<Y>,
@@ -36,7 +34,7 @@ pub fn indicator_row<'a, P, Y>(
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
-    let series = AnySeries::for_basis(chart_state.basis, datapoints);
+    let series = AnySeries::for_basis(main_chart.basis, datapoints);
 
     let (min, max) = plot
         .y_extents(&series, visible_range)
@@ -46,7 +44,7 @@ where
     let canvas = Canvas::new(ChartCanvas::<P, AnySeries<'a, Y>> {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
-        ctx: chart_state,
+        ctx: main_chart,
         plot,
         series,
         max_for_labels: max,
@@ -59,10 +57,10 @@ where
         label_cache: &cache.y_labels,
         max,
         min,
-        chart_bounds: chart_state.bounds,
+        chart_bounds: main_chart.bounds,
     })
     .height(Length::Fill)
-    .width(chart_state.y_labels_width());
+    .width(main_chart.y_labels_width());
 
     row![
         canvas,

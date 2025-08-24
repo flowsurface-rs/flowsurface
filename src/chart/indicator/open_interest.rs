@@ -2,18 +2,19 @@ use super::plot::{PlotTooltip, line::LinePlot};
 use crate::chart::{Basis, Caches, Message, ViewState, indicator::SeriesMap};
 use data::util::format_with_commas;
 use exchange::Timeframe;
-
 use iced::widget::{center, row, text};
+use std::ops::RangeInclusive;
 
 pub fn indicator_elem<'a>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
     datapoints: &'a SeriesMap<f32>,
-    earliest: u64,
-    latest: u64,
+    visible_range: RangeInclusive<u64>,
 ) -> iced::Element<'a, Message> {
     match main_chart.basis {
         Basis::Time(timeframe) => {
+            let (earliest, latest) = visible_range.clone().into_inner();
+
             if latest < earliest {
                 return row![].into();
             }
@@ -56,11 +57,12 @@ pub fn indicator_elem<'a>(
 
     let y_value = |v: &f32| *v;
 
-    let plot = LinePlot::new(y_value, tooltip)
+    let plot = LinePlot::new(y_value)
         .stroke_width(1.0)
         .show_points(true)
         .point_radius_factor(0.2)
-        .padding(0.08);
+        .padding(0.08)
+        .with_tooltip(tooltip);
 
-    super::indicator_row(main_chart, cache, plot, datapoints, earliest..=latest)
+    super::indicator_row(main_chart, cache, plot, datapoints, visible_range)
 }

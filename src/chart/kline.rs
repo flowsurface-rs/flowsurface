@@ -25,6 +25,7 @@ use ordered_float::OrderedFloat;
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::RangeInclusive;
 use std::time::Instant;
 
 impl Chart for KlineChart {
@@ -72,7 +73,7 @@ impl Chart for KlineChart {
             }
 
             if let Some(data) = self.indicators.get(selected_indicator) {
-                indicators.push(data.indicator_elem(chart_state, earliest, latest));
+                indicators.push(data.indicator_elem(chart_state, earliest..=latest));
             }
         }
 
@@ -164,15 +165,14 @@ impl IndicatorData {
     fn indicator_elem<'a>(
         &'a self,
         chart: &'a ViewState,
-        earliest: u64,
-        latest: u64,
+        visible_range: RangeInclusive<u64>,
     ) -> Element<'a, Message> {
         match self {
-            IndicatorData::Volume(cache, data) => {
-                indicator::volume::indicator_elem(chart, cache, data, earliest, latest)
+            IndicatorData::Volume(cache, datapoints) => {
+                indicator::volume::indicator_elem(chart, cache, datapoints, visible_range)
             }
-            IndicatorData::OpenInterest(cache, data) => {
-                indicator::open_interest::indicator_elem(chart, cache, data, earliest, latest)
+            IndicatorData::OpenInterest(cache, datapoints) => {
+                indicator::open_interest::indicator_elem(chart, cache, datapoints, visible_range)
             }
         }
     }

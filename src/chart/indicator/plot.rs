@@ -164,7 +164,7 @@ pub trait Plot<S: Series> {
         scale: &YScale,
     );
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, theme: &Theme) -> PlotTooltip;
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, theme: &Theme) -> Option<PlotTooltip>;
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -306,24 +306,25 @@ where
                 if let Some(y) = self.series.at(rounded_x) {
                     let next = self.series.next_after(rounded_x).map(|(_, v)| v);
 
-                    let plot_tooltip = self.plot.tooltip(y, next, theme);
-                    let (tooltip_w, tooltip_h) = plot_tooltip.guesstimate();
+                    if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
+                        let (tooltip_w, tooltip_h) = tooltip.guesstimate();
 
-                    let palette = theme.extended_palette();
+                        let palette = theme.extended_palette();
 
-                    frame.fill_rectangle(
-                        Point::new(4.0, 0.0),
-                        Size::new(tooltip_w, tooltip_h),
-                        palette.background.weakest.color.scale_alpha(0.9),
-                    );
-                    frame.fill_text(canvas::Text {
-                        content: plot_tooltip.text,
-                        position: Point::new(8.0, 2.0),
-                        size: iced::Pixels(10.0),
-                        color: palette.background.base.text,
-                        font: style::AZERET_MONO,
-                        ..canvas::Text::default()
-                    });
+                        frame.fill_rectangle(
+                            Point::new(4.0, 0.0),
+                            Size::new(tooltip_w, tooltip_h),
+                            palette.background.weakest.color.scale_alpha(0.9),
+                        );
+                        frame.fill_text(canvas::Text {
+                            content: tooltip.text,
+                            position: Point::new(8.0, 2.0),
+                            size: iced::Pixels(10.0),
+                            color: palette.background.base.text,
+                            font: style::AZERET_MONO,
+                            ..canvas::Text::default()
+                        });
+                    }
                 }
             } else if let Some(cursor_position) = cursor.position_in(bounds) {
                 // horizontal snap uses label extents
