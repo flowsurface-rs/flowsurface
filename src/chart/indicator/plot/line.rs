@@ -10,8 +10,8 @@ use crate::chart::{
     indicator::plot::{Plot, PlotTooltip, Series, YScale},
 };
 
-pub struct LinePlot<M, TT> {
-    pub map_y: M,
+pub struct LinePlot<V, TT> {
+    pub value: V,
     pub tooltip: TT,
     pub padding: f32,
     pub stroke_width: f32,
@@ -20,11 +20,11 @@ pub struct LinePlot<M, TT> {
 }
 
 #[allow(dead_code)]
-impl<M, TT> LinePlot<M, TT> {
+impl<V, TT> LinePlot<V, TT> {
     /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
-    pub fn new(map_y: M, tooltip: TT) -> Self {
+    pub fn new(value: V, tooltip: TT) -> Self {
         Self {
-            map_y,
+            value,
             tooltip,
             padding: 0.08,
             stroke_width: 1.0,
@@ -53,30 +53,30 @@ impl<M, TT> LinePlot<M, TT> {
     }
 }
 
-impl<S, M, TT> Plot<S> for LinePlot<M, TT>
+impl<S, V, TT> Plot<S> for LinePlot<V, TT>
 where
     S: Series,
-    M: Fn(&S::Y) -> f32 + Copy,
-    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
+    V: Fn(&S::Y) -> f32,
+    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip,
 {
     fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
-        let mut min = f32::MAX;
-        let mut max = f32::MIN;
+        let mut min_v = f32::MAX;
+        let mut max_v = f32::MIN;
 
         s.for_each_in(range, |_, y| {
-            let v = (self.map_y)(y);
-            if v < min {
-                min = v;
+            let v = (self.value)(y);
+            if v < min_v {
+                min_v = v;
             }
-            if v > max {
-                max = v;
+            if v > max_v {
+                max_v = v;
             }
         });
 
-        if min == f32::MAX {
+        if min_v == f32::MAX {
             None
         } else {
-            Some((min, max))
+            Some((min_v, max_v))
         }
     }
 
@@ -114,7 +114,7 @@ where
         let mut prev: Option<(f32, f32)> = None;
         s.for_each_in(range.clone(), |x, y| {
             let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
-            let vy = (self.map_y)(y);
+            let vy = (self.value)(y);
             let sy = scale.to_y(vy);
             if let Some((px, py)) = prev {
                 frame.stroke(
@@ -129,7 +129,7 @@ where
             let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
             s.for_each_in(range, |x, y| {
                 let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
-                let sy = scale.to_y((self.map_y)(y));
+                let sy = scale.to_y((self.value)(y));
                 frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
             });
         }

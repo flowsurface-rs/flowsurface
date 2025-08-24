@@ -2,19 +2,16 @@ use super::plot::PlotTooltip;
 use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
-        IndicatorMap,
-        plot::{
-            ReversedBTreeSeries,
-            bar::{BarClass, BarPlot},
-        },
+        SeriesMap,
+        plot::bar::{BarClass, BarPlot},
     },
 };
-use data::{chart::Basis, util::format_with_commas};
+use data::util::format_with_commas;
 
 pub fn indicator_elem<'a>(
-    chart_state: &'a ViewState,
+    main_chart: &'a ViewState,
     cache: &'a Caches,
-    datapoints: &'a IndicatorMap<(f32, f32)>,
+    datapoints: &'a SeriesMap<(f32, f32)>,
     earliest: u64,
     latest: u64,
 ) -> iced::Element<'a, Message> {
@@ -28,7 +25,7 @@ pub fn indicator_elem<'a>(
         }
     };
 
-    let bar_plot_kind = |&(buy, sell): &(f32, f32)| {
+    let bar_kind = |&(buy, sell): &(f32, f32)| {
         if buy == -1.0 {
             BarClass::Single // bybit workaround: single color only
         } else {
@@ -38,24 +35,11 @@ pub fn indicator_elem<'a>(
         }
     };
 
-    let plot = BarPlot::new(
-        |&(buy, sell): &(f32, f32)| {
-            if buy == -1.0 { sell } else { buy + sell }
-        },
-        bar_plot_kind,
-        tooltip,
-    )
-    .bar_width_factor(0.9);
+    let y_value = |&(buy, sell): &(f32, f32)| {
+        if buy == -1.0 { sell } else { buy + sell }
+    };
 
-    match chart_state.basis {
-        Basis::Tick(_) => {
-            // temporary workaround
-            // tick based data is reversed, index=0 is the latest datapoint
-            let reversed = ReversedBTreeSeries::new(datapoints);
-            super::indicator_row(chart_state, cache, plot, reversed, earliest..=latest)
-        }
-        Basis::Time(_) => {
-            super::indicator_row(chart_state, cache, plot, datapoints, earliest..=latest)
-        }
-    }
+    let plot = BarPlot::new(y_value, bar_kind, tooltip).bar_width_factor(0.9);
+
+    super::indicator_row(main_chart, cache, plot, datapoints, earliest..=latest)
 }

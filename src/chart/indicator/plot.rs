@@ -85,6 +85,52 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
     }
 }
 
+pub enum AnySeries<'a, Y> {
+    Forward(&'a BTreeMap<u64, Y>),
+    Reversed(ReversedBTreeSeries<'a, Y>),
+}
+
+impl<'a, Y> AnySeries<'a, Y> {
+    pub fn for_basis(basis: Basis, data: &'a BTreeMap<u64, Y>) -> Self {
+        match basis {
+            Basis::Tick(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
+            Basis::Time(_) => Self::Forward(data),
+        }
+    }
+}
+
+impl<'a, Y> Series for AnySeries<'a, Y> {
+    type Y = Y;
+
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
+        match self {
+            AnySeries::Forward(map) => {
+                for (k, v) in (**map).range(range) {
+                    f(*k, v);
+                }
+            }
+            AnySeries::Reversed(rv) => rv.for_each_in(range, f),
+        }
+    }
+
+    fn at(&self, x: u64) -> Option<&Self::Y> {
+        match self {
+            AnySeries::Forward(map) => (**map).get(&x),
+            AnySeries::Reversed(rv) => rv.at(x),
+        }
+    }
+
+    fn next_after<'b>(&'b self, x: u64) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        match self {
+            AnySeries::Forward(map) => (**map).range((x + 1)..).next().map(|(k, v)| (*k, v)),
+            AnySeries::Reversed(rv) => rv.next_after(x),
+        }
+    }
+}
+
 pub struct YScale {
     pub min: f32,
     pub max: f32,
@@ -239,13 +285,11 @@ where
                         (rx, sr)
                     }
                     Basis::Tick(_) => {
-                        let snapped_x =
-                            (cursor_position.x / ctx.cell_width).round() * ctx.cell_width;
-                        let sr = snapped_x / bounds.width;
+                        let world_x = region.x + (cursor_position.x / bounds.width) * region.width;
+                        let snapped_world_x = (world_x / ctx.cell_width).round() * ctx.cell_width;
 
-                        let chart_x_min = region.x;
-                        let crosshair_pos = chart_x_min + sr * region.width;
-                        let rx = ctx.x_to_interval(crosshair_pos);
+                        let sr = (snapped_world_x - region.x) / region.width;
+                        let rx = ctx.x_to_interval(snapped_world_x);
                         (rx, sr)
                     }
                 };

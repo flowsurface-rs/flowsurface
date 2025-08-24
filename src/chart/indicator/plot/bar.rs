@@ -29,22 +29,23 @@ pub enum BarClass {
     Overlay { overlay: f32 }, // signed; sign decides color
 }
 
-pub struct BarPlot<MH, CL, TT> {
+pub struct BarPlot<V, CL, TT> {
+    /// Maps a datapoint to the scalar value represented by the bar (before baseline).
+    pub value: V,
     pub bar_width_factor: f32,
     pub padding: f32,
-    pub main_height: MH, // main/total value
-    pub classify: CL,    // Single vs Overlay with signed overlay
-    pub tooltip: TT,     // tooltip formatter
+    pub classify: CL, // Single vs Overlay with signed overlay
+    pub tooltip: TT,  // tooltip formatter
     pub baseline: Baseline,
 }
 
 #[allow(dead_code)]
-impl<MH, CL, TT> BarPlot<MH, CL, TT> {
-    pub fn new(main_height: MH, classify: CL, tooltip: TT) -> Self {
+impl<V, CL, TT> BarPlot<V, CL, TT> {
+    pub fn new(value: V, classify: CL, tooltip: TT) -> Self {
         Self {
+            value,
             bar_width_factor: 0.9,
             padding: 0.0,
-            main_height,
             classify,
             tooltip,
             baseline: Baseline::Zero,
@@ -67,12 +68,12 @@ impl<MH, CL, TT> BarPlot<MH, CL, TT> {
     }
 }
 
-impl<S, MH, CL, TT> Plot<S> for BarPlot<MH, CL, TT>
+impl<S, V, CL, TT> Plot<S> for BarPlot<V, CL, TT>
 where
     S: Series,
-    MH: Fn(&S::Y) -> f32 + Copy,
-    CL: Fn(&S::Y) -> BarClass + Copy,
-    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip + Copy,
+    V: Fn(&S::Y) -> f32,
+    CL: Fn(&S::Y) -> BarClass,
+    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip,
 {
     fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min_v = f32::MAX;
@@ -80,7 +81,7 @@ where
         let mut n = 0u32;
 
         s.for_each_in(range, |_, y| {
-            let v = (self.main_height)(y);
+            let v = (self.value)(y);
             if v < min_v {
                 min_v = v;
             }
@@ -100,13 +101,13 @@ where
             Baseline::Fixed(v) => v,
         };
 
-        let low = min_ext;
-        let mut high = max_v.max(min_ext + f32::EPSILON);
-        if high > low && self.padding > 0.0 {
-            high *= 1.0 + self.padding;
+        let lowest = min_ext;
+        let mut highest = max_v.max(min_ext + f32::EPSILON);
+        if highest > lowest && self.padding > 0.0 {
+            highest *= 1.0 + self.padding;
         }
 
-        Some((low, high))
+        Some((lowest, highest))
     }
 
     fn draw(
@@ -131,7 +132,7 @@ where
         s.for_each_in(range, |x, y| {
             let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
 
-            let total = (self.main_height)(y);
+            let total = (self.value)(y);
             let rel = total - baseline_value;
 
             let (top_y, h_total) = if rel > 0.0 {
@@ -154,8 +155,7 @@ where
                     );
                 }
                 BarClass::Overlay { overlay } => {
-                    let up = overlay >= 0.0;
-                    let base_color = if up {
+                    let base_color = if overlay >= 0.0 {
                         palette.success.base.color
                     } else {
                         palette.danger.base.color

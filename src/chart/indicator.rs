@@ -16,33 +16,34 @@ use iced::{
 use super::scale::linear;
 use crate::chart::{
     Caches, TEXT_SIZE, ViewState,
-    indicator::plot::{ChartCanvas, Plot, Series},
+    indicator::plot::{AnySeries, ChartCanvas, Plot},
     scale::{AxisLabel, LabelContent, calc_label_rect},
 };
 use data::util::{abbr_large_numbers, round_to_tick};
 
 use super::{Interaction, Message};
 
-pub type IndicatorMap<T> = BTreeMap<u64, T>;
+pub type SeriesMap<T> = BTreeMap<u64, T>;
 
 /// Creates the indicator plot and its labels. Wraps it under `iced::Element`(row).
-pub fn indicator_row<'a, P, S>(
+pub fn indicator_row<'a, P, Y>(
     chart_state: &'a ViewState,
     cache: &'a Caches,
     plot: P,
-    series: S,
+    datapoints: &'a SeriesMap<Y>,
     visible_range: RangeInclusive<u64>,
 ) -> Element<'a, Message>
 where
-    P: Plot<S> + 'a,
-    S: Series + 'a,
+    P: Plot<AnySeries<'a, Y>> + 'a,
 {
+    let series = AnySeries::for_basis(chart_state.basis, datapoints);
+
     let (min, max) = plot
         .y_extents(&series, visible_range)
         .map(|(min, max)| plot.adjust_extents(min, max))
         .unwrap_or((0.0, 0.0));
 
-    let canvas = Canvas::new(ChartCanvas::<P, S> {
+    let canvas = Canvas::new(ChartCanvas::<P, AnySeries<'a, Y>> {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
         ctx: chart_state,
