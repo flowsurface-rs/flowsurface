@@ -3,7 +3,7 @@ use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
 
 use iced::widget::canvas::{self, Cache, Geometry, Path};
-use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Alignment, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -311,23 +311,7 @@ where
                     let next = self.series.next_after(rounded_x).map(|(_, v)| v);
 
                     if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
-                        let (tooltip_w, tooltip_h) = tooltip.guesstimate();
-
-                        let palette = theme.extended_palette();
-
-                        frame.fill_rectangle(
-                            Point::new(4.0, 0.0),
-                            Size::new(tooltip_w, tooltip_h),
-                            palette.background.weakest.color.scale_alpha(0.9),
-                        );
-                        frame.fill_text(canvas::Text {
-                            content: tooltip.text,
-                            position: Point::new(8.0, 2.0),
-                            size: iced::Pixels(10.0),
-                            color: palette.background.base.text,
-                            font: style::AZERET_MONO,
-                            ..canvas::Text::default()
-                        });
+                        tooltip.draw(frame, theme, bounds, cursor_position.x);
                     }
                 }
             } else if let Some(cursor_position) = cursor.position_in(bounds) {
@@ -371,6 +355,9 @@ where
 
 type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 
+const TOOLTIP_MARGIN: f32 = 4.0; // px from edge of canvas
+const TOOLTIP_PADDING: f32 = 8.0; // px inside tooltip box
+
 pub struct PlotTooltip {
     pub text: String,
 }
@@ -400,5 +387,48 @@ impl PlotTooltip {
         let width = (max_cols as f32) * Self::TOOLTIP_CHAR_W + Self::TOOLTIP_PAD_X;
         let height = (lines.max(1) as f32) * Self::TOOLTIP_LINE_H + Self::TOOLTIP_PAD_Y;
         (width, height)
+    }
+
+    pub fn draw(&self, frame: &mut canvas::Frame, theme: &Theme, bounds: Rectangle, cursor_x: f32) {
+        let (tooltip_w, tooltip_h) = self.guesstimate();
+        let palette = theme.extended_palette();
+
+        // decide side to avoid covering hovered datapoint and fit in bounds
+        let switch_sides = {
+            let right_half = cursor_x < bounds.width / 2.0;
+
+            if 3.0 * tooltip_h > bounds.height {
+                right_half
+            } else if right_half {
+                cursor_x + TOOLTIP_MARGIN + tooltip_w > bounds.width
+            } else {
+                cursor_x < TOOLTIP_MARGIN + tooltip_w
+            }
+        };
+
+        let (rect_x, text_x, align_x) = if switch_sides {
+            let rx = bounds.width - tooltip_w - TOOLTIP_MARGIN;
+            let tx = rx + tooltip_w - TOOLTIP_PADDING;
+            (rx, tx, Alignment::End)
+        } else {
+            let rx = TOOLTIP_MARGIN;
+            let tx = rx + TOOLTIP_PADDING;
+            (rx, tx, Alignment::Start)
+        };
+
+        frame.fill_rectangle(
+            Point::new(rect_x, 0.0),
+            Size::new(tooltip_w, tooltip_h),
+            palette.background.weakest.color.scale_alpha(0.9),
+        );
+        frame.fill_text(canvas::Text {
+            content: self.text.clone(),
+            position: Point::new(text_x, 2.0),
+            size: iced::Pixels(10.0),
+            color: palette.background.base.text,
+            font: style::AZERET_MONO,
+            align_x: align_x.into(),
+            ..canvas::Text::default()
+        });
     }
 }
