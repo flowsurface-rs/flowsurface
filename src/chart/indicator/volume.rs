@@ -27,11 +27,11 @@ pub fn indicator_elem<'a>(
 
     let bar_kind = |&(buy, sell): &(f32, f32)| {
         if buy == -1.0 {
-            BarClass::Single // bybit workaround: single color only
+            BarClass::Single // bybit workaround: single bar
         } else {
             BarClass::Overlay {
                 overlay: buy - sell,
-            } // volume delta as overlay, sign determines up/down color
+            } // use the overlay for volume delta, sign determines up/down color
         }
     };
 

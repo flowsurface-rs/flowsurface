@@ -4,7 +4,7 @@ use iced::{Point, Size, Theme, widget::canvas};
 
 use crate::chart::{
     ViewState,
-    indicator::plot::{Plot, PlotTooltip, Series, YScale},
+    indicator::plot::{Plot, PlotTooltip, Series, TooltipFn, YScale},
 };
 
 #[derive(Clone, Copy)]
@@ -29,18 +29,19 @@ pub enum BarClass {
     Overlay { overlay: f32 }, // signed; sign decides color
 }
 
-pub struct BarPlot<V, CL, TT> {
+pub struct BarPlot<V, CL, T> {
     /// Maps a datapoint to the scalar value represented by the bar (before baseline).
     pub value: V,
     pub bar_width_factor: f32,
     pub padding: f32,
     pub classify: CL, // Single vs Overlay with signed overlay
-    pub tooltip: Option<TT>,
+    pub tooltip: Option<TooltipFn<T>>,
     pub baseline: Baseline,
+    _phantom: std::marker::PhantomData<T>,
 }
 
 #[allow(dead_code)]
-impl<V, CL, TT> BarPlot<V, CL, TT> {
+impl<V, CL, T> BarPlot<V, CL, T> {
     pub fn new(value: V, classify: CL) -> Self {
         Self {
             value,
@@ -49,6 +50,7 @@ impl<V, CL, TT> BarPlot<V, CL, TT> {
             classify,
             tooltip: None,
             baseline: Baseline::Zero,
+            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -67,18 +69,20 @@ impl<V, CL, TT> BarPlot<V, CL, TT> {
         self
     }
 
-    pub fn with_tooltip(mut self, tooltip: TT) -> Self {
-        self.tooltip = Some(tooltip);
+    pub fn with_tooltip<F>(mut self, tooltip: F) -> Self
+    where
+        F: Fn(&T, Option<&T>) -> PlotTooltip + 'static,
+    {
+        self.tooltip = Some(Box::new(tooltip));
         self
     }
 }
 
-impl<S, V, CL, TT> Plot<S> for BarPlot<V, CL, TT>
+impl<S, V, CL> Plot<S> for BarPlot<V, CL, S::Y>
 where
     S: Series,
     V: Fn(&S::Y) -> f32,
     CL: Fn(&S::Y) -> BarClass,
-    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip,
 {
     fn y_extents(&self, datapoints: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min_v = f32::MAX;
@@ -189,7 +193,7 @@ where
         });
     }
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> Option<PlotTooltip> {
-        self.tooltip.as_ref().map(|tt| tt(y, next))
+    fn tooltip_fn(&self) -> Option<&TooltipFn<S::Y>> {
+        self.tooltip.as_ref()
     }
 }

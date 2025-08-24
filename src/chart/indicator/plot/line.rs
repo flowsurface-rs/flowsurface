@@ -7,21 +7,22 @@ use iced::{
 
 use crate::chart::{
     ViewState,
-    indicator::plot::{Plot, PlotTooltip, Series, YScale},
+    indicator::plot::{Plot, PlotTooltip, Series, TooltipFn, YScale},
 };
 
-pub struct LinePlot<V, TT> {
+pub struct LinePlot<V, T> {
     pub value: V,
-    pub tooltip: Option<TT>,
+    pub tooltip: Option<TooltipFn<T>>,
     // padding in percentage of the value range, applies both top and bottom
     pub padding: f32,
     pub stroke_width: f32,
     pub show_points: bool,
     pub point_radius_factor: f32,
+    _phantom: std::marker::PhantomData<T>,
 }
 
 #[allow(dead_code)]
-impl<V, TT> LinePlot<V, TT> {
+impl<V, T> LinePlot<V, T> {
     /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
     pub fn new(value: V) -> Self {
         Self {
@@ -31,6 +32,7 @@ impl<V, TT> LinePlot<V, TT> {
             stroke_width: 1.0,
             show_points: true,
             point_radius_factor: 0.2,
+            _phantom: std::marker::PhantomData,
         }
     }
     pub fn padding(mut self, p: f32) -> Self {
@@ -57,17 +59,19 @@ impl<V, TT> LinePlot<V, TT> {
         self
     }
 
-    pub fn with_tooltip(mut self, tooltip: TT) -> Self {
-        self.tooltip = Some(tooltip);
+    pub fn with_tooltip<F>(mut self, tooltip: F) -> Self
+    where
+        F: Fn(&T, Option<&T>) -> PlotTooltip + 'static,
+    {
+        self.tooltip = Some(Box::new(tooltip));
         self
     }
 }
 
-impl<S, V, TT> Plot<S> for LinePlot<V, TT>
+impl<S, V> Plot<S> for LinePlot<V, S::Y>
 where
     S: Series,
     V: Fn(&S::Y) -> f32,
-    TT: Fn(&S::Y, Option<&S::Y>) -> PlotTooltip,
 {
     fn y_extents(&self, datapoints: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
         let mut min_v = f32::MAX;
@@ -145,7 +149,7 @@ where
         }
     }
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &iced::Theme) -> Option<PlotTooltip> {
-        self.tooltip.as_ref().map(|tt| tt(y, next))
+    fn tooltip_fn(&self) -> Option<&TooltipFn<S::Y>> {
+        self.tooltip.as_ref()
     }
 }

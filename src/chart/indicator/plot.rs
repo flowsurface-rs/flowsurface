@@ -164,7 +164,11 @@ pub trait Plot<S: Series> {
         scale: &YScale,
     );
 
-    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, theme: &Theme) -> Option<PlotTooltip>;
+    fn tooltip_fn(&self) -> Option<&TooltipFn<S::Y>>;
+
+    fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &Theme) -> Option<PlotTooltip> {
+        self.tooltip_fn().map(|tt| tt(y, next))
+    }
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -364,6 +368,8 @@ where
         }
     }
 }
+
+type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 
 pub struct PlotTooltip {
     pub text: String,
