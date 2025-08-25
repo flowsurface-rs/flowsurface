@@ -1,14 +1,14 @@
 use super::plot::{PlotTooltip, line::LinePlot};
-use crate::chart::{Basis, Caches, Message, ViewState, indicator::SeriesMap};
+use crate::chart::{Basis, Caches, Message, ViewState};
 use data::util::format_with_commas;
 use exchange::Timeframe;
 use iced::widget::{center, row, text};
-use std::ops::RangeInclusive;
+use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub fn indicator_elem<'a>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
-    datapoints: &'a SeriesMap<f32>,
+    datapoints: &'a BTreeMap<u64, f32>,
     visible_range: RangeInclusive<u64>,
 ) -> iced::Element<'a, Message> {
     match main_chart.basis {

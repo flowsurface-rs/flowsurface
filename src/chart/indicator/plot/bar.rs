@@ -139,7 +139,8 @@ where
         let y_base = scale.to_y(baseline_value);
 
         datapoints.for_each_in(range, |x, y| {
-            let left = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
+            let center_x = ctx.interval_to_x(x);
+            let left = center_x - (bar_width / 2.0);
 
             let total = (self.value)(y);
             let rel = total - baseline_value;

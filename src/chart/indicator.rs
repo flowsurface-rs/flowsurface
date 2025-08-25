@@ -21,14 +21,12 @@ use iced::{
 };
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
-pub type SeriesMap<T> = BTreeMap<u64, T>;
-
 /// Creates the indicator plot and its labels. Wraps it under `iced::Element`(row).
 pub fn indicator_row<'a, P, Y>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
     plot: P,
-    datapoints: &'a SeriesMap<Y>,
+    datapoints: &'a BTreeMap<u64, Y>,
     visible_range: RangeInclusive<u64>,
 ) -> Element<'a, Message>
 where

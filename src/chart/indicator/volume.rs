@@ -1,18 +1,15 @@
 use super::plot::PlotTooltip;
 use crate::chart::{
     Caches, Message, ViewState,
-    indicator::{
-        SeriesMap,
-        plot::bar::{BarClass, BarPlot},
-    },
+    indicator::plot::bar::{BarClass, BarPlot},
 };
 use data::util::format_with_commas;
-use std::ops::RangeInclusive;
+use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub fn indicator_elem<'a>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
-    datapoints: &'a SeriesMap<(f32, f32)>,
+    datapoints: &'a BTreeMap<u64, (f32, f32)>,
     visible_range: RangeInclusive<u64>,
 ) -> iced::Element<'a, Message> {
     let tooltip = |&(buy, sell): &(f32, f32), _next: Option<&(f32, f32)>| {
