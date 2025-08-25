@@ -9,8 +9,8 @@ use crate::chart::{
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
-use exchange::fetcher::FetchRange;
 use exchange::{Kline, Timeframe, Trade};
+use exchange::{adapter::Exchange, fetcher::FetchRange};
 
 use iced::widget::{center, row, text};
 use std::{collections::BTreeMap, ops::RangeInclusive};
@@ -35,31 +35,27 @@ impl OpenInterestIndicator {
     ) -> iced::Element<'a, Message> {
         match chart.basis {
             Basis::Time(timeframe) => {
-                let (earliest, latest) = visible_range.clone().into_inner();
-
-                if latest < earliest {
-                    return row![].into();
-                }
-
                 let exchange = match chart.ticker_info.as_ref() {
                     Some(info) => info.exchange(),
                     None => return row![].into(),
                 };
-                if exchange == exchange::adapter::Exchange::HyperliquidLinear {
+                if !Self::is_supported_exchange(exchange) {
                     return center(text(format!(
                         "WIP: Open Interest is not available for {exchange}"
                     )))
                     .into();
                 }
 
-                if timeframe < Timeframe::M5
-                    || timeframe == Timeframe::H2
-                    || timeframe > Timeframe::H4
-                {
+                if !Self::is_supported_timeframe(timeframe) {
                     return center(text(format!(
                         "WIP: Open Interest is not available on {timeframe} timeframe"
                     )))
                     .into();
+                }
+
+                let (earliest, latest) = visible_range.clone().into_inner();
+                if latest < earliest {
+                    return row![].into();
                 }
             }
             Basis::Tick(_) => {
@@ -102,6 +98,14 @@ impl OpenInterestIndicator {
         });
         (from_time, to_time)
     }
+
+    pub fn is_supported_exchange(exchange: Exchange) -> bool {
+        exchange.is_perps() && exchange != Exchange::HyperliquidLinear
+    }
+
+    pub fn is_supported_timeframe(timeframe: Timeframe) -> bool {
+        !(timeframe < Timeframe::M5 || timeframe == Timeframe::H2 || timeframe > Timeframe::H4)
+    }
 }
 
 impl KlineIndicatorImpl for OpenInterestIndicator {
@@ -122,12 +126,14 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     }
 
     fn fetch_range(&mut self, ctx: &FetchCtx) -> Option<FetchRange> {
-        let tf_ok = ctx.timeframe_ms >= exchange::Timeframe::M5.to_milliseconds();
-        let perps_ok = ctx.chart.ticker_info.is_some_and(|t| {
-            t.is_perps() && t.exchange() != exchange::adapter::Exchange::HyperliquidLinear
-        });
-
-        if !(tf_ok && perps_ok) {
+        let is_supported = match ctx.chart.ticker_info.as_ref() {
+            Some(info) => {
+                let exchange = info.exchange();
+                Self::is_supported_exchange(exchange) && Self::is_supported_timeframe(ctx.timeframe)
+            }
+            None => false,
+        };
+        if !is_supported {
             return None;
         }
 

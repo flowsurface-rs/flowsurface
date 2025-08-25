@@ -340,7 +340,7 @@ impl KlineChart {
     fn missing_data_task(&mut self) -> Option<Action> {
         match &self.data_source {
             PlotData::TimeBased(timeseries) => {
-                let timeframe = timeseries.interval.to_milliseconds();
+                let timeframe_ms = timeseries.interval.to_milliseconds();
 
                 let (visible_earliest, visible_latest) = self.visible_timerange();
                 let (kline_earliest, kline_latest) = timeseries.timerange();
@@ -371,7 +371,7 @@ impl KlineChart {
                 // priority 3, Open Interest data
                 let ctx = indicator::kline::FetchCtx {
                     chart: &self.chart,
-                    timeframe_ms: timeframe,
+                    timeframe: timeseries.interval,
                     visible_earliest,
                     kline_latest,
                     prefetch_earliest: earliest,
@@ -386,11 +386,12 @@ impl KlineChart {
 
                 // priority 4, missing klines & integrity check
                 if let Some(missing_keys) =
-                    timeseries.check_kline_integrity(kline_earliest, kline_latest, timeframe)
+                    timeseries.check_kline_integrity(kline_earliest, kline_latest, timeframe_ms)
                 {
-                    let latest = missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe;
+                    let latest =
+                        missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe_ms;
                     let earliest =
-                        missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe;
+                        missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe_ms;
 
                     let range = FetchRange::Kline(earliest, latest);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
