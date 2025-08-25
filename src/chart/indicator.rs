@@ -1,6 +1,5 @@
-pub mod open_interest;
+pub mod kline;
 pub mod plot;
-pub mod volume;
 
 use super::scale::linear;
 use super::{Interaction, Message};
