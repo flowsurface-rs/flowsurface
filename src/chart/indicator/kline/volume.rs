@@ -97,7 +97,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
         self.clear_all_caches();
     }
 
-    fn on_new_klines(&mut self, klines: &[Kline]) {
+    fn on_insert_klines(&mut self, klines: &[Kline]) {
         for kline in klines {
             self.data
                 .insert(kline.time, (kline.volume.0, kline.volume.1));
@@ -105,17 +105,30 @@ impl KlineIndicatorImpl for VolumeIndicator {
         self.clear_all_caches();
     }
 
-    fn on_insert_trades(&mut self, _trades: &[Trade], source: &PlotData<KlineDataPoint>) {
-        // For tick-based, recompute tail cheaply; for simplicity, rebuild from source.
-        // If needed, you can optimize by only updating affected indexes.
+    fn on_insert_trades(
+        &mut self,
+        _trades: &[Trade],
+        old_dp_len: usize,
+        source: &PlotData<KlineDataPoint>,
+    ) {
+        match source {
+            PlotData::TimeBased(_) => return,
+            PlotData::TickBased(tickseries) => {
+                let start_idx = old_dp_len.saturating_sub(1);
+                for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
+                    self.data
+                        .insert(idx as u64, (dp.kline.volume.0, dp.kline.volume.1));
+                }
+            }
+        }
+        self.clear_all_caches();
+    }
+
+    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {
         self.rebuild_from_source(source);
     }
 
-    fn on_change_tick_size(&mut self, source: &PlotData<KlineDataPoint>) {
-        self.rebuild_from_source(source);
-    }
-
-    fn on_basis_changed(&mut self, source: &PlotData<KlineDataPoint>) {
+    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
         self.rebuild_from_source(source);
     }
 }

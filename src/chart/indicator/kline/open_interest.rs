@@ -158,13 +158,19 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
         self.clear_all_caches();
     }
 
-    fn on_new_klines(&mut self, _klines: &[Kline]) {}
+    fn on_insert_klines(&mut self, _klines: &[Kline]) {}
 
-    fn on_insert_trades(&mut self, _trades: &[Trade], _source: &PlotData<KlineDataPoint>) {}
+    fn on_insert_trades(
+        &mut self,
+        _trades: &[Trade],
+        _old_dp_len: usize,
+        _source: &PlotData<KlineDataPoint>,
+    ) {
+    }
 
-    fn on_change_tick_size(&mut self, _source: &PlotData<KlineDataPoint>) {}
+    fn on_ticksize_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
-    fn on_basis_changed(&mut self, _source: &PlotData<KlineDataPoint>) {}
+    fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
     fn on_open_interest(&mut self, data: &[exchange::OpenInterest]) {
         self.data.extend(data.iter().map(|oi| (oi.time, oi.value)));

@@ -319,7 +319,7 @@ impl KlineChart {
 
                 self.indicators
                     .values_mut()
-                    .for_each(|indi| indi.on_new_klines(&[*kline]));
+                    .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
                 let chart = self.mut_state();
 
@@ -522,7 +522,7 @@ impl KlineChart {
 
         self.indicators
             .values_mut()
-            .for_each(|indi| indi.on_change_tick_size(&self.data_source));
+            .for_each(|indi| indi.on_ticksize_change(&self.data_source));
 
         self.clear_trades(false);
         self.invalidate(None);
@@ -536,7 +536,7 @@ impl KlineChart {
 
         self.indicators
             .values_mut()
-            .for_each(|indi| indi.on_basis_changed(&self.data_source));
+            .for_each(|indi| indi.on_basis_change(&self.data_source));
 
         self.invalidate(None);
     }
@@ -564,6 +564,7 @@ impl KlineChart {
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
+                let old_dp_len = tick_aggr.datapoints.len();
                 tick_aggr.insert_trades(trades_buffer);
 
                 if let Some(last_dp) = tick_aggr.datapoints.last() {
@@ -573,9 +574,9 @@ impl KlineChart {
                     self.chart.last_price = None;
                 }
 
-                self.indicators
-                    .values_mut()
-                    .for_each(|indi| indi.on_insert_trades(trades_buffer, &self.data_source));
+                self.indicators.values_mut().for_each(|indi| {
+                    indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
+                });
 
                 self.invalidate(None);
             }
@@ -609,7 +610,7 @@ impl KlineChart {
 
                 self.indicators
                     .values_mut()
-                    .for_each(|indi| indi.on_new_klines(klines_raw));
+                    .for_each(|indi| indi.on_insert_klines(klines_raw));
 
                 if klines_raw.is_empty() {
                     self.request_handler
