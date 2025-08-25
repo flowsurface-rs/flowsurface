@@ -33,7 +33,6 @@ impl VolumeIndicator {
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
-        datapoints: &'a BTreeMap<u64, (f32, f32)>,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         let tooltip = |&(buy, sell): &(f32, f32), _next: Option<&(f32, f32)>| {
@@ -56,15 +55,15 @@ impl VolumeIndicator {
             }
         };
 
-        let y_value = |&(buy, sell): &(f32, f32)| {
+        let value_fn = |&(buy, sell): &(f32, f32)| {
             if buy == -1.0 { sell } else { buy + sell }
         };
 
-        let plot = BarPlot::new(y_value, bar_kind)
+        let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
             .with_tooltip(tooltip);
 
-        indicator_row(main_chart, &self.cache, plot, datapoints, visible_range)
+        indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
     }
 }
 
@@ -82,7 +81,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
         chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        self.indicator_elem(chart, &self.data, visible_range)
+        self.indicator_elem(chart, visible_range)
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {

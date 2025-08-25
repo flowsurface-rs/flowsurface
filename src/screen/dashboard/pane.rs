@@ -19,7 +19,7 @@ use data::{
     UserTimezone,
     chart::{
         Basis, ViewConfig, VisualConfig,
-        indicator::{HeatmapIndicator, Indicator, KlineIndicator},
+        indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
     },
     layout::pane::{LinkGroup, Settings},
 };
@@ -80,7 +80,7 @@ pub enum Message {
     ChartInteraction(pane_grid::Pane, chart::Message),
     PanelInteraction(pane_grid::Pane, panel::Message),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
-    ToggleIndicator(pane_grid::Pane, String),
+    ToggleIndicator(pane_grid::Pane, UiIndicator),
     Popout,
     Merge,
     DeleteNotification(pane_grid::Pane, usize),
@@ -673,7 +673,7 @@ impl State {
         &'a self,
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
-        indicators: &'a [impl Indicator],
+        indicators: &'a [impl Indicator + Copy + Into<UiIndicator>],
         compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
     ) -> Element<'a, Message>
@@ -1000,44 +1000,25 @@ impl Content {
         }
     }
 
-    pub fn toggle_indicator(&mut self, indicator_str: &str) {
-        match self {
-            Content::Heatmap(chart, indicators) => {
-                let indicator = match indicator_str {
-                    "Volume" => HeatmapIndicator::Volume,
-                    _ => {
-                        panic!("heatmap indicator requested to toggle not found: {indicator_str}",);
-                    }
-                };
-
-                if indicators.contains(&indicator) {
-                    indicators.retain(|i| i != &indicator);
+    pub fn toggle_indicator(&mut self, indicator: UiIndicator) {
+        match (self, indicator) {
+            (Content::Heatmap(chart, indicators), UiIndicator::Heatmap(ind)) => {
+                if indicators.contains(&ind) {
+                    indicators.retain(|i| i != &ind);
                 } else {
-                    indicators.push(indicator);
+                    indicators.push(ind);
                 }
-
-                chart.toggle_indicator(indicator);
+                chart.toggle_indicator(ind);
             }
-            Content::Kline(chart, indicators) => {
-                let indicator = match indicator_str {
-                    "Volume" => KlineIndicator::Volume,
-                    "Open Interest" => KlineIndicator::OpenInterest,
-                    _ => {
-                        panic!("kline indicator requested to toggle not found: {indicator_str}",);
-                    }
-                };
-
-                if indicators.contains(&indicator) {
-                    indicators.retain(|i| i != &indicator);
+            (Content::Kline(chart, indicators), UiIndicator::Kline(ind)) => {
+                if indicators.contains(&ind) {
+                    indicators.retain(|i| i != &ind);
                 } else {
-                    indicators.push(indicator);
+                    indicators.push(ind);
                 }
-
-                chart.toggle_indicator(indicator);
+                chart.toggle_indicator(ind);
             }
-            Content::Starter | Content::TimeAndSales(_) => {
-                panic!("indicator toggle on {} pane", self)
-            }
+            _ => panic!("indicator toggle on {indicator:?} pane",),
         }
     }
 

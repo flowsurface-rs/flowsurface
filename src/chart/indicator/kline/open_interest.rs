@@ -75,9 +75,9 @@ impl OpenInterestIndicator {
             PlotTooltip::new(format!("{value_text}\n{change_text}"))
         };
 
-        let y_value = |v: &f32| *v;
+        let value_fn = |v: &f32| *v;
 
-        let plot = LinePlot::new(y_value)
+        let plot = LinePlot::new(value_fn)
             .stroke_width(1.0)
             .show_points(true)
             .point_radius_factor(0.2)

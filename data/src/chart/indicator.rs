@@ -64,3 +64,23 @@ impl Display for HeatmapIndicator {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+/// Temporary workaround,
+/// represents any indicator type in the UI
+pub enum UiIndicator {
+    Heatmap(HeatmapIndicator),
+    Kline(KlineIndicator),
+}
+
+impl From<KlineIndicator> for UiIndicator {
+    fn from(k: KlineIndicator) -> Self {
+        UiIndicator::Kline(k)
+    }
+}
+
+impl From<HeatmapIndicator> for UiIndicator {
+    fn from(h: HeatmapIndicator) -> Self {
+        UiIndicator::Heatmap(h)
+    }
+}
