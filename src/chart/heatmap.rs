@@ -23,6 +23,7 @@ use iced::{
     theme::palette::Extended,
 };
 
+use enum_map::EnumMap;
 use ordered_float::OrderedFloat;
 use std::{collections::HashMap, time::Instant};
 
@@ -44,7 +45,7 @@ const TOOLTIP_PADDING: f32 = 12.0;
 const MAX_CIRCLE_RADIUS: f32 = 16.0;
 
 impl Chart for HeatmapChart {
-    type IndicatorType = HeatmapIndicator;
+    type IndicatorKind = HeatmapIndicator;
 
     fn state(&self) -> &ViewState {
         &self.chart
@@ -62,7 +63,7 @@ impl Chart for HeatmapChart {
         self.invalidate(None);
     }
 
-    fn view_indicators(&'_ self, _indicators: &[Self::IndicatorType]) -> Vec<Element<'_, Message>> {
+    fn view_indicators(&'_ self, _indicators: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>> {
         vec![]
     }
 
@@ -127,14 +128,16 @@ impl PlotConstants for HeatmapChart {
     }
 }
 
+#[derive(Default)]
 enum IndicatorData {
+    #[default]
     Volume,
 }
 
 pub struct HeatmapChart {
     chart: ViewState,
     trades: TimeSeries<HeatmapDataPoint>,
-    indicators: HashMap<HeatmapIndicator, IndicatorData>,
+    indicators: EnumMap<HeatmapIndicator, Option<IndicatorData>>,
     pause_buffer: Vec<(u64, Box<[Trade]>, Depth)>,
     heatmap: HistoricalDepth,
     visual_config: Config,
@@ -153,6 +156,14 @@ impl HeatmapChart {
         config: Option<Config>,
         studies: Vec<HeatmapStudy>,
     ) -> Self {
+        let mut indicators = EnumMap::default();
+        for &indicator in enabled_indicators {
+            let data = match indicator {
+                HeatmapIndicator::Volume => IndicatorData::Volume,
+            };
+            indicators[indicator] = Some(data);
+        }
+
         HeatmapChart {
             chart: ViewState {
                 cell_width: DEFAULT_CELL_WIDTH,
@@ -164,17 +175,7 @@ impl HeatmapChart {
                 basis,
                 ..Default::default()
             },
-            indicators: {
-                enabled_indicators
-                    .iter()
-                    .map(|&indicator| {
-                        let data = match indicator {
-                            HeatmapIndicator::Volume => IndicatorData::Volume,
-                        };
-                        (indicator, data)
-                    })
-                    .collect()
-            },
+            indicators,
             pause_buffer: vec![],
             heatmap: HistoricalDepth::new(
                 ticker_info.expect("basis set without ticker info").min_qty,
@@ -376,16 +377,13 @@ impl HeatmapChart {
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
-        match self.indicators.entry(indicator) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                entry.remove();
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let data = match indicator {
-                    HeatmapIndicator::Volume => IndicatorData::Volume,
-                };
-                entry.insert(data);
-            }
+        if self.indicators[indicator].is_some() {
+            self.indicators[indicator] = None;
+        } else {
+            let data = match indicator {
+                HeatmapIndicator::Volume => IndicatorData::Volume,
+            };
+            self.indicators[indicator] = Some(data);
         }
     }
 
@@ -498,7 +496,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
             let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 
-            let volume_indicator = self.indicators.contains_key(&HeatmapIndicator::Volume);
+            let volume_indicator = self.indicators[HeatmapIndicator::Volume].is_some();
 
             if let Some(merge_strat) = self.visual_config().coalescing {
                 let coalesced_visual_runs = self.heatmap.coalesced_runs(

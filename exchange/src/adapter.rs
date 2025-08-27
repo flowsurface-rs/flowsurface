@@ -336,6 +336,17 @@ impl Exchange {
             _ => true,
         }
     }
+
+    pub fn is_perps(&self) -> bool {
+        matches!(
+            self,
+            Exchange::BinanceLinear
+                | Exchange::BinanceInverse
+                | Exchange::BybitLinear
+                | Exchange::BybitInverse
+                | Exchange::HyperliquidLinear
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

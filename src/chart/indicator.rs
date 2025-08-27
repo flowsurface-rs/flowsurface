@@ -1,19 +1,71 @@
-pub mod open_interest;
-pub mod volume;
-
-use iced::{
-    Event, Rectangle, Renderer, Theme, mouse,
-    widget::canvas::{self, Cache, Geometry},
-};
+pub mod kline;
+pub mod plot;
 
 use super::scale::linear;
+use super::{Interaction, Message};
 use crate::chart::{
-    TEXT_SIZE,
+    Caches, TEXT_SIZE, ViewState,
+    indicator::plot::{AnySeries, ChartCanvas, Plot},
     scale::{AxisLabel, LabelContent, calc_label_rect},
 };
 use data::util::{abbr_large_numbers, round_to_tick};
 
-use super::{Interaction, Message};
+use iced::{
+    Element, Event, Length, Rectangle, Renderer, Theme, mouse,
+    widget::{
+        Canvas,
+        canvas::{self, Cache, Geometry},
+        container, row, vertical_rule,
+    },
+};
+use std::{collections::BTreeMap, ops::RangeInclusive};
+
+/// Creates the indicator plot and its labels. Wraps it under `iced::Element`(row).
+pub fn indicator_row<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    plot: P,
+    datapoints: &'a BTreeMap<u64, Y>,
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
+    let series = AnySeries::for_basis(main_chart.basis, datapoints);
+
+    let (min, max) = plot
+        .y_extents(&series, visible_range)
+        .map(|(min, max)| plot.adjust_extents(min, max))
+        .unwrap_or((0.0, 0.0));
+
+    let canvas = Canvas::new(ChartCanvas::<P, AnySeries<'a, Y>> {
+        indicator_cache: &cache.main,
+        crosshair_cache: &cache.crosshair,
+        ctx: main_chart,
+        plot,
+        series,
+        max_for_labels: max,
+        min_for_labels: min,
+    })
+    .height(Length::Fill)
+    .width(Length::Fill);
+
+    let labels = Canvas::new(IndicatorLabel {
+        label_cache: &cache.y_labels,
+        max,
+        min,
+        chart_bounds: main_chart.bounds,
+    })
+    .height(Length::Fill)
+    .width(main_chart.y_labels_width());
+
+    row![
+        canvas,
+        vertical_rule(1).style(crate::style::split_ruler),
+        container(labels),
+    ]
+    .into()
+}
 
 pub struct IndicatorLabel<'a> {
     pub label_cache: &'a Cache,

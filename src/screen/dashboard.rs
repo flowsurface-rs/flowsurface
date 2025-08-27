@@ -390,9 +390,9 @@ impl Dashboard {
                 pane::Message::Merge => {
                     return (self.merge_pane(main_window), None);
                 }
-                pane::Message::ToggleIndicator(pane, indicator_str) => {
+                pane::Message::ToggleIndicator(pane, indicator) => {
                     if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
-                        pane_state.content.toggle_indicator(&indicator_str);
+                        pane_state.content.toggle_indicator(indicator);
                     }
                 }
                 pane::Message::DeleteNotification(pane, idx) => {
