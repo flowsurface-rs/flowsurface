@@ -25,7 +25,8 @@ use iced::{
 
 use enum_map::EnumMap;
 use ordered_float::OrderedFloat;
-use std::{collections::HashMap, time::Instant};
+use rustc_hash::FxHashMap;
+use std::time::Instant;
 
 const MIN_SCALING: f32 = 0.6;
 const MAX_SCALING: f32 = 1.2;
@@ -796,7 +797,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         base_data_time.saturating_add_signed(offset * aggr_time as i64)
                     });
 
-                    let display_grid_qtys: HashMap<(u64, OrderedFloat<f32>), (f32, bool)> =
+                    let display_grid_qtys: FxHashMap<(u64, OrderedFloat<f32>), (f32, bool)> =
                         self.heatmap.query_grid_qtys(
                             base_data_time,
                             base_data_price,

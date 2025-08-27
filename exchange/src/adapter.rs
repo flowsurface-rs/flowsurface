@@ -1,11 +1,10 @@
 use super::{Ticker, Timeframe};
 use crate::{Kline, OpenInterest, TickMultiplier, TickerInfo, TickerStats, Trade, depth::Depth};
 
+use enum_map::{Enum, EnumMap};
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr,
-};
+use std::{collections::HashMap, str::FromStr};
 
 pub mod binance;
 pub mod bybit;
@@ -102,20 +101,13 @@ impl StreamKind {
 
 #[derive(Debug, Default)]
 pub struct UniqueStreams {
-    streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamKind>>>,
-    specs: HashMap<Exchange, StreamSpecs>,
+    streams: EnumMap<Exchange, Option<FxHashMap<Ticker, FxHashSet<StreamKind>>>>,
+    specs: EnumMap<Exchange, Option<StreamSpecs>>,
 }
 
 impl UniqueStreams {
-    pub fn new() -> Self {
-        Self {
-            streams: HashMap::new(),
-            specs: HashMap::new(),
-        }
-    }
-
     pub fn from<'a>(streams: impl Iterator<Item = &'a StreamKind>) -> Self {
-        let mut unique_streams = UniqueStreams::new();
+        let mut unique_streams = UniqueStreams::default();
         for stream in streams {
             unique_streams.add(*stream);
         }
@@ -129,9 +121,8 @@ impl UniqueStreams {
             }
         };
 
-        self.streams
-            .entry(exchange)
-            .or_default()
+        self.streams[exchange]
+            .get_or_insert_with(FxHashMap::default)
             .entry(ticker)
             .or_default()
             .insert(stream);
@@ -149,38 +140,29 @@ impl UniqueStreams {
         let depth_streams = self.depth_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));
 
-        self.specs.insert(
-            exchange,
-            StreamSpecs {
-                depth: depth_streams,
-                kline: kline_streams,
-            },
-        );
+        self.specs[exchange] = Some(StreamSpecs {
+            depth: depth_streams,
+            kline: kline_streams,
+        });
     }
 
     fn streams<T, F>(&self, exchange_filter: Option<Exchange>, stream_extractor: F) -> Vec<T>
     where
         F: Fn(Exchange, &StreamKind) -> Option<T>,
     {
+        let f = &stream_extractor;
+
+        let per_exchange = |exchange| {
+            self.streams[exchange]
+                .as_ref()
+                .into_iter()
+                .flat_map(|ticker_map| ticker_map.values().flatten())
+                .filter_map(move |stream| f(exchange, stream))
+        };
+
         match exchange_filter {
-            Some(exchange) => self.streams.get(&exchange).map_or(vec![], |ticker_map| {
-                ticker_map
-                    .values()
-                    .flatten()
-                    .filter_map(|stream| stream_extractor(exchange, stream))
-                    .collect()
-            }),
-            None => self
-                .streams
-                .iter()
-                .flat_map(|(exchange, ticker_map)| {
-                    ticker_map
-                        .values()
-                        .flatten()
-                        .filter_map(|stream| stream_extractor(*exchange, stream))
-                        .collect::<Vec<_>>()
-                })
-                .collect(),
+            Some(exchange) => per_exchange(exchange).collect(),
+            None => Exchange::ALL.into_iter().flat_map(per_exchange).collect(),
         }
     }
 
@@ -195,7 +177,13 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_kline_stream())
     }
 
-    pub fn combined(&self) -> &HashMap<Exchange, StreamSpecs> {
+    pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
+        self.specs
+            .iter()
+            .filter_map(|(exchange, specs)| specs.as_ref().map(|stream| (exchange, stream)))
+    }
+
+    pub fn combined(&self) -> &EnumMap<Exchange, Option<StreamSpecs>> {
         &self.specs
     }
 }
@@ -242,7 +230,7 @@ impl ExchangeInclusive {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Enum)]
 pub enum Exchange {
     BinanceLinear,
     BinanceInverse,

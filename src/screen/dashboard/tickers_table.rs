@@ -1,5 +1,3 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::{
     style::{self, Icon, icon_text},
     widget::button_with_tooltip,
@@ -19,6 +17,8 @@ use iced::{
         text, text_input,
     },
 };
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::HashMap;
 
 const ACTIVE_UPDATE_INTERVAL: u64 = 13;
 const INACTIVE_UPDATE_INTERVAL: u64 = 300;
@@ -103,17 +103,17 @@ pub enum Message {
 
 pub struct TickersTable {
     ticker_rows: Vec<TickerRowData>,
-    pub favorited_tickers: HashSet<(Exchange, Ticker)>,
-    display_cache: HashMap<(Exchange, Ticker), TickerDisplayData>,
+    pub favorited_tickers: FxHashSet<(Exchange, Ticker)>,
+    display_cache: FxHashMap<(Exchange, Ticker), TickerDisplayData>,
     search_query: String,
     show_sort_options: bool,
     selected_sort_option: SortOptions,
     pub expand_ticker_card: Option<(Ticker, Exchange)>,
     scroll_offset: AbsoluteOffset,
     pub is_shown: bool,
-    tickers_info: HashMap<Exchange, HashMap<Ticker, Option<TickerInfo>>>,
-    selected_exchanges: HashSet<ExchangeInclusive>,
-    selected_markets: HashSet<MarketKind>,
+    tickers_info: FxHashMap<Exchange, FxHashMap<Ticker, Option<TickerInfo>>>,
+    selected_exchanges: FxHashSet<ExchangeInclusive>,
+    selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
 }
 
@@ -122,7 +122,7 @@ impl TickersTable {
         (
             Self {
                 ticker_rows: Vec::new(),
-                display_cache: HashMap::new(),
+                display_cache: FxHashMap::default(),
                 favorited_tickers: favorited_tickers.into_iter().collect(),
                 search_query: String::new(),
                 show_sort_options: false,
@@ -130,7 +130,7 @@ impl TickersTable {
                 expand_ticker_card: None,
                 scroll_offset: AbsoluteOffset::default(),
                 is_shown: false,
-                tickers_info: HashMap::new(),
+                tickers_info: FxHashMap::default(),
                 selected_exchanges: ExchangeInclusive::ALL.iter().cloned().collect(),
                 selected_markets: MarketKind::ALL.into_iter().collect(),
                 show_favorites: false,
@@ -139,7 +139,11 @@ impl TickersTable {
         )
     }
 
-    pub fn update_table(&mut self, exchange: Exchange, ticker_rows: HashMap<Ticker, TickerStats>) {
+    pub fn update_table(
+        &mut self,
+        exchange: Exchange,
+        ticker_rows: FxHashMap<Ticker, TickerStats>,
+    ) {
         self.display_cache.retain(|(ex, _), _| ex != &exchange);
 
         for (ticker, new_stats) in ticker_rows {
@@ -312,8 +316,10 @@ impl TickersTable {
         exchange: Exchange,
         info: HashMap<Ticker, Option<TickerInfo>>,
     ) -> Action {
+        let info_fxh = info.into_iter().collect::<FxHashMap<_, _>>();
+
         if let Some(tickers) = self.tickers_info.get_mut(&exchange) {
-            for (ticker, ticker_info) in info {
+            for (ticker, ticker_info) in info_fxh {
                 if let Some(existing_ticker_info) = tickers.get_mut(&ticker) {
                     *existing_ticker_info = ticker_info;
                 } else {
@@ -321,7 +327,7 @@ impl TickersTable {
                 }
             }
         } else {
-            self.tickers_info.insert(exchange, info);
+            self.tickers_info.insert(exchange, info_fxh);
         }
 
         let task = Task::perform(fetch_ticker_prices(exchange), move |result| match result {
@@ -334,13 +340,15 @@ impl TickersTable {
     }
 
     pub fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {
-        let tickers_set: HashSet<_> = self
+        let stats_fxh = stats.into_iter().collect::<FxHashMap<_, _>>();
+
+        let tickers_set: FxHashSet<_> = self
             .tickers_info
             .get(&exchange)
             .map(|info| info.keys().copied().collect())
             .unwrap_or_default();
 
-        let filtered_tickers_stats = stats
+        let filtered_tickers_stats = stats_fxh
             .into_iter()
             .filter(|(ticker, _)| tickers_set.contains(ticker))
             .collect();

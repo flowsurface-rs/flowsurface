@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-
 use exchange::{Kline, Trade};
 use ordered_float::OrderedFloat;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{aggr::time::DataPoint, util::round_to_tick};
@@ -137,14 +136,14 @@ impl GroupedTrades {
 
 #[derive(Debug, Clone, Default)]
 pub struct KlineTrades {
-    pub trades: HashMap<OrderedFloat<f32>, GroupedTrades>,
+    pub trades: FxHashMap<OrderedFloat<f32>, GroupedTrades>,
     pub poc: Option<PointOfControl>,
 }
 
 impl KlineTrades {
     pub fn new() -> Self {
         Self {
-            trades: HashMap::new(),
+            trades: FxHashMap::default(),
             poc: None,
         }
     }

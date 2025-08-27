@@ -13,6 +13,8 @@ rust_decimal.workspace = true
 thiserror.workspace = true
 ordered-float.workspace = true
 uuid.workspace = true
+enum-map.workspace = true
+rustc-hash.workspace = true
 
 tokio = { version = "1.43", default-features = false, features = ["rt", "macros"] }
 reqwest = { version = "0.12.9", default-features = false, features = ["json", "brotli", "rustls-tls"] }

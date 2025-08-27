@@ -1,10 +1,8 @@
 use exchange::SerTicker;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crate::util::ok_or_default;
 
@@ -234,7 +232,7 @@ impl Default for StreamCfg {
 #[serde(default)]
 pub struct AudioStream {
     #[serde(deserialize_with = "ok_or_default")]
-    pub streams: HashMap<SerTicker, StreamCfg>,
+    pub streams: FxHashMap<SerTicker, StreamCfg>,
     #[serde(deserialize_with = "ok_or_default")]
     pub volume: Option<f32>,
 }

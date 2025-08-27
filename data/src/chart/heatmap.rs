@@ -1,6 +1,7 @@
 use ordered_float::OrderedFloat;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use exchange::{adapter::MarketKind, depth::Depth};
 
@@ -370,7 +371,7 @@ impl HistoricalDepth {
         market_type: MarketKind,
         order_size_filter: f32,
         coalesce_kind: Option<CoalesceKind>,
-    ) -> HashMap<(u64, OrderedFloat<f32>), (f32, bool)> {
+    ) -> FxHashMap<(u64, OrderedFloat<f32>), (f32, bool)> {
         let aggr_time = self.aggr_time;
         let tick_size: f32 = self.tick_size;
 
@@ -421,8 +422,8 @@ impl HistoricalDepth {
         };
 
         let capacity = time_interval_offsets.len() * price_tick_offsets.len();
-        let mut grid_quantities: HashMap<(u64, OrderedFloat<f32>), (f32, bool)> =
-            HashMap::with_capacity(capacity);
+        let mut grid_quantities: FxHashMap<(u64, OrderedFloat<f32>), (f32, bool)> =
+            FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher);
 
         for price_offset in price_tick_offsets {
             let target_price_val = center_price + (*price_offset as f32 * tick_size);

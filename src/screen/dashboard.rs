@@ -1245,8 +1245,7 @@ impl Dashboard {
     pub fn market_subscriptions(&self) -> Subscription<exchange::Event> {
         let unique_streams = self
             .streams
-            .combined()
-            .iter()
+            .combined_used()
             .flat_map(|(exchange, specs)| {
                 let mut subs = vec![];
 
@@ -1274,7 +1273,7 @@ impl Dashboard {
                     .collect::<Vec<_>>();
 
                 if !kline_params.is_empty() {
-                    subs.push(kline_subscription(*exchange, kline_params));
+                    subs.push(kline_subscription(exchange, kline_params));
                 }
 
                 subs

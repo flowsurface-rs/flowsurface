@@ -8,6 +8,7 @@ use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
 use iced::widget::{checkbox, horizontal_space, slider};
 use iced::{Element, padding};
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 
 const HARD_THRESHOLD: usize = 4;
@@ -324,7 +325,7 @@ impl AudioStream {
 
 impl From<&AudioStream> for data::AudioStream {
     fn from(audio_stream: &AudioStream) -> Self {
-        let mut streams = HashMap::new();
+        let mut streams = FxHashMap::default();
 
         for (&exchange, ticker_map) in &audio_stream.streams {
             for (&ticker, cfg) in ticker_map {
