@@ -60,7 +60,7 @@ pub enum Message {
 }
 
 pub trait Chart: PlotConstants + canvas::Program<Message> {
-    type IndicatorType: Indicator;
+    type IndicatorKind: Indicator;
 
     fn state(&self) -> &ViewState;
 
@@ -70,7 +70,7 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
 
     fn invalidate_crosshair(&mut self);
 
-    fn view_indicators(&'_ self, enabled: &[Self::IndicatorType]) -> Vec<Element<'_, Message>>;
+    fn view_indicators(&'_ self, enabled: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>>;
 
     fn visible_timerange(&self) -> (u64, u64);
 
@@ -492,7 +492,7 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
 
 pub fn view<'a, T: Chart>(
     chart: &'a T,
-    indicators: &'a [T::IndicatorType],
+    indicators: &'a [T::IndicatorKind],
     timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
     if chart.is_empty() {

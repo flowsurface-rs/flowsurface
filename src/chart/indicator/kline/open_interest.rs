@@ -30,12 +30,12 @@ impl OpenInterestIndicator {
 
     fn indicator_elem<'a>(
         &'a self,
-        chart: &'a ViewState,
+        main_chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        match chart.basis {
+        match main_chart.basis {
             Basis::Time(timeframe) => {
-                let exchange = match chart.ticker_info.as_ref() {
+                let exchange = match main_chart.ticker_info.as_ref() {
                     Some(info) => info.exchange(),
                     None => return row![].into(),
                 };
@@ -84,7 +84,7 @@ impl OpenInterestIndicator {
             .padding(0.08)
             .with_tooltip(tooltip);
 
-        indicator_row(chart, &self.cache, plot, &self.data, visible_range)
+        indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
     }
 
     // helper to compute (earliest, latest) present OI keys
@@ -126,7 +126,7 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     }
 
     fn fetch_range(&mut self, ctx: &FetchCtx) -> Option<FetchRange> {
-        let is_supported = match ctx.chart.ticker_info.as_ref() {
+        let is_supported = match ctx.main_chart.ticker_info.as_ref() {
             Some(info) => {
                 let exchange = info.exchange();
                 Self::is_supported_exchange(exchange) && Self::is_supported_timeframe(ctx.timeframe)

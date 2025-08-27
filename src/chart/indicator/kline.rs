@@ -50,7 +50,7 @@ pub trait KlineIndicatorImpl {
 }
 
 pub struct FetchCtx<'a> {
-    pub chart: &'a ViewState,
+    pub main_chart: &'a ViewState,
     pub timeframe: Timeframe,
     pub visible_earliest: u64,
     pub kline_latest: u64,

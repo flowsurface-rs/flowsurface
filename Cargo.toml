@@ -23,6 +23,8 @@ regex = "1.11.1"
 rust_decimal = "1.36.0"
 palette = "0.7.6"
 num-traits = "0.2.19"
+rustc-hash = "2.1.1"
+enum-map = "2.7.3"
 uuid = { version = "1.11.0", features = ["v4"] }
 
 [dependencies]
@@ -45,6 +47,8 @@ log.workspace = true
 uuid.workspace = true
 palette.workspace = true
 num-traits.workspace = true
+rustc-hash.workspace = true
+enum-map.workspace = true
 fern = "0.7.1"
 
 exchange = { version = "0.1.0", path = "exchange" }
