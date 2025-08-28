@@ -237,14 +237,15 @@ impl Flowsurface {
 
                 let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
+                self.sidebar.sync_tickers_table_settings();
+
                 let layout = data::State::from_parts(
                     layouts,
                     self.theme.clone(),
                     self.theme_editor.custom_theme.clone().map(data::Theme),
-                    self.sidebar.favorited_tickers(),
                     main_window,
                     self.timezone,
-                    self.sidebar.state,
+                    self.sidebar.state.clone(),
                     self.scale_factor,
                     audio_cfg,
                     self.preferred_currency,

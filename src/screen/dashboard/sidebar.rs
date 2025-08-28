@@ -32,11 +32,16 @@ pub enum Action {
 
 impl Sidebar {
     pub fn new(state: &SavedState) -> (Self, Task<Message>) {
-        let (tickers_table, initial_fetch) = TickersTable::new(state.favorited_tickers.clone());
+        let (tickers_table, initial_fetch) =
+            if let Some(settings) = state.sidebar.tickers_table.as_ref() {
+                TickersTable::new_with_settings(settings)
+            } else {
+                TickersTable::new()
+            };
 
         (
             Self {
-                state: state.sidebar,
+                state: state.sidebar.clone(),
                 tickers_table,
             },
             initial_fetch.map(Message::TickersTable),
@@ -218,11 +223,8 @@ impl Sidebar {
         self.state.active_menu = menu;
     }
 
-    pub fn favorited_tickers(&self) -> Vec<(exchange::adapter::Exchange, exchange::Ticker)> {
-        self.tickers_table
-            .favorited_tickers
-            .iter()
-            .map(|(exchange, ticker)| (*exchange, *ticker))
-            .collect()
+    pub fn sync_tickers_table_settings(&mut self) {
+        let settings = &self.tickers_table.settings();
+        self.state.tickers_table = Some(settings.clone());
     }
 }

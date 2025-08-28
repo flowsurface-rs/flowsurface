@@ -1,11 +1,10 @@
-use crate::layout::WindowSpec;
-use crate::{AudioStream, Layout, Theme};
-use exchange::{Ticker, adapter::Exchange};
-use serde::{Deserialize, Serialize};
-
 use super::ScaleFactor;
 use super::sidebar::Sidebar;
 use super::timezone::UserTimezone;
+use crate::layout::WindowSpec;
+use crate::{AudioStream, Layout, Theme};
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Layouts {
@@ -19,7 +18,6 @@ pub struct State {
     pub layout_manager: Layouts,
     pub selected_theme: Theme,
     pub custom_theme: Option<Theme>,
-    pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub main_window: Option<WindowSpec>,
     pub timezone: UserTimezone,
     pub sidebar: Sidebar,
@@ -34,7 +32,6 @@ impl State {
         layout_manager: Layouts,
         selected_theme: Theme,
         custom_theme: Option<Theme>,
-        favorited_tickers: Vec<(Exchange, Ticker)>,
         main_window: Option<WindowSpec>,
         timezone: UserTimezone,
         sidebar: Sidebar,
@@ -46,7 +43,6 @@ impl State {
             layout_manager,
             selected_theme: Theme(selected_theme.0),
             custom_theme: custom_theme.map(|t| Theme(t.0)),
-            favorited_tickers,
             main_window,
             timezone,
             sidebar,

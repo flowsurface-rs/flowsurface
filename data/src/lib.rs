@@ -4,6 +4,7 @@ pub mod chart;
 pub mod config;
 pub mod layout;
 pub mod log;
+pub mod tickers_table;
 pub mod util;
 
 use std::fs::File;

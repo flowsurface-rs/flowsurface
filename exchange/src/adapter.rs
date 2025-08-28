@@ -22,7 +22,7 @@ pub enum AdapterError {
     InvalidRequest(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum MarketKind {
     Spot,
     LinearPerps,
@@ -205,7 +205,7 @@ pub struct StreamSpecs {
     pub kline: Vec<(Ticker, Timeframe)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum ExchangeInclusive {
     Bybit,
     Binance,

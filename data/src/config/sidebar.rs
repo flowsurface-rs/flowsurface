@@ -1,11 +1,15 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+use crate::tickers_table;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Sidebar {
     pub position: Position,
     #[serde(skip)]
     pub active_menu: Option<Menu>,
+    #[serde(default)]
+    pub tickers_table: Option<tickers_table::Settings>,
 }
 
 impl Sidebar {
@@ -20,6 +24,10 @@ impl Sidebar {
     pub fn is_menu_active(&self, menu: Menu) -> bool {
         self.active_menu == Some(menu)
     }
+
+    pub fn sync_tickers_table_settings(&mut self, settings: &tickers_table::Settings) {
+        self.tickers_table = Some(settings.clone());
+    }
 }
 
 impl Default for Sidebar {
@@ -27,8 +35,16 @@ impl Default for Sidebar {
         Sidebar {
             position: Position::Left,
             active_menu: None,
+            tickers_table: None,
         }
     }
+}
+
+pub fn deserialize_sidebar_fallback<'de, D>(deserializer: D) -> Result<Sidebar, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Sidebar::deserialize(deserializer).or(Ok(Sidebar::default()))
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]

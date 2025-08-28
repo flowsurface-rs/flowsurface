@@ -6,7 +6,7 @@ use data::{
     chart::Basis,
     layout::{WindowSpec, pane::Axis},
 };
-use exchange::{TickMultiplier, Ticker, Timeframe, adapter::Exchange};
+use exchange::{TickMultiplier, Timeframe};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::{collections::HashMap, vec};
@@ -21,7 +21,6 @@ pub struct Layout {
 pub struct SavedState {
     pub layout_manager: LayoutManager,
     pub main_window: Option<WindowSpec>,
-    pub favorited_tickers: Vec<(Exchange, Ticker)>,
     pub scale_factor: data::ScaleFactor,
     pub timezone: data::UserTimezone,
     pub sidebar: data::Sidebar,
@@ -50,7 +49,6 @@ impl Default for SavedState {
         SavedState {
             layout_manager: LayoutManager::new(),
             main_window: None,
-            favorited_tickers: Vec::new(),
             scale_factor: data::ScaleFactor::default(),
             timezone: UserTimezone::default(),
             sidebar: data::Sidebar::default(),
@@ -357,7 +355,6 @@ pub fn load_saved_state() -> SavedState {
                 theme: state.selected_theme,
                 custom_theme: state.custom_theme,
                 layout_manager,
-                favorited_tickers: state.favorited_tickers,
                 main_window: state.main_window,
                 timezone: state.timezone,
                 sidebar: state.sidebar,
