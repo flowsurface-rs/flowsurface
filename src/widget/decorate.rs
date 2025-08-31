@@ -633,8 +633,8 @@ where
         vec![advanced::widget::Tree::new(&self.inner)]
     }
 
-    fn diff(&mut self, tree: &mut advanced::widget::Tree) {
-        tree.diff_children(slice::from_mut(&mut self.inner));
+    fn diff(&self, tree: &mut advanced::widget::Tree) {
+        tree.diff_children(slice::from_ref(&self.inner));
     }
 
     fn layout(
