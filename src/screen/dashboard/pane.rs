@@ -436,7 +436,11 @@ impl State {
                 let base = panel::view(panel, timezone)
                     .map(move |message| Message::PanelInteraction(id, message));
 
-                let settings_modal = || modal::pane::settings::orderbook_cfg_view(panel.config, id);
+                let settings_modal = || {
+                    let current_price = panel.current_price();
+                    let tick_size = panel.tick_size();
+                    modal::pane::settings::orderbook_cfg_view(panel.config, id, current_price, tick_size)
+                };
 
                 self.compose_panel_view(base, id, compact_controls, settings_modal)
             }

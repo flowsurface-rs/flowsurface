@@ -1197,6 +1197,9 @@ impl Dashboard {
                         pane::Content::TimeAndSales(panel) => {
                             panel.insert_buffer(trades_buffer);
                         }
+                        pane::Content::Orderbook(panel) => {
+                            panel.update_depth(depth);
+                        }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");
                         }

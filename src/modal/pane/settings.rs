@@ -431,9 +431,77 @@ pub fn kline_cfg_view<'a>(
     cfg_view_container(360, content)
 }
 
+fn generate_price_grouping_options(current_price: Option<f32>, tick_size: f32) -> Vec<f32> {
+    let base_price = current_price.unwrap_or(100.0); // fallback price
+    
+    // Generate clean decimal levels: 0.001, 0.01, 0.1, 1, 10, 100, 1000, etc.
+    let mut options = Vec::new();
+    
+    // Generate powers of 10 based on price magnitude
+    let price_magnitude = base_price.log10().floor() as i32;
+    
+    // Start from a reasonable lower bound and go up
+    let start_exp = (tick_size.log10().floor() as i32).min(-3);
+    let end_exp = (price_magnitude + 2).max(2);
+    
+    for exp in start_exp..=end_exp {
+        let base_value = 10.0_f32.powi(exp);
+        
+        // Add clean levels: 1x, 2x, 5x for each magnitude
+        for multiplier in [1.0, 2.0, 5.0] {
+            let value = base_value * multiplier;
+            
+            // Only include if it's at least the tick size and not too large relative to price
+            if value >= tick_size && value <= base_price * 0.5 {
+                options.push(value);
+            }
+        }
+    }
+    
+    // If tick size is a clean value (like 0.01, 0.1, 1, etc.), include it
+    // Otherwise, find the closest clean value that's >= tick_size
+    let tick_is_clean = {
+        let rounded_tick = if tick_size < 1.0 {
+            // For values < 1, check if it's a clean decimal like 0.01, 0.001, etc.
+            let decimal_places = (-tick_size.log10()).ceil() as u32;
+            let factor = 10.0_f32.powi(decimal_places as i32);
+            let rounded = (tick_size * factor).round() / factor;
+            (rounded - tick_size).abs() < 0.000001
+        } else {
+            // For values >= 1, check if it's a whole number or clean fraction
+            tick_size.fract() == 0.0 || (tick_size * 10.0).fract() == 0.0 || (tick_size * 100.0).fract() == 0.0
+        };
+        rounded_tick
+    };
+    
+    if tick_is_clean {
+        options.push(tick_size);
+    }
+    
+    // Remove duplicates and sort
+    options.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    options.dedup_by(|a, b| (*a - *b).abs() < 0.0001);
+    
+    // Ensure we have at least a few options
+    if options.is_empty() {
+        // Fallback: add some basic clean options
+        let fallback_options = [0.01, 0.1, 1.0, 10.0, 100.0];
+        for &value in &fallback_options {
+            if value >= tick_size && value <= base_price * 0.5 {
+                options.push(value);
+            }
+        }
+        options.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    }
+    
+    options
+}
+
 pub fn orderbook_cfg_view<'a>(
     cfg: orderbook::Config,
     pane: pane_grid::Pane,
+    current_price: Option<f32>,
+    tick_size: Option<f32>,
 ) -> Element<'a, Message> {
     let max_levels_column = {
         let slider = slider(5..=50, cfg.max_levels as i32, move |value| {
@@ -508,29 +576,27 @@ pub fn orderbook_cfg_view<'a>(
     };
 
     let price_grouping_column = {
-        let slider = slider(0.01..=100.0, cfg.price_grouping, move |value| {
-            Message::VisualConfigChanged(
-                pane,
-                VisualConfig::Orderbook(orderbook::Config {
-                    price_grouping: value,
-                    ..cfg
-                }),
-                false,
-            )
-        })
-        .step(0.01);
-
-        let value_text = if cfg.price_grouping < 1.0 {
-            format!("{:.2}", cfg.price_grouping)
-        } else if cfg.price_grouping < 10.0 {
-            format!("{:.1}", cfg.price_grouping)
-        } else {
-            format!("{:.0}", cfg.price_grouping)
-        };
+        let default_tick_size = tick_size.unwrap_or(0.01);
+        let options = generate_price_grouping_options(current_price, default_tick_size);
+        
+        let picklist = pick_list(
+            options.clone(),
+            options.iter().find(|&&x| (x - cfg.price_grouping).abs() < default_tick_size * 0.1).copied(),
+            move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Orderbook(orderbook::Config {
+                        price_grouping: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            },
+        );
 
         column![
             text("Price Grouping").size(14),
-            row![slider, text(value_text)].spacing(8),
+            picklist,
         ]
         .spacing(8)
     };

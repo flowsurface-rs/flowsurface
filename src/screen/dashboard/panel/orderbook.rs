@@ -118,6 +118,14 @@ impl Orderbook {
         self.last_tick
     }
 
+    pub fn current_price(&self) -> Option<f32> {
+        self.depth.mid_price()
+    }
+
+    pub fn tick_size(&self) -> Option<f32> {
+        self.ticker_info.map(|info| info.min_ticksize)
+    }
+
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         self.cache.clear();
         if let Some(now) = now {
