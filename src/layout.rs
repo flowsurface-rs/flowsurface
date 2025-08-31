@@ -1,6 +1,6 @@
 use crate::chart::{heatmap::HeatmapChart, kline::KlineChart};
 use crate::modal::layout_manager::LayoutManager;
-use crate::screen::dashboard::{Dashboard, pane, panel::timeandsales::TimeAndSales};
+use crate::screen::dashboard::{Dashboard, pane, panel::{timeandsales::TimeAndSales, orderbook::Orderbook}};
 use data::{
     UserTimezone,
     chart::Basis,
@@ -128,6 +128,11 @@ impl From<&pane::State> for data::Pane {
                 link_group: pane.link_group,
             },
             pane::Content::TimeAndSales(_) => data::Pane::TimeAndSales {
+                stream_type: streams,
+                settings: pane.settings,
+                link_group: pane.link_group,
+            },
+            pane::Content::Orderbook(_) => data::Pane::Orderbook {
                 stream_type: streams,
                 settings: pane.settings,
                 link_group: pane.link_group,
@@ -284,6 +289,25 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
 
             Configuration::Pane(pane::State::from_config(
                 pane::Content::TimeAndSales(TimeAndSales::new(config, settings.ticker_info)),
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
+        data::Pane::Orderbook {
+            stream_type,
+            settings,
+            link_group,
+        } => {
+            if settings.ticker_info.is_none() {
+                log::info!("Skipping a Orderbook initialization due to missing ticker info");
+                return Configuration::Pane(pane::State::new());
+            }
+
+            let config = settings.visual_config.and_then(|cfg| cfg.orderbook());
+
+            Configuration::Pane(pane::State::from_config(
+                pane::Content::Orderbook(Orderbook::new(config, settings.ticker_info)),
                 stream_type,
                 settings,
                 link_group,

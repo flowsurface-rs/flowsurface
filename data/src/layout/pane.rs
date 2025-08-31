@@ -59,6 +59,12 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
+    Orderbook {
+        stream_type: Vec<StreamKind>,
+        settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
 }
 
 impl Default for Pane {

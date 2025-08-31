@@ -1,5 +1,6 @@
 use crate::screen::dashboard::pane::Message;
 use crate::screen::dashboard::panel::timeandsales;
+use data::chart::orderbook;
 use crate::split_column;
 use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
@@ -428,6 +429,122 @@ pub fn kline_cfg_view<'a>(
     };
 
     cfg_view_container(360, content)
+}
+
+pub fn orderbook_cfg_view<'a>(
+    cfg: orderbook::Config,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    let max_levels_column = {
+        let slider = slider(5..=50, cfg.max_levels as i32, move |value| {
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Orderbook(orderbook::Config {
+                    max_levels: value as usize,
+                    ..cfg
+                }),
+                false,
+            )
+        })
+        .step(1);
+
+        column![
+            text("Max Levels").size(14),
+            row![slider, text(format!("{}", cfg.max_levels))].spacing(8),
+        ]
+        .spacing(8)
+    };
+
+    let precision_column = {
+        let slider = slider(0..=8, cfg.precision as i32, move |value| {
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Orderbook(orderbook::Config {
+                    precision: value as u8,
+                    ..cfg
+                }),
+                false,
+            )
+        })
+        .step(1);
+
+        column![
+            text("Price Precision").size(14),
+            row![slider, text(format!("{}", cfg.precision))].spacing(8),
+        ]
+        .spacing(8)
+    };
+
+    let show_size_toggle = {
+        let checkbox = iced::widget::checkbox("Show Size", cfg.show_size)
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Orderbook(orderbook::Config {
+                        show_size: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        column![text("Display Options").size(14), checkbox].spacing(8)
+    };
+
+    let show_spread_toggle = {
+        let checkbox = iced::widget::checkbox("Show Spread", cfg.show_spread)
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Orderbook(orderbook::Config {
+                        show_spread: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        column![checkbox]
+    };
+
+    let price_grouping_column = {
+        let slider = slider(0.01..=100.0, cfg.price_grouping, move |value| {
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Orderbook(orderbook::Config {
+                    price_grouping: value,
+                    ..cfg
+                }),
+                false,
+            )
+        })
+        .step(0.01);
+
+        let value_text = if cfg.price_grouping < 1.0 {
+            format!("{:.2}", cfg.price_grouping)
+        } else if cfg.price_grouping < 10.0 {
+            format!("{:.1}", cfg.price_grouping)
+        } else {
+            format!("{:.0}", cfg.price_grouping)
+        };
+
+        column![
+            text("Price Grouping").size(14),
+            row![slider, text(value_text)].spacing(8),
+        ]
+        .spacing(8)
+    };
+
+    let content = split_column![
+        max_levels_column,
+        precision_column,
+        price_grouping_column,
+        show_size_toggle,
+        show_spread_toggle;
+        spacing = 12, align_x = Alignment::Start
+    ];
+
+    cfg_view_container(320, content)
 }
 
 fn sync_all_button<'a>(pane: pane_grid::Pane, config: VisualConfig) -> Element<'a, Message> {
