@@ -899,6 +899,7 @@ impl canvas::Program<Message> for KlineChart {
                         latest,
                         *clusters,
                         content_spacing,
+                        imbalance.is_some(),
                     );
 
                     render_data_source(
@@ -1129,6 +1130,7 @@ fn draw_all_npocs(
     visible_latest: u64,
     cluster_kind: ClusterKind,
     spacing: ContentGaps,
+    imb_study_on: bool,
 ) {
     let Some(lookback) = studies.iter().find_map(|study| {
         if let FootprintStudy::NPoC { lookback } = study {
@@ -1164,7 +1166,12 @@ fn draw_all_npocs(
             ClusterKind::BidAsk => cell_center_x + (candle_width / 2.0) + spacing.candle_to_cluster,
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
                 let content_left = (cell_center_x - (cell_width / 2.0)) + inset;
-                let candle_lane_left = content_left + candle_width + spacing.marker_to_candle;
+                let candle_lane_left = content_left
+                    + if imb_study_on {
+                        candle_width + spacing.marker_to_candle
+                    } else {
+                        0.0
+                    };
                 candle_lane_left + candle_width * candle_lane_factor + spacing.candle_to_cluster
             }
         }
@@ -1175,7 +1182,12 @@ fn draw_all_npocs(
             ClusterKind::BidAsk => cell_center_x, // not used for BidAsk clustering
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
                 let content_left = (cell_center_x - (cell_width / 2.0)) + inset;
-                let candle_lane_left = content_left + candle_width + spacing.marker_to_candle;
+                let candle_lane_left = content_left
+                    + if imb_study_on {
+                        candle_width + spacing.marker_to_candle
+                    } else {
+                        0.0
+                    };
                 candle_lane_left + (candle_width * candle_lane_factor) / 2.0
                     - (spacing.candle_to_cluster * 0.5)
             }
@@ -1319,7 +1331,13 @@ fn draw_clusters(
 
     match cluster_kind {
         ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
-            let area = ProfileArea::new(content_left, content_right, candle_width, spacing);
+            let area = ProfileArea::new(
+                content_left,
+                content_right,
+                candle_width,
+                spacing,
+                imbalance.is_some(),
+            );
             let bar_alpha = if show_text { 0.25 } else { 1.0 };
 
             for (price, group) in &footprint.trades {
@@ -1745,8 +1763,18 @@ struct ProfileArea {
 }
 
 impl ProfileArea {
-    fn new(content_left: f32, content_right: f32, candle_width: f32, gaps: ContentGaps) -> Self {
-        let candle_lane_left = content_left + candle_width + gaps.marker_to_candle;
+    fn new(
+        content_left: f32,
+        content_right: f32,
+        candle_width: f32,
+        gaps: ContentGaps,
+        has_imbalance: bool,
+    ) -> Self {
+        let candle_lane_left = if has_imbalance {
+            content_left + candle_width + gaps.marker_to_candle
+        } else {
+            content_left
+        };
         let candle_lane_width = candle_width * 0.25;
 
         let bars_left = candle_lane_left + candle_lane_width + gaps.candle_to_cluster;
@@ -1756,7 +1784,7 @@ impl ProfileArea {
 
         Self {
             imb_marker_left: content_left,
-            imb_marker_width: candle_width,
+            imb_marker_width: if has_imbalance { candle_width } else { 0.0 },
             bars_left,
             bars_width,
             candle_center_x,
