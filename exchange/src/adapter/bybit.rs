@@ -311,7 +311,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let mut trades_buffer: Vec<Trade> = Vec::new();
         let mut orderbook = LocalDepthCache::default();
 
-        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_currency =
+            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
 
         loop {
             match &mut state {
@@ -443,6 +444,8 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
 
         let exchange = exchange_from_market_type(market_type);
+        let size_in_quote_currency =
+            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
 
         loop {
             match &mut state {
@@ -477,7 +480,7 @@ pub fn connect_kline_stream(
                                 feed_de(&msg.payload[..], None, market_type)
                             {
                                 for de_kline in &de_kline_vec {
-                                    let volume = if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                                    let volume = if size_in_quote_currency {
                                         (de_kline.volume * de_kline.close).round()
                                     } else {
                                         de_kline.volume
@@ -708,7 +711,8 @@ pub async fn fetch_klines(
     let value: ApiResponse =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-    let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+    let size_in_quote_currency =
+        SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && *market_type != MarketKind::InversePerps;
 
     let klines: Result<Vec<Kline>, AdapterError> = value
         .result

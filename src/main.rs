@@ -629,7 +629,9 @@ impl Flowsurface {
 
                         tooltip(
                             checkbox,
-                            Some("Show sizes/volumes in quote currency (USD)"),
+                            Some(
+                                "Display sizes/volumes in quote currency (USD)\n( ! )Has no effect on inverse perps or open interest",
+                            ),
                             TooltipPosition::Top,
                         )
                     };
