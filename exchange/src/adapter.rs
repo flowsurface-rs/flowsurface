@@ -9,6 +9,7 @@ use std::{collections::HashMap, str::FromStr};
 pub mod binance;
 pub mod bybit;
 pub mod hyperliquid;
+pub mod okex;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedStream {
@@ -377,13 +378,15 @@ pub enum ExchangeInclusive {
     Bybit,
     Binance,
     Hyperliquid,
+    Okex,
 }
 
 impl ExchangeInclusive {
-    pub const ALL: [ExchangeInclusive; 3] = [
+    pub const ALL: [ExchangeInclusive; 4] = [
         ExchangeInclusive::Bybit,
         ExchangeInclusive::Binance,
         ExchangeInclusive::Hyperliquid,
+        ExchangeInclusive::Okex,
     ];
 
     pub fn of(ex: Exchange) -> Self {
@@ -393,6 +396,7 @@ impl ExchangeInclusive {
                 Self::Binance
             }
             Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Self::Hyperliquid,
+            Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Self::Okex,
         }
     }
 }
@@ -407,6 +411,9 @@ pub enum Exchange {
     BybitSpot,
     HyperliquidLinear,
     HyperliquidSpot,
+    OkexLinear,
+    OkexInverse,
+    OkexSpot,
 }
 
 impl std::fmt::Display for Exchange {
@@ -423,6 +430,9 @@ impl std::fmt::Display for Exchange {
                 Exchange::BybitSpot => "Bybit Spot",
                 Exchange::HyperliquidLinear => "Hyperliquid Linear",
                 Exchange::HyperliquidSpot => "Hyperliquid Spot",
+                Exchange::OkexLinear => "Okex Linear",
+                Exchange::OkexInverse => "Okex Inverse",
+                Exchange::OkexSpot => "Okex Spot",
             }
         )
     }
@@ -441,13 +451,16 @@ impl FromStr for Exchange {
             "Bybit Spot" => Ok(Exchange::BybitSpot),
             "Hyperliquid Linear" => Ok(Exchange::HyperliquidLinear),
             "Hyperliquid Spot" => Ok(Exchange::HyperliquidSpot),
+            "Okex Linear" => Ok(Exchange::OkexLinear),
+            "Okex Inverse" => Ok(Exchange::OkexInverse),
+            "Okex Spot" => Ok(Exchange::OkexSpot),
             _ => Err(format!("Invalid exchange: {}", s)),
         }
     }
 }
 
 impl Exchange {
-    pub const ALL: [Exchange; 8] = [
+    pub const ALL: [Exchange; 11] = [
         Exchange::BinanceLinear,
         Exchange::BinanceInverse,
         Exchange::BinanceSpot,
@@ -456,6 +469,9 @@ impl Exchange {
         Exchange::BybitSpot,
         Exchange::HyperliquidLinear,
         Exchange::HyperliquidSpot,
+        Exchange::OkexLinear,
+        Exchange::OkexInverse,
+        Exchange::OkexSpot,
     ];
 
     pub fn market_type(&self) -> MarketKind {
@@ -467,6 +483,9 @@ impl Exchange {
             Exchange::BinanceSpot | Exchange::BybitSpot | Exchange::HyperliquidSpot => {
                 MarketKind::Spot
             }
+            Exchange::OkexLinear => MarketKind::LinearPerps,
+            Exchange::OkexInverse => MarketKind::InversePerps,
+            Exchange::OkexSpot => MarketKind::Spot,
         }
     }
 
@@ -479,6 +498,9 @@ impl Exchange {
                 | Exchange::BybitInverse
                 | Exchange::BinanceSpot
                 | Exchange::BybitSpot
+                | Exchange::OkexLinear
+                | Exchange::OkexInverse
+                | Exchange::OkexSpot
         )
     }
 
@@ -500,6 +522,8 @@ impl Exchange {
                 | Exchange::BybitLinear
                 | Exchange::BybitInverse
                 | Exchange::HyperliquidLinear
+                | Exchange::OkexLinear
+                | Exchange::OkexInverse
         )
     }
 }
@@ -545,6 +569,9 @@ pub async fn fetch_ticker_info(
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
             hyperliquid::fetch_ticksize(market_type).await
         }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            okex::fetch_ticksize(market_type).await
+        }
     }
 }
 
@@ -562,6 +589,9 @@ pub async fn fetch_ticker_prices(
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
             hyperliquid::fetch_ticker_prices(market_type).await
+        }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            okex::fetch_ticker_prices(market_type).await
         }
     }
 }
@@ -581,6 +611,9 @@ pub async fn fetch_klines(
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
             hyperliquid::fetch_klines(ticker, timeframe, range).await
+        }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            okex::fetch_klines(ticker, timeframe, range).await
         }
     }
 }

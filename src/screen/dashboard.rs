@@ -18,7 +18,7 @@ use exchange::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{
         self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
-        StreamTicksize, UniqueStreams, binance, bybit, hyperliquid,
+        StreamTicksize, UniqueStreams, binance, bybit, hyperliquid, okex,
     },
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
@@ -1629,6 +1629,10 @@ pub fn depth_subscription(
             };
             Subscription::run_with(config, builder)
         }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            let builder = |cfg: &StreamConfig<TickerInfo>| okex::connect_market_stream(cfg.id);
+            Subscription::run_with(config, builder)
+        }
     }
 }
 
@@ -1653,6 +1657,12 @@ pub fn kline_subscription(
         Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
             let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
                 hyperliquid::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+            };
+            Subscription::run_with(config, builder)
+        }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
+                okex::connect_kline_stream(cfg.id.clone(), cfg.market_type)
             };
             Subscription::run_with(config, builder)
         }

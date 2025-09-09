@@ -197,6 +197,9 @@ impl SerTicker {
             Exchange::BybitSpot => "BybitSpot",
             Exchange::HyperliquidLinear => "HyperliquidLinear",
             Exchange::HyperliquidSpot => "HyperliquidSpot",
+            Exchange::OkexLinear => "OkexLinear",
+            Exchange::OkexInverse => "OkexInverse",
+            Exchange::OkexSpot => "OkexSpot",
         }
     }
 
@@ -634,7 +637,7 @@ pub struct TickerStats {
 pub fn is_symbol_supported(symbol: &str, exchange: Exchange, log: bool) -> bool {
     let valid_symbol = symbol
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
 
     if valid_symbol {
         return true;
