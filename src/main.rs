@@ -11,6 +11,7 @@ mod window;
 
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
+use layout::{Layout, configuration};
 use modal::{LayoutManager, ThemeEditor, audio};
 use modal::{dashboard_modal, main_dialog_modal};
 use screen::dashboard::{self, Dashboard};
@@ -308,6 +309,42 @@ impl Flowsurface {
                             self.notifications.push(toast);
                             Task::none()
                         }
+                        Some(dashboard::Event::ResolveStreams { pane_id, streams }) => {
+                            let tickers_info = self.sidebar.tickers_info();
+
+                            let resolved_streams =
+                                streams
+                                    .into_iter()
+                                    .filter_map(|persist| {
+                                        let resolver = |t: &exchange::Ticker| {
+                                            tickers_info.get(t).and_then(|opt| *opt)
+                                        };
+
+                                        match persist.into_stream_kind(resolver) {
+                                            Ok(stream) => Some(stream),
+                                            Err(err) => {
+                                                log::warn!(
+                                                    "Failed to resolve persisted stream: {err}",
+                                                );
+                                                None
+                                            }
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+
+                            if !resolved_streams.is_empty() {
+                                dashboard
+                                    .resolve_streams(
+                                        main_window.id,
+                                        &layout_id,
+                                        pane_id,
+                                        resolved_streams,
+                                    )
+                                    .map(move |msg| Message::Dashboard(None, msg))
+                            } else {
+                                Task::none()
+                            }
+                        }
                         None => Task::none(),
                     };
 
@@ -381,6 +418,37 @@ impl Flowsurface {
                         .map(move |msg| Message::Dashboard(Some(old_layout.id), msg))
                         .chain(window_tasks)
                         .chain(self.load_layout(layout, self.main_window.id));
+                    }
+                    Some(modal::layout_manager::Action::Clone(id)) => {
+                        let manager = &mut self.layout_manager;
+
+                        if let Some((layout, dashboard)) = manager.get_layout(id) {
+                            let new_id = uuid::Uuid::new_v4();
+                            let new_layout = Layout {
+                                id: new_id,
+                                name: manager.ensure_unique_name(&layout.name, new_id),
+                            };
+
+                            let ser_dashboard = data::Dashboard::from(dashboard);
+
+                            let mut popout_windows = Vec::new();
+
+                            for (pane, window_spec) in &ser_dashboard.popout {
+                                let configuration = configuration(pane.clone());
+                                popout_windows.push((configuration, *window_spec));
+                            }
+
+                            let dashboard = Dashboard::from_config(
+                                configuration(ser_dashboard.pane.clone()),
+                                popout_windows,
+                                layout.id,
+                            );
+
+                            manager.layout_order.push(new_layout.id);
+                            manager
+                                .layouts
+                                .insert(new_layout.id, (new_layout.clone(), dashboard));
+                        }
                     }
                     None => {}
                 }

@@ -5,7 +5,7 @@ use crate::{
 
 use data::chart::Basis;
 use exchange::{
-    TickMultiplier, Ticker, Timeframe,
+    TickMultiplier, TickerInfo, Timeframe,
     adapter::{Exchange, hyperliquid::allowed_multipliers_for_base_tick},
 };
 use iced::{
@@ -313,7 +313,7 @@ impl Modifier {
         }
     }
 
-    pub fn view<'a>(&self, ticker: Option<Ticker>) -> Element<'a, Message> {
+    pub fn view<'a>(&self, ticker_info: Option<TickerInfo>) -> Element<'a, Message> {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
@@ -451,11 +451,11 @@ impl Modifier {
                             );
                             basis_selection_column =
                                 basis_selection_column.push(kline_timeframe_grid);
-                        } else if let Some(ticker) = ticker {
+                        } else if let Some(info) = ticker_info {
                             let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
                                 .iter()
                                 .copied()
-                                .filter(|tf| ticker.exchange.supports_heatmap_timeframe(*tf))
+                                .filter(|tf| info.exchange().supports_heatmap_timeframe(*tf))
                                 .collect();
                             let heatmap_timeframe_grid = modifiers_grid(
                                 &heatmap_timeframes,

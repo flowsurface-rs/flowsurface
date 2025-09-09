@@ -24,8 +24,8 @@ use data::{
     layout::pane::{LinkGroup, Settings},
 };
 use exchange::{
-    Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-    adapter::{MarketKind, StreamKind, StreamTicksize},
+    Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,
+    adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -63,6 +63,7 @@ pub enum Modal {
 pub enum Action {
     Chart(chart::Action),
     Panel(panel::Action),
+    ResolveStreams(Vec<PersistStreamKind>),
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +99,7 @@ pub struct State {
     pub content: Content,
     pub settings: Settings,
     pub notifications: Vec<Toast>,
-    pub streams: Vec<StreamKind>,
+    pub streams: ResolvedStream,
     pub status: Status,
     pub link_group: Option<LinkGroup>,
 }
@@ -110,28 +111,24 @@ impl State {
 
     pub fn from_config(
         content: Content,
-        streams: Vec<StreamKind>,
+        streams: Vec<PersistStreamKind>,
         settings: Settings,
         link_group: Option<LinkGroup>,
     ) -> Self {
         Self {
             content,
             settings,
-            streams,
+            streams: ResolvedStream::Waiting(streams),
             link_group,
             ..Default::default()
         }
     }
 
-    pub fn stream_pair(&self) -> Option<Ticker> {
-        self.streams
-            .iter()
-            .map(|stream| match stream {
-                StreamKind::DepthAndTrades { ticker, .. } | StreamKind::Kline { ticker, .. } => {
-                    *ticker
-                }
-            })
-            .next()
+    pub fn stream_pair(&self) -> Option<TickerInfo> {
+        self.streams.find_ready_map(|stream| match stream {
+            StreamKind::DepthAndTrades { ticker_info, .. }
+            | StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+        })
     }
 
     pub fn set_content_and_streams(
@@ -160,13 +157,17 @@ impl State {
                 });
                 self.settings.tick_multiply = tick_multiplier;
                 let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
-                    tm.multiply_with_min_tick_size(ticker_info)
+                    tm.multiply_with_min_tick_size(ticker_info).into()
                 });
 
-                let content =
-                    Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
+                let content = Content::new_heatmap(
+                    &self.content,
+                    ticker_info,
+                    &self.settings,
+                    tick_size.into(),
+                );
                 let streams = vec![StreamKind::DepthAndTrades {
-                    ticker,
+                    ticker_info,
                     depth_aggr: if is_depth_client_aggr {
                         StreamTicksize::Client
                     } else {
@@ -179,7 +180,7 @@ impl State {
                 let tick_multiplier = Some(TickMultiplier(50));
                 self.settings.tick_multiply = tick_multiplier;
                 let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
-                    tm.multiply_with_min_tick_size(ticker_info)
+                    tm.multiply_with_min_tick_size(ticker_info).into()
                 });
 
                 let content = Content::new_kline(
@@ -187,25 +188,28 @@ impl State {
                     &self.content,
                     ticker_info,
                     &self.settings,
-                    tick_size,
+                    tick_size.into(),
                 );
 
                 let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
                 let streams = match basis {
                     Basis::Time(timeframe) => vec![
                         StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                                 StreamTicksize::Client
                             } else {
                                 StreamTicksize::ServerSide(TickMultiplier(50))
                             },
                         },
-                        StreamKind::Kline { ticker, timeframe },
+                        StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        },
                     ],
                     Basis::Tick(_) => {
                         vec![StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                                 StreamTicksize::Client
                             } else {
@@ -225,7 +229,7 @@ impl State {
                     &self.content,
                     ticker_info,
                     &self.settings,
-                    tick_size,
+                    tick_size.into(),
                 );
 
                 let basis = self
@@ -234,11 +238,14 @@ impl State {
                     .unwrap_or(Timeframe::M15.into());
                 let streams = match basis {
                     Basis::Time(timeframe) => {
-                        vec![StreamKind::Kline { ticker, timeframe }]
+                        vec![StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        }]
                     }
                     Basis::Tick(_) => {
                         vec![StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                                 StreamTicksize::Client
                             } else {
@@ -256,7 +263,7 @@ impl State {
                     .and_then(|cfg| cfg.time_and_sales());
                 let content = Content::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)));
                 let streams = vec![StreamKind::DepthAndTrades {
-                    ticker,
+                    ticker_info,
                     depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                         StreamTicksize::Client
                     } else {
@@ -273,7 +280,7 @@ impl State {
         match result {
             Ok((content, streams)) => {
                 self.content = content;
-                self.streams.clone_from(&streams);
+                self.streams.rebuild_ready_from(&streams);
                 Ok(streams)
             }
             Err(e) => Err(e),
@@ -342,7 +349,8 @@ impl State {
             })]
         };
 
-        if let Some(ticker) = self.stream_pair() {
+        if let Some(info) = self.stream_pair() {
+            let ticker = info.ticker;
             let exchange_icon = icon_text(style::exchange_icon(ticker.exchange), 14);
 
             let ticker_str = {
@@ -771,7 +779,7 @@ impl State {
     }
 
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
-        self.streams.iter().any(|existing| existing == stream)
+        self.streams.matches_stream(stream)
     }
 
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
@@ -799,6 +807,12 @@ impl State {
     pub fn tick(&mut self, now: Instant) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
+
+        if let Some(stream) = self.streams.waiting_to_resolve()
+            && !stream.is_empty()
+        {
+            return Some(Action::ResolveStreams(stream.to_vec()));
+        }
 
         match (invalidate_interval, last_tick) {
             (Some(interval_ms), Some(previous_tick_time)) => {
@@ -832,7 +846,7 @@ impl Default for State {
             modal: None,
             content: Content::Starter,
             settings: Settings::default(),
-            streams: vec![],
+            streams: ResolvedStream::Waiting(vec![]),
             notifications: vec![],
             status: Status::Ready,
             link_group: None,

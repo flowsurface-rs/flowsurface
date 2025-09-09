@@ -97,7 +97,7 @@ impl AudioStream {
 
     pub fn view(
         &self,
-        active_streams: Vec<(exchange::Ticker, StreamTicksize)>,
+        active_streams: Vec<(exchange::TickerInfo, StreamTicksize)>,
     ) -> Element<'_, Message> {
         let volume_container = {
             let volume_slider = {
@@ -127,7 +127,7 @@ impl AudioStream {
                 let mut seen = Vec::with_capacity(streams.len());
                 streams.retain(|pair| {
                     let t = pair.0;
-                    let key = (t.exchange, t);
+                    let key = (t.exchange(), t);
                     if seen.contains(&key) {
                         false
                     } else {
@@ -136,14 +136,15 @@ impl AudioStream {
                     }
                 });
 
-                for (ticker, depth_aggr) in streams {
-                    let exchange = ticker.exchange;
+                for (ticker_info, depth_aggr) in streams {
+                    let exchange = ticker_info.exchange();
+                    let ticker = ticker_info.ticker;
 
                     let mut column = column![].padding(padding::left(4));
 
                     let is_audio_enabled =
                         self.is_stream_audio_enabled(&StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr,
                         });
 
@@ -235,10 +236,10 @@ impl AudioStream {
 
     pub fn is_stream_audio_enabled(&self, stream: &StreamKind) -> bool {
         match stream {
-            StreamKind::DepthAndTrades { ticker, .. } => self
+            StreamKind::DepthAndTrades { ticker_info, .. } => self
                 .streams
-                .get(&ticker.exchange)
-                .and_then(|streams| streams.get(ticker))
+                .get(&ticker_info.exchange())
+                .and_then(|streams| streams.get(&ticker_info.ticker))
                 .is_some_and(|cfg| cfg.enabled),
             _ => false,
         }
@@ -249,14 +250,14 @@ impl AudioStream {
             return None;
         }
 
-        let StreamKind::DepthAndTrades { ticker, .. } = stream else {
+        let StreamKind::DepthAndTrades { ticker_info, .. } = stream else {
             return None;
         };
 
         match self
             .streams
-            .get(&ticker.exchange)
-            .and_then(|streams| streams.get(ticker))
+            .get(&ticker_info.exchange())
+            .and_then(|streams| streams.get(&ticker_info.ticker))
         {
             Some(cfg) if cfg.enabled => Some(*cfg),
             _ => None,

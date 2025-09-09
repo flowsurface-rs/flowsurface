@@ -1,4 +1,5 @@
-use exchange::{TickMultiplier, TickerInfo, adapter::StreamKind};
+use exchange::adapter::PersistStreamKind;
+use exchange::{TickMultiplier, TickerInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -33,7 +34,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         studies: Vec<HeatmapStudy>,
         #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<StreamKind>,
+        stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
@@ -45,7 +46,7 @@ pub enum Pane {
         layout: ViewConfig,
         kind: KlineChartKind,
         #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<StreamKind>,
+        stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
@@ -54,7 +55,7 @@ pub enum Pane {
         link_group: Option<LinkGroup>,
     },
     TimeAndSales {
-        stream_type: Vec<StreamKind>,
+        stream_type: Vec<PersistStreamKind>,
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,

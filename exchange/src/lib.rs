@@ -266,8 +266,6 @@ pub struct Ticker {
     pub exchange: Exchange,
     // Optional display symbol for UI, mainly used for Hyperliquid spot markets
     // to show "HYPEUSDC" instead of "@107"
-    // Using Option<[u8; N]> would require heap allocation, so we use a flag pattern
-    // but could be refactored to use a smart enum if needed
     display_bytes: [u8; Ticker::MAX_LEN as usize],
     has_display_symbol: bool,
 }
@@ -449,6 +447,7 @@ enum TickerDe {
         exchange: String,
     },
 }
+
 impl<'de> Deserialize<'de> for Ticker {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -506,15 +505,92 @@ impl<'de> Deserialize<'de> for Ticker {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+pub struct Power10<const MIN: i8, const MAX: i8> {
+    pub power: i8,
+}
+
+impl<const MIN: i8, const MAX: i8> Power10<MIN, MAX> {
+    #[inline]
+    pub fn new(power: i8) -> Self {
+        Self {
+            power: power.clamp(MIN, MAX),
+        }
+    }
+
+    #[inline]
+    pub fn as_f32(self) -> f32 {
+        10f32.powi(self.power as i32)
+    }
+}
+
+impl<const MIN: i8, const MAX: i8> From<Power10<MIN, MAX>> for f32 {
+    fn from(v: Power10<MIN, MAX>) -> Self {
+        v.as_f32()
+    }
+}
+
+impl<const MIN: i8, const MAX: i8> From<f32> for Power10<MIN, MAX> {
+    fn from(value: f32) -> Self {
+        if value <= 0.0 {
+            return Self { power: 0 };
+        }
+        let log10 = value.abs().log10();
+        let rounded = log10.round() as i8;
+        let power = rounded.clamp(MIN, MAX);
+        Self { power }
+    }
+}
+
+impl<const MIN: i8, const MAX: i8> serde::Serialize for Power10<MIN, MAX> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // serialize as a plain numeric (e.g. 0.1, 1, 10)
+        let v: f32 = (*self).into();
+        serializer.serialize_f32(v)
+    }
+}
+
+impl<'de, const MIN: i8, const MAX: i8> serde::Deserialize<'de> for Power10<MIN, MAX> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = f32::deserialize(deserializer)?;
+        Ok(Self::from(v))
+    }
+}
+
+pub type ContractSize = Power10<-1, 6>;
+pub type MinTicksize = Power10<-8, 2>;
+pub type MinQtySize = Power10<-6, 8>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Hash, Eq)]
 pub struct TickerInfo {
     pub ticker: Ticker,
     #[serde(rename = "tickSize")]
-    pub min_ticksize: f32,
-    pub min_qty: f32,
+    pub min_ticksize: MinTicksize,
+    pub min_qty: MinQtySize,
+    pub contract_size: Option<ContractSize>,
 }
 
 impl TickerInfo {
+    pub fn new(
+        ticker: Ticker,
+        min_ticksize: f32,
+        min_qty: f32,
+        contract_size: Option<f32>,
+    ) -> Self {
+        Self {
+            ticker,
+            min_ticksize: MinTicksize::from(min_ticksize),
+            min_qty: MinQtySize::from(min_qty),
+            contract_size: contract_size.map(ContractSize::from),
+        }
+    }
+
     pub fn market_type(&self) -> MarketKind {
         self.ticker.market_type()
     }
@@ -646,7 +722,7 @@ impl TickMultiplier {
     ///
     /// Usually used for price steps in chart scales
     pub fn multiply_with_min_tick_size(&self, ticker_info: TickerInfo) -> f32 {
-        let min_tick_size = ticker_info.min_ticksize;
+        let min_tick_size: f32 = ticker_info.min_ticksize.into();
 
         let Some(multiplier) = Decimal::from_f32(f32::from(self.0)) else {
             log::error!("Failed to convert multiplier: {}", self.0);

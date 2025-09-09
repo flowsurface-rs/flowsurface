@@ -1,14 +1,48 @@
 use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
-use super::de_string_to_f32;
+use serde::Deserializer;
+use serde::de::Error as SerdeError;
+use serde_json::Value;
 
-#[derive(serde::Deserialize, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Order {
-    #[serde(rename = "0", deserialize_with = "de_string_to_f32")]
     pub price: f32,
-    #[serde(rename = "1", deserialize_with = "de_string_to_f32")]
     pub qty: f32,
+}
+
+impl<'de> serde::Deserialize<'de> for Order {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // can be either an array like ["price","qty", ...] or an object with keys "0" and "1"
+        let value = Value::deserialize(deserializer).map_err(SerdeError::custom)?;
+
+        let parse_f = |val: &Value| -> Option<f32> {
+            match val {
+                Value::String(s) => s.parse::<f32>().ok(),
+                Value::Number(n) => n.as_f64().map(|x| x as f32),
+                _ => None,
+            }
+        };
+
+        let price = match &value {
+            Value::Array(arr) => arr.first().and_then(parse_f),
+            Value::Object(map) => map.get("0").and_then(parse_f),
+            _ => None,
+        }
+        .ok_or_else(|| SerdeError::custom("Order price not found or invalid"))?;
+
+        let qty = match &value {
+            Value::Array(arr) => arr.get(1).and_then(parse_f),
+            Value::Object(map) => map.get("1").and_then(parse_f),
+            _ => None,
+        }
+        .ok_or_else(|| SerdeError::custom("Order qty not found or invalid"))?;
+
+        Ok(Order { price, qty })
+    }
 }
 
 pub struct DepthPayload {

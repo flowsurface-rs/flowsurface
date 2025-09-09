@@ -88,7 +88,7 @@ pub struct TickersTable {
     pub expand_ticker_card: Option<Ticker>,
     scroll_offset: AbsoluteOffset,
     pub is_shown: bool,
-    tickers_info: FxHashMap<Ticker, Option<TickerInfo>>,
+    pub tickers_info: FxHashMap<Ticker, Option<TickerInfo>>,
     selected_exchanges: FxHashSet<ExchangeInclusive>,
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,

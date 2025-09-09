@@ -329,9 +329,11 @@ async fn try_resync(
 }
 
 #[allow(unused_assignments)]
-pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
+pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
+
+        let ticker = ticker_info.ticker;
 
         let (symbol_str, market) = ticker.to_full_symbol_and_type();
         let exchange = exchange_from_market_type(market);
@@ -470,7 +472,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         let _ = output
                                                             .send(Event::DepthReceived(
                                                                 StreamKind::DepthAndTrades {
-                                                                    ticker,
+                                                                    ticker_info,
                                                                     depth_aggr:
                                                                         StreamTicksize::Client,
                                                                 },
@@ -532,7 +534,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         let _ = output
                                                             .send(Event::DepthReceived(
                                                                 StreamKind::DepthAndTrades {
-                                                                    ticker,
+                                                                    ticker_info,
                                                                     depth_aggr:
                                                                         StreamTicksize::Client,
                                                                 },
@@ -588,19 +590,25 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 }
 
 pub fn connect_kline_stream(
-    streams: Vec<(Ticker, Timeframe)>,
+    streams: Vec<(TickerInfo, Timeframe)>,
     market: MarketKind,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
         let exchange = exchange_from_market_type(market);
 
+        let ticker_info_map = streams
+            .iter()
+            .map(|(ticker_info, _)| (ticker_info.ticker, *ticker_info))
+            .collect::<HashMap<Ticker, TickerInfo>>();
+
         loop {
             match &mut state {
                 State::Disconnected => {
                     let stream_str = streams
                         .iter()
-                        .map(|(ticker, timeframe)| {
+                        .map(|(ticker_info, timeframe)| {
+                            let ticker = ticker_info.ticker;
                             format!(
                                 "{}@kline_{}",
                                 ticker.to_full_symbol_and_type().0.to_lowercase(),
@@ -658,19 +666,26 @@ pub fn connect_kline_stream(
                                     volume: (buy_volume, sell_volume),
                                 };
 
-                                if let Some(timeframe) = streams
+                                if let Some((_, tf)) = streams
                                     .iter()
                                     .find(|(_, tf)| tf.to_string() == de_kline.interval)
                                 {
-                                    let _ = output
-                                        .send(Event::KlineReceived(
-                                            StreamKind::Kline {
-                                                ticker,
-                                                timeframe: timeframe.1,
-                                            },
-                                            kline,
-                                        ))
-                                        .await;
+                                    if let Some(info) = ticker_info_map.get(&ticker) {
+                                        let ticker_info = *info;
+                                        let timeframe = *tf;
+
+                                        let _ = output
+                                            .send(Event::KlineReceived(
+                                                StreamKind::Kline {
+                                                    ticker_info,
+                                                    timeframe,
+                                                },
+                                                kline,
+                                            ))
+                                            .await;
+                                    } else {
+                                        log::error!("Ticker info not found for ticker: {}", ticker);
+                                    }
                                 }
                             }
                         }
@@ -1061,6 +1076,10 @@ pub async fn fetch_ticksize(
             .parse::<f32>()
             .map_err(|e| AdapterError::ParseError(format!("Failed to parse minQty: {e}")))?;
 
+        let contract_size = item["contractSize"].as_f64().map(|v| v as f32);
+
+        let ticker = Ticker::new(symbol_str, exchange);
+
         if let Some(price_filter) = price_filter {
             let min_ticksize = price_filter["tickSize"]
                 .as_str()
@@ -1068,18 +1087,11 @@ pub async fn fetch_ticksize(
                 .parse::<f32>()
                 .map_err(|e| AdapterError::ParseError(format!("Failed to parse tickSize: {e}")))?;
 
-            let ticker = Ticker::new(symbol_str, exchange);
+            let info = TickerInfo::new(ticker, min_ticksize, min_qty, contract_size);
 
-            ticker_info_map.insert(
-                Ticker::new(symbol_str, exchange),
-                Some(TickerInfo {
-                    ticker,
-                    min_ticksize,
-                    min_qty,
-                }),
-            );
+            ticker_info_map.insert(ticker, Some(info));
         } else {
-            ticker_info_map.insert(Ticker::new(symbol_str, exchange), None);
+            ticker_info_map.insert(ticker, None);
         }
     }
 

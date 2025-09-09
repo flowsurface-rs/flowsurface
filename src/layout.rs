@@ -105,7 +105,7 @@ impl From<&Dashboard> for data::Dashboard {
 
 impl From<&pane::State> for data::Pane {
     fn from(pane: &pane::State) -> Self {
-        let streams = pane.streams.clone();
+        let streams = pane.streams.clone().into_waiting();
 
         match &pane.content {
             pane::Content::Starter => data::Pane::Starter {

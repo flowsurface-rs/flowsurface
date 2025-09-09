@@ -1,14 +1,13 @@
-use crate::layout::{Layout, configuration};
-use crate::screen::dashboard::{Dashboard, pane};
+use crate::layout::Layout;
+use crate::screen::dashboard::Dashboard;
 use crate::style::{Icon, icon_text};
 use crate::widget::column_drag::{self, DragEvent};
 use crate::widget::dragger_row;
 use crate::{style, tooltip};
-use data::layout::WindowSpec;
 
 use iced::widget::{
-    Space, button, center, column, container, pane_grid::Configuration, row, scrollable, text,
-    text_input, tooltip::Position as TooltipPosition,
+    Space, button, center, column, container, row, scrollable, text, text_input,
+    tooltip::Position as TooltipPosition,
 };
 use iced::{Element, Theme, padding};
 use std::{collections::HashMap, vec};
@@ -36,10 +35,11 @@ pub enum Message {
 
 pub enum Action {
     Select(Layout),
+    Clone(Uuid),
 }
 
 pub struct LayoutManager {
-    layouts: HashMap<Uuid, (Layout, Dashboard)>,
+    pub layouts: HashMap<Uuid, (Layout, Dashboard)>,
     active_layout: Layout,
     pub layout_order: Vec<Uuid>,
     pub edit_mode: Editing,
@@ -77,7 +77,7 @@ impl LayoutManager {
         }
     }
 
-    fn generate_unique_layout_name(&self) -> String {
+    pub fn generate_unique_layout_name(&self) -> String {
         let mut counter = 1;
         loop {
             let candidate = format!("Layout {counter}");
@@ -92,7 +92,7 @@ impl LayoutManager {
         }
     }
 
-    fn ensure_unique_name(&self, proposed_name: &str, current_id: Uuid) -> String {
+    pub fn ensure_unique_name(&self, proposed_name: &str, current_id: Uuid) -> String {
         let mut counter = 2;
         let mut final_name = proposed_name.to_string();
 
@@ -206,33 +206,7 @@ impl LayoutManager {
                 };
             }
             Message::CloneLayout(id) => {
-                if let Some((layout, dashboard)) = self.layouts.get(&id) {
-                    let new_id = Uuid::new_v4();
-                    let new_layout = Layout {
-                        id: new_id,
-                        name: self.ensure_unique_name(&layout.name, new_id),
-                    };
-
-                    let ser_dashboard = data::Dashboard::from(dashboard);
-
-                    let mut popout_windows: Vec<(Configuration<pane::State>, WindowSpec)> =
-                        Vec::new();
-
-                    for (pane, window_spec) in &ser_dashboard.popout {
-                        let configuration = configuration(pane.clone());
-                        popout_windows.push((configuration, *window_spec));
-                    }
-
-                    let dashboard = Dashboard::from_config(
-                        configuration(ser_dashboard.pane.clone()),
-                        popout_windows,
-                        layout.id,
-                    );
-
-                    self.layout_order.push(new_layout.id);
-                    self.layouts
-                        .insert(new_layout.id, (new_layout.clone(), dashboard));
-                }
+                return Some(Action::Clone(id));
             }
             Message::Reorder(event) => column_drag::reorder_vec(&mut self.layout_order, &event),
         }
