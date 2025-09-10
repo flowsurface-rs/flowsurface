@@ -555,6 +555,7 @@ impl TickersTable {
                     Exchange::HyperliquidLinear,
                     "Hyperliquid"
                 ),
+                self.exchange_filter_btn(ExchangeInclusive::Okex, Exchange::OkexLinear, "OKX"),
             ]
             .spacing(4);
 
@@ -830,6 +831,7 @@ fn create_expanded_ticker_card<'a>(
     is_fav: bool,
 ) -> Element<'a, Message> {
     let (ticker_str, market) = ticker.display_symbol_and_type();
+    let exchange_icon = style::exchange_icon(ticker.exchange);
 
     column![
         row![
@@ -854,14 +856,7 @@ fn create_expanded_ticker_card<'a>(
         ]
         .spacing(2),
         row![
-            match ticker.exchange {
-                Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot =>
-                    icon_text(Icon::BybitLogo, 12),
-                Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot =>
-                    icon_text(Icon::BinanceLogo, 12),
-                Exchange::HyperliquidLinear | Exchange::HyperliquidSpot =>
-                    icon_text(Icon::HyperliquidLogo, 12),
-            },
+            icon_text(exchange_icon, 12),
             text(
                 ticker_str
                     + " "

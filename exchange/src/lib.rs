@@ -197,6 +197,9 @@ impl SerTicker {
             Exchange::BybitSpot => "BybitSpot",
             Exchange::HyperliquidLinear => "HyperliquidLinear",
             Exchange::HyperliquidSpot => "HyperliquidSpot",
+            Exchange::OkexLinear => "OkexLinear",
+            Exchange::OkexInverse => "OkexInverse",
+            Exchange::OkexSpot => "OkexSpot",
         }
     }
 
@@ -210,6 +213,9 @@ impl SerTicker {
             "BybitSpot" => Ok(Exchange::BybitSpot),
             "HyperliquidLinear" => Ok(Exchange::HyperliquidLinear),
             "HyperliquidSpot" => Ok(Exchange::HyperliquidSpot),
+            "OkexLinear" => Ok(Exchange::OkexLinear),
+            "OkexInverse" => Ok(Exchange::OkexInverse),
+            "OkexSpot" => Ok(Exchange::OkexSpot),
             _ => Err(format!("Unknown exchange: {}", s)),
         }
     }
@@ -563,7 +569,7 @@ impl<'de, const MIN: i8, const MAX: i8> serde::Deserialize<'de> for Power10<MIN,
     }
 }
 
-pub type ContractSize = Power10<-1, 6>;
+pub type ContractSize = Power10<-4, 6>;
 pub type MinTicksize = Power10<-8, 2>;
 pub type MinQtySize = Power10<-6, 8>;
 
@@ -634,7 +640,7 @@ pub struct TickerStats {
 pub fn is_symbol_supported(symbol: &str, exchange: Exchange, log: bool) -> bool {
     let valid_symbol = symbol
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
 
     if valid_symbol {
         return true;

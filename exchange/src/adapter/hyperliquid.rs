@@ -766,10 +766,12 @@ fn find_asset_stats(
 }
 
 pub async fn fetch_klines(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
+    let ticker = ticker_info.ticker;
+
     let interval = match timeframe {
         Timeframe::M1 => "1m",
         Timeframe::M5 => "5m",

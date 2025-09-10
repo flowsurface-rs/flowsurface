@@ -18,7 +18,7 @@ use exchange::{
     Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{
         self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
-        StreamTicksize, UniqueStreams, binance, bybit, hyperliquid,
+        StreamTicksize, UniqueStreams, binance, bybit, hyperliquid, okex,
     },
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
@@ -1368,7 +1368,7 @@ impl Dashboard {
 
             if matching_panes.is_empty() {
                 let fetch_task = Task::perform(
-                    adapter::fetch_klines(exchange, ticker, timeframe, None)
+                    adapter::fetch_klines(ticker_info, timeframe, None)
                         .map_err(|err| format!("{err}")),
                     move |result| match result {
                         Ok(_) => Message::Notification(Toast::warn(format!(
@@ -1554,8 +1554,7 @@ fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_klines(ticker_info.exchange(), ticker_info.ticker, timeframe, range)
-                .map_err(|err| format!("{err}")),
+            adapter::fetch_klines(ticker_info, timeframe, range).map_err(|err| format!("{err}")),
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines {
@@ -1629,6 +1628,10 @@ pub fn depth_subscription(
             };
             Subscription::run_with(config, builder)
         }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            let builder = |cfg: &StreamConfig<TickerInfo>| okex::connect_market_stream(cfg.id);
+            Subscription::run_with(config, builder)
+        }
     }
 }
 
@@ -1653,6 +1656,12 @@ pub fn kline_subscription(
         Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
             let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
                 hyperliquid::connect_kline_stream(cfg.id.clone(), cfg.market_type)
+            };
+            Subscription::run_with(config, builder)
+        }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
+                okex::connect_kline_stream(cfg.id.clone(), cfg.market_type)
             };
             Subscription::run_with(config, builder)
         }

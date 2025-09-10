@@ -691,10 +691,12 @@ fn parse_kline_field<T: std::str::FromStr>(field: Option<&str>) -> Result<T, Ada
 }
 
 pub async fn fetch_klines(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
+    let ticker = ticker_info.ticker;
+
     let (symbol_str, market_type) = &ticker.to_full_symbol_and_type();
     let timeframe_str = {
         if Timeframe::D1 == timeframe {
