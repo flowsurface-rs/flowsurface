@@ -1,6 +1,7 @@
 use crate::{
     SIZE_IN_QUOTE_CURRENCY,
     adapter::{StreamKind, StreamTicksize},
+    limiter::{self, RateLimiter},
 };
 
 use super::{
@@ -22,9 +23,45 @@ use iced_futures::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock, time::Duration};
+use tokio::sync::Mutex;
 
 const WS_DOMAIN: &str = "ws.okx.com";
+
+const LIMIT: usize = 20;
+
+const REFILL_RATE: Duration = Duration::from_secs(2);
+const LIMITER_BUFFER_PCT: f32 = 0.05;
+
+static OKEX_LIMITER: LazyLock<Mutex<OkexLimiter>> =
+    LazyLock::new(|| Mutex::new(OkexLimiter::new(LIMIT, REFILL_RATE)));
+
+pub struct OkexLimiter {
+    bucket: limiter::FixedWindowBucket,
+}
+
+impl OkexLimiter {
+    pub fn new(limit: usize, refill_rate: Duration) -> Self {
+        let effective_limit = (limit as f32 * (1.0 - LIMITER_BUFFER_PCT)) as usize;
+        Self {
+            bucket: limiter::FixedWindowBucket::new(effective_limit, refill_rate),
+        }
+    }
+}
+
+impl RateLimiter for OkexLimiter {
+    fn prepare_request(&mut self, weight: usize) -> Option<Duration> {
+        self.bucket.calculate_wait_time(weight)
+    }
+
+    fn update_from_response(&mut self, _response: &reqwest::Response, weight: usize) {
+        self.bucket.consume_tokens(weight);
+    }
+
+    fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
+        response.status() == 429
+    }
+}
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
@@ -600,14 +637,8 @@ pub async fn fetch_ticker_prices(
         inst_type
     );
 
-    let response_text = HTTP_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(AdapterError::FetchError)?
-        .text()
-        .await
-        .map_err(AdapterError::FetchError)?;
+    let response_text =
+        limiter::http_request_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
 
     let doc: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -706,14 +737,8 @@ pub async fn fetch_klines(
         url.push_str(&format!("&before={start}&after={end}"));
     }
 
-    let response_text = HTTP_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(AdapterError::FetchError)?
-        .text()
-        .await
-        .map_err(AdapterError::FetchError)?;
+    let response_text =
+        limiter::http_request_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
 
     let doc: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
