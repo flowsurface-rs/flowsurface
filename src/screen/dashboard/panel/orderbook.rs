@@ -193,7 +193,6 @@ impl canvas::Program<Message> for Orderbook {
     ) -> Vec<iced::widget::canvas::Geometry<Renderer>> {
         let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
             let palette = theme.extended_palette();
-            let background_color = palette.background.base.color;
             let text_color = palette.background.base.text;
             let bid_color = palette.success.base.color;
             let ask_color = palette.danger.base.color;
