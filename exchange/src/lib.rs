@@ -569,7 +569,7 @@ impl<'de, const MIN: i8, const MAX: i8> serde::Deserialize<'de> for Power10<MIN,
     }
 }
 
-pub type ContractSize = Power10<-1, 6>;
+pub type ContractSize = Power10<-4, 6>;
 pub type MinTicksize = Power10<-8, 2>;
 pub type MinQtySize = Power10<-6, 8>;
 

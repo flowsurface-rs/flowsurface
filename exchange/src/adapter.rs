@@ -590,22 +590,22 @@ pub async fn fetch_ticker_prices(
 }
 
 pub async fn fetch_klines(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
-    match ticker.exchange {
+    match ticker_info.ticker.exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
-            binance::fetch_klines(ticker, timeframe, range).await
+            binance::fetch_klines(ticker_info, timeframe, range).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
-            bybit::fetch_klines(ticker, timeframe, range).await
+            bybit::fetch_klines(ticker_info, timeframe, range).await
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
-            hyperliquid::fetch_klines(ticker, timeframe, range).await
+            hyperliquid::fetch_klines(ticker_info, timeframe, range).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            okex::fetch_klines(ticker, timeframe, range).await
+            okex::fetch_klines(ticker_info, timeframe, range).await
         }
     }
 }

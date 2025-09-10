@@ -181,8 +181,8 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
         let mut trades_buffer: Vec<Trade> = vec![];
         let mut orderbook = LocalDepthCache::default();
 
-        let size_in_quote_currency =
-            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
+        let size_in_quote = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let contract_size = ticker_info.contract_size.map(f32::from);
 
         loop {
             match &mut state {
@@ -204,7 +204,9 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                 qty: calc_qty(
                                                     de_trade.qty,
                                                     de_trade.price,
-                                                    size_in_quote_currency,
+                                                    size_in_quote,
+                                                    contract_size,
+                                                    market_type,
                                                 ),
                                             };
                                             trades_buffer.push(trade);
@@ -222,7 +224,9 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     qty: calc_qty(
                                                         x.qty,
                                                         x.price,
-                                                        size_in_quote_currency,
+                                                        size_in_quote,
+                                                        contract_size,
+                                                        market_type,
                                                     ),
                                                 })
                                                 .collect(),
@@ -234,7 +238,9 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     qty: calc_qty(
                                                         x.qty,
                                                         x.price,
-                                                        size_in_quote_currency,
+                                                        size_in_quote,
+                                                        contract_size,
+                                                        market_type,
                                                     ),
                                                 })
                                                 .collect(),
@@ -321,8 +327,7 @@ pub fn connect_kline_stream(
             "args": args,
         });
 
-        let size_in_quote =
-            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
+        let size_in_quote = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 
         loop {
             match &mut state {
@@ -347,6 +352,7 @@ pub fn connect_kline_stream(
                                     Some(t) => *t,
                                     None => continue,
                                 };
+                                let contract_size = ticker_info.contract_size.map(f32::from);
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
@@ -370,8 +376,8 @@ pub fn connect_kline_stream(
                                             .get(4)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
-                                        let volume_ccy = row
-                                            .get(6)
+                                        let volume = row
+                                            .get(5)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
 
@@ -387,8 +393,14 @@ pub fn connect_kline_stream(
                                                 _ => continue,
                                             };
 
-                                        let volume = if let Some(vq) = volume_ccy {
-                                            calc_qty(vq, close, size_in_quote)
+                                        let volume_in_display = if let Some(vq) = volume {
+                                            calc_qty(
+                                                vq,
+                                                close,
+                                                size_in_quote,
+                                                contract_size,
+                                                market_type,
+                                            )
                                         } else {
                                             0.0
                                         };
@@ -399,7 +411,7 @@ pub fn connect_kline_stream(
                                             high,
                                             low,
                                             close,
-                                            volume: (-1.0, volume),
+                                            volume: (-1.0, volume_in_display),
                                         };
                                         let _ = output
                                             .send(Event::KlineReceived(
@@ -440,11 +452,36 @@ pub fn connect_kline_stream(
     })
 }
 
-fn calc_qty(qty: f32, price: f32, size_in_quote_currency: bool) -> f32 {
-    if size_in_quote_currency {
-        qty * price
-    } else {
-        qty
+fn calc_qty(
+    qty: f32,
+    price: f32,
+    size_in_quote_currency: bool,
+    contract_size: Option<f32>,
+    market: MarketKind,
+) -> f32 {
+    let is_inverse = matches!(market, MarketKind::InversePerps);
+
+    match contract_size {
+        Some(cs) => {
+            if is_inverse {
+                if size_in_quote_currency {
+                    qty * cs
+                } else {
+                    qty
+                }
+            } else if size_in_quote_currency {
+                qty * cs * price
+            } else {
+                qty * cs
+            }
+        }
+        None => {
+            if size_in_quote_currency {
+                qty * price
+            } else {
+                qty
+            }
+        }
     }
 }
 
@@ -640,11 +677,15 @@ pub async fn fetch_ticker_prices(
 }
 
 pub async fn fetch_klines(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
-    let (symbol_str, _market) = ticker.to_full_symbol_and_type();
+    let ticker = ticker_info.ticker;
+
+    let (symbol_str, market) = ticker.to_full_symbol_and_type();
+    let contract_size = ticker_info.contract_size.map(f32::from);
+
     let bar = timeframe_to_okx_bar(timeframe).ok_or_else(|| {
         AdapterError::InvalidRequest(format!("Unsupported timeframe: {timeframe}"))
     })?;
@@ -684,6 +725,7 @@ pub async fn fetch_klines(
     let size_in_quote = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 
     let mut klines: Vec<Kline> = Vec::with_capacity(list.len());
+
     for row in list {
         let time = row
             .get(0)
@@ -705,8 +747,8 @@ pub async fn fetch_klines(
             .get(4)
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f32>().ok());
-        let volume_ccy = row
-            .get(6)
+        let volume = row
+            .get(5)
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f32>().ok());
 
@@ -714,8 +756,8 @@ pub async fn fetch_klines(
             (Some(ts), Some(o), Some(h), Some(l), Some(c)) => (ts, o, h, l, c),
             _ => continue,
         };
-        let volume = if let Some(vq) = volume_ccy {
-            calc_qty(vq, close, size_in_quote)
+        let volume_in_display = if let Some(vq) = volume {
+            calc_qty(vq, close, size_in_quote, contract_size, market)
         } else {
             0.0
         };
@@ -726,7 +768,7 @@ pub async fn fetch_klines(
             high,
             low,
             close,
-            volume: (-1.0, volume),
+            volume: (-1.0, volume_in_display),
         });
     }
 

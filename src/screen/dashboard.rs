@@ -1368,7 +1368,8 @@ impl Dashboard {
 
             if matching_panes.is_empty() {
                 let fetch_task = Task::perform(
-                    adapter::fetch_klines(ticker, timeframe, None).map_err(|err| format!("{err}")),
+                    adapter::fetch_klines(ticker_info, timeframe, None)
+                        .map_err(|err| format!("{err}")),
                     move |result| match result {
                         Ok(_) => Message::Notification(Toast::warn(format!(
                             "Fetched klines for stream with no matching panes: {exchange:?} {:?} {timeframe:?}",
@@ -1553,8 +1554,7 @@ fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_klines(ticker_info.ticker, timeframe, range)
-                .map_err(|err| format!("{err}")),
+            adapter::fetch_klines(ticker_info, timeframe, range).map_err(|err| format!("{err}")),
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines {
