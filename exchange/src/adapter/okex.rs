@@ -166,7 +166,6 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
         let mut state: State = State::Disconnected;
 
         let ticker = ticker_info.ticker;
-        let contract_size = ticker_info.contract_size.map(|cs| cs.as_f32());
 
         let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
         let exchange = ticker.exchange;
@@ -205,7 +204,6 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                 qty: calc_qty(
                                                     de_trade.qty,
                                                     de_trade.price,
-                                                    contract_size,
                                                     size_in_quote_currency,
                                                 ),
                                             };
@@ -224,7 +222,6 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     qty: calc_qty(
                                                         x.qty,
                                                         x.price,
-                                                        contract_size,
                                                         size_in_quote_currency,
                                                     ),
                                                 })
@@ -237,7 +234,6 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     qty: calc_qty(
                                                         x.qty,
                                                         x.price,
-                                                        contract_size,
                                                         size_in_quote_currency,
                                                     ),
                                                 })
@@ -308,7 +304,7 @@ pub fn connect_kline_stream(
             if let Some(bar) = timeframe_to_okx_bar(*timeframe) {
                 let (symbol, _mt) = ticker.to_full_symbol_and_type();
                 args.push(serde_json::json!({
-                    "channel": format!("candle{}", bar),
+                    "channel": format!("candle{bar}"),
                     "instId": symbol,
                 }));
                 lookup.insert(symbol, (*ticker_info, *timeframe));
@@ -354,56 +350,55 @@ pub fn connect_kline_stream(
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
-                                        let ts = row
+                                        let time = row
                                             .get(0)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<u64>().ok());
-                                        let o = row
+                                        let open = row
                                             .get(1)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
-                                        let h = row
+                                        let high = row
                                             .get(2)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
-                                        let l = row
+                                        let low = row
                                             .get(3)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
-                                        let c = row
+                                        let close = row
                                             .get(4)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
-                                        let vol = row
-                                            .get(5)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let vol_ccy = row
+                                        let volume_ccy = row
                                             .get(6)
                                             .and_then(|x| x.as_str())
                                             .and_then(|s| s.parse::<f32>().ok());
 
-                                        let (ts, o, h, l, c) = match (ts, o, h, l, c) {
-                                            (Some(ts), Some(o), Some(h), Some(l), Some(c)) => {
-                                                (ts, o, h, l, c)
-                                            }
-                                            _ => continue,
-                                        };
+                                        let (ts, open, high, low, close) =
+                                            match (time, open, high, low, close) {
+                                                (
+                                                    Some(ts),
+                                                    Some(open),
+                                                    Some(high),
+                                                    Some(low),
+                                                    Some(close),
+                                                ) => (ts, open, high, low, close),
+                                                _ => continue,
+                                            };
 
-                                        let volume = if let Some(vq) = vol_ccy {
-                                            vq
-                                        } else if let Some(vb) = vol {
-                                            if size_in_quote { (vb * c).round() } else { vb }
+                                        let volume = if let Some(vq) = volume_ccy {
+                                            calc_qty(vq, close, size_in_quote)
                                         } else {
                                             0.0
                                         };
 
                                         let kline = Kline {
                                             time: ts,
-                                            open: o,
-                                            high: h,
-                                            low: l,
-                                            close: c,
+                                            open,
+                                            high,
+                                            low,
+                                            close,
                                             volume: (-1.0, volume),
                                         };
                                         let _ = output
@@ -445,16 +440,11 @@ pub fn connect_kline_stream(
     })
 }
 
-fn calc_qty(qty: f32, price: f32, contract_size: Option<f32>, size_in_quote_currency: bool) -> f32 {
-    match contract_size {
-        Some(size) => qty * size,
-        None => {
-            if size_in_quote_currency {
-                (qty * price).round()
-            } else {
-                qty
-            }
-        }
+fn calc_qty(qty: f32, price: f32, size_in_quote_currency: bool) -> f32 {
+    if size_in_quote_currency {
+        qty * price
+    } else {
+        qty
     }
 }
 
@@ -654,7 +644,7 @@ pub async fn fetch_klines(
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
-    let (symbol_str, market) = ticker.to_full_symbol_and_type();
+    let (symbol_str, _market) = ticker.to_full_symbol_and_type();
     let bar = timeframe_to_okx_bar(timeframe).ok_or_else(|| {
         AdapterError::InvalidRequest(format!("Unsupported timeframe: {timeframe}"))
     })?;
@@ -691,10 +681,9 @@ pub async fn fetch_klines(
         .as_array()
         .ok_or_else(|| AdapterError::ParseError("Kline result is not an array".to_string()))?;
 
-    let size_in_quote =
-        SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market != MarketKind::InversePerps;
+    let size_in_quote = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 
-    let mut out: Vec<Kline> = Vec::with_capacity(list.len());
+    let mut klines: Vec<Kline> = Vec::with_capacity(list.len());
     for row in list {
         let time = row
             .get(0)
@@ -716,37 +705,31 @@ pub async fn fetch_klines(
             .get(4)
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f32>().ok());
-        let volume = row
-            .get(5)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f32>().ok());
         let volume_ccy = row
             .get(6)
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f32>().ok());
 
-        let (ts, o, h, l, c) = match (time, open, high, low, close) {
+        let (ts, open, high, low, close) = match (time, open, high, low, close) {
             (Some(ts), Some(o), Some(h), Some(l), Some(c)) => (ts, o, h, l, c),
             _ => continue,
         };
-        let volume_quote = if let Some(vq) = volume_ccy {
-            vq
-        } else if let Some(vb) = volume {
-            if size_in_quote { vb * c } else { vb }
+        let volume = if let Some(vq) = volume_ccy {
+            calc_qty(vq, close, size_in_quote)
         } else {
             0.0
         };
 
-        out.push(Kline {
+        klines.push(Kline {
             time: ts,
-            open: o,
-            high: h,
-            low: l,
-            close: c,
-            volume: (-1.0, volume_quote),
+            open,
+            high,
+            low,
+            close,
+            volume: (-1.0, volume),
         });
     }
 
-    out.sort_by_key(|k| k.time);
-    Ok(out)
+    klines.sort_by_key(|k| k.time);
+    Ok(klines)
 }

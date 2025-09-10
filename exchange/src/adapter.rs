@@ -597,12 +597,11 @@ pub async fn fetch_ticker_prices(
 }
 
 pub async fn fetch_klines(
-    exchange: Exchange,
     ticker: Ticker,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
-    match exchange {
+    match ticker.exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
             binance::fetch_klines(ticker, timeframe, range).await
         }
