@@ -198,12 +198,6 @@ impl canvas::Program<Message> for Orderbook {
             let bid_color = palette.success.base.color;
             let ask_color = palette.danger.base.color;
 
-            // Clear background
-            frame.fill_rectangle(
-                Point::ORIGIN,
-                Size::new(bounds.width, bounds.height),
-                background_color,
-            );
 
             let max_levels = self.config.max_levels;
             let mid_point = bounds.height / 2.0;
