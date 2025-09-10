@@ -476,31 +476,24 @@ impl Exchange {
 
     pub fn market_type(&self) -> MarketKind {
         match self {
-            Exchange::BinanceLinear | Exchange::BybitLinear | Exchange::HyperliquidLinear => {
-                MarketKind::LinearPerps
+            Exchange::BinanceLinear
+            | Exchange::BybitLinear
+            | Exchange::HyperliquidLinear
+            | Exchange::OkexLinear => MarketKind::LinearPerps,
+            Exchange::BinanceInverse | Exchange::BybitInverse | Exchange::OkexInverse => {
+                MarketKind::InversePerps
             }
-            Exchange::BinanceInverse | Exchange::BybitInverse => MarketKind::InversePerps,
-            Exchange::BinanceSpot | Exchange::BybitSpot | Exchange::HyperliquidSpot => {
-                MarketKind::Spot
-            }
-            Exchange::OkexLinear => MarketKind::LinearPerps,
-            Exchange::OkexInverse => MarketKind::InversePerps,
-            Exchange::OkexSpot => MarketKind::Spot,
+            Exchange::BinanceSpot
+            | Exchange::BybitSpot
+            | Exchange::HyperliquidSpot
+            | Exchange::OkexSpot => MarketKind::Spot,
         }
     }
 
     pub fn is_depth_client_aggr(&self) -> bool {
-        matches!(
+        !matches!(
             self,
-            Exchange::BinanceLinear
-                | Exchange::BinanceInverse
-                | Exchange::BybitLinear
-                | Exchange::BybitInverse
-                | Exchange::BinanceSpot
-                | Exchange::BybitSpot
-                | Exchange::OkexLinear
-                | Exchange::OkexInverse
-                | Exchange::OkexSpot
+            Exchange::HyperliquidLinear | Exchange::HyperliquidSpot
         )
     }
 

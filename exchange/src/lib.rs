@@ -213,6 +213,9 @@ impl SerTicker {
             "BybitSpot" => Ok(Exchange::BybitSpot),
             "HyperliquidLinear" => Ok(Exchange::HyperliquidLinear),
             "HyperliquidSpot" => Ok(Exchange::HyperliquidSpot),
+            "OkexLinear" => Ok(Exchange::OkexLinear),
+            "OkexInverse" => Ok(Exchange::OkexInverse),
+            "OkexSpot" => Ok(Exchange::OkexSpot),
             _ => Err(format!("Unknown exchange: {}", s)),
         }
     }
