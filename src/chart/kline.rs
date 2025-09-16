@@ -170,7 +170,7 @@ pub struct KlineChart {
     raw_trades: Vec<Trade>,
     indicators: EnumMap<KlineIndicator, Option<Box<dyn KlineIndicatorImpl>>>,
     fetching_trades: (bool, Option<Handle>),
-    kind: KlineChartKind,
+    pub(crate) kind: KlineChartKind,
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,

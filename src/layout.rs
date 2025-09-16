@@ -1,12 +1,9 @@
-use crate::chart::{heatmap::HeatmapChart, kline::KlineChart};
 use crate::modal::layout_manager::LayoutManager;
-use crate::screen::dashboard::{Dashboard, pane, panel::timeandsales::TimeAndSales};
+use crate::screen::dashboard::{Dashboard, pane};
 use data::{
     UserTimezone,
-    chart::Basis,
     layout::{WindowSpec, pane::Axis},
 };
-use exchange::{TickMultiplier, Timeframe};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::{collections::HashMap, vec};
@@ -111,17 +108,27 @@ impl From<&pane::State> for data::Pane {
             pane::Content::Starter => data::Pane::Starter {
                 link_group: pane.link_group,
             },
-            pane::Content::Heatmap(chart, indicators) => data::Pane::HeatmapChart {
-                layout: chart.chart_layout(),
+            pane::Content::Heatmap {
+                chart, indicators, ..
+            } => data::Pane::HeatmapChart {
+                layout: chart
+                    .as_ref()
+                    .map_or(data::chart::ViewConfig::default(), |c| c.chart_layout()),
                 stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
-                studies: chart.studies.clone(),
+                studies: chart.as_ref().map_or(vec![], |c| c.studies.clone()),
                 link_group: pane.link_group,
             },
-            pane::Content::Kline(chart, indicators) => data::Pane::KlineChart {
-                layout: chart.chart_layout(),
-                kind: chart.kind().clone(),
+            pane::Content::Kline {
+                chart, indicators, ..
+            } => data::Pane::KlineChart {
+                layout: chart
+                    .as_ref()
+                    .map_or(data::chart::ViewConfig::default(), |c| c.chart_layout()),
+                kind: chart
+                    .as_ref()
+                    .map_or(data::chart::KlineChartKind::Candles, |c| c.kind().clone()),
                 stream_type: streams,
                 settings: pane.settings,
                 indicators: indicators.clone(),
@@ -161,38 +168,19 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             indicators,
             link_group,
         } => {
-            if let Some(ticker_info) = settings.ticker_info {
-                let tick_size = settings
-                    .tick_multiply
-                    .unwrap_or(TickMultiplier(10))
-                    .multiply_with_min_tick_size(ticker_info);
+            let content = pane::Content::Heatmap {
+                chart: None,
+                indicators: indicators.clone(),
+                layout,
+                studies,
+            };
 
-                let config = settings.visual_config.and_then(|cfg| cfg.heatmap());
-                let basis = settings
-                    .selected_basis
-                    .unwrap_or(Basis::default_heatmap_time(Some(ticker_info)));
-
-                Configuration::Pane(pane::State::from_config(
-                    pane::Content::Heatmap(
-                        HeatmapChart::new(
-                            layout,
-                            basis,
-                            tick_size,
-                            &indicators,
-                            settings.ticker_info,
-                            config,
-                            studies,
-                        ),
-                        indicators,
-                    ),
-                    stream_type,
-                    settings,
-                    link_group,
-                ))
-            } else {
-                log::info!("Skipping a HeatmapChart initialization due to missing ticker info");
-                Configuration::Pane(pane::State::new())
-            }
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
         }
         data::Pane::KlineChart {
             layout,
@@ -201,89 +189,30 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             settings,
             indicators,
             link_group,
-        } => match kind {
-            data::chart::KlineChartKind::Footprint { .. } => {
-                if let Some(ticker_info) = settings.ticker_info {
-                    let tick_size = settings
-                        .tick_multiply
-                        .unwrap_or(TickMultiplier(50))
-                        .multiply_with_min_tick_size(ticker_info);
-                    let basis = settings.selected_basis.unwrap_or(Timeframe::M5.into());
+        } => {
+            let content = pane::Content::Kline {
+                chart: None,
+                indicators: indicators.clone(),
+                layout,
+                kind,
+            };
 
-                    Configuration::Pane(pane::State::from_config(
-                        pane::Content::Kline(
-                            KlineChart::new(
-                                layout,
-                                basis,
-                                tick_size,
-                                &[],
-                                vec![],
-                                &indicators,
-                                settings.ticker_info,
-                                &kind,
-                            ),
-                            indicators,
-                        ),
-                        stream_type,
-                        settings,
-                        link_group,
-                    ))
-                } else {
-                    log::info!(
-                        "Skipping a FootprintChart initialization due to missing ticker info"
-                    );
-                    Configuration::Pane(pane::State::new())
-                }
-            }
-            data::chart::KlineChartKind::Candles => {
-                if let Some(ticker_info) = settings.ticker_info {
-                    let basis = settings.selected_basis.unwrap_or(Timeframe::M15.into());
-
-                    let tick_size = settings
-                        .tick_multiply
-                        .unwrap_or(TickMultiplier(1))
-                        .multiply_with_min_tick_size(ticker_info);
-
-                    Configuration::Pane(pane::State::from_config(
-                        pane::Content::Kline(
-                            KlineChart::new(
-                                layout,
-                                basis,
-                                tick_size,
-                                &[],
-                                vec![],
-                                &indicators,
-                                settings.ticker_info,
-                                &kind,
-                            ),
-                            indicators,
-                        ),
-                        stream_type,
-                        settings,
-                        link_group,
-                    ))
-                } else {
-                    log::info!(
-                        "Skipping a CandlestickChart initialization due to missing ticker info"
-                    );
-                    Configuration::Pane(pane::State::new())
-                }
-            }
-        },
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
         data::Pane::TimeAndSales {
             stream_type,
             settings,
             link_group,
         } => {
-            if settings.ticker_info.is_none() {
-                log::info!("Skipping a TimeAndSales initialization due to missing ticker info");
-                return Configuration::Pane(pane::State::new());
-            }
-
-            let config = settings.visual_config.and_then(|cfg| cfg.time_and_sales());
+            let content = pane::Content::TimeAndSales(None);
 
             Configuration::Pane(pane::State::from_config(
-                pane::Content::TimeAndSales(TimeAndSales::new(config, settings.ticker_info)),
+                content,
                 stream_type,
                 settings,
                 link_group,

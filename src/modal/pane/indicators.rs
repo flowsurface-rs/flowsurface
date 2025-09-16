@@ -12,13 +12,12 @@ pub fn view<'a, I>(
     pane: pane_grid::Pane,
     state: &'a pane::State,
     selected: &[I],
+    market_type: Option<exchange::adapter::MarketKind>,
 ) -> Element<'a, Message>
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
-    let market_type = state.settings.ticker_info.map(|info| info.market_type());
-
-    let content_allows_dragging = matches!(state.content, pane::Content::Kline(_, _));
+    let content_allows_dragging = matches!(state.content, pane::Content::Kline { .. });
     let content_row = if let Some(market) = market_type {
         content_row(pane, selected, market, content_allows_dragging)
     } else {

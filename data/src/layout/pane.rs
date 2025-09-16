@@ -1,5 +1,4 @@
 use exchange::adapter::PersistStreamKind;
-use exchange::{TickMultiplier, TickerInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -71,8 +70,7 @@ impl Default for Pane {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Settings {
-    pub ticker_info: Option<TickerInfo>,
-    pub tick_multiply: Option<TickMultiplier>,
+    pub tick_multiply: Option<exchange::TickMultiplier>,
     pub visual_config: Option<VisualConfig>,
     pub selected_basis: Option<Basis>,
 }

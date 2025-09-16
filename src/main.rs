@@ -334,12 +334,7 @@ impl Flowsurface {
 
                             if !resolved_streams.is_empty() {
                                 dashboard
-                                    .resolve_streams(
-                                        main_window.id,
-                                        &layout_id,
-                                        pane_id,
-                                        resolved_streams,
-                                    )
+                                    .resolve_streams(main_window.id, pane_id, resolved_streams)
                                     .map(move |msg| Message::Dashboard(None, msg))
                             } else {
                                 Task::none()
@@ -638,7 +633,7 @@ impl Flowsurface {
         self.layout_manager
             .set_active_layout(layout.clone())
             .expect("Failed to set active layout")
-            .load_layout(main_window, layout.id)
+            .load_layout(main_window)
             .map(move |msg| Message::Dashboard(Some(layout.id), msg))
     }
 
