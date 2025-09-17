@@ -216,15 +216,20 @@ impl canvas::Program<Message> for Orderbook {
             let ask_color = palette.danger.base.color;
 
 
-            let max_levels = 20; // Default to 20 levels since config.max_levels was removed
             let mid_point = bounds.height / 2.0;
             let spread_height = if self.config.show_spread { SPREAD_ROW_HEIGHT } else { 0.0 };
 
-            // Draw asks (top half, lowest ask closest to spread line)
+            // Calculate how many levels can fit in each section
             let ask_section_height = (mid_point - spread_height / 2.0).max(0.0);
+            let bid_section_height = bounds.height - mid_point - spread_height / 2.0;
+            
+            let max_ask_levels = ((ask_section_height / ROW_HEIGHT).floor() as usize).max(1);
+            let max_bid_levels = ((bid_section_height / ROW_HEIGHT).floor() as usize).max(1);
+
+            // Draw asks (top half, lowest ask closest to spread line)
             let asks = self.group_price_levels(&self.depth.asks, false);
 
-            for (i, (price, qty)) in asks.iter().take(max_levels).enumerate() {
+            for (i, (price, qty)) in asks.iter().take(max_ask_levels).enumerate() {
                 let y = ask_section_height - ((i + 1) as f32 * ROW_HEIGHT);
                 if y < 0.0 { break; }
 
@@ -264,7 +269,7 @@ impl canvas::Program<Message> for Orderbook {
             let bid_section_start = mid_point + spread_height / 2.0;
             let bids = self.group_price_levels(&self.depth.bids, true);
 
-            for (i, (price, qty)) in bids.iter().take(max_levels).enumerate() {
+            for (i, (price, qty)) in bids.iter().take(max_bid_levels).enumerate() {
                 let y = bid_section_start + (i as f32 * ROW_HEIGHT);
                 if y + ROW_HEIGHT > bounds.height { break; }
 
