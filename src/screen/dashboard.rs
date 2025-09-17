@@ -421,27 +421,28 @@ impl Dashboard {
                     }
                 }
                 pane::Message::ClusterKindSelected(pane, cluster_kind) => {
-                    if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane)
-                        && let pane::Content::Kline { chart, .. } = &mut pane_state.content
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Kline { chart, kind, .. } = &mut state.content
                         && let Some(c) = chart
                     {
                         c.set_cluster_kind(cluster_kind);
+                        *kind = c.kind.clone();
                     }
                 }
                 pane::Message::ClusterScalingSelected(pane, scaling) => {
-                    if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane)
-                        && let pane::Content::Kline { chart, .. } = &mut pane_state.content
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Kline { chart, kind, .. } = &mut state.content
                         && let Some(c) = chart
                     {
                         c.set_cluster_scaling(scaling);
+                        *kind = c.kind.clone();
                     }
                 }
                 pane::Message::StudyConfigurator(pane, study_msg) => {
-                    if let Some(pane_state) = self.get_mut_pane(main_window.id, window, pane) {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
                         match study_msg {
                             StudyMessage::Footprint(message) => {
-                                if let pane::Content::Kline { chart, kind, .. } =
-                                    &mut pane_state.content
+                                if let pane::Content::Kline { chart, kind, .. } = &mut state.content
                                     && let Some(c) = chart
                                 {
                                     c.update_study_configurator(message);
@@ -451,7 +452,7 @@ impl Dashboard {
 
                             StudyMessage::Heatmap(message) => {
                                 if let pane::Content::Heatmap { chart, studies, .. } =
-                                    &mut pane_state.content
+                                    &mut state.content
                                     && let Some(c) = chart
                                 {
                                     c.update_study_configurator(message);
