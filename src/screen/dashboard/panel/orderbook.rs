@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::Message;
 use crate::style;
 use data::chart::orderbook::Config;
-use exchange::{TickMultiplier, TickerInfo, depth::Depth};
+use exchange::{TickerInfo, depth::Depth, TickMultiplier};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -12,6 +12,7 @@ use ordered_float::OrderedFloat;
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
 const ROW_HEIGHT: f32 = 16.0;
 const SPREAD_ROW_HEIGHT: f32 = 20.0;
+
 
 impl super::Panel for Orderbook {
     fn scroll(&mut self, delta: f32) {
@@ -41,11 +42,7 @@ pub struct Orderbook {
 }
 
 impl Orderbook {
-    pub fn new(
-        config: Option<Config>,
-        ticker_info: Option<TickerInfo>,
-        tick_multiplier: TickMultiplier,
-    ) -> Self {
+    pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>, tick_multiplier: TickMultiplier) -> Self {
         Self {
             depth: Depth::default(),
             config: config.unwrap_or_default(),
@@ -67,62 +64,59 @@ impl Orderbook {
     fn calculate_max_quantities(&mut self) {
         let grouped_bids = self.group_price_levels(&self.depth.bids, true);
         let grouped_asks = self.group_price_levels(&self.depth.asks, false);
-
-        self.max_bid_qty = grouped_bids.iter().map(|(_, qty)| *qty).fold(0.0, f32::max);
-
-        self.max_ask_qty = grouped_asks.iter().map(|(_, qty)| *qty).fold(0.0, f32::max);
+        
+        self.max_bid_qty = grouped_bids
+            .iter()
+            .map(|(_, qty)| *qty)
+            .fold(0.0, f32::max);
+        
+        self.max_ask_qty = grouped_asks
+            .iter()
+            .map(|(_, qty)| *qty)
+            .fold(0.0, f32::max);
     }
 
-    fn group_price_levels(
-        &self,
-        levels: &std::collections::BTreeMap<OrderedFloat<f32>, f32>,
-        is_bid: bool,
-    ) -> Vec<(f32, f32)> {
+    fn group_price_levels(&self, levels: &std::collections::BTreeMap<OrderedFloat<f32>, f32>, is_bid: bool) -> Vec<(f32, f32)> {
         let base_tick_size = self.tick_size().unwrap_or(0.01);
         let tick_size = (self.tick_multiplier.0 as f32) * base_tick_size;
-
+        
         if tick_size <= 0.01 {
             // No grouping, return original levels
             if is_bid {
-                return levels
-                    .iter()
+                return levels.iter()
                     .rev()
                     .map(|(price, qty)| (price.into_inner(), *qty))
                     .collect();
             } else {
-                return levels
-                    .iter()
+                return levels.iter()
                     .map(|(price, qty)| (price.into_inner(), *qty))
                     .collect();
             }
         }
 
-        let mut grouped_levels: std::collections::BTreeMap<OrderedFloat<f32>, f32> =
-            std::collections::BTreeMap::new();
-
+        let mut grouped_levels: std::collections::BTreeMap<OrderedFloat<f32>, f32> = std::collections::BTreeMap::new();
+        
         for (price, qty) in levels.iter() {
             let price_val = price.into_inner();
             let grouped_price = if is_bid {
                 // For bids, round down to the nearest tick size
                 ((price_val * (1.0 / tick_size)).floor()) * tick_size
             } else {
-                // For asks, round up to the nearest tick size
+                // For asks, round up to the nearest tick size  
                 ((price_val * (1.0 / tick_size)).ceil()) * tick_size
             };
             let grouped_key = OrderedFloat(grouped_price);
-
+            
             *grouped_levels.entry(grouped_key).or_insert(0.0) += qty;
         }
 
         if is_bid {
-            grouped_levels
-                .iter()
+            grouped_levels.iter()
                 .rev()
                 .map(|(price, qty)| (price.into_inner(), *qty))
                 .collect()
         } else {
-            grouped_levels
-                .iter()
+            grouped_levels.iter()
                 .map(|(price, qty)| (price.into_inner(), *qty))
                 .collect()
         }
@@ -221,17 +215,14 @@ impl canvas::Program<Message> for Orderbook {
             let bid_color = palette.success.base.color;
             let ask_color = palette.danger.base.color;
 
+
             let mid_point = bounds.height / 2.0;
-            let spread_height = if self.config.show_spread {
-                SPREAD_ROW_HEIGHT
-            } else {
-                0.0
-            };
+            let spread_height = if self.config.show_spread { SPREAD_ROW_HEIGHT } else { 0.0 };
 
             // Calculate how many levels can fit in each section
             let ask_section_height = (mid_point - spread_height / 2.0).max(0.0);
             let bid_section_height = bounds.height - mid_point - spread_height / 2.0;
-
+            
             let max_ask_levels = ((ask_section_height / ROW_HEIGHT).floor() as usize).max(1);
             let max_bid_levels = ((bid_section_height / ROW_HEIGHT).floor() as usize).max(1);
 
@@ -240,9 +231,7 @@ impl canvas::Program<Message> for Orderbook {
 
             for (i, (price, qty)) in asks.iter().take(max_ask_levels).enumerate() {
                 let y = ask_section_height - ((i + 1) as f32 * ROW_HEIGHT);
-                if y < 0.0 {
-                    break;
-                }
+                if y < 0.0 { break; }
 
                 self.draw_order_row(
                     frame,
@@ -262,7 +251,7 @@ impl canvas::Program<Message> for Orderbook {
                 if let Some(spread) = self.calculate_spread() {
                     let spread_y = mid_point - spread_height / 2.0;
                     let spread_text = format!("Spread: {:.4}", spread);
-
+                    
                     frame.fill_text(Text {
                         content: spread_text,
                         position: Point::new(bounds.width / 2.0, spread_y + spread_height / 2.0),
@@ -282,9 +271,7 @@ impl canvas::Program<Message> for Orderbook {
 
             for (i, (price, qty)) in bids.iter().take(max_bid_levels).enumerate() {
                 let y = bid_section_start + (i as f32 * ROW_HEIGHT);
-                if y + ROW_HEIGHT > bounds.height {
-                    break;
-                }
+                if y + ROW_HEIGHT > bounds.height { break; }
 
                 self.draw_order_row(
                     frame,
@@ -306,10 +293,8 @@ impl canvas::Program<Message> for Orderbook {
 
 impl Orderbook {
     fn calculate_spread(&self) -> Option<f32> {
-        if let (Some((best_ask, _)), Some((best_bid, _))) = (
-            self.depth.asks.first_key_value(),
-            self.depth.bids.last_key_value(),
-        ) {
+        if let (Some((best_ask, _)), Some((best_bid, _))) = 
+            (self.depth.asks.first_key_value(), self.depth.bids.last_key_value()) {
             Some(best_ask.into_inner() - best_bid.into_inner())
         } else {
             None
@@ -335,7 +320,7 @@ impl Orderbook {
         if max_qty > 0.0 {
             let bar_width = (qty / max_qty) * width * 0.3;
             let bar_x = if is_bid { 0.0 } else { width - bar_width };
-
+            
             let bar_color = iced::Color {
                 r: color.r,
                 g: color.g,
@@ -358,11 +343,7 @@ impl Orderbook {
             color: color,
             size: TEXT_SIZE,
             font: style::AZERET_MONO,
-            align_x: if is_bid {
-                Alignment::Start.into()
-            } else {
-                Alignment::End.into()
-            },
+            align_x: if is_bid { Alignment::Start.into() } else { Alignment::End.into() },
             align_y: Alignment::Center.into(),
             ..Default::default()
         });
@@ -375,11 +356,7 @@ impl Orderbook {
             color: text_color,
             size: TEXT_SIZE,
             font: style::AZERET_MONO,
-            align_x: if is_bid {
-                Alignment::Start.into()
-            } else {
-                Alignment::End.into()
-            },
+            align_x: if is_bid { Alignment::Start.into() } else { Alignment::End.into() },
             align_y: Alignment::Center.into(),
             ..Default::default()
         });
