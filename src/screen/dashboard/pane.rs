@@ -851,7 +851,7 @@ impl State {
                     .map(move |message| Message::StreamModifierChanged(pane, message)),
                 Message::HideModal(pane),
                 stack_padding,
-                Alignment::End,
+                Alignment::Start,
             ),
             Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
             Some(Modal::Controls) => stack_modal(
