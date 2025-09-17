@@ -29,6 +29,7 @@ pub enum ModifierKind {
     Candlestick(Basis),
     Footprint(Basis, TickMultiplier),
     Heatmap(Basis, TickMultiplier),
+    Orderbook(Basis, TickMultiplier),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -197,6 +198,9 @@ impl Modifier {
             ModifierKind::Heatmap(_, ticksize) => {
                 self.kind = ModifierKind::Heatmap(basis, ticksize);
             }
+            ModifierKind::Orderbook(_, ticksize) => {
+                self.kind = ModifierKind::Orderbook(basis, ticksize);
+            }
         }
     }
 
@@ -206,6 +210,7 @@ impl Modifier {
                 self.kind = ModifierKind::Footprint(basis, ticksize);
             }
             ModifierKind::Heatmap(basis, _) => self.kind = ModifierKind::Heatmap(basis, ticksize),
+            ModifierKind::Orderbook(basis, _) => self.kind = ModifierKind::Orderbook(basis, ticksize),
             _ => {}
         }
     }
@@ -318,7 +323,7 @@ impl Modifier {
 
         let (selected_basis, selected_ticksize) = match kind {
             ModifierKind::Candlestick(basis) => (Some(basis), None),
-            ModifierKind::Footprint(basis, ticksize) | ModifierKind::Heatmap(basis, ticksize) => {
+            ModifierKind::Footprint(basis, ticksize) | ModifierKind::Heatmap(basis, ticksize) | ModifierKind::Orderbook(basis, ticksize) => {
                 (Some(basis), Some(ticksize))
             }
         };
@@ -344,7 +349,7 @@ impl Modifier {
 
                 let is_kline_chart = match kind {
                     ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
-                    ModifierKind::Heatmap(_, _) => false,
+                    ModifierKind::Heatmap(_, _) | ModifierKind::Orderbook(_, _) => false,
                 };
 
                 if selected_basis.is_some() {
@@ -537,7 +542,7 @@ impl Modifier {
                         .push(horizontal_rule(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
-                        || matches!(kind, ModifierKind::Footprint(_, _));
+                        || matches!(kind, ModifierKind::Footprint(_, _) | ModifierKind::Orderbook(_, _));
 
                     let allowed_tm = if allows_custom_tsizes {
                         exchange::TickMultiplier::ALL.to_vec()
@@ -663,7 +668,8 @@ impl From<&ModifierKind> for SelectedTab {
         match kind {
             ModifierKind::Candlestick(basis)
             | ModifierKind::Footprint(basis, _)
-            | ModifierKind::Heatmap(basis, _) => match basis {
+            | ModifierKind::Heatmap(basis, _)
+            | ModifierKind::Orderbook(basis, _) => match basis {
                 Basis::Time(_) => SelectedTab::Timeframe,
                 Basis::Tick(tc) => SelectedTab::TickCount {
                     raw_input_buf: if tc.is_custom() {

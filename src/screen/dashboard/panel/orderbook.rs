@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::Message;
 use crate::style;
 use data::chart::orderbook::Config;
-use exchange::{TickerInfo, depth::Depth};
+use exchange::{TickerInfo, depth::Depth, TickMultiplier};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -38,10 +38,11 @@ pub struct Orderbook {
     last_tick: Instant,
     max_bid_qty: f32,
     max_ask_qty: f32,
+    tick_multiplier: TickMultiplier,
 }
 
 impl Orderbook {
-    pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>) -> Self {
+    pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>, tick_multiplier: TickMultiplier) -> Self {
         Self {
             depth: Depth::default(),
             config: config.unwrap_or_default(),
@@ -50,6 +51,7 @@ impl Orderbook {
             last_tick: Instant::now(),
             max_bid_qty: 0.0,
             max_ask_qty: 0.0,
+            tick_multiplier,
         }
     }
 
@@ -75,7 +77,10 @@ impl Orderbook {
     }
 
     fn group_price_levels(&self, levels: &std::collections::BTreeMap<OrderedFloat<f32>, f32>, is_bid: bool) -> Vec<(f32, f32)> {
-        if self.config.price_grouping <= 0.01 {
+        let base_tick_size = self.tick_size().unwrap_or(0.01);
+        let tick_size = (self.tick_multiplier.0 as f32) * base_tick_size;
+        
+        if tick_size <= 0.01 {
             // No grouping, return original levels
             if is_bid {
                 return levels.iter()
@@ -93,8 +98,13 @@ impl Orderbook {
         
         for (price, qty) in levels.iter() {
             let price_val = price.into_inner();
-            // Round price to the nearest grouping interval
-            let grouped_price = (price_val / self.config.price_grouping).round() * self.config.price_grouping;
+            let grouped_price = if is_bid {
+                // For bids, round down to the nearest tick size
+                ((price_val * (1.0 / tick_size)).floor()) * tick_size
+            } else {
+                // For asks, round up to the nearest tick size  
+                ((price_val * (1.0 / tick_size)).ceil()) * tick_size
+            };
             let grouped_key = OrderedFloat(grouped_price);
             
             *grouped_levels.entry(grouped_key).or_insert(0.0) += qty;
@@ -124,6 +134,16 @@ impl Orderbook {
         self.ticker_info.map(|info| info.min_ticksize)
     }
 
+    pub fn set_tick_multiplier(&mut self, tick_multiplier: TickMultiplier) {
+        self.tick_multiplier = tick_multiplier;
+        self.calculate_max_quantities();
+        self.invalidate(Some(Instant::now()));
+    }
+
+    pub fn tick_multiplier(&self) -> TickMultiplier {
+        self.tick_multiplier
+    }
+
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         self.cache.clear();
         if let Some(now) = now {
@@ -133,7 +153,7 @@ impl Orderbook {
     }
 
     fn format_price(&self, price: f32) -> String {
-        format!("{:.4}", price)
+        format!("{:.4}", price) // Default to 4 decimal places since config.precision was removed
     }
 
     fn format_quantity(&self, qty: f32) -> String {
@@ -196,6 +216,7 @@ impl canvas::Program<Message> for Orderbook {
             let ask_color = palette.danger.base.color;
 
 
+            let max_levels = 20; // Default to 20 levels since config.max_levels was removed
             let mid_point = bounds.height / 2.0;
             let spread_height = if self.config.show_spread { SPREAD_ROW_HEIGHT } else { 0.0 };
 
@@ -203,9 +224,8 @@ impl canvas::Program<Message> for Orderbook {
             let ask_section_height = (mid_point - spread_height / 2.0).max(0.0);
             let asks = self.group_price_levels(&self.depth.asks, false);
 
-            for (i, (price, qty)) in asks.iter().enumerate() {
+            for (i, (price, qty)) in asks.iter().take(max_levels).enumerate() {
                 let y = ask_section_height - ((i + 1) as f32 * ROW_HEIGHT);
-                // Stop rendering if the row would be outside the visible bounds
                 if y < 0.0 { break; }
 
                 self.draw_order_row(
@@ -244,9 +264,8 @@ impl canvas::Program<Message> for Orderbook {
             let bid_section_start = mid_point + spread_height / 2.0;
             let bids = self.group_price_levels(&self.depth.bids, true);
 
-            for (i, (price, qty)) in bids.iter().enumerate() {
+            for (i, (price, qty)) in bids.iter().take(max_levels).enumerate() {
                 let y = bid_section_start + (i as f32 * ROW_HEIGHT);
-                // Stop rendering if the row would be outside the visible bounds
                 if y + ROW_HEIGHT > bounds.height { break; }
 
                 self.draw_order_row(
@@ -290,7 +309,7 @@ impl Orderbook {
         max_qty: f32,
     ) {
         let price_text = self.format_price(price);
-        let qty_text = self.format_quantity(qty);
+        let qty_text = self.format_quantity(qty); // Always show size since config.show_size was removed
 
         // Draw quantity bar background
         if max_qty > 0.0 {

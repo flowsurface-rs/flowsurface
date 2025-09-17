@@ -9,8 +9,9 @@ use crate::{
     },
     screen::{
         DashboardError,
-        dashboard::panel::{self, timeandsales::TimeAndSales, orderbook::Orderbook},
+        dashboard::panel::{self, timeandsales::TimeAndSales},
     },
+    screen::dashboard::panel::orderbook::Orderbook,
     style::{self, Icon, icon_text},
     widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
     window::{self, Window},
@@ -270,13 +271,14 @@ impl State {
                     .settings
                     .visual_config
                     .and_then(|cfg| cfg.orderbook());
-                let content = Content::Orderbook(Orderbook::new(config, Some(ticker_info)));
+                let tick_multiplier = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
+                let content = Content::Orderbook(Orderbook::new(config, Some(ticker_info), tick_multiplier));
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker,
                     depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                         StreamTicksize::Client
                     } else {
-                        StreamTicksize::ServerSide(TickMultiplier(1))
+                        StreamTicksize::ServerSide(tick_multiplier)
                     },
                 }];
                 Ok((content, streams))
@@ -418,7 +420,7 @@ impl State {
                         .style(style::chart_modal),
                         Message::HideModal(id),
                         padding::left(12),
-                        Alignment::End,
+                Alignment::Start,
                     )
                 } else {
                     base
@@ -433,6 +435,24 @@ impl State {
                 self.compose_panel_view(base, id, compact_controls, settings_modal)
             }
             Content::Orderbook(panel) => {
+                let selected_basis = self
+                    .settings
+                    .selected_basis
+                    .unwrap_or(Basis::default_heatmap_time(self.settings.ticker_info));
+                let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
+                let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
+
+                let base_ticksize = tick_multiply.base(panel.tick_size().unwrap_or(0.01));
+
+                let exchange = self
+                    .settings
+                    .ticker_info
+                    .map(|ti| ti.exchange());
+
+                let modifiers = ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind, exchange);
+                
+                stream_info_element = stream_info_element.push(modifiers);
+
                 let base = panel::view(panel, timezone)
                     .map(move |message| Message::PanelInteraction(id, message));
 
@@ -442,7 +462,7 @@ impl State {
                     modal::pane::settings::orderbook_cfg_view(panel.config, id, current_price, tick_size)
                 };
 
-                self.compose_panel_view(base, id, compact_controls, settings_modal)
+                self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
             }
             Content::Heatmap(chart, indicators) => {
                 let selected_basis = self
@@ -778,6 +798,57 @@ impl State {
             Some(Modal::Settings) => stack_modal(
                 base,
                 settings_modal(),
+                Message::HideModal(pane),
+                stack_padding,
+                Alignment::End,
+            ),
+            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
+            Some(Modal::Controls) => stack_modal(
+                base,
+                if let Some(controls) = compact_controls {
+                    controls
+                } else {
+                    column![].into()
+                },
+                Message::HideModal(pane),
+                padding::left(12),
+                Alignment::End,
+            ),
+            _ => base,
+        }
+    }
+
+    fn compose_panel_view_with_stream<'a, F>(
+        &'a self,
+        base: Element<'a, Message>,
+        pane: pane_grid::Pane,
+        compact_controls: Option<Element<'a, Message>>,
+        settings_modal: F,
+    ) -> Element<'a, Message>
+    where
+        F: FnOnce() -> Element<'a, Message>,
+    {
+        let base: Element<_> =
+            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
+                Message::DeleteNotification(pane, msg)
+            })
+            .into();
+
+        let stack_padding = padding::right(12).left(12);
+
+        match self.modal {
+            Some(Modal::Settings) => stack_modal(
+                base,
+                settings_modal(),
+                Message::HideModal(pane),
+                stack_padding,
+                Alignment::End,
+            ),
+            Some(Modal::StreamModifier(modifier)) => stack_modal(
+                base,
+                modifier
+                    .view(self.stream_pair())
+                    .map(move |message| Message::StreamModifierChanged(pane, message)),
                 Message::HideModal(pane),
                 stack_padding,
                 Alignment::End,

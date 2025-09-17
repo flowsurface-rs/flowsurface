@@ -1,6 +1,7 @@
 use crate::chart::{heatmap::HeatmapChart, kline::KlineChart};
 use crate::modal::layout_manager::LayoutManager;
-use crate::screen::dashboard::{Dashboard, pane, panel::{timeandsales::TimeAndSales, orderbook::Orderbook}};
+use crate::screen::dashboard::{Dashboard, pane, panel::timeandsales::TimeAndSales};
+use crate::screen::dashboard::panel::orderbook::Orderbook;
 use data::{
     UserTimezone,
     chart::Basis,
@@ -305,9 +306,10 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             }
 
             let config = settings.visual_config.and_then(|cfg| cfg.orderbook());
+            let tick_multiplier = settings.tick_multiply.unwrap_or(TickMultiplier(1));
 
             Configuration::Pane(pane::State::from_config(
-                pane::Content::Orderbook(Orderbook::new(config, settings.ticker_info)),
+                pane::Content::Orderbook(Orderbook::new(config, settings.ticker_info, tick_multiplier)),
                 stream_type,
                 settings,
                 link_group,

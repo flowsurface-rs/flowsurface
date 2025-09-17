@@ -585,6 +585,9 @@ impl Dashboard {
                                                     .multiply_with_min_tick_size(ticker_info),
                                             );
                                         }
+                                        pane::Content::Orderbook(ref mut panel) => {
+                                            panel.set_tick_multiplier(new_multiplier);
+                                        }
                                         _ => {}
                                     }
                                 }
