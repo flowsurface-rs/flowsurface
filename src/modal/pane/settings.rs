@@ -503,78 +503,6 @@ pub fn orderbook_cfg_view<'a>(
     current_price: Option<f32>,
     tick_size: Option<f32>,
 ) -> Element<'a, Message> {
-    let max_levels_column = {
-        let slider = slider(5..=50, cfg.max_levels as i32, move |value| {
-            Message::VisualConfigChanged(
-                pane,
-                VisualConfig::Orderbook(orderbook::Config {
-                    max_levels: value as usize,
-                    ..cfg
-                }),
-                false,
-            )
-        })
-        .step(1);
-
-        column![
-            text("Max Levels").size(14),
-            row![slider, text(format!("{}", cfg.max_levels))].spacing(8),
-        ]
-        .spacing(8)
-    };
-
-    let precision_column = {
-        let slider = slider(0..=8, cfg.precision as i32, move |value| {
-            Message::VisualConfigChanged(
-                pane,
-                VisualConfig::Orderbook(orderbook::Config {
-                    precision: value as u8,
-                    ..cfg
-                }),
-                false,
-            )
-        })
-        .step(1);
-
-        column![
-            text("Price Precision").size(14),
-            row![slider, text(format!("{}", cfg.precision))].spacing(8),
-        ]
-        .spacing(8)
-    };
-
-    let show_size_toggle = {
-        let checkbox = iced::widget::checkbox("Show Size", cfg.show_size)
-            .on_toggle(move |value| {
-                Message::VisualConfigChanged(
-                    pane,
-                    VisualConfig::Orderbook(orderbook::Config {
-                        show_size: value,
-                        ..cfg
-                    }),
-                    false,
-                )
-            });
-
-        column![text("Display Options").size(14), checkbox].spacing(8)
-    };
-
-    let show_spread_toggle = {
-        let checkbox = iced::widget::checkbox("Show Spread", cfg.show_spread)
-            .on_toggle(move |value| {
-                Message::VisualConfigChanged(
-                    pane,
-                    VisualConfig::Orderbook(orderbook::Config {
-                        show_spread: value,
-                        ..cfg
-                    }),
-                    false,
-                )
-            });
-
-        column![checkbox]
-    };
-
     let price_grouping_column = {
         let default_tick_size = tick_size.unwrap_or(0.01);
         let options = generate_price_grouping_options(current_price, default_tick_size);
@@ -601,11 +529,24 @@ pub fn orderbook_cfg_view<'a>(
         .spacing(8)
     };
 
+    let show_spread_toggle = {
+        let checkbox = iced::widget::checkbox("Show Spread", cfg.show_spread)
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Orderbook(orderbook::Config {
+                        show_spread: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        column![text("Display Options").size(14), checkbox].spacing(8)
+    };
+
     let content = split_column![
-        max_levels_column,
-        precision_column,
         price_grouping_column,
-        show_size_toggle,
         show_spread_toggle;
         spacing = 12, align_x = Alignment::Start
     ];
