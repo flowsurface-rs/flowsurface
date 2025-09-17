@@ -65,13 +65,11 @@ impl Orderbook {
         
         self.max_bid_qty = grouped_bids
             .iter()
-            .take(self.config.max_levels)
             .map(|(_, qty)| *qty)
             .fold(0.0, f32::max);
         
         self.max_ask_qty = grouped_asks
             .iter()
-            .take(self.config.max_levels)
             .map(|(_, qty)| *qty)
             .fold(0.0, f32::max);
     }
@@ -135,7 +133,7 @@ impl Orderbook {
     }
 
     fn format_price(&self, price: f32) -> String {
-        format!("{:.prec$}", price, prec = self.config.precision as usize)
+        format!("{:.4}", price)
     }
 
     fn format_quantity(&self, qty: f32) -> String {
@@ -198,7 +196,6 @@ impl canvas::Program<Message> for Orderbook {
             let ask_color = palette.danger.base.color;
 
 
-            let max_levels = self.config.max_levels;
             let mid_point = bounds.height / 2.0;
             let spread_height = if self.config.show_spread { SPREAD_ROW_HEIGHT } else { 0.0 };
 
@@ -206,8 +203,9 @@ impl canvas::Program<Message> for Orderbook {
             let ask_section_height = (mid_point - spread_height / 2.0).max(0.0);
             let asks = self.group_price_levels(&self.depth.asks, false);
 
-            for (i, (price, qty)) in asks.iter().take(max_levels).enumerate() {
+            for (i, (price, qty)) in asks.iter().enumerate() {
                 let y = ask_section_height - ((i + 1) as f32 * ROW_HEIGHT);
+                // Stop rendering if the row would be outside the visible bounds
                 if y < 0.0 { break; }
 
                 self.draw_order_row(
@@ -227,7 +225,7 @@ impl canvas::Program<Message> for Orderbook {
             if self.config.show_spread {
                 if let Some(spread) = self.calculate_spread() {
                     let spread_y = mid_point - spread_height / 2.0;
-                    let spread_text = format!("Spread: {:.prec$}", spread, prec = self.config.precision as usize);
+                    let spread_text = format!("Spread: {:.4}", spread);
                     
                     frame.fill_text(Text {
                         content: spread_text,
@@ -246,8 +244,9 @@ impl canvas::Program<Message> for Orderbook {
             let bid_section_start = mid_point + spread_height / 2.0;
             let bids = self.group_price_levels(&self.depth.bids, true);
 
-            for (i, (price, qty)) in bids.iter().take(max_levels).enumerate() {
+            for (i, (price, qty)) in bids.iter().enumerate() {
                 let y = bid_section_start + (i as f32 * ROW_HEIGHT);
+                // Stop rendering if the row would be outside the visible bounds
                 if y + ROW_HEIGHT > bounds.height { break; }
 
                 self.draw_order_row(
@@ -291,14 +290,10 @@ impl Orderbook {
         max_qty: f32,
     ) {
         let price_text = self.format_price(price);
-        let qty_text = if self.config.show_size {
-            self.format_quantity(qty)
-        } else {
-            String::new()
-        };
+        let qty_text = self.format_quantity(qty);
 
         // Draw quantity bar background
-        if max_qty > 0.0 && self.config.show_size {
+        if max_qty > 0.0 {
             let bar_width = (qty / max_qty) * width * 0.3;
             let bar_x = if is_bid { 0.0 } else { width - bar_width };
             
@@ -330,18 +325,16 @@ impl Orderbook {
         });
 
         // Draw quantity text
-        if self.config.show_size {
-            let qty_x = if is_bid { width * 0.05 } else { width * 0.95 };
-            frame.fill_text(Text {
-                content: qty_text,
-                position: Point::new(qty_x, y + ROW_HEIGHT / 2.0),
-                color: text_color,
-                size: TEXT_SIZE,
-                font: style::AZERET_MONO,
-                align_x: if is_bid { Alignment::Start.into() } else { Alignment::End.into() },
-                align_y: Alignment::Center.into(),
-                ..Default::default()
-            });
-        }
+        let qty_x = if is_bid { width * 0.05 } else { width * 0.95 };
+        frame.fill_text(Text {
+            content: qty_text,
+            position: Point::new(qty_x, y + ROW_HEIGHT / 2.0),
+            color: text_color,
+            size: TEXT_SIZE,
+            font: style::AZERET_MONO,
+            align_x: if is_bid { Alignment::Start.into() } else { Alignment::End.into() },
+            align_y: Alignment::Center.into(),
+            ..Default::default()
+        });
     }
 }
