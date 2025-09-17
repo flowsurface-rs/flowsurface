@@ -12,6 +12,7 @@ use iced::{
     widget::responsive,
     widget::{Space, column, row},
 };
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -226,5 +227,9 @@ impl Sidebar {
     pub fn sync_tickers_table_settings(&mut self) {
         let settings = &self.tickers_table.settings();
         self.state.tickers_table = Some(settings.clone());
+    }
+
+    pub fn tickers_info(&self) -> &FxHashMap<exchange::Ticker, Option<exchange::TickerInfo>> {
+        &self.tickers_table.tickers_info
     }
 }

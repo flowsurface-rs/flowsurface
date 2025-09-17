@@ -33,6 +33,7 @@ pub enum Icon {
     BinanceLogo,
     BybitLogo,
     HyperliquidLogo,
+    OkexLogo,
     Search,
     Sort,
     SortDesc,
@@ -68,6 +69,7 @@ impl From<Icon> for char {
             Icon::BybitLogo => '\u{E808}',
             Icon::BinanceLogo => '\u{E809}',
             Icon::HyperliquidLogo => '\u{E813}',
+            Icon::OkexLogo => '\u{E81F}',
             Icon::Cog => '\u{E810}',
             Icon::Sort => '\u{F0DC}',
             Icon::SortDesc => '\u{F0DD}',
@@ -104,6 +106,7 @@ pub fn exchange_icon(exchange: Exchange) -> Icon {
             Icon::BinanceLogo
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Icon::HyperliquidLogo,
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Icon::OkexLogo,
     }
 }
 

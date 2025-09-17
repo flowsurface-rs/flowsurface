@@ -25,8 +25,8 @@ use data::{
     layout::pane::{LinkGroup, Settings},
 };
 use exchange::{
-    Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, Timeframe,
-    adapter::{MarketKind, StreamKind, StreamTicksize},
+    Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,
+    adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -64,6 +64,8 @@ pub enum Modal {
 pub enum Action {
     Chart(chart::Action),
     Panel(panel::Action),
+    ResolveStreams(Vec<PersistStreamKind>),
+    ResolveContent,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +101,7 @@ pub struct State {
     pub content: Content,
     pub settings: Settings,
     pub notifications: Vec<Toast>,
-    pub streams: Vec<StreamKind>,
+    pub streams: ResolvedStream,
     pub status: Status,
     pub link_group: Option<LinkGroup>,
 }
@@ -111,28 +113,24 @@ impl State {
 
     pub fn from_config(
         content: Content,
-        streams: Vec<StreamKind>,
+        streams: Vec<PersistStreamKind>,
         settings: Settings,
         link_group: Option<LinkGroup>,
     ) -> Self {
         Self {
             content,
             settings,
-            streams,
+            streams: ResolvedStream::Waiting(streams),
             link_group,
             ..Default::default()
         }
     }
 
-    pub fn stream_pair(&self) -> Option<Ticker> {
-        self.streams
-            .iter()
-            .map(|stream| match stream {
-                StreamKind::DepthAndTrades { ticker, .. } | StreamKind::Kline { ticker, .. } => {
-                    *ticker
-                }
-            })
-            .next()
+    pub fn stream_pair(&self) -> Option<TickerInfo> {
+        self.streams.find_ready_map(|stream| match stream {
+            StreamKind::DepthAndTrades { ticker_info, .. }
+            | StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+        })
     }
 
     pub fn set_content_and_streams(
@@ -140,13 +138,11 @@ impl State {
         ticker_info: TickerInfo,
         content_str: &str,
     ) -> Result<Vec<StreamKind>, DashboardError> {
-        if (matches!(&self.content, Content::Heatmap(_, _)) && content_str != "heatmap")
-            || (matches!(&self.content, Content::Kline(_, _)) && content_str == "heatmap")
+        if (matches!(&self.content, Content::Heatmap { .. }) && content_str != "heatmap")
+            || (matches!(&self.content, Content::Kline { .. }) && content_str == "heatmap")
         {
             self.settings.selected_basis = None;
         }
-
-        self.settings.ticker_info = Some(ticker_info);
         let ticker = ticker_info.ticker;
 
         let result = match content_str {
@@ -161,13 +157,17 @@ impl State {
                 });
                 self.settings.tick_multiply = tick_multiplier;
                 let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
-                    tm.multiply_with_min_tick_size(ticker_info)
+                    tm.multiply_with_min_tick_size(ticker_info).into()
                 });
 
-                let content =
-                    Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
+                let content = Content::new_heatmap(
+                    &self.content,
+                    ticker_info,
+                    &self.settings,
+                    tick_size.into(),
+                );
                 let streams = vec![StreamKind::DepthAndTrades {
-                    ticker,
+                    ticker_info,
                     depth_aggr: if is_depth_client_aggr {
                         StreamTicksize::Client
                     } else {
@@ -180,7 +180,7 @@ impl State {
                 let tick_multiplier = Some(TickMultiplier(50));
                 self.settings.tick_multiply = tick_multiplier;
                 let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
-                    tm.multiply_with_min_tick_size(ticker_info)
+                    tm.multiply_with_min_tick_size(ticker_info).into()
                 });
 
                 let content = Content::new_kline(
@@ -188,25 +188,28 @@ impl State {
                     &self.content,
                     ticker_info,
                     &self.settings,
-                    tick_size,
+                    tick_size.into(),
                 );
 
                 let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
                 let streams = match basis {
                     Basis::Time(timeframe) => vec![
                         StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                                 StreamTicksize::Client
                             } else {
                                 StreamTicksize::ServerSide(TickMultiplier(50))
                             },
                         },
-                        StreamKind::Kline { ticker, timeframe },
+                        StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        },
                     ],
                     Basis::Tick(_) => {
                         vec![StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                                 StreamTicksize::Client
                             } else {
@@ -226,7 +229,7 @@ impl State {
                     &self.content,
                     ticker_info,
                     &self.settings,
-                    tick_size,
+                    tick_size.into(),
                 );
 
                 let basis = self
@@ -235,11 +238,14 @@ impl State {
                     .unwrap_or(Timeframe::M15.into());
                 let streams = match basis {
                     Basis::Time(timeframe) => {
-                        vec![StreamKind::Kline { ticker, timeframe }]
+                        vec![StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        }]
                     }
                     Basis::Tick(_) => {
                         vec![StreamKind::DepthAndTrades {
-                            ticker,
+                            ticker_info,
                             depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                                 StreamTicksize::Client
                             } else {
@@ -255,9 +261,10 @@ impl State {
                     .settings
                     .visual_config
                     .and_then(|cfg| cfg.time_and_sales());
-                let content = Content::TimeAndSales(TimeAndSales::new(config, Some(ticker_info)));
+                let content =
+                    Content::TimeAndSales(Some(TimeAndSales::new(config, Some(ticker_info))));
                 let streams = vec![StreamKind::DepthAndTrades {
-                    ticker,
+                    ticker_info,
                     depth_aggr: if ticker.exchange.is_depth_client_aggr() {
                         StreamTicksize::Client
                     } else {
@@ -272,10 +279,10 @@ impl State {
                     .visual_config
                     .and_then(|cfg| cfg.orderbook());
                 let tick_multiplier = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
-                let content = Content::Orderbook(Orderbook::new(config, Some(ticker_info), tick_multiplier));
+                let content = Content::Orderbook(Some(Orderbook::new(config, Some(ticker_info), tick_multiplier)));
                 let streams = vec![StreamKind::DepthAndTrades {
-                    ticker,
-                    depth_aggr: if ticker.exchange.is_depth_client_aggr() {
+                    ticker_info,
+                    depth_aggr: if ticker_info.ticker.exchange.is_depth_client_aggr() {
                         StreamTicksize::Client
                     } else {
                         StreamTicksize::ServerSide(tick_multiplier)
@@ -291,7 +298,7 @@ impl State {
         match result {
             Ok((content, streams)) => {
                 self.content = content;
-                self.streams.clone_from(&streams);
+                self.streams.rebuild_ready_from(&streams);
                 Ok(streams)
             }
             Err(e) => Err(e),
@@ -300,7 +307,10 @@ impl State {
 
     pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
         match &mut self.content {
-            Content::Kline(chart, _) => {
+            Content::Kline { chart, .. } => {
+                let Some(chart) = chart else {
+                    panic!("Kline chart wasn't initialized when inserting open interest");
+                };
                 chart.insert_open_interest(req_id, oi);
             }
             _ => {
@@ -315,14 +325,21 @@ impl State {
         timeframe: Timeframe,
         klines: &[Kline],
     ) {
+        let ticker_info = self.stream_pair();
+
         match &mut self.content {
-            Content::Kline(chart, indicators) => {
+            Content::Kline {
+                chart, indicators, ..
+            } => {
+                let Some(chart) = chart else {
+                    panic!("chart wasn't initialized when inserting klines");
+                };
+
                 if let Some(id) = req_id {
                     chart.insert_new_klines(id, klines);
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
-                    let ticker_info = self.settings.ticker_info;
 
                     *chart = KlineChart::new(
                         layout,
@@ -360,7 +377,8 @@ impl State {
             })]
         };
 
-        if let Some(ticker) = self.stream_pair() {
+        if let Some(info) = self.stream_pair() {
+            let ticker = info.ticker;
             let exchange_icon = icon_text(style::exchange_icon(ticker.exchange), 14);
 
             let ticker_str = {
@@ -427,142 +445,163 @@ impl State {
                 }
             }
             Content::TimeAndSales(panel) => {
-                let base = panel::view(panel, timezone)
-                    .map(move |message| Message::PanelInteraction(id, message));
+                if let Some(panel) = panel {
+                    let base = panel::view(panel, timezone)
+                        .map(move |message| Message::PanelInteraction(id, message));
 
-                let settings_modal = || modal::pane::settings::timesales_cfg_view(panel.config, id);
+                    let settings_modal =
+                        || modal::pane::settings::timesales_cfg_view(panel.config, id);
 
-                self.compose_panel_view(base, id, compact_controls, settings_modal)
+                    self.compose_panel_view(base, id, compact_controls, settings_modal)
+                } else {
+                    center(text("Loading...").size(16)).into()
+                }
             }
             Content::Orderbook(panel) => {
-                let selected_basis = self
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Basis::default_heatmap_time(self.settings.ticker_info));
-                let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
-                let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
+                if let Some(panel) = panel {
+                    let selected_basis = self
+                        .settings
+                        .selected_basis
+                        .unwrap_or(Basis::default_heatmap_time(self.stream_pair()));
+                    let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
+                    let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
 
-                let base_ticksize = tick_multiply.base(panel.tick_size().unwrap_or(0.01));
+                    let base_ticksize = tick_multiply.base(panel.tick_size().unwrap_or(0.01));
 
-                let exchange = self
-                    .settings
-                    .ticker_info
-                    .map(|ti| ti.exchange());
+                    let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
 
-                let modifiers = ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind, exchange);
-                
-                stream_info_element = stream_info_element.push(modifiers);
+                    let modifiers = ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind, exchange);
+                    
+                    stream_info_element = stream_info_element.push(modifiers);
 
-                let base = panel::view(panel, timezone)
-                    .map(move |message| Message::PanelInteraction(id, message));
+                    let base = panel::view(panel, timezone)
+                        .map(move |message| Message::PanelInteraction(id, message));
 
-                let settings_modal = || {
-                    let current_price = panel.current_price();
-                    let tick_size = panel.tick_size();
-                    modal::pane::settings::orderbook_cfg_view(panel.config, id, current_price, tick_size)
-                };
+                    let settings_modal = || {
+                        let current_price = panel.current_price();
+                        let tick_size = panel.tick_size();
+                        modal::pane::settings::orderbook_cfg_view(panel.config, id, current_price, tick_size)
+                    };
 
-                self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
-            }
-            Content::Heatmap(chart, indicators) => {
-                let selected_basis = self
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Basis::default_heatmap_time(self.settings.ticker_info));
-                let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
-                let kind = ModifierKind::Heatmap(selected_basis, tick_multiply);
-
-                let base_ticksize = tick_multiply.base(chart.tick_size());
-
-                let exchange = self
-                    .settings
-                    .ticker_info
-                    .as_ref()
-                    .map(|info| info.ticker.exchange);
-
-                let modifiers = row![
-                    basis_modifier(id, selected_basis, modifier, kind),
-                    ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind, exchange),
-                ]
-                .spacing(4);
-
-                stream_info_element = stream_info_element.push(modifiers);
-
-                let base = chart::view(chart, indicators, timezone)
-                    .map(move |message| Message::ChartInteraction(id, message));
-                let settings_modal = || {
-                    heatmap_cfg_view(
-                        chart.visual_config(),
-                        id,
-                        chart.study_configurator(),
-                        &chart.studies,
-                        selected_basis,
-                    )
-                };
-
-                self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
-            }
-            Content::Kline(chart, indicators) => {
-                let chart_kind = chart.kind();
-
-                match chart_kind {
-                    data::chart::KlineChartKind::Footprint { .. } => {
-                        let selected_basis =
-                            self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
-                        let tick_multiply =
-                            self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
-                        let kind = ModifierKind::Footprint(selected_basis, tick_multiply);
-
-                        let base_ticksize = tick_multiply.base(chart.tick_size());
-
-                        let exchange = self
-                            .settings
-                            .ticker_info
-                            .as_ref()
-                            .map(|info| info.ticker.exchange);
-
-                        let modifiers = row![
-                            basis_modifier(id, selected_basis, modifier, kind),
-                            ticksize_modifier(
-                                id,
-                                base_ticksize,
-                                tick_multiply,
-                                modifier,
-                                kind,
-                                exchange
-                            ),
-                        ]
-                        .spacing(4);
-
-                        stream_info_element = stream_info_element.push(modifiers);
-                    }
-                    data::chart::KlineChartKind::Candles => {
-                        let selected_basis = self
-                            .settings
-                            .selected_basis
-                            .unwrap_or(Timeframe::M15.into());
-                        let kind = ModifierKind::Candlestick(selected_basis);
-
-                        let modifiers =
-                            row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
-
-                        stream_info_element = stream_info_element.push(modifiers);
-                    }
+                    self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
+                } else {
+                    center(text("Loading...").size(16)).into()
                 }
+            }
+            Content::Heatmap {
+                chart, indicators, ..
+            } => {
+                if let Some(chart) = chart {
+                    let ticker_info = self.stream_pair();
+                    let exchange = ticker_info.as_ref().map(|info| info.ticker.exchange);
 
-                let base = chart::view(chart, indicators, timezone)
-                    .map(move |message| Message::ChartInteraction(id, message));
-                let settings_modal = || {
-                    kline_cfg_view(
-                        chart.study_configurator(),
-                        data::chart::kline::Config {},
-                        chart_kind,
-                        id,
-                        chart.basis(),
-                    )
-                };
+                    let selected_basis = self
+                        .settings
+                        .selected_basis
+                        .unwrap_or(Basis::default_heatmap_time(ticker_info));
+                    let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
+                    let kind = ModifierKind::Heatmap(selected_basis, tick_multiply);
 
-                self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
+                    let base_ticksize = tick_multiply.base(chart.tick_size());
+
+                    let modifiers = row![
+                        basis_modifier(id, selected_basis, modifier, kind),
+                        ticksize_modifier(
+                            id,
+                            base_ticksize,
+                            tick_multiply,
+                            modifier,
+                            kind,
+                            exchange
+                        ),
+                    ]
+                    .spacing(4);
+
+                    stream_info_element = stream_info_element.push(modifiers);
+
+                    let base = chart::view(chart, indicators, timezone)
+                        .map(move |message| Message::ChartInteraction(id, message));
+                    let settings_modal = || {
+                        heatmap_cfg_view(
+                            chart.visual_config(),
+                            id,
+                            chart.study_configurator(),
+                            &chart.studies,
+                            selected_basis,
+                        )
+                    };
+
+                    self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
+                } else {
+                    center(text("Loading...").size(16)).into()
+                }
+            }
+            Content::Kline {
+                chart,
+                indicators,
+                kind: chart_kind,
+                ..
+            } => {
+                if let Some(chart) = chart {
+                    match chart_kind {
+                        data::chart::KlineChartKind::Footprint { .. } => {
+                            let selected_basis =
+                                self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
+                            let tick_multiply =
+                                self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
+                            let kind = ModifierKind::Footprint(selected_basis, tick_multiply);
+
+                            let base_ticksize = tick_multiply.base(chart.tick_size());
+
+                            let exchange =
+                                self.stream_pair().as_ref().map(|info| info.ticker.exchange);
+
+                            let modifiers = row![
+                                basis_modifier(id, selected_basis, modifier, kind),
+                                ticksize_modifier(
+                                    id,
+                                    base_ticksize,
+                                    tick_multiply,
+                                    modifier,
+                                    kind,
+                                    exchange
+                                ),
+                            ]
+                            .spacing(4);
+
+                            stream_info_element = stream_info_element.push(modifiers);
+                        }
+                        data::chart::KlineChartKind::Candles => {
+                            let selected_basis = self
+                                .settings
+                                .selected_basis
+                                .unwrap_or(Timeframe::M15.into());
+                            let kind = ModifierKind::Candlestick(selected_basis);
+
+                            let modifiers =
+                                row![basis_modifier(id, selected_basis, modifier, kind),]
+                                    .spacing(4);
+
+                            stream_info_element = stream_info_element.push(modifiers);
+                        }
+                    }
+
+                    let base = chart::view(chart, indicators, timezone)
+                        .map(move |message| Message::ChartInteraction(id, message));
+                    let settings_modal = || {
+                        kline_cfg_view(
+                            chart.study_configurator(),
+                            data::chart::kline::Config {},
+                            chart_kind,
+                            id,
+                            chart.basis(),
+                        )
+                    };
+
+                    self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
+                } else {
+                    center(text("Loading...").size(16)).into()
+                }
             }
         };
 
@@ -658,7 +697,10 @@ impl State {
             ));
         }
 
-        if matches!(&self.content, Content::Heatmap(_, _) | Content::Kline(_, _)) {
+        if matches!(
+            &self.content,
+            Content::Heatmap { .. } | Content::Kline { .. }
+        ) {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::ChartOutline, 12),
                 Message::ShowModal(pane, Modal::Indicators),
@@ -748,7 +790,12 @@ impl State {
             ),
             Some(Modal::Indicators) => stack_modal(
                 base,
-                modal::indicators::view(pane, self, indicators),
+                modal::indicators::view(
+                    pane,
+                    self,
+                    indicators,
+                    self.stream_pair().map(|i| i.ticker.market_type()),
+                ),
                 Message::HideModal(pane),
                 stack_padding,
                 Alignment::End,
@@ -870,23 +917,37 @@ impl State {
     }
 
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
-        self.streams.iter().any(|existing| existing == stream)
+        self.streams.matches_stream(stream)
     }
 
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
         match &mut self.content {
-            Content::Heatmap(chart, _) => chart.invalidate(Some(now)).map(Action::Chart),
-            Content::Kline(chart, _) => chart.invalidate(Some(now)).map(Action::Chart),
-            Content::TimeAndSales(panel) => panel.invalidate(Some(now)).map(Action::Panel),
-            Content::Orderbook(panel) => panel.invalidate(Some(now)).map(Action::Panel),
+            Content::Heatmap { chart, .. } => chart
+                .as_mut()
+                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
+            Content::Kline { chart, .. } => chart
+                .as_mut()
+                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
+            Content::TimeAndSales(panel) => panel
+                .as_mut()
+                .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
+            Content::Orderbook(panel) => panel
+                .as_mut()
+                .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
             Content::Starter => None,
         }
     }
 
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
-            Content::Kline(_, _) => Some(1000),
-            Content::Heatmap(chart, _) => chart.basis_interval(),
+            Content::Kline { .. } => Some(1000),
+            Content::Heatmap { chart, .. } => {
+                if let Some(chart) = chart {
+                    chart.basis_interval()
+                } else {
+                    None
+                }
+            }
             Content::TimeAndSales(_) => Some(100),
             Content::Orderbook(_) => Some(100),
             Content::Starter => None,
@@ -900,6 +961,16 @@ impl State {
     pub fn tick(&mut self, now: Instant) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
+
+        if let Some(streams) = self.streams.waiting_to_resolve()
+            && !streams.is_empty()
+        {
+            return Some(Action::ResolveStreams(streams.to_vec()));
+        }
+
+        if !self.content.initialized() {
+            return Some(Action::ResolveContent);
+        }
 
         match (invalidate_interval, last_tick) {
             (Some(interval_ms), Some(previous_tick_time)) => {
@@ -933,7 +1004,7 @@ impl Default for State {
             modal: None,
             content: Content::Starter,
             settings: Settings::default(),
-            streams: vec![],
+            streams: ResolvedStream::Waiting(vec![]),
             notifications: vec![],
             status: Status::Ready,
             link_group: None,
@@ -945,10 +1016,20 @@ impl Default for State {
 pub enum Content {
     #[default]
     Starter,
-    Heatmap(HeatmapChart, Vec<HeatmapIndicator>),
-    Kline(KlineChart, Vec<KlineIndicator>),
-    TimeAndSales(TimeAndSales),
-    Orderbook(Orderbook),
+    Heatmap {
+        chart: Option<HeatmapChart>,
+        indicators: Vec<HeatmapIndicator>,
+        layout: data::chart::ViewConfig,
+        studies: Vec<data::chart::heatmap::HeatmapStudy>,
+    },
+    Kline {
+        chart: Option<KlineChart>,
+        indicators: Vec<KlineIndicator>,
+        layout: data::chart::ViewConfig,
+        kind: data::chart::KlineChartKind,
+    },
+    TimeAndSales(Option<TimeAndSales>),
+    Orderbook(Option<Orderbook>),
 }
 
 impl Content {
@@ -958,37 +1039,55 @@ impl Content {
         settings: &Settings,
         tick_size: f32,
     ) -> Self {
-        let (enabled_indicators, layout, prev_studies) =
-            if let Content::Heatmap(chart, inds) = current_content {
-                (inds.clone(), chart.chart_layout(), chart.studies.clone())
-            } else {
-                (
-                    vec![HeatmapIndicator::Volume],
-                    ViewConfig {
-                        splits: vec![],
-                        autoscale: Some(data::chart::Autoscale::CenterLatest),
-                    },
-                    vec![],
-                )
-            };
+        let (enabled_indicators, layout, prev_studies) = if let Content::Heatmap {
+            chart,
+            indicators,
+            studies,
+            layout,
+        } = current_content
+        {
+            (
+                indicators.clone(),
+                chart
+                    .as_ref()
+                    .map(|c| c.chart_layout())
+                    .unwrap_or(layout.clone()),
+                chart
+                    .as_ref()
+                    .map_or(studies.clone(), |c| c.studies.clone()),
+            )
+        } else {
+            (
+                vec![HeatmapIndicator::Volume],
+                ViewConfig {
+                    splits: vec![],
+                    autoscale: Some(data::chart::Autoscale::CenterLatest),
+                },
+                vec![],
+            )
+        };
 
         let basis = settings
             .selected_basis
             .unwrap_or_else(|| Basis::default_heatmap_time(Some(ticker_info)));
         let config = settings.visual_config.and_then(|cfg| cfg.heatmap());
 
-        Content::Heatmap(
-            HeatmapChart::new(
-                layout,
-                basis,
-                tick_size,
-                &enabled_indicators,
-                Some(ticker_info),
-                config,
-                prev_studies,
-            ),
-            enabled_indicators,
-        )
+        let chart = HeatmapChart::new(
+            layout.clone(),
+            basis,
+            tick_size,
+            &enabled_indicators,
+            Some(ticker_info),
+            config,
+            prev_studies.clone(),
+        );
+
+        Content::Heatmap {
+            chart: Some(chart),
+            indicators: enabled_indicators,
+            layout,
+            studies: prev_studies,
+        }
     }
 
     fn new_kline(
@@ -998,16 +1097,21 @@ impl Content {
         settings: &Settings,
         tick_size: f32,
     ) -> Self {
-        let (prev_indis, prev_layout, prev_kind_opt) =
-            if let Content::Kline(chart, inds) = current_content {
-                (
-                    Some(inds.clone()),
-                    Some(chart.chart_layout()),
-                    Some(chart.kind().clone()),
-                )
-            } else {
-                (None, None, None)
-            };
+        let (prev_indis, prev_layout, prev_kind_opt) = if let Content::Kline {
+            chart,
+            indicators,
+            kind,
+            layout,
+        } = current_content
+        {
+            (
+                Some(indicators.clone()),
+                Some(chart.as_ref().map_or(layout.clone(), |c| c.chart_layout())),
+                Some(chart.as_ref().map_or(kind.clone(), |c| c.kind().clone())),
+            )
+        } else {
+            (None, None, None)
+        };
 
         let (default_tf, determined_chart_kind) = match content_str {
             "footprint" => (
@@ -1071,41 +1175,54 @@ impl Content {
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
             });
 
-        Content::Kline(
-            KlineChart::new(
-                layout,
-                basis,
-                tick_size,
-                &[],
-                vec![],
-                &enabled_indicators,
-                Some(ticker_info),
-                &determined_chart_kind,
-            ),
-            enabled_indicators,
-        )
+        let chart = KlineChart::new(
+            layout.clone(),
+            basis,
+            tick_size,
+            &[],
+            vec![],
+            &enabled_indicators,
+            Some(ticker_info),
+            &determined_chart_kind,
+        );
+
+        Content::Kline {
+            chart: Some(chart),
+            indicators: enabled_indicators,
+            layout,
+            kind: determined_chart_kind,
+        }
     }
 
     pub fn last_tick(&self) -> Option<Instant> {
         match self {
-            Content::Heatmap(chart, _) => Some(chart.last_update()),
-            Content::Kline(chart, _) => Some(chart.last_update()),
-            Content::TimeAndSales(panel) => Some(panel.last_update()),
-            Content::Orderbook(panel) => Some(panel.last_update()),
+            Content::Heatmap { chart, .. } => Some(chart.as_ref()?.last_update()),
+            Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
+            Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
+            Content::Orderbook(panel) => Some(panel.as_ref()?.last_update()),
             Content::Starter => None,
         }
     }
 
     pub fn chart_kind(&self) -> Option<data::chart::KlineChartKind> {
         match self {
-            Content::Kline(chart, _) => Some(chart.kind().clone()),
+            Content::Kline { chart, .. } => Some(chart.as_ref()?.kind().clone()),
             _ => None,
         }
     }
 
     pub fn toggle_indicator(&mut self, indicator: UiIndicator) {
         match (self, indicator) {
-            (Content::Heatmap(chart, indicators), UiIndicator::Heatmap(ind)) => {
+            (
+                Content::Heatmap {
+                    chart, indicators, ..
+                },
+                UiIndicator::Heatmap(ind),
+            ) => {
+                let Some(chart) = chart else {
+                    return;
+                };
+
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
                 } else {
@@ -1113,7 +1230,16 @@ impl Content {
                 }
                 chart.toggle_indicator(ind);
             }
-            (Content::Kline(chart, indicators), UiIndicator::Kline(ind)) => {
+            (
+                Content::Kline {
+                    chart, indicators, ..
+                },
+                UiIndicator::Kline(ind),
+            ) => {
+                let Some(chart) = chart else {
+                    return;
+                };
+
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
                 } else {
@@ -1127,8 +1253,8 @@ impl Content {
 
     pub fn reorder_indicators(&mut self, event: &column_drag::DragEvent) {
         match self {
-            Content::Heatmap(_, indicator) => column_drag::reorder_vec(indicator, event),
-            Content::Kline(_, indicator) => column_drag::reorder_vec(indicator, event),
+            Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
+            Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
             Content::TimeAndSales(_) | Content::Orderbook(_) | Content::Starter => {
                 panic!("indicator reorder on {} pane", self)
             }
@@ -1137,13 +1263,13 @@ impl Content {
 
     pub fn change_visual_config(&mut self, config: VisualConfig) {
         match (self, config) {
-            (Content::Heatmap(chart, _), VisualConfig::Heatmap(cfg)) => {
-                chart.set_visual_config(cfg);
+            (Content::Heatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
+                c.set_visual_config(cfg);
             }
-            (Content::TimeAndSales(panel), VisualConfig::TimeAndSales(cfg)) => {
+            (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
                 panel.config = cfg;
             }
-            (Content::Orderbook(panel), VisualConfig::Orderbook(cfg)) => {
+            (Content::Orderbook(Some(panel)), VisualConfig::Orderbook(cfg)) => {
                 panel.config = cfg;
             }
             _ => {}
@@ -1152,19 +1278,45 @@ impl Content {
 
     pub fn studies(&self) -> Option<data::chart::Study> {
         match &self {
-            Content::Heatmap(chart, _) => Some(data::chart::Study::Heatmap(chart.studies.clone())),
-            Content::Kline(chart, _) => chart.studies().map(data::chart::Study::Footprint),
+            Content::Heatmap { studies, .. } => Some(data::chart::Study::Heatmap(studies.clone())),
+            Content::Kline { kind, .. } => {
+                if let data::chart::KlineChartKind::Footprint { studies, .. } = kind {
+                    Some(data::chart::Study::Footprint(studies.clone()))
+                } else {
+                    None
+                }
+            }
             Content::TimeAndSales(_) | Content::Orderbook(_) | Content::Starter => None,
         }
     }
 
     pub fn update_studies(&mut self, studies: data::chart::Study) {
         match (self, studies) {
-            (Content::Heatmap(chart, _), data::chart::Study::Heatmap(studies)) => {
-                chart.studies = studies;
+            (
+                Content::Heatmap {
+                    chart,
+                    studies: previous,
+                    ..
+                },
+                data::chart::Study::Heatmap(studies),
+            ) => {
+                chart
+                    .as_mut()
+                    .expect("heatmap chart not initialized")
+                    .studies = studies.clone();
+                *previous = studies;
             }
-            (Content::Kline(chart, _), data::chart::Study::Footprint(studies)) => {
-                chart.set_studies(studies);
+            (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
+                chart
+                    .as_mut()
+                    .expect("kline chart not initialized")
+                    .set_studies(studies.clone());
+                if let data::chart::KlineChartKind::Footprint {
+                    studies: k_studies, ..
+                } = kind
+                {
+                    *k_studies = studies;
+                }
             }
             _ => {}
         }
@@ -1173,13 +1325,23 @@ impl Content {
     pub fn identifier_str(&self) -> String {
         match self {
             Content::Starter => "starter".to_string(),
-            Content::Heatmap(_, _) => "heatmap".to_string(),
-            Content::Kline(chart, _) => match chart.kind() {
+            Content::Heatmap { .. } => "heatmap".to_string(),
+            Content::Kline { kind, .. } => match kind {
                 data::chart::KlineChartKind::Footprint { .. } => "footprint".to_string(),
                 data::chart::KlineChartKind::Candles => "candlestick".to_string(),
             },
             Content::TimeAndSales(_) => "time&sales".to_string(),
             Content::Orderbook(_) => "orderbook".to_string(),
+        }
+    }
+
+    fn initialized(&self) -> bool {
+        match self {
+            Content::Heatmap { chart, .. } => chart.is_some(),
+            Content::Kline { chart, .. } => chart.is_some(),
+            Content::TimeAndSales(panel) => panel.is_some(),
+            Content::Orderbook(panel) => panel.is_some(),
+            Content::Starter => true,
         }
     }
 }
@@ -1188,8 +1350,8 @@ impl std::fmt::Display for Content {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Content::Starter => write!(f, "Starter pane"),
-            Content::Heatmap(_, _) => write!(f, "Heatmap chart"),
-            Content::Kline(chart, _) => match chart.kind() {
+            Content::Heatmap { .. } => write!(f, "Heatmap chart"),
+            Content::Kline { kind, .. } => match kind {
                 data::chart::KlineChartKind::Footprint { .. } => {
                     write!(f, "Footprint chart")
                 }
@@ -1208,8 +1370,8 @@ impl PartialEq for Content {
         matches!(
             (self, other),
             (Content::Starter, Content::Starter)
-                | (Content::Heatmap(_, _), Content::Heatmap(_, _))
-                | (Content::Kline(_, _), Content::Kline(_, _))
+                | (Content::Heatmap { .. }, Content::Heatmap { .. })
+                | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))
                 | (Content::Orderbook(_), Content::Orderbook(_))
         )

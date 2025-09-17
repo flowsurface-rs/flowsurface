@@ -301,9 +301,11 @@ async fn try_connect(
     }
 }
 
-pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
+pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
+
+        let ticker = ticker_info.ticker;
 
         let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
         let exchange = exchange_from_market_type(market_type);
@@ -311,7 +313,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
         let mut trades_buffer: Vec<Trade> = Vec::new();
         let mut orderbook = LocalDepthCache::default();
 
-        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_currency =
+            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
 
         loop {
             match &mut state {
@@ -392,7 +395,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                             let _ = output
                                                 .send(Event::DepthReceived(
                                                     StreamKind::DepthAndTrades {
-                                                        ticker,
+                                                        ticker_info,
                                                         depth_aggr: StreamTicksize::Client,
                                                     },
                                                     time,
@@ -436,20 +439,28 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 }
 
 pub fn connect_kline_stream(
-    streams: Vec<(Ticker, Timeframe)>,
+    streams: Vec<(TickerInfo, Timeframe)>,
     market_type: MarketKind,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
         let exchange = exchange_from_market_type(market_type);
+        let size_in_quote_currency =
+            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
+
+        let ticker_info_map = streams
+            .iter()
+            .map(|(ticker_info, _)| (ticker_info.ticker, *ticker_info))
+            .collect::<HashMap<Ticker, TickerInfo>>();
 
         loop {
             match &mut state {
                 State::Disconnected => {
                     let stream_str = streams
                         .iter()
-                        .map(|(ticker, timeframe)| {
+                        .map(|(ticker_info, timeframe)| {
+                            let ticker = ticker_info.ticker;
                             let timeframe_str = {
                                 if Timeframe::D1 == *timeframe {
                                     "D".to_string()
@@ -477,7 +488,7 @@ pub fn connect_kline_stream(
                                 feed_de(&msg.payload[..], None, market_type)
                             {
                                 for de_kline in &de_kline_vec {
-                                    let volume = if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                                    let volume = if size_in_quote_currency {
                                         (de_kline.volume * de_kline.close).round()
                                     } else {
                                         de_kline.volume
@@ -494,12 +505,24 @@ pub fn connect_kline_stream(
 
                                     if let Some(timeframe) = string_to_timeframe(&de_kline.interval)
                                     {
-                                        let _ = output
-                                            .send(Event::KlineReceived(
-                                                StreamKind::Kline { ticker, timeframe },
-                                                kline,
-                                            ))
-                                            .await;
+                                        if let Some(info) = ticker_info_map.get(&ticker) {
+                                            let ticker_info = *info;
+
+                                            let _ = output
+                                                .send(Event::KlineReceived(
+                                                    StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe,
+                                                    },
+                                                    kline,
+                                                ))
+                                                .await;
+                                        } else {
+                                            log::error!(
+                                                "Ticker info not found for ticker: {}",
+                                                ticker
+                                            );
+                                        }
                                     } else {
                                         log::error!(
                                             "Failed to find timeframe: {}, {:?}",
@@ -668,10 +691,12 @@ fn parse_kline_field<T: std::str::FromStr>(field: Option<&str>) -> Result<T, Ada
 }
 
 pub async fn fetch_klines(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
+    let ticker = ticker_info.ticker;
+
     let (symbol_str, market_type) = &ticker.to_full_symbol_and_type();
     let timeframe_str = {
         if Timeframe::D1 == timeframe {
@@ -708,7 +733,8 @@ pub async fn fetch_klines(
     let value: ApiResponse =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-    let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+    let size_in_quote_currency =
+        SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && *market_type != MarketKind::InversePerps;
 
     let klines: Result<Vec<Kline>, AdapterError> = value
         .result
@@ -818,15 +844,9 @@ pub async fn fetch_ticksize(
             .map_err(|_| AdapterError::ParseError("Failed to parse tick size".to_string()))?;
 
         let ticker = Ticker::new(symbol, exchange);
+        let info = TickerInfo::new(ticker, min_ticksize, min_qty, None);
 
-        ticker_info_map.insert(
-            ticker,
-            Some(TickerInfo {
-                ticker,
-                min_ticksize,
-                min_qty,
-            }),
-        );
+        ticker_info_map.insert(ticker, Some(info));
     }
 
     Ok(ticker_info_map)

@@ -131,7 +131,7 @@ impl Orderbook {
     }
 
     pub fn tick_size(&self) -> Option<f32> {
-        self.ticker_info.map(|info| info.min_ticksize)
+        self.ticker_info.map(|info| info.min_ticksize.into())
     }
 
     pub fn set_tick_multiplier(&mut self, tick_multiplier: TickMultiplier) {

@@ -179,7 +179,10 @@ impl HeatmapChart {
             indicators,
             pause_buffer: vec![],
             heatmap: HistoricalDepth::new(
-                ticker_info.expect("basis set without ticker info").min_qty,
+                ticker_info
+                    .expect("basis set without ticker info")
+                    .min_qty
+                    .into(),
                 tick_size,
                 basis,
             ),
@@ -299,7 +302,8 @@ impl HeatmapChart {
             self.chart
                 .ticker_info
                 .expect("basis set without ticker info")
-                .min_qty,
+                .min_qty
+                .into(),
             self.chart.tick_size,
             basis,
         );
@@ -367,7 +371,8 @@ impl HeatmapChart {
             self.chart
                 .ticker_info
                 .expect("basis set without ticker info")
-                .min_qty,
+                .min_qty
+                .into(),
             new_tick_size,
             basis,
         );

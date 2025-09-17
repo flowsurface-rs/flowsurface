@@ -87,8 +87,8 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         tree::State::new(State::default())
     }
 
-    fn diff(&mut self, tree: &mut Tree) {
-        tree.diff_children(&mut self.panels);
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&self.panels);
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
