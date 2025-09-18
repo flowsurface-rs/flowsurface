@@ -149,22 +149,18 @@ impl State {
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
 
-                let tick_multiplier = Some(if is_depth_client_aggr {
+                let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
+                    tm
+                } else if is_depth_client_aggr {
                     TickMultiplier(5)
                 } else {
                     TickMultiplier(10)
-                });
-                self.settings.tick_multiply = tick_multiplier;
-                let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
-                    tm.multiply_with_min_tick_size(ticker_info).into()
-                });
+                };
+                self.settings.tick_multiply = Some(tick_multiplier);
+                let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
-                let content = Content::new_heatmap(
-                    &self.content,
-                    ticker_info,
-                    &self.settings,
-                    tick_size.into(),
-                );
+                let content =
+                    Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker_info,
                     depth_aggr: if is_depth_client_aggr {
@@ -176,18 +172,20 @@ impl State {
                 Ok((content, streams))
             }
             "footprint" => {
-                let tick_multiplier = Some(TickMultiplier(50));
-                self.settings.tick_multiply = tick_multiplier;
-                let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
-                    tm.multiply_with_min_tick_size(ticker_info).into()
-                });
+                let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
+                    tm
+                } else {
+                    TickMultiplier(50)
+                };
+                self.settings.tick_multiply = Some(tick_multiplier);
+                let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
                 let content = Content::new_kline(
                     content_str,
                     &self.content,
                     ticker_info,
                     &self.settings,
-                    tick_size.into(),
+                    tick_size,
                 );
 
                 let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
