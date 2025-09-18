@@ -7,11 +7,11 @@ use crate::{
             stack_modal,
         },
     },
+    screen::dashboard::panel::orderbook::Orderbook,
     screen::{
         DashboardError,
         dashboard::panel::{self, timeandsales::TimeAndSales},
     },
-    screen::dashboard::panel::orderbook::Orderbook,
     style::{self, Icon, icon_text},
     widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
     window::{self, Window},
@@ -274,18 +274,32 @@ impl State {
                 Ok((content, streams))
             }
             "orderbook" => {
-                let config = self
-                    .settings
-                    .visual_config
-                    .and_then(|cfg| cfg.orderbook());
-                let tick_multiplier = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
-                let content = Content::Orderbook(Some(Orderbook::new(config, Some(ticker_info), tick_multiplier)));
+                let config = self.settings.visual_config.and_then(|cfg| cfg.orderbook());
+                let exchange = ticker.exchange;
+                let is_depth_client_aggr = exchange.is_depth_client_aggr();
+
+                let tick_multiplier = Some(if is_depth_client_aggr {
+                    TickMultiplier(5)
+                } else {
+                    TickMultiplier(10)
+                });
+
+                let tick_size = tick_multiplier.map_or(ticker_info.min_ticksize, |tm| {
+                    tm.multiply_with_min_tick_size(ticker_info).into()
+                });
+
+                let content = Content::Orderbook(Some(Orderbook::new(
+                    config,
+                    Some(ticker_info),
+                    tick_size.into(),
+                )));
+
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker_info,
                     depth_aggr: if ticker_info.ticker.exchange.is_depth_client_aggr() {
                         StreamTicksize::Client
                     } else {
-                        StreamTicksize::ServerSide(tick_multiplier)
+                        StreamTicksize::ServerSide(TickMultiplier(10))
                     },
                 }];
                 Ok((content, streams))
@@ -438,7 +452,7 @@ impl State {
                         .style(style::chart_modal),
                         Message::HideModal(id),
                         padding::left(12),
-                Alignment::Start,
+                        Alignment::Start,
                     )
                 } else {
                     base
@@ -466,12 +480,19 @@ impl State {
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
                     let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
 
-                    let base_ticksize = tick_multiply.base(panel.tick_size().unwrap_or(0.01));
+                    let base_ticksize = tick_multiply.base(panel.tick_size);
 
                     let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
 
-                    let modifiers = ticksize_modifier(id, base_ticksize, tick_multiply, modifier, kind, exchange);
-                    
+                    let modifiers = ticksize_modifier(
+                        id,
+                        base_ticksize,
+                        tick_multiply,
+                        modifier,
+                        kind,
+                        exchange,
+                    );
+
                     stream_info_element = stream_info_element.push(modifiers);
 
                     let base = panel::view(panel, timezone)
@@ -479,8 +500,13 @@ impl State {
 
                     let settings_modal = || {
                         let current_price = panel.current_price();
-                        let tick_size = panel.tick_size();
-                        modal::pane::settings::orderbook_cfg_view(panel.config, id, current_price, tick_size)
+                        let tick_size = panel.tick_size;
+                        modal::pane::settings::orderbook_cfg_view(
+                            panel.config,
+                            id,
+                            current_price,
+                            Some(tick_size),
+                        )
                     };
 
                     self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)

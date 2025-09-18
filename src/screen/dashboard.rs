@@ -634,7 +634,10 @@ impl Dashboard {
                                         }
                                         pane::Content::Orderbook(ref mut panel) => {
                                             if let Some(panel) = panel {
-                                                panel.set_tick_multiplier(new_multiplier);
+                                                panel.set_tick_size(
+                                                    new_multiplier
+                                                        .multiply_with_min_tick_size(ticker_info),
+                                                );
                                             }
                                         }
                                         _ => {}
