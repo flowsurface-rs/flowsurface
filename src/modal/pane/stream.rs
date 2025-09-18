@@ -210,7 +210,9 @@ impl Modifier {
                 self.kind = ModifierKind::Footprint(basis, ticksize);
             }
             ModifierKind::Heatmap(basis, _) => self.kind = ModifierKind::Heatmap(basis, ticksize),
-            ModifierKind::Orderbook(basis, _) => self.kind = ModifierKind::Orderbook(basis, ticksize),
+            ModifierKind::Orderbook(basis, _) => {
+                self.kind = ModifierKind::Orderbook(basis, ticksize)
+            }
             _ => {}
         }
     }
@@ -323,9 +325,9 @@ impl Modifier {
 
         let (selected_basis, selected_ticksize) = match kind {
             ModifierKind::Candlestick(basis) => (Some(basis), None),
-            ModifierKind::Footprint(basis, ticksize) | ModifierKind::Heatmap(basis, ticksize) | ModifierKind::Orderbook(basis, ticksize) => {
-                (Some(basis), Some(ticksize))
-            }
+            ModifierKind::Footprint(basis, ticksize)
+            | ModifierKind::Heatmap(basis, ticksize)
+            | ModifierKind::Orderbook(basis, ticksize) => (Some(basis), Some(ticksize)),
         };
 
         let create_button = |content: iced::widget::text::Text<'a>,
@@ -542,7 +544,10 @@ impl Modifier {
                         .push(horizontal_rule(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
-                        || matches!(kind, ModifierKind::Footprint(_, _) | ModifierKind::Orderbook(_, _));
+                        || matches!(
+                            kind,
+                            ModifierKind::Footprint(_, _) | ModifierKind::Orderbook(_, _)
+                        );
 
                     let allowed_tm = if allows_custom_tsizes {
                         exchange::TickMultiplier::ALL.to_vec()

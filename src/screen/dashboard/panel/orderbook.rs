@@ -156,23 +156,17 @@ impl canvas::Program<Message> for Orderbook {
         let _cursor_position = cursor.position_in(bounds)?;
 
         match event {
-            Event::Mouse(mouse_event) => match mouse_event {
-                mouse::Event::ButtonPressed(button) => match button {
-                    mouse::Button::Middle => {
-                        Some(canvas::Action::publish(Message::ResetScroll).and_capture())
-                    }
-                    _ => None,
-                },
-                mouse::Event::WheelScrolled { delta } => {
-                    let scroll_amount = match delta {
-                        mouse::ScrollDelta::Lines { y, .. } => *y * ROW_HEIGHT,
-                        mouse::ScrollDelta::Pixels { y, .. } => *y,
-                    };
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+                Some(canvas::Action::publish(Message::ResetScroll).and_capture())
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                let scroll_amount = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => *y * ROW_HEIGHT,
+                    mouse::ScrollDelta::Pixels { y, .. } => *y,
+                };
 
-                    Some(canvas::Action::publish(Message::Scrolled(scroll_amount)).and_capture())
-                }
-                _ => None,
-            },
+                Some(canvas::Action::publish(Message::Scrolled(scroll_amount)).and_capture())
+            }
             _ => None,
         }
     }
@@ -227,27 +221,26 @@ impl canvas::Program<Message> for Orderbook {
                 );
             }
 
-            if self.config.show_spread {
-                if let Some(info) = self.ticker_info
-                    && let Some(spread) = self.calculate_spread()
-                {
-                    let min_ticksize: f32 = info.min_ticksize.into();
-                    let spread = (spread / min_ticksize).round() * min_ticksize;
-                    let content = format!("Spread: {spread}",);
+            if self.config.show_spread
+                && let Some(info) = self.ticker_info
+                && let Some(spread) = self.calculate_spread()
+            {
+                let min_ticksize: f32 = info.min_ticksize.into();
+                let spread = (spread / min_ticksize).round() * min_ticksize;
+                let content = format!("Spread: {spread}",);
 
-                    let spread_y = mid_point - spread_height / 2.0;
+                let spread_y = mid_point - spread_height / 2.0;
 
-                    frame.fill_text(Text {
-                        content,
-                        position: Point::new(bounds.width / 2.0, spread_y + spread_height / 2.0),
-                        color: text_color,
-                        size: TEXT_SIZE,
-                        font: style::AZERET_MONO,
-                        align_x: Alignment::Center.into(),
-                        align_y: Alignment::Center.into(),
-                        ..Default::default()
-                    });
-                }
+                frame.fill_text(Text {
+                    content,
+                    position: Point::new(bounds.width / 2.0, spread_y + spread_height / 2.0),
+                    color: text_color,
+                    size: TEXT_SIZE,
+                    font: style::AZERET_MONO,
+                    align_x: Alignment::Center.into(),
+                    align_y: Alignment::Center.into(),
+                    ..Default::default()
+                });
             }
 
             // Draw bids (bottom half)
@@ -329,7 +322,7 @@ impl Orderbook {
         frame.fill_text(Text {
             content: price_text,
             position: Point::new(price_x, y + ROW_HEIGHT / 2.0),
-            color: color,
+            color,
             size: TEXT_SIZE,
             font: style::AZERET_MONO,
             align_x: if is_bid {

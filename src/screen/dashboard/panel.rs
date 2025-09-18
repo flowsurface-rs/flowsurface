@@ -1,5 +1,5 @@
-pub mod timeandsales;
 pub mod orderbook;
+pub mod timeandsales;
 
 use iced::{
     Element, padding,

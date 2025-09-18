@@ -1,8 +1,8 @@
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
-pub mod timeandsales;
 pub mod orderbook;
+pub mod timeandsales;
 
 use exchange::Timeframe;
 use serde::{Deserialize, Serialize};
