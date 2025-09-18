@@ -281,13 +281,16 @@ impl Dashboard {
                     }
                 }
                 pane::Message::PanelInteraction(pane, msg) => {
-                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                        && let pane::Content::TimeAndSales(ref mut panel) = state.content
-                    {
-                        let Some(panel) = panel else {
-                            panic!("panel wasn't initialized when handling panel interaction");
-                        };
-                        panel::update(panel, msg);
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        match state.content {
+                            pane::Content::Orderbook(Some(ref mut panel)) => {
+                                panel::update(panel, msg);
+                            }
+                            pane::Content::TimeAndSales(Some(ref mut panel)) => {
+                                panel::update(panel, msg);
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 pane::Message::VisualConfigChanged(pane, cfg, to_sync) => {

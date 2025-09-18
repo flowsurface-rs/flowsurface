@@ -15,17 +15,17 @@ const SPREAD_ROW_HEIGHT: f32 = 20.0;
 
 impl super::Panel for Orderbook {
     fn scroll(&mut self, delta: f32) {
-        // Orderbooks typically don't need scrolling as they show top levels
-        // But we could implement it to show more levels if needed
-        let _ = delta;
+        self.scroll_px += delta;
+        Orderbook::invalidate(self, Some(Instant::now()));
     }
 
     fn reset_scroll(&mut self) {
-        // Nothing to reset for orderbook
+        self.scroll_px = 0.0;
+        Orderbook::invalidate(self, Some(Instant::now()));
     }
 
     fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
-        self.invalidate(now)
+        Orderbook::invalidate(self, now)
     }
 }
 
@@ -35,10 +35,9 @@ pub struct Orderbook {
     pub config: Config,
     cache: canvas::Cache,
     last_tick: Instant,
-    max_bid_qty: f32,
-    max_ask_qty: f32,
     pub tick_size: f32,
     decimals: usize,
+    scroll_px: f32,
 }
 
 impl Orderbook {
@@ -49,26 +48,15 @@ impl Orderbook {
             ticker_info,
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
-            max_bid_qty: 0.0,
-            max_ask_qty: 0.0,
             tick_size,
             decimals: data::util::count_decimals(tick_size),
+            scroll_px: 0.0,
         }
     }
 
     pub fn update_depth(&mut self, depth: &Depth) {
         self.depth = depth.clone();
-        self.calculate_max_quantities();
         self.invalidate(Some(Instant::now()));
-    }
-
-    fn calculate_max_quantities(&mut self) {
-        let grouped_bids = self.group_price_levels(&self.depth.bids, true);
-        let grouped_asks = self.group_price_levels(&self.depth.asks, false);
-
-        self.max_bid_qty = grouped_bids.iter().map(|(_, qty)| *qty).fold(0.0, f32::max);
-
-        self.max_ask_qty = grouped_asks.iter().map(|(_, qty)| *qty).fold(0.0, f32::max);
     }
 
     fn group_price_levels(
@@ -122,7 +110,6 @@ impl Orderbook {
     pub fn set_tick_size(&mut self, tick_size: f32) {
         self.decimals = data::util::count_decimals(tick_size);
         self.tick_size = tick_size;
-        self.calculate_max_quantities();
         self.invalidate(Some(Instant::now()));
     }
 
@@ -156,13 +143,13 @@ impl canvas::Program<Message> for Orderbook {
         let _cursor_position = cursor.position_in(bounds)?;
 
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
-                Some(canvas::Action::publish(Message::ResetScroll).and_capture())
-            }
+            Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Middle | mouse::Button::Left | mouse::Button::Right,
+            )) => Some(canvas::Action::publish(Message::ResetScroll).and_capture()),
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let scroll_amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y * ROW_HEIGHT,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y,
+                    mouse::ScrollDelta::Lines { y, .. } => -(*y) * ROW_HEIGHT,
+                    mouse::ScrollDelta::Pixels { y, .. } => -*y,
                 };
 
                 Some(canvas::Action::publish(Message::Scrolled(scroll_amount)).and_capture())
@@ -179,91 +166,129 @@ impl canvas::Program<Message> for Orderbook {
         bounds: Rectangle,
         _cursor: iced_core::mouse::Cursor,
     ) -> Vec<iced::widget::canvas::Geometry<Renderer>> {
-        let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
-            let palette = theme.extended_palette();
-            let text_color = palette.background.base.text;
-            let bid_color = palette.success.base.color;
-            let ask_color = palette.danger.base.color;
+        let palette = theme.extended_palette();
 
-            let mid_point = bounds.height / 2.0;
-            let spread_height = if self.config.show_spread {
-                SPREAD_ROW_HEIGHT
+        let text_color = palette.background.base.text;
+        let bid_color = palette.success.base.color;
+        let ask_color = palette.danger.base.color;
+
+        let asks = self.group_price_levels(&self.depth.asks, false);
+        let bids = self.group_price_levels(&self.depth.bids, true);
+
+        let mut rows: Vec<Row> = Vec::with_capacity(
+            asks.len() + bids.len() + if self.config.show_spread { 1 } else { 0 },
+        );
+
+        for (price, qty) in asks.iter().rev() {
+            rows.push(Row::Ask {
+                price: *price,
+                qty: *qty,
+            });
+        }
+        if self.config.show_spread {
+            rows.push(Row::Spread);
+        }
+        for (price, qty) in bids.iter() {
+            rows.push(Row::Bid {
+                price: *price,
+                qty: *qty,
+            });
+        }
+
+        let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
+            let pre_spread_height = (asks.len() as f32) * ROW_HEIGHT;
+            let center_target = if self.config.show_spread {
+                pre_spread_height + SPREAD_ROW_HEIGHT / 2.0
             } else {
-                0.0
+                pre_spread_height
             };
 
-            // Calculate how many levels can fit in each section
-            let ask_section_height = (mid_point - spread_height / 2.0).max(0.0);
-            let bid_section_height = bounds.height - mid_point - spread_height / 2.0;
+            let base_scroll = center_target - bounds.height / 2.0;
 
-            let max_ask_levels = ((ask_section_height / ROW_HEIGHT).floor() as usize).max(1);
-            let max_bid_levels = ((bid_section_height / ROW_HEIGHT).floor() as usize).max(1);
+            let mut y_cursor = -(base_scroll + self.scroll_px);
+            let mut vis_max_ask_qty: f32 = 0.0;
+            let mut vis_max_bid_qty: f32 = 0.0;
+            let mut visible_idx: Vec<(usize, f32)> = vec![];
 
-            // Draw asks (top half, lowest ask closest to spread line)
-            let asks = self.group_price_levels(&self.depth.asks, false);
+            for (idx, row) in rows.iter().enumerate() {
+                let h = match row {
+                    Row::Spread => SPREAD_ROW_HEIGHT,
+                    _ => ROW_HEIGHT,
+                };
 
-            for (i, (price, qty)) in asks.iter().take(max_ask_levels).enumerate() {
-                let y = ask_section_height - ((i + 1) as f32 * ROW_HEIGHT);
-                if y < 0.0 {
+                if y_cursor + h <= 0.0 {
+                    y_cursor += h;
+                    continue;
+                }
+                if y_cursor >= bounds.height {
                     break;
                 }
 
-                self.draw_order_row(
-                    frame,
-                    y,
-                    bounds.width,
-                    *price,
-                    *qty,
-                    false, // is_bid
-                    ask_color,
-                    text_color,
-                    self.max_ask_qty,
-                );
-            }
-
-            if self.config.show_spread
-                && let Some(info) = self.ticker_info
-                && let Some(spread) = self.calculate_spread()
-            {
-                let min_ticksize: f32 = info.min_ticksize.into();
-                let spread = (spread / min_ticksize).round() * min_ticksize;
-                let content = format!("Spread: {spread}",);
-
-                let spread_y = mid_point - spread_height / 2.0;
-
-                frame.fill_text(Text {
-                    content,
-                    position: Point::new(bounds.width / 2.0, spread_y + spread_height / 2.0),
-                    color: text_color,
-                    size: TEXT_SIZE,
-                    font: style::AZERET_MONO,
-                    align_x: Alignment::Center.into(),
-                    align_y: Alignment::Center.into(),
-                    ..Default::default()
-                });
-            }
-
-            // Draw bids (bottom half)
-            let bid_section_start = mid_point + spread_height / 2.0;
-            let bids = self.group_price_levels(&self.depth.bids, true);
-
-            for (i, (price, qty)) in bids.iter().take(max_bid_levels).enumerate() {
-                let y = bid_section_start + (i as f32 * ROW_HEIGHT);
-                if y + ROW_HEIGHT > bounds.height {
-                    break;
+                match row {
+                    Row::Ask { qty, .. } => {
+                        vis_max_ask_qty = vis_max_ask_qty.max(*qty);
+                    }
+                    Row::Bid { qty, .. } => {
+                        vis_max_bid_qty = vis_max_bid_qty.max(*qty);
+                    }
+                    Row::Spread => {}
                 }
 
-                self.draw_order_row(
-                    frame,
-                    y,
-                    bounds.width,
-                    *price,
-                    *qty,
-                    true, // is_bid
-                    bid_color,
-                    text_color,
-                    self.max_bid_qty,
-                );
+                visible_idx.push((idx, y_cursor));
+                y_cursor += h;
+            }
+
+            for (idx, y) in visible_idx {
+                match &rows[idx] {
+                    Row::Ask { price, qty } => {
+                        self.draw_order_row(
+                            frame,
+                            y,
+                            bounds.width,
+                            *price,
+                            *qty,
+                            false,
+                            ask_color,
+                            text_color,
+                            vis_max_ask_qty,
+                        );
+                    }
+                    Row::Bid { price, qty } => {
+                        self.draw_order_row(
+                            frame,
+                            y,
+                            bounds.width,
+                            *price,
+                            *qty,
+                            true,
+                            bid_color,
+                            text_color,
+                            vis_max_bid_qty,
+                        );
+                    }
+                    Row::Spread => {
+                        if let (Some(info), Some(spread)) =
+                            (self.ticker_info, self.calculate_spread())
+                        {
+                            let min_ticksize: f32 = info.min_ticksize.into();
+                            let spread = (spread / min_ticksize).round() * min_ticksize;
+                            let content = format!("Spread: {spread}");
+                            frame.fill_text(Text {
+                                content,
+                                position: Point::new(
+                                    bounds.width / 2.0,
+                                    y + SPREAD_ROW_HEIGHT / 2.0,
+                                ),
+                                color: text_color,
+                                size: TEXT_SIZE,
+                                font: style::AZERET_MONO,
+                                align_x: Alignment::Center.into(),
+                                align_y: Alignment::Center.into(),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
             }
         });
 
@@ -351,4 +376,10 @@ impl Orderbook {
             ..Default::default()
         });
     }
+}
+
+enum Row {
+    Ask { price: f32, qty: f32 },
+    Spread,
+    Bid { price: f32, qty: f32 },
 }
