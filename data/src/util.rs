@@ -116,6 +116,14 @@ pub fn round_to_tick(value: f32, tick_size: f32) -> f32 {
     (value / tick_size).round() * tick_size
 }
 
+pub fn round_to_next_tick(value: f32, tick_size: f32, down: bool) -> f32 {
+    if down {
+        (value / tick_size).floor() * tick_size
+    } else {
+        (value / tick_size).ceil() * tick_size
+    }
+}
+
 pub fn currency_abbr(price: f32) -> String {
     match price {
         p if p > 1_000_000_000.0 => format!("${:.2}b", p / 1_000_000_000.0),

@@ -1277,7 +1277,7 @@ impl Dashboard {
                         }
                         pane::Content::Orderbook(panel) => {
                             if let Some(panel) = panel {
-                                panel.update_depth(depth);
+                                panel.insert_buffers(depth_update_t, depth, trades_buffer);
                             }
                         }
                         _ => {

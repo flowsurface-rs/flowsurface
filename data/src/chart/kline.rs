@@ -3,7 +3,7 @@ use ordered_float::OrderedFloat;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{aggr::time::DataPoint, util::round_to_tick};
+use crate::{aggr::time::DataPoint, util::round_to_next_tick};
 
 pub struct KlineDataPoint {
     pub kline: Kline,
@@ -157,7 +157,7 @@ impl KlineTrades {
     }
 
     pub fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
-        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+        let price_level = OrderedFloat(round_to_next_tick(trade.price, tick_size, trade.is_sell));
 
         if let Some(group) = self.trades.get_mut(&price_level) {
             group.add_trade(trade);

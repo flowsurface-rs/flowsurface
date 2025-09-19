@@ -1,17 +1,30 @@
-use std::time::Instant;
-
 use super::Message;
 use crate::style;
+use data::chart::kline::KlineTrades;
 use data::chart::orderbook::Config;
+use exchange::Trade;
 use exchange::{TickerInfo, depth::Depth};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
+
 use ordered_float::OrderedFloat;
+use std::collections::BTreeMap;
+use std::time::Instant;
 
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
 const ROW_HEIGHT: f32 = 16.0;
 const SPREAD_ROW_HEIGHT: f32 = 20.0;
+
+// Total width ratios must sum to 1.0
+/// Uses half of the width for each side of the order quantity columns
+const ORDER_QTY_COLS_WIDTH: f32 = 0.60;
+/// Uses half of the width for each side of the trade quantity columns
+const TRADE_QTY_COLS_WIDTH: f32 = 0.20;
+const PRICE_COL_WIDTH: f32 = 0.20;
+
+/// Horizontal gap between columns (pixels)
+const COL_PADDING: f32 = 4.0;
 
 impl super::Panel for Orderbook {
     fn scroll(&mut self, delta: f32) {
@@ -31,6 +44,8 @@ impl super::Panel for Orderbook {
 
 pub struct Orderbook {
     depth: Depth,
+    raw_trades: Vec<Trade>,
+    grouped_trades: KlineTrades,
     ticker_info: Option<TickerInfo>,
     pub config: Config,
     cache: canvas::Cache,
@@ -44,6 +59,8 @@ impl Orderbook {
     pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>, tick_size: f32) -> Self {
         Self {
             depth: Depth::default(),
+            raw_trades: Vec::new(),
+            grouped_trades: KlineTrades::new(),
             config: config.unwrap_or_default(),
             ticker_info,
             cache: canvas::Cache::default(),
@@ -54,44 +71,14 @@ impl Orderbook {
         }
     }
 
-    pub fn update_depth(&mut self, depth: &Depth) {
+    pub fn insert_buffers(&mut self, _update_t: u64, depth: &Depth, trades_buffer: &[Trade]) {
         self.depth = depth.clone();
-        self.invalidate(Some(Instant::now()));
-    }
-
-    fn group_price_levels(
-        &self,
-        levels: &std::collections::BTreeMap<OrderedFloat<f32>, f32>,
-        is_bid: bool,
-    ) -> Vec<(f32, f32)> {
-        let mut grouped_levels: std::collections::BTreeMap<OrderedFloat<f32>, f32> =
-            std::collections::BTreeMap::new();
-
         let tick_size = self.tick_size;
 
-        for (price, qty) in levels.iter() {
-            let price_val = price.into_inner();
-            let grouped_price = if is_bid {
-                ((price_val * (1.0 / tick_size)).floor()) * tick_size
-            } else {
-                ((price_val * (1.0 / tick_size)).ceil()) * tick_size
-            };
-            let grouped_key = OrderedFloat(grouped_price);
-
-            *grouped_levels.entry(grouped_key).or_insert(0.0) += qty;
-        }
-
-        if is_bid {
-            grouped_levels
-                .iter()
-                .rev()
-                .map(|(price, qty)| (price.into_inner(), *qty))
-                .collect()
-        } else {
-            grouped_levels
-                .iter()
-                .map(|(price, qty)| (price.into_inner(), *qty))
-                .collect()
+        for trade in trades_buffer {
+            self.grouped_trades
+                .add_trade_at_price_level(trade, tick_size);
+            self.raw_trades.push(*trade);
         }
     }
 
@@ -110,6 +97,13 @@ impl Orderbook {
     pub fn set_tick_size(&mut self, tick_size: f32) {
         self.decimals = data::util::count_decimals(tick_size);
         self.tick_size = tick_size;
+
+        self.grouped_trades.clear();
+        for trade in &self.raw_trades {
+            self.grouped_trades
+                .add_trade_at_price_level(trade, tick_size);
+        }
+
         self.invalidate(Some(Instant::now()));
     }
 
@@ -127,6 +121,36 @@ impl Orderbook {
 
     fn format_quantity(&self, qty: f32) -> String {
         data::util::abbr_large_numbers(qty)
+    }
+
+    fn calculate_spread(&self) -> Option<f32> {
+        if let (Some((best_ask, _)), Some((best_bid, _))) = (
+            self.depth.asks.first_key_value(),
+            self.depth.bids.last_key_value(),
+        ) {
+            Some(best_ask.into_inner() - best_bid.into_inner())
+        } else {
+            None
+        }
+    }
+
+    fn group_price_levels(
+        &self,
+        levels: &BTreeMap<OrderedFloat<f32>, f32>,
+        is_bid: bool,
+    ) -> BTreeMap<OrderedFloat<f32>, f32> {
+        let mut grouped = BTreeMap::new();
+
+        let tick_size = self.tick_size;
+
+        for (price, qty) in levels.iter() {
+            let price_val = price.into_inner();
+            let grouped_price = data::util::round_to_next_tick(price_val, tick_size, is_bid);
+            let grouped_key = OrderedFloat(grouped_price);
+            *grouped.entry(grouped_key).or_insert(0.0) += qty;
+        }
+
+        grouped
     }
 }
 
@@ -172,101 +196,77 @@ impl canvas::Program<Message> for Orderbook {
         let bid_color = palette.success.base.color;
         let ask_color = palette.danger.base.color;
 
-        let asks = self.group_price_levels(&self.depth.asks, false);
-        let bids = self.group_price_levels(&self.depth.bids, true);
+        let asks_grouped = self.group_price_levels(&self.depth.asks, false);
+        let bids_grouped = self.group_price_levels(&self.depth.bids, true);
 
-        let mut rows: Vec<Row> = Vec::with_capacity(
-            asks.len() + bids.len() + if self.config.show_spread { 1 } else { 0 },
+        let tick_size = self.tick_size.max(f32::EPSILON);
+
+        let meta = self.row_meta(
+            &asks_grouped,
+            &bids_grouped,
+            tick_size,
+            self.config.show_spread,
         );
 
-        for (price, qty) in asks.iter().rev() {
-            rows.push(Row::Ask {
-                price: *price,
-                qty: *qty,
-            });
-        }
-        if self.config.show_spread {
-            rows.push(Row::Spread);
-        }
-        for (price, qty) in bids.iter() {
-            rows.push(Row::Bid {
-                price: *price,
-                qty: *qty,
-            });
-        }
+        let pre_spread_height = (meta.ask_rows as f32) * ROW_HEIGHT;
+        let center_target = if self.config.show_spread {
+            pre_spread_height + SPREAD_ROW_HEIGHT / 2.0
+        } else {
+            pre_spread_height
+        };
+        let base_scroll = center_target - bounds.height / 2.0;
 
         let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
-            let pre_spread_height = (asks.len() as f32) * ROW_HEIGHT;
-            let center_target = if self.config.show_spread {
-                pre_spread_height + SPREAD_ROW_HEIGHT / 2.0
-            } else {
-                pre_spread_height
-            };
+            let cols = self.column_ranges(bounds.width);
 
-            let base_scroll = center_target - bounds.height / 2.0;
+            let (visible_rows, maxima) = self.visible_rows(
+                bounds,
+                &asks_grouped,
+                &bids_grouped,
+                tick_size,
+                &meta,
+                base_scroll,
+            );
 
-            let mut y_cursor = -(base_scroll + self.scroll_px);
-            let mut vis_max_ask_qty: f32 = 0.0;
-            let mut vis_max_bid_qty: f32 = 0.0;
-            let mut visible_idx: Vec<(usize, f32)> = vec![];
-
-            for (idx, row) in rows.iter().enumerate() {
-                let h = match row {
-                    Row::Spread => SPREAD_ROW_HEIGHT,
-                    _ => ROW_HEIGHT,
-                };
-
-                if y_cursor + h <= 0.0 {
-                    y_cursor += h;
-                    continue;
-                }
-                if y_cursor >= bounds.height {
-                    break;
-                }
-
-                match row {
-                    Row::Ask { qty, .. } => {
-                        vis_max_ask_qty = vis_max_ask_qty.max(*qty);
-                    }
-                    Row::Bid { qty, .. } => {
-                        vis_max_bid_qty = vis_max_bid_qty.max(*qty);
-                    }
-                    Row::Spread => {}
-                }
-
-                visible_idx.push((idx, y_cursor));
-                y_cursor += h;
-            }
-
-            for (idx, y) in visible_idx {
-                match &rows[idx] {
-                    Row::Ask { price, qty } => {
-                        self.draw_order_row(
+            for visible_row in visible_rows {
+                match visible_row.row {
+                    DomRow::Ask { price, qty } => {
+                        self.draw_row(
                             frame,
-                            y,
-                            bounds.width,
-                            *price,
-                            *qty,
+                            visible_row.y,
+                            price,
+                            qty,
                             false,
                             ask_color,
                             text_color,
-                            vis_max_ask_qty,
+                            maxima.vis_max_order_qty,
+                            visible_row.buy_t,
+                            visible_row.sell_t,
+                            maxima.vis_max_trade_qty,
+                            bid_color,
+                            ask_color,
+                            &cols,
                         );
                     }
-                    Row::Bid { price, qty } => {
-                        self.draw_order_row(
+                    DomRow::Bid { price, qty } => {
+                        self.draw_row(
                             frame,
-                            y,
-                            bounds.width,
-                            *price,
-                            *qty,
+                            visible_row.y,
+                            price,
+                            qty,
                             true,
                             bid_color,
                             text_color,
-                            vis_max_bid_qty,
+                            maxima.vis_max_order_qty,
+                            visible_row.buy_t,
+                            visible_row.sell_t,
+                            maxima.vis_max_trade_qty,
+                            bid_color,
+                            ask_color,
+                            &cols,
                         );
                     }
-                    Row::Spread => {
+                    DomRow::Spread => {
                         if let (Some(info), Some(spread)) =
                             (self.ticker_info, self.calculate_spread())
                         {
@@ -277,7 +277,7 @@ impl canvas::Program<Message> for Orderbook {
                                 content,
                                 position: Point::new(
                                     bounds.width / 2.0,
-                                    y + SPREAD_ROW_HEIGHT / 2.0,
+                                    visible_row.y + SPREAD_ROW_HEIGHT / 2.0,
                                 ),
                                 color: text_color,
                                 size: TEXT_SIZE,
@@ -296,89 +296,447 @@ impl canvas::Program<Message> for Orderbook {
     }
 }
 
+#[derive(Default)]
+struct Maxima {
+    vis_max_order_qty: f32,
+    vis_max_trade_qty: f32,
+}
+
+struct VisibleRow {
+    row: DomRow,
+    y: f32,
+    buy_t: f32,
+    sell_t: f32,
+}
+
+struct RowMeta {
+    ask_rows: usize,
+    bid_rows: usize,
+    spread_rows: usize,
+    total_rows: usize,
+    max_ask: Option<f32>,
+    min_bid: Option<f32>,
+    best_bid: Option<f32>,
+}
+
+struct ColumnRanges {
+    bid_order: (f32, f32),
+    sell: (f32, f32),
+    price: (f32, f32),
+    buy: (f32, f32),
+    ask_order: (f32, f32),
+}
+
 impl Orderbook {
-    fn calculate_spread(&self) -> Option<f32> {
-        if let (Some((best_ask, _)), Some((best_bid, _))) = (
-            self.depth.asks.first_key_value(),
-            self.depth.bids.last_key_value(),
-        ) {
-            Some(best_ask.into_inner() - best_bid.into_inner())
-        } else {
-            None
+    // [BidOrderQty][SellQty][ Price ][BuyQty][AskOrderQty]
+    const NUMBER_OF_COLUMN_GAPS: f32 = 4.0;
+
+    fn column_ranges(&self, width: f32) -> ColumnRanges {
+        let order_qty_ratio = ORDER_QTY_COLS_WIDTH / 2.0;
+        let trade_qty_ratio = TRADE_QTY_COLS_WIDTH / 2.0;
+
+        let total_gutter_width = COL_PADDING * Self::NUMBER_OF_COLUMN_GAPS;
+
+        let usable_width = (width - total_gutter_width).max(0.0);
+
+        let bid_order_width = order_qty_ratio * usable_width;
+        let sell_trades_width = trade_qty_ratio * usable_width;
+        let price_width = PRICE_COL_WIDTH * usable_width;
+        let buy_trades_width = trade_qty_ratio * usable_width;
+        let ask_order_width = order_qty_ratio * usable_width;
+
+        let mut cursor_x = 0.0;
+
+        let bid_order_end = cursor_x + bid_order_width;
+        let bid_order_range = (cursor_x, bid_order_end);
+        cursor_x = bid_order_end + COL_PADDING;
+
+        let sell_trades_end = cursor_x + sell_trades_width;
+        let sell_trades_range = (cursor_x, sell_trades_end);
+        cursor_x = sell_trades_end + COL_PADDING;
+
+        let price_end = cursor_x + price_width;
+        let price_range = (cursor_x, price_end);
+        cursor_x = price_end + COL_PADDING;
+
+        let buy_trades_end = cursor_x + buy_trades_width;
+        let buy_trades_range = (cursor_x, buy_trades_end);
+        cursor_x = buy_trades_end + COL_PADDING;
+
+        let ask_order_end = cursor_x + ask_order_width;
+        let ask_order_range = (cursor_x, ask_order_end);
+
+        ColumnRanges {
+            bid_order: bid_order_range,
+            sell: sell_trades_range,
+            price: price_range,
+            buy: buy_trades_range,
+            ask_order: ask_order_range,
         }
     }
 
-    fn draw_order_row(
+    fn trade_qty_at(&self, price: f32) -> (f32, f32) {
+        let key = OrderedFloat(data::util::round_to_tick(price, self.tick_size));
+        if let Some(g) = self.grouped_trades.trades.get(&key) {
+            (g.buy_qty, g.sell_qty)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    fn row_meta(
+        &self,
+        asks_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
+        bids_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
+        tick_size: f32,
+        show_spread: bool,
+    ) -> RowMeta {
+        let (max_ask_opt, ask_rows) = if let (Some((best_ask, _)), Some((max_ask, _))) = (
+            asks_grouped.first_key_value(),
+            asks_grouped.last_key_value(),
+        ) {
+            let best_ask_price = best_ask.into_inner();
+            let max_ask_price = max_ask.into_inner();
+            let rows = ((max_ask_price - best_ask_price) / tick_size)
+                .floor()
+                .max(0.0) as usize
+                + 1;
+            (Some(max_ask_price), rows)
+        } else {
+            (None, 0)
+        };
+
+        let (min_bid_opt, best_bid_opt, bid_rows) =
+            if let (Some((min_bid, _)), Some((best_bid, _))) = (
+                bids_grouped.first_key_value(),
+                bids_grouped.last_key_value(),
+            ) {
+                let min_bid_price = min_bid.into_inner();
+                let best_bid_price = best_bid.into_inner();
+                let rows = ((best_bid_price - min_bid_price) / tick_size)
+                    .floor()
+                    .max(0.0) as usize
+                    + 1;
+                (Some(min_bid_price), Some(best_bid_price), rows)
+            } else {
+                (None, None, 0)
+            };
+
+        let spread_rows = if show_spread { 1 } else { 0 };
+        let total_rows = ask_rows + spread_rows + bid_rows;
+
+        RowMeta {
+            ask_rows,
+            bid_rows,
+            spread_rows,
+            total_rows,
+            max_ask: max_ask_opt,
+            min_bid: min_bid_opt,
+            best_bid: best_bid_opt,
+        }
+    }
+
+    fn visible_rows(
+        &self,
+        bounds: Rectangle,
+        asks_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
+        bids_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
+        tick_size: f32,
+        meta: &RowMeta,
+        base_scroll: f32,
+    ) -> (Vec<VisibleRow>, Maxima) {
+        let mut y_cursor = -(base_scroll + self.scroll_px);
+        let mut row_idx: usize = 0;
+        let mut visible: Vec<VisibleRow> = Vec::new();
+
+        let mut maxima = Maxima::default();
+
+        if y_cursor < 0.0 {
+            let ask_skip = ((-y_cursor) / ROW_HEIGHT).floor() as usize;
+            let ask_skipped = ask_skip.min(meta.ask_rows);
+            y_cursor += (ask_skipped as f32) * ROW_HEIGHT;
+            row_idx += ask_skipped;
+
+            if self.config.show_spread
+                && row_idx == meta.ask_rows
+                && y_cursor < 0.0
+                && y_cursor + SPREAD_ROW_HEIGHT <= 0.0
+            {
+                y_cursor += SPREAD_ROW_HEIGHT;
+                row_idx += 1;
+            }
+
+            let after_spread = meta.ask_rows + if self.config.show_spread { 1 } else { 0 };
+            if row_idx >= after_spread && y_cursor < 0.0 {
+                let remaining_neg = -y_cursor;
+                let bid_skip = (remaining_neg / ROW_HEIGHT).floor() as usize;
+                let bid_skipped = bid_skip.min(meta.bid_rows);
+                y_cursor += (bid_skipped as f32) * ROW_HEIGHT;
+                row_idx = (after_spread + bid_skipped).min(meta.total_rows);
+            }
+        }
+
+        let mut drawn = 0usize;
+        let rows_budget = ((bounds.height / ROW_HEIGHT).ceil() as usize) + 4;
+
+        while row_idx < meta.total_rows && y_cursor < bounds.height && drawn < rows_budget {
+            let pick_row = || -> (f32, DomRow) {
+                if row_idx < meta.ask_rows {
+                    let ma = match meta.max_ask {
+                        Some(v) => v,
+                        None => return (ROW_HEIGHT, DomRow::Spread),
+                    };
+
+                    let price = ma - (row_idx as f32) * tick_size;
+                    let key = OrderedFloat(data::util::round_to_tick(price, tick_size));
+                    let qty = asks_grouped.get(&key).copied().unwrap_or(0.0);
+                    (ROW_HEIGHT, DomRow::Ask { price, qty })
+                } else if self.config.show_spread && row_idx == meta.ask_rows {
+                    (SPREAD_ROW_HEIGHT, DomRow::Spread)
+                } else {
+                    let offset = row_idx - meta.ask_rows - meta.spread_rows;
+                    let bb = match meta.best_bid {
+                        Some(v) => v,
+                        None => return (ROW_HEIGHT, DomRow::Spread),
+                    };
+
+                    let price = bb - (offset as f32) * tick_size;
+                    if let Some(mb) = meta.min_bid
+                        && price < mb - 0.5 * tick_size
+                    {
+                        return (0.0, DomRow::Spread);
+                    }
+
+                    let key = OrderedFloat(data::util::round_to_tick(price, tick_size));
+                    let qty = bids_grouped.get(&key).copied().unwrap_or(0.0);
+
+                    (ROW_HEIGHT, DomRow::Bid { price, qty })
+                }
+            };
+
+            let (h, row) = pick_row();
+            if h <= 0.0 {
+                break;
+            }
+
+            if y_cursor + h <= 0.0 {
+                y_cursor += h;
+                row_idx += 1;
+                continue;
+            }
+
+            match row {
+                DomRow::Ask { price, qty } => {
+                    maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(qty);
+
+                    let (buy_t, sell_t) = self.trade_qty_at(price);
+                    maxima.vis_max_trade_qty = maxima.vis_max_trade_qty.max(buy_t.max(sell_t));
+
+                    visible.push(VisibleRow {
+                        row,
+                        y: y_cursor,
+                        buy_t,
+                        sell_t,
+                    });
+                }
+                DomRow::Bid { price, qty } => {
+                    maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(qty);
+
+                    let (buy_t, sell_t) = self.trade_qty_at(price);
+                    maxima.vis_max_trade_qty = maxima.vis_max_trade_qty.max(buy_t.max(sell_t));
+
+                    visible.push(VisibleRow {
+                        row,
+                        y: y_cursor,
+                        buy_t,
+                        sell_t,
+                    });
+                }
+                DomRow::Spread => {
+                    visible.push(VisibleRow {
+                        row,
+                        y: y_cursor,
+                        buy_t: 0.0,
+                        sell_t: 0.0,
+                    });
+                }
+            }
+
+            y_cursor += h;
+            row_idx += 1;
+            drawn += 1;
+        }
+
+        (visible, maxima)
+    }
+
+    fn draw_row(
         &self,
         frame: &mut iced::widget::canvas::Frame,
         y: f32,
-        width: f32,
         price: f32,
-        qty: f32,
+        order_qty: f32,
         is_bid: bool,
-        color: iced::Color,
+        side_color: iced::Color,
         text_color: iced::Color,
-        max_qty: f32,
+        max_order_qty: f32,
+        trade_buy_qty: f32,
+        trade_sell_qty: f32,
+        max_trade_qty: f32,
+        trade_buy_color: iced::Color,
+        trade_sell_color: iced::Color,
+        cols: &ColumnRanges,
     ) {
-        let price_text = self.format_price(price);
-        let qty_text = self.format_quantity(qty);
-
-        // Draw quantity bar background
-        if max_qty > 0.0 {
-            let bar_width = (qty / max_qty) * width * 0.3;
-            let bar_x = if is_bid { 0.0 } else { width - bar_width };
-
-            let bar_color = iced::Color {
-                r: color.r,
-                g: color.g,
-                b: color.b,
-                a: 0.2,
-            };
-
-            frame.fill_rectangle(
-                Point::new(bar_x, y),
-                Size::new(bar_width, ROW_HEIGHT),
-                bar_color,
+        if is_bid {
+            Self::fill_bar(
+                frame,
+                cols.bid_order,
+                y,
+                ROW_HEIGHT,
+                order_qty,
+                max_order_qty,
+                side_color,
+                true,
+                0.20,
             );
+            let qty_txt = self.format_quantity(order_qty);
+            let x_text = cols.bid_order.0 + 6.0;
+            Self::draw_cell_text(frame, &qty_txt, x_text, y, text_color, Alignment::Start);
+        } else {
+            Self::fill_bar(
+                frame,
+                cols.ask_order,
+                y,
+                ROW_HEIGHT,
+                order_qty,
+                max_order_qty,
+                side_color,
+                false,
+                0.20,
+            );
+            let qty_txt = self.format_quantity(order_qty);
+            let x_text = cols.ask_order.1 - 6.0;
+            Self::draw_cell_text(frame, &qty_txt, x_text, y, text_color, Alignment::End);
         }
 
-        // Draw price text
-        let price_x = if is_bid { width * 0.35 } else { width * 0.65 };
+        // Sell trades (right-to-left)
+        Self::fill_bar(
+            frame,
+            cols.sell,
+            y,
+            ROW_HEIGHT,
+            trade_sell_qty,
+            max_trade_qty,
+            trade_sell_color,
+            false,
+            0.30,
+        );
+        let sell_txt = if trade_sell_qty > 0.0 {
+            self.format_quantity(trade_sell_qty)
+        } else {
+            "".into()
+        };
+        Self::draw_cell_text(
+            frame,
+            &sell_txt,
+            cols.sell.1 - 6.0,
+            y,
+            text_color,
+            Alignment::End,
+        );
+
+        // Buy trades (left-to-right)
+        Self::fill_bar(
+            frame,
+            cols.buy,
+            y,
+            ROW_HEIGHT,
+            trade_buy_qty,
+            max_trade_qty,
+            trade_buy_color,
+            true,
+            0.30,
+        );
+        let buy_txt = if trade_buy_qty > 0.0 {
+            self.format_quantity(trade_buy_qty)
+        } else {
+            "".into()
+        };
+        Self::draw_cell_text(
+            frame,
+            &buy_txt,
+            cols.buy.0 + 6.0,
+            y,
+            text_color,
+            Alignment::Start,
+        );
+
+        // Price
+        let price_txt = self.format_price(price);
+        let price_x_center = (cols.price.0 + cols.price.1) * 0.5;
+        Self::draw_cell_text(
+            frame,
+            &price_txt,
+            price_x_center,
+            y,
+            side_color,
+            Alignment::Center,
+        );
+    }
+
+    fn fill_bar(
+        frame: &mut iced::widget::canvas::Frame,
+        (x_start, x_end): (f32, f32),
+        y: f32,
+        height: f32,
+        value: f32,
+        scale_value_max: f32,
+        color: iced::Color,
+        from_left: bool,
+        alpha: f32,
+    ) {
+        if scale_value_max <= 0.0 || value <= 0.0 {
+            return;
+        }
+        let col_width = x_end - x_start;
+
+        let mut bar_width = (value / scale_value_max) * col_width.max(1.0);
+        bar_width = bar_width.min(col_width);
+        let bar_x = if from_left {
+            x_start
+        } else {
+            x_end - bar_width
+        };
+
+        frame.fill_rectangle(
+            Point::new(bar_x, y),
+            Size::new(bar_width, height),
+            iced::Color { a: alpha, ..color },
+        );
+    }
+
+    fn draw_cell_text(
+        frame: &mut iced::widget::canvas::Frame,
+        text: &str,
+        x_anchor: f32,
+        y: f32,
+        color: iced::Color,
+        align: Alignment,
+    ) {
         frame.fill_text(Text {
-            content: price_text,
-            position: Point::new(price_x, y + ROW_HEIGHT / 2.0),
+            content: text.to_string(),
+            position: Point::new(x_anchor, y + ROW_HEIGHT / 2.0),
             color,
             size: TEXT_SIZE,
             font: style::AZERET_MONO,
-            align_x: if is_bid {
-                Alignment::Start.into()
-            } else {
-                Alignment::End.into()
-            },
-            align_y: Alignment::Center.into(),
-            ..Default::default()
-        });
-
-        // Draw quantity text
-        let qty_x = if is_bid { width * 0.05 } else { width * 0.95 };
-        frame.fill_text(Text {
-            content: qty_text,
-            position: Point::new(qty_x, y + ROW_HEIGHT / 2.0),
-            color: text_color,
-            size: TEXT_SIZE,
-            font: style::AZERET_MONO,
-            align_x: if is_bid {
-                Alignment::Start.into()
-            } else {
-                Alignment::End.into()
-            },
+            align_x: align.into(),
             align_y: Alignment::Center.into(),
             ..Default::default()
         });
     }
 }
 
-enum Row {
+enum DomRow {
     Ask { price: f32, qty: f32 },
     Spread,
     Bid { price: f32, qty: f32 },
