@@ -1,10 +1,9 @@
-use exchange::{Kline, Trade};
-use ordered_float::OrderedFloat;
-use std::collections::BTreeMap;
-
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
-use crate::util::round_to_tick;
+use exchange::util::{Price, PriceStep};
+use exchange::{Kline, Trade};
+
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
@@ -56,12 +55,7 @@ impl TickAccumulation {
         self.footprint.add_trade_at_price_level(trade, tick_size);
     }
 
-    pub fn max_cluster_qty(
-        &self,
-        cluster_kind: ClusterKind,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
-    ) -> f32 {
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
         match cluster_kind {
             ClusterKind::BidAsk => self.footprint.max_qty_by(highest, lowest, f32::max),
             ClusterKind::DeltaProfile => self
@@ -78,7 +72,7 @@ impl TickAccumulation {
         self.tick_count >= interval.0 as usize
     }
 
-    pub fn poc_price(&self) -> Option<f32> {
+    pub fn poc_price(&self) -> Option<Price> {
         self.footprint.poc_price()
     }
 
@@ -175,15 +169,18 @@ impl TickAggr {
             .collect::<Vec<_>>();
 
         let total_points = self.datapoints.len();
+        let step = PriceStep::from_f32(self.tick_size);
 
         for (current_idx, poc_price) in updates {
             let mut npoc = NPoc::default();
 
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.datapoints[next_idx];
-                if round_to_tick(next_dp.kline.low, self.tick_size) <= poc_price
-                    && round_to_tick(next_dp.kline.high, self.tick_size) >= poc_price
-                {
+
+                let next_dp_low = next_dp.kline.low.round_to_step(step);
+                let next_dp_high = next_dp.kline.high.round_to_step(step);
+
+                if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     // on render we reverse the order of the points
                     // as it is easier to just take the idx=0 as latest candle for coords
                     let reversed_idx = (total_points - 1) - next_idx;
@@ -202,8 +199,8 @@ impl TickAggr {
     }
 
     pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
-        let mut min_price = OrderedFloat(f32::MAX);
-        let mut max_price = OrderedFloat(f32::MIN);
+        let mut min_price = f32::MAX;
+        let mut max_price = f32::MIN;
 
         self.datapoints
             .iter()
@@ -211,14 +208,14 @@ impl TickAggr {
             .enumerate()
             .filter(|(index, _)| *index <= latest && *index >= earliest)
             .for_each(|(_, dp)| {
-                min_price = min_price.min(OrderedFloat(dp.kline.low));
-                max_price = max_price.max(OrderedFloat(dp.kline.high));
+                min_price = min_price.min(dp.kline.low.to_f32());
+                max_price = max_price.max(dp.kline.high.to_f32());
             });
 
-        if min_price.0 == f32::MAX || max_price.0 == f32::MIN {
+        if min_price == f32::MAX || max_price == f32::MIN {
             None
         } else {
-            Some((*min_price, *max_price))
+            Some((min_price, max_price))
         }
     }
 
@@ -227,8 +224,8 @@ impl TickAggr {
         cluster_kind: ClusterKind,
         earliest: usize,
         latest: usize,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
+        highest: Price,
+        lowest: Price,
     ) -> f32 {
         let mut max_cluster_qty: f32 = 0.0;
 

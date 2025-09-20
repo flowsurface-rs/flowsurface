@@ -1,12 +1,11 @@
-use crate::adapter::StreamTicksize;
+use crate::{Price, adapter::StreamTicksize, de_string_to_f32};
 
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
-        de_string_to_f32,
-        depth::{DepthPayload, DepthUpdate, LocalDepthCache, Order},
+        depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, RateLimiter},
         str_f32_parse,
@@ -110,9 +109,9 @@ pub struct FetchedPerpDepth {
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "bids")]
-    bids: Vec<Order>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "asks")]
-    asks: Vec<Order>,
+    asks: Vec<DeOrder>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -120,9 +119,9 @@ pub struct FetchedSpotDepth {
     #[serde(rename = "lastUpdateId")]
     update_id: u64,
     #[serde(rename = "bids")]
-    bids: Vec<Order>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "asks")]
-    asks: Vec<Order>,
+    asks: Vec<DeOrder>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -164,7 +163,6 @@ struct SonicTrade {
     #[serde(rename = "m")]
     is_sell: bool,
 }
-
 enum SonicDepth {
     Spot(SpotDepth),
     Perp(PerpDepth),
@@ -179,9 +177,9 @@ struct SpotDepth {
     #[serde(rename = "u")]
     final_id: u64,
     #[serde(rename = "b")]
-    bids: Vec<Order>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "a")]
-    asks: Vec<Order>,
+    asks: Vec<DeOrder>,
 }
 
 #[derive(Deserialize)]
@@ -195,9 +193,9 @@ struct PerpDepth {
     #[serde(rename = "pu")]
     prev_final_id: u64,
     #[serde(rename = "b")]
-    bids: Vec<Order>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "a")]
-    asks: Vec<Order>,
+    asks: Vec<DeOrder>,
 }
 
 enum StreamData {
@@ -286,13 +284,15 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
 
 async fn try_resync(
     exchange: Exchange,
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     contract_size: Option<f32>,
     orderbook: &mut LocalDepthCache,
     state: &mut State,
     output: &mut mpsc::Sender<Event>,
     already_fetching: &mut bool,
 ) {
+    let ticker = ticker_info.ticker;
+
     let (tx, rx) = tokio::sync::oneshot::channel();
     *already_fetching = true;
 
@@ -303,7 +303,7 @@ async fn try_resync(
 
     match rx.await {
         Ok(Ok(depth)) => {
-            orderbook.update(DepthUpdate::Snapshot(depth));
+            orderbook.update(DepthUpdate::Snapshot(depth), ticker_info.min_ticksize);
         }
         Ok(Err(e)) => {
             let _ = output
@@ -365,7 +365,8 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                         });
                         match rx.await {
                             Ok(Ok(depth)) => {
-                                orderbook.update(DepthUpdate::Snapshot(depth));
+                                orderbook
+                                    .update(DepthUpdate::Snapshot(depth), ticker_info.min_ticksize);
                                 prev_id = 0;
 
                                 state = State::Connected(websocket);
@@ -407,18 +408,22 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                 if let Ok(data) = feed_de(&msg.payload[..], market) {
                                     match data {
                                         StreamData::Trade(de_trade) => {
+                                            let price = Price::from_f32(de_trade.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize);
+                                            let qty = contract_size.map_or(
+                                                if size_in_quote_currency {
+                                                    (de_trade.qty * de_trade.price).round()
+                                                } else {
+                                                    de_trade.qty
+                                                },
+                                                |size| de_trade.qty * size,
+                                            );
+
                                             let trade = Trade {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
-                                                price: de_trade.price,
-                                                qty: contract_size.map_or(
-                                                    if size_in_quote_currency {
-                                                        (de_trade.qty * de_trade.price).round()
-                                                    } else {
-                                                        de_trade.qty
-                                                    },
-                                                    |size| de_trade.qty * size,
-                                                ),
+                                                price,
+                                                qty,
                                             };
 
                                             trades_buffer.push(trade);
@@ -449,7 +454,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
 
                                                         try_resync(
                                                             exchange,
-                                                            ticker,
+                                                            ticker_info,
                                                             contract_size,
                                                             &mut orderbook,
                                                             &mut state,
@@ -462,12 +467,13 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     if (prev_id == 0)
                                                         || (prev_id == de_depth.prev_final_id)
                                                     {
-                                                        orderbook.update(DepthUpdate::Diff(
-                                                            new_depth_cache(
+                                                        orderbook.update(
+                                                            DepthUpdate::Diff(new_depth_cache(
                                                                 &depth_type,
                                                                 contract_size,
-                                                            ),
-                                                        ));
+                                                            )),
+                                                            ticker_info.min_ticksize,
+                                                        );
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
@@ -511,7 +517,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
 
                                                         try_resync(
                                                             exchange,
-                                                            ticker,
+                                                            ticker_info,
                                                             contract_size,
                                                             &mut orderbook,
                                                             &mut state,
@@ -524,12 +530,13 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     if (prev_id == 0)
                                                         || (prev_id == de_depth.first_id - 1)
                                                     {
-                                                        orderbook.update(DepthUpdate::Diff(
-                                                            new_depth_cache(
+                                                        orderbook.update(
+                                                            DepthUpdate::Diff(new_depth_cache(
                                                                 &depth_type,
                                                                 contract_size,
-                                                            ),
-                                                        ));
+                                                            )),
+                                                            ticker_info.min_ticksize,
+                                                        );
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
@@ -657,15 +664,6 @@ pub fn connect_kline_stream(
                                     }
                                 };
 
-                                let kline = Kline {
-                                    time: de_kline.time,
-                                    open: de_kline.open,
-                                    high: de_kline.high,
-                                    low: de_kline.low,
-                                    close: de_kline.close,
-                                    volume: (buy_volume, sell_volume),
-                                };
-
                                 if let Some((_, tf)) = streams
                                     .iter()
                                     .find(|(_, tf)| tf.to_string() == de_kline.interval)
@@ -673,6 +671,16 @@ pub fn connect_kline_stream(
                                     if let Some(info) = ticker_info_map.get(&ticker) {
                                         let ticker_info = *info;
                                         let timeframe = *tf;
+
+                                        let kline = Kline::new(
+                                            de_kline.time,
+                                            de_kline.open,
+                                            de_kline.high,
+                                            de_kline.low,
+                                            de_kline.close,
+                                            (buy_volume, sell_volume),
+                                            info.min_ticksize,
+                                        );
 
                                         let _ = output
                                             .send(Event::KlineReceived(
@@ -741,14 +749,14 @@ fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> DepthPaylo
         time,
         bids: bids
             .iter()
-            .map(|x| Order {
+            .map(|x| DeOrder {
                 price: x.price,
                 qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
             })
             .collect(),
         asks: asks
             .iter()
-            .map(|x| Order {
+            .map(|x| DeOrder {
                 price: x.price,
                 qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
             })
@@ -813,7 +821,7 @@ async fn fetch_depth(
                 bids: fetched_depth
                     .bids
                     .iter()
-                    .map(|x| Order {
+                    .map(|x| DeOrder {
                         price: x.price,
                         qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
                     })
@@ -821,7 +829,7 @@ async fn fetch_depth(
                 asks: fetched_depth
                     .asks
                     .iter()
-                    .map(|x| Order {
+                    .map(|x| DeOrder {
                         price: x.price,
                         qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
                     })
@@ -840,7 +848,7 @@ async fn fetch_depth(
                 bids: fetched_depth
                     .bids
                     .iter()
-                    .map(|x| Order {
+                    .map(|x| DeOrder {
                         price: x.price,
                         qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
                     })
@@ -848,7 +856,7 @@ async fn fetch_depth(
                 asks: fetched_depth
                     .asks
                     .iter()
-                    .map(|x| Order {
+                    .map(|x| DeOrder {
                         price: x.price,
                         qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
                     })
@@ -896,10 +904,10 @@ impl From<FetchedKlines> for Kline {
 
         Self {
             time: fetched.0,
-            open: fetched.1,
-            high: fetched.2,
-            low: fetched.3,
-            close: fetched.4,
+            open: Price::from_f32(fetched.1),
+            high: Price::from_f32(fetched.2),
+            low: Price::from_f32(fetched.3),
+            close: Price::from_f32(fetched.4),
             volume: (fetched.9, sell_volume),
         }
     }
@@ -970,10 +978,10 @@ pub async fn fetch_klines(
         .into_iter()
         .map(|k| Kline {
             time: k.0,
-            open: k.1,
-            high: k.2,
-            low: k.3,
-            close: k.4,
+            open: Price::from_f32(k.1).round_to_min_tick(ticker_info.min_ticksize),
+            high: Price::from_f32(k.2).round_to_min_tick(ticker_info.min_ticksize),
+            low: Price::from_f32(k.3).round_to_min_tick(ticker_info.min_ticksize),
+            close: Price::from_f32(k.4).round_to_min_tick(ticker_info.min_ticksize),
             volume: match market_type {
                 MarketKind::Spot | MarketKind::LinearPerps => {
                     let sell_volume = if size_in_quote_currency {
@@ -1290,7 +1298,7 @@ pub async fn fetch_historical_oi(
 }
 
 pub async fn fetch_trades(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     from_time: u64,
     data_path: PathBuf,
 ) -> Result<Vec<Trade>, AdapterError> {
@@ -1301,26 +1309,30 @@ pub async fn fetch_trades(
         .and_utc();
 
     if from_time as i64 >= today_midnight.timestamp_millis() {
-        return fetch_intraday_trades(ticker, from_time).await;
+        return fetch_intraday_trades(ticker_info, from_time).await;
     }
 
     let from_date = chrono::DateTime::from_timestamp_millis(from_time as i64)
         .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
         .date_naive();
 
-    match get_hist_trades(ticker, from_date, data_path).await {
+    match get_hist_trades(ticker_info, from_date, data_path).await {
         Ok(trades) => Ok(trades),
         Err(e) => {
             log::warn!(
                 "Historical trades fetch failed: {}, falling back to intraday fetch",
                 e
             );
-            fetch_intraday_trades(ticker, from_time).await
+            fetch_intraday_trades(ticker_info, from_time).await
         }
     }
 }
 
-pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trade>, AdapterError> {
+pub async fn fetch_intraday_trades(
+    ticker_info: TickerInfo,
+    from: u64,
+) -> Result<Vec<Trade>, AdapterError> {
+    let ticker = ticker_info.ticker;
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let (base_url, weight) = match market_type {
@@ -1346,7 +1358,7 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
             .map(|de_trade| Trade {
                 time: de_trade.time,
                 is_sell: de_trade.is_sell,
-                price: de_trade.price,
+                price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
                 qty: if size_in_quote_currency {
                     (de_trade.qty * de_trade.price).round()
                 } else {
@@ -1360,10 +1372,11 @@ pub async fn fetch_intraday_trades(ticker: Ticker, from: u64) -> Result<Vec<Trad
 }
 
 pub async fn get_hist_trades(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     date: chrono::NaiveDate,
     base_path: PathBuf,
 ) -> Result<Vec<Trade>, AdapterError> {
+    let ticker = ticker_info.ticker;
     let (symbol, market_type) = ticker.to_full_symbol_and_type();
 
     let market_subpath = match market_type {
@@ -1435,12 +1448,15 @@ pub async fn get_hist_trades(
                     record.ok().and_then(|record| {
                         let time = record[5].parse::<u64>().ok()?;
                         let is_sell = record[6].parse::<bool>().ok()?;
-                        let price = str_f32_parse(&record[1]);
+                        let price_f32 = str_f32_parse(&record[1]);
+
+                        let price =
+                            Price::from_f32(price_f32).round_to_min_tick(ticker_info.min_ticksize);
 
                         let mut qty = str_f32_parse(&record[2]);
 
                         qty = if size_in_quote_currency {
-                            (qty * price).round()
+                            (qty * price_f32).round()
                         } else {
                             qty
                         };
@@ -1456,7 +1472,7 @@ pub async fn get_hist_trades(
             }
 
             if let Some(latest_trade) = trades.last() {
-                match fetch_intraday_trades(ticker, latest_trade.time).await {
+                match fetch_intraday_trades(ticker_info, latest_trade.time).await {
                     Ok(intraday_trades) => {
                         trades.extend(intraday_trades);
                     }

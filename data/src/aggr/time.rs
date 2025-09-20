@@ -1,11 +1,10 @@
-use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
 use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
-use crate::util::round_to_tick;
 
+use exchange::util::{Price, PriceStep};
 use exchange::{Kline, Timeframe, Trade};
 
 pub trait DataPoint {
@@ -17,13 +16,13 @@ pub trait DataPoint {
 
     fn first_trade_time(&self) -> Option<u64>;
 
-    fn last_price(&self) -> f32;
+    fn last_price(&self) -> Price;
 
     fn kline(&self) -> Option<&Kline>;
 
-    fn value_high(&self) -> f32;
+    fn value_high(&self) -> Price;
 
-    fn value_low(&self) -> f32;
+    fn value_low(&self) -> Price;
 }
 
 pub struct TimeSeries<D: DataPoint> {
@@ -33,11 +32,11 @@ pub struct TimeSeries<D: DataPoint> {
 }
 
 impl<D: DataPoint> TimeSeries<D> {
-    pub fn base_price(&self) -> f32 {
+    pub fn base_price(&self) -> Price {
         self.datapoints
             .values()
             .last()
-            .map_or(0.0, DataPoint::last_price)
+            .map_or(Price::from_units(0), DataPoint::last_price)
     }
 
     pub fn latest_timestamp(&self) -> Option<u64> {
@@ -48,7 +47,7 @@ impl<D: DataPoint> TimeSeries<D> {
         self.datapoints.values().last().and_then(|dp| dp.kline())
     }
 
-    pub fn price_scale(&self, lookback: usize) -> (f32, f32) {
+    pub fn price_scale(&self, lookback: usize) -> (Price, Price) {
         let mut scale_high = 0.0f32;
         let mut scale_low = f32::MAX;
 
@@ -57,11 +56,11 @@ impl<D: DataPoint> TimeSeries<D> {
             .rev()
             .take(lookback)
             .for_each(|(_, dp)| {
-                scale_high = scale_high.max(dp.value_high());
-                scale_low = scale_low.min(dp.value_low());
+                scale_high = scale_high.max(dp.value_high().to_f32());
+                scale_low = scale_low.min(dp.value_low().to_f32());
             });
 
-        (scale_high, scale_low)
+        (Price::from_f32(scale_high), Price::from_f32(scale_low))
     }
 
     pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, (f32, f32)>
@@ -79,18 +78,18 @@ impl<D: DataPoint> TimeSeries<D> {
     }
 
     pub fn min_max_price_in_range(&self, earliest: u64, latest: u64) -> Option<(f32, f32)> {
-        let mut min_price = OrderedFloat(f32::MAX);
-        let mut max_price = OrderedFloat(f32::MIN);
+        let mut min_price = f32::MAX;
+        let mut max_price = f32::MIN;
 
         for (_, dp) in self.datapoints.range(earliest..=latest) {
-            min_price = min_price.min(OrderedFloat(dp.value_low()));
-            max_price = max_price.max(OrderedFloat(dp.value_high()));
+            min_price = min_price.min(dp.value_low().to_f32());
+            max_price = max_price.max(dp.value_high().to_f32());
         }
 
-        if min_price.0 == f32::MAX || max_price.0 == f32::MIN {
+        if min_price == f32::MAX || max_price == f32::MIN {
             None
         } else {
-            Some((*min_price, *max_price))
+            Some((min_price, max_price))
         }
     }
 
@@ -232,13 +231,16 @@ impl TimeSeries<KlineDataPoint> {
             .filter_map(|(&time, dp)| dp.poc_price().map(|price| (time, price)))
             .collect::<Vec<_>>();
 
+        let step = PriceStep::from_f32(self.tick_size);
+
         for (current_time, poc_price) in updates {
             let mut npoc = NPoc::default();
 
             for (&next_time, next_dp) in self.datapoints.range((current_time + 1)..) {
-                if round_to_tick(next_dp.kline.low, self.tick_size) <= poc_price
-                    && round_to_tick(next_dp.kline.high, self.tick_size) >= poc_price
-                {
+                let next_dp_low = next_dp.kline.low.round_to_step(step);
+                let next_dp_high = next_dp.kline.high.round_to_step(step);
+
+                if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     npoc.filled(next_time);
                     break;
                 } else {
@@ -314,8 +316,8 @@ impl TimeSeries<KlineDataPoint> {
         cluster_kind: ClusterKind,
         earliest: u64,
         latest: u64,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
+        highest: Price,
+        lowest: Price,
     ) -> f32 {
         let mut max_cluster_qty: f32 = 0.0;
 

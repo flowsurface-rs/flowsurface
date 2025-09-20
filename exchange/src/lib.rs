@@ -3,6 +3,7 @@ pub mod connect;
 pub mod depth;
 pub mod fetcher;
 mod limiter;
+pub mod util;
 
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
@@ -16,6 +17,8 @@ use serde_json::Value;
 
 use std::sync::OnceLock;
 use std::{fmt, hash::Hash};
+
+use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
 
 pub static SIZE_IN_QUOTE_CURRENCY: OnceLock<bool> = OnceLock::new();
 
@@ -511,68 +514,6 @@ impl<'de> Deserialize<'de> for Ticker {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
-pub struct Power10<const MIN: i8, const MAX: i8> {
-    pub power: i8,
-}
-
-impl<const MIN: i8, const MAX: i8> Power10<MIN, MAX> {
-    #[inline]
-    pub fn new(power: i8) -> Self {
-        Self {
-            power: power.clamp(MIN, MAX),
-        }
-    }
-
-    #[inline]
-    pub fn as_f32(self) -> f32 {
-        10f32.powi(self.power as i32)
-    }
-}
-
-impl<const MIN: i8, const MAX: i8> From<Power10<MIN, MAX>> for f32 {
-    fn from(v: Power10<MIN, MAX>) -> Self {
-        v.as_f32()
-    }
-}
-
-impl<const MIN: i8, const MAX: i8> From<f32> for Power10<MIN, MAX> {
-    fn from(value: f32) -> Self {
-        if value <= 0.0 {
-            return Self { power: 0 };
-        }
-        let log10 = value.abs().log10();
-        let rounded = log10.round() as i8;
-        let power = rounded.clamp(MIN, MAX);
-        Self { power }
-    }
-}
-
-impl<const MIN: i8, const MAX: i8> serde::Serialize for Power10<MIN, MAX> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // serialize as a plain numeric (e.g. 0.1, 1, 10)
-        let v: f32 = (*self).into();
-        serializer.serialize_f32(v)
-    }
-}
-
-impl<'de, const MIN: i8, const MAX: i8> serde::Deserialize<'de> for Power10<MIN, MAX> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let v = f32::deserialize(deserializer)?;
-        Ok(Self::from(v))
-    }
-}
-
-pub type ContractSize = Power10<-4, 6>;
-pub type MinTicksize = Power10<-8, 2>;
-pub type MinQtySize = Power10<-6, 8>;
-
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Hash, Eq)]
 pub struct TickerInfo {
     pub ticker: Ticker,
@@ -616,18 +557,39 @@ pub struct Trade {
     pub time: u64,
     #[serde(deserialize_with = "bool_from_int")]
     pub is_sell: bool,
-    pub price: f32,
+    pub price: Price,
     pub qty: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kline {
     pub time: u64,
-    pub open: f32,
-    pub high: f32,
-    pub low: f32,
-    pub close: f32,
+    pub open: Price,
+    pub high: Price,
+    pub low: Price,
+    pub close: Price,
     pub volume: (f32, f32),
+}
+
+impl Kline {
+    pub fn new(
+        time: u64,
+        open: f32,
+        high: f32,
+        low: f32,
+        close: f32,
+        volume: (f32, f32),
+        min_ticksize: MinTicksize,
+    ) -> Self {
+        Self {
+            time,
+            open: Price::from_f32(open).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            high: Price::from_f32(high).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            low: Price::from_f32(low).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            close: Price::from_f32(close).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            volume,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
