@@ -36,7 +36,7 @@ impl<D: DataPoint> TimeSeries<D> {
         self.datapoints
             .values()
             .last()
-            .map_or(Price::from_units(0), DataPoint::last_price)
+            .map_or(Price::from_f32(0.0), DataPoint::last_price)
     }
 
     pub fn latest_timestamp(&self) -> Option<u64> {
@@ -48,19 +48,27 @@ impl<D: DataPoint> TimeSeries<D> {
     }
 
     pub fn price_scale(&self, lookback: usize) -> (Price, Price) {
-        let mut scale_high = 0.0f32;
-        let mut scale_low = f32::MAX;
+        let mut iter = self.datapoints.iter().rev().take(lookback);
 
-        self.datapoints
-            .iter()
-            .rev()
-            .take(lookback)
-            .for_each(|(_, dp)| {
-                scale_high = scale_high.max(dp.value_high().to_f32());
-                scale_low = scale_low.min(dp.value_low().to_f32());
-            });
+        if let Some((_, first)) = iter.next() {
+            let mut high = first.value_high();
+            let mut low = first.value_low();
 
-        (Price::from_f32(scale_high), Price::from_f32(scale_low))
+            for (_, dp) in iter {
+                let value_high = dp.value_high();
+                let value_low = dp.value_low();
+                if value_high > high {
+                    high = value_high;
+                }
+                if value_low < low {
+                    low = value_low;
+                }
+            }
+
+            (high, low)
+        } else {
+            (Price::from_f32(0.0), Price::from_f32(0.0))
+        }
     }
 
     pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, (f32, f32)>
@@ -77,20 +85,34 @@ impl<D: DataPoint> TimeSeries<D> {
         (earliest, latest)
     }
 
+    pub fn min_max_price_in_range_prices(
+        &self,
+        earliest: u64,
+        latest: u64,
+    ) -> Option<(Price, Price)> {
+        let mut it = self.datapoints.range(earliest..=latest);
+
+        let (_, first) = it.next()?;
+        let mut min_price = first.value_low();
+        let mut max_price = first.value_high();
+
+        for (_, dp) in it {
+            let low = dp.value_low();
+            let high = dp.value_high();
+            if low < min_price {
+                min_price = low;
+            }
+            if high > max_price {
+                max_price = high;
+            }
+        }
+
+        Some((min_price, max_price))
+    }
+
     pub fn min_max_price_in_range(&self, earliest: u64, latest: u64) -> Option<(f32, f32)> {
-        let mut min_price = f32::MAX;
-        let mut max_price = f32::MIN;
-
-        for (_, dp) in self.datapoints.range(earliest..=latest) {
-            min_price = min_price.min(dp.value_low().to_f32());
-            max_price = max_price.max(dp.value_high().to_f32());
-        }
-
-        if min_price == f32::MAX || max_price == f32::MIN {
-            None
-        } else {
-            Some((min_price, max_price))
-        }
+        self.min_max_price_in_range_prices(earliest, latest)
+            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
     pub fn clear_trades(&mut self) {

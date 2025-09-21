@@ -5,7 +5,6 @@ use crate::{
     modal::pane::settings::study::{self, Study},
     style,
 };
-use data::aggr::time::{DataPoint, TimeSeries};
 use data::chart::{
     Basis, ViewConfig,
     heatmap::{
@@ -15,6 +14,10 @@ use data::chart::{
     indicator::HeatmapIndicator,
 };
 use data::util::{abbr_large_numbers, count_decimals};
+use data::{
+    aggr::time::{DataPoint, TimeSeries},
+    chart::Autoscale,
+};
 use exchange::util::{Price, PriceStep};
 use exchange::{SIZE_IN_QUOTE_CURRENCY, TickerInfo, Trade, depth::Depth};
 
@@ -182,7 +185,10 @@ impl HeatmapChart {
                 cell_height: 4.0,
                 tick_size: step,
                 decimals: count_decimals(tick_size),
-                layout,
+                layout: ViewConfig {
+                    splits: layout.splits,
+                    autoscale: Some(Autoscale::CenterLatest.into()),
+                },
                 ticker_info,
                 basis,
                 ..Default::default()

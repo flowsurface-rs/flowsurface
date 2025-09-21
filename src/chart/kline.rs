@@ -6,6 +6,7 @@ use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
+use data::chart::Autoscale;
 use data::chart::kline::ClusterScaling;
 use data::chart::{
     KlineChartKind, ViewConfig,
@@ -203,7 +204,13 @@ impl KlineChart {
                     }
                 });
 
-                let y_ticks = (scale_high.to_f32() - scale_low.to_f32()) / tick_size;
+                let low_rounded = scale_low.round_to_side_step(true, step);
+                let high_rounded = scale_high.round_to_side_step(false, step);
+
+                let y_ticks = Price::steps_between_inclusive(low_rounded, high_rounded, step)
+                    .map(|n| n.saturating_sub(1))
+                    .unwrap_or(1)
+                    .max(1) as f32;
 
                 let mut chart = ViewState {
                     cell_width: match kind {
@@ -218,7 +225,10 @@ impl KlineChart {
                     latest_x,
                     tick_size: step,
                     decimals: count_decimals(tick_size),
-                    layout,
+                    layout: ViewConfig {
+                        splits: layout.splits,
+                        autoscale: Some(Autoscale::FitToVisible.into()),
+                    },
                     ticker_info,
                     basis,
                     ..Default::default()
@@ -271,7 +281,10 @@ impl KlineChart {
                     },
                     tick_size: step,
                     decimals: count_decimals(tick_size),
-                    layout,
+                    layout: ViewConfig {
+                        splits: layout.splits,
+                        autoscale: Some(Autoscale::FitToVisible.into()),
+                    },
                     ticker_info,
                     basis,
                     ..Default::default()

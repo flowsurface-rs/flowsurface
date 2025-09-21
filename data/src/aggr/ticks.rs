@@ -197,25 +197,46 @@ impl TickAggr {
         }
     }
 
-    pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
-        let mut min_price = f32::MAX;
-        let mut max_price = f32::MIN;
+    pub fn min_max_price_in_range_prices(
+        &self,
+        earliest: usize,
+        latest: usize,
+    ) -> Option<(Price, Price)> {
+        if earliest > latest {
+            return None;
+        }
+
+        let mut min_p: Option<Price> = None;
+        let mut max_p: Option<Price> = None;
 
         self.datapoints
             .iter()
             .rev()
             .enumerate()
-            .filter(|(index, _)| *index <= latest && *index >= earliest)
+            .filter(|(idx, _)| *idx >= earliest && *idx <= latest)
             .for_each(|(_, dp)| {
-                min_price = min_price.min(dp.kline.low.to_f32());
-                max_price = max_price.max(dp.kline.high.to_f32());
+                let low = dp.kline.low;
+                let high = dp.kline.high;
+
+                min_p = Some(match min_p {
+                    Some(value) => value.min(low),
+                    None => low,
+                });
+                max_p = Some(match max_p {
+                    Some(value) => value.max(high),
+                    None => high,
+                });
             });
 
-        if min_price == f32::MAX || max_price == f32::MIN {
-            None
-        } else {
-            Some((min_price, max_price))
+        match (min_p, max_p) {
+            (Some(low), Some(high)) => Some((low, high)),
+            _ => None,
         }
+    }
+
+    pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
+        self.min_max_price_in_range_prices(earliest, latest)
+            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
     pub fn max_qty_idx_range(
