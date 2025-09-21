@@ -374,8 +374,7 @@ impl Orderbook {
     }
 
     fn trade_qty_at(&self, price: Price) -> (f32, f32) {
-        let key = price.round_to_step(self.tick_size);
-        if let Some(g) = self.grouped_trades.trades.get(&key) {
+        if let Some(g) = self.grouped_trades.trades.get(&price) {
             (g.buy_qty, g.sell_qty)
         } else {
             (0.0, 0.0)

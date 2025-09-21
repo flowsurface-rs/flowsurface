@@ -24,7 +24,8 @@ pub fn abbr_large_numbers(value: f32) -> String {
             format!("{}{:.3}b", sign, v / 100_000_000.0)
         }
         v if v >= 1_000_000.0 => format!("{}{:.2}m", sign, v / 1_000_000.0),
-        v if v >= 1_000.0 => format!("{}{:.1}k", sign, v / 1_000.0),
+        v if v >= 10_000.0 => format!("{}{:.1}k", sign, v / 1_000.0),
+        v if v >= 1_000.0 => format!("{}{:.2}k", sign, v / 1_000.0),
         v if v >= 100.0 => format!("{}{:.0}", sign, v),
         v if v >= 10.0 => format!("{}{:.1}", sign, v),
         v if v >= 1.0 => format!("{}{:.2}", sign, v),

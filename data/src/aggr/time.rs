@@ -257,8 +257,8 @@ impl TimeSeries<KlineDataPoint> {
             let mut npoc = NPoc::default();
 
             for (&next_time, next_dp) in self.datapoints.range((current_time + 1)..) {
-                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
-                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
+                let next_dp_low = next_dp.kline.low.round_to_side_step(true, self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_side_step(false, self.tick_size);
 
                 if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     npoc.filled(next_time);

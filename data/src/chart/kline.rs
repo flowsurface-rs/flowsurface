@@ -154,13 +154,12 @@ impl KlineTrades {
     }
 
     pub fn add_trade_at_price_level(&mut self, trade: &Trade, step: PriceStep) {
-        let price_level = trade.price.round_to_step(step);
+        let price = trade.price.round_to_side_step(trade.is_sell, step);
 
-        if let Some(group) = self.trades.get_mut(&price_level) {
-            group.add_trade(trade);
-        } else {
-            self.trades.insert(price_level, GroupedTrades::new(trade));
-        }
+        self.trades
+            .entry(price)
+            .and_modify(|group| group.add_trade(trade))
+            .or_insert_with(|| GroupedTrades::new(trade));
     }
 
     pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> f32

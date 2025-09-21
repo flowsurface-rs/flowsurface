@@ -176,8 +176,8 @@ impl TickAggr {
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.datapoints[next_idx];
 
-                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
-                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
+                let next_dp_low = next_dp.kline.low.round_to_side_step(true, self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_side_step(false, self.tick_size);
 
                 if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     // on render we reverse the order of the points
