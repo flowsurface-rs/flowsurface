@@ -15,7 +15,7 @@ pub struct TickAccumulation {
 impl TickAccumulation {
     pub fn new(trade: &Trade, step: PriceStep) -> Self {
         let mut footprint = KlineTrades::new();
-        footprint.add_trade_at_price_level(trade, step);
+        footprint.add_trade_to_nearest_bin(trade, step);
 
         let kline = Kline {
             time: trade.time,
@@ -52,7 +52,7 @@ impl TickAccumulation {
     }
 
     fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
-        self.footprint.add_trade_at_price_level(trade, step);
+        self.footprint.add_trade_to_nearest_bin(trade, step);
     }
 
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {

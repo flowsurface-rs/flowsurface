@@ -76,8 +76,7 @@ impl Orderbook {
         let tick_size = self.tick_size;
 
         for trade in trades_buffer {
-            self.grouped_trades
-                .add_trade_at_price_level(trade, tick_size);
+            self.grouped_trades.add_trade_to_side_bin(trade, tick_size);
             self.raw_trades.push(*trade);
         }
     }
@@ -102,7 +101,7 @@ impl Orderbook {
 
         self.grouped_trades.clear();
         for trade in &self.raw_trades {
-            self.grouped_trades.add_trade_at_price_level(trade, step);
+            self.grouped_trades.add_trade_to_side_bin(trade, step);
         }
 
         self.invalidate(Some(Instant::now()));
