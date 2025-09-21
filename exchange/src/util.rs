@@ -101,10 +101,27 @@ impl Price {
     /// number of decimal places of the atomic unit (10^-8)
     pub const PRICE_SCALE: i32 = 8;
 
-    pub fn to_string_dp(self, dp: u32) -> String {
-        let dp = dp.min(Self::PRICE_SCALE as u32);
-        let scale = Self::PRICE_SCALE as u32;
-        let unit = 10i64.pow(scale - dp);
+    #[inline]
+    pub fn to_string<const MIN: i8, const MAX: i8>(self, precision: Power10<MIN, MAX>) -> String {
+        let mut out = String::with_capacity(24);
+        self.fmt_into(precision, &mut out).unwrap();
+        out
+    }
+
+    #[inline]
+    pub fn fmt_into<const MIN: i8, const MAX: i8, W: core::fmt::Write>(
+        self,
+        precision: Power10<MIN, MAX>,
+        out: &mut W,
+    ) -> core::fmt::Result {
+        let scale_u = Self::PRICE_SCALE as u32;
+
+        // number of atomic units for the given decade step: 10^(PRICE_SCALE + power)
+        let exp = (Self::PRICE_SCALE + precision.power as i32) as u32;
+        debug_assert!(Self::PRICE_SCALE + precision.power as i32 >= 0);
+        let unit = 10i64
+            .checked_pow(exp)
+            .expect("Price::to_string unit overflow");
 
         let u = self.units;
         let half = unit / 2;
@@ -114,20 +131,28 @@ impl Price {
             ((u - half).div_euclid(unit)) * unit
         };
 
-        let sign = if rounded_units < 0 { "-" } else { "" };
+        let decimals: u32 = if precision.power < 0 {
+            ((-precision.power) as u32).min(scale_u)
+        } else {
+            0
+        };
+
+        if rounded_units < 0 {
+            core::fmt::Write::write_char(out, '-')?;
+        }
         let abs_u = (rounded_units as i128).unsigned_abs();
 
-        let scale_pow = 10u128.pow(scale);
+        let scale_pow = 10u128.pow(scale_u);
         let int_part = abs_u / scale_pow;
-        if dp == 0 {
-            return format!("{}{}", sign, int_part);
+        write!(out, "{}", int_part)?;
+
+        if decimals == 0 {
+            return Ok(());
         }
 
-        let frac_div = 10u128.pow(scale - dp);
+        let frac_div = 10u128.pow(scale_u - decimals);
         let frac_part = (abs_u % scale_pow) / frac_div;
-        let frac_str = format!("{:0width$}", frac_part, width = dp as usize);
-
-        format!("{}{}.{frac_str}", sign, int_part)
+        write!(out, ".{:0width$}", frac_part, width = decimals as usize)
     }
 
     /// Lossy: convert price to f32, may lose precision if going beyond `PRICE_SCALE`

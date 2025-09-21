@@ -119,8 +119,12 @@ impl Orderbook {
         self.tick_size.to_f32_lossy()
     }
 
-    fn format_price(&self, price: Price) -> String {
-        price.to_string_dp(self.decimals as u32)
+    fn format_price(&self, price: Price) -> Option<String> {
+        if let Some(info) = self.ticker_info {
+            Some(price.to_string(info.min_ticksize))
+        } else {
+            None
+        }
     }
 
     fn format_quantity(&self, qty: f32) -> String {
@@ -270,7 +274,7 @@ impl canvas::Program<Message> for Orderbook {
                         {
                             let spread = spread.round_to_min_tick(info.min_ticksize);
                             let content =
-                                format!("Spread: {}", spread.to_string_dp(self.decimals as u32));
+                                format!("Spread: {}", spread.to_string(info.min_ticksize));
                             frame.fill_text(Text {
                                 content,
                                 position: Point::new(
@@ -648,16 +652,17 @@ impl Orderbook {
         );
 
         // Price
-        let price_txt = self.format_price(price);
-        let price_x_center = (cols.price.0 + cols.price.1) * 0.5;
-        Self::draw_cell_text(
-            frame,
-            &price_txt,
-            price_x_center,
-            y,
-            side_color,
-            Alignment::Center,
-        );
+        if let Some(price_text) = self.format_price(price) {
+            let price_x_center = (cols.price.0 + cols.price.1) * 0.5;
+            Self::draw_cell_text(
+                frame,
+                &price_text,
+                price_x_center,
+                y,
+                side_color,
+                Alignment::Center,
+            );
+        }
     }
 
     fn fill_bar(
