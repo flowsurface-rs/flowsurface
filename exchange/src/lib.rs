@@ -8,10 +8,6 @@ pub mod util;
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
 
-use rust_decimal::{
-    Decimal,
-    prelude::{FromPrimitive, ToPrimitive},
-};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -690,38 +686,22 @@ impl TickMultiplier {
     ///
     /// Usually used for price steps in chart scales
     pub fn multiply_with_min_tick_size(&self, ticker_info: TickerInfo) -> f32 {
-        let min_tick_size: f32 = ticker_info.min_ticksize.into();
+        // MinTicksize is 10^p with p in [-8, 2]
+        let power = ticker_info.min_ticksize.power as i32;
+        let multiply = self.0 as f32;
 
-        let Some(multiplier) = Decimal::from_f32(f32::from(self.0)) else {
-            log::error!("Failed to convert multiplier: {}", self.0);
-            return f32::from(self.0) * min_tick_size;
-        };
+        let decimal_places: u32 = if power < 0 { (-power) as u32 } else { 0 };
 
-        let Some(decimal_min_tick_size) = Decimal::from_f32(min_tick_size) else {
-            log::error!("Failed to convert min_tick_size: {min_tick_size}",);
-            return f32::from(self.0) * min_tick_size;
-        };
-
-        let normalized = multiplier * decimal_min_tick_size.normalize();
-        if let Some(tick_size) = normalized.to_f32() {
-            let decimal_places = calculate_decimal_places(min_tick_size);
-            round_to_decimal_places(tick_size, decimal_places)
+        let raw = if power >= 0 {
+            multiply * 10f32.powi(power)
         } else {
-            log::error!("Failed to calculate tick size for multiplier: {}", self.0);
-            f32::from(self.0) * min_tick_size
-        }
+            multiply / 10f32.powi(-power)
+        };
+
+        round_to_decimal_places(raw, decimal_places)
     }
 }
 
-// ticksize rounding helpers
-fn calculate_decimal_places(value: f32) -> u32 {
-    let s = value.to_string();
-    if let Some(decimal_pos) = s.find('.') {
-        (s.len() - decimal_pos - 1) as u32
-    } else {
-        0
-    }
-}
 fn round_to_decimal_places(value: f32, places: u32) -> f32 {
     let factor = 10.0f32.powi(places as i32);
     (value * factor).round() / factor

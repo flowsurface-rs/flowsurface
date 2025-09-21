@@ -187,7 +187,7 @@ impl HeatmapChart {
                 decimals: count_decimals(tick_size),
                 layout: ViewConfig {
                     splits: layout.splits,
-                    autoscale: Some(Autoscale::CenterLatest.into()),
+                    autoscale: Some(Autoscale::CenterLatest),
                 },
                 ticker_info,
                 basis,

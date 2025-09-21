@@ -227,7 +227,7 @@ impl KlineChart {
                     decimals: count_decimals(tick_size),
                     layout: ViewConfig {
                         splits: layout.splits,
-                        autoscale: Some(Autoscale::FitToVisible.into()),
+                        autoscale: Some(Autoscale::FitToVisible),
                     },
                     ticker_info,
                     basis,
@@ -283,7 +283,7 @@ impl KlineChart {
                     decimals: count_decimals(tick_size),
                     layout: ViewConfig {
                         splits: layout.splits,
-                        autoscale: Some(Autoscale::FitToVisible.into()),
+                        autoscale: Some(Autoscale::FitToVisible),
                     },
                     ticker_info,
                     basis,
