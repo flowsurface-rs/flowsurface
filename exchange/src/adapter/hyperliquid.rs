@@ -1,4 +1,4 @@
-use crate::TickMultiplier;
+use crate::{Price, TickMultiplier};
 
 use super::{
     super::{
@@ -6,7 +6,7 @@ use super::{
         TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32,
-        depth::{DepthPayload, DepthUpdate, LocalDepthCache, Order},
+        depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
     },
     AdapterError, Event,
@@ -842,16 +842,15 @@ pub async fn fetch_klines(
                 hl_kline.volume
             };
 
-            let kline = Kline {
-                time: hl_kline.time,
-                open: hl_kline.open,
-                high: hl_kline.high,
-                low: hl_kline.low,
-                close: hl_kline.close,
-                // -1.0 for the sources that don't provide individual buy/sell volume,
-                // negative value indicates the other field is the total volume
-                volume: (-1.0, volume),
-            };
+            let kline = Kline::new(
+                hl_kline.time,
+                hl_kline.open,
+                hl_kline.high,
+                hl_kline.low,
+                hl_kline.close,
+                (-1.0, volume),
+                ticker_info.min_ticksize,
+            );
             klines.push(kline);
         }
     }
@@ -1026,15 +1025,19 @@ pub fn connect_market_stream(
                                     match stream_data {
                                         StreamData::Trade(trades) => {
                                             for hl_trade in trades {
+                                                let price = Price::from_f32(hl_trade.px)
+                                                    .round_to_min_tick(ticker_info.min_ticksize);
+                                                let qty = if size_in_quote_currency {
+                                                    (hl_trade.sz * hl_trade.px).round()
+                                                } else {
+                                                    hl_trade.sz
+                                                };
+
                                                 let trade = Trade {
                                                     time: hl_trade.time,
                                                     is_sell: hl_trade.side == "A", // A for Ask/Sell, B for Bid/Buy
-                                                    price: hl_trade.px,
-                                                    qty: if size_in_quote_currency {
-                                                        (hl_trade.sz * hl_trade.px).round()
-                                                    } else {
-                                                        hl_trade.sz
-                                                    },
+                                                    price,
+                                                    qty,
                                                 };
                                                 trades_buffer.push(trade);
                                             }
@@ -1042,7 +1045,7 @@ pub fn connect_market_stream(
                                         StreamData::Depth(depth) => {
                                             let bids = depth.levels[0]
                                                 .iter()
-                                                .map(|level| Order {
+                                                .map(|level| DeOrder {
                                                     price: level.px,
                                                     qty: if size_in_quote_currency {
                                                         (level.sz * level.px).round()
@@ -1053,7 +1056,7 @@ pub fn connect_market_stream(
                                                 .collect();
                                             let asks = depth.levels[1]
                                                 .iter()
-                                                .map(|level| Order {
+                                                .map(|level| DeOrder {
                                                     price: level.px,
                                                     qty: if size_in_quote_currency {
                                                         (level.sz * level.px).round()
@@ -1069,8 +1072,10 @@ pub fn connect_market_stream(
                                                 bids,
                                                 asks,
                                             };
-                                            local_depth_cache
-                                                .update(DepthUpdate::Snapshot(depth_payload));
+                                            local_depth_cache.update(
+                                                DepthUpdate::Snapshot(depth_payload),
+                                                ticker_info.min_ticksize,
+                                            );
 
                                             let stream_kind = StreamKind::DepthAndTrades {
                                                 ticker_info,
@@ -1228,14 +1233,15 @@ pub fn connect_kline_stream(
                                         hl_kline.volume
                                     };
 
-                                    let kline = Kline {
-                                        time: hl_kline.time,
-                                        open: hl_kline.open,
-                                        high: hl_kline.high,
-                                        low: hl_kline.low,
-                                        close: hl_kline.close,
-                                        volume: (-1.0, volume),
-                                    };
+                                    let kline = Kline::new(
+                                        hl_kline.time,
+                                        hl_kline.open,
+                                        hl_kline.high,
+                                        hl_kline.low,
+                                        hl_kline.close,
+                                        (-1.0, volume),
+                                        info.min_ticksize,
+                                    );
 
                                     let stream_kind = StreamKind::Kline {
                                         ticker_info: info,
@@ -1319,7 +1325,7 @@ async fn fetch_orderbook(
 
     let bids = depth.levels[0]
         .iter()
-        .map(|level| Order {
+        .map(|level| DeOrder {
             price: level.px,
             qty: if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
                 (level.sz * level.px).round()
@@ -1330,7 +1336,7 @@ async fn fetch_orderbook(
         .collect();
     let asks = depth.levels[1]
         .iter()
-        .map(|level| Order {
+        .map(|level| DeOrder {
             price: level.px,
             qty: if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
                 (level.sz * level.px).round()

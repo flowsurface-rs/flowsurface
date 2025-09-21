@@ -1,9 +1,11 @@
-use exchange::{Kline, Trade};
-use ordered_float::OrderedFloat;
+use exchange::{
+    Kline, Trade,
+    util::{Price, PriceStep},
+};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{aggr::time::DataPoint, util::round_to_tick};
+use crate::aggr::time::DataPoint;
 
 pub struct KlineDataPoint {
     pub kline: Kline,
@@ -11,12 +13,7 @@ pub struct KlineDataPoint {
 }
 
 impl KlineDataPoint {
-    pub fn max_cluster_qty(
-        &self,
-        cluster_kind: ClusterKind,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
-    ) -> f32 {
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
         match cluster_kind {
             ClusterKind::BidAsk => self.footprint.max_qty_by(highest, lowest, f32::max),
             ClusterKind::DeltaProfile => self
@@ -29,11 +26,11 @@ impl KlineDataPoint {
         }
     }
 
-    pub fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
-        self.footprint.add_trade_at_price_level(trade, tick_size);
+    pub fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
+        self.footprint.add_trade_at_price_level(trade, step);
     }
 
-    pub fn poc_price(&self) -> Option<f32> {
+    pub fn poc_price(&self) -> Option<Price> {
         self.footprint.poc_price()
     }
 
@@ -59,8 +56,8 @@ impl KlineDataPoint {
 }
 
 impl DataPoint for KlineDataPoint {
-    fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
-        self.add_trade(trade, tick_size);
+    fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
+        self.add_trade(trade, step);
     }
 
     fn clear_trades(&mut self) {
@@ -75,7 +72,7 @@ impl DataPoint for KlineDataPoint {
         self.first_trade_time()
     }
 
-    fn last_price(&self) -> f32 {
+    fn last_price(&self) -> Price {
         self.kline.close
     }
 
@@ -83,11 +80,11 @@ impl DataPoint for KlineDataPoint {
         Some(&self.kline)
     }
 
-    fn value_high(&self) -> f32 {
+    fn value_high(&self) -> Price {
         self.kline.high
     }
 
-    fn value_low(&self) -> f32 {
+    fn value_low(&self) -> Price {
         self.kline.low
     }
 }
@@ -136,7 +133,7 @@ impl GroupedTrades {
 
 #[derive(Debug, Clone, Default)]
 pub struct KlineTrades {
-    pub trades: FxHashMap<OrderedFloat<f32>, GroupedTrades>,
+    pub trades: FxHashMap<Price, GroupedTrades>,
     pub poc: Option<PointOfControl>,
 }
 
@@ -156,8 +153,8 @@ impl KlineTrades {
         self.trades.values().map(|group| group.last_time).max()
     }
 
-    pub fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
-        let price_level = OrderedFloat(round_to_tick(trade.price, tick_size));
+    pub fn add_trade_at_price_level(&mut self, trade: &Trade, step: PriceStep) {
+        let price_level = trade.price.round_to_step(step);
 
         if let Some(group) = self.trades.get_mut(&price_level) {
             group.add_trade(trade);
@@ -166,13 +163,13 @@ impl KlineTrades {
         }
     }
 
-    pub fn max_qty_by<F>(&self, highest: OrderedFloat<f32>, lowest: OrderedFloat<f32>, f: F) -> f32
+    pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> f32
     where
         F: Fn(f32, f32) -> f32,
     {
         let mut max_qty: f32 = 0.0;
         for (price, group) in &self.trades {
-            if price >= &lowest && price <= &highest {
+            if *price >= lowest && *price <= highest {
                 max_qty = max_qty.max(f(group.buy_qty, group.sell_qty));
             }
         }
@@ -185,13 +182,13 @@ impl KlineTrades {
         }
 
         let mut max_volume = 0.0;
-        let mut poc_price = 0.0;
+        let mut poc_price = Price::from_f32(0.0);
 
         for (price, group) in &self.trades {
             let total_volume = group.total_qty();
             if total_volume > max_volume {
                 max_volume = total_volume;
-                poc_price = price.0;
+                poc_price = *price;
             }
         }
 
@@ -208,7 +205,7 @@ impl KlineTrades {
         }
     }
 
-    pub fn poc_price(&self) -> Option<f32> {
+    pub fn poc_price(&self) -> Option<Price> {
         self.poc.map(|poc| poc.price)
     }
 
@@ -387,11 +384,21 @@ impl std::fmt::Display for FootprintStudy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct PointOfControl {
-    pub price: f32,
+    pub price: Price,
     pub volume: f32,
     pub status: NPoc,
+}
+
+impl Default for PointOfControl {
+    fn default() -> Self {
+        Self {
+            price: Price::from_f32(0.0),
+            volume: 0.0,
+            status: NPoc::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

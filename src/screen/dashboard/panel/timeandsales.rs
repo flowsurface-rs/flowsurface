@@ -5,6 +5,7 @@ use crate::style;
 pub use data::chart::timeandsales::Config;
 use data::chart::timeandsales::TradeDisplay;
 use data::config::theme::{darken, lighten};
+use exchange::util::Price;
 use exchange::{TickerInfo, Trade};
 
 use iced::widget::canvas::{self, Text};
@@ -98,14 +99,14 @@ impl TimeAndSales {
             ) {
                 let converted_trade = TradeDisplay {
                     time_str: trade_time.format("%M:%S.%3f").to_string(),
-                    price: trade.price,
+                    price: trade.price.to_f32(),
                     qty: trade.qty,
                     is_sell: trade.is_sell,
                 };
 
                 let trade_size = market_type.qty_in_quote_value(
                     converted_trade.qty,
-                    converted_trade.price,
+                    trade.price,
                     size_in_quote_currency,
                 );
 
@@ -126,8 +127,11 @@ impl TimeAndSales {
                 self.max_filtered_qty = self.recent_trades[drain_amount..]
                     .iter()
                     .filter(|t| {
-                        let trade_size =
-                            market_type.qty_in_quote_value(t.qty, t.price, size_in_quote_currency);
+                        let trade_size = market_type.qty_in_quote_value(
+                            t.qty,
+                            Price::from_f32(t.price),
+                            size_in_quote_currency,
+                        );
                         trade_size >= size_filter
                     })
                     .map(|t| t.qty)
@@ -278,8 +282,11 @@ impl canvas::Program<Message> for TimeAndSales {
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size =
-                        market_type.qty_in_quote_value(t.qty, t.price, size_in_quote_currency);
+                    let trade_size = market_type.qty_in_quote_value(
+                        t.qty,
+                        Price::from_f32(t.price),
+                        size_in_quote_currency,
+                    );
                     trade_size >= self.config.trade_size_filter
                 })
                 .rev()

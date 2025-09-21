@@ -15,7 +15,7 @@ use crate::{
 };
 use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 use exchange::{
-    Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
+    Kline, TickMultiplier, TickerInfo, Timeframe, Trade,
     adapter::{
         self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
         StreamTicksize, UniqueStreams, binance, bybit, hyperliquid, okex,
@@ -1451,7 +1451,7 @@ fn request_fetch(
                     let data_path = data::data_path(Some("market_data/binance/"));
 
                     let (task, handle) = Task::sip(
-                        fetch_trades_batched(ticker_info.ticker, from_time, to_time, data_path),
+                        fetch_trades_batched(ticker_info, from_time, to_time, data_path),
                         move |batch| {
                             let data = FetchedData::Trades {
                                 batch,
@@ -1568,7 +1568,7 @@ fn kline_fetch_task(
 }
 
 pub fn fetch_trades_batched(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     from_time: u64,
     to_time: u64,
     data_path: PathBuf,
@@ -1577,7 +1577,7 @@ pub fn fetch_trades_batched(
         let mut latest_trade_t = from_time;
 
         while latest_trade_t < to_time {
-            match binance::fetch_trades(ticker, latest_trade_t, data_path.clone()).await {
+            match binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone()).await {
                 Ok(batch) => {
                     if batch.is_empty() {
                         break;

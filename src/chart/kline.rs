@@ -6,13 +6,15 @@ use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
+use data::chart::Autoscale;
 use data::chart::kline::ClusterScaling;
 use data::chart::{
     KlineChartKind, ViewConfig,
     indicator::{Indicator, KlineIndicator},
     kline::{ClusterKind, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl},
 };
-use data::util::{abbr_large_numbers, count_decimals, round_to_tick};
+use data::util::{abbr_large_numbers, count_decimals};
+use exchange::util::{Price, PriceStep};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
     fetcher::{FetchRange, RequestHandler},
@@ -24,7 +26,6 @@ use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
 use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
-use ordered_float::OrderedFloat;
 use std::time::Instant;
 
 impl Chart for KlineChart {
@@ -189,8 +190,10 @@ impl KlineChart {
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
+                let step = PriceStep::from_f32(tick_size);
+
                 let timeseries =
-                    TimeSeries::<KlineDataPoint>::new(interval, tick_size, &raw_trades, klines_raw);
+                    TimeSeries::<KlineDataPoint>::new(interval, step, &raw_trades, klines_raw);
 
                 let base_price_y = timeseries.base_price();
                 let latest_x = timeseries.latest_timestamp().unwrap_or(0);
@@ -201,7 +204,13 @@ impl KlineChart {
                     }
                 });
 
-                let y_ticks = (scale_high - scale_low) / tick_size;
+                let low_rounded = scale_low.round_to_side_step(true, step);
+                let high_rounded = scale_high.round_to_side_step(false, step);
+
+                let y_ticks = Price::steps_between_inclusive(low_rounded, high_rounded, step)
+                    .map(|n| n.saturating_sub(1))
+                    .unwrap_or(1)
+                    .max(1) as f32;
 
                 let mut chart = ViewState {
                     cell_width: match kind {
@@ -214,9 +223,12 @@ impl KlineChart {
                     },
                     base_price_y,
                     latest_x,
-                    tick_size,
+                    tick_size: step,
                     decimals: count_decimals(tick_size),
-                    layout,
+                    layout: ViewConfig {
+                        splits: layout.splits,
+                        autoscale: Some(Autoscale::FitToVisible),
+                    },
                     ticker_info,
                     basis,
                     ..Default::default()
@@ -256,6 +268,8 @@ impl KlineChart {
                 }
             }
             Basis::Tick(interval) => {
+                let step = PriceStep::from_f32(tick_size);
+
                 let mut chart = ViewState {
                     cell_width: match kind {
                         KlineChartKind::Footprint { .. } => 80.0,
@@ -265,9 +279,12 @@ impl KlineChart {
                         KlineChartKind::Footprint { .. } => 90.0,
                         KlineChartKind::Candles => 8.0,
                     },
-                    tick_size,
+                    tick_size: step,
                     decimals: count_decimals(tick_size),
-                    layout,
+                    layout: ViewConfig {
+                        splits: layout.splits,
+                        autoscale: Some(Autoscale::FitToVisible),
+                    },
                     ticker_info,
                     basis,
                     ..Default::default()
@@ -285,8 +302,7 @@ impl KlineChart {
                 };
                 chart.translation.x = x_translation;
 
-                let data_source =
-                    PlotData::TickBased(TickAggr::new(interval, tick_size, &raw_trades));
+                let data_source = PlotData::TickBased(TickAggr::new(interval, step, &raw_trades));
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
@@ -326,7 +342,10 @@ impl KlineChart {
                     chart.latest_x = kline.time;
                 }
 
-                chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
+                chart.last_price = Some(PriceInfoLabel::new(
+                    kline.close.to_f32(),
+                    kline.open.to_f32(),
+                ));
             }
             PlotData::TickBased(_) => {}
         }
@@ -437,7 +456,7 @@ impl KlineChart {
     }
 
     pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size
+        self.chart.tick_size.to_f32_lossy()
     }
 
     pub fn study_configurator(&self) -> &study::Configurator<FootprintStudy> {
@@ -507,8 +526,10 @@ impl KlineChart {
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
         let chart = self.mut_state();
 
-        chart.cell_height *= new_tick_size / chart.tick_size;
-        chart.tick_size = new_tick_size;
+        let step = PriceStep::from_f32(new_tick_size);
+
+        chart.cell_height *= new_tick_size / chart.tick_size.to_f32_lossy();
+        chart.tick_size = step;
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
@@ -569,8 +590,10 @@ impl KlineChart {
                 tick_aggr.insert_trades(trades_buffer);
 
                 if let Some(last_dp) = tick_aggr.datapoints.last() {
-                    self.chart.last_price =
-                        Some(PriceInfoLabel::new(last_dp.kline.close, last_dp.kline.open));
+                    self.chart.last_price = Some(PriceInfoLabel::new(
+                        last_dp.kline.close.to_f32(),
+                        last_dp.kline.open.to_f32(),
+                    ));
                 } else {
                     self.chart.last_price = None;
                 }
@@ -647,13 +670,14 @@ impl KlineChart {
         &self,
         earliest: u64,
         latest: u64,
-        highest: f32,
-        lowest: f32,
-        tick_size: f32,
+        highest: Price,
+        lowest: Price,
+        step: PriceStep,
         cluster_kind: ClusterKind,
     ) -> f32 {
-        let rounded_highest = OrderedFloat(round_to_tick(highest + tick_size, tick_size));
-        let rounded_lowest = OrderedFloat(round_to_tick(lowest - tick_size, tick_size));
+        let rounded_highest = highest.round_to_side_step(false, step).add_steps(1, step);
+
+        let rounded_lowest = lowest.round_to_side_step(true, step).add_steps(-1, step);
 
         match &self.data_source {
             PlotData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
@@ -742,11 +766,11 @@ impl KlineChart {
                         if price_span > 0.0 && chart.bounds.height > f32::EPSILON {
                             let padded_highest = highest + padding;
                             let chart_height = chart.bounds.height;
-                            let tick_size = chart.tick_size;
+                            let tick_size = chart.tick_size.to_f32_lossy();
 
                             if tick_size > 0.0 {
                                 chart.cell_height = (chart_height * tick_size) / price_span;
-                                chart.base_price_y = padded_highest;
+                                chart.base_price_y = Price::from_f32(padded_highest);
                                 chart.translation.y = -chart_height / 2.0;
                             }
                         }
@@ -830,8 +854,8 @@ impl canvas::Program<Message> for KlineChart {
             let region = chart.visible_region(frame.size());
             let (earliest, latest) = chart.interval_range(&region);
 
-            let price_to_y = |price: f32| chart.price_to_y(price);
-            let interval_to_x = |interval: u64| chart.interval_to_x(interval);
+            let price_to_y = |price| chart.price_to_y(price);
+            let interval_to_x = |interval| chart.interval_to_x(interval);
 
             match &self.kind {
                 KlineChartKind::Footprint {
@@ -993,7 +1017,7 @@ impl canvas::Program<Message> for KlineChart {
 
 fn draw_footprint_kline(
     frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
+    price_to_y: impl Fn(Price) -> f32,
     x_position: f32,
     candle_width: f32,
     kline: &Kline,
@@ -1038,7 +1062,7 @@ fn draw_footprint_kline(
 
 fn draw_candle_dp(
     frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
+    price_to_y: impl Fn(Price) -> f32,
     candle_width: f32,
     palette: &Extended,
     x_position: f32,
@@ -1119,7 +1143,7 @@ fn render_data_source<F>(
 fn draw_all_npocs(
     data_source: &PlotData<KlineDataPoint>,
     frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
+    price_to_y: impl Fn(Price) -> f32,
     interval_to_x: impl Fn(u64) -> f32,
     candle_width: f32,
     cell_width: f32,
@@ -1304,7 +1328,7 @@ fn effective_cluster_qty(
 
 fn draw_clusters(
     frame: &mut canvas::Frame,
-    price_to_y: impl Fn(f32) -> f32,
+    price_to_y: impl Fn(Price) -> f32,
     x_position: f32,
     cell_width: f32,
     cell_height: f32,
@@ -1341,7 +1365,7 @@ fn draw_clusters(
             let bar_alpha = if show_text { 0.25 } else { 1.0 };
 
             for (price, group) in &footprint.trades {
-                let y = price_to_y(**price);
+                let y = price_to_y(*price);
 
                 match cluster_kind {
                     ClusterKind::VolumeProfile => {
@@ -1404,7 +1428,10 @@ fn draw_clusters(
                 }
 
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance {
-                    let higher_price = OrderedFloat(round_to_tick(**price + tick_size, tick_size));
+                    let step = PriceStep::from_f32(tick_size);
+                    let higher_price =
+                        Price::from_f32(price.to_f32() + tick_size).round_to_step(step);
+
                     let rect_w = ((area.imb_marker_width - 1.0) / 2.0).max(1.0);
                     let buyside_x = area.imb_marker_left + area.imb_marker_width - rect_w;
                     let sellside_x =
@@ -1464,7 +1491,7 @@ fn draw_clusters(
             let left_area_width = (area.ask_area_right - left_min_x).max(0.0);
 
             for (price, group) in &footprint.trades {
-                let y = price_to_y(**price);
+                let y = price_to_y(*price);
 
                 if group.buy_qty > 0.0 && right_area_width > 0.0 {
                     if show_text {
@@ -1514,7 +1541,10 @@ fn draw_clusters(
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance
                     && area.imb_marker_width > 0.0
                 {
-                    let higher_price = OrderedFloat(round_to_tick(**price + tick_size, tick_size));
+                    let step = PriceStep::from_f32(tick_size);
+                    let higher_price =
+                        Price::from_f32(price.to_f32() + tick_size).round_to_step(step);
+
                     let rect_width = ((area.imb_marker_width - 1.0) / 2.0).max(1.0);
 
                     let buyside_x = area.bid_area_right - rect_width - spacing.marker_to_bars;
@@ -1553,11 +1583,11 @@ fn draw_clusters(
 
 fn draw_imbalance_markers(
     frame: &mut canvas::Frame,
-    price_to_y: &impl Fn(f32) -> f32,
+    price_to_y: &impl Fn(Price) -> f32,
     footprint: &KlineTrades,
-    price: OrderedFloat<f32>,
+    price: Price,
     sell_qty: f32,
-    higher_price: OrderedFloat<f32>,
+    higher_price: Price,
     threshold: usize,
     color_scale: Option<usize>,
     ignore_zeros: bool,
@@ -1595,7 +1625,7 @@ fn draw_imbalance_markers(
                 let ratio = diagonal_buy_qty / required_qty;
                 let alpha = alpha_from_ratio(ratio);
 
-                let y = price_to_y(*higher_price);
+                let y = price_to_y(higher_price);
                 frame.fill_rectangle(
                     Point::new(buyside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
@@ -1608,7 +1638,7 @@ fn draw_imbalance_markers(
                 let ratio = sell_qty / required_qty;
                 let alpha = alpha_from_ratio(ratio);
 
-                let y = price_to_y(*price);
+                let y = price_to_y(price);
                 frame.fill_rectangle(
                     Point::new(sellside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
@@ -1697,7 +1727,8 @@ fn draw_crosshair_tooltip(
     };
 
     if let Some(kline) = kline_opt {
-        let change_pct = ((kline.close - kline.open) / kline.open) * 100.0;
+        let change_pct =
+            ((kline.close.to_f32() - kline.open.to_f32()) / kline.open.to_f32()) * 100.0;
         let change_color = if change_pct >= 0.0 {
             palette.success.base.color
         } else {
@@ -1708,13 +1739,13 @@ fn draw_crosshair_tooltip(
 
         let segments = [
             ("O", base_color, false),
-            (&kline.open.to_string(), change_color, true),
+            (&kline.open.to_f32().to_string(), change_color, true),
             ("H", base_color, false),
-            (&kline.high.to_string(), change_color, true),
+            (&kline.high.to_f32().to_string(), change_color, true),
             ("L", base_color, false),
-            (&kline.low.to_string(), change_color, true),
+            (&kline.low.to_f32().to_string(), change_color, true),
             ("C", base_color, false),
-            (&kline.close.to_string(), change_color, true),
+            (&kline.close.to_f32().to_string(), change_color, true),
             (&format!("{change_pct:+.2}%"), change_color, true),
         ];
 

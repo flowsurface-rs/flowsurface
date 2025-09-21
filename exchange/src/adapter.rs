@@ -1,5 +1,7 @@
 use super::{Ticker, Timeframe};
-use crate::{Kline, OpenInterest, TickMultiplier, TickerInfo, TickerStats, Trade, depth::Depth};
+use crate::{
+    Kline, OpenInterest, Price, TickMultiplier, TickerInfo, TickerStats, Trade, depth::Depth,
+};
 
 use enum_map::{Enum, EnumMap};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -132,14 +134,14 @@ impl MarketKind {
         MarketKind::InversePerps,
     ];
 
-    pub fn qty_in_quote_value(&self, qty: f32, price: f32, size_in_quote_currency: bool) -> f32 {
+    pub fn qty_in_quote_value(&self, qty: f32, price: Price, size_in_quote_currency: bool) -> f32 {
         match self {
             MarketKind::InversePerps => qty,
             _ => {
                 if size_in_quote_currency {
                     qty
                 } else {
-                    price * qty
+                    price.to_f32() * qty
                 }
             }
         }
