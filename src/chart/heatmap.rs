@@ -157,6 +157,8 @@ impl HeatmapChart {
         config: Option<Config>,
         studies: Vec<HeatmapStudy>,
     ) -> Self {
+        let step = PriceStep::from_f32(tick_size);
+
         let mut indicators = EnumMap::default();
         for &indicator in enabled_indicators {
             let data = match indicator {
@@ -165,11 +167,20 @@ impl HeatmapChart {
             indicators[indicator] = Some(data);
         }
 
+        let heatmap = HistoricalDepth::new(
+            ticker_info
+                .expect("basis set without ticker info")
+                .min_qty
+                .into(),
+            step,
+            basis,
+        );
+
         HeatmapChart {
             chart: ViewState {
                 cell_width: DEFAULT_CELL_WIDTH,
                 cell_height: 4.0,
-                tick_size: Price::from_f32(tick_size),
+                tick_size: step,
                 decimals: count_decimals(tick_size),
                 layout,
                 ticker_info,
@@ -178,15 +189,8 @@ impl HeatmapChart {
             },
             indicators,
             pause_buffer: vec![],
-            heatmap: HistoricalDepth::new(
-                ticker_info
-                    .expect("basis set without ticker info")
-                    .min_qty
-                    .into(),
-                tick_size,
-                basis,
-            ),
-            trades: TimeSeries::<HeatmapDataPoint>::new(basis, tick_size),
+            heatmap,
+            trades: TimeSeries::<HeatmapDataPoint>::new(basis, step),
             visual_config: config.unwrap_or_default(),
             study_configurator: study::Configurator::new(),
             studies,
@@ -270,7 +274,7 @@ impl HeatmapChart {
                 });
 
             for trade in trades_buffer {
-                entry.add_trade(trade, chart.tick_size.to_f32());
+                entry.add_trade(trade, chart.tick_size);
             }
         }
 
@@ -279,10 +283,7 @@ impl HeatmapChart {
 
         {
             let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
-            chart.base_price_y = Price::from_f32(
-                (mid_price.to_f32() / (chart.tick_size.to_f32())).round()
-                    * (chart.tick_size.to_f32()),
-            );
+            chart.base_price_y = mid_price.round_to_step(chart.tick_size);
         }
 
         chart.latest_x = rounded_depth_update;
@@ -307,7 +308,7 @@ impl HeatmapChart {
                 .expect("basis set without ticker info")
                 .min_qty
                 .into(),
-            self.chart.tick_size.to_f32(),
+            self.chart.tick_size,
             basis,
         );
 
@@ -364,9 +365,10 @@ impl HeatmapChart {
         let chart_state = self.mut_state();
 
         let basis = chart_state.basis;
+        let step = PriceStep::from_f32(new_tick_size);
 
         chart_state.cell_height = 4.0;
-        chart_state.tick_size = Price::from_f32(new_tick_size);
+        chart_state.tick_size = step;
         chart_state.decimals = count_decimals(new_tick_size);
 
         self.trades.datapoints.clear();
@@ -376,13 +378,13 @@ impl HeatmapChart {
                 .expect("basis set without ticker info")
                 .min_qty
                 .into(),
-            new_tick_size,
+            step,
             basis,
         );
     }
 
     pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size.to_f32()
+        self.chart.tick_size.to_f32_lossy()
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
@@ -794,8 +796,8 @@ impl canvas::Program<Message> for HeatmapChart {
                         Basis::Time(interval) => interval.into(),
                         Basis::Tick(_) => return,
                     };
-                    let tick_size = chart.tick_size.to_f32();
-                    let step = PriceStep::from_f32(tick_size);
+                    let tick_size = chart.tick_size.to_f32_lossy();
+                    let step = chart.tick_size;
 
                     let base_data_price = Price::from_f32(cursor_at_price)
                         .round_to_step(step)
@@ -942,13 +944,11 @@ fn draw_volume_profile(
     area_width: f32,
 ) {
     let (highest, lowest) = chart.price_range(region);
-    let (highest_f32, lowest_f32) = (highest.to_f32(), lowest.to_f32());
 
     let time_range = match kind {
         ProfileKind::VisibleRange => {
             let earliest = chart.x_to_interval(region.x);
             let latest = chart.x_to_interval(region.x + region.width);
-
             earliest..=latest
         }
         ProfileKind::FixedWindow(datapoints) => {
@@ -966,13 +966,16 @@ fn draw_volume_profile(
         }
     };
 
-    let tick_size = chart.tick_size.to_f32();
-    if tick_size <= 0.0 {
-        return;
-    }
+    let step = chart.tick_size;
 
-    let first_tick = (lowest_f32 / tick_size).ceil() * tick_size;
-    let num_ticks = ((highest_f32 - first_tick) / tick_size).floor() as usize + 1;
+    let first_tick = lowest.round_to_side_step(false, step);
+    let last_tick = highest.round_to_side_step(true, step);
+
+    let num_ticks = match Price::steps_between_inclusive(first_tick, last_tick, step) {
+        Some(n) => n,
+        None => return,
+    };
+
     if num_ticks > 4096 {
         return;
     }
@@ -985,14 +988,14 @@ fn draw_volume_profile(
             .iter()
             .filter(|trade| trade.price >= lowest && trade.price <= highest)
             .for_each(|trade| {
-                let trade_price = trade.price.to_f32();
+                let grouped_price = trade.price.round_to_side_step(trade.is_sell, step);
 
-                let grouped_price = if trade.is_sell {
-                    (trade_price * (1.0 / tick_size)).floor() * tick_size
-                } else {
-                    (trade_price * (1.0 / tick_size)).ceil() * tick_size
-                };
-                let index = ((grouped_price - first_tick) / tick_size).round() as usize;
+                if grouped_price.units < first_tick.units || grouped_price.units > last_tick.units {
+                    return;
+                }
+
+                let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
+
                 if let Some(entry) = profile.get_mut(index) {
                     if trade.is_sell {
                         entry.1 += trade.qty;
@@ -1009,10 +1012,11 @@ fn draw_volume_profile(
         .enumerate()
         .for_each(|(index, (buy_v, sell_v))| {
             if *buy_v > 0.0 || *sell_v > 0.0 {
-                let price = Price::from_f32(first_tick + (index as f32 * tick_size));
+                let price = first_tick.add_steps(index as i64, step);
                 let y_position = chart.price_to_y(price);
 
-                let next_y_position = chart.price_to_y(price + Price::from_f32(tick_size));
+                let next_price = price.add_steps(1, step);
+                let next_y_position = chart.price_to_y(next_price);
                 let bar_height = (next_y_position - y_position).abs();
 
                 super::draw_volume_bar(

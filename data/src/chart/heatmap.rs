@@ -39,8 +39,7 @@ pub struct HeatmapDataPoint {
 }
 
 impl DataPoint for HeatmapDataPoint {
-    fn add_trade(&mut self, trade: &exchange::Trade, tick_size: f32) {
-        let step = PriceStep::from_f32(tick_size);
+    fn add_trade(&mut self, trade: &exchange::Trade, step: PriceStep) {
         let grouped_price: Price = trade.price.round_to_side_step(trade.is_sell, step);
 
         match self
@@ -144,12 +143,12 @@ impl OrderRun {
 pub struct HistoricalDepth {
     price_levels: BTreeMap<Price, Vec<OrderRun>>,
     aggr_time: u64,
-    tick_size: f32,
+    tick_size: PriceStep,
     min_order_qty: f32,
 }
 
 impl HistoricalDepth {
-    pub fn new(min_order_qty: f32, tick_size: f32, basis: Basis) -> Self {
+    pub fn new(min_order_qty: f32, tick_size: PriceStep, basis: Basis) -> Self {
         Self {
             price_levels: BTreeMap::new(),
             aggr_time: match basis {
@@ -162,21 +161,15 @@ impl HistoricalDepth {
     }
 
     pub fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
-        let step = PriceStep::from_f32(self.tick_size);
-
-        self.process_side(&depth.bids, time, true, step);
-        self.process_side(&depth.asks, time, false, step);
+        self.process_side(&depth.bids, time, true);
+        self.process_side(&depth.asks, time, false);
     }
 
-    fn process_side(
-        &mut self,
-        side: &BTreeMap<Price, f32>,
-        time: u64,
-        is_bid: bool,
-        step: PriceStep,
-    ) {
+    fn process_side(&mut self, side: &BTreeMap<Price, f32>, time: u64, is_bid: bool) {
         let mut current_price = None;
         let mut current_qty = 0.0;
+
+        let step = self.tick_size;
 
         for (price, qty) in side {
             let rounded_price = price.round_to_side_step(is_bid, step);
@@ -367,8 +360,9 @@ impl HistoricalDepth {
         coalesce_kind: Option<CoalesceKind>,
     ) -> FxHashMap<(u64, Price), (f32, bool)> {
         let aggr_time = self.aggr_time;
-        let tick_size: f32 = self.tick_size;
-        let step = PriceStep::from_f32(tick_size);
+
+        let step = self.tick_size;
+        let tick_size = step.to_f32_lossy();
 
         let query_earliest_time = time_interval_offsets
             .iter()

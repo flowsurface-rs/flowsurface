@@ -8,7 +8,7 @@ use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
-use exchange::util::Price;
+use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, Timeframe};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
@@ -656,7 +656,7 @@ pub struct ViewState {
     last_price: Option<PriceInfoLabel>,
     base_price_y: Price,
     latest_x: u64,
-    tick_size: Price,
+    tick_size: PriceStep,
     decimals: usize,
     ticker_info: Option<TickerInfo>,
     layout: ViewConfig,
@@ -675,7 +675,7 @@ impl Default for ViewState {
             cell_height: 3.0,
             latest_x: 0,
             base_price_y: Price::from_f32_lossy(0.0),
-            tick_size: Price::from_f32_lossy(0.0),
+            tick_size: PriceStep::from_f32_lossy(1.0),
             decimals: 0,
             ticker_info: None,
             layout: ViewConfig::default(),

@@ -189,8 +189,10 @@ impl KlineChart {
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
+                let step = PriceStep::from_f32(tick_size);
+
                 let timeseries =
-                    TimeSeries::<KlineDataPoint>::new(interval, tick_size, &raw_trades, klines_raw);
+                    TimeSeries::<KlineDataPoint>::new(interval, step, &raw_trades, klines_raw);
 
                 let base_price_y = timeseries.base_price();
                 let latest_x = timeseries.latest_timestamp().unwrap_or(0);
@@ -214,7 +216,7 @@ impl KlineChart {
                     },
                     base_price_y,
                     latest_x,
-                    tick_size: Price::from_f32(tick_size),
+                    tick_size: step,
                     decimals: count_decimals(tick_size),
                     layout,
                     ticker_info,
@@ -256,6 +258,8 @@ impl KlineChart {
                 }
             }
             Basis::Tick(interval) => {
+                let step = PriceStep::from_f32(tick_size);
+
                 let mut chart = ViewState {
                     cell_width: match kind {
                         KlineChartKind::Footprint { .. } => 80.0,
@@ -265,7 +269,7 @@ impl KlineChart {
                         KlineChartKind::Footprint { .. } => 90.0,
                         KlineChartKind::Candles => 8.0,
                     },
-                    tick_size: Price::from_f32(tick_size),
+                    tick_size: step,
                     decimals: count_decimals(tick_size),
                     layout,
                     ticker_info,
@@ -285,8 +289,7 @@ impl KlineChart {
                 };
                 chart.translation.x = x_translation;
 
-                let data_source =
-                    PlotData::TickBased(TickAggr::new(interval, tick_size, &raw_trades));
+                let data_source = PlotData::TickBased(TickAggr::new(interval, step, &raw_trades));
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
@@ -440,7 +443,7 @@ impl KlineChart {
     }
 
     pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size.to_f32()
+        self.chart.tick_size.to_f32_lossy()
     }
 
     pub fn study_configurator(&self) -> &study::Configurator<FootprintStudy> {
@@ -510,8 +513,10 @@ impl KlineChart {
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
         let chart = self.mut_state();
 
-        chart.cell_height *= new_tick_size / chart.tick_size.to_f32();
-        chart.tick_size = Price::from_f32(new_tick_size);
+        let step = PriceStep::from_f32(new_tick_size);
+
+        chart.cell_height *= new_tick_size / chart.tick_size.to_f32_lossy();
+        chart.tick_size = step;
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
@@ -533,8 +538,7 @@ impl KlineChart {
 
     pub fn set_tick_basis(&mut self, tick_basis: data::aggr::TickCount) {
         self.chart.basis = Basis::Tick(tick_basis);
-        let new_tick_aggr =
-            TickAggr::new(tick_basis, self.chart.tick_size.to_f32(), &self.raw_trades);
+        let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
 
         self.data_source = PlotData::TickBased(new_tick_aggr);
 
@@ -653,15 +657,14 @@ impl KlineChart {
         &self,
         earliest: u64,
         latest: u64,
-        highest: f32,
-        lowest: f32,
-        tick_size: f32,
+        highest: Price,
+        lowest: Price,
+        step: PriceStep,
         cluster_kind: ClusterKind,
     ) -> f32 {
-        let step = PriceStep::from_f32(tick_size);
+        let rounded_highest = highest.round_to_side_step(false, step).add_steps(1, step);
 
-        let rounded_highest = Price::from_f32(highest + tick_size).round_to_step(step);
-        let rounded_lowest = Price::from_f32(lowest - tick_size).round_to_step(step);
+        let rounded_lowest = lowest.round_to_side_step(true, step).add_steps(-1, step);
 
         match &self.data_source {
             PlotData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
@@ -750,7 +753,7 @@ impl KlineChart {
                         if price_span > 0.0 && chart.bounds.height > f32::EPSILON {
                             let padded_highest = highest + padding;
                             let chart_height = chart.bounds.height;
-                            let tick_size = chart.tick_size.to_f32();
+                            let tick_size = chart.tick_size.to_f32_lossy();
 
                             if tick_size > 0.0 {
                                 chart.cell_height = (chart_height * tick_size) / price_span;
@@ -852,9 +855,9 @@ impl canvas::Program<Message> for KlineChart {
                     let max_cluster_qty = self.calc_qty_scales(
                         earliest,
                         latest,
-                        highest.to_f32(),
-                        lowest.to_f32(),
-                        chart.tick_size.to_f32(),
+                        highest,
+                        lowest,
+                        chart.tick_size,
                         *clusters,
                     );
 

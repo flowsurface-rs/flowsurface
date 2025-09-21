@@ -26,8 +26,8 @@ impl KlineDataPoint {
         }
     }
 
-    pub fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
-        self.footprint.add_trade_at_price_level(trade, tick_size);
+    pub fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
+        self.footprint.add_trade_at_price_level(trade, step);
     }
 
     pub fn poc_price(&self) -> Option<Price> {
@@ -56,8 +56,8 @@ impl KlineDataPoint {
 }
 
 impl DataPoint for KlineDataPoint {
-    fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
-        self.add_trade(trade, tick_size);
+    fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
+        self.add_trade(trade, step);
     }
 
     fn clear_trades(&mut self) {
@@ -153,8 +153,7 @@ impl KlineTrades {
         self.trades.values().map(|group| group.last_time).max()
     }
 
-    pub fn add_trade_at_price_level(&mut self, trade: &Trade, tick_size: f32) {
-        let step = PriceStep::from_f32(tick_size);
+    pub fn add_trade_at_price_level(&mut self, trade: &Trade, step: PriceStep) {
         let price_level = trade.price.round_to_step(step);
 
         if let Some(group) = self.trades.get_mut(&price_level) {

@@ -8,7 +8,7 @@ use exchange::util::{Price, PriceStep};
 use exchange::{Kline, Timeframe, Trade};
 
 pub trait DataPoint {
-    fn add_trade(&mut self, trade: &Trade, tick_size: f32);
+    fn add_trade(&mut self, trade: &Trade, step: PriceStep);
 
     fn clear_trades(&mut self);
 
@@ -28,7 +28,7 @@ pub trait DataPoint {
 pub struct TimeSeries<D: DataPoint> {
     pub datapoints: BTreeMap<u64, D>,
     pub interval: Timeframe,
-    pub tick_size: f32,
+    pub tick_size: PriceStep,
 }
 
 impl<D: DataPoint> TimeSeries<D> {
@@ -141,7 +141,7 @@ impl<D: DataPoint> TimeSeries<D> {
 impl TimeSeries<KlineDataPoint> {
     pub fn new(
         interval: Timeframe,
-        tick_size: f32,
+        tick_size: PriceStep,
         raw_trades: &[Trade],
         klines: &[Kline],
     ) -> Self {
@@ -216,7 +216,7 @@ impl TimeSeries<KlineDataPoint> {
     }
 
     pub fn change_tick_size(&mut self, tick_size: f32, all_raw_trades: &[Trade]) {
-        self.tick_size = tick_size;
+        self.tick_size = PriceStep::from_f32(tick_size);
         self.clear_trades();
 
         if !all_raw_trades.is_empty() {
@@ -231,14 +231,12 @@ impl TimeSeries<KlineDataPoint> {
             .filter_map(|(&time, dp)| dp.poc_price().map(|price| (time, price)))
             .collect::<Vec<_>>();
 
-        let step = PriceStep::from_f32(self.tick_size);
-
         for (current_time, poc_price) in updates {
             let mut npoc = NPoc::default();
 
             for (&next_time, next_dp) in self.datapoints.range((current_time + 1)..) {
-                let next_dp_low = next_dp.kline.low.round_to_step(step);
-                let next_dp_high = next_dp.kline.high.round_to_step(step);
+                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
 
                 if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     npoc.filled(next_time);
@@ -333,7 +331,7 @@ impl TimeSeries<KlineDataPoint> {
 }
 
 impl TimeSeries<HeatmapDataPoint> {
-    pub fn new(basis: Basis, tick_size: f32) -> Self {
+    pub fn new(basis: Basis, tick_size: PriceStep) -> Self {
         let timeframe = match basis {
             Basis::Time(interval) => interval,
             Basis::Tick(_) => unimplemented!(),

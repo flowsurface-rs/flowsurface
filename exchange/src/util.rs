@@ -62,13 +62,19 @@ impl<'de, const MIN: i8, const MAX: i8> serde::Deserialize<'de> for Power10<MIN,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PriceStep {
     /// step size in atomic units (10^-PRICE_SCALE)
     pub units: i64,
 }
 
 impl PriceStep {
+    /// Lossy: f32 step for UI
+    pub fn to_f32_lossy(self) -> f32 {
+        let scale = 10f32.powi(Price::PRICE_SCALE);
+        (self.units as f32) / scale
+    }
+
     /// Lossy: from f32 step (rounds to nearest atomic unit)
     pub fn from_f32_lossy(step: f32) -> Self {
         assert!(step > 0.0, "step must be > 0");
@@ -215,6 +221,23 @@ impl Price {
         let half = unit / 2;
         let rounded = ((self.units + half).div_euclid(unit)) * unit;
         Self { units: rounded }
+    }
+
+    pub fn add_steps(self, steps: i64, step: PriceStep) -> Self {
+        Self::from_units(
+            self.units
+                .checked_add(steps.saturating_mul(step.units))
+                .expect("add_steps overflowed"),
+        )
+    }
+
+    /// Number of step increments between low..=high (inclusive), or None if invalid.
+    pub fn steps_between_inclusive(low: Price, high: Price, step: PriceStep) -> Option<usize> {
+        if high.units < low.units || step.units <= 0 {
+            return None;
+        }
+        let span = high.units.checked_sub(low.units)?;
+        Some((span / step.units) as usize + 1)
     }
 }
 

@@ -13,9 +13,9 @@ pub struct TickAccumulation {
 }
 
 impl TickAccumulation {
-    pub fn new(trade: &Trade, tick_size: f32) -> Self {
+    pub fn new(trade: &Trade, step: PriceStep) -> Self {
         let mut footprint = KlineTrades::new();
-        footprint.add_trade_at_price_level(trade, tick_size);
+        footprint.add_trade_at_price_level(trade, step);
 
         let kline = Kline {
             time: trade.time,
@@ -36,7 +36,7 @@ impl TickAccumulation {
         }
     }
 
-    pub fn update_with_trade(&mut self, trade: &Trade, tick_size: f32) {
+    pub fn update_with_trade(&mut self, trade: &Trade, step: PriceStep) {
         self.tick_count += 1;
         self.kline.high = self.kline.high.max(trade.price);
         self.kline.low = self.kline.low.min(trade.price);
@@ -48,11 +48,11 @@ impl TickAccumulation {
             self.kline.volume.0 += trade.qty;
         }
 
-        self.add_trade(trade, tick_size);
+        self.add_trade(trade, step);
     }
 
-    fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
-        self.footprint.add_trade_at_price_level(trade, tick_size);
+    fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
+        self.footprint.add_trade_at_price_level(trade, step);
     }
 
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
@@ -88,11 +88,11 @@ impl TickAccumulation {
 pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,
-    pub tick_size: f32,
+    pub tick_size: PriceStep,
 }
 
 impl TickAggr {
-    pub fn new(interval: aggr::TickCount, tick_size: f32, raw_trades: &[Trade]) -> Self {
+    pub fn new(interval: aggr::TickCount, tick_size: PriceStep, raw_trades: &[Trade]) -> Self {
         let mut tick_aggr = Self {
             datapoints: Vec::new(),
             interval,
@@ -107,7 +107,7 @@ impl TickAggr {
     }
 
     pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
-        self.tick_size = tick_size;
+        self.tick_size = PriceStep::from_f32(tick_size);
 
         self.datapoints.clear();
 
@@ -169,7 +169,6 @@ impl TickAggr {
             .collect::<Vec<_>>();
 
         let total_points = self.datapoints.len();
-        let step = PriceStep::from_f32(self.tick_size);
 
         for (current_idx, poc_price) in updates {
             let mut npoc = NPoc::default();
@@ -177,8 +176,8 @@ impl TickAggr {
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.datapoints[next_idx];
 
-                let next_dp_low = next_dp.kline.low.round_to_step(step);
-                let next_dp_high = next_dp.kline.high.round_to_step(step);
+                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
 
                 if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     // on render we reverse the order of the points
