@@ -1,3 +1,4 @@
+use exchange::util::Price;
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -29,7 +30,7 @@ fn default_buffer_filter() -> usize {
 
 pub struct TradeDisplay {
     pub time_str: String,
-    pub price: f32,
+    pub price: Price,
     pub qty: f32,
     pub is_sell: bool,
 }

@@ -5,7 +5,6 @@ use crate::style;
 pub use data::chart::timeandsales::Config;
 use data::chart::timeandsales::TradeDisplay;
 use data::config::theme::{darken, lighten};
-use exchange::util::Price;
 use exchange::{TickerInfo, Trade};
 
 use iced::widget::canvas::{self, Text};
@@ -99,7 +98,7 @@ impl TimeAndSales {
             ) {
                 let converted_trade = TradeDisplay {
                     time_str: trade_time.format("%M:%S.%3f").to_string(),
-                    price: trade.price.to_f32(),
+                    price: trade.price,
                     qty: trade.qty,
                     is_sell: trade.is_sell,
                 };
@@ -127,11 +126,8 @@ impl TimeAndSales {
                 self.max_filtered_qty = self.recent_trades[drain_amount..]
                     .iter()
                     .filter(|t| {
-                        let trade_size = market_type.qty_in_quote_value(
-                            t.qty,
-                            Price::from_f32(t.price),
-                            size_in_quote_currency,
-                        );
+                        let trade_size =
+                            market_type.qty_in_quote_value(t.qty, t.price, size_in_quote_currency);
                         trade_size >= size_filter
                     })
                     .map(|t| t.qty)
@@ -219,13 +215,12 @@ impl canvas::Program<Message> for TimeAndSales {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let market_type = match self.ticker_info {
-            Some(ref ticker_info) => ticker_info.market_type(),
-            None => return vec![],
+        let Some(ticker_info) = &self.ticker_info else {
+            return vec![];
         };
+        let market_type = ticker_info.market_type();
 
         let palette = theme.extended_palette();
-
         let is_scroll_paused = self.is_paused;
 
         let content = self.cache.draw(renderer, bounds.size(), |frame| {
@@ -282,11 +277,8 @@ impl canvas::Program<Message> for TimeAndSales {
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.qty,
-                        Price::from_f32(t.price),
-                        size_in_quote_currency,
-                    );
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.qty, t.price, size_in_quote_currency);
                     trade_size >= self.config.trade_size_filter
                 })
                 .rev()
@@ -354,7 +346,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(trade_time);
 
                 let trade_price = create_text(
-                    trade.price.to_string(),
+                    trade.price.to_string(ticker_info.min_ticksize),
                     Point {
                         x: row_width * 0.67,
                         y: y_position,
