@@ -1,5 +1,5 @@
 use crate::{
-    SIZE_IN_QUOTE_CURRENCY,
+    Price, SIZE_IN_QUOTE_CURRENCY,
     adapter::{StreamKind, StreamTicksize},
     limiter::{self, RateLimiter},
 };
@@ -14,7 +14,7 @@ use super::{
     AdapterError, Event,
 };
 
-use super::super::depth::{DepthPayload, DepthUpdate, LocalDepthCache, Order};
+use super::super::depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache};
 
 use fastwebsockets::{Frame, OpCode};
 use iced_futures::{
@@ -77,8 +77,8 @@ struct SonicTrade {
 
 struct SonicDepth {
     pub update_id: u64,
-    pub bids: Vec<Order>,
-    pub asks: Vec<Order>,
+    pub bids: Vec<DeOrder>,
+    pub asks: Vec<DeOrder>,
 }
 
 enum StreamData {
@@ -101,13 +101,13 @@ fn feed_de(slice: &[u8], _ticker: Ticker) -> Result<StreamData, AdapterError> {
         && let Some(data_arr) = v.get("data")
         && let Some(first) = data_arr.get(0)
     {
-        let bids: Vec<Order> = if let Some(b) = first.get("bids") {
+        let bids: Vec<DeOrder> = if let Some(b) = first.get("bids") {
             serde_json::from_value(b.clone())
                 .map_err(|e| AdapterError::ParseError(e.to_string()))?
         } else {
             Vec::new()
         };
-        let asks: Vec<Order> = if let Some(a) = first.get("asks") {
+        let asks: Vec<DeOrder> = if let Some(a) = first.get("asks") {
             serde_json::from_value(a.clone())
                 .map_err(|e| AdapterError::ParseError(e.to_string()))?
         } else {
@@ -233,18 +233,22 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                 match data {
                                     StreamData::Trade(de_trade_vec) => {
                                         for de_trade in &de_trade_vec {
+                                            let price = Price::from_f32(de_trade.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize);
+                                            let qty = calc_qty(
+                                                de_trade.qty,
+                                                de_trade.price,
+                                                size_in_quote,
+                                                contract_size,
+                                                market_type,
+                                            );
+
                                             let trade = Trade {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell == "sell"
                                                     || de_trade.is_sell == "SELL",
-                                                price: de_trade.price,
-                                                qty: calc_qty(
-                                                    de_trade.qty,
-                                                    de_trade.price,
-                                                    size_in_quote,
-                                                    contract_size,
-                                                    market_type,
-                                                ),
+                                                price,
+                                                qty,
                                             };
                                             trades_buffer.push(trade);
                                         }
@@ -256,7 +260,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                             bids: de_depth
                                                 .bids
                                                 .iter()
-                                                .map(|x| Order {
+                                                .map(|x| DeOrder {
                                                     price: x.price,
                                                     qty: calc_qty(
                                                         x.qty,
@@ -270,7 +274,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                             asks: de_depth
                                                 .asks
                                                 .iter()
-                                                .map(|x| Order {
+                                                .map(|x| DeOrder {
                                                     price: x.price,
                                                     qty: calc_qty(
                                                         x.qty,
@@ -285,9 +289,15 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
 
                                         if (data_type == "snapshot") || (depth.last_update_id == 1)
                                         {
-                                            orderbook.update(DepthUpdate::Snapshot(depth));
+                                            orderbook.update(
+                                                DepthUpdate::Snapshot(depth),
+                                                ticker_info.min_ticksize,
+                                            );
                                         } else if data_type == "delta" {
-                                            orderbook.update(DepthUpdate::Diff(depth));
+                                            orderbook.update(
+                                                DepthUpdate::Diff(depth),
+                                                ticker_info.min_ticksize,
+                                            );
 
                                             let _ = output
                                                 .send(Event::DepthReceived(
@@ -442,14 +452,15 @@ pub fn connect_kline_stream(
                                             0.0
                                         };
 
-                                        let kline = Kline {
-                                            time: ts,
+                                        let kline = Kline::new(
+                                            ts,
                                             open,
                                             high,
                                             low,
                                             close,
-                                            volume: (-1.0, volume_in_display),
-                                        };
+                                            (-1.0, volume_in_display),
+                                            ticker_info.min_ticksize,
+                                        );
                                         let _ = output
                                             .send(Event::KlineReceived(
                                                 StreamKind::Kline {
@@ -787,14 +798,17 @@ pub async fn fetch_klines(
             0.0
         };
 
-        klines.push(Kline {
-            time: ts,
+        let kline = Kline::new(
+            ts,
             open,
             high,
             low,
             close,
-            volume: (-1.0, volume_in_display),
-        });
+            (-1.0, volume_in_display),
+            ticker_info.min_ticksize,
+        );
+
+        klines.push(kline);
     }
 
     klines.sort_by_key(|k| k.time);

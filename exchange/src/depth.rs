@@ -1,17 +1,18 @@
-use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
 use serde::Deserializer;
 use serde::de::Error as SerdeError;
 use serde_json::Value;
 
+use crate::{MinTicksize, Price};
+
 #[derive(Clone, Copy)]
-pub struct Order {
+pub struct DeOrder {
     pub price: f32,
     pub qty: f32,
 }
 
-impl<'de> serde::Deserialize<'de> for Order {
+impl<'de> serde::Deserialize<'de> for DeOrder {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -41,15 +42,20 @@ impl<'de> serde::Deserialize<'de> for Order {
         }
         .ok_or_else(|| SerdeError::custom("Order qty not found or invalid"))?;
 
-        Ok(Order { price, qty })
+        Ok(DeOrder { price, qty })
     }
+}
+
+struct Order {
+    price: Price,
+    qty: f32,
 }
 
 pub struct DepthPayload {
     pub last_update_id: u64,
     pub time: u64,
-    pub bids: Vec<Order>,
-    pub asks: Vec<Order>,
+    pub bids: Vec<DeOrder>,
+    pub asks: Vec<DeOrder>,
 }
 
 pub enum DepthUpdate {
@@ -59,8 +65,8 @@ pub enum DepthUpdate {
 
 #[derive(Clone, Default)]
 pub struct Depth {
-    pub bids: BTreeMap<OrderedFloat<f32>, f32>,
-    pub asks: BTreeMap<OrderedFloat<f32>, f32>,
+    pub bids: BTreeMap<Price, f32>,
+    pub asks: BTreeMap<Price, f32>,
 }
 
 impl std::fmt::Debug for Depth {
@@ -73,39 +79,56 @@ impl std::fmt::Debug for Depth {
 }
 
 impl Depth {
-    pub fn update(&mut self, diff: &DepthPayload) {
-        Self::diff_price_levels(&mut self.bids, &diff.bids);
-        Self::diff_price_levels(&mut self.asks, &diff.asks);
+    pub fn update(&mut self, diff: &DepthPayload, min_ticksize: MinTicksize) {
+        Self::diff_price_levels(&mut self.bids, &diff.bids, min_ticksize);
+        Self::diff_price_levels(&mut self.asks, &diff.asks, min_ticksize);
     }
 
-    fn diff_price_levels(price_map: &mut BTreeMap<OrderedFloat<f32>, f32>, orders: &[Order]) {
+    fn diff_price_levels(
+        price_map: &mut BTreeMap<Price, f32>,
+        orders: &[DeOrder],
+        min_ticksize: MinTicksize,
+    ) {
         orders.iter().for_each(|order| {
+            let order = Order {
+                price: Price::from_f32(order.price).round_to_min_tick(min_ticksize),
+                qty: order.qty,
+            };
+
             if order.qty == 0.0 {
-                price_map.remove(&OrderedFloat(order.price));
+                price_map.remove(&order.price);
             } else {
-                price_map.insert(OrderedFloat(order.price), order.qty);
+                price_map.insert(order.price, order.qty);
             }
         });
     }
 
-    pub fn replace_all(&mut self, snapshot: &DepthPayload) {
+    pub fn replace_all(&mut self, snapshot: &DepthPayload, min_ticksize: MinTicksize) {
         self.bids = snapshot
             .bids
             .iter()
-            .map(|order| (OrderedFloat(order.price), order.qty))
-            .collect();
+            .map(|de_order| {
+                (
+                    Price::from_f32(de_order.price).round_to_min_tick(min_ticksize),
+                    de_order.qty,
+                )
+            })
+            .collect::<BTreeMap<Price, f32>>();
         self.asks = snapshot
             .asks
             .iter()
-            .map(|order| (OrderedFloat(order.price), order.qty))
-            .collect();
+            .map(|de_order| {
+                (
+                    Price::from_f32(de_order.price).round_to_min_tick(min_ticksize),
+                    de_order.qty,
+                )
+            })
+            .collect::<BTreeMap<Price, f32>>();
     }
 
-    pub fn mid_price(&self) -> Option<f32> {
+    pub fn mid_price(&self) -> Option<Price> {
         match (self.asks.first_key_value(), self.bids.last_key_value()) {
-            (Some((ask_price, _)), Some((bid_price, _))) => {
-                Some((ask_price.into_inner() + bid_price.into_inner()) / 2.0)
-            }
+            (Some((ask_price, _)), Some((bid_price, _))) => Some((*ask_price + *bid_price) / 2),
             _ => None,
         }
     }
@@ -119,17 +142,17 @@ pub struct LocalDepthCache {
 }
 
 impl LocalDepthCache {
-    pub fn update(&mut self, new_depth: DepthUpdate) {
+    pub fn update(&mut self, new_depth: DepthUpdate, min_ticksize: MinTicksize) {
         match new_depth {
             DepthUpdate::Snapshot(snapshot) => {
                 self.last_update_id = snapshot.last_update_id;
                 self.time = snapshot.time;
-                self.depth.replace_all(&snapshot);
+                self.depth.replace_all(&snapshot, min_ticksize);
             }
             DepthUpdate::Diff(diff) => {
                 self.last_update_id = diff.last_update_id;
                 self.time = diff.time;
-                self.depth.update(&diff);
+                self.depth.update(&diff, min_ticksize);
             }
         }
     }

@@ -434,8 +434,6 @@ pub fn kline_cfg_view<'a>(
 pub fn orderbook_cfg_view<'a>(
     cfg: orderbook::Config,
     pane: pane_grid::Pane,
-    _current_price: Option<f32>,
-    _tick_size: Option<f32>,
 ) -> Element<'a, Message> {
     let show_spread_toggle = {
         let checkbox =

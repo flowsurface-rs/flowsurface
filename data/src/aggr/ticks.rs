@@ -1,10 +1,9 @@
-use exchange::{Kline, Trade};
-use ordered_float::OrderedFloat;
-use std::collections::BTreeMap;
-
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
-use crate::util::round_to_tick;
+use exchange::util::{Price, PriceStep};
+use exchange::{Kline, Trade};
+
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
@@ -14,9 +13,9 @@ pub struct TickAccumulation {
 }
 
 impl TickAccumulation {
-    pub fn new(trade: &Trade, tick_size: f32) -> Self {
+    pub fn new(trade: &Trade, step: PriceStep) -> Self {
         let mut footprint = KlineTrades::new();
-        footprint.add_trade_at_price_level(trade, tick_size);
+        footprint.add_trade_at_price_level(trade, step);
 
         let kline = Kline {
             time: trade.time,
@@ -37,7 +36,7 @@ impl TickAccumulation {
         }
     }
 
-    pub fn update_with_trade(&mut self, trade: &Trade, tick_size: f32) {
+    pub fn update_with_trade(&mut self, trade: &Trade, step: PriceStep) {
         self.tick_count += 1;
         self.kline.high = self.kline.high.max(trade.price);
         self.kline.low = self.kline.low.min(trade.price);
@@ -49,19 +48,14 @@ impl TickAccumulation {
             self.kline.volume.0 += trade.qty;
         }
 
-        self.add_trade(trade, tick_size);
+        self.add_trade(trade, step);
     }
 
-    fn add_trade(&mut self, trade: &Trade, tick_size: f32) {
-        self.footprint.add_trade_at_price_level(trade, tick_size);
+    fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
+        self.footprint.add_trade_at_price_level(trade, step);
     }
 
-    pub fn max_cluster_qty(
-        &self,
-        cluster_kind: ClusterKind,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
-    ) -> f32 {
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
         match cluster_kind {
             ClusterKind::BidAsk => self.footprint.max_qty_by(highest, lowest, f32::max),
             ClusterKind::DeltaProfile => self
@@ -78,7 +72,7 @@ impl TickAccumulation {
         self.tick_count >= interval.0 as usize
     }
 
-    pub fn poc_price(&self) -> Option<f32> {
+    pub fn poc_price(&self) -> Option<Price> {
         self.footprint.poc_price()
     }
 
@@ -94,11 +88,11 @@ impl TickAccumulation {
 pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,
-    pub tick_size: f32,
+    pub tick_size: PriceStep,
 }
 
 impl TickAggr {
-    pub fn new(interval: aggr::TickCount, tick_size: f32, raw_trades: &[Trade]) -> Self {
+    pub fn new(interval: aggr::TickCount, tick_size: PriceStep, raw_trades: &[Trade]) -> Self {
         let mut tick_aggr = Self {
             datapoints: Vec::new(),
             interval,
@@ -113,7 +107,7 @@ impl TickAggr {
     }
 
     pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
-        self.tick_size = tick_size;
+        self.tick_size = PriceStep::from_f32(tick_size);
 
         self.datapoints.clear();
 
@@ -181,9 +175,11 @@ impl TickAggr {
 
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.datapoints[next_idx];
-                if round_to_tick(next_dp.kline.low, self.tick_size) <= poc_price
-                    && round_to_tick(next_dp.kline.high, self.tick_size) >= poc_price
-                {
+
+                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
+
+                if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     // on render we reverse the order of the points
                     // as it is easier to just take the idx=0 as latest candle for coords
                     let reversed_idx = (total_points - 1) - next_idx;
@@ -201,25 +197,46 @@ impl TickAggr {
         }
     }
 
-    pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
-        let mut min_price = OrderedFloat(f32::MAX);
-        let mut max_price = OrderedFloat(f32::MIN);
+    pub fn min_max_price_in_range_prices(
+        &self,
+        earliest: usize,
+        latest: usize,
+    ) -> Option<(Price, Price)> {
+        if earliest > latest {
+            return None;
+        }
+
+        let mut min_p: Option<Price> = None;
+        let mut max_p: Option<Price> = None;
 
         self.datapoints
             .iter()
             .rev()
             .enumerate()
-            .filter(|(index, _)| *index <= latest && *index >= earliest)
+            .filter(|(idx, _)| *idx >= earliest && *idx <= latest)
             .for_each(|(_, dp)| {
-                min_price = min_price.min(OrderedFloat(dp.kline.low));
-                max_price = max_price.max(OrderedFloat(dp.kline.high));
+                let low = dp.kline.low;
+                let high = dp.kline.high;
+
+                min_p = Some(match min_p {
+                    Some(value) => value.min(low),
+                    None => low,
+                });
+                max_p = Some(match max_p {
+                    Some(value) => value.max(high),
+                    None => high,
+                });
             });
 
-        if min_price.0 == f32::MAX || max_price.0 == f32::MIN {
-            None
-        } else {
-            Some((*min_price, *max_price))
+        match (min_p, max_p) {
+            (Some(low), Some(high)) => Some((low, high)),
+            _ => None,
         }
+    }
+
+    pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
+        self.min_max_price_in_range_prices(earliest, latest)
+            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
     pub fn max_qty_idx_range(
@@ -227,8 +244,8 @@ impl TickAggr {
         cluster_kind: ClusterKind,
         earliest: usize,
         latest: usize,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
+        highest: Price,
+        lowest: Price,
     ) -> f32 {
         let mut max_cluster_qty: f32 = 0.0;
 

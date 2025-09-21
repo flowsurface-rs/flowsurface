@@ -1,15 +1,14 @@
-use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
 use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
-use crate::util::round_to_tick;
 
+use exchange::util::{Price, PriceStep};
 use exchange::{Kline, Timeframe, Trade};
 
 pub trait DataPoint {
-    fn add_trade(&mut self, trade: &Trade, tick_size: f32);
+    fn add_trade(&mut self, trade: &Trade, step: PriceStep);
 
     fn clear_trades(&mut self);
 
@@ -17,27 +16,27 @@ pub trait DataPoint {
 
     fn first_trade_time(&self) -> Option<u64>;
 
-    fn last_price(&self) -> f32;
+    fn last_price(&self) -> Price;
 
     fn kline(&self) -> Option<&Kline>;
 
-    fn value_high(&self) -> f32;
+    fn value_high(&self) -> Price;
 
-    fn value_low(&self) -> f32;
+    fn value_low(&self) -> Price;
 }
 
 pub struct TimeSeries<D: DataPoint> {
     pub datapoints: BTreeMap<u64, D>,
     pub interval: Timeframe,
-    pub tick_size: f32,
+    pub tick_size: PriceStep,
 }
 
 impl<D: DataPoint> TimeSeries<D> {
-    pub fn base_price(&self) -> f32 {
+    pub fn base_price(&self) -> Price {
         self.datapoints
             .values()
             .last()
-            .map_or(0.0, DataPoint::last_price)
+            .map_or(Price::from_f32(0.0), DataPoint::last_price)
     }
 
     pub fn latest_timestamp(&self) -> Option<u64> {
@@ -48,20 +47,28 @@ impl<D: DataPoint> TimeSeries<D> {
         self.datapoints.values().last().and_then(|dp| dp.kline())
     }
 
-    pub fn price_scale(&self, lookback: usize) -> (f32, f32) {
-        let mut scale_high = 0.0f32;
-        let mut scale_low = f32::MAX;
+    pub fn price_scale(&self, lookback: usize) -> (Price, Price) {
+        let mut iter = self.datapoints.iter().rev().take(lookback);
 
-        self.datapoints
-            .iter()
-            .rev()
-            .take(lookback)
-            .for_each(|(_, dp)| {
-                scale_high = scale_high.max(dp.value_high());
-                scale_low = scale_low.min(dp.value_low());
-            });
+        if let Some((_, first)) = iter.next() {
+            let mut high = first.value_high();
+            let mut low = first.value_low();
 
-        (scale_high, scale_low)
+            for (_, dp) in iter {
+                let value_high = dp.value_high();
+                let value_low = dp.value_low();
+                if value_high > high {
+                    high = value_high;
+                }
+                if value_low < low {
+                    low = value_low;
+                }
+            }
+
+            (high, low)
+        } else {
+            (Price::from_f32(0.0), Price::from_f32(0.0))
+        }
     }
 
     pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, (f32, f32)>
@@ -78,20 +85,34 @@ impl<D: DataPoint> TimeSeries<D> {
         (earliest, latest)
     }
 
+    pub fn min_max_price_in_range_prices(
+        &self,
+        earliest: u64,
+        latest: u64,
+    ) -> Option<(Price, Price)> {
+        let mut it = self.datapoints.range(earliest..=latest);
+
+        let (_, first) = it.next()?;
+        let mut min_price = first.value_low();
+        let mut max_price = first.value_high();
+
+        for (_, dp) in it {
+            let low = dp.value_low();
+            let high = dp.value_high();
+            if low < min_price {
+                min_price = low;
+            }
+            if high > max_price {
+                max_price = high;
+            }
+        }
+
+        Some((min_price, max_price))
+    }
+
     pub fn min_max_price_in_range(&self, earliest: u64, latest: u64) -> Option<(f32, f32)> {
-        let mut min_price = OrderedFloat(f32::MAX);
-        let mut max_price = OrderedFloat(f32::MIN);
-
-        for (_, dp) in self.datapoints.range(earliest..=latest) {
-            min_price = min_price.min(OrderedFloat(dp.value_low()));
-            max_price = max_price.max(OrderedFloat(dp.value_high()));
-        }
-
-        if min_price.0 == f32::MAX || max_price.0 == f32::MIN {
-            None
-        } else {
-            Some((*min_price, *max_price))
-        }
+        self.min_max_price_in_range_prices(earliest, latest)
+            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
     pub fn clear_trades(&mut self) {
@@ -142,7 +163,7 @@ impl<D: DataPoint> TimeSeries<D> {
 impl TimeSeries<KlineDataPoint> {
     pub fn new(
         interval: Timeframe,
-        tick_size: f32,
+        tick_size: PriceStep,
         raw_trades: &[Trade],
         klines: &[Kline],
     ) -> Self {
@@ -217,7 +238,7 @@ impl TimeSeries<KlineDataPoint> {
     }
 
     pub fn change_tick_size(&mut self, tick_size: f32, all_raw_trades: &[Trade]) {
-        self.tick_size = tick_size;
+        self.tick_size = PriceStep::from_f32(tick_size);
         self.clear_trades();
 
         if !all_raw_trades.is_empty() {
@@ -236,9 +257,10 @@ impl TimeSeries<KlineDataPoint> {
             let mut npoc = NPoc::default();
 
             for (&next_time, next_dp) in self.datapoints.range((current_time + 1)..) {
-                if round_to_tick(next_dp.kline.low, self.tick_size) <= poc_price
-                    && round_to_tick(next_dp.kline.high, self.tick_size) >= poc_price
-                {
+                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
+
+                if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     npoc.filled(next_time);
                     break;
                 } else {
@@ -314,8 +336,8 @@ impl TimeSeries<KlineDataPoint> {
         cluster_kind: ClusterKind,
         earliest: u64,
         latest: u64,
-        highest: OrderedFloat<f32>,
-        lowest: OrderedFloat<f32>,
+        highest: Price,
+        lowest: Price,
     ) -> f32 {
         let mut max_cluster_qty: f32 = 0.0;
 
@@ -331,7 +353,7 @@ impl TimeSeries<KlineDataPoint> {
 }
 
 impl TimeSeries<HeatmapDataPoint> {
-    pub fn new(basis: Basis, tick_size: f32) -> Self {
+    pub fn new(basis: Basis, tick_size: PriceStep) -> Self {
         let timeframe = match basis {
             Basis::Time(interval) => interval,
             Basis::Tick(_) => unimplemented!(),

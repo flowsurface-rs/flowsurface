@@ -3,12 +3,12 @@ use crate::style;
 use data::chart::kline::KlineTrades;
 use data::chart::orderbook::Config;
 use exchange::Trade;
+use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
-use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -50,7 +50,7 @@ pub struct Orderbook {
     pub config: Config,
     cache: canvas::Cache,
     last_tick: Instant,
-    pub tick_size: f32,
+    tick_size: PriceStep,
     decimals: usize,
     scroll_px: f32,
 }
@@ -65,7 +65,7 @@ impl Orderbook {
             ticker_info,
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
-            tick_size,
+            tick_size: PriceStep::from_f32(tick_size),
             decimals: data::util::count_decimals(tick_size),
             scroll_px: 0.0,
         }
@@ -86,7 +86,7 @@ impl Orderbook {
         self.last_tick
     }
 
-    pub fn current_price(&self) -> Option<f32> {
+    pub fn current_price(&self) -> Option<Price> {
         self.depth.mid_price()
     }
 
@@ -96,12 +96,13 @@ impl Orderbook {
 
     pub fn set_tick_size(&mut self, tick_size: f32) {
         self.decimals = data::util::count_decimals(tick_size);
-        self.tick_size = tick_size;
+
+        let step = PriceStep::from_f32(tick_size);
+        self.tick_size = step;
 
         self.grouped_trades.clear();
         for trade in &self.raw_trades {
-            self.grouped_trades
-                .add_trade_at_price_level(trade, tick_size);
+            self.grouped_trades.add_trade_at_price_level(trade, step);
         }
 
         self.invalidate(Some(Instant::now()));
@@ -115,20 +116,24 @@ impl Orderbook {
         None
     }
 
-    fn format_price(&self, price: f32) -> String {
-        format!("{:.*}", self.decimals, price)
+    pub fn tick_size(&self) -> f32 {
+        self.tick_size.to_f32_lossy()
+    }
+
+    fn format_price(&self, price: Price) -> String {
+        price.to_string_dp(self.decimals as u32)
     }
 
     fn format_quantity(&self, qty: f32) -> String {
         data::util::abbr_large_numbers(qty)
     }
 
-    fn calculate_spread(&self) -> Option<f32> {
+    fn calculate_spread(&self) -> Option<Price> {
         if let (Some((best_ask, _)), Some((best_bid, _))) = (
             self.depth.asks.first_key_value(),
             self.depth.bids.last_key_value(),
         ) {
-            Some(best_ask.into_inner() - best_bid.into_inner())
+            Some(*best_ask - *best_bid)
         } else {
             None
         }
@@ -136,18 +141,14 @@ impl Orderbook {
 
     fn group_price_levels(
         &self,
-        levels: &BTreeMap<OrderedFloat<f32>, f32>,
+        levels: &BTreeMap<Price, f32>,
         is_bid: bool,
-    ) -> BTreeMap<OrderedFloat<f32>, f32> {
+    ) -> BTreeMap<Price, f32> {
         let mut grouped = BTreeMap::new();
 
-        let tick_size = self.tick_size;
-
         for (price, qty) in levels.iter() {
-            let price_val = price.into_inner();
-            let grouped_price = data::util::round_to_next_tick(price_val, tick_size, is_bid);
-            let grouped_key = OrderedFloat(grouped_price);
-            *grouped.entry(grouped_key).or_insert(0.0) += qty;
+            let grouped_price = price.round_to_side_step(is_bid, self.tick_size);
+            *grouped.entry(grouped_price).or_insert(0.0) += qty;
         }
 
         grouped
@@ -199,12 +200,10 @@ impl canvas::Program<Message> for Orderbook {
         let asks_grouped = self.group_price_levels(&self.depth.asks, false);
         let bids_grouped = self.group_price_levels(&self.depth.bids, true);
 
-        let tick_size = self.tick_size.max(f32::EPSILON);
-
         let meta = self.row_meta(
             &asks_grouped,
             &bids_grouped,
-            tick_size,
+            self.tick_size,
             self.config.show_spread,
         );
 
@@ -223,7 +222,7 @@ impl canvas::Program<Message> for Orderbook {
                 bounds,
                 &asks_grouped,
                 &bids_grouped,
-                tick_size,
+                self.tick_size,
                 &meta,
                 base_scroll,
             );
@@ -270,9 +269,9 @@ impl canvas::Program<Message> for Orderbook {
                         if let (Some(info), Some(spread)) =
                             (self.ticker_info, self.calculate_spread())
                         {
-                            let min_ticksize: f32 = info.min_ticksize.into();
-                            let spread = (spread / min_ticksize).round() * min_ticksize;
-                            let content = format!("Spread: {spread}");
+                            let spread = spread.round_to_min_tick(info.min_ticksize);
+                            let content =
+                                format!("Spread: {}", spread.to_string_dp(self.decimals as u32));
                             frame.fill_text(Text {
                                 content,
                                 position: Point::new(
@@ -314,9 +313,8 @@ struct RowMeta {
     bid_rows: usize,
     spread_rows: usize,
     total_rows: usize,
-    max_ask: Option<f32>,
-    min_bid: Option<f32>,
-    best_bid: Option<f32>,
+    max_ask: Option<Price>,
+    best_bid: Option<Price>,
 }
 
 struct ColumnRanges {
@@ -375,8 +373,8 @@ impl Orderbook {
         }
     }
 
-    fn trade_qty_at(&self, price: f32) -> (f32, f32) {
-        let key = OrderedFloat(data::util::round_to_tick(price, self.tick_size));
+    fn trade_qty_at(&self, price: Price) -> (f32, f32) {
+        let key = price.round_to_step(self.tick_size);
         if let Some(g) = self.grouped_trades.trades.get(&key) {
             (g.buy_qty, g.sell_qty)
         } else {
@@ -386,41 +384,30 @@ impl Orderbook {
 
     fn row_meta(
         &self,
-        asks_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
-        bids_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
-        tick_size: f32,
+        asks_grouped: &BTreeMap<Price, f32>,
+        bids_grouped: &BTreeMap<Price, f32>,
+        tick_size: PriceStep,
         show_spread: bool,
     ) -> RowMeta {
         let (max_ask_opt, ask_rows) = if let (Some((best_ask, _)), Some((max_ask, _))) = (
             asks_grouped.first_key_value(),
             asks_grouped.last_key_value(),
         ) {
-            let best_ask_price = best_ask.into_inner();
-            let max_ask_price = max_ask.into_inner();
-            let rows = ((max_ask_price - best_ask_price) / tick_size)
-                .floor()
-                .max(0.0) as usize
-                + 1;
-            (Some(max_ask_price), rows)
+            let rows = Price::steps_between_inclusive(*best_ask, *max_ask, tick_size).unwrap_or(0);
+            (Some(*max_ask), rows)
         } else {
             (None, 0)
         };
 
-        let (min_bid_opt, best_bid_opt, bid_rows) =
-            if let (Some((min_bid, _)), Some((best_bid, _))) = (
-                bids_grouped.first_key_value(),
-                bids_grouped.last_key_value(),
-            ) {
-                let min_bid_price = min_bid.into_inner();
-                let best_bid_price = best_bid.into_inner();
-                let rows = ((best_bid_price - min_bid_price) / tick_size)
-                    .floor()
-                    .max(0.0) as usize
-                    + 1;
-                (Some(min_bid_price), Some(best_bid_price), rows)
-            } else {
-                (None, None, 0)
-            };
+        let (best_bid_opt, bid_rows) = if let (Some((min_bid, _)), Some((best_bid, _))) = (
+            bids_grouped.first_key_value(),
+            bids_grouped.last_key_value(),
+        ) {
+            let rows = Price::steps_between_inclusive(*min_bid, *best_bid, tick_size).unwrap_or(0);
+            (Some(*best_bid), rows)
+        } else {
+            (None, 0)
+        };
 
         let spread_rows = if show_spread { 1 } else { 0 };
         let total_rows = ask_rows + spread_rows + bid_rows;
@@ -431,7 +418,6 @@ impl Orderbook {
             spread_rows,
             total_rows,
             max_ask: max_ask_opt,
-            min_bid: min_bid_opt,
             best_bid: best_bid_opt,
         }
     }
@@ -439,9 +425,9 @@ impl Orderbook {
     fn visible_rows(
         &self,
         bounds: Rectangle,
-        asks_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
-        bids_grouped: &BTreeMap<OrderedFloat<f32>, f32>,
-        tick_size: f32,
+        asks_grouped: &BTreeMap<Price, f32>,
+        bids_grouped: &BTreeMap<Price, f32>,
+        tick_size: PriceStep,
         meta: &RowMeta,
         base_scroll: f32,
     ) -> (Vec<VisibleRow>, Maxima) {
@@ -487,9 +473,8 @@ impl Orderbook {
                         None => return (ROW_HEIGHT, DomRow::Spread),
                     };
 
-                    let price = ma - (row_idx as f32) * tick_size;
-                    let key = OrderedFloat(data::util::round_to_tick(price, tick_size));
-                    let qty = asks_grouped.get(&key).copied().unwrap_or(0.0);
+                    let price = ma.add_steps(-(row_idx as i64), tick_size);
+                    let qty = asks_grouped.get(&price).copied().unwrap_or(0.0);
                     (ROW_HEIGHT, DomRow::Ask { price, qty })
                 } else if self.config.show_spread && row_idx == meta.ask_rows {
                     (SPREAD_ROW_HEIGHT, DomRow::Spread)
@@ -500,15 +485,8 @@ impl Orderbook {
                         None => return (ROW_HEIGHT, DomRow::Spread),
                     };
 
-                    let price = bb - (offset as f32) * tick_size;
-                    if let Some(mb) = meta.min_bid
-                        && price < mb - 0.5 * tick_size
-                    {
-                        return (0.0, DomRow::Spread);
-                    }
-
-                    let key = OrderedFloat(data::util::round_to_tick(price, tick_size));
-                    let qty = bids_grouped.get(&key).copied().unwrap_or(0.0);
+                    let price = bb.add_steps(-(offset as i64), tick_size);
+                    let qty = bids_grouped.get(&price).copied().unwrap_or(0.0);
 
                     (ROW_HEIGHT, DomRow::Bid { price, qty })
                 }
@@ -574,7 +552,7 @@ impl Orderbook {
         &self,
         frame: &mut iced::widget::canvas::Frame,
         y: f32,
-        price: f32,
+        price: Price,
         order_qty: f32,
         is_bid: bool,
         side_color: iced::Color,
@@ -737,7 +715,7 @@ impl Orderbook {
 }
 
 enum DomRow {
-    Ask { price: f32, qty: f32 },
+    Ask { price: Price, qty: f32 },
     Spread,
-    Bid { price: f32, qty: f32 },
+    Bid { price: Price, qty: f32 },
 }

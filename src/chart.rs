@@ -8,6 +8,7 @@ use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::fetcher::{FetchRange, RequestHandler};
+use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, Timeframe};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
@@ -553,9 +554,9 @@ pub fn view<'a, T: Chart>(
             translation_y: state.translation.y,
             scaling: state.scaling,
             decimals: state.decimals,
-            min: state.base_price_y,
+            min: state.base_price_y.to_f32_lossy(),
             last_price: state.last_price,
-            tick_size: state.tick_size,
+            tick_size: state.tick_size.to_f32_lossy(),
             cell_height: state.cell_height,
             basis: state.basis,
             chart_bounds: state.bounds,
@@ -653,9 +654,9 @@ pub struct ViewState {
     cell_height: f32,
     basis: Basis,
     last_price: Option<PriceInfoLabel>,
-    base_price_y: f32,
+    base_price_y: Price,
     latest_x: u64,
-    tick_size: f32,
+    tick_size: PriceStep,
     decimals: usize,
     ticker_info: Option<TickerInfo>,
     layout: ViewConfig,
@@ -672,9 +673,9 @@ impl Default for ViewState {
             scaling: 1.0,
             cell_width: 4.0,
             cell_height: 3.0,
-            base_price_y: 0.0,
             latest_x: 0,
-            tick_size: 0.0,
+            base_price_y: Price::from_f32_lossy(0.0),
+            tick_size: PriceStep::from_f32_lossy(1.0),
             decimals: 0,
             ticker_info: None,
             layout: ViewConfig::default(),
@@ -683,6 +684,11 @@ impl Default for ViewState {
 }
 
 impl ViewState {
+    #[inline]
+    fn price_unit() -> i64 {
+        10i64.pow(Price::PRICE_SCALE as u32)
+    }
+
     fn visible_region(&self, size: Size) -> Rectangle {
         let width = size.width / self.scaling;
         let height = size.height / self.scaling;
@@ -718,7 +724,7 @@ impl ViewState {
         }
     }
 
-    fn price_range(&self, region: &Rectangle) -> (f32, f32) {
+    fn price_range(&self, region: &Rectangle) -> (Price, Price) {
         let highest = self.y_to_price(region.y);
         let lowest = self.y_to_price(region.y + region.height);
 
@@ -758,12 +764,28 @@ impl ViewState {
         }
     }
 
-    fn price_to_y(&self, price: f32) -> f32 {
-        ((self.base_price_y - price) / self.tick_size) * self.cell_height
+    fn price_to_y(&self, price: Price) -> f32 {
+        if self.tick_size.units == 0 {
+            let one = Self::price_unit() as f32;
+            let delta_units = (self.base_price_y.units - price.units) as f32;
+            return (delta_units / one) * self.cell_height;
+        }
+
+        let delta_units = self.base_price_y.units - price.units;
+        let ticks = (delta_units as f32) / (self.tick_size.units as f32);
+        ticks * self.cell_height
     }
 
-    fn y_to_price(&self, y: f32) -> f32 {
-        self.base_price_y - (y / self.cell_height) * self.tick_size
+    fn y_to_price(&self, y: f32) -> Price {
+        if self.tick_size.units == 0 {
+            let one = Self::price_unit() as f32;
+            let delta_units = ((y / self.cell_height) * one).round() as i64;
+            return Price::from_units(self.base_price_y.units - delta_units);
+        }
+
+        let ticks: f32 = y / self.cell_height;
+        let delta_units = (ticks * self.tick_size.units as f32).round() as i64;
+        Price::from_units(self.base_price_y.units - delta_units)
     }
 
     fn draw_crosshair(
@@ -777,8 +799,12 @@ impl ViewState {
         let region = self.visible_region(bounds);
         let dashed_line = style::dashed_line(theme);
 
-        let highest = self.y_to_price(region.y);
-        let lowest = self.y_to_price(region.y + region.height);
+        let highest_p: Price = self.y_to_price(region.y);
+        let lowest_p: Price = self.y_to_price(region.y + region.height);
+        let highest: f32 = highest_p.to_f32_lossy();
+        let lowest: f32 = lowest_p.to_f32_lossy();
+
+        let tick_size = self.tick_size.to_f32_lossy();
 
         if let Interaction::Ruler { start: Some(start) } = interaction {
             let p1 = *start;
@@ -787,7 +813,16 @@ impl ViewState {
             let snap_y = |y: f32| {
                 let ratio = y / bounds.height;
                 let price = highest + ratio * (lowest - highest);
-                let rounded_price = data::util::round_to_tick(price, self.tick_size);
+
+                let rounded_price_p = if self.tick_size.units == 0 {
+                    Price::from_f32_lossy((price / tick_size).round() * tick_size)
+                } else {
+                    let p = Price::from_f32_lossy(price);
+                    let tick_units = self.tick_size.units;
+                    let tick_index = p.units.div_euclid(tick_units);
+                    Price::from_units(tick_index * tick_units)
+                };
+                let rounded_price = rounded_price_p.to_f32_lossy();
                 let snap_ratio = (rounded_price - highest) / (lowest - highest);
                 snap_ratio * bounds.height
             };
@@ -805,10 +840,10 @@ impl ViewState {
             let price1 = self.y_to_price(snapped_p1_y);
             let price2 = self.y_to_price(snapped_p2_y);
 
-            let pct = if price1 == 0.0 {
+            let pct = if price1.to_f32_lossy() == 0.0 {
                 0.0
             } else {
-                ((price2 - price1) / price1) * 100.0
+                ((price2.to_f32_lossy() - price1.to_f32_lossy()) / price1.to_f32_lossy()) * 100.0
             };
             let pct_text = format!("{:.2}%", pct);
 
@@ -947,7 +982,7 @@ impl ViewState {
         let crosshair_ratio = cursor_position.y / bounds.height;
         let crosshair_price = highest + crosshair_ratio * (lowest - highest);
 
-        let rounded_price = data::util::round_to_tick(crosshair_price, self.tick_size);
+        let rounded_price = (crosshair_price / tick_size).round() * tick_size;
         let snap_ratio = (rounded_price - highest) / (lowest - highest);
 
         frame.stroke(
@@ -1004,7 +1039,7 @@ impl ViewState {
     ) {
         if let Some(price) = &self.last_price {
             let (mut y_pos, line_color) = price.get_with_color(palette);
-            y_pos = self.price_to_y(y_pos);
+            y_pos = self.price_to_y(Price::from_f32_lossy(y_pos));
 
             let marker_line = Stroke::with_color(
                 Stroke {
@@ -1037,7 +1072,7 @@ impl ViewState {
     }
 
     fn y_labels_width(&self) -> Length {
-        let base_value = self.base_price_y;
+        let base_value = self.base_price_y.to_f32_lossy();
         let decimals = self.decimals;
 
         let value = format!("{base_value:.decimals$}");

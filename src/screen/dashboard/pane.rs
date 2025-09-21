@@ -476,7 +476,9 @@ impl State {
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
                     let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
 
-                    let base_ticksize = tick_multiply.base(panel.tick_size);
+                    let tick_size = panel.tick_size();
+
+                    let base_ticksize = tick_multiply.base(tick_size);
 
                     let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
 
@@ -494,16 +496,8 @@ impl State {
                     let base = panel::view(panel, timezone)
                         .map(move |message| Message::PanelInteraction(id, message));
 
-                    let settings_modal = || {
-                        let current_price = panel.current_price();
-                        let tick_size = panel.tick_size;
-                        modal::pane::settings::orderbook_cfg_view(
-                            panel.config,
-                            id,
-                            current_price,
-                            Some(tick_size),
-                        )
-                    };
+                    let settings_modal =
+                        || modal::pane::settings::orderbook_cfg_view(panel.config, id);
 
                     self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
                 } else {
