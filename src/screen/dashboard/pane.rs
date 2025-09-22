@@ -150,7 +150,14 @@ impl State {
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
 
-                let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
+                let prev_is_client = self
+                    .stream_pair()
+                    .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
+                    .unwrap_or(is_depth_client_aggr);
+
+                let tick_multiplier = if !is_depth_client_aggr && prev_is_client {
+                    TickMultiplier(10)
+                } else if let Some(tm) = self.settings.tick_multiply {
                     tm
                 } else if is_depth_client_aggr {
                     TickMultiplier(5)
@@ -277,7 +284,14 @@ impl State {
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
 
-                let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
+                let prev_is_client = self
+                    .stream_pair()
+                    .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
+                    .unwrap_or(is_depth_client_aggr);
+
+                let tick_multiplier = if !is_depth_client_aggr && prev_is_client {
+                    TickMultiplier(10)
+                } else if let Some(tm) = self.settings.tick_multiply {
                     tm
                 } else if is_depth_client_aggr {
                     TickMultiplier(5)
@@ -288,7 +302,7 @@ impl State {
                 let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
                 let content =
-                    Content::Orderbook(Some(Orderbook::new(config, Some(ticker_info), tick_size)));
+                    Content::Orderbook(Some(Orderbook::new(config, ticker_info, tick_size)));
 
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker_info,

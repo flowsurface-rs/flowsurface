@@ -544,10 +544,7 @@ impl Modifier {
                         .push(horizontal_rule(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
-                        || matches!(
-                            kind,
-                            ModifierKind::Footprint(_, _) | ModifierKind::Orderbook(_, _)
-                        );
+                        || matches!(kind, ModifierKind::Footprint(_, _));
 
                     let allowed_tm = if allows_custom_tsizes {
                         exchange::TickMultiplier::ALL.to_vec()

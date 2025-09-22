@@ -45,18 +45,17 @@ pub struct Orderbook {
     depth: Depth,
     raw_trades: VecDeque<Trade>,
     grouped_trades: KlineTrades,
-    ticker_info: Option<TickerInfo>,
+    ticker_info: TickerInfo,
     pub config: Config,
     cache: canvas::Cache,
     last_tick: Instant,
     tick_size: PriceStep,
-    decimals: usize,
     scroll_px: f32,
     last_exchange_ts_ms: Option<u64>,
 }
 
 impl Orderbook {
-    pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>, tick_size: f32) -> Self {
+    pub fn new(config: Option<Config>, ticker_info: TickerInfo, tick_size: f32) -> Self {
         Self {
             depth: Depth::default(),
             raw_trades: VecDeque::new(),
@@ -66,7 +65,6 @@ impl Orderbook {
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
             tick_size: PriceStep::from_f32(tick_size),
-            decimals: data::util::count_decimals(tick_size),
             scroll_px: 0.0,
             last_exchange_ts_ms: None,
         }
@@ -134,13 +132,11 @@ impl Orderbook {
         self.depth.mid_price()
     }
 
-    pub fn min_tick_size(&self) -> Option<f32> {
-        self.ticker_info.map(|info| info.min_ticksize.into())
+    pub fn min_tick_size(&self) -> f32 {
+        self.ticker_info.min_ticksize.into()
     }
 
     pub fn set_tick_size(&mut self, tick_size: f32) {
-        self.decimals = data::util::count_decimals(tick_size);
-
         let step = PriceStep::from_f32(tick_size);
         self.tick_size = step;
 
@@ -164,9 +160,9 @@ impl Orderbook {
         self.tick_size.to_f32_lossy()
     }
 
-    fn format_price(&self, price: Price) -> Option<String> {
-        self.ticker_info
-            .map(|info| price.to_string(info.min_ticksize))
+    fn format_price(&self, price: Price) -> String {
+        let precision = self.ticker_info.min_ticksize;
+        price.to_string(precision)
     }
 
     fn format_quantity(&self, qty: f32) -> String {
@@ -295,14 +291,12 @@ impl canvas::Program<Message> for Orderbook {
                             );
                         }
                         DomRow::Spread => {
-                            if let (Some(info), Some(spread)) =
-                                (self.ticker_info, self.calculate_spread())
-                            {
+                            if let Some(spread) = self.calculate_spread() {
+                                let min_ticksize = self.ticker_info.min_ticksize;
                                 spread_row = Some((visible_row.y, visible_row.y + ROW_HEIGHT));
 
-                                let spread = spread.round_to_min_tick(info.min_ticksize);
-                                let content =
-                                    format!("Spread: {}", spread.to_string(info.min_ticksize));
+                                let spread = spread.round_to_min_tick(min_ticksize);
+                                let content = format!("Spread: {}", spread.to_string(min_ticksize));
                                 frame.fill_text(Text {
                                     content,
                                     position: Point::new(
@@ -574,17 +568,16 @@ impl Orderbook {
         );
 
         // Price
-        if let Some(price_text) = self.format_price(price) {
-            let price_x_center = (cols.price.0 + cols.price.1) * 0.5;
-            Self::draw_cell_text(
-                frame,
-                &price_text,
-                price_x_center,
-                y,
-                side_color,
-                Alignment::Center,
-            );
-        }
+        let price_text = self.format_price(price);
+        let price_x_center = (cols.price.0 + cols.price.1) * 0.5;
+        Self::draw_cell_text(
+            frame,
+            &price_text,
+            price_x_center,
+            y,
+            side_color,
+            Alignment::Center,
+        );
     }
 
     fn fill_bar(
@@ -700,7 +693,9 @@ impl Orderbook {
             if idx == 0 {
                 let top_y_screen = mid_screen_y + PriceGrid::top_y(0) - scroll;
                 if top_y_screen < bounds.height && top_y_screen + ROW_HEIGHT > 0.0 {
-                    let row = if self.config.show_spread {
+                    let row = if self.config.show_spread
+                        && self.ticker_info.exchange().is_depth_client_aggr()
+                    {
                         DomRow::Spread
                     } else {
                         DomRow::CenterDivider
