@@ -12,7 +12,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            show_spread: true,
+            show_spread: false,
             trade_retention: Duration::from_millis(TRADE_RETENTION_MS),
         }
     }

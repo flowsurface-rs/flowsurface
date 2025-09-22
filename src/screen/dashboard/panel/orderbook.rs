@@ -12,9 +12,8 @@ use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
-const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
+const TEXT_SIZE: f32 = 11.0;
 const ROW_HEIGHT: f32 = 16.0;
-const SPREAD_ROW_HEIGHT: f32 = 20.0;
 
 // Total width ratios must sum to 1.0
 /// Uses half of the width for each side of the order quantity columns
@@ -243,96 +242,151 @@ impl canvas::Program<Message> for Orderbook {
         let bid_color = palette.success.base.color;
         let ask_color = palette.danger.base.color;
 
+        let divider_color = style::split_ruler(theme).color;
+
         let asks_grouped = self.group_price_levels(&self.depth.asks, false);
         let bids_grouped = self.group_price_levels(&self.depth.bids, true);
-
-        let meta = self.row_meta(
-            &asks_grouped,
-            &bids_grouped,
-            self.tick_size,
-            self.config.show_spread,
-        );
-
-        let pre_spread_height = (meta.ask_rows as f32) * ROW_HEIGHT;
-        let center_target = if self.config.show_spread {
-            pre_spread_height + SPREAD_ROW_HEIGHT / 2.0
-        } else {
-            pre_spread_height
-        };
-        let base_scroll = center_target - bounds.height / 2.0;
 
         let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
             let cols = self.column_ranges(bounds.width);
 
-            let (visible_rows, maxima) = self.visible_rows(
-                bounds,
-                &asks_grouped,
-                &bids_grouped,
-                self.tick_size,
-                &meta,
-                base_scroll,
-            );
+            if let Some(grid) = self.build_price_grid(&asks_grouped, &bids_grouped) {
+                let (visible_rows, maxima) =
+                    self.visible_rows(bounds, &asks_grouped, &bids_grouped, &grid);
 
-            for visible_row in visible_rows {
-                match visible_row.row {
-                    DomRow::Ask { price, qty } => {
-                        self.draw_row(
-                            frame,
-                            visible_row.y,
-                            price,
-                            qty,
-                            false,
-                            ask_color,
-                            text_color,
-                            maxima.vis_max_order_qty,
-                            visible_row.buy_t,
-                            visible_row.sell_t,
-                            maxima.vis_max_trade_qty,
-                            bid_color,
-                            ask_color,
-                            &cols,
-                        );
-                    }
-                    DomRow::Bid { price, qty } => {
-                        self.draw_row(
-                            frame,
-                            visible_row.y,
-                            price,
-                            qty,
-                            true,
-                            bid_color,
-                            text_color,
-                            maxima.vis_max_order_qty,
-                            visible_row.buy_t,
-                            visible_row.sell_t,
-                            maxima.vis_max_trade_qty,
-                            bid_color,
-                            ask_color,
-                            &cols,
-                        );
-                    }
-                    DomRow::Spread => {
-                        if let (Some(info), Some(spread)) =
-                            (self.ticker_info, self.calculate_spread())
-                        {
-                            let spread = spread.round_to_min_tick(info.min_ticksize);
-                            let content =
-                                format!("Spread: {}", spread.to_string(info.min_ticksize));
-                            frame.fill_text(Text {
-                                content,
-                                position: Point::new(
-                                    bounds.width / 2.0,
-                                    visible_row.y + SPREAD_ROW_HEIGHT / 2.0,
-                                ),
-                                color: palette.secondary.strong.color,
-                                size: TEXT_SIZE,
-                                font: style::AZERET_MONO,
-                                align_x: Alignment::Center.into(),
-                                align_y: Alignment::Center.into(),
-                                ..Default::default()
-                            });
+                let mut spread_row: Option<(f32, f32)> = None;
+
+                for visible_row in visible_rows {
+                    match visible_row.row {
+                        DomRow::Ask { price, qty } => {
+                            self.draw_row(
+                                frame,
+                                visible_row.y,
+                                price,
+                                qty,
+                                false,
+                                ask_color,
+                                text_color,
+                                maxima.vis_max_order_qty,
+                                visible_row.buy_t,
+                                visible_row.sell_t,
+                                maxima.vis_max_trade_qty,
+                                bid_color,
+                                ask_color,
+                                &cols,
+                            );
+                        }
+                        DomRow::Bid { price, qty } => {
+                            self.draw_row(
+                                frame,
+                                visible_row.y,
+                                price,
+                                qty,
+                                true,
+                                bid_color,
+                                text_color,
+                                maxima.vis_max_order_qty,
+                                visible_row.buy_t,
+                                visible_row.sell_t,
+                                maxima.vis_max_trade_qty,
+                                bid_color,
+                                ask_color,
+                                &cols,
+                            );
+                        }
+                        DomRow::Spread => {
+                            if let (Some(info), Some(spread)) =
+                                (self.ticker_info, self.calculate_spread())
+                            {
+                                spread_row = Some((visible_row.y, visible_row.y + ROW_HEIGHT));
+
+                                let spread = spread.round_to_min_tick(info.min_ticksize);
+                                let content =
+                                    format!("Spread: {}", spread.to_string(info.min_ticksize));
+                                frame.fill_text(Text {
+                                    content,
+                                    position: Point::new(
+                                        bounds.width / 2.0,
+                                        visible_row.y + ROW_HEIGHT / 2.0,
+                                    ),
+                                    color: palette.secondary.strong.color,
+                                    size: (TEXT_SIZE - 1.0).into(),
+                                    font: style::AZERET_MONO,
+                                    align_x: Alignment::Center.into(),
+                                    align_y: Alignment::Center.into(),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        DomRow::CenterDivider => {
+                            let y_mid = visible_row.y + ROW_HEIGHT / 2.0 - 0.5;
+
+                            frame.fill_rectangle(
+                                Point::new(0.0, y_mid),
+                                Size::new(bounds.width, 1.0),
+                                divider_color,
+                            );
                         }
                     }
+                }
+
+                // Price column vertical dividers with a gap over the spread row (if visible)
+                let mut draw_vsplit = |x: f32, gap: Option<(f32, f32)>| {
+                    let x = x.floor() + 0.5;
+                    match gap {
+                        Some((top, bottom)) => {
+                            if top > 0.0 {
+                                frame.fill_rectangle(
+                                    Point::new(x, 0.0),
+                                    Size::new(1.0, top.max(0.0)),
+                                    divider_color,
+                                );
+                            }
+                            if bottom < bounds.height {
+                                frame.fill_rectangle(
+                                    Point::new(x, bottom),
+                                    Size::new(1.0, (bounds.height - bottom).max(0.0)),
+                                    divider_color,
+                                );
+                            }
+                        }
+                        None => {
+                            frame.fill_rectangle(
+                                Point::new(x, 0.0),
+                                Size::new(1.0, bounds.height),
+                                divider_color,
+                            );
+                        }
+                    }
+                };
+                draw_vsplit(cols.sell.1, spread_row);
+                draw_vsplit(cols.buy.0, spread_row);
+
+                if let Some((top, bottom)) = spread_row {
+                    let y_top: f32 = top.floor() + 0.5;
+                    let y_bot = bottom.floor() + 0.5;
+
+                    frame.fill_rectangle(
+                        Point::new(0.0, y_top),
+                        Size::new(cols.sell.1, 1.0),
+                        divider_color,
+                    );
+                    frame.fill_rectangle(
+                        Point::new(0.0, y_bot),
+                        Size::new(cols.sell.1, 1.0),
+                        divider_color,
+                    );
+
+                    frame.fill_rectangle(
+                        Point::new(cols.buy.0, y_top),
+                        Size::new(bounds.width - cols.buy.0, 1.0),
+                        divider_color,
+                    );
+                    frame.fill_rectangle(
+                        Point::new(cols.buy.0, y_bot),
+                        Size::new(bounds.width - cols.buy.0, 1.0),
+                        divider_color,
+                    );
                 }
             }
         });
@@ -352,15 +406,6 @@ struct VisibleRow {
     y: f32,
     buy_t: f32,
     sell_t: f32,
-}
-
-struct RowMeta {
-    ask_rows: usize,
-    bid_rows: usize,
-    spread_rows: usize,
-    total_rows: usize,
-    max_ask: Option<Price>,
-    best_bid: Option<Price>,
 }
 
 struct ColumnRanges {
@@ -425,172 +470,6 @@ impl Orderbook {
         } else {
             (0.0, 0.0)
         }
-    }
-
-    fn row_meta(
-        &self,
-        asks_grouped: &BTreeMap<Price, f32>,
-        bids_grouped: &BTreeMap<Price, f32>,
-        tick_size: PriceStep,
-        show_spread: bool,
-    ) -> RowMeta {
-        let (max_ask_opt, ask_rows) = if let (Some((best_ask, _)), Some((max_ask, _))) = (
-            asks_grouped.first_key_value(),
-            asks_grouped.last_key_value(),
-        ) {
-            let rows = Price::steps_between_inclusive(*best_ask, *max_ask, tick_size).unwrap_or(0);
-            (Some(*max_ask), rows)
-        } else {
-            (None, 0)
-        };
-
-        let (best_bid_opt, bid_rows) = if let (Some((min_bid, _)), Some((best_bid, _))) = (
-            bids_grouped.first_key_value(),
-            bids_grouped.last_key_value(),
-        ) {
-            let rows = Price::steps_between_inclusive(*min_bid, *best_bid, tick_size).unwrap_or(0);
-            (Some(*best_bid), rows)
-        } else {
-            (None, 0)
-        };
-
-        let spread_rows = if show_spread { 1 } else { 0 };
-        let total_rows = ask_rows + spread_rows + bid_rows;
-
-        RowMeta {
-            ask_rows,
-            bid_rows,
-            spread_rows,
-            total_rows,
-            max_ask: max_ask_opt,
-            best_bid: best_bid_opt,
-        }
-    }
-
-    fn visible_rows(
-        &self,
-        bounds: Rectangle,
-        asks_grouped: &BTreeMap<Price, f32>,
-        bids_grouped: &BTreeMap<Price, f32>,
-        tick_size: PriceStep,
-        meta: &RowMeta,
-        base_scroll: f32,
-    ) -> (Vec<VisibleRow>, Maxima) {
-        let mut y_cursor = -(base_scroll + self.scroll_px);
-        let mut row_idx: usize = 0;
-        let mut visible: Vec<VisibleRow> = Vec::new();
-
-        let mut maxima = Maxima::default();
-
-        if y_cursor < 0.0 {
-            let ask_skip = ((-y_cursor) / ROW_HEIGHT).floor() as usize;
-            let ask_skipped = ask_skip.min(meta.ask_rows);
-            y_cursor += (ask_skipped as f32) * ROW_HEIGHT;
-            row_idx += ask_skipped;
-
-            if self.config.show_spread
-                && row_idx == meta.ask_rows
-                && y_cursor < 0.0
-                && y_cursor + SPREAD_ROW_HEIGHT <= 0.0
-            {
-                y_cursor += SPREAD_ROW_HEIGHT;
-                row_idx += 1;
-            }
-
-            let after_spread = meta.ask_rows + if self.config.show_spread { 1 } else { 0 };
-            if row_idx >= after_spread && y_cursor < 0.0 {
-                let remaining_neg = -y_cursor;
-                let bid_skip = (remaining_neg / ROW_HEIGHT).floor() as usize;
-                let bid_skipped = bid_skip.min(meta.bid_rows);
-                y_cursor += (bid_skipped as f32) * ROW_HEIGHT;
-                row_idx = (after_spread + bid_skipped).min(meta.total_rows);
-            }
-        }
-
-        let mut drawn = 0usize;
-        let rows_budget = ((bounds.height / ROW_HEIGHT).ceil() as usize) + 4;
-
-        while row_idx < meta.total_rows && y_cursor < bounds.height && drawn < rows_budget {
-            let pick_row = || -> (f32, DomRow) {
-                if row_idx < meta.ask_rows {
-                    let ma = match meta.max_ask {
-                        Some(v) => v,
-                        None => return (ROW_HEIGHT, DomRow::Spread),
-                    };
-
-                    let price = ma.add_steps(-(row_idx as i64), tick_size);
-                    let qty = asks_grouped.get(&price).copied().unwrap_or(0.0);
-                    (ROW_HEIGHT, DomRow::Ask { price, qty })
-                } else if self.config.show_spread && row_idx == meta.ask_rows {
-                    (SPREAD_ROW_HEIGHT, DomRow::Spread)
-                } else {
-                    let offset = row_idx - meta.ask_rows - meta.spread_rows;
-                    let bb = match meta.best_bid {
-                        Some(v) => v,
-                        None => return (ROW_HEIGHT, DomRow::Spread),
-                    };
-
-                    let price = bb.add_steps(-(offset as i64), tick_size);
-                    let qty = bids_grouped.get(&price).copied().unwrap_or(0.0);
-
-                    (ROW_HEIGHT, DomRow::Bid { price, qty })
-                }
-            };
-
-            let (h, row) = pick_row();
-            if h <= 0.0 {
-                break;
-            }
-
-            if y_cursor + h <= 0.0 {
-                y_cursor += h;
-                row_idx += 1;
-                continue;
-            }
-
-            match row {
-                DomRow::Ask { price, qty } => {
-                    maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(qty);
-
-                    let (buy_t, sell_t) = self.trade_qty_at(price);
-                    maxima.vis_max_trade_qty = maxima.vis_max_trade_qty.max(buy_t.max(sell_t));
-
-                    visible.push(VisibleRow {
-                        row,
-                        y: y_cursor,
-                        buy_t,
-                        sell_t,
-                    });
-                }
-                DomRow::Bid { price, qty } => {
-                    maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(qty);
-
-                    let (buy_t, sell_t) = self.trade_qty_at(price);
-                    maxima.vis_max_trade_qty = maxima.vis_max_trade_qty.max(buy_t.max(sell_t));
-
-                    visible.push(VisibleRow {
-                        row,
-                        y: y_cursor,
-                        buy_t,
-                        sell_t,
-                    });
-                }
-                DomRow::Spread => {
-                    visible.push(VisibleRow {
-                        row,
-                        y: y_cursor,
-                        buy_t: 0.0,
-                        sell_t: 0.0,
-                    });
-                }
-            }
-
-            y_cursor += h;
-            row_idx += 1;
-            drawn += 1;
-        }
-
-        (visible, maxima)
     }
 
     fn draw_row(
@@ -751,17 +630,166 @@ impl Orderbook {
             content: text.to_string(),
             position: Point::new(x_anchor, y + ROW_HEIGHT / 2.0),
             color,
-            size: TEXT_SIZE,
+            size: TEXT_SIZE.into(),
             font: style::AZERET_MONO,
             align_x: align.into(),
             align_y: Alignment::Center.into(),
             ..Default::default()
         });
     }
+
+    fn build_price_grid(
+        &self,
+        asks_grouped: &BTreeMap<Price, f32>,
+        bids_grouped: &BTreeMap<Price, f32>,
+    ) -> Option<PriceGrid> {
+        let best_bid = bids_grouped.last_key_value().map(|(k, _)| *k);
+        let best_ask = asks_grouped.first_key_value().map(|(k, _)| *k);
+
+        let (best_bid, best_ask) = match (best_bid, best_ask) {
+            (Some(bb), Some(ba)) => (bb, ba),
+            (Some(bb), None) => (bb, bb.add_steps(1, self.tick_size)),
+            (None, Some(ba)) => (ba.add_steps(-1, self.tick_size), ba),
+            (None, None) => {
+                let mut min_t: Option<Price> = None;
+                let mut max_t: Option<Price> = None;
+
+                for &p in self.grouped_trades.trades.keys() {
+                    min_t = Some(min_t.map_or(p, |cur| cur.min(p)));
+                    max_t = Some(max_t.map_or(p, |cur| cur.max(p)));
+                }
+                let (Some(min_t), Some(max_t)) = (min_t, max_t) else {
+                    return None;
+                };
+
+                let steps =
+                    Price::steps_between_inclusive(min_t, max_t, self.tick_size).unwrap_or(1);
+                let mid = max_t.add_steps(-(steps as i64 / 2), self.tick_size);
+
+                (mid, mid.add_steps(1, self.tick_size))
+            }
+        };
+
+        Some(PriceGrid {
+            best_bid,
+            best_ask,
+            tick: self.tick_size,
+        })
+    }
+
+    fn visible_rows(
+        &self,
+        bounds: Rectangle,
+        asks_grouped: &BTreeMap<Price, f32>,
+        bids_grouped: &BTreeMap<Price, f32>,
+        grid: &PriceGrid,
+    ) -> (Vec<VisibleRow>, Maxima) {
+        let mut visible: Vec<VisibleRow> = Vec::new();
+        let mut maxima = Maxima::default();
+
+        let mid_screen_y = bounds.height * 0.5;
+        let scroll = self.scroll_px;
+
+        let y0 = mid_screen_y + PriceGrid::top_y(0) - scroll;
+        let idx_top = ((0.0 - y0) / ROW_HEIGHT).floor() as i32;
+
+        let rows_needed = (bounds.height / ROW_HEIGHT).ceil() as i32 + 1;
+        let idx_bottom = idx_top + rows_needed;
+
+        for idx in idx_top..=idx_bottom {
+            if idx == 0 {
+                let top_y_screen = mid_screen_y + PriceGrid::top_y(0) - scroll;
+                if top_y_screen < bounds.height && top_y_screen + ROW_HEIGHT > 0.0 {
+                    let row = if self.config.show_spread {
+                        DomRow::Spread
+                    } else {
+                        DomRow::CenterDivider
+                    };
+
+                    visible.push(VisibleRow {
+                        row,
+                        y: top_y_screen,
+                        buy_t: 0.0,
+                        sell_t: 0.0,
+                    });
+                }
+                continue;
+            }
+
+            let Some(price) = grid.index_to_price(idx) else {
+                continue;
+            };
+
+            let is_bid = idx > 0;
+            let order_qty = if is_bid {
+                bids_grouped.get(&price).copied().unwrap_or(0.0)
+            } else {
+                asks_grouped.get(&price).copied().unwrap_or(0.0)
+            };
+
+            let top_y_screen = mid_screen_y + PriceGrid::top_y(idx) - scroll;
+            if top_y_screen >= bounds.height || top_y_screen + ROW_HEIGHT <= 0.0 {
+                continue;
+            }
+
+            maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(order_qty);
+            let (buy_t, sell_t) = self.trade_qty_at(price);
+            maxima.vis_max_trade_qty = maxima.vis_max_trade_qty.max(buy_t.max(sell_t));
+
+            let row = if is_bid {
+                DomRow::Bid {
+                    price,
+                    qty: order_qty,
+                }
+            } else {
+                DomRow::Ask {
+                    price,
+                    qty: order_qty,
+                }
+            };
+
+            visible.push(VisibleRow {
+                row,
+                y: top_y_screen,
+                buy_t,
+                sell_t,
+            });
+        }
+
+        visible.sort_by(|a, b| a.y.total_cmp(&b.y));
+        (visible, maxima)
+    }
 }
 
 enum DomRow {
     Ask { price: Price, qty: f32 },
     Spread,
+    CenterDivider,
     Bid { price: Price, qty: f32 },
+}
+
+struct PriceGrid {
+    best_bid: Price,
+    best_ask: Price,
+    tick: PriceStep,
+}
+
+impl PriceGrid {
+    /// Returns None for index 0 (spread row)
+    fn index_to_price(&self, idx: i32) -> Option<Price> {
+        if idx == 0 {
+            return None;
+        }
+        if idx > 0 {
+            let off = (idx - 1) as i64; // 1 => best_bid, 2 => best_bid - 1 tick
+            Some(self.best_bid.add_steps(-off, self.tick))
+        } else {
+            let off = (-1 - idx) as i64; // -1 => best_ask, -2 => best_ask + 1 tick
+            Some(self.best_ask.add_steps(off, self.tick))
+        }
+    }
+
+    fn top_y(idx: i32) -> f32 {
+        (idx as f32) * ROW_HEIGHT - ROW_HEIGHT * 0.5
+    }
 }
