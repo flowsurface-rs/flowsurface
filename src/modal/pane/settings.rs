@@ -5,6 +5,7 @@ use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
+use data::chart::ladder;
 use data::chart::{
     KlineChartKind, VisualConfig,
     heatmap::{self, CoalesceKind},
@@ -12,6 +13,7 @@ use data::chart::{
     timeandsales::StackedBarRatio,
 };
 use data::util::format_with_commas;
+
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -19,6 +21,7 @@ use iced::{
         row, slider, text, tooltip::Position as TooltipPosition,
     },
 };
+use std::time::Duration;
 
 fn cfg_view_container<'a, T>(max_width: u32, content: T) -> Element<'a, Message>
 where
@@ -428,6 +431,56 @@ pub fn kline_cfg_view<'a>(
     };
 
     cfg_view_container(360, content)
+}
+
+pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
+    let show_spread_toggle = {
+        let checkbox =
+            iced::widget::checkbox("Show Spread", cfg.show_spread).on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Ladder(ladder::Config {
+                        show_spread: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        column![text("Display Options").size(14), checkbox].spacing(8)
+    };
+
+    let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
+    let retention_slider = {
+        let slider_ui = slider(1.0..=60.0, retention_minutes, move |new_minutes| {
+            let mins = new_minutes.round().max(1.0) as u64;
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Ladder(ladder::Config {
+                    trade_retention: Duration::from_secs(mins * 60),
+                    ..cfg
+                }),
+                false,
+            )
+        })
+        .step(1.0);
+
+        classic_slider_row(
+            text("Keep trades for"),
+            slider_ui.into(),
+            Some(text(format!("≈ {} min", retention_minutes.round() as u64)).size(13)),
+        )
+    };
+
+    let history_column = column![text("History").size(14), retention_slider].spacing(8);
+
+    let content = split_column![
+        show_spread_toggle,
+        history_column;
+        spacing = 12, align_x = Alignment::Start
+    ];
+
+    cfg_view_container(320, content)
 }
 
 fn sync_all_button<'a>(pane: pane_grid::Pane, config: VisualConfig) -> Element<'a, Message> {

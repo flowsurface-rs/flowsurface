@@ -27,7 +27,7 @@ impl KlineDataPoint {
     }
 
     pub fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
-        self.footprint.add_trade_at_price_level(trade, step);
+        self.footprint.add_trade_to_nearest_bin(trade, step);
     }
 
     pub fn poc_price(&self) -> Option<Price> {
@@ -153,14 +153,28 @@ impl KlineTrades {
         self.trades.values().map(|group| group.last_time).max()
     }
 
-    pub fn add_trade_at_price_level(&mut self, trade: &Trade, step: PriceStep) {
-        let price_level = trade.price.round_to_step(step);
+    /// Add trade to the bin at the step multiple computed with side-based rounding.
+    /// Intended for order-book ladder/quotes; Floor for sells, ceil for buys.
+    /// Introduces side bias at bin edges and should not be used for OHLC/footprint aggregation
+    pub fn add_trade_to_side_bin(&mut self, trade: &Trade, step: PriceStep) {
+        let price = trade.price.round_to_side_step(trade.is_sell, step);
 
-        if let Some(group) = self.trades.get_mut(&price_level) {
-            group.add_trade(trade);
-        } else {
-            self.trades.insert(price_level, GroupedTrades::new(trade));
-        }
+        self.trades
+            .entry(price)
+            .and_modify(|group| group.add_trade(trade))
+            .or_insert_with(|| GroupedTrades::new(trade));
+    }
+
+    /// Add trade to the bin at the nearest step multiple (side-agnostic).
+    /// Ties (exactly half a step) round up to the higher multiple.
+    /// Intended for footprint/OHLC trade aggregation
+    pub fn add_trade_to_nearest_bin(&mut self, trade: &Trade, step: PriceStep) {
+        let price = trade.price.round_to_step(step);
+
+        self.trades
+            .entry(price)
+            .and_modify(|group| group.add_trade(trade))
+            .or_insert_with(|| GroupedTrades::new(trade));
     }
 
     pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> f32

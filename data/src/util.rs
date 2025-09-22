@@ -24,7 +24,8 @@ pub fn abbr_large_numbers(value: f32) -> String {
             format!("{}{:.3}b", sign, v / 100_000_000.0)
         }
         v if v >= 1_000_000.0 => format!("{}{:.2}m", sign, v / 1_000_000.0),
-        v if v >= 1_000.0 => format!("{}{:.1}k", sign, v / 1_000.0),
+        v if v >= 10_000.0 => format!("{}{:.1}k", sign, v / 1_000.0),
+        v if v >= 1_000.0 => format!("{}{:.2}k", sign, v / 1_000.0),
         v if v >= 100.0 => format!("{}{:.0}", sign, v),
         v if v >= 10.0 => format!("{}{:.1}", sign, v),
         v if v >= 1.0 => format!("{}{:.2}", sign, v),
@@ -114,6 +115,14 @@ pub fn format_with_commas(num: f32) -> String {
 
 pub fn round_to_tick(value: f32, tick_size: f32) -> f32 {
     (value / tick_size).round() * tick_size
+}
+
+pub fn round_to_next_tick(value: f32, tick_size: f32, down: bool) -> f32 {
+    if down {
+        (value / tick_size).floor() * tick_size
+    } else {
+        (value / tick_size).ceil() * tick_size
+    }
 }
 
 pub fn currency_abbr(price: f32) -> String {

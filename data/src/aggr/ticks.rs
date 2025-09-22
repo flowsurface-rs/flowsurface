@@ -15,7 +15,7 @@ pub struct TickAccumulation {
 impl TickAccumulation {
     pub fn new(trade: &Trade, step: PriceStep) -> Self {
         let mut footprint = KlineTrades::new();
-        footprint.add_trade_at_price_level(trade, step);
+        footprint.add_trade_to_nearest_bin(trade, step);
 
         let kline = Kline {
             time: trade.time,
@@ -52,7 +52,7 @@ impl TickAccumulation {
     }
 
     fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
-        self.footprint.add_trade_at_price_level(trade, step);
+        self.footprint.add_trade_to_nearest_bin(trade, step);
     }
 
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
@@ -176,8 +176,8 @@ impl TickAggr {
             for next_idx in (current_idx + 1)..total_points {
                 let next_dp = &self.datapoints[next_idx];
 
-                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
-                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
+                let next_dp_low = next_dp.kline.low.round_to_side_step(true, self.tick_size);
+                let next_dp_high = next_dp.kline.high.round_to_side_step(false, self.tick_size);
 
                 if next_dp_low <= poc_price && next_dp_high >= poc_price {
                     // on render we reverse the order of the points

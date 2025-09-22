@@ -7,6 +7,7 @@ use crate::{
             stack_modal,
         },
     },
+    screen::dashboard::panel::ladder::Ladder,
     screen::{
         DashboardError,
         dashboard::panel::{self, timeandsales::TimeAndSales},
@@ -149,7 +150,14 @@ impl State {
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
 
-                let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
+                let prev_is_client = self
+                    .stream_pair()
+                    .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
+                    .unwrap_or(is_depth_client_aggr);
+
+                let tick_multiplier = if !is_depth_client_aggr && prev_is_client {
+                    TickMultiplier(10)
+                } else if let Some(tm) = self.settings.tick_multiply {
                     tm
                 } else if is_depth_client_aggr {
                     TickMultiplier(5)
@@ -266,6 +274,41 @@ impl State {
                         StreamTicksize::Client
                     } else {
                         StreamTicksize::ServerSide(TickMultiplier(50))
+                    },
+                }];
+                Ok((content, streams))
+            }
+            "ladder" => {
+                let config = self.settings.visual_config.and_then(|cfg| cfg.ladder());
+
+                let exchange = ticker.exchange;
+                let is_depth_client_aggr = exchange.is_depth_client_aggr();
+
+                let prev_is_client = self
+                    .stream_pair()
+                    .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
+                    .unwrap_or(is_depth_client_aggr);
+
+                let tick_multiplier = if !is_depth_client_aggr && prev_is_client {
+                    TickMultiplier(10)
+                } else if let Some(tm) = self.settings.tick_multiply {
+                    tm
+                } else if is_depth_client_aggr {
+                    TickMultiplier(5)
+                } else {
+                    TickMultiplier(10)
+                };
+                self.settings.tick_multiply = Some(tick_multiplier);
+                let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
+
+                let content = Content::Ladder(Some(Ladder::new(config, ticker_info, tick_size)));
+
+                let streams = vec![StreamKind::DepthAndTrades {
+                    ticker_info,
+                    depth_aggr: if ticker_info.ticker.exchange.is_depth_client_aggr() {
+                        StreamTicksize::Client
+                    } else {
+                        StreamTicksize::ServerSide(TickMultiplier(10))
                     },
                 }];
                 Ok((content, streams))
@@ -418,7 +461,7 @@ impl State {
                         .style(style::chart_modal),
                         Message::HideModal(id),
                         padding::left(12),
-                        Alignment::End,
+                        Alignment::Start,
                     )
                 } else {
                     base
@@ -433,6 +476,43 @@ impl State {
                         || modal::pane::settings::timesales_cfg_view(panel.config, id);
 
                     self.compose_panel_view(base, id, compact_controls, settings_modal)
+                } else {
+                    center(text("Loading...").size(16)).into()
+                }
+            }
+            Content::Ladder(panel) => {
+                if let Some(panel) = panel {
+                    let selected_basis = self
+                        .settings
+                        .selected_basis
+                        .unwrap_or(Basis::default_heatmap_time(self.stream_pair()));
+                    let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
+                    let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
+
+                    let tick_size = panel.tick_size();
+
+                    let base_ticksize = tick_multiply.base(tick_size);
+
+                    let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
+
+                    let modifiers = ticksize_modifier(
+                        id,
+                        base_ticksize,
+                        tick_multiply,
+                        modifier,
+                        kind,
+                        exchange,
+                    );
+
+                    stream_info_element = stream_info_element.push(modifiers);
+
+                    let base = panel::view(panel, timezone)
+                        .map(move |message| Message::PanelInteraction(id, message));
+
+                    let settings_modal =
+                        || modal::pane::settings::ladder_cfg_view(panel.config, id);
+
+                    self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
                 } else {
                     center(text("Loading...").size(16)).into()
                 }
@@ -814,6 +894,57 @@ impl State {
         }
     }
 
+    fn compose_panel_view_with_stream<'a, F>(
+        &'a self,
+        base: Element<'a, Message>,
+        pane: pane_grid::Pane,
+        compact_controls: Option<Element<'a, Message>>,
+        settings_modal: F,
+    ) -> Element<'a, Message>
+    where
+        F: FnOnce() -> Element<'a, Message>,
+    {
+        let base: Element<_> =
+            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
+                Message::DeleteNotification(pane, msg)
+            })
+            .into();
+
+        let stack_padding = padding::right(12).left(12);
+
+        match self.modal {
+            Some(Modal::Settings) => stack_modal(
+                base,
+                settings_modal(),
+                Message::HideModal(pane),
+                stack_padding,
+                Alignment::End,
+            ),
+            Some(Modal::StreamModifier(modifier)) => stack_modal(
+                base,
+                modifier
+                    .view(self.stream_pair())
+                    .map(move |message| Message::StreamModifierChanged(pane, message)),
+                Message::HideModal(pane),
+                stack_padding,
+                Alignment::Start,
+            ),
+            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
+            Some(Modal::Controls) => stack_modal(
+                base,
+                if let Some(controls) = compact_controls {
+                    controls
+                } else {
+                    column![].into()
+                },
+                Message::HideModal(pane),
+                padding::left(12),
+                Alignment::End,
+            ),
+            _ => base,
+        }
+    }
+
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
         self.streams.matches_stream(stream)
     }
@@ -827,6 +958,9 @@ impl State {
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
             Content::TimeAndSales(panel) => panel
+                .as_mut()
+                .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
+            Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
             Content::Starter => None,
@@ -844,6 +978,7 @@ impl State {
                 }
             }
             Content::TimeAndSales(_) => Some(100),
+            Content::Ladder(_) => Some(100),
             Content::Starter => None,
         }
     }
@@ -923,6 +1058,7 @@ pub enum Content {
         kind: data::chart::KlineChartKind,
     },
     TimeAndSales(Option<TimeAndSales>),
+    Ladder(Option<Ladder>),
 }
 
 impl Content {
@@ -1092,6 +1228,7 @@ impl Content {
             Content::Heatmap { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
+            Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Starter => None,
         }
     }
@@ -1147,7 +1284,7 @@ impl Content {
         match self {
             Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
             Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::TimeAndSales(_) | Content::Starter => {
+            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => {
                 panic!("indicator reorder on {} pane", self)
             }
         }
@@ -1159,6 +1296,9 @@ impl Content {
                 c.set_visual_config(cfg);
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
+                panel.config = cfg;
+            }
+            (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
                 panel.config = cfg;
             }
             _ => {}
@@ -1175,7 +1315,7 @@ impl Content {
                     None
                 }
             }
-            Content::TimeAndSales(_) | Content::Starter => None,
+            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => None,
         }
     }
 
@@ -1220,6 +1360,7 @@ impl Content {
                 data::chart::KlineChartKind::Candles => "candlestick".to_string(),
             },
             Content::TimeAndSales(_) => "time&sales".to_string(),
+            Content::Ladder(_) => "ladder".to_string(),
         }
     }
 
@@ -1228,6 +1369,7 @@ impl Content {
             Content::Heatmap { chart, .. } => chart.is_some(),
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
+            Content::Ladder(panel) => panel.is_some(),
             Content::Starter => true,
         }
     }
@@ -1247,6 +1389,7 @@ impl std::fmt::Display for Content {
                 }
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales"),
+            Content::Ladder(_) => write!(f, "DOM/Ladder"),
         }
     }
 }
@@ -1259,6 +1402,7 @@ impl PartialEq for Content {
                 | (Content::Heatmap { .. }, Content::Heatmap { .. })
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))
+                | (Content::Ladder(_), Content::Ladder(_))
         )
     }
 }

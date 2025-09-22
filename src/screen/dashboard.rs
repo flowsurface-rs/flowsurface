@@ -281,13 +281,16 @@ impl Dashboard {
                     }
                 }
                 pane::Message::PanelInteraction(pane, msg) => {
-                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                        && let pane::Content::TimeAndSales(ref mut panel) = state.content
-                    {
-                        let Some(panel) = panel else {
-                            panic!("panel wasn't initialized when handling panel interaction");
-                        };
-                        panel::update(panel, msg);
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        match state.content {
+                            pane::Content::Ladder(Some(ref mut panel)) => {
+                                panel::update(panel, msg);
+                            }
+                            pane::Content::TimeAndSales(Some(ref mut panel)) => {
+                                panel::update(panel, msg);
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 pane::Message::VisualConfigChanged(pane, cfg, to_sync) => {
@@ -628,6 +631,12 @@ impl Dashboard {
                                             ..
                                         } => {
                                             c.change_tick_size(
+                                                new_multiplier
+                                                    .multiply_with_min_tick_size(ticker_info),
+                                            );
+                                        }
+                                        pane::Content::Ladder(Some(ref mut panel)) => {
+                                            panel.set_tick_size(
                                                 new_multiplier
                                                     .multiply_with_min_tick_size(ticker_info),
                                             );
@@ -1264,6 +1273,11 @@ impl Dashboard {
                         pane::Content::TimeAndSales(panel) => {
                             if let Some(p) = panel {
                                 p.insert_buffer(trades_buffer);
+                            }
+                        }
+                        pane::Content::Ladder(panel) => {
+                            if let Some(panel) = panel {
+                                panel.insert_buffers(depth_update_t, depth, trades_buffer);
                             }
                         }
                         _ => {

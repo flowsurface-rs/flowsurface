@@ -139,6 +139,11 @@ impl From<&pane::State> for data::Pane {
                 settings: pane.settings,
                 link_group: pane.link_group,
             },
+            pane::Content::Ladder(_) => data::Pane::Ladder {
+                stream_type: streams,
+                settings: pane.settings,
+                link_group: pane.link_group,
+            },
         }
     }
 }
@@ -210,6 +215,20 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             link_group,
         } => {
             let content = pane::Content::TimeAndSales(None);
+
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
+        data::Pane::Ladder {
+            stream_type,
+            settings,
+            link_group,
+        } => {
+            let content = pane::Content::Ladder(None);
 
             Configuration::Pane(pane::State::from_config(
                 content,
