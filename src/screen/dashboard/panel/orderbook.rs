@@ -9,7 +9,7 @@ use exchange::{TickerInfo, depth::Depth};
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
@@ -44,7 +44,7 @@ impl super::Panel for Orderbook {
 
 pub struct Orderbook {
     depth: Depth,
-    raw_trades: Vec<Trade>,
+    raw_trades: VecDeque<Trade>,
     grouped_trades: KlineTrades,
     ticker_info: Option<TickerInfo>,
     pub config: Config,
@@ -53,13 +53,14 @@ pub struct Orderbook {
     tick_size: PriceStep,
     decimals: usize,
     scroll_px: f32,
+    last_exchange_ts_ms: Option<u64>,
 }
 
 impl Orderbook {
     pub fn new(config: Option<Config>, ticker_info: Option<TickerInfo>, tick_size: f32) -> Self {
         Self {
             depth: Depth::default(),
-            raw_trades: Vec::new(),
+            raw_trades: VecDeque::new(),
             grouped_trades: KlineTrades::new(),
             config: config.unwrap_or_default(),
             ticker_info,
@@ -68,16 +69,61 @@ impl Orderbook {
             tick_size: PriceStep::from_f32(tick_size),
             decimals: data::util::count_decimals(tick_size),
             scroll_px: 0.0,
+            last_exchange_ts_ms: None,
         }
     }
 
-    pub fn insert_buffers(&mut self, _update_t: u64, depth: &Depth, trades_buffer: &[Trade]) {
+    pub fn insert_buffers(&mut self, update_t: u64, depth: &Depth, trades_buffer: &[Trade]) {
         self.depth = depth.clone();
         let tick_size = self.tick_size;
 
         for trade in trades_buffer {
             self.grouped_trades.add_trade_to_side_bin(trade, tick_size);
-            self.raw_trades.push(*trade);
+            self.raw_trades.push_back(*trade);
+        }
+
+        self.last_exchange_ts_ms = Some(update_t);
+        self.maybe_cleanup_trades(update_t);
+    }
+
+    fn maybe_cleanup_trades(&mut self, now_ms: u64) {
+        let Some(oldest_trade) = self.raw_trades.front() else {
+            return;
+        };
+
+        let oldest_ms = oldest_trade.time;
+
+        // Derive cleanup step from retention: ~1/10th (min 5s)
+        let retention_ms = self.config.trade_retention.as_millis() as u64;
+        if retention_ms == 0 {
+            return;
+        }
+        let cleanup_step_ms = (retention_ms / 10).max(5_000);
+
+        let threshold_ms = retention_ms + cleanup_step_ms;
+        if now_ms.saturating_sub(oldest_ms) < threshold_ms {
+            return;
+        }
+
+        let keep_from_ms = now_ms.saturating_sub(retention_ms);
+
+        let mut removed = 0usize;
+        while let Some(trade) = self.raw_trades.front() {
+            if trade.time < keep_from_ms {
+                self.raw_trades.pop_front();
+                removed += 1;
+            } else {
+                break;
+            }
+        }
+
+        if removed > 0 {
+            self.grouped_trades.clear();
+            for trade in &self.raw_trades {
+                self.grouped_trades
+                    .add_trade_to_side_bin(trade, self.tick_size);
+            }
+            self.invalidate(Some(Instant::now()));
         }
     }
 
@@ -120,11 +166,8 @@ impl Orderbook {
     }
 
     fn format_price(&self, price: Price) -> Option<String> {
-        if let Some(info) = self.ticker_info {
-            Some(price.to_string(info.min_ticksize))
-        } else {
-            None
-        }
+        self.ticker_info
+            .map(|info| price.to_string(info.min_ticksize))
     }
 
     fn format_quantity(&self, qty: f32) -> String {
@@ -281,7 +324,7 @@ impl canvas::Program<Message> for Orderbook {
                                     bounds.width / 2.0,
                                     visible_row.y + SPREAD_ROW_HEIGHT / 2.0,
                                 ),
-                                color: text_color,
+                                color: palette.secondary.strong.color,
                                 size: TEXT_SIZE,
                                 font: style::AZERET_MONO,
                                 align_x: Alignment::Center.into(),

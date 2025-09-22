@@ -13,6 +13,7 @@ use data::chart::{
     timeandsales::StackedBarRatio,
 };
 use data::util::format_with_commas;
+
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -20,6 +21,7 @@ use iced::{
         row, slider, text, tooltip::Position as TooltipPosition,
     },
 };
+use std::time::Duration;
 
 fn cfg_view_container<'a, T>(max_width: u32, content: T) -> Element<'a, Message>
 where
@@ -440,7 +442,10 @@ pub fn orderbook_cfg_view<'a>(
             iced::widget::checkbox("Show Spread", cfg.show_spread).on_toggle(move |value| {
                 Message::VisualConfigChanged(
                     pane,
-                    VisualConfig::Orderbook(orderbook::Config { show_spread: value }),
+                    VisualConfig::Orderbook(orderbook::Config {
+                        show_spread: value,
+                        ..cfg
+                    }),
                     false,
                 )
             });
@@ -448,8 +453,33 @@ pub fn orderbook_cfg_view<'a>(
         column![text("Display Options").size(14), checkbox].spacing(8)
     };
 
+    let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
+    let retention_slider = {
+        let slider_ui = slider(1.0..=60.0, retention_minutes, move |new_minutes| {
+            let mins = new_minutes.round().max(1.0) as u64;
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Orderbook(orderbook::Config {
+                    trade_retention: Duration::from_secs(mins * 60),
+                    ..cfg
+                }),
+                false,
+            )
+        })
+        .step(1.0);
+
+        classic_slider_row(
+            text("Keep trades for"),
+            slider_ui.into(),
+            Some(text(format!("≈ {} min", retention_minutes.round() as u64)).size(13)),
+        )
+    };
+
+    let history_column = column![text("History").size(14), retention_slider].spacing(8);
+
     let content = split_column![
-        show_spread_toggle;
+        show_spread_toggle,
+        history_column;
         spacing = 12, align_x = Alignment::Start
     ];
 
