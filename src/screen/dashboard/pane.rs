@@ -7,7 +7,7 @@ use crate::{
             stack_modal,
         },
     },
-    screen::dashboard::panel::orderbook::Orderbook,
+    screen::dashboard::panel::ladder::Ladder,
     screen::{
         DashboardError,
         dashboard::panel::{self, timeandsales::TimeAndSales},
@@ -278,8 +278,8 @@ impl State {
                 }];
                 Ok((content, streams))
             }
-            "orderbook" => {
-                let config = self.settings.visual_config.and_then(|cfg| cfg.orderbook());
+            "ladder" => {
+                let config = self.settings.visual_config.and_then(|cfg| cfg.ladder());
 
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
@@ -301,8 +301,7 @@ impl State {
                 self.settings.tick_multiply = Some(tick_multiplier);
                 let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
-                let content =
-                    Content::Orderbook(Some(Orderbook::new(config, ticker_info, tick_size)));
+                let content = Content::Ladder(Some(Ladder::new(config, ticker_info, tick_size)));
 
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker_info,
@@ -481,7 +480,7 @@ impl State {
                     center(text("Loading...").size(16)).into()
                 }
             }
-            Content::Orderbook(panel) => {
+            Content::Ladder(panel) => {
                 if let Some(panel) = panel {
                     let selected_basis = self
                         .settings
@@ -511,7 +510,7 @@ impl State {
                         .map(move |message| Message::PanelInteraction(id, message));
 
                     let settings_modal =
-                        || modal::pane::settings::orderbook_cfg_view(panel.config, id);
+                        || modal::pane::settings::ladder_cfg_view(panel.config, id);
 
                     self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
                 } else {
@@ -961,7 +960,7 @@ impl State {
             Content::TimeAndSales(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
-            Content::Orderbook(panel) => panel
+            Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
             Content::Starter => None,
@@ -979,7 +978,7 @@ impl State {
                 }
             }
             Content::TimeAndSales(_) => Some(100),
-            Content::Orderbook(_) => Some(100),
+            Content::Ladder(_) => Some(100),
             Content::Starter => None,
         }
     }
@@ -1059,7 +1058,7 @@ pub enum Content {
         kind: data::chart::KlineChartKind,
     },
     TimeAndSales(Option<TimeAndSales>),
-    Orderbook(Option<Orderbook>),
+    Ladder(Option<Ladder>),
 }
 
 impl Content {
@@ -1229,7 +1228,7 @@ impl Content {
             Content::Heatmap { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
-            Content::Orderbook(panel) => Some(panel.as_ref()?.last_update()),
+            Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Starter => None,
         }
     }
@@ -1285,7 +1284,7 @@ impl Content {
         match self {
             Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
             Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::TimeAndSales(_) | Content::Orderbook(_) | Content::Starter => {
+            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => {
                 panic!("indicator reorder on {} pane", self)
             }
         }
@@ -1299,7 +1298,7 @@ impl Content {
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
                 panel.config = cfg;
             }
-            (Content::Orderbook(Some(panel)), VisualConfig::Orderbook(cfg)) => {
+            (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
                 panel.config = cfg;
             }
             _ => {}
@@ -1316,7 +1315,7 @@ impl Content {
                     None
                 }
             }
-            Content::TimeAndSales(_) | Content::Orderbook(_) | Content::Starter => None,
+            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => None,
         }
     }
 
@@ -1361,7 +1360,7 @@ impl Content {
                 data::chart::KlineChartKind::Candles => "candlestick".to_string(),
             },
             Content::TimeAndSales(_) => "time&sales".to_string(),
-            Content::Orderbook(_) => "orderbook".to_string(),
+            Content::Ladder(_) => "ladder".to_string(),
         }
     }
 
@@ -1370,7 +1369,7 @@ impl Content {
             Content::Heatmap { chart, .. } => chart.is_some(),
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
-            Content::Orderbook(panel) => panel.is_some(),
+            Content::Ladder(panel) => panel.is_some(),
             Content::Starter => true,
         }
     }
@@ -1390,7 +1389,7 @@ impl std::fmt::Display for Content {
                 }
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales"),
-            Content::Orderbook(_) => write!(f, "Orderbook"),
+            Content::Ladder(_) => write!(f, "DOM/Ladder"),
         }
     }
 }
@@ -1403,7 +1402,7 @@ impl PartialEq for Content {
                 | (Content::Heatmap { .. }, Content::Heatmap { .. })
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))
-                | (Content::Orderbook(_), Content::Orderbook(_))
+                | (Content::Ladder(_), Content::Ladder(_))
         )
     }
 }

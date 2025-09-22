@@ -5,7 +5,7 @@ use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
-use data::chart::orderbook;
+use data::chart::ladder;
 use data::chart::{
     KlineChartKind, VisualConfig,
     heatmap::{self, CoalesceKind},
@@ -433,16 +433,13 @@ pub fn kline_cfg_view<'a>(
     cfg_view_container(360, content)
 }
 
-pub fn orderbook_cfg_view<'a>(
-    cfg: orderbook::Config,
-    pane: pane_grid::Pane,
-) -> Element<'a, Message> {
+pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
     let show_spread_toggle = {
         let checkbox =
             iced::widget::checkbox("Show Spread", cfg.show_spread).on_toggle(move |value| {
                 Message::VisualConfigChanged(
                     pane,
-                    VisualConfig::Orderbook(orderbook::Config {
+                    VisualConfig::Ladder(ladder::Config {
                         show_spread: value,
                         ..cfg
                     }),
@@ -459,7 +456,7 @@ pub fn orderbook_cfg_view<'a>(
             let mins = new_minutes.round().max(1.0) as u64;
             Message::VisualConfigChanged(
                 pane,
-                VisualConfig::Orderbook(orderbook::Config {
+                VisualConfig::Ladder(ladder::Config {
                     trade_retention: Duration::from_secs(mins * 60),
                     ..cfg
                 }),

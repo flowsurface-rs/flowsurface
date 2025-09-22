@@ -1,7 +1,7 @@
 use super::Message;
 use crate::style;
 use data::chart::kline::KlineTrades;
-use data::chart::orderbook::Config;
+use data::chart::ladder::Config;
 use exchange::Trade;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};
@@ -25,23 +25,23 @@ const PRICE_COL_WIDTH: f32 = 0.20;
 /// Horizontal gap between columns (pixels)
 const COL_PADDING: f32 = 4.0;
 
-impl super::Panel for Orderbook {
+impl super::Panel for Ladder {
     fn scroll(&mut self, delta: f32) {
         self.scroll_px += delta;
-        Orderbook::invalidate(self, Some(Instant::now()));
+        Ladder::invalidate(self, Some(Instant::now()));
     }
 
     fn reset_scroll(&mut self) {
         self.scroll_px = 0.0;
-        Orderbook::invalidate(self, Some(Instant::now()));
+        Ladder::invalidate(self, Some(Instant::now()));
     }
 
     fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
-        Orderbook::invalidate(self, now)
+        Ladder::invalidate(self, now)
     }
 }
 
-pub struct Orderbook {
+pub struct Ladder {
     depth: Depth,
     raw_trades: VecDeque<Trade>,
     grouped_trades: KlineTrades,
@@ -54,7 +54,7 @@ pub struct Orderbook {
     last_exchange_ts_ms: Option<u64>,
 }
 
-impl Orderbook {
+impl Ladder {
     pub fn new(config: Option<Config>, ticker_info: TickerInfo, tick_size: f32) -> Self {
         Self {
             depth: Depth::default(),
@@ -196,7 +196,7 @@ impl Orderbook {
     }
 }
 
-impl canvas::Program<Message> for Orderbook {
+impl canvas::Program<Message> for Ladder {
     type State = ();
 
     fn update(
@@ -410,7 +410,7 @@ struct ColumnRanges {
     ask_order: (f32, f32),
 }
 
-impl Orderbook {
+impl Ladder {
     // [BidOrderQty][SellQty][ Price ][BuyQty][AskOrderQty]
     const NUMBER_OF_COLUMN_GAPS: f32 = 4.0;
 

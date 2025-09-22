@@ -59,7 +59,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
-    Orderbook {
+    Ladder {
         stream_type: Vec<PersistStreamKind>,
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]

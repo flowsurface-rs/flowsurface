@@ -283,7 +283,7 @@ impl Dashboard {
                 pane::Message::PanelInteraction(pane, msg) => {
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
                         match state.content {
-                            pane::Content::Orderbook(Some(ref mut panel)) => {
+                            pane::Content::Ladder(Some(ref mut panel)) => {
                                 panel::update(panel, msg);
                             }
                             pane::Content::TimeAndSales(Some(ref mut panel)) => {
@@ -635,7 +635,7 @@ impl Dashboard {
                                                     .multiply_with_min_tick_size(ticker_info),
                                             );
                                         }
-                                        pane::Content::Orderbook(Some(ref mut panel)) => {
+                                        pane::Content::Ladder(Some(ref mut panel)) => {
                                             panel.set_tick_size(
                                                 new_multiplier
                                                     .multiply_with_min_tick_size(ticker_info),
@@ -1275,7 +1275,7 @@ impl Dashboard {
                                 p.insert_buffer(trades_buffer);
                             }
                         }
-                        pane::Content::Orderbook(panel) => {
+                        pane::Content::Ladder(panel) => {
                             if let Some(panel) = panel {
                                 panel.insert_buffers(depth_update_t, depth, trades_buffer);
                             }
