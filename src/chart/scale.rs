@@ -694,6 +694,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 };
 
                 let (price, color) = label.get_with_color(palette);
+                let price = price.to_f32();
 
                 let price_label = LabelContent {
                     content: format!("{:.*}", self.decimals, price),

@@ -349,18 +349,19 @@ pub fn connect_kline_stream(
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
-        let mut args: Vec<Value> = Vec::with_capacity(streams.len());
-        let mut lookup: HashMap<String, (TickerInfo, Timeframe)> = HashMap::new();
+        let mut args = Vec::with_capacity(streams.len());
+        let mut lookup = HashMap::new();
         for (ticker_info, timeframe) in &streams {
             let ticker = ticker_info.ticker;
 
             if let Some(bar) = timeframe_to_okx_bar(*timeframe) {
                 let (symbol, _mt) = ticker.to_full_symbol_and_type();
+                let channel = format!("candle{bar}");
                 args.push(serde_json::json!({
-                    "channel": format!("candle{bar}"),
+                    "channel": channel,
                     "instId": symbol,
                 }));
-                lookup.insert(symbol, (*ticker_info, *timeframe));
+                lookup.insert((channel, symbol), (*ticker_info, *timeframe));
             }
         }
 
@@ -395,10 +396,12 @@ pub fn connect_kline_stream(
                                     Some(s) => s,
                                     None => continue,
                                 };
-                                let (ticker_info, timeframe) = match lookup.get(inst) {
-                                    Some(t) => *t,
-                                    None => continue,
-                                };
+                                let (ticker_info, timeframe) =
+                                    match lookup.get(&(channel.to_string(), inst.to_string())) {
+                                        Some(t) => *t,
+                                        None => continue,
+                                    };
+
                                 let contract_size = ticker_info.contract_size.map(f32::from);
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {

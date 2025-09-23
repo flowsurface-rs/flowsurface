@@ -828,7 +828,7 @@ impl ViewState {
             };
 
             let snap_x = |x: f32| {
-                let (_, snap_ratio) = self.snap_x_to_timestamp(x, bounds, region);
+                let (_, snap_ratio) = self.snap_x_to_index(x, bounds, region);
                 snap_ratio * bounds.width
             };
 
@@ -849,15 +849,15 @@ impl ViewState {
 
             let interval_diff: String = match self.basis {
                 Basis::Time(_) => {
-                    let (timestamp1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
-                    let (timestamp2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
+                    let (timestamp1, _) = self.snap_x_to_index(p1.x, bounds, region);
+                    let (timestamp2, _) = self.snap_x_to_index(p2.x, bounds, region);
 
                     let diff_ms: u64 = timestamp1.abs_diff(timestamp2);
                     data::util::format_duration_ms(diff_ms)
                 }
                 Basis::Tick(_) => {
-                    let (tick1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
-                    let (tick2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
+                    let (tick1, _) = self.snap_x_to_index(p1.x, bounds, region);
+                    let (tick2, _) = self.snap_x_to_index(p2.x, bounds, region);
 
                     let tick_diff = tick1.abs_diff(tick2);
                     format!("{} ticks", tick_diff)
@@ -906,16 +906,16 @@ impl ViewState {
             let datapoints_text = match self.basis {
                 Basis::Time(timeframe) => {
                     let interval_ms = timeframe.to_milliseconds();
-                    let (timestamp1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
-                    let (timestamp2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
+                    let (timestamp1, _) = self.snap_x_to_index(p1.x, bounds, region);
+                    let (timestamp2, _) = self.snap_x_to_index(p2.x, bounds, region);
 
                     let diff_ms = timestamp1.abs_diff(timestamp2);
                     let datapoints = (diff_ms / interval_ms).max(1);
                     format!("{} bars", datapoints)
                 }
                 Basis::Tick(aggregation) => {
-                    let (tick1, _) = self.snap_x_to_timestamp(p1.x, bounds, region);
-                    let (tick2, _) = self.snap_x_to_timestamp(p2.x, bounds, region);
+                    let (tick1, _) = self.snap_x_to_index(p1.x, bounds, region);
+                    let (tick2, _) = self.snap_x_to_index(p2.x, bounds, region);
 
                     let tick_diff = tick1.abs_diff(tick2);
                     let datapoints = (tick_diff / u64::from(aggregation.0)).max(1);
@@ -997,7 +997,7 @@ impl ViewState {
         match self.basis {
             Basis::Time(_) => {
                 let (rounded_timestamp, snap_ratio) =
-                    self.snap_x_to_timestamp(cursor_position.x, bounds, region);
+                    self.snap_x_to_index(cursor_position.x, bounds, region);
 
                 frame.stroke(
                     &Path::line(
@@ -1038,8 +1038,8 @@ impl ViewState {
         region: Rectangle,
     ) {
         if let Some(price) = &self.last_price {
-            let (mut y_pos, line_color) = price.get_with_color(palette);
-            y_pos = self.price_to_y(Price::from_f32_lossy(y_pos));
+            let (last_price, line_color) = price.get_with_color(palette);
+            let y_pos = self.price_to_y(last_price);
 
             let marker_line = Stroke::with_color(
                 Stroke {
@@ -1072,16 +1072,17 @@ impl ViewState {
     }
 
     fn y_labels_width(&self) -> Length {
-        let base_value = self.base_price_y.to_f32_lossy();
-        let decimals = self.decimals;
+        let Some(precision) = self.ticker_info.as_ref().map(|info| info.min_ticksize) else {
+            return Length::Fixed(60.0);
+        };
 
-        let value = format!("{base_value:.decimals$}");
+        let value = self.base_price_y.to_string(precision);
         let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
 
         Length::Fixed(width.ceil())
     }
 
-    fn snap_x_to_timestamp(&self, x: f32, bounds: Size, region: Rectangle) -> (u64, f32) {
+    fn snap_x_to_index(&self, x: f32, bounds: Size, region: Rectangle) -> (u64, f32) {
         let x_ratio = x / bounds.width;
 
         match self.basis {

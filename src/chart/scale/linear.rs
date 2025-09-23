@@ -1,5 +1,6 @@
 use super::{AxisLabel, LabelContent, calc_label_rect};
 use data::util::abbr_large_numbers;
+use exchange::util::Price;
 
 const MAX_ITERATIONS: usize = 1000;
 
@@ -105,13 +106,13 @@ pub fn generate_labels(
 // other helpers
 #[derive(Debug, Clone, Copy)]
 pub enum PriceInfoLabel {
-    Up(f32),
-    Down(f32),
-    Neutral(f32),
+    Up(Price),
+    Down(Price),
+    Neutral(Price),
 }
 
 impl PriceInfoLabel {
-    pub fn new(close_price: f32, open_price: f32) -> Self {
+    pub fn new(close_price: Price, open_price: Price) -> Self {
         if close_price >= open_price {
             PriceInfoLabel::Up(close_price)
         } else {
@@ -119,7 +120,7 @@ impl PriceInfoLabel {
         }
     }
 
-    pub fn get_with_color(self, palette: &iced::theme::palette::Extended) -> (f32, iced::Color) {
+    pub fn get_with_color(self, palette: &iced::theme::palette::Extended) -> (Price, iced::Color) {
         match self {
             PriceInfoLabel::Up(p) => (p, palette.success.base.color),
             PriceInfoLabel::Down(p) => (p, palette.danger.base.color),

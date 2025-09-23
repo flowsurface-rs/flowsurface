@@ -213,7 +213,7 @@ impl HeatmapChart {
         let chart = &mut self.chart;
 
         let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
-        chart.last_price = Some(PriceInfoLabel::Neutral(mid_price.to_f32()));
+        chart.last_price = Some(PriceInfoLabel::Neutral(mid_price));
 
         // if current orderbook not visible, pause the data insertion and buffer them instead
         let is_paused = { chart.translation.x * chart.scaling > chart.bounds.width / 2.0 };

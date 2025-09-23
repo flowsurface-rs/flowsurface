@@ -342,10 +342,7 @@ impl KlineChart {
                     chart.latest_x = kline.time;
                 }
 
-                chart.last_price = Some(PriceInfoLabel::new(
-                    kline.close.to_f32(),
-                    kline.open.to_f32(),
-                ));
+                chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
             }
             PlotData::TickBased(_) => {}
         }
@@ -590,10 +587,8 @@ impl KlineChart {
                 tick_aggr.insert_trades(trades_buffer);
 
                 if let Some(last_dp) = tick_aggr.datapoints.last() {
-                    self.chart.last_price = Some(PriceInfoLabel::new(
-                        last_dp.kline.close.to_f32(),
-                        last_dp.kline.open.to_f32(),
-                    ));
+                    self.chart.last_price =
+                        Some(PriceInfoLabel::new(last_dp.kline.close, last_dp.kline.open));
                 } else {
                     self.chart.last_price = None;
                 }
@@ -988,7 +983,15 @@ impl canvas::Program<Message> for KlineChart {
                 let (_, rounded_aggregation) =
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
 
-                draw_crosshair_tooltip(&self.data_source, frame, palette, rounded_aggregation);
+                if let Some(ticker_info) = &chart.ticker_info {
+                    draw_crosshair_tooltip(
+                        &self.data_source,
+                        ticker_info,
+                        frame,
+                        palette,
+                        rounded_aggregation,
+                    );
+                }
             }
         });
 
@@ -1694,6 +1697,7 @@ fn draw_cluster_text(
 
 fn draw_crosshair_tooltip(
     data: &PlotData<KlineDataPoint>,
+    ticker_info: &TickerInfo,
     frame: &mut canvas::Frame,
     palette: &Extended,
     at_interval: u64,
@@ -1727,8 +1731,7 @@ fn draw_crosshair_tooltip(
     };
 
     if let Some(kline) = kline_opt {
-        let change_pct =
-            ((kline.close.to_f32() - kline.open.to_f32()) / kline.open.to_f32()) * 100.0;
+        let change_pct = ((kline.close - kline.open).to_f32() / kline.open.to_f32()) * 100.0;
         let change_color = if change_pct >= 0.0 {
             palette.success.base.color
         } else {
@@ -1736,16 +1739,17 @@ fn draw_crosshair_tooltip(
         };
 
         let base_color = palette.background.base.text;
+        let precision = ticker_info.min_ticksize;
 
         let segments = [
             ("O", base_color, false),
-            (&kline.open.to_f32().to_string(), change_color, true),
+            (&kline.open.to_string(precision), change_color, true),
             ("H", base_color, false),
-            (&kline.high.to_f32().to_string(), change_color, true),
+            (&kline.high.to_string(precision), change_color, true),
             ("L", base_color, false),
-            (&kline.low.to_f32().to_string(), change_color, true),
+            (&kline.low.to_string(precision), change_color, true),
             ("C", base_color, false),
-            (&kline.close.to_f32().to_string(), change_color, true),
+            (&kline.close.to_string(precision), change_color, true),
             (&format!("{change_pct:+.2}%"), change_color, true),
         ];
 
