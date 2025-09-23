@@ -18,9 +18,9 @@ use iced::{
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
-        Button, Space, button, column, container, horizontal_rule, horizontal_space, row,
+        Button, Space, button, column, container, row, rule,
         scrollable::{self, AbsoluteOffset},
-        text, text_input,
+        space, text, text_input,
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -274,7 +274,7 @@ impl TickersTable {
             row![
                 icon_text(style::exchange_icon(logo_exchange), 12).align_x(Alignment::Center),
                 text(label),
-                horizontal_space(),
+                space::horizontal(),
                 container(icon_text(Icon::Checkmark, 12)),
             ]
         } else {
@@ -560,25 +560,31 @@ impl TickersTable {
             .spacing(4);
 
             column![
-                horizontal_rule(2.0).style(style::split_ruler),
+                rule::horizontal(2.0).style(style::split_ruler),
                 row![
-                    Space::new(Length::FillPortion(2), Length::Shrink),
+                    Space::new()
+                        .width(Length::FillPortion(2))
+                        .height(Length::Shrink),
                     volume_sort,
-                    Space::new(Length::FillPortion(1), Length::Shrink),
+                    Space::new()
+                        .width(Length::FillPortion(1))
+                        .height(Length::Shrink),
                     daily_change,
-                    Space::new(Length::FillPortion(2), Length::Shrink)
+                    Space::new()
+                        .width(Length::FillPortion(2))
+                        .height(Length::Shrink),
                 ]
                 .spacing(4),
-                horizontal_rule(1.0).style(style::split_ruler),
+                rule::horizontal(1.0).style(style::split_ruler),
                 row![
                     spot_market_button.width(Length::Fill),
                     linear_markets_btn.width(Length::Fill),
                     inverse_markets_btn.width(Length::Fill),
                 ]
                 .spacing(4),
-                horizontal_rule(1.0).style(style::split_ruler),
+                rule::horizontal(1.0).style(style::split_ruler),
                 exchange_filters,
-                horizontal_rule(1.0).style(style::split_ruler),
+                rule::horizontal(1.0).style(style::split_ruler),
                 text({
                     let total = rest_n + fav_n;
                     if total == 0 {
@@ -598,7 +604,7 @@ impl TickersTable {
                     }
                 })
                 .align_x(Alignment::Center),
-                horizontal_rule(2.0).style(style::split_ruler),
+                rule::horizontal(2.0).style(style::split_ruler),
             ]
             .align_x(Alignment::Center)
             .spacing(8)
@@ -668,14 +674,12 @@ impl TickersTable {
         let last_visible_index =
             (pos_to_index(scroll_bottom) + 1 + OVERSCAN_BUFFER as usize).min(virtual_count);
 
-        let top_space = Space::new(
-            Length::Shrink,
-            Length::Fixed(index_start_y(first_visible_index)),
-        );
-        let bottom_space = Space::new(
-            Length::Shrink,
-            Length::Fixed((total_height - index_start_y(last_visible_index)).max(0.0)),
-        );
+        let top_space = Space::new()
+            .width(Length::Shrink)
+            .height(Length::Fixed(index_start_y(first_visible_index)));
+        let bottom_space = Space::new().width(Length::Shrink).height(Length::Fixed(
+            (total_height - index_start_y(last_visible_index)).max(0.0),
+        ));
 
         let mut ticker_cards = column![top_space].spacing(4);
 
@@ -690,13 +694,13 @@ impl TickersTable {
                         };
                         column![
                             text(hint).size(11),
-                            horizontal_rule(2.0).style(style::split_ruler),
+                            rule::horizontal(2.0).style(style::split_ruler),
                         ]
                         .spacing(8)
                         .align_x(Horizontal::Center)
                         .width(Length::Fill)
                     } else {
-                        column![horizontal_rule(2.0).style(style::split_ruler),]
+                        column![rule::horizontal(2.0).style(style::split_ruler),]
                             .align_x(Horizontal::Center)
                             .spacing(16)
                             .width(Length::Fill)
@@ -801,14 +805,14 @@ fn create_ticker_card<'a>(
                         row![icon, text(&display_data.display_ticker),]
                             .spacing(2)
                             .align_y(alignment::Vertical::Center),
-                        Space::new(Length::Fill, Length::Shrink),
+                        Space::new().width(Length::Fill).height(Length::Shrink),
                         text(&display_data.daily_change_pct),
                     ]
                     .spacing(4)
                     .align_y(alignment::Vertical::Center),
                     row![
                         price_display,
-                        Space::new(Length::Fill, Length::Shrink),
+                        Space::new().width(Length::Fill).height(Length::Shrink),
                         text(&display_data.volume_display),
                     ]
                     .spacing(4),
@@ -845,7 +849,7 @@ fn create_expanded_ticker_card<'a>(
             })
             .on_press(Message::FavoriteTicker(*ticker))
             .style(move |theme, status| { style::button::transparent(theme, status, false) }),
-            horizontal_space(),
+            space::horizontal(),
             button_with_tooltip(
                 icon_text(Icon::Link, 11),
                 Message::TickerSelected(*ticker, None),
@@ -872,17 +876,17 @@ fn create_expanded_ticker_card<'a>(
             column![
                 row![
                     text("Last Updated Price: ").size(11),
-                    Space::new(Length::Fill, Length::Shrink),
+                    Space::new().width(Length::Fill).height(Length::Shrink),
                     text(&display_data.mark_price_display)
                 ],
                 row![
                     text("Daily Change: ").size(11),
-                    Space::new(Length::Fill, Length::Shrink),
+                    Space::new().width(Length::Fill).height(Length::Shrink),
                     text(&display_data.daily_change_pct),
                 ],
                 row![
                     text("Daily Volume: ").size(11),
-                    Space::new(Length::Fill, Length::Shrink),
+                    Space::new().width(Length::Fill).height(Length::Shrink),
                     text(&display_data.volume_display),
                 ],
             ]

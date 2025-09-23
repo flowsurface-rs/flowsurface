@@ -5,7 +5,7 @@ use crate::widget::{column_drag, dragger_row};
 use data::chart::indicator::{Indicator, UiIndicator};
 use iced::{
     Element, Length, padding,
-    widget::{button, column, container, horizontal_space, pane_grid, row, text},
+    widget::{button, column, container, pane_grid, row, space, text},
 };
 
 pub fn view<'a, I>(
@@ -42,7 +42,7 @@ where
     let content = if is_selected {
         row![
             text(indicator.to_string()),
-            horizontal_space(),
+            space::horizontal(),
             container(icon_text(Icon::Checkmark, 12)),
         ]
         .width(Length::Fill)

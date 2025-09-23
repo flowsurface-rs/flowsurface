@@ -55,10 +55,10 @@ where
         .map(|window_id| {
             // Map both tasks to produce an enum or tuple to distinguish them
             let pos_task: Task<(Option<Point>, Option<Size>)> =
-                iced::window::get_position(window_id).map(|pos| (pos, None));
+                iced::window::position(window_id).map(|pos| (pos, None));
 
             let size_task: Task<(Option<Point>, Option<Size>)> =
-                iced::window::get_size(window_id).map(|size| (None, Some(size)));
+                iced::window::size(window_id).map(|size| (None, Some(size)));
 
             Task::batch(vec![pos_task, size_task])
                 .collect()

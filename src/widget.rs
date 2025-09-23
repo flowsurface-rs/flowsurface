@@ -5,10 +5,7 @@ use iced::{
     Color,
     Length::Fill,
     Theme, border, padding,
-    widget::{
-        button, column, container, horizontal_space, row, scrollable, slider, text,
-        tooltip::Position,
-    },
+    widget::{button, column, container, row, scrollable, slider, space, text, tooltip::Position},
 };
 
 pub mod color_picker;
@@ -182,7 +179,7 @@ where
 
     iced::widget::stack![
         container(slider).style(modal_container),
-        row![text(label), horizontal_space(), text(to_string(&current))]
+        row![text(label), space::horizontal(), text(to_string(&current))]
             .padding([0, 10])
             .height(Fill)
             .align_y(Center),
@@ -270,7 +267,7 @@ macro_rules! split_column {
     ($first:expr, $($rest:expr),+ $(,)?) => {{
         let mut col = column![$first];
         $(
-            col = col.push(horizontal_rule(1.0).style($crate::style::split_ruler));
+            col = col.push(iced::widget::rule::horizontal(1.0).style($crate::style::split_ruler));
             col = col.push($rest);
         )+
         col

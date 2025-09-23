@@ -8,9 +8,9 @@ use crate::{
 use data::sidebar;
 
 use iced::{
-    Alignment, Element, Length, Subscription, Task,
+    Alignment, Element, Subscription, Task,
     widget::responsive,
-    widget::{Space, column, row},
+    widget::{column, row, space},
 };
 use rustc_hash::FxHashMap;
 
@@ -187,7 +187,7 @@ impl Sidebar {
             ticker_search_button,
             layout_modal_button,
             audio_btn,
-            Space::with_height(Length::Fill),
+            space::vertical(),
             settings_modal_button,
         ]
         .width(32)

@@ -15,7 +15,7 @@ use iced::{
     widget::{
         Canvas,
         canvas::{self, Cache, Geometry},
-        container, row, vertical_rule,
+        container, row, rule,
     },
 };
 use std::{collections::BTreeMap, ops::RangeInclusive};
@@ -61,7 +61,7 @@ where
 
     row![
         canvas,
-        vertical_rule(1).style(crate::style::split_ruler),
+        rule::vertical(1).style(crate::style::split_ruler),
         container(labels),
     ]
     .into()

@@ -6,7 +6,7 @@ use crate::widget::dragger_row;
 use crate::{style, tooltip};
 
 use iced::widget::{
-    Space, button, center, column, container, row, scrollable, text, text_input,
+    button, center, column, container, row, scrollable, space, text, text_input,
     tooltip::Position as TooltipPosition,
 };
 use iced::{Element, Theme, padding};
@@ -227,7 +227,7 @@ impl LayoutManager {
         };
 
         content = content.push(row![
-            Space::with_width(iced::Length::Fill),
+            space::horizontal(),
             if is_edit_mode {
                 row![edit_btn]
             } else {

@@ -24,7 +24,7 @@ use widget::{
 use iced::{
     Alignment, Element, Subscription, Task, keyboard, padding,
     widget::{
-        button, column, container, horizontal_rule, pane_grid, pick_list, row, scrollable, text,
+        button, column, container, pane_grid, pick_list, row, rule, scrollable, text,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -588,7 +588,7 @@ impl Flowsurface {
         format!("Flowsurface [{}]", self.layout_manager.active_layout().name)
     }
 
-    fn scale_factor(&self, _window: window::Id) -> f64 {
+    fn scale_factor(&self, _window: window::Id) -> f32 {
         self.scale_factor.into()
     }
 
@@ -708,7 +708,7 @@ impl Flowsurface {
                     );
 
                     let scale_factor = {
-                        let current_value: f64 = self.scale_factor.into();
+                        let current_value: f32 = self.scale_factor.into();
 
                         let decrease_btn = if current_value > data::config::MIN_SCALE {
                             button(text("-"))
@@ -914,7 +914,7 @@ impl Flowsurface {
                 let manage_layout_modal = {
                     let col = column![
                         manage_pane,
-                        iced::widget::horizontal_rule(1.0).style(style::split_ruler),
+                        rule::horizontal(1.0).style(style::split_ruler),
                         self.layout_manager.view().map(Message::Layouts)
                     ];
 

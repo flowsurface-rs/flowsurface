@@ -14,11 +14,12 @@ use data::chart::{
 };
 use data::util::format_with_commas;
 
+use iced::widget::space;
 use iced::{
     Alignment, Element, Length,
     widget::{
-        button, column, container, horizontal_rule, horizontal_space, pane_grid, pick_list, radio,
-        row, slider, text, tooltip::Position as TooltipPosition,
+        button, column, container, pane_grid, pick_list, radio, row, slider, text,
+        tooltip::Position as TooltipPosition,
     },
 };
 use std::time::Duration;
@@ -256,7 +257,7 @@ pub fn heatmap_cfg_view<'a>(
         trade_viz_column,
         column![text("Studies").size(14), study_cfg].spacing(8),
         row![
-            horizontal_space(),
+            space::horizontal(),
             sync_all_button(pane, VisualConfig::Heatmap(cfg))
         ]
         ; spacing = 12, align_x = Alignment::Start
@@ -356,7 +357,7 @@ pub fn timesales_cfg_view<'a>(
         storage_buffer_column,
         stacked_bar_ratio,
         row![
-            horizontal_space(),
+            space::horizontal(),
             sync_all_button(pane, VisualConfig::TimeAndSales(cfg))
         ],
         ; spacing = 12, align_x = Alignment::Start
@@ -422,7 +423,7 @@ pub fn kline_cfg_view<'a>(
                 column![text("Cluster scaling").size(14), scaling].spacing(8),
                 column![text("Studies").size(14), study_cfg].spacing(8),
                 row![
-                    horizontal_space(),
+                    space::horizontal(),
                     sync_all_button(pane, VisualConfig::Kline(cfg))
                 ],
                 ; spacing = 12, align_x = Alignment::Start
@@ -500,7 +501,7 @@ pub mod study {
     use data::chart::kline::FootprintStudy;
     use iced::{
         Element, padding,
-        widget::{button, column, container, horizontal_rule, horizontal_space, row, slider, text},
+        widget::{button, column, container, row, rule, slider, space, text},
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -688,7 +689,7 @@ pub mod study {
                         );
 
                         column![
-                            row![horizontal_space(), switch_kind,],
+                            row![rule::horizontal(1), switch_kind,],
                             text(format!(
                                 "Window: {} datapoints ({})",
                                 datapoint_count, duration_text
@@ -706,7 +707,7 @@ pub mod study {
                             ))),
                         );
 
-                        column![row![horizontal_space(), switch_kind,],]
+                        column![row![space::horizontal(), switch_kind,],]
                             .padding(8)
                             .spacing(4)
                             .into()
@@ -809,7 +810,7 @@ pub mod study {
             let checkbox = iced::widget::checkbox(label, is_selected)
                 .on_toggle(move |checked| Message::StudyToggled(study, checked));
 
-            let mut checkbox_row = row![checkbox, horizontal_space()]
+            let mut checkbox_row = row![checkbox, space::horizontal()]
                 .height(36)
                 .align_y(iced::Alignment::Center)
                 .padding(padding::left(8).right(4))

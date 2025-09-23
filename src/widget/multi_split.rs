@@ -8,7 +8,7 @@ use iced::{
         widget::{Operation, Tree, tree},
     },
     mouse::{self, Cursor, Interaction},
-    widget::Rule,
+    widget::rule,
 };
 use std::fmt::{Debug, Formatter};
 
@@ -58,7 +58,7 @@ where
             elements.push(panel);
 
             if i < splits.len() {
-                elements.push(Rule::horizontal(DRAG_SIZE).style(style::split_ruler).into());
+                elements.push(rule::horizontal(DRAG_SIZE).style(style::split_ruler).into());
             }
         }
 
@@ -318,22 +318,12 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
 
     fn operate(
         &mut self,
-        tree: &mut Tree,
+        _tree: &mut Tree,
         layout: Layout<'_>,
-        renderer: &Renderer,
+        _renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds(), &mut |operation| {
-            self.panels
-                .iter_mut()
-                .zip(&mut tree.children)
-                .zip(layout.children())
-                .for_each(|((child, state), layout)| {
-                    child
-                        .as_widget_mut()
-                        .operate(state, layout, renderer, operation);
-                });
-        });
+        operation.container(None, layout.bounds());
     }
 }
 

@@ -4,7 +4,7 @@ use iced::advanced::renderer;
 use iced::advanced::widget::{self, Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget};
 use iced::time::{self, Duration, Instant};
-use iced::widget::{button, column, container, horizontal_space, row, text};
+use iced::widget::{button, column, container, row, space, text};
 use iced::{
     Alignment, Center, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
     Vector,
@@ -104,7 +104,7 @@ where
                     container(
                         row![
                             text(toast.title.as_str()),
-                            horizontal_space(),
+                            space::horizontal(),
                             button("X")
                                 .on_press((on_close)(index))
                                 .style(move |theme, status| {
@@ -207,19 +207,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
     fn operate(
         &mut self,
-        state: &mut Tree,
+        _state: &mut Tree,
         layout: Layout<'_>,
-        renderer: &Renderer,
+        _renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds(), &mut |operation| {
-            self.content.as_widget_mut().operate(
-                &mut state.children[0],
-                layout,
-                renderer,
-                operation,
-            );
-        });
+        operation.container(None, layout.bounds())
     }
 
     fn update(
@@ -437,20 +430,10 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
     fn operate(
         &mut self,
         layout: Layout<'_>,
-        renderer: &Renderer,
+        _renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        operation.container(None, layout.bounds(), &mut |operation| {
-            self.toasts
-                .iter_mut()
-                .zip(self.state.iter_mut())
-                .zip(layout.children())
-                .for_each(|((child, state), layout)| {
-                    child
-                        .as_widget_mut()
-                        .operate(state, layout, renderer, operation);
-                });
-        });
+        operation.container(None, layout.bounds());
     }
 
     fn mouse_interaction(

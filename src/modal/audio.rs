@@ -6,7 +6,7 @@ use exchange::adapter::{Exchange, StreamKind, StreamTicksize};
 
 use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
-use iced::widget::{checkbox, horizontal_space, slider};
+use iced::widget::{checkbox, slider, space};
 use iced::{Element, padding};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -153,7 +153,7 @@ impl AudioStream {
                             move |is_checked| Message::ToggleStream(is_checked, (exchange, ticker)),
                         );
 
-                    let mut stream_row = row![stream_checkbox, horizontal_space(),]
+                    let mut stream_row = row![stream_checkbox, space::horizontal(),]
                         .height(36)
                         .align_y(iced::Alignment::Center)
                         .padding(4)

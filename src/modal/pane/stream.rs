@@ -12,7 +12,7 @@ use iced::{
     Element, Length,
     alignment::Horizontal,
     padding,
-    widget::{button, column, container, horizontal_rule, row, scrollable, text},
+    widget::{button, column, container, row, rule, scrollable, text},
 };
 use serde::{Deserialize, Serialize};
 
@@ -373,7 +373,7 @@ impl Modifier {
                                     let content = if checkmark {
                                         row![
                                             content,
-                                            iced::widget::horizontal_space(),
+                                            iced::widget::space::horizontal(),
                                             icon_text(style::Icon::Checkmark, 12)
                                         ]
                                     } else {
@@ -438,7 +438,7 @@ impl Modifier {
 
                     basis_selection_column = basis_selection_column
                         .push(tabs_row)
-                        .push(horizontal_rule(1).style(style::split_ruler));
+                        .push(rule::horizontal(1).style(style::split_ruler));
                 }
 
                 match self.tab {
@@ -541,7 +541,7 @@ impl Modifier {
 
                     ticksizes_column = ticksizes_column
                         .push(text("Tick size multiplier").size(13))
-                        .push(horizontal_rule(1).style(style::split_ruler));
+                        .push(rule::horizontal(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
                         || matches!(kind, ModifierKind::Footprint(_, _));
@@ -589,7 +589,7 @@ impl Modifier {
                     if let Some(base_ticksize) = self.base_ticksize {
                         ticksizes_column = ticksizes_column.push(
                             row![
-                                iced::widget::horizontal_space(),
+                                iced::widget::space::horizontal(),
                                 text(format!("Base: {}", base_ticksize)).style(
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {

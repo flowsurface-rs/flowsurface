@@ -1,6 +1,6 @@
 use iced::{
     Alignment, Element,
-    widget::{button, column, container, horizontal_space, pick_list, row, text_input::default},
+    widget::{button, column, container, pick_list, row, space, text_input::default},
 };
 
 use crate::{
@@ -175,7 +175,7 @@ impl ThemeEditor {
         let content = column![
             row![
                 close_editor,
-                horizontal_space(),
+                space::horizontal(),
                 row![hex_input, focused_field,].spacing(4),
             ]
             .spacing(8)

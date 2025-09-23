@@ -17,9 +17,7 @@ use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};
 use iced::{
     Alignment, Element, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, padding,
-    widget::{
-        button, center, column, container, horizontal_rule, mouse_area, row, text, vertical_rule,
-    },
+    widget::{button, center, column, container, mouse_area, row, rule, text},
 };
 
 const ZOOM_SENSITIVITY: f32 = 30.0;
@@ -536,7 +534,7 @@ pub fn view<'a, T: Chart>(
         .style(move |theme: &Theme, status| style::button::transparent(theme, status, is_active));
 
         row![
-            iced::widget::horizontal_space(),
+            iced::widget::space::horizontal(),
             tooltip(
                 autoscale_button,
                 autoscale_btn_tooltip,
@@ -568,7 +566,7 @@ pub fn view<'a, T: Chart>(
             container(Canvas::new(chart).width(Length::Fill).height(Length::Fill))
                 .width(Length::FillPortion(10))
                 .height(Length::FillPortion(120)),
-            vertical_rule(1).style(style::split_ruler),
+            rule::vertical(1).style(style::split_ruler),
             container(
                 mouse_area(axis_labels_y)
                     .on_double_click(Message::DoubleClick(AxisScaleClicked::Y))
@@ -596,7 +594,7 @@ pub fn view<'a, T: Chart>(
 
     column![
         content,
-        horizontal_rule(1).style(style::split_ruler),
+        rule::horizontal(1).style(style::split_ruler),
         row![
             container(
                 mouse_area(axis_labels_x)
