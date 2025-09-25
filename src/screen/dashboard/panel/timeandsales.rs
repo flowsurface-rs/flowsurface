@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::Message;
 use crate::style;
 pub use data::chart::timeandsales::Config;
-use data::chart::timeandsales::TradeDisplay;
+use data::chart::timeandsales::{Histogram, StackedBarRatio, TradeDisplay};
 use data::config::theme::{darken, lighten};
 use exchange::{TickerInfo, Trade};
 
@@ -11,20 +11,22 @@ use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
-const HISTOGRAM_HEIGHT: f32 = 8.0;
+const HISTOGRAM_HEIGHT_COMPACT: f32 = 8.0;
+const HISTOGRAM_HEIGHT_FULL: f32 = 18.0;
 const TRADE_ROW_HEIGHT: f32 = 14.0;
 
 impl super::Panel for TimeAndSales {
     fn scroll(&mut self, delta: f32) {
         self.scroll_offset -= delta;
 
+        let histogram_h = self.histogram_height();
         let total_content_height =
-            (self.recent_trades.len() as f32 * TRADE_ROW_HEIGHT) + HISTOGRAM_HEIGHT;
+            (self.recent_trades.len() as f32 * TRADE_ROW_HEIGHT) + histogram_h;
         let max_scroll_offset = (total_content_height - TRADE_ROW_HEIGHT).max(0.0);
 
         self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll_offset);
 
-        if self.scroll_offset > HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT {
+        if self.scroll_offset > histogram_h + TRADE_ROW_HEIGHT {
             self.is_paused = true;
         } else if self.is_paused {
             self.is_paused = false;
@@ -149,6 +151,14 @@ impl TimeAndSales {
         }
         None
     }
+
+    fn histogram_height(&self) -> f32 {
+        match &self.config.histogram {
+            Some(Histogram::Compact(_)) => HISTOGRAM_HEIGHT_COMPACT,
+            Some(Histogram::Full(_)) => HISTOGRAM_HEIGHT_FULL,
+            None => 0.0,
+        }
+    }
 }
 
 impl canvas::Program<Message> for TimeAndSales {
@@ -162,12 +172,13 @@ impl canvas::Program<Message> for TimeAndSales {
         cursor: iced_core::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let cursor_position = cursor.position_in(bounds)?;
+        let histogram_h = self.histogram_height();
 
         let paused_box = Rectangle {
             x: 0.0,
             y: 0.0,
             width: bounds.width,
-            height: HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT,
+            height: histogram_h + TRADE_ROW_HEIGHT,
         };
 
         match event {
@@ -222,52 +233,105 @@ impl canvas::Program<Message> for TimeAndSales {
 
         let palette = theme.extended_palette();
         let is_scroll_paused = self.is_paused;
+        let histogram_h = self.histogram_height();
 
         let content = self.cache.draw(renderer, bounds.size(), |frame| {
             let content_top_y = -self.scroll_offset;
 
             // Histogram
-            if let Some((buy_ratio, _)) =
-                self.config.stacked_bar_ratio.calculate(&self.recent_trades)
-            {
-                let draw_stacked_bar =
-                    |frame: &mut canvas::Frame, buy_bar_width: f32, sell_bar_width: f32| {
-                        frame.fill_rectangle(
-                            Point {
-                                x: 0.0,
-                                y: content_top_y,
-                            },
-                            Size {
-                                width: buy_bar_width,
-                                height: HISTOGRAM_HEIGHT,
-                            },
-                            palette.success.weak.color,
-                        );
+            if let Some(hist) = &self.config.histogram {
+                let ratio_kind = match hist {
+                    Histogram::Compact(r) | Histogram::Full(r) => *r,
+                };
 
-                        frame.fill_rectangle(
-                            Point {
-                                x: buy_bar_width,
-                                y: content_top_y,
-                            },
-                            Size {
-                                width: sell_bar_width,
-                                height: HISTOGRAM_HEIGHT,
-                            },
-                            palette.danger.weak.color,
-                        );
-                    };
+                if let Some((buy_ratio, _sell_ratio)) = ratio_kind.calculate(&self.recent_trades) {
+                    let draw_stacked_bar =
+                        |frame: &mut canvas::Frame, buy_bar_width: f32, sell_bar_width: f32| {
+                            frame.fill_rectangle(
+                                Point {
+                                    x: 0.0,
+                                    y: content_top_y,
+                                },
+                                Size {
+                                    width: buy_bar_width,
+                                    height: histogram_h,
+                                },
+                                palette.success.weak.color,
+                            );
 
-                let buy_bar_width = (bounds.width * buy_ratio).round();
-                let sell_bar_width = bounds.width - buy_bar_width;
+                            frame.fill_rectangle(
+                                Point {
+                                    x: buy_bar_width,
+                                    y: content_top_y,
+                                },
+                                Size {
+                                    width: sell_bar_width,
+                                    height: histogram_h,
+                                },
+                                palette.danger.weak.color,
+                            );
+                        };
 
-                draw_stacked_bar(frame, buy_bar_width, sell_bar_width);
+                    let buy_bar_width = (bounds.width * buy_ratio).round();
+                    let sell_bar_width = bounds.width - buy_bar_width;
+
+                    draw_stacked_bar(frame, buy_bar_width, sell_bar_width);
+
+                    if matches!(hist, Histogram::Full(_))
+                        && let Some((buy_val, sell_val)) = ratio_kind.values(&self.recent_trades)
+                    {
+                        let center_y = content_top_y + (histogram_h / 2.0);
+
+                        let buy_text_content = match ratio_kind {
+                            StackedBarRatio::Count => format!("{}", buy_val as i64),
+                            StackedBarRatio::AverageSize | StackedBarRatio::Volume => {
+                                data::util::abbr_large_numbers(buy_val)
+                            }
+                        };
+                        let buy_text = Text {
+                            content: buy_text_content,
+                            position: Point {
+                                x: 8.0,
+                                y: center_y,
+                            },
+                            size: TEXT_SIZE,
+                            font: style::AZERET_MONO,
+                            color: palette.success.weak.text,
+                            align_x: Alignment::Start.into(),
+                            align_y: Alignment::Center.into(),
+                            ..Default::default()
+                        };
+                        frame.fill_text(buy_text);
+
+                        let sell_text_content = match ratio_kind {
+                            StackedBarRatio::Count => format!("{}", sell_val as i64),
+                            StackedBarRatio::AverageSize | StackedBarRatio::Volume => {
+                                data::util::abbr_large_numbers(sell_val)
+                            }
+                        };
+                        let sell_text = Text {
+                            content: sell_text_content,
+                            position: Point {
+                                x: bounds.width - 8.0,
+                                y: center_y,
+                            },
+                            size: TEXT_SIZE,
+                            font: style::AZERET_MONO,
+                            color: palette.danger.weak.text,
+                            align_x: Alignment::End.into(),
+                            align_y: Alignment::Center.into(),
+                            ..Default::default()
+                        };
+                        frame.fill_text(sell_text);
+                    }
+                }
             }
 
             // Feed
             let row_height = TRADE_ROW_HEIGHT;
             let row_width = bounds.width;
 
-            let row_scroll_offset = (self.scroll_offset - HISTOGRAM_HEIGHT).max(0.0);
+            let row_scroll_offset = (self.scroll_offset - histogram_h).max(0.0);
             let start_index = (row_scroll_offset / row_height).floor() as usize;
             let visible_rows = (bounds.height / row_height).ceil() as usize;
 
@@ -298,7 +362,7 @@ impl canvas::Program<Message> for TimeAndSales {
 
             for (i, trade) in trades_to_draw.enumerate() {
                 let y_position =
-                    content_top_y + HISTOGRAM_HEIGHT + ((start_index + i) as f32 * row_height);
+                    content_top_y + histogram_h + ((start_index + i) as f32 * row_height);
 
                 if y_position + row_height < 0.0 || y_position > bounds.height {
                     continue;
@@ -318,7 +382,10 @@ impl canvas::Program<Message> for TimeAndSales {
                     darken(bg_color, (bg_color_alpha * 0.8).max(0.1))
                 };
 
-                if is_scroll_paused && y_position < HISTOGRAM_HEIGHT + (TRADE_ROW_HEIGHT * 0.8) {
+                if is_scroll_paused
+                    && y_position
+                        < (histogram_h.max(HISTOGRAM_HEIGHT_COMPACT)) + (TRADE_ROW_HEIGHT * 0.8)
+                {
                     text_color = text_color.scale_alpha(0.1);
                 }
 
@@ -369,7 +436,7 @@ impl canvas::Program<Message> for TimeAndSales {
             }
 
             if is_scroll_paused {
-                let pause_box_height = HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT;
+                let pause_box_height = histogram_h.max(HISTOGRAM_HEIGHT_COMPACT) + TRADE_ROW_HEIGHT;
                 let pause_box_y = 0.0;
 
                 let cursor_position = cursor.position_in(bounds);
@@ -429,11 +496,12 @@ impl canvas::Program<Message> for TimeAndSales {
         cursor: iced_core::mouse::Cursor,
     ) -> iced_core::mouse::Interaction {
         if self.is_paused {
+            let histogram_h = self.histogram_height();
             let paused_box = Rectangle {
                 x: bounds.x,
                 y: bounds.y,
                 width: bounds.width,
-                height: HISTOGRAM_HEIGHT + TRADE_ROW_HEIGHT,
+                height: histogram_h.max(HISTOGRAM_HEIGHT_COMPACT) + TRADE_ROW_HEIGHT,
             };
 
             if cursor.is_over(paused_box) {

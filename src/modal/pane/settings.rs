@@ -6,6 +6,7 @@ use crate::{style, tooltip, widget::scrollable_content};
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
 use data::chart::ladder;
+use data::chart::timeandsales::Histogram;
 use data::chart::{
     KlineChartKind, VisualConfig,
     heatmap::{self, CoalesceKind},
@@ -335,31 +336,103 @@ pub fn timesales_cfg_view<'a>(
         .spacing(4)
     };
 
-    let stacked_bar_ratio = {
-        let ratio = cfg.stacked_bar_ratio;
+    let stacked_bar: Element<_> = {
+        let is_shown = cfg.histogram.is_some();
 
-        let ratio_picklist = pick_list(StackedBarRatio::ALL, Some(ratio), move |new_ratio| {
-            Message::VisualConfigChanged(
-                pane,
-                VisualConfig::TimeAndSales(timeandsales::Config {
-                    stacked_bar_ratio: new_ratio,
-                    ..cfg
-                }),
-                false,
-            )
+        let enable_checkbox = iced::widget::checkbox("Show stacked bar", is_shown).on_toggle({
+            move |value| {
+                let current_ratio = cfg.histogram.map(|h| h.ratio()).unwrap_or_default();
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::TimeAndSales(timeandsales::Config {
+                        histogram: if value {
+                            Some(Histogram::Compact(current_ratio)) // default to Compact
+                        } else {
+                            None
+                        },
+                        ..cfg
+                    }),
+                    false,
+                )
+            }
         });
 
-        column![text("Stacked bar ratio").size(14), ratio_picklist].spacing(8)
+        let controls: Element<_> = if let Some(hist) = cfg.histogram {
+            let ratio = hist.ratio();
+            let is_compact = matches!(hist, Histogram::Compact(_));
+
+            let compact = radio("Compact", true, Some(is_compact), {
+                move |_new_is_compact| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::TimeAndSales(timeandsales::Config {
+                            histogram: Some(Histogram::Compact(ratio)),
+                            ..cfg
+                        }),
+                        false,
+                    )
+                }
+            })
+            .spacing(4);
+
+            let full = radio("Full", false, Some(is_compact), {
+                move |_new_is_compact| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::TimeAndSales(timeandsales::Config {
+                            histogram: Some(Histogram::Full(ratio)),
+                            ..cfg
+                        }),
+                        false,
+                    )
+                }
+            })
+            .spacing(4);
+
+            let metric_picklist = pick_list(StackedBarRatio::ALL, Some(ratio), move |new_ratio| {
+                let new_hist = Some(match cfg.histogram {
+                    Some(Histogram::Full(_)) => Histogram::Full(new_ratio),
+                    _ => Histogram::Compact(new_ratio),
+                });
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::TimeAndSales(timeandsales::Config {
+                        histogram: new_hist,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+            column![
+                iced::widget::rule::horizontal(1),
+                text("Mode").size(12),
+                row![compact, full].spacing(12),
+                text("Metric").size(12),
+                metric_picklist,
+            ]
+            .spacing(8)
+            .into()
+        } else {
+            row![].into()
+        };
+
+        container(
+            column![text("Stacked bar").size(14), enable_checkbox, controls,]
+                .width(Length::Fill)
+                .padding(4)
+                .spacing(8),
+        )
+        .style(style::modal_container)
+        .padding(8)
+        .into()
     };
 
     let content = split_column![
         trade_size_column,
         storage_buffer_column,
-        stacked_bar_ratio,
-        row![
-            space::horizontal(),
-            sync_all_button(pane, VisualConfig::TimeAndSales(cfg))
-        ],
+        stacked_bar,
+        row![space::horizontal(), sync_all_button(pane, VisualConfig::TimeAndSales(cfg))],
         ; spacing = 12, align_x = Alignment::Start
     ];
 
@@ -501,7 +574,7 @@ pub mod study {
     use data::chart::kline::FootprintStudy;
     use iced::{
         Element, padding,
-        widget::{button, column, container, row, rule, slider, space, text},
+        widget::{button, column, container, row, slider, space, text},
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -689,7 +762,7 @@ pub mod study {
                         );
 
                         column![
-                            row![rule::horizontal(1), switch_kind,],
+                            row![space::horizontal(), switch_kind,],
                             text(format!(
                                 "Window: {} datapoints ({})",
                                 datapoint_count, duration_text
