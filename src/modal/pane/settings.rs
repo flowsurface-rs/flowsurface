@@ -6,7 +6,7 @@ use crate::{style, tooltip, widget::scrollable_content};
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
 use data::chart::ladder;
-use data::chart::timeandsales::Histogram;
+use data::chart::timeandsales::StackedBar;
 use data::chart::{
     KlineChartKind, VisualConfig,
     heatmap::{self, CoalesceKind},
@@ -46,7 +46,6 @@ pub fn heatmap_cfg_view<'a>(
 ) -> Element<'a, Message> {
     let trade_size_slider = {
         let filter = cfg.trade_size_filter;
-
         labeled_slider(
             "Trade",
             0.0..=50000.0,
@@ -68,7 +67,6 @@ pub fn heatmap_cfg_view<'a>(
 
     let order_size_slider = {
         let filter = cfg.order_size_filter;
-
         labeled_slider(
             "Order",
             0.0..=500_000.0,
@@ -88,116 +86,112 @@ pub fn heatmap_cfg_view<'a>(
         )
     };
 
-    let circle_scaling_slider = {
-        if let Some(radius_scale) = cfg.trade_size_scale {
-            classic_slider_row(
-                text("Circle radius scaling"),
-                slider(10..=200, radius_scale, move |value| {
+    let circle_scaling_slider = cfg.trade_size_scale.map(|radius_scale| {
+        classic_slider_row(
+            text("Circle radius scaling"),
+            slider(10..=200, radius_scale, move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        trade_size_scale: Some(value),
+                        ..cfg
+                    }),
+                    false,
+                )
+            })
+            .step(10)
+            .into(),
+            Some(text(format!("{}%", radius_scale)).size(13)),
+        )
+    });
+
+    let coalescer_cfg: Option<Element<_>> = if let Some(coalescing) = cfg.coalescing {
+        let threshold_pct = coalescing.threshold();
+
+        let coalescer_kinds = {
+            let average = radio(
+                "Average",
+                CoalesceKind::Average(threshold_pct),
+                Some(coalescing),
+                move |value| {
                     Message::VisualConfigChanged(
                         pane,
                         VisualConfig::Heatmap(heatmap::Config {
-                            trade_size_scale: Some(value),
+                            coalescing: Some(value),
                             ..cfg
                         }),
                         false,
                     )
-                })
-                .step(10)
-                .into(),
-                Some(text(format!("{}%", radius_scale)).size(13)),
+                },
             )
-        } else {
-            container(row![]).into()
-        }
-    };
+            .spacing(4);
 
-    let coalescer_cfg: Element<_> = {
-        if let Some(coalescing) = cfg.coalescing {
-            let threshold_pct = coalescing.threshold();
-
-            let coalescer_kinds = {
-                let average = radio(
-                    "Average",
-                    CoalesceKind::Average(threshold_pct),
-                    Some(coalescing),
-                    move |value| {
-                        Message::VisualConfigChanged(
-                            pane,
-                            VisualConfig::Heatmap(heatmap::Config {
-                                coalescing: Some(value),
-                                ..cfg
-                            }),
-                            false,
-                        )
-                    },
-                )
-                .spacing(4);
-
-                let first = radio(
-                    "First",
-                    CoalesceKind::First(threshold_pct),
-                    Some(coalescing),
-                    move |value| {
-                        Message::VisualConfigChanged(
-                            pane,
-                            VisualConfig::Heatmap(heatmap::Config {
-                                coalescing: Some(value),
-                                ..cfg
-                            }),
-                            false,
-                        )
-                    },
-                )
-                .spacing(4);
-
-                let max = radio(
-                    "Max",
-                    CoalesceKind::Max(threshold_pct),
-                    Some(coalescing),
-                    move |value| {
-                        Message::VisualConfigChanged(
-                            pane,
-                            VisualConfig::Heatmap(heatmap::Config {
-                                coalescing: Some(value),
-                                ..cfg
-                            }),
-                            false,
-                        )
-                    },
-                )
-                .spacing(4);
-
-                row![
-                    text("Merge method: "),
-                    row![average, first, max].spacing(12)
-                ]
-                .spacing(12)
-            };
-
-            let threshold_slider = classic_slider_row(
-                text("Size similarity"),
-                slider(0.05..=0.8, threshold_pct, move |value| {
+            let first = radio(
+                "First",
+                CoalesceKind::First(threshold_pct),
+                Some(coalescing),
+                move |value| {
                     Message::VisualConfigChanged(
                         pane,
                         VisualConfig::Heatmap(heatmap::Config {
-                            coalescing: Some(coalescing.with_threshold(value)),
+                            coalescing: Some(value),
                             ..cfg
                         }),
                         false,
                     )
-                })
-                .step(0.05)
-                .into(),
-                Some(text(format!("{:.0}%", threshold_pct * 100.0)).size(13)),
-            );
+                },
+            )
+            .spacing(4);
 
-            container(column![coalescer_kinds, threshold_slider,].spacing(8))
+            let max = radio(
+                "Max",
+                CoalesceKind::Max(threshold_pct),
+                Some(coalescing),
+                move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Heatmap(heatmap::Config {
+                            coalescing: Some(value),
+                            ..cfg
+                        }),
+                        false,
+                    )
+                },
+            )
+            .spacing(4);
+
+            row![
+                text("Merge method: "),
+                row![average, first, max].spacing(12)
+            ]
+            .spacing(12)
+        };
+
+        let threshold_slider = classic_slider_row(
+            text("Size similarity"),
+            slider(0.05..=0.8, threshold_pct, move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        coalescing: Some(coalescing.with_threshold(value)),
+                        ..cfg
+                    }),
+                    false,
+                )
+            })
+            .step(0.05)
+            .into(),
+            Some(text(format!("{:.0}%", threshold_pct * 100.0)).size(13)),
+        );
+
+        Some(
+            container(column![coalescer_kinds, threshold_slider].spacing(8))
                 .style(style::modal_container)
                 .padding(8)
-                .into()
-        } else {
-            row![].into()
-        }
+                .into(),
+        )
+    } else {
+        None
     };
 
     let size_filters_column = column![
@@ -206,9 +200,8 @@ pub fn heatmap_cfg_view<'a>(
     ]
     .spacing(8);
 
-    let noise_filters_column = column![
-        text("Noise filters").size(14),
-        iced::widget::checkbox(
+    let noise_filters_column = {
+        let merge_checkbox = iced::widget::checkbox(
             "Merge orders if sizes are similar",
             cfg.coalescing.is_some(),
         )
@@ -225,28 +218,35 @@ pub fn heatmap_cfg_view<'a>(
                 }),
                 false,
             )
-        }),
-        coalescer_cfg,
-    ]
-    .spacing(8);
+        });
 
-    let trade_viz_column = column![
-        text("Trade visualization").size(14),
-        iced::widget::checkbox("Dynamic circle radius", cfg.trade_size_scale.is_some(),).on_toggle(
-            move |value| {
-                Message::VisualConfigChanged(
-                    pane,
-                    VisualConfig::Heatmap(heatmap::Config {
-                        trade_size_scale: if value { Some(100) } else { None },
-                        ..cfg
-                    }),
-                    false,
-                )
-            }
-        ),
-        circle_scaling_slider,
-    ]
-    .spacing(8);
+        let mut col = column![text("Noise filters").size(14), merge_checkbox].spacing(8);
+        if let Some(c) = coalescer_cfg {
+            col = col.push(c);
+        }
+        col
+    };
+
+    let trade_viz_column = {
+        let dyn_checkbox =
+            iced::widget::checkbox("Dynamic circle radius", cfg.trade_size_scale.is_some())
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Heatmap(heatmap::Config {
+                            trade_size_scale: if value { Some(100) } else { None },
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+        let mut col = column![text("Trade visualization").size(14), dyn_checkbox].spacing(8);
+        if let Some(slider) = circle_scaling_slider {
+            col = col.push(slider);
+        }
+        col
+    };
 
     let study_cfg = study_config
         .view(studies, basis)
@@ -272,81 +272,76 @@ pub fn timesales_cfg_view<'a>(
     pane: pane_grid::Pane,
 ) -> Element<'a, Message> {
     let trade_size_column = {
-        let slider = {
-            let filter = cfg.trade_size_filter;
-
-            labeled_slider(
-                "Trade",
-                0.0..=50000.0,
-                filter,
-                move |value| {
-                    Message::VisualConfigChanged(
-                        pane,
-                        VisualConfig::TimeAndSales(timeandsales::Config {
-                            trade_size_filter: value,
-                            ..cfg
-                        }),
-                        false,
-                    )
-                },
-                |value| format!(">${}", format_with_commas(*value)),
-                Some(500.0),
-            )
-        };
-
-        column![text("Size filter").size(14), slider,].spacing(8)
-    };
-
-    let storage_buffer_column = {
-        let slider = {
-            let buffer_size = cfg.buffer_filter as f32;
-
-            labeled_slider(
-                "Count",
-                400.0..=5000.0,
-                buffer_size,
-                move |value| {
-                    Message::VisualConfigChanged(
-                        pane,
-                        VisualConfig::TimeAndSales(timeandsales::Config {
-                            buffer_filter: value as usize,
-                            ..cfg
-                        }),
-                        false,
-                    )
-                },
-                |value| format!("{}", *value as usize),
-                Some(100.0),
-            )
-        };
-
-        column![
-            row![
-                text("Max trades stored").size(14),
-                tooltip(
-                    button("i").style(style::button::info),
-                    Some("Affects the stacked bar, colors and how much you can scroll down"),
-                    TooltipPosition::Top,
-                ),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(4),
-            row![slider,]
-        ]
-        .spacing(4)
-    };
-
-    let stacked_bar: Element<_> = {
-        let is_shown = cfg.histogram.is_some();
-
-        let enable_checkbox = iced::widget::checkbox("Show stacked bar", is_shown).on_toggle({
+        let filter = cfg.trade_size_filter;
+        let slider = labeled_slider(
+            "Trade",
+            0.0..=50000.0,
+            filter,
             move |value| {
-                let current_ratio = cfg.histogram.map(|h| h.ratio()).unwrap_or_default();
                 Message::VisualConfigChanged(
                     pane,
                     VisualConfig::TimeAndSales(timeandsales::Config {
-                        histogram: if value {
-                            Some(Histogram::Compact(current_ratio)) // default to Compact
+                        trade_size_filter: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            },
+            |value| format!(">${}", format_with_commas(*value)),
+            Some(500.0),
+        );
+
+        column![text("Size filter").size(14), slider].spacing(8)
+    };
+
+    let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
+    let retention_slider = {
+        let slider_ui = slider(1.0..=60.0, retention_minutes, move |new_minutes| {
+            let mins = new_minutes.round().max(1.0) as u64;
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::TimeAndSales(timeandsales::Config {
+                    trade_retention: Duration::from_secs(mins * 60),
+                    ..cfg
+                }),
+                false,
+            )
+        })
+        .step(1.0);
+
+        classic_slider_row(
+            text("Keep trades for"),
+            slider_ui.into(),
+            Some(text(format!("≈ {} min", retention_minutes.round() as u64)).size(13)),
+        )
+    };
+
+    let history_column = column![
+        row![
+            text("History").size(14),
+            tooltip(
+                button("i").style(style::button::info),
+                Some("Affects the stacked bar, colors and how much you can scroll down"),
+                TooltipPosition::Top,
+            )
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+        retention_slider
+    ]
+    .spacing(8);
+
+    let stacked_bar: Element<_> = {
+        let is_shown = cfg.stacked_bar.is_some();
+
+        let enable_checkbox = iced::widget::checkbox("Show stacked bar", is_shown).on_toggle({
+            move |value| {
+                let current_ratio = cfg.stacked_bar.map(|h| h.ratio()).unwrap_or_default();
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::TimeAndSales(timeandsales::Config {
+                        stacked_bar: if value {
+                            Some(StackedBar::Compact(current_ratio))
                         } else {
                             None
                         },
@@ -357,16 +352,16 @@ pub fn timesales_cfg_view<'a>(
             }
         });
 
-        let controls: Element<_> = if let Some(hist) = cfg.histogram {
+        let controls: Option<Element<_>> = cfg.stacked_bar.map(|hist| {
             let ratio = hist.ratio();
-            let is_compact = matches!(hist, Histogram::Compact(_));
+            let is_compact = matches!(hist, StackedBar::Compact(_));
 
             let compact = radio("Compact", true, Some(is_compact), {
-                move |_new_is_compact| {
+                move |_v| {
                     Message::VisualConfigChanged(
                         pane,
                         VisualConfig::TimeAndSales(timeandsales::Config {
-                            histogram: Some(Histogram::Compact(ratio)),
+                            stacked_bar: Some(StackedBar::Compact(ratio)),
                             ..cfg
                         }),
                         false,
@@ -376,11 +371,11 @@ pub fn timesales_cfg_view<'a>(
             .spacing(4);
 
             let full = radio("Full", false, Some(is_compact), {
-                move |_new_is_compact| {
+                move |_v| {
                     Message::VisualConfigChanged(
                         pane,
                         VisualConfig::TimeAndSales(timeandsales::Config {
-                            histogram: Some(Histogram::Full(ratio)),
+                            stacked_bar: Some(StackedBar::Full(ratio)),
                             ..cfg
                         }),
                         false,
@@ -390,14 +385,14 @@ pub fn timesales_cfg_view<'a>(
             .spacing(4);
 
             let metric_picklist = pick_list(StackedBarRatio::ALL, Some(ratio), move |new_ratio| {
-                let new_hist = Some(match cfg.histogram {
-                    Some(Histogram::Full(_)) => Histogram::Full(new_ratio),
-                    _ => Histogram::Compact(new_ratio),
+                let new_hist = Some(match cfg.stacked_bar {
+                    Some(StackedBar::Full(_)) => StackedBar::Full(new_ratio),
+                    _ => StackedBar::Compact(new_ratio),
                 });
                 Message::VisualConfigChanged(
                     pane,
                     VisualConfig::TimeAndSales(timeandsales::Config {
-                        histogram: new_hist,
+                        stacked_bar: new_hist,
                         ..cfg
                     }),
                     false,
@@ -413,24 +408,26 @@ pub fn timesales_cfg_view<'a>(
             ]
             .spacing(8)
             .into()
-        } else {
-            row![].into()
-        };
+        });
 
-        container(
-            column![text("Stacked bar").size(14), enable_checkbox, controls,]
-                .width(Length::Fill)
-                .padding(4)
-                .spacing(8),
-        )
-        .style(style::modal_container)
-        .padding(8)
-        .into()
+        let mut inner = column![enable_checkbox]
+            .width(Length::Fill)
+            .padding(4)
+            .spacing(8);
+
+        if let Some(ctrls) = controls {
+            inner = inner.push(ctrls);
+        }
+
+        container(inner)
+            .style(style::modal_container)
+            .padding(8)
+            .into()
     };
 
     let content = split_column![
         trade_size_column,
-        storage_buffer_column,
+        history_column,
         stacked_bar,
         row![space::horizontal(), sync_all_button(pane, VisualConfig::TimeAndSales(cfg))],
         ; spacing = 12, align_x = Alignment::Start
