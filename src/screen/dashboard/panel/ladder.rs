@@ -52,6 +52,8 @@ pub struct Ladder {
     tick_size: PriceStep,
     scroll_px: f32,
     last_exchange_ts_ms: Option<u64>,
+    grouped_asks: BTreeMap<Price, f32>,
+    grouped_bids: BTreeMap<Price, f32>,
 }
 
 impl Ladder {
@@ -67,6 +69,8 @@ impl Ladder {
             tick_size: PriceStep::from_f32(tick_size),
             scroll_px: 0.0,
             last_exchange_ts_ms: None,
+            grouped_asks: BTreeMap::new(),
+            grouped_bids: BTreeMap::new(),
         }
     }
 
@@ -78,6 +82,8 @@ impl Ladder {
             self.grouped_trades.add_trade_to_side_bin(trade, tick_size);
             self.raw_trades.push_back(*trade);
         }
+
+        self.recompute_grouped_depth();
 
         self.last_exchange_ts_ms = Some(update_t);
         self.maybe_cleanup_trades(update_t);
@@ -145,6 +151,8 @@ impl Ladder {
             self.grouped_trades.add_trade_to_side_bin(trade, step);
         }
 
+        self.recompute_grouped_depth();
+
         self.invalidate(Some(Instant::now()));
     }
 
@@ -178,6 +186,11 @@ impl Ladder {
         } else {
             None
         }
+    }
+
+    fn recompute_grouped_depth(&mut self) {
+        self.grouped_asks = self.group_price_levels(&self.depth.asks, false);
+        self.grouped_bids = self.group_price_levels(&self.depth.bids, true);
     }
 
     fn group_price_levels(
@@ -240,15 +253,11 @@ impl canvas::Program<Message> for Ladder {
 
         let divider_color = style::split_ruler(theme).color;
 
-        let asks_grouped = self.group_price_levels(&self.depth.asks, false);
-        let bids_grouped = self.group_price_levels(&self.depth.bids, true);
-
         let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
             let cols = self.column_ranges(bounds.width);
 
-            if let Some(grid) = self.build_price_grid(&asks_grouped, &bids_grouped) {
-                let (visible_rows, maxima) =
-                    self.visible_rows(bounds, &asks_grouped, &bids_grouped, &grid);
+            if let Some(grid) = self.build_price_grid() {
+                let (visible_rows, maxima) = self.visible_rows(bounds, &grid);
 
                 let mut spread_row: Option<(f32, f32)> = None;
 
@@ -631,13 +640,9 @@ impl Ladder {
         });
     }
 
-    fn build_price_grid(
-        &self,
-        asks_grouped: &BTreeMap<Price, f32>,
-        bids_grouped: &BTreeMap<Price, f32>,
-    ) -> Option<PriceGrid> {
-        let best_bid = bids_grouped.last_key_value().map(|(k, _)| *k);
-        let best_ask = asks_grouped.first_key_value().map(|(k, _)| *k);
+    fn build_price_grid(&self) -> Option<PriceGrid> {
+        let best_bid = self.grouped_bids.last_key_value().map(|(k, _)| *k);
+        let best_ask = self.grouped_asks.first_key_value().map(|(k, _)| *k);
 
         let (best_bid, best_ask) = match (best_bid, best_ask) {
             (Some(bb), Some(ba)) => (bb, ba),
@@ -670,13 +675,10 @@ impl Ladder {
         })
     }
 
-    fn visible_rows(
-        &self,
-        bounds: Rectangle,
-        asks_grouped: &BTreeMap<Price, f32>,
-        bids_grouped: &BTreeMap<Price, f32>,
-        grid: &PriceGrid,
-    ) -> (Vec<VisibleRow>, Maxima) {
+    fn visible_rows(&self, bounds: Rectangle, grid: &PriceGrid) -> (Vec<VisibleRow>, Maxima) {
+        let asks_grouped = &self.grouped_asks;
+        let bids_grouped = &self.grouped_bids;
+
         let mut visible: Vec<VisibleRow> = Vec::new();
         let mut maxima = Maxima::default();
 

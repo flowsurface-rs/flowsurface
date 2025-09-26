@@ -266,8 +266,7 @@ impl State {
                     .settings
                     .visual_config
                     .and_then(|cfg| cfg.time_and_sales());
-                let content =
-                    Content::TimeAndSales(Some(TimeAndSales::new(config, Some(ticker_info))));
+                let content = Content::TimeAndSales(Some(TimeAndSales::new(config, ticker_info)));
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker_info,
                     depth_aggr: if ticker.exchange.is_depth_client_aggr() {
