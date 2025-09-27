@@ -4,7 +4,7 @@ use crate::widget::{labeled_slider, tooltip};
 use data::audio::{SoundCache, SoundType, StreamCfg};
 use exchange::adapter::{Exchange, StreamKind, StreamTicksize};
 
-use exchange::Trade;
+use exchange::{PushFrequency, Trade};
 use iced::widget::{button, column, container, row, text};
 use iced::widget::{checkbox, slider, space};
 use iced::{Element, padding};
@@ -97,7 +97,7 @@ impl AudioStream {
 
     pub fn view(
         &self,
-        active_streams: Vec<(exchange::TickerInfo, StreamTicksize)>,
+        active_streams: Vec<(exchange::TickerInfo, StreamTicksize, PushFrequency)>,
     ) -> Element<'_, Message> {
         let volume_container = {
             let volume_slider = {
@@ -136,7 +136,7 @@ impl AudioStream {
                     }
                 });
 
-                for (ticker_info, depth_aggr) in streams {
+                for (ticker_info, depth_aggr, _) in streams {
                     let exchange = ticker_info.exchange();
                     let ticker = ticker_info.ticker;
 
@@ -146,6 +146,7 @@ impl AudioStream {
                         self.is_stream_audio_enabled(&StreamKind::DepthAndTrades {
                             ticker_info,
                             depth_aggr,
+                            push_freq: PushFrequency::ServerDefault,
                         });
 
                     let stream_checkbox =

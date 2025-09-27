@@ -1,4 +1,4 @@
-use crate::{Price, adapter::StreamTicksize};
+use crate::{Price, PushFrequency, adapter::StreamTicksize};
 
 use super::{
     super::{
@@ -301,7 +301,10 @@ async fn try_connect(
     }
 }
 
-pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
+pub fn connect_market_stream(
+    ticker_info: TickerInfo,
+    push_freq: PushFrequency,
+) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
 
@@ -319,20 +322,30 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
         loop {
             match &mut state {
                 State::Disconnected => {
-                    let stream_1 = format!("publicTrade.{symbol_str}");
-                    let stream_2 = format!(
-                        "orderbook.{}.{}",
+                    let depth_level = if let PushFrequency::Custom(tf) = push_freq {
                         match market_type {
-                            MarketKind::Spot => "200",
-                            MarketKind::LinearPerps | MarketKind::InversePerps => "500",
-                        },
-                        symbol_str,
-                    );
+                            MarketKind::Spot => match tf {
+                                Timeframe::MS100 => "200",
+                                Timeframe::MS300 => "1000",
+                                _ => "200",
+                            },
+                            MarketKind::LinearPerps | MarketKind::InversePerps => match tf {
+                                Timeframe::MS200 => "200",
+                                Timeframe::MS300 => "1000",
+                                _ => "200",
+                            },
+                        }
+                    } else {
+                        "200"
+                    };
+
+                    let stream_1 = format!("publicTrade.{symbol_str}");
+                    let stream_2 = format!("orderbook.{depth_level}.{symbol_str}");
+
                     let subscribe_message = serde_json::json!({
                         "op": "subscribe",
                         "args": [stream_1, stream_2]
                     });
-
                     state = try_connect(&subscribe_message, market_type, &mut output).await;
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
@@ -407,6 +420,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     StreamKind::DepthAndTrades {
                                                         ticker_info,
                                                         depth_aggr: StreamTicksize::Client,
+                                                        push_freq,
                                                     },
                                                     time,
                                                     orderbook.depth.clone(),

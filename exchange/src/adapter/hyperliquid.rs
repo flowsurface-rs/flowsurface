@@ -1,4 +1,4 @@
-use crate::{Price, TickMultiplier};
+use crate::{Price, PushFrequency, TickMultiplier};
 
 use super::{
     super::{
@@ -901,6 +901,7 @@ fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
 pub fn connect_market_stream(
     ticker_info: TickerInfo,
     tick_multiplier: Option<TickMultiplier>,
+    push_freq: PushFrequency,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
@@ -1082,6 +1083,7 @@ pub fn connect_market_stream(
                                                 depth_aggr: super::StreamTicksize::ServerSide(
                                                     TickMultiplier(user_multiplier),
                                                 ),
+                                                push_freq,
                                             };
                                             let current_depth = local_depth_cache.depth.clone();
                                             let trades = std::mem::take(&mut trades_buffer)

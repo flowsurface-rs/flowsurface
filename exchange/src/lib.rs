@@ -22,6 +22,22 @@ pub fn is_flag_enabled() -> bool {
     *SIZE_IN_QUOTE_CURRENCY.get().unwrap_or(&false)
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum PushFrequency {
+    #[default]
+    ServerDefault,
+    Custom(Timeframe),
+}
+
+impl std::fmt::Display for PushFrequency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PushFrequency::ServerDefault => write!(f, "Server Default"),
+            PushFrequency::Custom(tf) => write!(f, "{}", tf),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum PreferredCurrency {
     Quote,
@@ -47,6 +63,7 @@ impl std::fmt::Display for Timeframe {
             match self {
                 Timeframe::MS100 => "100ms",
                 Timeframe::MS200 => "200ms",
+                Timeframe::MS300 => "300ms",
                 Timeframe::MS500 => "500ms",
                 Timeframe::MS1000 => "1s",
                 Timeframe::M1 => "1m",
@@ -69,6 +86,7 @@ impl std::fmt::Display for Timeframe {
 pub enum Timeframe {
     MS100,
     MS200,
+    MS300,
     MS500,
     MS1000,
     M1,
@@ -99,9 +117,10 @@ impl Timeframe {
         Timeframe::D1,
     ];
 
-    pub const HEATMAP: [Timeframe; 4] = [
+    pub const HEATMAP: [Timeframe; 5] = [
         Timeframe::MS100,
         Timeframe::MS200,
+        Timeframe::MS300,
         Timeframe::MS500,
         Timeframe::MS1000,
     ];
@@ -130,6 +149,7 @@ impl Timeframe {
         match self {
             Timeframe::MS100 => 100,
             Timeframe::MS200 => 200,
+            Timeframe::MS300 => 300,
             Timeframe::MS500 => 500,
             Timeframe::MS1000 => 1_000,
             _ => {

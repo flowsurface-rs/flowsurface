@@ -15,7 +15,7 @@ use crate::{
 };
 use data::{UserTimezone, chart::Basis, layout::WindowSpec};
 use exchange::{
-    Kline, TickMultiplier, TickerInfo, Timeframe, Trade,
+    Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
     adapter::{
         self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
         StreamTicksize, UniqueStreams, binance, bybit, hyperliquid, okex,
@@ -481,7 +481,6 @@ impl Dashboard {
                                 modifier.update_kind_with_basis(new_basis);
 
                                 state.modal = Some(pane::Modal::StreamModifier(modifier));
-
                                 state.settings.selected_basis = Some(new_basis);
 
                                 if let pane::Content::Heatmap { ref mut chart, .. } = state.content
@@ -489,6 +488,32 @@ impl Dashboard {
                                     if let Some(c) = chart {
                                         c.set_basis(new_basis);
                                     }
+
+                                    if let Some(stream_type) =
+                                        state.streams.ready_iter_mut().and_then(|mut iter| {
+                                            iter.find(|stream| {
+                                                matches!(stream, StreamKind::DepthAndTrades { .. })
+                                            })
+                                        })
+                                        && let StreamKind::DepthAndTrades {
+                                            push_freq,
+                                            ticker_info,
+                                            ..
+                                        } = stream_type
+                                        && ticker_info.exchange().is_custom_push_freq()
+                                    {
+                                        match new_basis {
+                                            Basis::Time(tf) => {
+                                                *push_freq = PushFrequency::Custom(tf)
+                                            }
+                                            Basis::Tick(_) => {
+                                                *push_freq = PushFrequency::ServerDefault
+                                            }
+                                        }
+
+                                        return (self.refresh_streams(main_window.id), None);
+                                    }
+
                                     return (Task::none(), None);
                                 }
 
@@ -501,10 +526,12 @@ impl Dashboard {
 
                                     match new_basis {
                                         Basis::Time(new_tf) => {
-                                            let mut streams = vec![StreamKind::Kline {
+                                            let kline_stream = StreamKind::Kline {
                                                 ticker_info,
                                                 timeframe: new_tf,
-                                            }];
+                                            };
+
+                                            let mut streams = vec![kline_stream];
 
                                             if is_footprint {
                                                 streams.push(StreamKind::DepthAndTrades {
@@ -522,54 +549,26 @@ impl Dashboard {
                                                                 .unwrap_or(TickMultiplier(1)),
                                                         )
                                                     },
+                                                    push_freq: PushFrequency::ServerDefault,
                                                 });
                                             }
 
                                             state.streams = ResolvedStream::Ready(streams);
-
                                             let pane_id = state.unique_id();
 
-                                            state.settings.selected_basis =
-                                                Some(Basis::Time(new_tf));
-
-                                            if let Some(stream_type) = state
-                                                .streams
-                                                .ready_iter_mut()
-                                                .and_then(|mut iter| {
-                                                    iter.find(|stream| {
-                                                        matches!(stream, StreamKind::Kline { .. })
-                                                    })
-                                                })
-                                            {
-                                                if let StreamKind::Kline { timeframe, .. } =
-                                                    stream_type
-                                                {
-                                                    *timeframe = new_tf;
-                                                }
-
-                                                if let pane::Content::Kline { .. } = &state.content
-                                                {
-                                                    {
-                                                        if let StreamKind::Kline { .. } =
-                                                            stream_type
-                                                        {
-                                                            let task = kline_fetch_task(
-                                                                *layout_id,
-                                                                pane_id,
-                                                                *stream_type,
-                                                                None,
-                                                                None,
-                                                            );
-                                                            return (
-                                                                self.refresh_streams(
-                                                                    main_window.id,
-                                                                )
-                                                                .chain(task),
-                                                                None,
-                                                            );
-                                                        }
-                                                    }
-                                                }
+                                            if let pane::Content::Kline { .. } = &state.content {
+                                                let task = kline_fetch_task(
+                                                    *layout_id,
+                                                    pane_id,
+                                                    kline_stream,
+                                                    None,
+                                                    None,
+                                                );
+                                                return (
+                                                    self.refresh_streams(main_window.id)
+                                                        .chain(task),
+                                                    None,
+                                                );
                                             }
                                         }
                                         Basis::Tick(interval) => {
@@ -589,6 +588,7 @@ impl Dashboard {
                                             let streams = vec![StreamKind::DepthAndTrades {
                                                 ticker_info,
                                                 depth_aggr,
+                                                push_freq: PushFrequency::ServerDefault,
                                             }];
 
                                             state.streams = ResolvedStream::Ready(streams);
@@ -1361,11 +1361,12 @@ impl Dashboard {
                     let depth_subs = specs
                         .depth
                         .iter()
-                        .map(|(ticker, aggr)| match aggr {
-                            StreamTicksize::Client => depth_subscription(*ticker, None),
-                            StreamTicksize::ServerSide(mltp) => {
-                                depth_subscription(*ticker, Some(*mltp))
-                            }
+                        .map(|(ticker, aggr, push_freq)| {
+                            let tick_mltp = match aggr {
+                                StreamTicksize::Client => None,
+                                StreamTicksize::ServerSide(tick_mltp) => Some(*tick_mltp),
+                            };
+                            depth_subscription(*ticker, tick_mltp, *push_freq)
                         })
                         .collect::<Vec<_>>();
 
@@ -1612,28 +1613,34 @@ pub fn fetch_trades_batched(
 pub fn depth_subscription(
     ticker_info: TickerInfo,
     tick_mlpt: Option<TickMultiplier>,
+    push_freq: PushFrequency,
 ) -> Subscription<exchange::Event> {
     let exchange = ticker_info.exchange();
 
-    let config = StreamConfig::new(ticker_info, exchange, tick_mlpt);
+    let config = StreamConfig::new(ticker_info, exchange, tick_mlpt, push_freq);
 
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
-            let builder = |cfg: &StreamConfig<TickerInfo>| binance::connect_market_stream(cfg.id);
+            let builder = |cfg: &StreamConfig<TickerInfo>| {
+                binance::connect_market_stream(cfg.id, cfg.push_freq)
+            };
             Subscription::run_with(config, builder)
         }
         Exchange::BybitSpot | Exchange::BybitLinear | Exchange::BybitInverse => {
-            let builder = |cfg: &StreamConfig<TickerInfo>| bybit::connect_market_stream(cfg.id);
+            let builder = |cfg: &StreamConfig<TickerInfo>| {
+                bybit::connect_market_stream(cfg.id, cfg.push_freq)
+            };
             Subscription::run_with(config, builder)
         }
         Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
             let builder = |cfg: &StreamConfig<TickerInfo>| {
-                hyperliquid::connect_market_stream(cfg.id, cfg.tick_mltp)
+                hyperliquid::connect_market_stream(cfg.id, cfg.tick_mltp, cfg.push_freq)
             };
             Subscription::run_with(config, builder)
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            let builder = |cfg: &StreamConfig<TickerInfo>| okex::connect_market_stream(cfg.id);
+            let builder =
+                |cfg: &StreamConfig<TickerInfo>| okex::connect_market_stream(cfg.id, cfg.push_freq);
             Subscription::run_with(config, builder)
         }
     }
@@ -1643,7 +1650,7 @@ pub fn kline_subscription(
     exchange: Exchange,
     kline_subs: Vec<(TickerInfo, Timeframe)>,
 ) -> Subscription<exchange::Event> {
-    let config = StreamConfig::new(kline_subs, exchange, None);
+    let config = StreamConfig::new(kline_subs, exchange, None, PushFrequency::ServerDefault);
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
             let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {

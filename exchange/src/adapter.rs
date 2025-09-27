@@ -1,6 +1,7 @@
 use super::{Ticker, Timeframe};
 use crate::{
-    Kline, OpenInterest, Price, TickMultiplier, TickerInfo, TickerStats, Trade, depth::Depth,
+    Kline, OpenInterest, Price, PushFrequency, TickMultiplier, TickerInfo, TickerStats, Trade,
+    depth::Depth,
 };
 
 use enum_map::{Enum, EnumMap};
@@ -66,10 +67,12 @@ impl ResolvedStream {
                     StreamKind::DepthAndTrades {
                         ticker_info,
                         depth_aggr,
+                        push_freq,
                     } => {
                         let persist_depth = PersistDepth {
                             ticker: ticker_info.ticker,
                             depth_aggr,
+                            push_freq,
                         };
                         PersistStreamKind::DepthAndTrades(persist_depth)
                     }
@@ -172,6 +175,7 @@ pub enum StreamKind {
         ticker_info: TickerInfo,
         #[serde(default = "default_depth_aggr")]
         depth_aggr: StreamTicksize,
+        push_freq: PushFrequency,
     },
 }
 
@@ -183,12 +187,13 @@ impl StreamKind {
         }
     }
 
-    pub fn as_depth_stream(&self) -> Option<(TickerInfo, StreamTicksize)> {
+    pub fn as_depth_stream(&self) -> Option<(TickerInfo, StreamTicksize, PushFrequency)> {
         match self {
             StreamKind::DepthAndTrades {
                 ticker_info,
                 depth_aggr,
-            } => Some((*ticker_info, *depth_aggr)),
+                push_freq,
+            } => Some((*ticker_info, *depth_aggr, *push_freq)),
             _ => None,
         }
     }
@@ -275,7 +280,7 @@ impl UniqueStreams {
     pub fn depth_streams(
         &self,
         exchange_filter: Option<Exchange>,
-    ) -> Vec<(TickerInfo, StreamTicksize)> {
+    ) -> Vec<(TickerInfo, StreamTicksize, PushFrequency)> {
         self.streams(exchange_filter, |_, stream| stream.as_depth_stream())
     }
 
@@ -305,6 +310,8 @@ pub struct PersistDepth {
     pub ticker: Ticker,
     #[serde(default = "default_depth_aggr")]
     pub depth_aggr: StreamTicksize,
+    #[serde(default = "default_push_freq")]
+    pub push_freq: PushFrequency,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -326,9 +333,11 @@ impl From<StreamKind> for PersistStreamKind {
             StreamKind::DepthAndTrades {
                 ticker_info,
                 depth_aggr,
+                push_freq,
             } => PersistStreamKind::DepthAndTrades(PersistDepth {
                 ticker: ticker_info.ticker,
                 depth_aggr,
+                push_freq,
             }),
         }
     }
@@ -352,6 +361,7 @@ impl PersistStreamKind {
                 .map(|ti| StreamKind::DepthAndTrades {
                     ticker_info: ti,
                     depth_aggr: d.depth_aggr,
+                    push_freq: d.push_freq,
                 })
                 .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
         }
@@ -369,9 +379,13 @@ fn default_depth_aggr() -> StreamTicksize {
     StreamTicksize::Client
 }
 
+fn default_push_freq() -> PushFrequency {
+    PushFrequency::ServerDefault
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StreamSpecs {
-    pub depth: Vec<(TickerInfo, StreamTicksize)>,
+    pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
 }
 
@@ -499,11 +513,33 @@ impl Exchange {
         )
     }
 
+    pub fn is_custom_push_freq(&self) -> bool {
+        matches!(
+            self,
+            Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot
+        )
+    }
+
+    pub fn allowed_push_freqs(&self) -> &[PushFrequency] {
+        match self {
+            Exchange::BybitLinear | Exchange::BybitInverse => &[
+                PushFrequency::Custom(Timeframe::MS100),
+                PushFrequency::Custom(Timeframe::MS300),
+            ],
+            Exchange::BybitSpot => &[
+                PushFrequency::Custom(Timeframe::MS200),
+                PushFrequency::Custom(Timeframe::MS300),
+            ],
+            _ => &[PushFrequency::ServerDefault],
+        }
+    }
+
     pub fn supports_heatmap_timeframe(&self, tf: Timeframe) -> bool {
         match self {
             Exchange::BybitSpot => tf != Timeframe::MS100,
+            Exchange::BybitLinear | Exchange::BybitInverse => tf != Timeframe::MS200,
             Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
-                tf != Timeframe::MS100 && tf != Timeframe::MS200
+                tf != Timeframe::MS100 && tf != Timeframe::MS200 && tf != Timeframe::MS300
             }
             _ => true,
         }
@@ -536,15 +572,22 @@ pub struct StreamConfig<I> {
     pub id: I,
     pub market_type: MarketKind,
     pub tick_mltp: Option<TickMultiplier>,
+    pub push_freq: PushFrequency,
 }
 
 impl<I> StreamConfig<I> {
-    pub fn new(id: I, exchange: Exchange, tick_mltp: Option<TickMultiplier>) -> Self {
+    pub fn new(
+        id: I,
+        exchange: Exchange,
+        tick_mltp: Option<TickMultiplier>,
+        push_freq: PushFrequency,
+    ) -> Self {
         let market_type = exchange.market_type();
         Self {
             id,
             market_type,
             tick_mltp,
+            push_freq,
         }
     }
 }

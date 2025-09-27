@@ -1,4 +1,4 @@
-use crate::{Price, adapter::StreamTicksize, de_string_to_f32};
+use crate::{Price, PushFrequency, adapter::StreamTicksize, de_string_to_f32};
 
 use super::{
     super::{
@@ -329,7 +329,10 @@ async fn try_resync(
 }
 
 #[allow(unused_assignments)]
-pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
+pub fn connect_market_stream(
+    ticker_info: TickerInfo,
+    push_freq: PushFrequency,
+) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
@@ -481,6 +484,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                                     ticker_info,
                                                                     depth_aggr:
                                                                         StreamTicksize::Client,
+                                                                    push_freq,
                                                                 },
                                                                 de_depth.time,
                                                                 orderbook.depth.clone(),
@@ -544,6 +548,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                                     ticker_info,
                                                                     depth_aggr:
                                                                         StreamTicksize::Client,
+                                                                    push_freq,
                                                                 },
                                                                 de_depth.time,
                                                                 orderbook.depth.clone(),

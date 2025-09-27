@@ -150,6 +150,14 @@ impl State {
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
 
+                if !matches!(
+                    self.settings.selected_basis,
+                    Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf)
+                ) {
+                    self.settings.selected_basis =
+                        Some(Basis::default_heatmap_time(Some(ticker_info)));
+                }
+
                 let prev_is_client = self
                     .stream_pair()
                     .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
@@ -167,8 +175,20 @@ impl State {
                 self.settings.tick_multiply = Some(tick_multiplier);
                 let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
+                let push_freq = if exchange.is_custom_push_freq() {
+                    match self.settings.selected_basis {
+                        Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf) => {
+                            exchange::PushFrequency::Custom(tf)
+                        }
+                        _ => exchange::PushFrequency::ServerDefault,
+                    }
+                } else {
+                    exchange::PushFrequency::ServerDefault
+                };
+
                 let content =
                     Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
+
                 let streams = vec![StreamKind::DepthAndTrades {
                     ticker_info,
                     depth_aggr: if is_depth_client_aggr {
@@ -176,7 +196,9 @@ impl State {
                     } else {
                         StreamTicksize::ServerSide(TickMultiplier(10))
                     },
+                    push_freq,
                 }];
+
                 Ok((content, streams))
             }
             "footprint" => {
@@ -196,6 +218,8 @@ impl State {
                     tick_size,
                 );
 
+                let push_freq = exchange::PushFrequency::ServerDefault;
+
                 let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
                 let streams = match basis {
                     Basis::Time(timeframe) => vec![
@@ -206,6 +230,7 @@ impl State {
                             } else {
                                 StreamTicksize::ServerSide(TickMultiplier(50))
                             },
+                            push_freq,
                         },
                         StreamKind::Kline {
                             ticker_info,
@@ -220,6 +245,7 @@ impl State {
                             } else {
                                 StreamTicksize::ServerSide(TickMultiplier(50))
                             },
+                            push_freq,
                         }]
                     }
                 };
@@ -256,6 +282,7 @@ impl State {
                             } else {
                                 StreamTicksize::ServerSide(TickMultiplier(50))
                             },
+                            push_freq: exchange::PushFrequency::ServerDefault,
                         }]
                     }
                 };
@@ -274,6 +301,7 @@ impl State {
                     } else {
                         StreamTicksize::ServerSide(TickMultiplier(50))
                     },
+                    push_freq: exchange::PushFrequency::ServerDefault,
                 }];
                 Ok((content, streams))
             }
@@ -300,6 +328,8 @@ impl State {
                 self.settings.tick_multiply = Some(tick_multiplier);
                 let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
+                let push_freq = exchange::PushFrequency::ServerDefault;
+
                 let content = Content::Ladder(Some(Ladder::new(config, ticker_info, tick_size)));
 
                 let streams = vec![StreamKind::DepthAndTrades {
@@ -309,6 +339,7 @@ impl State {
                     } else {
                         StreamTicksize::ServerSide(TickMultiplier(10))
                     },
+                    push_freq,
                 }];
                 Ok((content, streams))
             }
@@ -481,17 +512,15 @@ impl State {
             }
             Content::Ladder(panel) => {
                 if let Some(panel) = panel {
-                    let selected_basis = self
+                    let basis = self
                         .settings
                         .selected_basis
                         .unwrap_or(Basis::default_heatmap_time(self.stream_pair()));
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
-                    let kind = ModifierKind::Orderbook(selected_basis, tick_multiply);
 
-                    let tick_size = panel.tick_size();
+                    let kind = ModifierKind::Orderbook(basis, tick_multiply);
 
-                    let base_ticksize = tick_multiply.base(tick_size);
-
+                    let base_ticksize = tick_multiply.base(panel.tick_size());
                     let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
 
                     let modifiers = ticksize_modifier(
@@ -523,17 +552,17 @@ impl State {
                     let ticker_info = self.stream_pair();
                     let exchange = ticker_info.as_ref().map(|info| info.ticker.exchange);
 
-                    let selected_basis = self
+                    let basis = self
                         .settings
                         .selected_basis
                         .unwrap_or(Basis::default_heatmap_time(ticker_info));
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
-                    let kind = ModifierKind::Heatmap(selected_basis, tick_multiply);
 
+                    let kind = ModifierKind::Heatmap(basis, tick_multiply);
                     let base_ticksize = tick_multiply.base(chart.tick_size());
 
                     let modifiers = row![
-                        basis_modifier(id, selected_basis, modifier, kind),
+                        basis_modifier(id, basis, modifier, kind),
                         ticksize_modifier(
                             id,
                             base_ticksize,
@@ -555,7 +584,7 @@ impl State {
                             id,
                             chart.study_configurator(),
                             &chart.studies,
-                            selected_basis,
+                            basis,
                         )
                     };
 
@@ -573,19 +602,19 @@ impl State {
                 if let Some(chart) = chart {
                     match chart_kind {
                         data::chart::KlineChartKind::Footprint { .. } => {
-                            let selected_basis =
+                            let basis =
                                 self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
                             let tick_multiply =
                                 self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
-                            let kind = ModifierKind::Footprint(selected_basis, tick_multiply);
 
+                            let kind = ModifierKind::Footprint(basis, tick_multiply);
                             let base_ticksize = tick_multiply.base(chart.tick_size());
 
                             let exchange =
                                 self.stream_pair().as_ref().map(|info| info.ticker.exchange);
 
                             let modifiers = row![
-                                basis_modifier(id, selected_basis, modifier, kind),
+                                basis_modifier(id, basis, modifier, kind),
                                 ticksize_modifier(
                                     id,
                                     base_ticksize,

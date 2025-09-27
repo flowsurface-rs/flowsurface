@@ -1,5 +1,5 @@
 use crate::{
-    Price, SIZE_IN_QUOTE_CURRENCY,
+    Price, PushFrequency, SIZE_IN_QUOTE_CURRENCY,
     adapter::{StreamKind, StreamTicksize},
     limiter::{self, RateLimiter},
 };
@@ -198,7 +198,10 @@ async fn try_connect(
     }
 }
 
-pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
+pub fn connect_market_stream(
+    ticker_info: TickerInfo,
+    push_freq: PushFrequency,
+) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
 
@@ -304,6 +307,7 @@ pub fn connect_market_stream(ticker_info: TickerInfo) -> impl Stream<Item = Even
                                                     StreamKind::DepthAndTrades {
                                                         ticker_info,
                                                         depth_aggr: StreamTicksize::Client,
+                                                        push_freq,
                                                     },
                                                     time,
                                                     orderbook.depth.clone(),
