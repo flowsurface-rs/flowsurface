@@ -7,9 +7,9 @@ use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
+use exchange::TickerInfo;
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::util::{Price, PriceStep};
-use exchange::{TickerInfo, Timeframe};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
 
@@ -656,32 +656,38 @@ pub struct ViewState {
     latest_x: u64,
     tick_size: PriceStep,
     decimals: usize,
-    ticker_info: Option<TickerInfo>,
+    ticker_info: TickerInfo,
     layout: ViewConfig,
 }
 
-impl Default for ViewState {
-    fn default() -> Self {
+impl ViewState {
+    pub fn new(
+        basis: Basis,
+        tick_size: PriceStep,
+        decimals: usize,
+        ticker_info: TickerInfo,
+        layout: ViewConfig,
+        cell_width: f32,
+        cell_height: f32,
+    ) -> Self {
         ViewState {
             cache: Caches::default(),
-            translation: Vector::default(),
             bounds: Rectangle::default(),
-            basis: Timeframe::M5.into(),
-            last_price: None,
+            translation: Vector::default(),
             scaling: 1.0,
-            cell_width: 4.0,
-            cell_height: 3.0,
-            latest_x: 0,
+            cell_width,
+            cell_height,
+            basis,
+            last_price: None,
             base_price_y: Price::from_f32_lossy(0.0),
-            tick_size: PriceStep::from_f32_lossy(1.0),
-            decimals: 0,
-            ticker_info: None,
-            layout: ViewConfig::default(),
+            latest_x: 0,
+            tick_size,
+            decimals,
+            ticker_info,
+            layout,
         }
     }
-}
 
-impl ViewState {
     #[inline]
     fn price_unit() -> i64 {
         10i64.pow(Price::PRICE_SCALE as u32)
@@ -1070,9 +1076,7 @@ impl ViewState {
     }
 
     fn y_labels_width(&self) -> Length {
-        let Some(precision) = self.ticker_info.as_ref().map(|info| info.min_ticksize) else {
-            return Length::Fixed(60.0);
-        };
+        let precision = self.ticker_info.min_ticksize;
 
         let value = self.base_price_y.to_string(precision);
         let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);

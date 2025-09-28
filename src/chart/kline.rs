@@ -58,21 +58,19 @@ impl Chart for KlineChart {
         if earliest > latest {
             return vec![];
         }
-        let mut out = vec![];
-        let market = match chart_state.ticker_info {
-            Some(ref info) => info.market_type(),
-            None => return out,
-        };
+
+        let market = chart_state.ticker_info.market_type();
+        let mut elements = vec![];
 
         for selected_indicator in enabled {
             if !KlineIndicator::for_market(market).contains(selected_indicator) {
                 continue;
             }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
-                out.push(indi.element(chart_state, earliest..=latest));
+                elements.push(indi.element(chart_state, earliest..=latest));
             }
         }
-        out
+        elements
     }
 
     fn visible_timerange(&self) -> (u64, u64) {
@@ -185,7 +183,7 @@ impl KlineChart {
         klines_raw: &[Kline],
         raw_trades: Vec<Trade>,
         enabled_indicators: &[KlineIndicator],
-        ticker_info: Option<TickerInfo>,
+        ticker_info: TickerInfo,
         kind: &KlineChartKind,
     ) -> Self {
         match basis {
@@ -212,27 +210,29 @@ impl KlineChart {
                     .unwrap_or(1)
                     .max(1) as f32;
 
-                let mut chart = ViewState {
-                    cell_width: match kind {
-                        KlineChartKind::Footprint { .. } => 80.0,
-                        KlineChartKind::Candles => 4.0,
-                    },
-                    cell_height: match kind {
-                        KlineChartKind::Footprint { .. } => 800.0 / y_ticks,
-                        KlineChartKind::Candles => 200.0 / y_ticks,
-                    },
-                    base_price_y,
-                    latest_x,
-                    tick_size: step,
-                    decimals: count_decimals(tick_size),
-                    layout: ViewConfig {
+                let cell_width = match kind {
+                    KlineChartKind::Footprint { .. } => 80.0,
+                    KlineChartKind::Candles => 4.0,
+                };
+                let cell_height = match kind {
+                    KlineChartKind::Footprint { .. } => 800.0 / y_ticks,
+                    KlineChartKind::Candles => 200.0 / y_ticks,
+                };
+
+                let mut chart = ViewState::new(
+                    basis,
+                    step,
+                    count_decimals(tick_size),
+                    ticker_info,
+                    ViewConfig {
                         splits: layout.splits,
                         autoscale: Some(Autoscale::FitToVisible),
                     },
-                    ticker_info,
-                    basis,
-                    ..Default::default()
-                };
+                    cell_width,
+                    cell_height,
+                );
+                chart.base_price_y = base_price_y;
+                chart.latest_x = latest_x;
 
                 let x_translation = match &kind {
                     KlineChartKind::Footprint { .. } => {
@@ -270,25 +270,27 @@ impl KlineChart {
             Basis::Tick(interval) => {
                 let step = PriceStep::from_f32(tick_size);
 
-                let mut chart = ViewState {
-                    cell_width: match kind {
-                        KlineChartKind::Footprint { .. } => 80.0,
-                        KlineChartKind::Candles => 4.0,
-                    },
-                    cell_height: match kind {
-                        KlineChartKind::Footprint { .. } => 90.0,
-                        KlineChartKind::Candles => 8.0,
-                    },
-                    tick_size: step,
-                    decimals: count_decimals(tick_size),
-                    layout: ViewConfig {
+                let cell_width = match kind {
+                    KlineChartKind::Footprint { .. } => 80.0,
+                    KlineChartKind::Candles => 4.0,
+                };
+                let cell_height = match kind {
+                    KlineChartKind::Footprint { .. } => 90.0,
+                    KlineChartKind::Candles => 8.0,
+                };
+
+                let mut chart = ViewState::new(
+                    basis,
+                    step,
+                    count_decimals(tick_size),
+                    ticker_info,
+                    ViewConfig {
                         splits: layout.splits,
                         autoscale: Some(Autoscale::FitToVisible),
                     },
-                    ticker_info,
-                    basis,
-                    ..Default::default()
-                };
+                    cell_width,
+                    cell_height,
+                );
 
                 let x_translation = match &kind {
                     KlineChartKind::Footprint { .. } => {
@@ -983,15 +985,13 @@ impl canvas::Program<Message> for KlineChart {
                 let (_, rounded_aggregation) =
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
 
-                if let Some(ticker_info) = &chart.ticker_info {
-                    draw_crosshair_tooltip(
-                        &self.data_source,
-                        ticker_info,
-                        frame,
-                        palette,
-                        rounded_aggregation,
-                    );
-                }
+                draw_crosshair_tooltip(
+                    &self.data_source,
+                    &chart.ticker_info,
+                    frame,
+                    palette,
+                    rounded_aggregation,
+                );
             }
         });
 

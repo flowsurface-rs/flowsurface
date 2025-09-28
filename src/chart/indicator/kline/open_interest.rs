@@ -35,10 +35,7 @@ impl OpenInterestIndicator {
     ) -> iced::Element<'a, Message> {
         match main_chart.basis {
             Basis::Time(timeframe) => {
-                let exchange = match main_chart.ticker_info.as_ref() {
-                    Some(info) => info.exchange(),
-                    None => return row![].into(),
-                };
+                let exchange = main_chart.ticker_info.exchange();
                 if !Self::is_supported_exchange(exchange) {
                     return center(text(format!(
                         "WIP: Open Interest is not available for {exchange}"
@@ -129,13 +126,10 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     }
 
     fn fetch_range(&mut self, ctx: &FetchCtx) -> Option<FetchRange> {
-        let is_supported = match ctx.main_chart.ticker_info.as_ref() {
-            Some(info) => {
-                let exchange = info.exchange();
-                Self::is_supported_exchange(exchange) && Self::is_supported_timeframe(ctx.timeframe)
-            }
-            None => false,
-        };
+        let exchange = ctx.main_chart.ticker_info.exchange();
+        let is_supported =
+            Self::is_supported_exchange(exchange) && Self::is_supported_timeframe(ctx.timeframe);
+
         if !is_supported {
             return None;
         }

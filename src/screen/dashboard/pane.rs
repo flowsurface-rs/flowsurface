@@ -378,12 +378,11 @@ impl State {
         timeframe: Timeframe,
         klines: &[Kline],
     ) {
-        let ticker_info = self.stream_pair();
-
-        match &mut self.content {
-            Content::Kline {
+        if let Some(ticker_info) = self.stream_pair() {
+            if let Content::Kline {
                 chart, indicators, ..
-            } => {
+            } = &mut self.content
+            {
                 let Some(chart) = chart else {
                     panic!("chart wasn't initialized when inserting klines");
                 };
@@ -405,8 +404,7 @@ impl State {
                         chart.kind(),
                     );
                 }
-            }
-            _ => {
+            } else {
                 log::error!("pane content not candlestick or footprint");
             }
         }
@@ -1134,7 +1132,7 @@ impl Content {
             basis,
             tick_size,
             &enabled_indicators,
-            Some(ticker_info),
+            ticker_info,
             config,
             prev_studies.clone(),
         );
@@ -1239,7 +1237,7 @@ impl Content {
             &[],
             vec![],
             &enabled_indicators,
-            Some(ticker_info),
+            ticker_info,
             &determined_chart_kind,
         );
 

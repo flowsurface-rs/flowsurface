@@ -156,7 +156,7 @@ impl HeatmapChart {
         basis: Basis,
         tick_size: f32,
         enabled_indicators: &[HeatmapIndicator],
-        ticker_info: Option<TickerInfo>,
+        ticker_info: TickerInfo,
         config: Option<Config>,
         studies: Vec<HeatmapStudy>,
     ) -> Self {
@@ -164,35 +164,28 @@ impl HeatmapChart {
 
         let mut indicators = EnumMap::default();
         for &indicator in enabled_indicators {
-            let data = match indicator {
+            indicators[indicator] = Some(match indicator {
                 HeatmapIndicator::Volume => IndicatorData::Volume,
-            };
-            indicators[indicator] = Some(data);
+            });
         }
 
-        let heatmap = HistoricalDepth::new(
-            ticker_info
-                .expect("basis set without ticker info")
-                .min_qty
-                .into(),
-            step,
+        let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
+
+        let view_state = ViewState::new(
             basis,
+            step,
+            count_decimals(tick_size),
+            ticker_info,
+            ViewConfig {
+                splits: layout.splits,
+                autoscale: Some(Autoscale::CenterLatest),
+            },
+            DEFAULT_CELL_WIDTH,
+            4.0,
         );
 
         HeatmapChart {
-            chart: ViewState {
-                cell_width: DEFAULT_CELL_WIDTH,
-                cell_height: 4.0,
-                tick_size: step,
-                decimals: count_decimals(tick_size),
-                layout: ViewConfig {
-                    splits: layout.splits,
-                    autoscale: Some(Autoscale::CenterLatest),
-                },
-                ticker_info,
-                basis,
-                ..Default::default()
-            },
+            chart: view_state,
             indicators,
             pause_buffer: vec![],
             heatmap,
@@ -309,11 +302,7 @@ impl HeatmapChart {
 
         self.trades.datapoints.clear();
         self.heatmap = HistoricalDepth::new(
-            self.chart
-                .ticker_info
-                .expect("basis set without ticker info")
-                .min_qty
-                .into(),
+            self.chart.ticker_info.min_qty.into(),
             self.chart.tick_size,
             basis,
         );
@@ -378,15 +367,7 @@ impl HeatmapChart {
         chart_state.decimals = count_decimals(new_tick_size);
 
         self.trades.datapoints.clear();
-        self.heatmap = HistoricalDepth::new(
-            self.chart
-                .ticker_info
-                .expect("basis set without ticker info")
-                .min_qty
-                .into(),
-            step,
-            basis,
-        );
+        self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty.into(), step, basis);
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -434,10 +415,7 @@ impl HeatmapChart {
         highest: Price,
         lowest: Price,
     ) -> QtyScale {
-        let market_type = match self.chart.ticker_info {
-            Some(ref ticker_info) => ticker_info.market_type(),
-            None => return QtyScale::default(),
-        };
+        let market_type = self.chart.ticker_info.market_type();
 
         let (max_trade_qty, max_aggr_volume) =
             self.trades.max_trade_qty_and_aggr_volume(earliest, latest);
@@ -486,10 +464,7 @@ impl canvas::Program<Message> for HeatmapChart {
             return vec![];
         }
 
-        let market_type = match self.chart.ticker_info {
-            Some(ref ticker_info) => ticker_info.market_type(),
-            None => return vec![],
-        };
+        let market_type = chart.ticker_info.market_type();
 
         let bounds_size = bounds.size();
         let palette = theme.extended_palette();
