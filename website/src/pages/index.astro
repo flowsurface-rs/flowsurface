@@ -1,0 +1,163 @@
+---
+import "../styles/global.css";
+---
+
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <title>Flowsurface – Open Source Orderflow & Market Structure Charts</title>
+    <meta name="description" content="Flowsurface is an experimental open-source desktop charting platform for crypto derivatives: heatmap (historical DOM), footprint, kline, ladder & time & sales with real-time aggregation, sound alerts and customizable layouts." />
+    <meta name="theme-color" content="#050607" />
+  </head>
+  <body>
+    <header id="top" class="navbar">
+      <nav class="container nav-inner" aria-label="Main navigation">
+        <a href="#top" class="logo" aria-label="Flowsurface home">
+          <span class="logo-dot" />Flowsurface
+        </a>
+        <div class="nav-links" role="menubar">
+          <a href="#features" role="menuitem">Features</a>
+          <a href="#how" role="menuitem">How It Works</a>
+          <a href="#download" role="menuitem">Download</a>
+          <a href="https://github.com/akenshaw/flowsurface" target="_blank" rel="noopener" role="menuitem">GitHub</a>
+          <a href="#download" class="btn btn-sm" role="menuitem">Get App</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Hero -->
+      <section class="relative section pt-[5.5rem]" aria-labelledby="hero-title">
+        <div class="hero-bg" />
+        <div class="container grid lg:grid-cols-2 gap-12 items-center">
+          <div class="flex flex-col gap-6">
+            <div class="badge w-max" aria-label="Project status">Open Source • Experimental</div>
+            <h1 id="hero-title" class="h1">Precision orderflow & liquidity visualization</h1>
+            <p class="subtle max-w-xl text-sm leading-relaxed">Flowsurface brings together heatmap (historical DOM), footprint clustering, custom tick & time aggregation, ladder depth, and real-time time & sales. Built with Rust & Iced for performance. Own your tooling.</p>
+            <div class="flex gap-3 mt-sm">
+              <a href="#download" class="btn" aria-label="Download Flowsurface">Download</a>
+              <a href="https://github.com/akenshaw/flowsurface" class="btn btn-outline" target="_blank" rel="noopener" aria-label="Star Flowsurface on GitHub">Star on GitHub</a>
+            </div>
+            <div class="flex gap-6 mt-2 opacity-dim text-[11px] tracking-wide">
+              <span>Heatmap</span>
+              <span>Footprint</span>
+              <span>Multi-pane layouts</span>
+              <span>Realtime audio</span>
+            </div>
+          </div>
+          <div class="frame" aria-hidden="true">
+            <div class="frame-inner"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Features -->
+      <section id="features" class="section" aria-labelledby="features-title">
+        <div class="container">
+          <h2 id="features-title" class="h2 center mxa max-w-xl">Focused on clarity & actionable context</h2>
+          <p class="subtle center max-w-xl mxa mt-sm text-sm">Instead of bloated indicators, Flowsurface emphasises structural liquidity, executed volume & pace – the things that actually move markets.</p>
+          <div class="grid features-grid mt-lg">
+            <div class="card">
+              <h3>Heatmap DOM</h3>
+              <p>Historical bid/ask liquidity with adaptive grouping + optional volume profile overlay.</p>
+            </div>
+            <div class="card">
+              <h3>Footprint Modes</h3>
+              <p>Cluster trades by time or tick count with imbalance + naked POC studies.</p>
+            </div>
+            <div class="card">
+              <h3>Multi‑Pane Layouts</h3>
+              <p>Link panes & switch instruments instantly while retaining per‑pane state.</p>
+            </div>
+            <div class="card">
+              <h3>Adaptive Aggregation</h3>
+              <p>Timeframe or trade‑count (tick) based aggregation for precise tempo control.</p>
+            </div>
+            <div class="card">
+              <h3>Realtime Audio</h3>
+              <p>Configurable trade threshold sound cues to surface acceleration.</p>
+            </div>
+            <div class="card">
+              <h3>Local & Private</h3>
+              <p>No vendor lock-in. Data streamed directly from exchange public APIs.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section id="how" class="section" aria-labelledby="how-title">
+        <div class="container">
+          <h2 id="how-title" class="h2 center">Get started in 3 steps</h2>
+          <div class="grid steps mt-lg">
+            <div class="step">
+              <h3>1. Download</h3>
+              <p>Grab a prebuilt binary or build from source (Rust) in minutes.</p>
+            </div>
+            <div class="step">
+              <h3>2. Connect</h3>
+              <p>Select an exchange instrument (Binance or Bybit) & layout.</p>
+            </div>
+            <div class="step">
+              <h3>3. Observe</h3>
+              <p>Track liquidity shifts, volume clustering & pace to frame trades.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Download / CTA -->
+      <section id="download" class="section" aria-labelledby="download-title">
+        <div class="container">
+          <div class="band">
+            <h2 id="download-title" class="h2">Own your market perspective</h2>
+            <p class="subtle max-w-xl">Download Flowsurface and explore execution dynamics without surrendering control to black‑box platforms.</p>
+            <div class="dl-buttons mt-sm" aria-label="Download options">
+              <a class="btn" href="https://github.com/akenshaw/flowsurface/releases" target="_blank" rel="noopener">macOS (Universal)</a>
+              <a class="btn btn-outline" href="https://github.com/akenshaw/flowsurface/releases" target="_blank" rel="noopener">Windows</a>
+              <a class="btn btn-outline" href="https://github.com/akenshaw/flowsurface/releases" target="_blank" rel="noopener">Linux</a>
+              <a class="btn btn-ghost" href="https://github.com/akenshaw/flowsurface" target="_blank" rel="noopener">View on GitHub →</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Final CTA -->
+      <section class="section pt-0" aria-labelledby="cta-title">
+        <div class="container center max-w-xl">
+          <h2 id="cta-title" class="h2">Transparent. Fast. Extensible.</h2>
+          <p class="subtle text-sm mt-sm">If price is an emergent property of liquidity + orderflow, your tooling should expose both with minimal noise. Contributions welcome.</p>
+          <div class="flex jc-c gap-3 mt-sm">
+            <a href="#download" class="btn">Get Flowsurface</a>
+            <a href="https://github.com/akenshaw/flowsurface" class="btn btn-outline" target="_blank" rel="noopener">Contribute</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <hr class="line" />
+    <footer class="section pt-10" aria-labelledby="footer-title">
+      <div class="container footer-grid">
+        <div>
+          <div class="logo mb-3"><span class="logo-dot" />Flowsurface</div>
+          <p class="max-w-[260px] subtle">Open-source experimental orderflow & market microstructure exploration tool.</p>
+        </div>
+        <div>
+          <h3 class="h3 mb-3 text-sm">Project</h3>
+          <p><a href="https://github.com/akenshaw/flowsurface" target="_blank" rel="noopener">GitHub Repository</a></p>
+          <p><a href="https://github.com/akenshaw/flowsurface/releases" target="_blank" rel="noopener">Releases</a></p>
+        </div>
+        <div>
+          <h3 class="h3 mb-3 text-sm">License</h3>
+          <p><a href="https://github.com/akenshaw/flowsurface/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0-or-later</a></p>
+        </div>
+      </div>
+      <div class="container mt-10">
+        <small class="subtle">© {new Date().getFullYear()} Flowsurface. Built with Rust & Iced. This site uses Astro.</small>
+      </div>
+    </footer>
+  </body>
+</html>
