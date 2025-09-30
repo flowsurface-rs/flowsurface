@@ -10,7 +10,7 @@ Snapshot of pending enhancement tasks (kept in sync with internal task list).
 | contrib-roadmap | Add contribution & roadmap / docs links section | low | pending | Link to CONTRIBUTING, roadmap milestones |
 | a11y | Add accessibility improvements (skip link, contrast audit) | medium | pending | Add skip link, verify WCAG AA contrasts |
 | mobile-nav | Implement mobile nav toggle for small screens | medium | pending | Collapse nav < 768px with accessible menu button |
-| componentize | Componentize repeated patterns into Astro components | low | pending | Extract FeatureCard, Section, Button variants |
+| componentize | Componentize repeated patterns into Astro components | low | in-progress | Base layout & major sections extracted; consider smaller atoms next |
 | analytics | Integrate privacy-friendly analytics (e.g., Plausible) | low | pending | Ensure no tracking cookies; provide opt-out note |
 | pwa-favicons | Add PWA manifest + full favicon set | low | pending | Include maskable icons, theme color meta |
 | build-source | Add build-from-source section/instructions | low | pending | Quick dev setup + bun install + astro dev |

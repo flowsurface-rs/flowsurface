@@ -1,0 +1,168 @@
+---
+import { Image } from 'astro:assets';
+import heroImg from '../assets/hero.png';
+
+interface Feature {
+  title: string;
+  description: string;
+  img: ImageMetadata; // from astro:assets types
+  caption: string;
+}
+
+const features: Feature[] = [
+  {
+    title: 'Heatmap DOM',
+    description: 'Historical bid/ask liquidity with adaptive grouping + optional volume profile overlay.',
+    img: heroImg,
+    caption: 'Historical orderbook liquidity over time'
+  },
+  {
+    title: 'Footprint Modes',
+    description: 'Cluster trades by time or tick count with imbalance + naked POC studies.',
+    img: heroImg,
+    caption: 'Execution clustering footprint views'
+  },
+  {
+    title: 'Multi‑Pane Layouts',
+    description: 'Link panes & switch instruments instantly while retaining per‑pane state.',
+    img: heroImg,
+    caption: 'Multiple synchronized analysis panes'
+  },
+  {
+    title: 'Adaptive Aggregation',
+    description: 'Timeframe or trade‑count (tick) based aggregation for precise tempo control.',
+    img: heroImg,
+    caption: 'Adaptive timeframe & tick aggregation'
+  },
+  {
+    title: 'Realtime Audio',
+    description: 'Configurable trade threshold sound cues to surface acceleration.',
+    img: heroImg,
+    caption: 'Audio cues for acceleration'
+  },
+  {
+    title: 'Multi‑Exchange Support',
+    description: 'Binance, Bybit, Hyperliquid & OKX streams (more coming).',
+    img: heroImg,
+    caption: 'Connect across major derivatives venues'
+  },
+  {
+    title: 'Local & Private',
+    description: 'No vendor lock-in. Data streamed directly from exchange public APIs.',
+    img: heroImg,
+    caption: 'Local processing & privacy'
+  },
+  {
+    title: 'Low‑Latency Core',
+    description: 'Rust zero‑copy dataflow + batched diffed rendering keep median capture→render latency <20ms under burst loads.',
+    img: heroImg,
+    caption: 'Low-latency Rust + Iced pipeline'
+  }
+];
+---
+<section
+  id="features"
+  class="py-[clamp(4rem,8vw,7rem)]"
+  aria-labelledby="features-title"
+>
+  <div class="w-full max-w-[1240px] mx-auto px-8">
+    <h2
+      id="features-title"
+      class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center mx-auto max-w-xl font-medium [font-variation-settings:'wght'_550]"
+    >
+      Built for reading the auction, not decorating it
+    </h2>
+    <p
+      class="text-text-secondary text-center max-w-xl mx-auto mt-3 text-sm font-medium tracking-wide"
+    >
+      Strip away ornamental overlays. Surface resting + shifting
+      liquidity, actual executed volume and tempo so you can contextualize
+      intent in real time.
+    </p>
+
+    <div
+      class="grid grid-cols-[minmax(0,1fr)_minmax(340px,480px)] gap-[2.2rem] items-start mt-10 max-[1000px]:grid-cols-1"
+      data-feature-ui
+    >
+      <div
+        class="flex flex-col gap-[0.9rem]"
+        role="tablist"
+        aria-label="Platform features"
+      >
+        {features.map((f, i) => (
+          <button
+            class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+            role="tab"
+            aria-selected="false"
+            data-index={i}
+            data-caption={f.caption}
+          >
+            <h3
+              class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+            >
+              {f.title}
+            </h3>
+            <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+              {f.description}
+            </p>
+          </button>
+        ))}
+      </div>
+      <div
+        class="sticky top-[100px] flex flex-col gap-4 max-[1000px]:relative max-[1000px]:top-0 max-[1000px]:order-[-1]"
+        aria-live="polite"
+      >
+        <div
+          class="relative rounded-2xl bg-gradient-frame p-[3px] shadow-lg"
+          aria-hidden="true"
+        >
+          <div
+            class="relative rounded-[21px] bg-[#0f1010] min-h-[320px] max-[1000px]:min-h-[240px] flex items-center justify-center overflow-hidden shadow-frame-inset"
+          >
+            <Image
+              id="feature-preview-img"
+              src={heroImg}
+              alt="Feature preview"
+              class="w-full h-full object-cover block"
+              loading="lazy"
+              format="webp"
+              widths={[480,768,1024,1440]}
+              sizes="(max-width: 480px) 100vw, 480px"
+            />
+          </div>
+        </div>
+        <p
+          class="text-[0.7rem] tracking-widest uppercase mx-1 text-text-secondary"
+          id="feature-caption"
+        ></p>
+      </div>
+    </div>
+  </div>
+  <script>
+    const featureButtons = [...document.querySelectorAll('[data-feature-ui] [role="tab"]')];
+    const captionEl = document.getElementById('feature-caption');
+    let activeIndex = 0;
+    if (featureButtons.length) {
+      function activate(i){
+        featureButtons.forEach((b,idx)=>{
+          b.classList.toggle('active', idx===i);
+          b.setAttribute('aria-selected', idx===i ? 'true' : 'false');
+        });
+        const btn = featureButtons[i];
+        if(btn && captionEl){ captionEl.textContent = btn.dataset.caption || ''; }
+        activeIndex = i;
+      }
+      featureButtons.forEach((b,idx)=>{
+        b.addEventListener('click', ()=>activate(idx));
+        b.addEventListener('keydown', (e)=>{
+          if(e.key==='ArrowDown'){ e.preventDefault(); activate((idx+1)%featureButtons.length);} 
+          if(e.key==='ArrowUp'){ e.preventDefault(); activate((idx-1+featureButtons.length)%featureButtons.length);} 
+          if(e.key==='Home'){ e.preventDefault(); activate(0);} 
+          if(e.key==='End'){ e.preventDefault(); activate(featureButtons.length-1);} 
+          if(e.key==='Enter' || e.key===' '){ e.preventDefault(); activate(idx);} 
+        });
+      });
+      activate(0);
+    }
+  </script>
+</section>

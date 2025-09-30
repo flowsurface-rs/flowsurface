@@ -1,43 +1,55 @@
-# Astro Starter Kit: Minimal
+# Flowsurface Website
 
-```sh
-npm create astro@latest -- --template minimal
-```
-
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+Marketing / landing site for the Flowsurface open-source orderflow & market structure charting platform.
 
 ## 🚀 Project Structure
 
-Inside of your Astro project, you'll see the following folders and files:
+Key directories:
 
 ```text
 /
-├── public/
+├── public/                # Static assets (favicons, future OG image)
 ├── src/
+│   ├── components/        # Modular sections & layout (Hero, Features, etc.)
+│   ├── assets/            # Imported images processed by Astro
 │   └── pages/
-│       └── index.astro
+│       └── index.astro    # Composes page from components
+├── styles/                # Global stylesheet(s)
+├── TODO.md                # Enhancement task list
 └── package.json
 ```
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+Primary layout wrapper: `src/components/BaseLayout.astro` centralizes `<html>`, meta, theme initialization, Open Graph & Twitter tags, and a skip link for accessibility.
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
-
-Any static assets, like images, can be placed in the `public/` directory.
+Component sections live in `src/components/`:
+- `Header.astro` navigation + theme toggle
+- `Hero.astro` headline & primary CTA
+- `Features.astro` interactive feature tabs
+- `HowItWorks.astro` 3-step onboarding summary
+- `DownloadSection.astro` platform download CTA
+- `FinalCTA.astro` closing call to action
+- `Footer.astro` site footer
 
 ## 🧞 Commands
 
-All commands are run from the root of the project, from a terminal:
+All commands are run from the project root:
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+| Command | Action |
+| :------ | :----- |
+| `npm install` | Install dependencies |
+| `npm run dev` | Start dev server (default: `http://localhost:4321`) |
+| `npm run build` | Build production site to `./dist/` |
+| `npm run preview` | Preview the built site locally |
 
-## 👀 Want to learn more?
+## 🛠 Development Notes
+- Theme preference persisted in `localStorage` under `fs-theme` and applied early to avoid FOUC.
+- Open Graph/Twitter meta tags are declared in `BaseLayout.astro`; update image URL once real preview available (`hero-screenshot` task).
+- Accessibility: includes skip link + semantic `main`; further contrast & nav improvements tracked in `TODO.md` (`a11y`, `mobile-nav`).
 
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+## 🧩 Next Enhancements
+See `TODO.md` for prioritized tasks (OG image asset, mobile nav, FAQ, etc.).
+
+## 📄 License
+Website content will follow the main project license (add reference/link when repository root license is finalized).
+
+

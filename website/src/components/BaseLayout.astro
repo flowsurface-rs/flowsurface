@@ -1,0 +1,54 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+}
+const { title = 'Flowsurface – Open Source Orderflow & Market Structure Charts', description = 'Flowsurface is an open-source desktop charting platform for crypto derivatives: heatmap (historical DOM), footprint, kline, ladder & time & sales with real-time aggregation, sound alerts and customizable layouts.' } = Astro.props as Props;
+---
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#0e0d0d" />
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Flowsurface" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content="https://flowsurface.dev/" />
+    <meta property="og:image" content="https://flowsurface.dev/og-cover.png" />
+    <meta property="og:image:alt" content="Flowsurface application interface preview" />
+    <meta property="og:image:width" content="1600" />
+    <meta property="og:image:height" content="900" />
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@flowsurface" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content="https://flowsurface.dev/og-cover.png" />
+    <meta name="twitter:image:alt" content="Flowsurface application interface preview" />
+    <script>
+      (function () {
+        try {
+          const stored = localStorage.getItem('fs-theme');
+          const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+          const theme = stored || (prefersLight ? 'light' : 'dark');
+          if (theme === 'light') document.documentElement.classList.add('light');
+          else document.documentElement.classList.remove('light');
+          const meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', theme === 'light' ? '#f5f7f8' : '#0e0d0d');
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:bg-accent-primary focus:text-white focus:px-4 focus:py-2 focus:rounded-md focus:shadow-lg">Skip to content</a>
+    <main id="main" tabindex="-1" role="main">
+      <slot />
+    </main>
+  </body>
+</html>
