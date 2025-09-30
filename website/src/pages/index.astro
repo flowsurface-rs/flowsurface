@@ -10,7 +10,7 @@ import "../styles/global.css";
     <meta name="generator" content={Astro.generator} />
     <title>Flowsurface – Open Source Orderflow & Market Structure Charts</title>
     <meta name="description" content="Flowsurface is an experimental open-source desktop charting platform for crypto derivatives: heatmap (historical DOM), footprint, kline, ladder & time & sales with real-time aggregation, sound alerts and customizable layouts." />
-    <meta name="theme-color" content="#050607" />
+    <meta name="theme-color" content="#0e0d0d" />
   </head>
   <body>
     <header id="top" class="navbar">
@@ -49,7 +49,11 @@ import "../styles/global.css";
             </div>
           </div>
           <div class="frame" aria-hidden="true">
-            <div class="frame-inner"></div>
+            <div class="frame-inner">
+              <picture>
+                <img src="/src/assets/hero.png" alt="Flowsurface application multi-pane orderflow view" style="display:block;width:100%;height:auto;object-fit:cover;" loading="lazy" />
+              </picture>
+            </div>
           </div>
         </div>
       </section>
