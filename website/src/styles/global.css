@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @theme {
+  --font-family-sans: "Azeret Mono", monospace;
   --color-bg-1: #0e0d0d;
   --color-bg-2: #171617;
   --color-surface-1: #1f1e1c;
@@ -38,6 +39,7 @@
 @layer base {
   html, body {
     height: 100%;
+    font-family: var(--font-family-sans);
   }
 
   html {

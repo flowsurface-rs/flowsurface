@@ -4,6 +4,7 @@
     "": {
       "name": "website",
       "dependencies": {
+        "@fontsource-variable/azeret-mono": "^5.2.11",
         "@tailwindcss/vite": "^4.1.13",
         "astro": "^5.14.1",
         "tailwindcss": "^4.1.13",
@@ -84,6 +85,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.10", "", { "os": "win32", "cpu": "ia32" }, "sha512-QHPDbKkrGO8/cz9LKVnJU22HOi4pxZnZhhA2HYHez5Pz4JeffhDjf85E57Oyco163GnzNCVkZK0b/n4Y0UHcSw=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.10", "", { "os": "win32", "cpu": "x64" }, "sha512-9KpxSVFCu0iK1owoez6aC/s/EdUQLDN3adTxGCqxMVhrPDj6bt5dbrHDXUuq+Bs2vATFBBrQS5vdQ/Ed2P+nbw=="],
+
+    "@fontsource-variable/azeret-mono": ["@fontsource-variable/azeret-mono@5.2.11", "", {}, "sha512-C2lkE7Pg0yg46ze3+AaJkolyldWBxluGiRG4pB5vHSdQRApOdQME6WbdsfYyy6wFDn/zPNx+1mwRJPnMRnovpA=="],
 
     "@img/colour": ["@img/colour@1.0.0", "", {}, "sha512-A5P/LfWGFSl6nsckYtjw9da+19jB8hkJ6ACTGcDfEJ0aE+l2n2El7dsVM7UVHZQ9s2lmYMWlrS21YLy2IR1LUw=="],
 
