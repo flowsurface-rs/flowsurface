@@ -33,7 +33,9 @@
   --shadow-inset: 0 -1px 0 rgba(255,255,255,0.03) inset;
   --shadow-frame-inset: inset 0 0 0 1px rgba(255,255,255,0.04), inset 0 0 40px rgba(0,0,0,0.6);
   --shadow-download-notice: 0 4px 18px -6px rgba(0,0,0,.65), 0 1px 0 0 rgba(255,255,255,0.02) inset;
-  --shadow-btn: 0 2px 8px -2px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+  --shadow-btn: 0 2px 8px -2px rgba(0,0,0,.2), 0 0 0 1px rgba(255,255,255,.02);
+  --color-surface-plain: #151515;
+  --color-grid-line: rgba(255,255,255,0.035);
 }
 
 @layer base {
@@ -49,6 +51,8 @@
   body {
     @apply bg-bg-1 text-text-primary antialiased;
     text-rendering: optimizeLegibility;
+    position: relative;
+    z-index: 0;
   }
 
   ::-webkit-scrollbar {
@@ -70,15 +74,92 @@
 }
 
 @layer components {
-  .hero-bg {
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(circle at 30% 35%, rgba(255,255,255,0.05), transparent 60%),
-                linear-gradient(160deg, #141313, #0e0d0d 70%);
-    pointer-events: none;
-    opacity: 0.9;
-    z-index: -1;
+  .light body {
+    background:
+      linear-gradient(180deg,#FFFFFC,#F8FBF8 65%) fixed;
   }
+
+  .light {
+    --color-bg-1: #f5f7f8;
+    --color-bg-2: #eef0f2;
+    --color-surface-1: #ffffff;
+    --color-surface-2: #f2f4f6;
+    --color-surface-plain: #ffffff;
+    --color-border: #d9dde2;
+    --color-border-soft: #cfd5db;
+    --color-text-primary: #1e2125;
+    --color-text-secondary: #5a6472;
+    --color-accent-primary: #2c7b5c;
+    --color-accent-buy: #2f8e63;
+    --color-accent-sell: #b34745;
+    --color-accent-danger: #b34745;
+    --color-accent-info: #2c6e55;
+    --color-grid-line: rgba(0,0,0,0.05);
+  }
+
+  body:before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: linear-gradient(var(--color-grid-line) 1px,transparent 1px),linear-gradient(90deg,var(--color-grid-line) 1px,transparent 1px);
+    background-size: 60px 60px, 60px 60px;
+    pointer-events: none;
+    opacity: .32;
+    z-index: 0;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    padding: 0.8rem 1.25rem 0.78rem;
+    font-size: 0.9rem;
+    line-height: 1;
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    transition: background .18s ease, border-color .18s ease, color .18s ease, transform .16s ease;
+    text-decoration: none;
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb,var(--color-accent-primary) 55%, transparent);
+  }
+  .btn-primary {
+    background: var(--color-accent-primary);
+    color: #fff;
+    border-color: color-mix(in srgb,var(--color-accent-primary) 75%, #000 10%);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  }
+  .btn-primary:hover {
+    background: color-mix(in srgb,var(--color-accent-primary) 88%, #ffffff 18%);
+  }
+  .btn-primary:active { transform: translateY(1px); }
+
+  .btn-secondary {
+    background: var(--color-surface-2);
+    color: var(--color-text-primary);
+    border-color: var(--color-border);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  }
+  .btn-secondary:hover {
+    background: color-mix(in srgb,var(--color-surface-2) 90%, #ffffff 30%);
+    border-color: var(--color-border-soft);
+  }
+  .btn-secondary:active { transform: translateY(1px); }
+
+  .light .btn-secondary {
+    background: #ffffff;
+    border-color: #dfe3e7;
+  }
+  .light .btn-secondary:hover {
+    background: #f3f6f8;
+    border-color: #d0d6db;
+  }
+
 }
 
 

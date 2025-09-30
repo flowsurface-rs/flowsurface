@@ -3,7 +3,7 @@ import "@fontsource-variable/azeret-mono";
 import "../styles/global.css";
 ---
 
-<html lang="en" class="scroll-smooth">
+<html lang="en" class="scroll-smooth light">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -19,8 +19,7 @@ import "../styles/global.css";
   <body>
     <header
       id="top"
-      class="fixed top-0 left-0 right-0 bg-gradient-navbar border-b border-border z-[100]"
-      style="backdrop-filter: saturate(160%) blur(14px);"
+      class="fixed top-0 left-0 right-0 border-b border-border z-[100] bg-bg-1/95 backdrop-blur-sm shadow-inset"
     >
       <nav
         class="w-full max-w-[1240px] mx-auto px-8 flex items-center justify-between gap-8 h-[70px]"
@@ -62,10 +61,7 @@ import "../styles/global.css";
             class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
             >GitHub</a
           >
-          <a
-            href="#download"
-            role="menuitem"
-            class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus"
+          <a href="#download" role="menuitem" class="btn btn-primary"
             >Download</a
           >
         </div>
@@ -78,7 +74,6 @@ import "../styles/global.css";
         class="relative py-[clamp(4rem,8vw,7rem)] pt-[5.5rem]"
         aria-labelledby="hero-title"
       >
-        <div class="hero-bg"></div>
         <div
           class="w-full max-w-[1240px] lg:h-[80vh] mx-auto px-8 grid lg:grid-cols-2 gap-12 items-center"
         >
@@ -93,33 +88,38 @@ import "../styles/global.css";
               id="hero-title"
               class="text-[clamp(2.8rem,6vw,4.2rem)] leading-[1.05] tracking-tighter font-semibold"
             >
-              Precision orderflow & liquidity visualization
+              Purpose‑built orderflow & liquidity workstation
             </h1>
-            <p class="text-text-secondary max-w-xl text-sm leading-relaxed">
-              Flowsurface brings together heatmap (historical DOM), footprint
-              clustering, custom tick & time aggregation, ladder depth, and
-              real-time time & sales. Built with Rust & Iced for performance.
-              Own your tooling.
+            <p
+              class="text-text-secondary max-w-xl text-sm leading-relaxed font-medium tracking-wide"
+            >
+              A minimalist, transparent stack for reading microstructure:
+              historical DOM heatmap, execution footprint clustering, adaptive
+              tick/time aggregation, depth ladder & real‑time tape – processed
+              locally, no vendor lock‑in, no hidden algos. Rust core. You own
+              the edge.
             </p>
             <div class="flex gap-3 mt-3">
               <a
                 href="#download"
-                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus"
+                class="btn btn-primary"
                 aria-label="Download Flowsurface">Download</a
               >
               <a
                 href="https://github.com/akenshaw/flowsurface"
-                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus"
+                class="btn btn-secondary"
                 target="_blank"
                 rel="noopener"
                 aria-label="Star Flowsurface on GitHub">Star on GitHub</a
               >
             </div>
-            <div class="flex gap-6 mt-2 opacity-70 text-[11px] tracking-wide">
+            <div
+              class="flex gap-6 mt-2 opacity-70 text-[11px] tracking-[0.2em] uppercase font-semibold"
+            >
               <span>Heatmap</span>
               <span>Footprint</span>
-              <span>Multi-pane layouts</span>
-              <span>Realtime audio</span>
+              <span>Layouts</span>
+              <span>Audio Pace</span>
             </div>
           </div>
           <div
@@ -151,16 +151,16 @@ import "../styles/global.css";
         <div class="w-full max-w-[1240px] mx-auto px-8">
           <h2
             id="features-title"
-            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center mx-auto max-w-xl"
+            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center mx-auto max-w-xl font-medium [font-variation-settings:'wght'_550]"
           >
-            Focused on clarity & actionable context
+            Built for reading the auction, not decorating it
           </h2>
           <p
-            class="text-text-secondary text-center max-w-xl mx-auto mt-3 text-sm"
+            class="text-text-secondary text-center max-w-xl mx-auto mt-3 text-sm font-medium tracking-wide"
           >
-            Instead of bloated indicators, Flowsurface emphasises structural
-            liquidity, executed volume & pace – the things that actually move
-            markets.
+            Strip away ornamental overlays. Surface resting + shifting
+            liquidity, actual executed volume and tempo so you can contextualize
+            intent in real time.
           </p>
 
           <div
@@ -255,6 +255,22 @@ import "../styles/global.css";
                 <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
                   Configurable trade threshold sound cues to surface
                   acceleration.
+                </p>
+              </button>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Connect across major derivatives venues"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Multi‑Exchange Support
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Binance, Bybit, Hyperliquid & OKX streams (more coming).
                 </p>
               </button>
               <button
@@ -357,9 +373,9 @@ import "../styles/global.css";
         <div class="w-full max-w-[1240px] mx-auto px-8">
           <h2
             id="how-title"
-            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center"
+            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center font-medium [font-variation-settings:'wght'_550]"
           >
-            Get started in 3 steps
+            Three steps. No friction.
           </h2>
           <div
             class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-6 mt-10 [counter-reset:step]"
@@ -367,26 +383,37 @@ import "../styles/global.css";
             <div
               class="py-5 px-[1.15rem] pb-[1.3rem] relative bg-gradient-card border border-border rounded-md before:flex before:items-center before:justify-center before:[counter-increment:step] before:content-[counter(step)] before:absolute before:top-3 before:right-[0.8rem] before:text-[0.65rem] before:font-semibold before:tracking-widest before:w-6 before:h-6 before:bg-white/5 before:text-text-secondary before:rounded-sm"
             >
-              <h3 class="m-0 mb-[0.35rem] text-[0.9rem]">1. Download</h3>
-              <p class="m-0 text-[0.75rem] leading-[1.5]">
-                Grab a prebuilt binary or build from source (Rust) in minutes.
+              <h3
+                class="m-0 mb-[0.35rem] text-[0.9rem] tracking-widest uppercase"
+              >
+                1. Download
+              </h3>
+              <p class="m-0 text-[0.75rem] leading-[1.5] text-text-secondary">
+                Fetch a release binary or compile (Rust) yourself in minutes.
               </p>
             </div>
             <div
               class="py-5 px-[1.15rem] pb-[1.3rem] relative bg-gradient-card border border-border rounded-md before:flex before:items-center before:justify-center before:[counter-increment:step] before:content-[counter(step)] before:absolute before:top-3 before:right-[0.8rem] before:text-[0.65rem] before:font-semibold before:tracking-widest before:w-6 before:h-6 before:bg-white/5 before:text-text-secondary before:rounded-sm"
             >
-              <h3 class="m-0 mb-[0.35rem] text-[0.9rem]">2. Connect</h3>
-              <p class="m-0 text-[0.75rem] leading-[1.5]">
-                Select an exchange instrument (Binance or Bybit) & layout.
+              <h3
+                class="m-0 mb-[0.35rem] text-[0.9rem] tracking-widest uppercase"
+              >
+                2. Connect
+              </h3>
+              <p class="m-0 text-[0.75rem] leading-[1.5] text-text-secondary">
+                Choose instrument (Binance / Bybit), pick a pane layout.
               </p>
             </div>
             <div
               class="py-5 px-[1.15rem] pb-[1.3rem] relative bg-gradient-card border border-border rounded-md before:flex before:items-center before:justify-center before:[counter-increment:step] before:content-[counter(step)] before:absolute before:top-3 before:right-[0.8rem] before:text-[0.65rem] before:font-semibold before:tracking-widest before:w-6 before:h-6 before:bg-white/5 before:text-text-secondary before:rounded-sm"
             >
-              <h3 class="m-0 mb-[0.35rem] text-[0.9rem]">3. Observe</h3>
-              <p class="m-0 text-[0.75rem] leading-[1.5]">
-                Track liquidity shifts, volume clustering & pace to frame
-                trades.
+              <h3
+                class="m-0 mb-[0.35rem] text-[0.9rem] tracking-widest uppercase"
+              >
+                3. Observe
+              </h3>
+              <p class="m-0 text-[0.75rem] leading-[1.5] text-text-secondary">
+                Read liquidity shifts, clustering & pace; frame asymmetric risk.
               </p>
             </div>
           </div>
@@ -401,24 +428,27 @@ import "../styles/global.css";
       >
         <div class="w-full max-w-[1240px] mx-auto px-8">
           <div
-            class="relative bg-gradient-band py-[3.2rem] px-[clamp(1.8rem,4vw,4rem)] border border-border rounded-4xl shadow-xl overflow-hidden before:content-[''] before:absolute before:inset-0 before:bg-gradient-band-radial before:mix-blend-overlay before:opacity-40"
+            class="relative bg-gradient-band py-[3.2rem] px-[clamp(1.8rem,4vw,4rem)] border border-border rounded-4xl overflow-hidden before:content-[''] before:absolute before:inset-0 before:bg-gradient-band-radial before:mix-blend-overlay before:opacity-40 shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
           >
             <h2
               id="download-title"
-              class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight m-0 mb-[1.1rem]"
+              class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight m-0 mb-[1.1rem] font-medium [font-variation-settings:'wght'_550]"
             >
-              Own your market perspective
+              Control the data. Control the narrative.
             </h2>
-            <p class="text-text-secondary max-w-xl m-0 mb-[1.6rem]">
-              Download Flowsurface and explore execution dynamics without
-              surrendering control to black‑box platforms.
+            <p
+              class="text-text-secondary max-w-xl m-0 mb-[1.6rem] font-medium tracking-wide"
+            >
+              Install locally. Data streams directly from exchange public APIs;
+              nothing is routed through third‑party servers. Review code. Extend
+              modules. No forced upgrades.
             </p>
             <div
               class="flex flex-wrap gap-[0.9rem] mt-3"
               aria-label="Download options"
             >
               <a
-                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
+                class="btn btn-primary"
                 href="https://github.com/akenshaw/flowsurface/releases"
                 target="_blank"
                 rel="noopener"
@@ -435,7 +465,7 @@ import "../styles/global.css";
                 >macOS (Universal)</a
               >
               <a
-                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
+                class="btn btn-secondary"
                 href="https://github.com/akenshaw/flowsurface/releases"
                 target="_blank"
                 rel="noopener"
@@ -452,7 +482,7 @@ import "../styles/global.css";
                 >Windows</a
               >
               <a
-                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
+                class="btn btn-secondary"
                 href="https://github.com/akenshaw/flowsurface/releases"
                 target="_blank"
                 rel="noopener"
@@ -476,7 +506,7 @@ import "../styles/global.css";
               >
             </div>
             <div
-              class="mt-7 border border-[#2a2a27] bg-gradient-download-notice rounded-xl py-[1.15rem] px-5 pb-5 relative shadow-download-notice"
+              class="mt-7 border border-border bg-bg-2 rounded-xl py-[1.15rem] px-5 pb-5 relative"
               role="note"
               aria-label="macOS Gatekeeper instructions"
             >
@@ -533,24 +563,20 @@ import "../styles/global.css";
         <div class="w-full max-w-[1240px] mx-auto px-8 text-center max-w-xl">
           <h2
             id="cta-title"
-            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight"
+            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight font-medium [font-variation-settings:'wght'_550]"
           >
             Transparent. Fast. Extensible.
           </h2>
-          <p class="text-text-secondary text-sm mt-3">
-            If price is an emergent property of liquidity + orderflow, your
-            tooling should expose both with minimal noise. Contributions
-            welcome.
+          <p class="text-text-secondary text-sm mt-3 font-medium tracking-wide">
+            Price emerges from liquidity + orderflow interaction. Your tooling
+            should render the mechanics, not a cartoon. Hack on it, fork it,
+            pressure‑test it.
           </p>
           <div class="flex justify-center gap-3 mt-3">
-            <a
-              href="#download"
-              class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
-              >Get Flowsurface</a
-            >
+            <a href="#download" class="btn btn-primary">Get Flowsurface</a>
             <a
               href="https://github.com/akenshaw/flowsurface"
-              class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
+              class="btn btn-secondary"
               target="_blank"
               rel="noopener">Contribute</a
             >
@@ -558,10 +584,6 @@ import "../styles/global.css";
         </div>
       </section>
     </main>
-
-    <hr
-      class="border-none h-px bg-[linear-gradient(90deg,transparent,theme(colors.border.DEFAULT),transparent)] mt-[4.5rem]"
-    />
     <footer
       class="py-[clamp(4rem,8vw,7rem)] pt-10 border-t border-border bg-gradient-footer relative shadow-inset before:content-[''] before:absolute before:top-[-70px] before:left-0 before:right-0 before:h-[70px] before:bg-gradient-footer-fade before:pointer-events-none before:-z-10"
       aria-labelledby="footer-title"
@@ -580,7 +602,7 @@ import "../styles/global.css";
           <p
             class="max-w-[260px] text-text-secondary m-0 text-[0.7rem] leading-[1.4]"
           >
-            Open-source orderflow & market microstructure exploration tool.
+            Open-source orderflow & market microstructure workstation.
           </p>
         </div>
         <div>
@@ -626,9 +648,9 @@ import "../styles/global.css";
         </div>
       </div>
       <div class="w-full max-w-[1240px] mx-auto px-8 mt-10">
-        <small class="text-text-secondary m-0 text-[0.7rem] leading-[1.4]"
+        <small class="text-text-secondary m-0 text-[0.7rem] leading-[1.4] block"
           >© {new Date().getFullYear()} Flowsurface. Built with Rust & Iced. This
-          site uses Astro.</small
+          site uses Astro.<br />Not investment advice. Use at your own risk.</small
         >
       </div>
     </footer>
