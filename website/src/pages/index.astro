@@ -17,126 +17,91 @@ import "../styles/global.css";
     <meta name="theme-color" content="#0e0d0d" />
   </head>
   <body>
-    <header
-      id="top"
-      class="fixed top-0 left-0 right-0 border-b border-border z-[100] bg-bg-1/95 backdrop-blur-sm shadow-inset"
-    >
-      <nav
-        class="w-full max-w-[1240px] mx-auto px-8 flex items-center justify-between gap-8 h-[70px]"
-        aria-label="Main navigation"
+    <!-- Navigation removed for focused hero -->
+    <header class="fixed top-5 left-6 z-50 select-none">
+      <a
+        href="#top"
+        aria-label="Flowsurface home"
+        class="flex items-center gap-3 font-semibold tracking-[0.4em] text-lg uppercase opacity-80 hover:opacity-100 transition-opacity"
       >
-        <a
-          href="#top"
-          class="font-semibold text-base tracking-widest flex items-center gap-2"
-          aria-label="Flowsurface home"
-        >
-          <span
-            class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
-          ></span>Flowsurface
-        </a>
-        <div class="flex gap-5 items-center" role="menubar">
-          <a
-            href="#features"
-            role="menuitem"
-            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
-            >Features</a
-          >
-          <a
-            href="#how"
-            role="menuitem"
-            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
-            >How It Works</a
-          >
-          <a
-            href="#download"
-            role="menuitem"
-            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
-            >Download</a
-          >
-          <a
-            href="https://github.com/akenshaw/flowsurface"
-            target="_blank"
-            rel="noopener"
-            role="menuitem"
-            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
-            >GitHub</a
-          >
-          <a href="#download" role="menuitem" class="btn btn-primary"
-            >Download</a
-          >
-        </div>
-      </nav>
+        <span
+          class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
+        ></span>
+        Flowsurface
+      </a>
     </header>
+    <div id="top" class="h-[36px]"></div>
 
     <main>
       <!-- Hero -->
       <section
-        class="relative py-[clamp(4rem,8vw,7rem)] pt-[5.5rem]"
+        class="relative py-[clamp(5.5rem,10vw,9rem)]"
         aria-labelledby="hero-title"
       >
         <div
-          class="w-full max-w-[1240px] lg:h-[80vh] mx-auto px-8 grid lg:grid-cols-2 gap-12 items-center"
+          class="w-full max-w-[1040px] mx-auto px-8 flex flex-col items-center text-center gap-7"
         >
-          <div class="flex flex-col gap-6">
-            <div
-              class="inline-flex items-center gap-2 bg-[rgba(67,166,129,0.18)] text-accent-primary text-[0.7rem] font-semibold tracking-ultra py-[0.45rem] px-[0.7rem] pb-[0.4rem] border border-[rgba(67,166,129,0.35)] rounded-full uppercase w-max"
-              aria-label="Project status"
+          <div
+            class="inline-flex items-center gap-2 bg-[rgba(67,166,129,0.18)] text-accent-primary text-[0.62rem] font-semibold tracking-ultra py-[0.42rem] px-[0.65rem] pb-[0.38rem] border border-[rgba(67,166,129,0.32)] rounded-full uppercase"
+            aria-label="Project status"
+          >
+            Open Source • Free
+          </div>
+          <h1
+            id="hero-title"
+            class="text-5xl leading-[1.04] tracking-tighter font-semibold max-w-[29ch]"
+          >
+            Analyze <strong class="font-semibold">Liquidity</strong> & <strong
+              class="font-semibold">Order Flow</strong
+            ><br />
+            Across crypto derivatives markets.
+          </h1>
+          <p
+            class="text-text-secondary max-w-[640px] text-[0.85rem] leading-relaxed font-medium tracking-wide"
+          >
+            Real‑time microstructure workstation: historical DOM heatmap,
+            execution footprint clustering, adaptive aggregation, depth ladder &
+            pace audio — processed locally in a transparent Rust core. No vendor
+            lock‑in. You own the edge.
+          </p>
+          <div class="flex items-center gap-3 flex-wrap justify-center mt-2">
+            <a
+              href="#download"
+              class="btn btn-primary"
+              aria-label="Download Flowsurface">Download</a
             >
-              Open Source • Free
-            </div>
-            <h1
-              id="hero-title"
-              class="text-[clamp(2.8rem,6vw,4.2rem)] leading-[1.05] tracking-tighter font-semibold"
+            <a
+              href="https://github.com/akenshaw/flowsurface"
+              class="btn btn-secondary"
+              target="_blank"
+              rel="noopener"
+              aria-label="View Flowsurface on GitHub">GitHub</a
             >
-              Purpose‑built orderflow & liquidity workstation
-            </h1>
-            <p
-              class="text-text-secondary max-w-xl text-sm leading-relaxed font-medium tracking-wide"
-            >
-              A minimalist, transparent stack for reading microstructure:
-              historical DOM heatmap, execution footprint clustering, adaptive
-              tick/time aggregation, depth ladder & real‑time tape – processed
-              locally, no vendor lock‑in, no hidden algos. Rust core. You own
-              the edge.
-            </p>
-            <div class="flex gap-3 mt-3">
-              <a
-                href="#download"
-                class="btn btn-primary"
-                aria-label="Download Flowsurface">Download</a
-              >
-              <a
-                href="https://github.com/akenshaw/flowsurface"
-                class="btn btn-secondary"
-                target="_blank"
-                rel="noopener"
-                aria-label="Star Flowsurface on GitHub">Star on GitHub</a
-              >
-            </div>
-            <div
-              class="flex gap-6 mt-2 opacity-70 text-[11px] tracking-[0.2em] uppercase font-semibold"
-            >
-              <span>Heatmap</span>
-              <span>Footprint</span>
-              <span>Layouts</span>
-              <span>Audio Pace</span>
-            </div>
           </div>
           <div
-            class="relative rounded-3xl bg-gradient-frame p-[3px] shadow-lg"
-            aria-hidden="true"
+            class="flex gap-6 mt-2 opacity-70 text-[11px] tracking-[0.2em] uppercase font-semibold"
           >
+            <span>Heatmap</span>
+            <span>Footprint</span>
+            <span>Layouts</span>
+            <a href="#features">See more features ↓</a>
+          </div>
+          <div class="relative w-full mt-5" aria-hidden="true">
             <div
-              class="relative rounded-[21px] bg-[#0f1010] min-h-[400px] flex items-center justify-center overflow-hidden shadow-frame-inset"
+              class="relative rounded-3xl bg-gradient-frame p-[3px] shadow-lg"
             >
-              <picture>
-                <img
-                  src="/src/assets/hero.png"
-                  alt="Flowsurface application multi-pane orderflow view"
-                  class="w-full h-full object-cover block"
-                  loading="lazy"
-                />
-              </picture>
+              <div
+                class="relative rounded-[21px] bg-[#0f1010] min-h-[430px] flex items-center justify-center overflow-hidden shadow-frame-inset"
+              >
+                <picture>
+                  <img
+                    src="/src/assets/hero.png"
+                    alt="Flowsurface application multi-pane orderflow view"
+                    class="w-full h-full object-cover block"
+                    loading="lazy"
+                  />
+                </picture>
+              </div>
             </div>
           </div>
         </div>
