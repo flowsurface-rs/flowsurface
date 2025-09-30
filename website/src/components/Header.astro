@@ -1,19 +1,24 @@
 ---
 // Header component encapsulates site navigation + theme toggle
 ---
-<header class="fixed top-0 left-0 right-0 z-50 select-none">
-  <div class="w-full flex items-center justify-between gap-4 px-6 pt-5">
+
+<header
+  class="fixed top-0 left-0 right-0 z-50 select-none bg-bg-1 sm:bg-transparent border-b border-border sm:border-none"
+>
+  <div
+    class="w-full flex items-center justify-between gap-2 md:gap-4 p-2 md:px-6 md:py-5"
+  >
     <a
       href="#top"
       aria-label="Flowsurface home"
-      class="flex items-center gap-3 font-semibold tracking-[0.4em] text-lg uppercase opacity-80 hover:opacity-100 transition-opacity"
+      class="flex items-center gap-3 font-semibold tracking-wide md:tracking-[0.4em] text-base md:text-lg uppercase opacity-80 hover:opacity-100 transition-opacity"
     >
       <span
         class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
       ></span>
       Flowsurface
     </a>
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-2 md:gap-3">
       <a
         href="#download"
         aria-label="Download Flowsurface"
@@ -39,23 +44,26 @@
   </div>
   <script>
     (function () {
-      const btn = document.getElementById('theme-toggle');
-      const icon = document.getElementById('theme-toggle-icon');
+      const btn = document.getElementById("theme-toggle");
+      const icon = document.getElementById("theme-toggle-icon");
       if (!btn) return;
       function currentTheme() {
-        return document.documentElement.classList.contains('light') ? 'light' : 'dark';
+        return document.documentElement.classList.contains("light")
+          ? "light"
+          : "dark";
       }
       function apply(t) {
-        if (t === 'light') document.documentElement.classList.add('light');
-        else document.documentElement.classList.remove('light');
-        localStorage.setItem('fs-theme', t);
-        if (icon) icon.textContent = t === 'light' ? '☀︎' : '☾';
+        if (t === "light") document.documentElement.classList.add("light");
+        else document.documentElement.classList.remove("light");
+        localStorage.setItem("fs-theme", t);
+        if (icon) icon.textContent = t === "light" ? "☀︎" : "☾";
         const meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute('content', t === 'light' ? '#f5f7f8' : '#0e0d0d');
+        if (meta)
+          meta.setAttribute("content", t === "light" ? "#f5f7f8" : "#0e0d0d");
       }
       apply(currentTheme());
-      btn.addEventListener('click', () => {
-        const next = currentTheme() === 'light' ? 'dark' : 'light';
+      btn.addEventListener("click", () => {
+        const next = currentTheme() === "light" ? "dark" : "light";
         apply(next);
       });
     })();

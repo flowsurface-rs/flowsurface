@@ -120,6 +120,7 @@
   }
   .btn {
     display: inline-flex;
+    white-space: nowrap;
     align-items: center;
     gap: 0.5rem;
     font-weight: 500;
