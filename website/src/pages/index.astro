@@ -16,22 +16,57 @@ import "../styles/global.css";
     <meta name="theme-color" content="#0e0d0d" />
   </head>
   <body>
-    <header id="top" class="navbar">
-      <nav class="container nav-inner" aria-label="Main navigation">
-        <a href="#top" class="logo" aria-label="Flowsurface home">
-          <span class="logo-dot"></span>Flowsurface
+    <header
+      id="top"
+      class="fixed top-0 left-0 right-0 bg-gradient-navbar border-b border-border z-[100]"
+      style="backdrop-filter: saturate(160%) blur(14px);"
+    >
+      <nav
+        class="w-full max-w-[1240px] mx-auto px-8 flex items-center justify-between gap-8 h-[70px]"
+        aria-label="Main navigation"
+      >
+        <a
+          href="#top"
+          class="font-semibold text-base tracking-widest flex items-center gap-2"
+          aria-label="Flowsurface home"
+        >
+          <span
+            class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
+          ></span>Flowsurface
         </a>
-        <div class="nav-links" role="menubar">
-          <a href="#features" role="menuitem">Features</a>
-          <a href="#how" role="menuitem">How It Works</a>
-          <a href="#download" role="menuitem">Download</a>
+        <div class="flex gap-5 items-center" role="menubar">
+          <a
+            href="#features"
+            role="menuitem"
+            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
+            >Features</a
+          >
+          <a
+            href="#how"
+            role="menuitem"
+            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
+            >How It Works</a
+          >
+          <a
+            href="#download"
+            role="menuitem"
+            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
+            >Download</a
+          >
           <a
             href="https://github.com/akenshaw/flowsurface"
             target="_blank"
             rel="noopener"
-            role="menuitem">GitHub</a
+            role="menuitem"
+            class="text-[0.8rem] font-medium tracking-ultra text-text-secondary no-underline py-2 px-3 rounded-sm transition-all duration-250 hover:text-text-primary hover:bg-white/5"
+            >GitHub</a
           >
-          <a href="#download" class="btn" role="menuitem">Download</a>
+          <a
+            href="#download"
+            role="menuitem"
+            class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus"
+            >Download</a
+          >
         </div>
       </nav>
     </header>
@@ -39,50 +74,65 @@ import "../styles/global.css";
     <main>
       <!-- Hero -->
       <section
-        class="relative section pt-[5.5rem]"
+        class="relative py-[clamp(4rem,8vw,7rem)] pt-[5.5rem]"
         aria-labelledby="hero-title"
       >
         <div class="hero-bg"></div>
-        <div class="container grid lg:grid-cols-2 gap-12 items-center">
+        <div
+          class="w-full max-w-[1240px] lg:h-[80vh] mx-auto px-8 grid lg:grid-cols-2 gap-12 items-center"
+        >
           <div class="flex flex-col gap-6">
-            <div class="badge w-max" aria-label="Project status">
+            <div
+              class="inline-flex items-center gap-2 bg-[rgba(67,166,129,0.18)] text-accent-primary text-[0.7rem] font-semibold tracking-ultra py-[0.45rem] px-[0.7rem] pb-[0.4rem] border border-[rgba(67,166,129,0.35)] rounded-full uppercase w-max"
+              aria-label="Project status"
+            >
               Open Source • Free
             </div>
-            <h1 id="hero-title" class="h1">
+            <h1
+              id="hero-title"
+              class="text-[clamp(2.8rem,6vw,4.2rem)] leading-[1.05] tracking-tighter font-semibold"
+            >
               Precision orderflow & liquidity visualization
             </h1>
-            <p class="subtle max-w-xl text-sm leading-relaxed">
+            <p class="text-text-secondary max-w-xl text-sm leading-relaxed">
               Flowsurface brings together heatmap (historical DOM), footprint
               clustering, custom tick & time aggregation, ladder depth, and
               real-time time & sales. Built with Rust & Iced for performance.
               Own your tooling.
             </p>
-            <div class="flex gap-3 mt-sm">
-              <a href="#download" class="btn" aria-label="Download Flowsurface"
-                >Download</a
+            <div class="flex gap-3 mt-3">
+              <a
+                href="#download"
+                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus"
+                aria-label="Download Flowsurface">Download</a
               >
               <a
                 href="https://github.com/akenshaw/flowsurface"
-                class="btn btn-outline"
+                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus"
                 target="_blank"
                 rel="noopener"
                 aria-label="Star Flowsurface on GitHub">Star on GitHub</a
               >
             </div>
-            <div class="flex gap-6 mt-2 opacity-dim text-[11px] tracking-wide">
+            <div class="flex gap-6 mt-2 opacity-70 text-[11px] tracking-wide">
               <span>Heatmap</span>
               <span>Footprint</span>
               <span>Multi-pane layouts</span>
               <span>Realtime audio</span>
             </div>
           </div>
-          <div class="frame" aria-hidden="true">
-            <div class="frame-inner">
+          <div
+            class="relative rounded-3xl bg-gradient-frame p-[3px] shadow-lg"
+            aria-hidden="true"
+          >
+            <div
+              class="relative rounded-[21px] bg-[#0f1010] min-h-[400px] flex items-center justify-center overflow-hidden shadow-frame-inset"
+            >
               <picture>
                 <img
                   src="/src/assets/hero.png"
                   alt="Flowsurface application multi-pane orderflow view"
-                  style="display:block;width:100%;height:auto;object-fit:cover;"
+                  class="w-full h-full object-cover block"
                   loading="lazy"
                 />
               </picture>
@@ -92,95 +142,248 @@ import "../styles/global.css";
       </section>
 
       <!-- Features -->
-      <section id="features" class="section" aria-labelledby="features-title">
-        <div class="container">
-          <h2 id="features-title" class="h2 center mxa max-w-xl">
+      <section
+        id="features"
+        class="py-[clamp(4rem,8vw,7rem)]"
+        aria-labelledby="features-title"
+      >
+        <div class="w-full max-w-[1240px] mx-auto px-8">
+          <h2
+            id="features-title"
+            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center mx-auto max-w-xl"
+          >
             Focused on clarity & actionable context
           </h2>
-          <p class="subtle center max-w-xl mxa mt-sm text-sm">
+          <p
+            class="text-text-secondary text-center max-w-xl mx-auto mt-3 text-sm"
+          >
             Instead of bloated indicators, Flowsurface emphasises structural
             liquidity, executed volume & pace – the things that actually move
             markets.
           </p>
 
-          <div class="features-interactive mt-lg" data-feature-ui>
-            <div class="feature-list" role="tablist" aria-label="Platform features">
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Historical orderbook liquidity over time">
-                <h3>Heatmap DOM</h3>
-                <p>Historical bid/ask liquidity with adaptive grouping + optional volume profile overlay.</p>
+          <div
+            class="grid grid-cols-[minmax(0,1fr)_minmax(340px,480px)] gap-[2.2rem] items-start mt-10 max-[1000px]:grid-cols-1"
+            data-feature-ui
+          >
+            <div
+              class="flex flex-col gap-[0.9rem]"
+              role="tablist"
+              aria-label="Platform features"
+            >
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Historical orderbook liquidity over time"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Heatmap DOM
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Historical bid/ask liquidity with adaptive grouping + optional
+                  volume profile overlay.
+                </p>
               </button>
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Execution clustering footprint views">
-                <h3>Footprint Modes</h3>
-                <p>Cluster trades by time or tick count with imbalance + naked POC studies.</p>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Execution clustering footprint views"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Footprint Modes
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Cluster trades by time or tick count with imbalance + naked
+                  POC studies.
+                </p>
               </button>
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Multiple synchronized analysis panes">
-                <h3>Multi‑Pane Layouts</h3>
-                <p>Link panes & switch instruments instantly while retaining per‑pane state.</p>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Multiple synchronized analysis panes"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Multi‑Pane Layouts
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Link panes & switch instruments instantly while retaining
+                  per‑pane state.
+                </p>
               </button>
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Adaptive timeframe & tick aggregation">
-                <h3>Adaptive Aggregation</h3>
-                <p>Timeframe or trade‑count (tick) based aggregation for precise tempo control.</p>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Adaptive timeframe & tick aggregation"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Adaptive Aggregation
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Timeframe or trade‑count (tick) based aggregation for precise
+                  tempo control.
+                </p>
               </button>
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Audio cues for acceleration">
-                <h3>Realtime Audio</h3>
-                <p>Configurable trade threshold sound cues to surface acceleration.</p>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Audio cues for acceleration"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Realtime Audio
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Configurable trade threshold sound cues to surface
+                  acceleration.
+                </p>
               </button>
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Local processing & privacy">
-                <h3>Local & Private</h3>
-                <p>No vendor lock-in. Data streamed directly from exchange public APIs.</p>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Local processing & privacy"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Local & Private
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  No vendor lock-in. Data streamed directly from exchange public
+                  APIs.
+                </p>
               </button>
-              <button class="feature-item" role="tab" aria-selected="false" data-img="/src/assets/hero.png" data-caption="Low-latency Rust + Iced pipeline">
-                <h3>Low‑Latency Core</h3>
-                <p>Rust zero‑copy dataflow + batched diffed rendering keep median capture→render latency &lt;20ms under burst loads.</p>
+              <button
+                class="text-left w-full border border-border bg-gradient-surface rounded-lg py-[1.05rem] px-[1.15rem] pb-[1.15rem] cursor-pointer relative transition-all duration-[350ms] after:content-[''] after:absolute after:inset-0 after:rounded-[inherit] after:bg-[linear-gradient(120deg,rgba(67,166,129,0.18),transparent_55%,rgba(67,166,129,0.08))] after:opacity-0 after:transition-opacity after:duration-[450ms] after:pointer-events-none hover:border-border-soft hover:after:opacity-70 focus-visible:outline-none focus-visible:shadow-focus [&.active]:border-[rgba(67,166,129,0.55)] [&.active]:bg-gradient-feature-active [&.active]:after:opacity-100"
+                role="tab"
+                aria-selected="false"
+                data-img="/src/assets/hero.png"
+                data-caption="Low-latency Rust + Iced pipeline"
+              >
+                <h3
+                  class="m-0 mb-[0.35rem] text-[0.95rem] font-semibold tracking-wider"
+                >
+                  Low‑Latency Core
+                </h3>
+                <p class="m-0 text-[0.72rem] leading-[1.5] text-text-secondary">
+                  Rust zero‑copy dataflow + batched diffed rendering keep median
+                  capture→render latency &lt;20ms under burst loads.
+                </p>
               </button>
             </div>
-            <div class="feature-preview" aria-live="polite">
-              <div class="frame small" aria-hidden="true">
-                <div class="frame-inner">
-                  <img id="feature-preview-img" src="/src/assets/hero.png" alt="Feature preview" loading="lazy" />
+            <div
+              class="sticky top-[100px] flex flex-col gap-4 max-[1000px]:relative max-[1000px]:top-0 max-[1000px]:order-[-1]"
+              aria-live="polite"
+            >
+              <div
+                class="relative rounded-2xl bg-gradient-frame p-[3px] shadow-lg"
+                aria-hidden="true"
+              >
+                <div
+                  class="relative rounded-[21px] bg-[#0f1010] min-h-[320px] max-[1000px]:min-h-[240px] flex items-center justify-center overflow-hidden shadow-frame-inset"
+                >
+                  <img
+                    id="feature-preview-img"
+                    src="/src/assets/hero.png"
+                    alt="Feature preview"
+                    loading="lazy"
+                    class="w-full h-full object-cover block"
+                  />
                 </div>
               </div>
-              <p class="preview-caption subtle" id="feature-caption"></p>
+              <p
+                class="text-[0.7rem] tracking-widest uppercase mx-1 text-text-secondary"
+                id="feature-caption"
+              >
+              </p>
             </div>
           </div>
         </div>
         <script>
-          const featureItems = [...document.querySelectorAll('.feature-item')];
-          const previewImg = document.getElementById('feature-preview-img');
-          const captionEl = document.getElementById('feature-caption');
-          function activateFeature(el){
-            featureItems.forEach(f=>{f.classList.remove('active'); f.setAttribute('aria-selected','false');});
-            el.classList.add('active');
-            el.setAttribute('aria-selected','true');
-            const src = el.dataset.img; if(src) previewImg.src = src;
-            captionEl.textContent = el.dataset.caption || '';
+          const featureItems = [...document.querySelectorAll('[role="tab"]')];
+          const previewImg = document.getElementById("feature-preview-img");
+          const captionEl = document.getElementById("feature-caption");
+          function activateFeature(el) {
+            featureItems.forEach((f) => {
+              f.classList.remove("active");
+              f.setAttribute("aria-selected", "false");
+            });
+            el.classList.add("active");
+            el.setAttribute("aria-selected", "true");
+            const src = el.dataset.img;
+            if (src) previewImg.src = src;
+            captionEl.textContent = el.dataset.caption || "";
           }
-          featureItems.forEach(item=>{
-            item.addEventListener('click', ()=>activateFeature(item));
-            item.addEventListener('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); activateFeature(item);} });
+          featureItems.forEach((item) => {
+            item.addEventListener("click", () => activateFeature(item));
+            item.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                activateFeature(item);
+              }
+            });
           });
-          if(featureItems.length) activateFeature(featureItems[0]);
+          if (featureItems.length) activateFeature(featureItems[0]);
         </script>
       </section>
 
       <!-- How it works -->
-      <section id="how" class="section" aria-labelledby="how-title">
-        <div class="container">
-          <h2 id="how-title" class="h2 center">Get started in 3 steps</h2>
-          <div class="grid steps mt-lg">
-            <div class="step">
-              <h3>1. Download</h3>
-              <p>
+      <section
+        id="how"
+        class="py-[clamp(4rem,8vw,7rem)]"
+        aria-labelledby="how-title"
+      >
+        <div class="w-full max-w-[1240px] mx-auto px-8">
+          <h2
+            id="how-title"
+            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight text-center"
+          >
+            Get started in 3 steps
+          </h2>
+          <div
+            class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-6 mt-10 [counter-reset:step]"
+          >
+            <div
+              class="py-5 px-[1.15rem] pb-[1.3rem] relative bg-gradient-card border border-border rounded-md before:flex before:items-center before:justify-center before:[counter-increment:step] before:content-[counter(step)] before:absolute before:top-3 before:right-[0.8rem] before:text-[0.65rem] before:font-semibold before:tracking-widest before:w-6 before:h-6 before:bg-white/5 before:text-text-secondary before:rounded-sm"
+            >
+              <h3 class="m-0 mb-[0.35rem] text-[0.9rem]">1. Download</h3>
+              <p class="m-0 text-[0.75rem] leading-[1.5]">
                 Grab a prebuilt binary or build from source (Rust) in minutes.
               </p>
             </div>
-            <div class="step">
-              <h3>2. Connect</h3>
-              <p>Select an exchange instrument (Binance or Bybit) & layout.</p>
+            <div
+              class="py-5 px-[1.15rem] pb-[1.3rem] relative bg-gradient-card border border-border rounded-md before:flex before:items-center before:justify-center before:[counter-increment:step] before:content-[counter(step)] before:absolute before:top-3 before:right-[0.8rem] before:text-[0.65rem] before:font-semibold before:tracking-widest before:w-6 before:h-6 before:bg-white/5 before:text-text-secondary before:rounded-sm"
+            >
+              <h3 class="m-0 mb-[0.35rem] text-[0.9rem]">2. Connect</h3>
+              <p class="m-0 text-[0.75rem] leading-[1.5]">
+                Select an exchange instrument (Binance or Bybit) & layout.
+              </p>
             </div>
-            <div class="step">
-              <h3>3. Observe</h3>
-              <p>
+            <div
+              class="py-5 px-[1.15rem] pb-[1.3rem] relative bg-gradient-card border border-border rounded-md before:flex before:items-center before:justify-center before:[counter-increment:step] before:content-[counter(step)] before:absolute before:top-3 before:right-[0.8rem] before:text-[0.65rem] before:font-semibold before:tracking-widest before:w-6 before:h-6 before:bg-white/5 before:text-text-secondary before:rounded-sm"
+            >
+              <h3 class="m-0 mb-[0.35rem] text-[0.9rem]">3. Observe</h3>
+              <p class="m-0 text-[0.75rem] leading-[1.5]">
                 Track liquidity shifts, volume clustering & pace to frame
                 trades.
               </p>
@@ -190,67 +393,163 @@ import "../styles/global.css";
       </section>
 
       <!-- Download / CTA -->
-      <section id="download" class="section" aria-labelledby="download-title">
-        <div class="container">
-          <div class="band">
-            <h2 id="download-title" class="h2">Own your market perspective</h2>
-            <p class="subtle max-w-xl">
+      <section
+        id="download"
+        class="py-[clamp(4rem,8vw,7rem)]"
+        aria-labelledby="download-title"
+      >
+        <div class="w-full max-w-[1240px] mx-auto px-8">
+          <div
+            class="relative bg-gradient-band py-[3.2rem] px-[clamp(1.8rem,4vw,4rem)] border border-border rounded-4xl shadow-xl overflow-hidden before:content-[''] before:absolute before:inset-0 before:bg-gradient-band-radial before:mix-blend-overlay before:opacity-40"
+          >
+            <h2
+              id="download-title"
+              class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight m-0 mb-[1.1rem]"
+            >
+              Own your market perspective
+            </h2>
+            <p class="text-text-secondary max-w-xl m-0 mb-[1.6rem]">
               Download Flowsurface and explore execution dynamics without
               surrendering control to black‑box platforms.
             </p>
-            <div class="dl-buttons mt-sm" aria-label="Download options">
+            <div
+              class="flex flex-wrap gap-[0.9rem] mt-3"
+              aria-label="Download options"
+            >
               <a
-                class="btn"
+                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
                 href="https://github.com/akenshaw/flowsurface/releases"
                 target="_blank"
-                rel="noopener"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M17.25 13.29c-.03-2.27 1.85-3.35 1.93-3.41-1.05-1.54-2.68-1.75-3.25-1.78-1.38-.14-2.69.81-3.39.81-.71 0-1.78-.79-2.93-.77-1.5.02-2.89.87-3.66 2.2-1.57 2.72-.4 6.74 1.12 8.94.75 1.08 1.64 2.29 2.81 2.25 1.13-.05 1.55-.73 2.91-.73 1.36 0 1.73.73 2.93.7 1.21-.02 1.98-1.09 2.72-2.17.86-1.26 1.22-2.49 1.24-2.55-.03-.01-2.38-.91-2.42-3.49ZM15.19 6.35c.62-.76 1.04-1.81.93-2.86-.9.04-1.99.6-2.64 1.35-.57.66-1.08 1.72-.95 2.73.99.08 2-.5 2.66-1.22Z"/></svg>macOS (Universal)</a
+                rel="noopener"
+                ><svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  aria-hidden="true"
+                  ><path
+                    fill="currentColor"
+                    d="M17.25 13.29c-.03-2.27 1.85-3.35 1.93-3.41-1.05-1.54-2.68-1.75-3.25-1.78-1.38-.14-2.69.81-3.39.81-.71 0-1.78-.79-2.93-.77-1.5.02-2.89.87-3.66 2.2-1.57 2.72-.4 6.74 1.12 8.94.75 1.08 1.64 2.29 2.81 2.25 1.13-.05 1.55-.73 2.91-.73 1.36 0 1.73.73 2.93.7 1.21-.02 1.98-1.09 2.72-2.17.86-1.26 1.22-2.49 1.24-2.55-.03-.01-2.38-.91-2.42-3.49ZM15.19 6.35c.62-.76 1.04-1.81.93-2.86-.9.04-1.99.6-2.64 1.35-.57.66-1.08 1.72-.95 2.73.99.08 2-.5 2.66-1.22Z"
+                  ></path></svg
+                >macOS (Universal)</a
               >
               <a
-                class="btn btn-outline"
+                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
                 href="https://github.com/akenshaw/flowsurface/releases"
                 target="_blank"
-                rel="noopener"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 5.49 10.5 4v7.26H3V5.49Zm0 13.02 7.5 1.5v-7.26H3v5.76ZM11.87 4.02 21 2.5v8.77h-9.13V4.02Zm0 15.96L21 21.5v-8.77h-9.13v7.25Z"/></svg>Windows</a
+                rel="noopener"
+                ><svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  aria-hidden="true"
+                  ><path
+                    fill="currentColor"
+                    d="M3 5.49 10.5 4v7.26H3V5.49Zm0 13.02 7.5 1.5v-7.26H3v5.76ZM11.87 4.02 21 2.5v8.77h-9.13V4.02Zm0 15.96L21 21.5v-8.77h-9.13v7.25Z"
+                  ></path></svg
+                >Windows</a
               >
               <a
-                class="btn btn-outline"
+                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
                 href="https://github.com/akenshaw/flowsurface/releases"
                 target="_blank"
-                rel="noopener"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M11.48 2.01c-.61.08-1.15.42-1.45.94-.21.32-.22.41-.23 1.63v1.3l-.23.15c-.29.19-.68.71-.84 1.12-.12.31-.14.52-.1 1.2.05.99.26 1.67.84 2.82.29.57.45.95.42 1.04-.03.07-.27.32-.54.55-.74.63-1.08 1.28-1.08 2.06 0 .41.05.64.29 1.16.21.46.22.52.22 1.48v1h-.3c-.23 0-.37.07-.56.26-.33.33-.34.62-.02 1.01.42.48 1.02.8 1.98 1.07.64.18 2.62.18 3.26 0 .96-.27 1.56-.59 1.98-1.07.32-.39.31-.68-.02-1.01-.19-.19-.33-.26-.56-.26h-.3v-1c0-.96.01-1.02.22-1.48.24-.52.29-.75.29-1.16 0-.78-.34-1.43-1.08-2.06-.27-.23-.51-.48-.54-.55-.03-.09.13-.47.42-1.04.58-1.15.79-1.83.84-2.82.04-.68.02-.89-.1-1.2-.16-.41-.55-.93-.84-1.12l-.23-.15v-1.3c0-1.22-.02-1.31-.23-1.63-.36-.6-1.07-.96-1.81-.91Zm-1.22 3.11c.13.07.4.19.62.26.32.1.39.1.71 0 .22-.07.49-.19.62-.26.21-.11.22-.09.22.59v.71l-.55.06c-.3.03-.87.03-1.17 0l-.55-.06V5.72c0-.68.01-.7.22-.6Zm-1.12 3.59c.2.18.67.4 1.06.5.48.12 1.41.12 1.89 0 .39-.1.86-.32 1.06-.5.13-.12.14-.09.14.27 0 .52-.19 1.23-.55 2.04-.44.96-.77 1.32-1.58 1.71-.26.12-.52.17-.5.1 0-.04.14-.31.31-.61.53-.97.72-1.65.66-2.52-.04-.6-.2-.99-.6-1.38-.3-.3-.33-.31-.83-.31-.5 0-.53.01-.83.31-.4.39-.56.78-.6 1.38-.06.87.13 1.55.66 2.52.17.3.31.57.31.61.02.07-.24.02-.5-.1-.81-.39-1.14-.75-1.58-1.71-.36-.81-.55-1.52-.55-2.04 0-.36.01-.39.14-.27Zm.06 7.78c.61.24 1.03.3 1.9.3.87 0 1.29-.06 1.9-.3.54-.21.58-.22.58-.11 0 .2-.64.84-1.03 1.02-.7.34-1.83.34-2.52 0-.39-.18-1.03-.82-1.03-1.02 0-.11.04-.1.58.11Z"/></svg>Linux</a
+                rel="noopener"
+                ><svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  aria-hidden="true"
+                  ><path
+                    fill="currentColor"
+                    d="M11.48 2.01c-.61.08-1.15.42-1.45.94-.21.32-.22.41-.23 1.63v1.3l-.23.15c-.29.19-.68.71-.84 1.12-.12.31-.14.52-.1 1.2.05.99.26 1.67.84 2.82.29.57.45.95.42 1.04-.03.07-.27.32-.54.55-.74.63-1.08 1.28-1.08 2.06 0 .41.05.64.29 1.16.21.46.22.52.22 1.48v1h-.3c-.23 0-.37.07-.56.26-.33.33-.34.62-.02 1.01.42.48 1.02.8 1.98 1.07.64.18 2.62.18 3.26 0 .96-.27 1.56-.59 1.98-1.07.32-.39.31-.68-.02-1.01-.19-.19-.33-.26-.56-.26h-.3v-1c0-.96.01-1.02.22-1.48.24-.52.29-.75.29-1.16 0-.78-.34-1.43-1.08-2.06-.27-.23-.51-.48-.54-.55-.03-.09.13-.47.42-1.04.58-1.15.79-1.83.84-2.82.04-.68.02-.89-.1-1.2-.16-.41-.55-.93-.84-1.12l-.23-.15v-1.3c0-1.22-.02-1.31-.23-1.63-.36-.6-1.07-.96-1.81-.91Zm-1.22 3.11c.13.07.4.19.62.26.32.1.39.1.71 0 .22-.07.49-.19.62-.26.21-.11.22-.09.22.59v.71l-.55.06c-.3.03-.87.03-1.17 0l-.55-.06V5.72c0-.68.01-.7.22-.6Zm-1.12 3.59c.2.18.67.4 1.06.5.48.12 1.41.12 1.89 0 .39-.1.86-.32 1.06-.5.13-.12.14-.09.14.27 0 .52-.19 1.23-.55 2.04-.44.96-.77 1.32-1.58 1.71-.26.12-.52.17-.5.1 0-.04.14-.31.31-.61.53-.97.72-1.65.66-2.52-.04-.6-.2-.99-.6-1.38-.3-.3-.33-.31-.83-.31-.5 0-.53.01-.83.31-.4.39-.56.78-.6 1.38-.06.87.13 1.55.66 2.52.17.3.31.57.31.61.02.07-.24.02-.5-.1-.81-.39-1.14-.75-1.58-1.71-.36-.81-.55-1.52-.55-2.04 0-.36.01-.39.14-.27Zm.06 7.78c.61.24 1.03.3 1.9.3.87 0 1.29-.06 1.9-.3.54-.21.58-.22.58-.11 0 .2-.64.84-1.03 1.02-.7.34-1.83.34-2.52 0-.39-.18-1.03-.82-1.03-1.02 0-.11.04-.1.58.11Z"
+                  ></path></svg
+                >Linux</a
               >
               <a
-                class="btn btn-ghost"
+                class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.65rem] px-4 bg-transparent text-text-primary border-none rounded-sm text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 hover:bg-white/[0.08] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
                 href="https://github.com/akenshaw/flowsurface"
                 target="_blank"
                 rel="noopener">View on GitHub →</a
               >
             </div>
-            <div class="download-notice" role="note" aria-label="macOS Gatekeeper instructions">
-              <h3><svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'><circle cx='12' cy='12' r='10' stroke='currentColor' stroke-width='1.4'/><path d='M12 7.2v6.1' stroke='currentColor' stroke-width='1.6' stroke-linecap='round'/><circle cx='12' cy='16.7' r='1.05' fill='currentColor'/></svg> macOS – Unsigned App</h3>
-              <p>First launch may be blocked because the app is not code‑signed. Allow it once:
-              <br />1. Double‑click the app: when the warning appears, click <strong>Cancel</strong> (or <strong>Done</strong>).
-              <br />2. Open <strong>System Settings → Privacy & Security</strong> and scroll down.
-              <br />3. Click <strong>Open Anyway</strong> next to the blocked app notice.
-              <br />4. Confirm (enter password) when prompted. Future launches are allowed until you update to a new binary.
-              <br />This is a normal macOS Gatekeeper step for unsigned open‑source builds.</p>
+            <div
+              class="mt-7 border border-[#2a2a27] bg-gradient-download-notice rounded-xl py-[1.15rem] px-5 pb-5 relative shadow-download-notice"
+              role="note"
+              aria-label="macOS Gatekeeper instructions"
+            >
+              <h3
+                class="m-0 mb-[0.55rem] text-[0.78rem] font-semibold tracking-widest uppercase text-accent-primary flex items-center gap-2"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  class="w-[14px] h-[14px] text-accent-primary flex-[0_0_14px]"
+                  ><circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="1.4"></circle><path
+                    d="M12 7.2v6.1"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"></path><circle
+                    cx="12"
+                    cy="16.7"
+                    r="1.05"
+                    fill="currentColor"></circle></svg
+                > macOS – Unsigned App
+              </h3>
+              <p class="m-0 text-[0.68rem] leading-[1.55] text-text-secondary">
+                First launch may be blocked because the app is not code‑signed.
+                Allow it once:
+                <br />1. Double‑click the app: when the warning appears, click <strong
+                  >Cancel</strong
+                > (or <strong>Done</strong>).
+                <br />2. Open <strong
+                  >System Settings → Privacy & Security</strong
+                > and scroll down.
+                <br />3. Click <strong>Open Anyway</strong> next to the blocked app
+                notice.
+                <br />4. Confirm (enter password) when prompted. Future launches
+                are allowed until you update to a new binary.
+                <br />This is a normal macOS Gatekeeper step for unsigned
+                open‑source builds.
+              </p>
             </div>
           </div>
         </div>
       </section>
 
       <!-- Final CTA -->
-      <section class="section pt-0" aria-labelledby="cta-title">
-        <div class="container center max-w-xl">
-          <h2 id="cta-title" class="h2">Transparent. Fast. Extensible.</h2>
-          <p class="subtle text-sm mt-sm">
+      <section
+        class="py-[clamp(4rem,8vw,7rem)] pt-0"
+        aria-labelledby="cta-title"
+      >
+        <div class="w-full max-w-[1240px] mx-auto px-8 text-center max-w-xl">
+          <h2
+            id="cta-title"
+            class="text-[clamp(1.9rem,4.5vw,2.8rem)] leading-[1.1] font-semibold tracking-tight"
+          >
+            Transparent. Fast. Extensible.
+          </h2>
+          <p class="text-text-secondary text-sm mt-3">
             If price is an emergent property of liquidity + orderflow, your
             tooling should expose both with minimal noise. Contributions
             welcome.
           </p>
-          <div class="flex jc-c gap-3 mt-sm">
-            <a href="#download" class="btn">Get Flowsurface</a>
+          <div class="flex justify-center gap-3 mt-3">
+            <a
+              href="#download"
+              class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-accent-primary text-[#0f1513] border-none rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-[color-mix(in_srgb,#43a681_85%,#ffffff)] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
+              >Get Flowsurface</a
+            >
             <a
               href="https://github.com/akenshaw/flowsurface"
-              class="btn btn-outline"
+              class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.85rem] px-[1.35rem] bg-white/[0.03] text-text-primary border border-border rounded-md text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 shadow-btn hover:bg-white/[0.07] hover:border-border-soft active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
               target="_blank"
               rel="noopener">Contribute</a
             >
@@ -259,45 +558,74 @@ import "../styles/global.css";
       </section>
     </main>
 
-    <hr class="line" />
-    <footer class="section pt-10" aria-labelledby="footer-title">
-      <div class="container footer-grid">
+    <hr
+      class="border-none h-px bg-[linear-gradient(90deg,transparent,theme(colors.border.DEFAULT),transparent)] mt-[4.5rem]"
+    />
+    <footer
+      class="py-[clamp(4rem,8vw,7rem)] pt-10 border-t border-border bg-gradient-footer relative shadow-inset before:content-[''] before:absolute before:top-[-70px] before:left-0 before:right-0 before:h-[70px] before:bg-gradient-footer-fade before:pointer-events-none before:-z-10"
+      aria-labelledby="footer-title"
+    >
+      <div
+        class="w-full max-w-[1240px] mx-auto px-8 grid gap-10 grid-cols-[repeat(auto-fit,minmax(180px,1fr))]"
+      >
         <div>
-          <div class="logo mb-3"><span class="logo-dot"></span>Flowsurface</div>
-          <p class="max-w-[260px] subtle">
+          <div
+            class="font-semibold text-base tracking-widest flex items-center gap-2 mb-3"
+          >
+            <span
+              class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
+            ></span>Flowsurface
+          </div>
+          <p
+            class="max-w-[260px] text-text-secondary m-0 text-[0.7rem] leading-[1.4]"
+          >
             Open-source orderflow & market microstructure exploration tool.
           </p>
         </div>
         <div>
-          <h3 class="h3 mb-3 text-sm">Project</h3>
-          <p>
+          <h3
+            class="text-[clamp(1.3rem,2.5vw,1.65rem)] font-semibold mb-3 text-sm"
+          >
+            Project
+          </h3>
+          <p class="m-0 text-[0.7rem] leading-[1.4]">
             <a
               href="https://github.com/akenshaw/flowsurface"
               target="_blank"
-              rel="noopener">GitHub Repository</a
+              rel="noopener"
+              class="text-text-secondary text-[0.75rem] tracking-wider no-underline hover:text-text-primary"
+              >GitHub Repository</a
             >
           </p>
-          <p>
+          <p class="m-0 text-[0.7rem] leading-[1.4]">
             <a
               href="https://github.com/akenshaw/flowsurface/releases"
               target="_blank"
-              rel="noopener">Releases</a
+              rel="noopener"
+              class="text-text-secondary text-[0.75rem] tracking-wider no-underline hover:text-text-primary"
+              >Releases</a
             >
           </p>
         </div>
         <div>
-          <h3 class="h3 mb-3 text-sm">License</h3>
-          <p>
+          <h3
+            class="text-[clamp(1.3rem,2.5vw,1.65rem)] font-semibold mb-3 text-sm"
+          >
+            License
+          </h3>
+          <p class="m-0 text-[0.7rem] leading-[1.4]">
             <a
               href="https://github.com/akenshaw/flowsurface/blob/main/LICENSE"
               target="_blank"
-              rel="noopener">GPL-3.0-or-later</a
+              rel="noopener"
+              class="text-text-secondary text-[0.75rem] tracking-wider no-underline hover:text-text-primary"
+              >GPL-3.0-or-later</a
             >
           </p>
         </div>
       </div>
-      <div class="container mt-10">
-        <small class="subtle"
+      <div class="w-full max-w-[1240px] mx-auto px-8 mt-10">
+        <small class="text-text-secondary m-0 text-[0.7rem] leading-[1.4]"
           >© {new Date().getFullYear()} Flowsurface. Built with Rust & Iced. This
           site uses Astro.</small
         >
