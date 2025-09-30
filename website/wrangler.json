@@ -1,0 +1,6 @@
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "flowsurface",
+    "compatibility_date": "2025-09-30",
+    "pages_build_output_dir": "./dist"
+}

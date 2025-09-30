@@ -3,100 +3,75 @@ interface Props {
   showWordmark?: boolean;
   class?: string;
   condensed?: boolean; // if true, tighter gap
-  variant?: 'panels' | 'candles';
+  encased?: boolean; // if true, draw dark rounded background (for light mode contrast)
 }
 const {
   showWordmark = true,
-  class: klass = '',
+  class: klass = "",
   condensed = false,
-  variant = 'panels' // new default to better reflect product UI
-} = Astro.props;
+  encased = false,
+} = Astro.props as Props;
 ---
-<!-- Accessible, theme-adaptive Flowsurface logo -->
-<div class={`flex items-center ${condensed ? 'gap-1.5' : 'gap-2'} ${klass}`.trim()} aria-label="Flowsurface">
-  {variant === 'candles' ? (
-    <svg
-      width="28"
-      height="28"
-      viewBox="0 0 64 64"
-      role="img"
-      aria-hidden={showWordmark ? 'true' : 'false'}
-      class="shrink-0"
-    >
-      <title>Flowsurface</title>
-      <desc>Three stylized ascending candlesticks over a flowing baseline</desc>
-      <defs>
-        <linearGradient id="fsFade" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--color-accent-buy)" />
-          <stop offset="100%" stop-color="var(--color-accent-primary)" />
-        </linearGradient>
-        <linearGradient id="fsSell" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--color-accent-sell)" />
-          <stop offset="100%" stop-color="var(--color-accent-danger)" />
-        </linearGradient>
-      </defs>
-      <path d="M4 50 C14 42 22 40 32 44 C40 47 48 47 60 40" fill="none" stroke="var(--color-accent-info)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.55" />
-      <line x1="14" x2="14" y1="22" y2="46" stroke="url(#fsSell)" stroke-width="4" stroke-linecap="round" />
-      <rect x="11" y="32" width="6" height="10" rx="1.5" fill="url(#fsSell)" />
-      <line x1="30" x2="30" y1="14" y2="46" stroke="var(--color-accent-info)" stroke-width="4" stroke-linecap="round" />
-      <rect x="27" y="26" width="6" height="14" rx="1.5" fill="var(--color-accent-info)" />
-      <line x1="46" x2="46" y1="6" y2="46" stroke="url(#fsFade)" stroke-width="4" stroke-linecap="round" />
-      <rect x="43" y="18" width="6" height="20" rx="1.5" fill="url(#fsFade)" />
-      <circle cx="46" cy="18" r="12" fill="none" stroke="var(--color-accent-primary)" stroke-width="2" opacity="0.08" />
-    </svg>
-  ) : (
-    <svg
-      width="28"
-      height="28"
-      viewBox="0 0 64 64"
-      role="img"
-      aria-hidden={showWordmark ? 'true' : 'false'}
-      class="shrink-0"
-    >
-      <title>Flowsurface</title>
-      <desc>Abstract multi-panel trading layout with volume profile + depth path</desc>
-      <defs>
-        <linearGradient id="fsHeat" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stop-color="var(--color-accent-danger)" />
-          <stop offset="50%" stop-color="var(--color-accent-info)" />
-          <stop offset="100%" stop-color="var(--color-accent-buy)" />
-        </linearGradient>
-        <linearGradient id="fsGreen" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--color-accent-buy)" />
-          <stop offset="100%" stop-color="var(--color-accent-primary)" />
-        </linearGradient>
-      </defs>
-      <!-- Left symbol list lines -->
-      <g stroke-width="2" stroke-linecap="round" stroke="var(--color-accent-info)" opacity="0.8">
-        <line x1="8" x2="18" y1="18" y2="18" />
-        <line x1="8" x2="16" y1="24" y2="24" />
-        <line x1="8" x2="20" y1="30" y2="30" />
-        <line x1="8" x2="15" y1="36" y2="36" opacity="0.6" />
-      </g>
-      <!-- Central volume profile (stacked horizontal bars) -->
-      <g fill="none" stroke-linecap="round" stroke-width="3">
-        <line x1="34" x2="24" y1="16" y2="16" stroke="var(--color-accent-sell)" />
-        <line x1="26" x2="38" y1="22" y2="22" stroke="var(--color-accent-buy)" />
-        <line x1="30" x2="42" y1="28" y2="28" stroke="var(--color-accent-buy)" />
-        <line x1="34" x2="26" y1="34" y2="34" stroke="var(--color-accent-sell)" />
-        <line x1="28" x2="40" y1="40" y2="40" stroke="var(--color-accent-info)" />
-      </g>
-      <!-- Right heatmap / panel blocks -->
-      <g opacity="0.9">
-        <rect x="46" y="16" width="10" height="10" rx="1.5" fill="url(#fsHeat)" />
-        <rect x="46" y="30" width="10" height="14" rx="1.5" fill="var(--color-surface-2)" stroke="var(--color-accent-info)" stroke-width="1.5" />
-      </g>
-      <!-- Depth / liquidity staircase path -->
-      <path d="M10 48 L22 40 L30 40 L38 34 L46 34 L54 26" fill="none" stroke="url(#fsGreen)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
-      <!-- Soft enclosing silhouette ring for brand identity -->
-      <rect x="2.5" y="2.5" width="59" height="59" rx="14" stroke="var(--color-accent-primary)" stroke-width="2" opacity="0.08" />
-    </svg>
-  )}
+
+<!-- Flowsurface mark: green candle + right-side volume profile (uniform row heights) incl. wick extremity rows. -->
+<div
+  class={`flex items-center ${condensed ? "gap-1.5" : "gap-2"} ${klass}`.trim()}
+  aria-label="Flowsurface"
+>
+  <svg
+    width="28"
+    height="28"
+    viewBox="0 0 64 64"
+    role="img"
+    aria-hidden={showWordmark ? "true" : "false"}
+    class="shrink-0"
+  >
+    <title>Flowsurface</title>
+    <desc>
+      Bullish candle with seven uniform horizontal volume profile rows (top red-only, bottom green-only) to the right.
+    </desc>
+
+    {encased && (
+      <rect x="1" y="1" width="62" height="62" rx="14" class="logo-bg" />
+    )}
+
+    <!-- Candle -->
+    <rect x="20" y="10" width="2" height="44" rx="1" fill="#51CDA0" opacity="0.9" />
+    <rect x="18" y="18" width="6" height="28" rx="2" fill="#51CDA0" />
+
+    <!-- Volume profile rows -->
+    <!-- Uniform: rowHeight = 4, gap = 2 => y positions: 12,18,24,30,36,42,48 -->
+    <g>
+      <!-- Row 1 (top wick, ask only) -->
+      <rect x="26" y="12" width="12" height="4" rx="1" fill="#C0504D" />
+      <!-- Row 2 -->
+      <rect x="26" y="18" width="18" height="4" rx="1" fill="#C0504D" />
+      <rect x="26" y="18" width="9" height="4" rx="1" fill="#51CDA0" />
+      <!-- Row 3 -->
+      <rect x="26" y="24" width="22" height="4" rx="1" fill="#C0504D" />
+      <rect x="26" y="24" width="13" height="4" rx="1" fill="#51CDA0" />
+      <!-- Row 4 (POC) -->
+      <rect x="26" y="30" width="26" height="4" rx="1" fill="#C0504D" />
+      <rect x="26" y="30" width="15" height="4" rx="1" fill="#51CDA0" />
+      <!-- Row 5 -->
+      <rect x="26" y="36" width="20" height="4" rx="1" fill="#C0504D" />
+      <rect x="26" y="36" width="11" height="4" rx="1" fill="#51CDA0" />
+      <!-- Row 6 -->
+      <rect x="26" y="42" width="14" height="4" rx="1" fill="#C0504D" />
+      <rect x="26" y="42" width="7" height="4" rx="1" fill="#51CDA0" />
+      <!-- Row 7 (bottom wick, bid only) -->
+      <rect x="26" y="48" width="13" height="4" rx="1" fill="#51CDA0" />
+    </g>
+  </svg>
   {showWordmark && (
-    <span class="font-semibold tracking-[0.38em] uppercase text-sm md:text-base leading-none select-none opacity-85 logo-wordmark">Flowsurface</span>
+    <span class="font-semibold tracking-[0.38em] uppercase text-sm md:text-base leading-none select-none opacity-85 logo-wordmark">
+      Flowsurface
+    </span>
   )}
 </div>
 <style>
-.logo-wordmark { letter-spacing: 0.38em; }
-@media (max-width: 480px) { .logo-wordmark { letter-spacing: 0.32em; } }
+  .logo-wordmark { letter-spacing: 0.38em; }
+  @media (max-width: 480px) { .logo-wordmark { letter-spacing: 0.32em; } }
+  .logo-bg { fill: #0e0d0d; }
+  .light .logo-bg { fill: #0e0d0d; /* force dark for contrast */ }
 </style>

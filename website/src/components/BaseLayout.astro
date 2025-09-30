@@ -8,7 +8,11 @@ const { title = 'Flowsurface – Open Source Orderflow & Market Structure Charts
 <html lang="en" class="scroll-smooth">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Favicon set: dark & light variants -->
+    <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
+    <!-- Fallback (some browsers pick first) -->
+    <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="generator" content={Astro.generator} />
     <title>{title}</title>
