@@ -13,6 +13,7 @@ An experimental open-source desktop charting application. Currently supports Bin
     -   **Candlestick:** Traditional kline chart supporting both time-based and custom tick-based intervals.
     -   **Footprint:** Price-grouped and interval-aggregated views for trades on top of candlestick chart; supports different clustering methods. Includes configurable imbalance and naked-POC studies.
     -   **Time & Sales:** Scrollable list of live trades.
+    -   **DOM (Depth of Market) / Ladder:** A real-time, interactive panel that displays limit order book data (bids and asks) alongside recent trade volumes at each price level.
 -   Real-time sound effects driven by trade streams
 -   Pane linking and grouping for quickly switching tickers across multiple panes
 -   Customizable and persistent layouts, themes, panel and chart settings
