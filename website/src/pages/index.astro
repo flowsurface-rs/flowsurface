@@ -3,7 +3,7 @@ import "@fontsource-variable/azeret-mono";
 import "../styles/global.css";
 ---
 
-<html lang="en" class="scroll-smooth light">
+<html lang="en" class="scroll-smooth">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -15,20 +15,96 @@ import "../styles/global.css";
       content="Flowsurface is an open-source desktop charting platform for crypto derivatives: heatmap (historical DOM), footprint, kline, ladder & time & sales with real-time aggregation, sound alerts and customizable layouts."
     />
     <meta name="theme-color" content="#0e0d0d" />
+    <script>
+      (function () {
+        try {
+          const stored = localStorage.getItem("fs-theme");
+          const prefersLight = window.matchMedia(
+            "(prefers-color-scheme: light)",
+          ).matches;
+          const theme = stored || (prefersLight ? "light" : "dark");
+          if (theme === "light")
+            document.documentElement.classList.add("light");
+          else document.documentElement.classList.remove("light");
+          const meta = document.querySelector('meta[name="theme-color"]');
+          if (meta)
+            meta.setAttribute(
+              "content",
+              theme === "light" ? "#f5f7f8" : "#0e0d0d",
+            );
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
   </head>
   <body>
     <!-- Navigation removed for focused hero -->
-    <header class="fixed top-5 left-6 z-50 select-none">
-      <a
-        href="#top"
-        aria-label="Flowsurface home"
-        class="flex items-center gap-3 font-semibold tracking-[0.4em] text-lg uppercase opacity-80 hover:opacity-100 transition-opacity"
-      >
-        <span
-          class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
-        ></span>
-        Flowsurface
-      </a>
+    <header class="fixed top-0 left-0 right-0 z-50 select-none">
+      <div class="w-full flex items-center justify-between gap-4 px-6 pt-5">
+        <a
+          href="#top"
+          aria-label="Flowsurface home"
+          class="flex items-center gap-3 font-semibold tracking-[0.4em] text-lg uppercase opacity-80 hover:opacity-100 transition-opacity"
+        >
+          <span
+            class="w-2 h-2 bg-accent-primary rounded-full shadow-[0_0_0_4px_rgba(67,166,129,.25)]"
+          ></span>
+          Flowsurface
+        </a>
+        <div class="flex items-center gap-3">
+          <a
+            href="#download"
+            aria-label="Download Flowsurface"
+            class="btn btn-primary px-3 py-[0.55rem] text-[0.65rem] leading-none tracking-wider"
+            >Download</a
+          >
+          <a
+            href="https://github.com/akenshaw/flowsurface"
+            target="_blank"
+            rel="noopener"
+            aria-label="View Flowsurface on GitHub"
+            class="btn btn-secondary px-3 py-[0.55rem] text-[0.65rem] leading-none tracking-wider"
+            >GitHub</a
+          >
+          <button
+            id="theme-toggle"
+            aria-label="Toggle light/dark theme"
+            class="inline-flex items-center justify-center rounded-md border border-border bg-surface-2 hover:border-border-soft hover:bg-surface-1 transition-colors px-3 py-[0.55rem] text-[0.65rem] leading-none tracking-wider font-semibold"
+          >
+            <span id="theme-toggle-icon" aria-hidden="true">☾</span>
+          </button>
+        </div>
+      </div>
+      <script>
+        (function () {
+          const btn = document.getElementById("theme-toggle");
+          const icon = document.getElementById("theme-toggle-icon");
+          if (!btn) return;
+          function currentTheme() {
+            return document.documentElement.classList.contains("light")
+              ? "light"
+              : "dark";
+          }
+          function apply(t) {
+            if (t === "light") document.documentElement.classList.add("light");
+            else document.documentElement.classList.remove("light");
+            localStorage.setItem("fs-theme", t);
+            if (icon) icon.textContent = t === "light" ? "☀︎" : "☾";
+            const meta = document.querySelector('meta[name="theme-color"]');
+            if (meta)
+              meta.setAttribute(
+                "content",
+                t === "light" ? "#f5f7f8" : "#0e0d0d",
+              );
+          }
+          apply(currentTheme());
+          btn.addEventListener("click", () => {
+            const next = currentTheme() === "light" ? "dark" : "light";
+            apply(next);
+          });
+        })();
+      </script>
     </header>
     <div id="top" class="h-[36px]"></div>
 
@@ -467,7 +543,7 @@ import "../styles/global.css";
                 class="inline-flex items-center gap-2 font-medium tracking-wider py-[0.65rem] px-4 bg-transparent text-text-primary border-none rounded-sm text-[0.95rem] leading-none cursor-pointer relative transition-all duration-250 hover:bg-white/[0.08] active:translate-y-0.5 focus-visible:outline-none focus-visible:shadow-focus no-underline"
                 href="https://github.com/akenshaw/flowsurface"
                 target="_blank"
-                rel="noopener">View on GitHub →</a
+                rel="noopener">Install from source →</a
               >
             </div>
             <div
