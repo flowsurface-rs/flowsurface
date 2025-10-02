@@ -1,6 +1,6 @@
 # Flowsurface
 
-An experimental open-source desktop charting application. Currently supports Binance and Bybit
+An experimental open-source desktop charting application. Supports Binance, Bybit, Hyperliquid and OKX
 
 <div align="center">
   <img width="2330" height="1440" alt="overview-layout-1" src="https://github.com/user-attachments/assets/7875117e-2475-4549-ac8c-6d350dacdb75" />
@@ -9,10 +9,11 @@ An experimental open-source desktop charting application. Currently supports Bin
 ### Key Features
 
 -   Multiple chart/panel types:
-    -   **Heatmap (Historical DOM):** Uses live trades and L2 orderbook data to create a time-series heatmap chart. Supports customizable price grouping and selectable time intervals. Includes a configurable fixed or visible range volume profile.
+    -   **Heatmap (Historical DOM):** Uses live trades and L2 orderbook to create a time-series heatmap chart. Supports customizable price grouping and selectable time intervals. Includes a configurable fixed or visible range volume profile.
     -   **Candlestick:** Traditional kline chart supporting both time-based and custom tick-based intervals.
     -   **Footprint:** Price-grouped and interval-aggregated views for trades on top of candlestick chart; supports different clustering methods. Includes configurable imbalance and naked-POC studies.
     -   **Time & Sales:** Scrollable list of live trades.
+    -   **DOM (Depth of Market) / Ladder:** A real-time, interactive panel that displays current L2 orderbook alongside recent trade volumes on grouped price levels.
 -   Real-time sound effects driven by trade streams
 -   Pane linking and grouping for quickly switching tickers across multiple panes
 -   Customizable and persistent layouts, themes, panel and chart settings
@@ -26,12 +27,12 @@ An experimental open-source desktop charting application. Currently supports Bin
 
 #### Historical Trades on Footprint Charts
 
--   By default, `FootprintChart` captures and plots live trades in real time via WebSocket.
+-   By default, they capture and plot live trades in real time via WebSocket.
 -   For Binance tickers, you can optionally backfill the visible time range by enabling trade fetching in the settings:
     -   [data.binance.vision](https://data.binance.vision/): Fast daily bulk downloads (no intraday).
     -   REST API (e.g., `/fapi/v1/aggTrades`): Slower, paginated intraday fetching (subject to rate limits).
     -   The Binance connector can use either or both methods to retrieve historical data as needed.
--   Trade fetching for Bybit tickers is not supported, as they lack a suitable REST API.
+-   Trade fetching for Bybit/Hyperliquid is not supported, as both lack a suitable REST API. OKX is WIP.
 
 ---
 
