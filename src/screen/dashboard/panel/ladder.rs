@@ -39,6 +39,10 @@ impl super::Panel for Ladder {
     fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         Ladder::invalidate(self, now)
     }
+
+    fn is_empty(&self) -> bool {
+        self.depth.bids.is_empty() && self.depth.asks.is_empty() && self.raw_trades.is_empty()
+    }
 }
 
 pub struct Ladder {

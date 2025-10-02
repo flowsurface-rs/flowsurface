@@ -3,7 +3,7 @@ pub mod timeandsales;
 
 use iced::{
     Element, padding,
-    widget::{canvas, container},
+    widget::{canvas, center, container, text},
 };
 use std::time::Instant;
 
@@ -22,9 +22,15 @@ pub trait Panel: canvas::Program<Message> {
     fn reset_scroll(&mut self);
 
     fn invalidate(&mut self, now: Option<Instant>) -> Option<Action>;
+
+    fn is_empty(&self) -> bool;
 }
 
 pub fn view<T: Panel>(panel: &'_ T, _timezone: data::UserTimezone) -> Element<'_, Message> {
+    if panel.is_empty() {
+        return center(text("Waiting for data...").size(16)).into();
+    }
+
     container(
         canvas(panel)
             .height(iced::Length::Fill)

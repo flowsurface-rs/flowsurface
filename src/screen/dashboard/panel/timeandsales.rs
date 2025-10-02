@@ -63,6 +63,10 @@ impl super::Panel for TimeAndSales {
     fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         self.invalidate(now)
     }
+
+    fn is_empty(&self) -> bool {
+        self.recent_trades.is_empty() && self.paused_trades_buffer.is_empty()
+    }
 }
 
 pub struct TimeAndSales {
