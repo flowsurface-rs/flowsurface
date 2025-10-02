@@ -1,5 +1,5 @@
 use crate::{
-    Price, PushFrequency, SIZE_IN_QUOTE_CURRENCY,
+    OpenInterest, Price, PushFrequency, SIZE_IN_QUOTE_CURRENCY,
     adapter::{StreamKind, StreamTicksize},
     limiter::{self, RateLimiter},
 };
@@ -557,9 +557,9 @@ fn timeframe_to_okx_bar(tf: Timeframe) -> Option<&'static str> {
         Timeframe::H1 => "1H",
         Timeframe::H2 => "2H",
         Timeframe::H4 => "4H",
-        Timeframe::H6 => "6H",
-        Timeframe::H12 => "12H",
-        Timeframe::D1 => "1D",
+        Timeframe::H6 => "6Hutc",
+        Timeframe::H12 => "12Hutc",
+        Timeframe::D1 => "1Dutc",
         _ => return None,
     })
 }
@@ -820,4 +820,50 @@ pub async fn fetch_klines(
 
     klines.sort_by_key(|k| k.time);
     Ok(klines)
+}
+
+const TRADING_STATS_DOMAIN: &str = "https://www.okx.com/api/v5/rubik/stat";
+
+pub async fn fetch_historical_oi(
+    ticker: Ticker,
+    range: Option<(u64, u64)>,
+    period: Timeframe,
+) -> Result<Vec<OpenInterest>, AdapterError> {
+    let (ticker_str, _market) = ticker.to_full_symbol_and_type();
+
+    let bar = timeframe_to_okx_bar(period)
+        .ok_or_else(|| AdapterError::InvalidRequest(format!("Unsupported timeframe: {period}")))?;
+
+    let mut url = TRADING_STATS_DOMAIN.to_string()
+        + format!("/contracts/open-interest-history?instId={ticker_str}&period={bar}").as_str();
+
+    if let Some((start, end)) = range {
+        url.push_str(&format!("&begin={start}&end={end}"));
+    }
+
+    let response_text =
+        limiter::http_request_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
+
+    let doc: Value = serde_json::from_str(&response_text)
+        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+
+    let list = doc["data"]
+        .as_array()
+        .ok_or_else(|| AdapterError::ParseError("Fetch result is not an array".to_string()))?;
+
+    // data = [ [ts, oi, oiCcy, oiUsd], ... ]
+    let open_interest: Vec<OpenInterest> = list
+        .iter()
+        .filter_map(|row| {
+            let arr = row.as_array()?;
+            let ts = arr.first()?.as_str()?.parse::<u64>().ok()?;
+            let oi_ccy = arr.get(2)?.as_str()?.parse::<f32>().ok()?;
+            Some(OpenInterest {
+                time: ts,
+                value: oi_ccy,
+            })
+        })
+        .collect();
+
+    Ok(open_interest)
 }

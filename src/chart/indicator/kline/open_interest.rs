@@ -97,10 +97,7 @@ impl OpenInterestIndicator {
     }
 
     pub fn is_supported_exchange(exchange: Exchange) -> bool {
-        exchange.is_perps()
-            && exchange != Exchange::HyperliquidLinear
-            && exchange != Exchange::OkexLinear
-            && exchange != Exchange::OkexInverse
+        exchange.is_perps() && exchange != Exchange::HyperliquidLinear
     }
 
     pub fn is_supported_timeframe(timeframe: Timeframe) -> bool {
