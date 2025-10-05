@@ -20,10 +20,13 @@ const ROW_HEIGHT: f32 = 16.0;
 const ORDER_QTY_COLS_WIDTH: f32 = 0.60;
 /// Uses half of the width for each side of the trade quantity columns
 const TRADE_QTY_COLS_WIDTH: f32 = 0.20;
-const PRICE_COL_WIDTH: f32 = 0.20;
+// const PRICE_COL_WIDTH: f32 = 0.20;
 
-/// Horizontal gap between columns (pixels)
 const COL_PADDING: f32 = 4.0;
+const MONO_CHAR_ADVANCE: f32 = 0.62;
+const PRICE_TEXT_SIDE_PAD_MIN: f32 = 12.0;
+
+const CHASE_CIRCLE_RADIUS: f32 = 4.0;
 
 impl super::Panel for Ladder {
     fn scroll(&mut self, delta: f32) {
@@ -286,9 +289,10 @@ impl canvas::Program<Message> for Ladder {
         let divider_color = style::split_ruler(theme).color;
 
         let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
-            let cols = self.column_ranges(bounds.width);
-
             if let Some(grid) = self.build_price_grid() {
+                let layout = self.price_layout_for(bounds.width, &grid);
+                let cols = self.column_ranges(bounds.width, layout.price_px);
+
                 let (visible_rows, maxima) = self.visible_rows(bounds, &grid);
 
                 let mut spread_row: Option<(f32, f32)> = None;
@@ -383,26 +387,27 @@ impl canvas::Program<Message> for Ladder {
                     }
                 }
 
-                // chase indicators with trail lines
-                let radius = 4.0;
+                // Chase indicators with trail lines
+                let left_gap_mid_x = cols.sell.1 + (layout.inside_pad_px + COL_PADDING) * 0.5;
+                let right_gap_mid_x = cols.buy.0 - (layout.inside_pad_px + COL_PADDING) * 0.5;
 
-                // Bid side (best ask row center for active circle)
+                // Bid tracker shown near the right split (buy side)
                 self.draw_chase_trail(
                     frame,
                     &grid,
                     bounds,
                     &self.bid_chase,
-                    cols.buy.0 - radius - 1.0,
+                    right_gap_mid_x,
                     best_ask_y.map(|y| y + ROW_HEIGHT / 2.0),
                     palette.success.weak.color,
                 );
-                // Ask side (best bid row center for active circle)
+                // Ask tracker shown near the left split (sell side)
                 self.draw_chase_trail(
                     frame,
                     &grid,
                     bounds,
                     &self.ask_chase,
-                    cols.sell.1 + radius + 1.0,
+                    left_gap_mid_x,
                     best_bid_y.map(|y| y + ROW_HEIGHT / 2.0),
                     palette.danger.weak.color,
                 );
@@ -493,23 +498,66 @@ struct ColumnRanges {
     ask_order: (f32, f32),
 }
 
+struct PriceLayout {
+    price_px: f32,
+    inside_pad_px: f32,
+}
+
 impl Ladder {
     // [BidOrderQty][SellQty][ Price ][BuyQty][AskOrderQty]
     const NUMBER_OF_COLUMN_GAPS: f32 = 4.0;
 
-    fn column_ranges(&self, width: f32) -> ColumnRanges {
-        let order_qty_ratio = ORDER_QTY_COLS_WIDTH / 2.0;
-        let trade_qty_ratio = TRADE_QTY_COLS_WIDTH / 2.0;
+    fn price_sample_text(&self, grid: &PriceGrid) -> String {
+        let a = self.format_price(grid.best_ask);
+        let b = self.format_price(grid.best_bid);
+        if a.len() >= b.len() { a } else { b }
+    }
 
+    fn mono_text_width_px(text_len: usize) -> f32 {
+        (text_len as f32) * TEXT_SIZE * MONO_CHAR_ADVANCE
+    }
+
+    fn price_layout_for(&self, total_width: f32, grid: &PriceGrid) -> PriceLayout {
+        let sample = self.price_sample_text(grid);
+        let text_px = Self::mono_text_width_px(sample.len());
+
+        let desired_total_gap = CHASE_CIRCLE_RADIUS * 2.0 + 4.0;
+        let inside_pad_px = PRICE_TEXT_SIDE_PAD_MIN
+            .max(desired_total_gap - COL_PADDING)
+            .max(0.0);
+
+        let price_px = (text_px + 2.0 * inside_pad_px).min(total_width.max(0.0));
+
+        PriceLayout {
+            price_px,
+            inside_pad_px,
+        }
+    }
+
+    fn column_ranges(&self, width: f32, price_px: f32) -> ColumnRanges {
         let total_gutter_width = COL_PADDING * Self::NUMBER_OF_COLUMN_GAPS;
-
         let usable_width = (width - total_gutter_width).max(0.0);
 
-        let bid_order_width = order_qty_ratio * usable_width;
-        let sell_trades_width = trade_qty_ratio * usable_width;
-        let price_width = PRICE_COL_WIDTH * usable_width;
-        let buy_trades_width = trade_qty_ratio * usable_width;
-        let ask_order_width = order_qty_ratio * usable_width;
+        let price_width = price_px.min(usable_width);
+
+        let rest = (usable_width - price_width).max(0.0);
+        let rest_ratio = ORDER_QTY_COLS_WIDTH + TRADE_QTY_COLS_WIDTH; // 0.80
+
+        let order_share = if rest_ratio > 0.0 {
+            (ORDER_QTY_COLS_WIDTH / rest_ratio) * rest
+        } else {
+            0.0
+        };
+        let trade_share = if rest_ratio > 0.0 {
+            (TRADE_QTY_COLS_WIDTH / rest_ratio) * rest
+        } else {
+            0.0
+        };
+
+        let bid_order_width = order_share * 0.5;
+        let sell_trades_width = trade_share * 0.5;
+        let buy_trades_width = trade_share * 0.5;
+        let ask_order_width = order_share * 0.5;
 
         let mut cursor_x = 0.0;
 
