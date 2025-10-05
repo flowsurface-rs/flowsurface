@@ -731,7 +731,7 @@ impl Ladder {
             let stroke_w = 2.0;
             let pad_to_circle = radius + stroke_w * 0.5;
 
-            if let Some(start_price) = tracker.chase_start_price {
+            if let Some(start_price) = tracker.chase_start_price() {
                 let start_y = self.price_to_screen_y(start_price, grid, bounds.height);
                 if let (Some(start_y), Some(current_y)) = (start_y, current_center_y) {
                     let dy = current_y - start_y;
@@ -752,7 +752,7 @@ impl Ladder {
                 frame.fill(path, color);
             }
         } else if tracker.is_fading_visible()
-            && let Some(end_price) = tracker.chase_end_price
+            && let Some(end_price) = tracker.chase_end_price()
             && let Some(end_y) = self.price_to_screen_y(end_price, grid, bounds.height)
         {
             let circle_y = end_y + ROW_HEIGHT / 2.0;
