@@ -645,13 +645,12 @@ impl Ladder {
     }
 
     fn build_price_grid(&self) -> Option<PriceGrid> {
-        let best_bid = self.grouped_bids.last_key_value().map(|(k, _)| *k);
-        let best_ask = self.grouped_asks.first_key_value().map(|(k, _)| *k);
-
-        let (best_bid, best_ask) = match (best_bid, best_ask) {
-            (Some(bb), Some(ba)) => (bb, ba),
-            (Some(bb), None) => (bb, bb.add_steps(1, self.tick_size)),
-            (None, Some(ba)) => (ba.add_steps(-1, self.tick_size), ba),
+        let best_bid = match (
+            self.grouped_bids.last_key_value().map(|(k, _)| *k),
+            self.grouped_asks.first_key_value().map(|(k, _)| *k),
+        ) {
+            (Some(bb), _) => bb,
+            (None, Some(ba)) => ba.add_steps(-1, self.tick_size),
             (None, None) => {
                 let mut min_t: Option<Price> = None;
                 let mut max_t: Option<Price> = None;
@@ -666,11 +665,10 @@ impl Ladder {
 
                 let steps =
                     Price::steps_between_inclusive(min_t, max_t, self.tick_size).unwrap_or(1);
-                let mid = max_t.add_steps(-(steps as i64 / 2), self.tick_size);
-
-                (mid, mid.add_steps(1, self.tick_size))
+                max_t.add_steps(-(steps as i64 / 2), self.tick_size)
             }
         };
+        let best_ask = best_bid.add_steps(1, self.tick_size);
 
         Some(PriceGrid {
             best_bid,
