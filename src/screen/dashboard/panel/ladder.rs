@@ -1,12 +1,12 @@
 use super::Message;
 use crate::style;
 use data::chart::kline::KlineTrades;
-use data::chart::ladder::Config;
+use data::chart::ladder::{ChaseTracker, Config};
 use exchange::Trade;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};
 
-use iced::widget::canvas::{self, Text};
+use iced::widget::canvas::{self, Path, Stroke, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use std::collections::{BTreeMap, VecDeque};
@@ -20,10 +20,14 @@ const ROW_HEIGHT: f32 = 16.0;
 const ORDER_QTY_COLS_WIDTH: f32 = 0.60;
 /// Uses half of the width for each side of the trade quantity columns
 const TRADE_QTY_COLS_WIDTH: f32 = 0.20;
-const PRICE_COL_WIDTH: f32 = 0.20;
 
-/// Horizontal gap between columns (pixels)
 const COL_PADDING: f32 = 4.0;
+/// Used for calculating layout with texts inside the price column
+const MONO_CHAR_ADVANCE: f32 = 0.62;
+/// Minimum padding on each side of the price text inside the price column
+const PRICE_TEXT_SIDE_PAD_MIN: f32 = 12.0;
+
+const CHASE_CIRCLE_RADIUS: f32 = 4.0;
 
 impl super::Panel for Ladder {
     fn scroll(&mut self, delta: f32) {
@@ -58,6 +62,8 @@ pub struct Ladder {
     last_exchange_ts_ms: Option<u64>,
     grouped_asks: BTreeMap<Price, f32>,
     grouped_bids: BTreeMap<Price, f32>,
+    bid_chase: ChaseTracker,
+    ask_chase: ChaseTracker,
 }
 
 impl Ladder {
@@ -75,10 +81,18 @@ impl Ladder {
             last_exchange_ts_ms: None,
             grouped_asks: BTreeMap::new(),
             grouped_bids: BTreeMap::new(),
+            bid_chase: ChaseTracker::default(),
+            ask_chase: ChaseTracker::default(),
         }
     }
 
     pub fn insert_buffers(&mut self, update_t: u64, depth: &Depth, trades_buffer: &[Trade]) {
+        let raw_best_bid = depth.bids.last_key_value().map(|(p, _)| *p);
+        let raw_best_ask = depth.asks.first_key_value().map(|(p, _)| *p);
+
+        self.bid_chase.update(raw_best_bid, true);
+        self.ask_chase.update(raw_best_ask, false);
+
         self.depth = depth.clone();
         let tick_size = self.tick_size;
 
@@ -197,6 +211,24 @@ impl Ladder {
         self.grouped_bids = self.group_price_levels(&self.depth.bids, true);
     }
 
+    fn price_to_screen_y(&self, price: Price, grid: &PriceGrid, bounds_height: f32) -> Option<f32> {
+        let mid_screen_y = bounds_height * 0.5;
+        let scroll = self.scroll_px;
+
+        let idx = if price >= grid.best_ask {
+            let steps = Price::steps_between_inclusive(grid.best_ask, price, grid.tick)?;
+            -(steps as i32)
+        } else if price <= grid.best_bid {
+            let steps = Price::steps_between_inclusive(price, grid.best_bid, grid.tick)?;
+            steps as i32
+        } else {
+            return Some(mid_screen_y - scroll);
+        };
+
+        let y = mid_screen_y + PriceGrid::top_y(idx) - scroll + ROW_HEIGHT / 2.0;
+        Some(y)
+    }
+
     fn group_price_levels(
         &self,
         levels: &BTreeMap<Price, f32>,
@@ -258,14 +290,33 @@ impl canvas::Program<Message> for Ladder {
         let divider_color = style::split_ruler(theme).color;
 
         let orderbook_visual = self.cache.draw(renderer, bounds.size(), |frame| {
-            let cols = self.column_ranges(bounds.width);
-
             if let Some(grid) = self.build_price_grid() {
+                let layout = self.price_layout_for(bounds.width, &grid);
+                let cols = self.column_ranges(bounds.width, layout.price_px);
+
                 let (visible_rows, maxima) = self.visible_rows(bounds, &grid);
 
                 let mut spread_row: Option<(f32, f32)> = None;
+                let mut best_bid_y: Option<f32> = None;
+                let mut best_ask_y: Option<f32> = None;
 
-                for visible_row in visible_rows {
+                for visible_row in visible_rows.iter() {
+                    match visible_row.row {
+                        DomRow::Ask { price, .. }
+                            if Some(price)
+                                == self.grouped_asks.first_key_value().map(|(p, _)| *p) =>
+                        {
+                            best_ask_y = Some(visible_row.y);
+                        }
+                        DomRow::Bid { price, .. }
+                            if Some(price)
+                                == self.grouped_bids.last_key_value().map(|(p, _)| *p) =>
+                        {
+                            best_bid_y = Some(visible_row.y);
+                        }
+                        _ => {}
+                    }
+
                     match visible_row.row {
                         DomRow::Ask { price, qty } => {
                             self.draw_row(
@@ -336,6 +387,33 @@ impl canvas::Program<Message> for Ladder {
                         }
                     }
                 }
+
+                // Chase indicators with trail lines
+                let left_gap_mid_x = cols.sell.1 + (layout.inside_pad_px + COL_PADDING) * 0.5;
+                let right_gap_mid_x = cols.buy.0 - (layout.inside_pad_px + COL_PADDING) * 0.5;
+
+                // Bid tracker shown near the right split (buy side)
+                self.draw_chase_trail(
+                    frame,
+                    &grid,
+                    bounds,
+                    &self.bid_chase,
+                    right_gap_mid_x,
+                    best_ask_y.map(|y| y + ROW_HEIGHT / 2.0),
+                    palette.success.weak.color,
+                    true, // is_bid
+                );
+                // Ask tracker shown near the left split (sell side)
+                self.draw_chase_trail(
+                    frame,
+                    &grid,
+                    bounds,
+                    &self.ask_chase,
+                    left_gap_mid_x,
+                    best_bid_y.map(|y| y + ROW_HEIGHT / 2.0),
+                    palette.danger.weak.color,
+                    false,
+                );
 
                 // Price column vertical dividers with a gap over the spread row (if visible)
                 let mut draw_vsplit = |x: f32, gap: Option<(f32, f32)>| {
@@ -423,23 +501,66 @@ struct ColumnRanges {
     ask_order: (f32, f32),
 }
 
+struct PriceLayout {
+    price_px: f32,
+    inside_pad_px: f32,
+}
+
 impl Ladder {
     // [BidOrderQty][SellQty][ Price ][BuyQty][AskOrderQty]
     const NUMBER_OF_COLUMN_GAPS: f32 = 4.0;
 
-    fn column_ranges(&self, width: f32) -> ColumnRanges {
-        let order_qty_ratio = ORDER_QTY_COLS_WIDTH / 2.0;
-        let trade_qty_ratio = TRADE_QTY_COLS_WIDTH / 2.0;
+    fn price_sample_text(&self, grid: &PriceGrid) -> String {
+        let a = self.format_price(grid.best_ask);
+        let b = self.format_price(grid.best_bid);
+        if a.len() >= b.len() { a } else { b }
+    }
 
+    fn mono_text_width_px(text_len: usize) -> f32 {
+        (text_len as f32) * TEXT_SIZE * MONO_CHAR_ADVANCE
+    }
+
+    fn price_layout_for(&self, total_width: f32, grid: &PriceGrid) -> PriceLayout {
+        let sample = self.price_sample_text(grid);
+        let text_px = Self::mono_text_width_px(sample.len());
+
+        let desired_total_gap = CHASE_CIRCLE_RADIUS * 2.0 + 4.0;
+        let inside_pad_px = PRICE_TEXT_SIDE_PAD_MIN
+            .max(desired_total_gap - COL_PADDING)
+            .max(0.0);
+
+        let price_px = (text_px + 2.0 * inside_pad_px).min(total_width.max(0.0));
+
+        PriceLayout {
+            price_px,
+            inside_pad_px,
+        }
+    }
+
+    fn column_ranges(&self, width: f32, price_px: f32) -> ColumnRanges {
         let total_gutter_width = COL_PADDING * Self::NUMBER_OF_COLUMN_GAPS;
-
         let usable_width = (width - total_gutter_width).max(0.0);
 
-        let bid_order_width = order_qty_ratio * usable_width;
-        let sell_trades_width = trade_qty_ratio * usable_width;
-        let price_width = PRICE_COL_WIDTH * usable_width;
-        let buy_trades_width = trade_qty_ratio * usable_width;
-        let ask_order_width = order_qty_ratio * usable_width;
+        let price_width = price_px.min(usable_width);
+
+        let rest = (usable_width - price_width).max(0.0);
+        let rest_ratio = ORDER_QTY_COLS_WIDTH + TRADE_QTY_COLS_WIDTH; // 0.80
+
+        let order_share = if rest_ratio > 0.0 {
+            (ORDER_QTY_COLS_WIDTH / rest_ratio) * rest
+        } else {
+            0.0
+        };
+        let trade_share = if rest_ratio > 0.0 {
+            (TRADE_QTY_COLS_WIDTH / rest_ratio) * rest
+        } else {
+            0.0
+        };
+
+        let bid_order_width = order_share * 0.5;
+        let sell_trades_width = trade_share * 0.5;
+        let buy_trades_width = trade_share * 0.5;
+        let ask_order_width = order_share * 0.5;
 
         let mut cursor_x = 0.0;
 
@@ -644,14 +765,58 @@ impl Ladder {
         });
     }
 
-    fn build_price_grid(&self) -> Option<PriceGrid> {
-        let best_bid = self.grouped_bids.last_key_value().map(|(k, _)| *k);
-        let best_ask = self.grouped_asks.first_key_value().map(|(k, _)| *k);
+    fn draw_chase_trail(
+        &self,
+        frame: &mut iced::widget::canvas::Frame,
+        grid: &PriceGrid,
+        bounds: Rectangle,
+        tracker: &ChaseTracker,
+        pos_x: f32,
+        best_offer_y: Option<f32>,
+        color: iced::Color,
+        is_bid: bool,
+    ) {
+        let radius = CHASE_CIRCLE_RADIUS;
+        if let Some((start_p_raw, end_p_raw, alpha)) = tracker.segment() {
+            let start_p = start_p_raw.round_to_side_step(is_bid, grid.tick);
+            let end_p = end_p_raw.round_to_side_step(is_bid, grid.tick);
 
-        let (best_bid, best_ask) = match (best_bid, best_ask) {
-            (Some(bb), Some(ba)) => (bb, ba),
-            (Some(bb), None) => (bb, bb.add_steps(1, self.tick_size)),
-            (None, Some(ba)) => (ba.add_steps(-1, self.tick_size), ba),
+            let color = color.scale_alpha(alpha);
+            let stroke_w = 2.0;
+            let pad_to_circle = radius + stroke_w * 0.5;
+
+            let start_y = self.price_to_screen_y(start_p, grid, bounds.height);
+            let end_y = self
+                .price_to_screen_y(end_p, grid, bounds.height)
+                .or(best_offer_y);
+
+            if let Some(end_y) = end_y {
+                if let Some(start_y) = start_y {
+                    let dy = end_y - start_y;
+                    if dy.abs() > pad_to_circle {
+                        let line_end_y = end_y - dy.signum() * pad_to_circle;
+                        let line_path =
+                            Path::line(Point::new(pos_x, start_y), Point::new(pos_x, line_end_y));
+                        frame.stroke(
+                            &line_path,
+                            Stroke::default().with_color(color).with_width(stroke_w),
+                        );
+                    }
+                }
+
+                let circle = &Path::circle(Point::new(pos_x, end_y), radius);
+                frame.fill(circle, color);
+            }
+        }
+    }
+
+    fn build_price_grid(&self) -> Option<PriceGrid> {
+        let best_bid = match (
+            self.grouped_bids.last_key_value().map(|(k, _)| *k),
+            self.grouped_asks.first_key_value().map(|(k, _)| *k),
+        ) {
+            (Some(bb), _) => bb,
+            (None, Some(ba)) => ba.add_steps(-1, self.tick_size),
             (None, None) => {
                 let mut min_t: Option<Price> = None;
                 let mut max_t: Option<Price> = None;
@@ -666,11 +831,10 @@ impl Ladder {
 
                 let steps =
                     Price::steps_between_inclusive(min_t, max_t, self.tick_size).unwrap_or(1);
-                let mid = max_t.add_steps(-(steps as i64 / 2), self.tick_size);
-
-                (mid, mid.add_steps(1, self.tick_size))
+                max_t.add_steps(-(steps as i64 / 2), self.tick_size)
             }
         };
+        let best_ask = best_bid.add_steps(1, self.tick_size);
 
         Some(PriceGrid {
             best_bid,
