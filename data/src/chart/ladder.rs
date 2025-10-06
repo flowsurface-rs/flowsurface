@@ -33,12 +33,17 @@ enum ChaseProgress {
         direction: Direction,
         start: Price,
         end: Price,
+        /// Number of consecutive moves in the current direction
         consecutive: u32,
     },
     Fading {
+        direction: Direction,
         start: Price,
         end: Price,
-        strength: u32,
+        /// Consecutive count at the moment fading started
+        start_consecutive: u32,
+        /// How many unchanged updates we have been fading
+        fade_steps: u32,
     },
 }
 
@@ -50,9 +55,6 @@ pub struct ChaseTracker {
 }
 
 impl ChaseTracker {
-    const MAX_CONSECUTIVE: u32 = 50;
-    const COOLDOWN_DECAY_RATE: u32 = 1;
-
     pub fn update(&mut self, current_best: Option<Price>, is_bid: bool) {
         let Some(current) = current_best else {
             self.reset();
@@ -76,118 +78,119 @@ impl ChaseTracker {
             };
             let is_unchanged = current == last;
 
-            let step_gain = Self::MAX_CONSECUTIVE / 10;
-
-            self.state =
-                match (&self.state, is_continue, is_reverse, is_unchanged) {
-                    (
-                        ChaseProgress::Chasing {
-                            direction: sdir,
-                            start,
-                            consecutive,
-                            ..
-                        },
-                        true,
-                        _,
-                        _,
-                    ) if *sdir == direction => ChaseProgress::Chasing {
-                        direction,
-                        start: *start,
-                        end: current,
-                        consecutive: consecutive
-                            .saturating_add(step_gain)
-                            .min(Self::MAX_CONSECUTIVE),
+            self.state = match (&self.state, is_continue, is_reverse, is_unchanged) {
+                // Continue in same direction while already chasing: extend chase
+                (
+                    ChaseProgress::Chasing {
+                        direction: sdir,
+                        start,
+                        consecutive,
+                        ..
                     },
+                    true,
+                    _,
+                    _,
+                ) if *sdir == direction => ChaseProgress::Chasing {
+                    direction,
+                    start: *start,
+                    end: current,
+                    consecutive: consecutive.saturating_add(1),
+                },
 
-                    // Start a new chase (from idle or while fading)
-                    (ChaseProgress::Idle, true, _, _)
-                    | (ChaseProgress::Fading { .. }, true, _, _) => ChaseProgress::Chasing {
+                // Start or restart a chase (from idle or from fading)
+                (ChaseProgress::Idle, true, _, _) | (ChaseProgress::Fading { .. }, true, _, _) => {
+                    ChaseProgress::Chasing {
                         direction,
                         start: last,
                         end: current,
-                        consecutive: step_gain.min(Self::MAX_CONSECUTIVE),
-                    },
-
-                    // Reversal while chasing -> fade previous trail
-                    (
-                        ChaseProgress::Chasing {
-                            start, consecutive, ..
-                        },
-                        _,
-                        true,
-                        _,
-                    ) if *consecutive > 0 => ChaseProgress::Fading {
-                        start: *start,
-                        end: current,
-                        strength: *consecutive,
-                    },
-
-                    // Unchanged while chasing -> decay
-                    (
-                        ChaseProgress::Chasing {
-                            direction: sdir,
-                            start,
-                            end,
-                            consecutive,
-                        },
-                        _,
-                        _,
-                        true,
-                    ) if *sdir == direction => {
-                        let next = consecutive.saturating_sub(Self::COOLDOWN_DECAY_RATE);
-                        if next == 0 {
-                            ChaseProgress::Idle
-                        } else {
-                            ChaseProgress::Chasing {
-                                direction,
-                                start: *start,
-                                end: *end,
-                                consecutive: next,
-                            }
-                        }
+                        consecutive: 1,
                     }
+                }
 
-                    // Unchanged while fading -> fade out
-                    (
-                        ChaseProgress::Fading {
-                            start,
-                            end,
-                            strength,
-                        },
-                        _,
-                        _,
-                        true,
-                    ) => {
-                        let next = strength.saturating_sub(Self::COOLDOWN_DECAY_RATE);
-                        if next == 0 {
-                            ChaseProgress::Idle
-                        } else {
-                            ChaseProgress::Fading {
-                                start: *start,
-                                end: *end,
-                                strength: next,
-                            }
-                        }
-                    }
-
-                    // Reversal when idle or already fading -> no change
-                    (ChaseProgress::Idle, _, true, _)
-                    | (ChaseProgress::Fading { .. }, _, true, _) => self.state,
-
-                    // Unchanged when idle -> no change
-                    (ChaseProgress::Idle, _, _, true) => ChaseProgress::Idle,
-
-                    // Any other "continue" case -> (re)start a chase in this dir
-                    (_, true, _, _) => ChaseProgress::Chasing {
-                        direction,
-                        start: last,
-                        end: current,
-                        consecutive: step_gain.min(Self::MAX_CONSECUTIVE),
+                // Reversal while chasing -> start fading from the last chase extreme (freeze end)
+                (
+                    ChaseProgress::Chasing {
+                        direction: sdir,
+                        start,
+                        end,
+                        consecutive,
                     },
+                    _,
+                    true,
+                    _,
+                ) if *consecutive > 0 => ChaseProgress::Fading {
+                    direction: *sdir,
+                    start: *start,
+                    end: *end, // keep the extreme reached during the chase
+                    start_consecutive: *consecutive,
+                    fade_steps: 0,
+                },
 
-                    // Default: keep state
-                    _ => self.state,
-                };
+                // Unchanged while chasing -> start fading from the last chase extreme (freeze end)
+                (
+                    ChaseProgress::Chasing {
+                        direction: sdir,
+                        start,
+                        end,
+                        consecutive,
+                    },
+                    _,
+                    _,
+                    true,
+                ) if *consecutive > 0 => ChaseProgress::Fading {
+                    direction: *sdir,
+                    start: *start,
+                    end: *end, // keep the extreme reached during the chase
+                    start_consecutive: *consecutive,
+                    fade_steps: 0,
+                },
+
+                // Unchanged while fading -> keep fading (decay)
+                (
+                    ChaseProgress::Fading {
+                        direction: sdir,
+                        start,
+                        end,
+                        start_consecutive,
+                        fade_steps,
+                    },
+                    _,
+                    _,
+                    true,
+                ) => ChaseProgress::Fading {
+                    direction: *sdir,
+                    start: *start,
+                    end: *end,
+                    start_consecutive: *start_consecutive,
+                    fade_steps: fade_steps.saturating_add(1),
+                },
+
+                // Reversal while fading -> keep fading and decay
+                (
+                    ChaseProgress::Fading {
+                        direction: sdir,
+                        start,
+                        end,
+                        start_consecutive,
+                        fade_steps,
+                    },
+                    _,
+                    true,
+                    _,
+                ) => ChaseProgress::Fading {
+                    direction: *sdir,
+                    start: *start,
+                    end: *end, // freeze
+                    start_consecutive: *start_consecutive,
+                    fade_steps: fade_steps.saturating_add(1),
+                },
+
+                // Unchanged when idle -> no change
+                (ChaseProgress::Idle, _, _, true) => ChaseProgress::Idle,
+
+                // Default: keep state
+                _ => self.state,
+            };
         }
 
         self.last_best = Some(current);
@@ -198,44 +201,33 @@ impl ChaseTracker {
         self.state = ChaseProgress::Idle;
     }
 
-    pub fn opacity(&self) -> f32 {
+    /// Maps consecutive steps n to [0,1): 1 - 1/(1+n)
+    fn consecutive_to_alpha(n: u32) -> f32 {
+        let nf = n as f32;
+        1.0 - 1.0 / (1.0 + nf)
+    }
+
+    pub fn segment(&self) -> Option<(Price, Price, f32)> {
         match self.state {
-            ChaseProgress::Chasing { consecutive, .. } => {
-                (consecutive as f32 / Self::MAX_CONSECUTIVE as f32).clamp(0.0, 1.0)
+            ChaseProgress::Chasing {
+                start,
+                end,
+                consecutive,
+                ..
+            } => Some((start, end, Self::consecutive_to_alpha(consecutive))),
+            ChaseProgress::Fading {
+                start,
+                end,
+                start_consecutive,
+                fade_steps,
+                ..
+            } => {
+                let alpha = {
+                    let base = Self::consecutive_to_alpha(start_consecutive);
+                    base / (1.0 + fade_steps as f32)
+                };
+                Some((start, end, alpha))
             }
-            _ => 0.0,
-        }
-    }
-
-    pub fn fading_opacity(&self) -> f32 {
-        match self.state {
-            ChaseProgress::Fading { strength, .. } => {
-                (strength as f32 / Self::MAX_CONSECUTIVE as f32).clamp(0.0, 1.0)
-            }
-            _ => 0.0,
-        }
-    }
-
-    pub fn is_visible(&self) -> bool {
-        matches!(self.state, ChaseProgress::Chasing { .. }) && self.opacity() > 0.0
-    }
-
-    pub fn is_fading_visible(&self) -> bool {
-        matches!(self.state, ChaseProgress::Fading { .. })
-            && self.fading_opacity() > 0.0
-            && !self.is_visible()
-    }
-
-    pub fn chase_start_price(&self) -> Option<Price> {
-        match self.state {
-            ChaseProgress::Chasing { start, .. } => Some(start),
-            _ => None,
-        }
-    }
-
-    pub fn chase_end_price(&self) -> Option<Price> {
-        match self.state {
-            ChaseProgress::Chasing { end, .. } => Some(end),
             _ => None,
         }
     }

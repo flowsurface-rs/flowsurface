@@ -20,10 +20,11 @@ const ROW_HEIGHT: f32 = 16.0;
 const ORDER_QTY_COLS_WIDTH: f32 = 0.60;
 /// Uses half of the width for each side of the trade quantity columns
 const TRADE_QTY_COLS_WIDTH: f32 = 0.20;
-// const PRICE_COL_WIDTH: f32 = 0.20;
 
 const COL_PADDING: f32 = 4.0;
+/// Used for calculating layout with texts inside the price column
 const MONO_CHAR_ADVANCE: f32 = 0.62;
+/// Minimum padding on each side of the price text inside the price column
 const PRICE_TEXT_SIDE_PAD_MIN: f32 = 12.0;
 
 const CHASE_CIRCLE_RADIUS: f32 = 4.0;
@@ -216,10 +217,10 @@ impl Ladder {
 
         let idx = if price >= grid.best_ask {
             let steps = Price::steps_between_inclusive(grid.best_ask, price, grid.tick)?;
-            -1 - steps as i32
+            -(steps as i32)
         } else if price <= grid.best_bid {
             let steps = Price::steps_between_inclusive(price, grid.best_bid, grid.tick)?;
-            1 + steps as i32
+            steps as i32
         } else {
             return Some(mid_screen_y - scroll);
         };
@@ -400,6 +401,7 @@ impl canvas::Program<Message> for Ladder {
                     right_gap_mid_x,
                     best_ask_y.map(|y| y + ROW_HEIGHT / 2.0),
                     palette.success.weak.color,
+                    true, // is_bid
                 );
                 // Ask tracker shown near the left split (sell side)
                 self.draw_chase_trail(
@@ -410,6 +412,7 @@ impl canvas::Program<Message> for Ladder {
                     left_gap_mid_x,
                     best_bid_y.map(|y| y + ROW_HEIGHT / 2.0),
                     palette.danger.weak.color,
+                    false,
                 );
 
                 // Price column vertical dividers with a gap over the spread row (if visible)
@@ -769,44 +772,41 @@ impl Ladder {
         bounds: Rectangle,
         tracker: &ChaseTracker,
         pos_x: f32,
-        current_center_y: Option<f32>,
+        best_offer_y: Option<f32>,
         color: iced::Color,
+        is_bid: bool,
     ) {
-        let radius = 4.0;
+        let radius = CHASE_CIRCLE_RADIUS;
+        if let Some((start_p_raw, end_p_raw, alpha)) = tracker.segment() {
+            let start_p = start_p_raw.round_to_side_step(is_bid, grid.tick);
+            let end_p = end_p_raw.round_to_side_step(is_bid, grid.tick);
 
-        if tracker.is_visible() {
-            let color = color.scale_alpha(tracker.opacity());
+            let color = color.scale_alpha(alpha);
             let stroke_w = 2.0;
             let pad_to_circle = radius + stroke_w * 0.5;
 
-            if let Some(start_price) = tracker.chase_start_price() {
-                let start_y = self.price_to_screen_y(start_price, grid, bounds.height);
-                if let (Some(start_y), Some(current_y)) = (start_y, current_center_y) {
-                    let dy = current_y - start_y;
+            let start_y = self.price_to_screen_y(start_p, grid, bounds.height);
+            let end_y = self
+                .price_to_screen_y(end_p, grid, bounds.height)
+                .or(best_offer_y);
+
+            if let Some(end_y) = end_y {
+                if let Some(start_y) = start_y {
+                    let dy = end_y - start_y;
                     if dy.abs() > pad_to_circle {
-                        let end_y = current_y - dy.signum() * pad_to_circle;
+                        let line_end_y = end_y - dy.signum() * pad_to_circle;
                         let line_path =
-                            Path::line(Point::new(pos_x, start_y), Point::new(pos_x, end_y));
+                            Path::line(Point::new(pos_x, start_y), Point::new(pos_x, line_end_y));
                         frame.stroke(
                             &line_path,
                             Stroke::default().with_color(color).with_width(stroke_w),
                         );
                     }
                 }
-            }
 
-            if let Some(curr) = current_center_y {
-                let path = &Path::circle(Point::new(pos_x, curr), radius);
-                frame.fill(path, color);
+                let circle = &Path::circle(Point::new(pos_x, end_y), radius);
+                frame.fill(circle, color);
             }
-        } else if tracker.is_fading_visible()
-            && let Some(end_price) = tracker.chase_end_price()
-            && let Some(end_y) = self.price_to_screen_y(end_price, grid, bounds.height)
-        {
-            let circle_y = end_y + ROW_HEIGHT / 2.0;
-            let fade_color = color.scale_alpha(tracker.fading_opacity());
-            let path = &Path::circle(Point::new(pos_x, circle_y), radius);
-            frame.fill(path, fade_color);
         }
     }
 
