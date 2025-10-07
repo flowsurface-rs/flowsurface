@@ -315,13 +315,13 @@ impl Dashboard {
                                         None => matches!(
                                             (&cfg, &state.content),
                                             (
-                                                data::chart::VisualConfig::Kline(_),
+                                                data::layout::pane::VisualConfig::Kline(_),
                                                 pane::Content::Kline { .. }
                                             ) | (
-                                                data::chart::VisualConfig::Heatmap(_),
+                                                data::layout::pane::VisualConfig::Heatmap(_),
                                                 pane::Content::Heatmap { .. }
                                             ) | (
-                                                data::chart::VisualConfig::TimeAndSales(_),
+                                                data::layout::pane::VisualConfig::TimeAndSales(_),
                                                 pane::Content::TimeAndSales(_)
                                             )
                                         ),

@@ -1,8 +1,8 @@
 use super::Message;
 use crate::style;
-pub use data::chart::timeandsales::Config;
-use data::chart::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
 use data::config::theme::{darken, lighten};
+pub use data::panel::timeandsales::Config;
+use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
 use exchange::{TickerInfo, Trade};
 
 use iced::widget::canvas::{self, Text};

@@ -19,10 +19,10 @@ use crate::{
 use data::{
     UserTimezone,
     chart::{
-        Basis, ViewConfig, VisualConfig,
+        Basis, ViewConfig,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
     },
-    layout::pane::{LinkGroup, Settings},
+    layout::pane::{LinkGroup, Settings, VisualConfig},
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,

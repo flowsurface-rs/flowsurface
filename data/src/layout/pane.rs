@@ -1,10 +1,12 @@
 use exchange::adapter::PersistStreamKind;
 use serde::{Deserialize, Serialize};
 
+use crate::chart::{heatmap, kline};
+use crate::panel::{ladder, timeandsales};
 use crate::util::ok_or_default;
 
 use crate::chart::{
-    Basis, ViewConfig, VisualConfig,
+    Basis, ViewConfig,
     heatmap::HeatmapStudy,
     indicator::{HeatmapIndicator, KlineIndicator},
     kline::KlineChartKind,
@@ -122,5 +124,44 @@ impl std::fmt::Display for LinkGroup {
             LinkGroup::I => "9",
         };
         write!(f, "{c}")
+    }
+}
+
+/// Defines the specific configuration for different types of pane settings.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum VisualConfig {
+    Heatmap(heatmap::Config),
+    TimeAndSales(timeandsales::Config),
+    Kline(kline::Config),
+    Ladder(ladder::Config),
+}
+
+impl VisualConfig {
+    pub fn heatmap(&self) -> Option<heatmap::Config> {
+        match self {
+            Self::Heatmap(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn time_and_sales(&self) -> Option<timeandsales::Config> {
+        match self {
+            Self::TimeAndSales(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn kline(&self) -> Option<kline::Config> {
+        match self {
+            Self::Kline(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn ladder(&self) -> Option<ladder::Config> {
+        match self {
+            Self::Ladder(cfg) => Some(*cfg),
+            _ => None,
+        }
     }
 }

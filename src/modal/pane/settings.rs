@@ -3,16 +3,17 @@ use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
 use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
+
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
-use data::chart::ladder;
-use data::chart::timeandsales::StackedBar;
 use data::chart::{
-    KlineChartKind, VisualConfig,
+    KlineChartKind,
     heatmap::{self, CoalesceKind},
     kline::ClusterKind,
-    timeandsales::StackedBarRatio,
 };
+use data::layout::pane::VisualConfig;
+use data::panel::ladder;
+use data::panel::timeandsales::{StackedBar, StackedBarRatio};
 use data::util::format_with_commas;
 
 use iced::widget::space;

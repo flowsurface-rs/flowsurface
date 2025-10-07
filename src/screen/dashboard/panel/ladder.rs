@@ -1,7 +1,7 @@
 use super::Message;
 use crate::style;
 use data::chart::kline::KlineTrades;
-use data::chart::ladder::{ChaseTracker, Config};
+use data::panel::ladder::{ChaseTracker, Config};
 use exchange::Trade;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};

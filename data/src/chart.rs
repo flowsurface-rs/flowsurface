@@ -1,8 +1,6 @@
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
-pub mod ladder;
-pub mod timeandsales;
 
 use exchange::Timeframe;
 use serde::{Deserialize, Serialize};
@@ -58,44 +56,6 @@ pub enum Autoscale {
     #[default]
     CenterLatest,
     FitToVisible,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub enum VisualConfig {
-    Heatmap(heatmap::Config),
-    TimeAndSales(timeandsales::Config),
-    Kline(kline::Config),
-    Ladder(ladder::Config),
-}
-
-impl VisualConfig {
-    pub fn heatmap(&self) -> Option<heatmap::Config> {
-        match self {
-            Self::Heatmap(cfg) => Some(*cfg),
-            _ => None,
-        }
-    }
-
-    pub fn time_and_sales(&self) -> Option<timeandsales::Config> {
-        match self {
-            Self::TimeAndSales(cfg) => Some(*cfg),
-            _ => None,
-        }
-    }
-
-    pub fn kline(&self) -> Option<kline::Config> {
-        match self {
-            Self::Kline(cfg) => Some(*cfg),
-            _ => None,
-        }
-    }
-
-    pub fn ladder(&self) -> Option<ladder::Config> {
-        match self {
-            Self::Ladder(cfg) => Some(*cfg),
-            _ => None,
-        }
-    }
 }
 
 /// Defines how chart data is aggregated and displayed along the x-axis.
