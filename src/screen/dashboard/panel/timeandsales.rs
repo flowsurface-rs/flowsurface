@@ -178,6 +178,10 @@ impl TimeAndSales {
         }
     }
 
+    fn pause_overlay_height(&self) -> f32 {
+        self.stacked_bar_height().max(METRICS_HEIGHT_COMPACT) + TRADE_ROW_HEIGHT
+    }
+
     fn prune_by_time(&mut self, now_epoch_ms: Option<u64>) {
         if self.recent_trades.is_empty() {
             return;
@@ -284,14 +288,6 @@ impl canvas::Program<Message> for TimeAndSales {
         cursor: iced_core::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let cursor_position = cursor.position_in(bounds)?;
-        let stacked_bar_h = self.stacked_bar_height();
-
-        let paused_box = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: bounds.width,
-            height: stacked_bar_h + TRADE_ROW_HEIGHT,
-        };
 
         match event {
             Event::Mouse(mouse_event) => match mouse_event {
@@ -300,6 +296,14 @@ impl canvas::Program<Message> for TimeAndSales {
                         Some(canvas::Action::publish(Message::ResetScroll).and_capture())
                     }
                     mouse::Button::Left => {
+                        let paused_box_height = self.pause_overlay_height();
+                        let paused_box = Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            width: bounds.width,
+                            height: paused_box_height,
+                        };
+
                         if self.is_paused && paused_box.contains(cursor_position) {
                             Some(canvas::Action::publish(Message::ResetScroll).and_capture())
                         } else {
@@ -550,16 +554,16 @@ impl canvas::Program<Message> for TimeAndSales {
             }
 
             if is_scroll_paused {
-                let pause_box_height = stacked_bar_h.max(METRICS_HEIGHT_COMPACT) + TRADE_ROW_HEIGHT;
-                let pause_box_y = 0.0;
+                let pause_overlay_height = self.pause_overlay_height();
+                let pause_overlay_y = 0.0;
 
                 let cursor_position = cursor.position_in(bounds);
 
                 let paused_box = Rectangle {
                     x: 0.0,
-                    y: pause_box_y,
+                    y: pause_overlay_y,
                     width: frame.width(),
-                    height: pause_box_height,
+                    height: pause_overlay_height,
                 };
 
                 let bg_color = if let Some(cursor) = cursor_position {
@@ -575,11 +579,11 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_rectangle(
                     Point {
                         x: 0.0,
-                        y: pause_box_y,
+                        y: pause_overlay_y,
                     },
                     Size {
                         width: frame.width(),
-                        height: pause_box_height,
+                        height: pause_overlay_height,
                     },
                     bg_color,
                 );
@@ -588,7 +592,7 @@ impl canvas::Program<Message> for TimeAndSales {
                     content: "Paused".to_string(),
                     position: Point {
                         x: frame.width() * 0.5,
-                        y: pause_box_y + (pause_box_height / 2.0),
+                        y: pause_overlay_y + (pause_overlay_height / 2.0),
                     },
                     size: 12.0.into(),
                     font: style::AZERET_MONO,
