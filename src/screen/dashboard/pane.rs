@@ -1,5 +1,10 @@
 use crate::{
-    chart::{self, heatmap::HeatmapChart, kline::KlineChart},
+    chart::{
+        self,
+        comparison::{self, ComparisonChart},
+        heatmap::HeatmapChart,
+        kline::KlineChart,
+    },
     modal::{
         self, ModifierKind,
         pane::{
@@ -12,10 +17,7 @@ use crate::{
         dashboard::panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
     },
     style::{self, Icon, icon_text},
-    widget::{
-        self, button_with_tooltip, chart::LineComparison, column_drag, link_group_button,
-        toast::Toast,
-    },
+    widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
     window::{self, Window},
 };
 use data::{
@@ -37,7 +39,7 @@ use iced::{
     widget::{button, center, column, container, pane_grid, row, text, tooltip},
 };
 use serde::{Deserialize, Serialize};
-use std::{char, time::Instant};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InfoType {
@@ -95,6 +97,7 @@ pub enum Message {
     StreamModifierChanged(pane_grid::Pane, modal::stream::Message),
     StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
+    ComparisonChartInteraction(pane_grid::Pane, comparison::Message),
 }
 
 pub struct State {
@@ -346,7 +349,7 @@ impl State {
                 Ok((content, streams))
             }
             "comparison" => {
-                let content = Content::Comparison(Some(LineComparison::sample()));
+                let content = Content::Comparison(Some(ComparisonChart::new()));
                 let streams = vec![];
                 Ok((content, streams))
             }
@@ -503,9 +506,15 @@ impl State {
                 }
             }
             Content::Comparison(chart) => {
-                let chart = LineComparison::sample();
+                if let Some(chart) = chart {
+                    let base = chart
+                        .view()
+                        .map(move |message| Message::ComparisonChartInteraction(id, message));
 
-                row![chart].padding(1).into()
+                    base.into()
+                } else {
+                    center(text("Loading...").size(16)).into()
+                }
             }
             Content::TimeAndSales(panel) => {
                 if let Some(panel) = panel {
@@ -1101,7 +1110,7 @@ pub enum Content {
     },
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
-    Comparison(Option<LineComparison>),
+    Comparison(Option<ComparisonChart>),
 }
 
 impl Content {

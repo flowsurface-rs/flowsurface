@@ -1,5 +1,5 @@
-use std::time::Instant;
-
+use crate::chart::Action;
+use crate::style;
 use iced::advanced::layout;
 use iced::advanced::renderer;
 use iced::advanced::widget::tree::{self, Tree};
@@ -8,11 +8,12 @@ use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
-use crate::chart::Action;
-use crate::style;
-
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const TEXT_SIZE: f32 = 12.0;
+
+const MIN_ZOOM_POINTS: usize = 2;
+const MAX_ZOOM_POINTS: usize = 5000;
+const ZOOM_STEP_PCT: f64 = 0.05; // 5% per scroll "line"
 
 #[derive(Debug, Clone)]
 pub struct Series {
@@ -22,11 +23,11 @@ pub struct Series {
     pub color: Option<Color>,
 }
 
-pub struct LineComparison {
+pub struct LineComparison<Message> {
     series: Vec<Series>,
     stroke_width: f32,
     zoom: Zoom,
-    last_tick: Instant,
+    on_zoom_chg: Option<fn(Zoom) -> Message>,
 }
 
 #[derive(Default)]
@@ -35,33 +36,75 @@ struct State {
     label_cache: canvas::Cache,
 }
 
-impl LineComparison {
+impl<Message> LineComparison<Message> {
     pub fn new(series: Vec<Series>) -> Self {
         Self {
             series,
             stroke_width: 2.0,
             zoom: Zoom::all(),
-            last_tick: Instant::now(),
+            on_zoom_chg: None,
         }
     }
 
-    /// Builder to set zoom (0 = all points, otherwise last N points).
     pub fn with_zoom(mut self, zoom: Zoom) -> Self {
         self.zoom = zoom;
         self
     }
 
-    /// Update zoom at runtime (0 = all points, otherwise last N points).
-    pub fn set_zoom(&mut self, zoom: Zoom) {
-        if self.zoom != zoom {
-            self.zoom = zoom;
-            // If you retain widget state across frames, consider clearing caches:
-            // (requires access to State) — keep as-is if the widget is recreated on change.
+    fn max_points_available(&self) -> usize {
+        self.series
+            .iter()
+            .map(|s| s.points.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn normalize_zoom(&self, z: Zoom) -> Zoom {
+        if z.is_all() {
+            return Zoom::all();
+        }
+        let n = z.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+        Zoom::points(n)
+    }
+
+    fn estimated_dt(&self) -> f64 {
+        let mut dts: Vec<f64> = self
+            .series
+            .iter()
+            .filter_map(|s| {
+                if s.points.len() >= 2 {
+                    let first = s.points.first().unwrap().0;
+                    let last = s.points.last().unwrap().0;
+                    let steps = (s.points.len() - 1) as f64;
+                    let dt = (last - first) / steps;
+                    if dt.is_finite() && dt > 0.0 {
+                        Some(dt)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if dts.is_empty() {
+            return 1.0;
+        }
+
+        dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = dts.len() / 2;
+        if dts.len() % 2 == 1 {
+            dts[mid]
+        } else {
+            (dts[mid - 1] + dts[mid]) * 0.5
         }
     }
 
-    pub fn last_update(&self) -> Instant {
-        self.last_tick
+    /// Builder to set zoom change callback.
+    pub fn on_zoom(mut self, f: fn(Zoom) -> Message) -> Self {
+        self.on_zoom_chg = Some(f);
+        self
     }
 
     fn compute_domains(&self) -> Option<((f64, f64), (f32, f32))> {
@@ -69,14 +112,38 @@ impl LineComparison {
             return None;
         }
 
-        // X domain is shared across all series (restricted by zoom)
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
+        let mut data_min_x = f64::INFINITY;
+        let mut data_max_x = f64::NEG_INFINITY;
+        for s in &self.series {
+            for (x, _) in &s.points {
+                if *x < data_min_x {
+                    data_min_x = *x;
+                }
+                if *x > data_max_x {
+                    data_max_x = *x;
+                }
+            }
+        }
+        if !data_min_x.is_finite() || !data_max_x.is_finite() {
+            return None;
+        }
+        if (data_max_x - data_min_x).abs() < f64::EPSILON {
+            data_max_x = data_min_x + 1.0;
+        }
 
-        // Y domain (percent) over the currently visible X window
+        // Determine the X window from zoom.
+        let (win_min_x, win_max_x) = if self.zoom.is_all() {
+            (data_min_x, data_max_x)
+        } else {
+            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+            let dt = self.estimated_dt().max(1e-9);
+            let span = ((n.saturating_sub(1)) as f64) * dt;
+            (data_max_x - span, data_max_x)
+        };
+
+        // Y domain (percent) over the window [win_min_x, win_max_x]
         let mut min_pct = f32::INFINITY;
         let mut max_pct = f32::NEG_INFINITY;
-
         let mut any_point = false;
 
         for s in &self.series {
@@ -85,25 +152,15 @@ impl LineComparison {
             }
             let base = s.points[0].1;
             if base == 0.0 {
-                continue; // skip invalid base
+                continue;
             }
 
-            let start_idx = if self.zoom.is_all() {
-                0
-            } else {
-                s.points.len().saturating_sub(self.zoom.0)
-            };
-
-            for (x, y) in s.points.iter().skip(start_idx) {
+            for (_, y) in s
+                .points
+                .iter()
+                .filter(|(x, _)| *x >= win_min_x && *x <= win_max_x)
+            {
                 any_point = true;
-
-                if *x < min_x {
-                    min_x = *x;
-                }
-                if *x > max_x {
-                    max_x = *x;
-                }
-
                 let pct = ((*y / base) - 1.0) as f32 * 100.0;
                 if pct < min_pct {
                     min_pct = pct;
@@ -114,13 +171,10 @@ impl LineComparison {
             }
         }
 
-        if !any_point || !min_x.is_finite() || !max_x.is_finite() {
+        if !any_point {
             return None;
         }
 
-        if (max_x - min_x).abs() < f64::EPSILON {
-            max_x = min_x + 1.0;
-        }
         if (max_pct - min_pct).abs() < f32::EPSILON {
             min_pct -= 1.0;
             max_pct += 1.0;
@@ -129,42 +183,13 @@ impl LineComparison {
         // Apply 5% padding in value space (top & bottom)
         let span = (max_pct - min_pct).max(1e-6);
         let pad = span * 0.05;
-        min_pct -= pad;
-        max_pct += pad;
+        let min_pct = min_pct - pad;
+        let max_pct = max_pct + pad;
 
-        Some(((min_x, max_x), (min_pct, max_pct)))
+        Some(((win_min_x, win_max_x), (min_pct, max_pct)))
     }
 
-    pub fn sample() -> Self {
-        use rand::prelude::*;
-        let mut rng = rand::rng();
-        let n = 120;
-
-        let mut make_series = |name: &str, start: f64, drift: f64, noise: f64| -> Series {
-            let mut y = start;
-            let mut points = Vec::with_capacity(n);
-            for i in 0..n {
-                let step: f64 = rng.random_range(-noise..noise) + drift;
-                y = (y + step).max(1e-6);
-                points.push((i as f64, y));
-            }
-            Series {
-                name: name.into(),
-                points,
-                color: None,
-            }
-        };
-
-        Self::new(vec![
-            make_series("Alpha", 100.0, 0.08, 0.9),
-            make_series("Beta", 80.0, 0.18, 1.2),
-            make_series("Gamma", 120.0, 0.04, 1.6),
-        ])
-        // Example: show last 60 points
-        // .with_zoom(Zoom::points(60))
-    }
-
-    // Compute a "nice" step close to range/target using 1/2/5*10^k
+    /// Compute a "nice" step close to range/target using 1/2/5*10^k
     fn nice_step(range: f32, target: usize) -> f32 {
         let target = target.max(2) as f32;
         let raw = (range / target).max(f32::EPSILON);
@@ -201,22 +226,23 @@ impl LineComparison {
         (v, step)
     }
 
-    fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
-        if show_decimals {
-            if step >= 1.0 {
-                format!("{:+.1}%", val)
-            } else if step >= 0.1 {
-                format!("{:+.2}%", val)
-            } else {
-                format!("{:+.3}%", val)
-            }
-        } else if step >= 1.0 {
-            format!("{:+.0}%", val)
-        } else if step >= 0.1 {
-            format!("{:+.1}%", val)
+    fn step_zoom_percent(&self, current: Zoom, zoom_in: bool) -> Zoom {
+        let len = self.max_points_available().max(MIN_ZOOM_POINTS);
+        let base_n = if current.is_all() {
+            len
         } else {
-            format!("{:+.2}%", val)
-        }
+            current.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS)
+        };
+
+        let step = ((base_n as f64) * ZOOM_STEP_PCT).ceil().max(1.0) as usize;
+
+        let new_n = if zoom_in {
+            base_n.saturating_sub(step).max(MIN_ZOOM_POINTS)
+        } else {
+            base_n.saturating_add(step).min(MAX_ZOOM_POINTS)
+        };
+
+        Zoom::points(new_n)
     }
 
     fn collect_end_labels<Fy>(
@@ -268,7 +294,7 @@ impl LineComparison {
             let half_txt = TEXT_SIZE * 0.5;
             py = py.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
 
-            let lbl = LineComparison::format_pct(pct, step, true);
+            let lbl = format_pct(pct, step, true);
             end_labels.push(EndLabel {
                 pos: Point::new(plot.x + plot.width + gutter, py),
                 text: lbl,
@@ -278,50 +304,6 @@ impl LineComparison {
         }
 
         end_labels
-    }
-
-    fn resolve_label_overlaps(end_labels: &mut [EndLabel], plot: Rectangle) {
-        if end_labels.len() <= 1 {
-            return;
-        }
-
-        let half_h = TEXT_SIZE * 0.5 + 2.0;
-        let mut min_y = plot.y + half_h;
-        let mut max_y = plot.y + plot.height - half_h;
-        if max_y < min_y {
-            core::mem::swap(&mut min_y, &mut max_y);
-        }
-
-        let mut sep = TEXT_SIZE + 4.0;
-
-        if end_labels.len() > 1 {
-            let avail = (max_y - min_y).max(0.0);
-            let needed = sep * (end_labels.len() as f32 - 1.0);
-            if needed > avail {
-                sep = if end_labels.len() > 1 {
-                    avail / (end_labels.len() as f32 - 1.0)
-                } else {
-                    sep
-                };
-            }
-        }
-
-        end_labels.sort_by(|a, b| {
-            a.pos
-                .y
-                .partial_cmp(&b.pos.y)
-                .unwrap_or(core::cmp::Ordering::Equal)
-        });
-
-        let mut prev_y = f32::NAN;
-        for i in 0..end_labels.len() {
-            let low = if i == 0 { min_y } else { prev_y + sep };
-            let high = max_y - sep * (end_labels.len() as f32 - 1.0 - i as f32);
-            let target = end_labels[i].pos.y;
-            let y = target.clamp(low, high);
-            end_labels[i].pos.y = y;
-            prev_y = y;
-        }
     }
 
     fn fill_label_geometry(&self, frame: &mut canvas::Frame, end_labels: &[EndLabel], gutter: f32) {
@@ -476,7 +458,7 @@ impl LineComparison {
     }
 }
 
-impl<Message> Widget<Message, Theme, Renderer> for LineComparison
+impl<Message> Widget<Message, Theme, Renderer> for LineComparison<Message>
 where
     Message: Clone + 'static,
 {
@@ -506,15 +488,41 @@ where
 
     fn update(
         &mut self,
-        _tree: &mut Tree,
-        _event: &Event,
+        tree: &mut Tree,
+        event: &Event,
         _layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
-        _shell: &mut Shell<'_, Message>,
+        shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+        if shell.is_event_captured() {
+            return;
+        }
+
+        match event {
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if let mouse::ScrollDelta::Lines { y, .. } = delta {
+                    let state = tree.state.downcast_mut::<State>();
+
+                    let on_zoom_chg = match self.on_zoom_chg {
+                        Some(f) => f,
+                        None => return,
+                    };
+
+                    let zoom_in = *y > 0.0;
+                    let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
+
+                    if new_zoom != self.zoom {
+                        shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
+                        state.plot_cache.clear();
+                        state.label_cache.clear();
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn draw(
@@ -546,10 +554,7 @@ where
         if ticks.is_empty() {
             ticks = vec![min_pct, max_pct];
         }
-        let labels: Vec<String> = ticks
-            .iter()
-            .map(|t| LineComparison::format_pct(*t, step, false))
-            .collect();
+        let labels: Vec<String> = ticks.iter().map(|t| format_pct(*t, step, false)).collect();
 
         let gutter = Y_AXIS_GUTTER;
 
@@ -598,7 +603,7 @@ where
             gutter,
         );
 
-        LineComparison::resolve_label_overlaps(&mut end_labels, plot);
+        resolve_label_overlaps(&mut end_labels, plot);
 
         let geometry = state.plot_cache.draw(renderer, bounds.size(), |frame| {
             self.fill_main_geometry(
@@ -634,11 +639,11 @@ where
     }
 }
 
-impl<'a, Message> From<LineComparison> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message> From<LineComparison<Message>> for Element<'a, Message, Theme, Renderer>
 where
     Message: Clone + 'a + 'static,
 {
-    fn from(chart: LineComparison) -> Self {
+    fn from(chart: LineComparison<Message>) -> Self {
         Element::new(chart)
     }
 }
@@ -662,5 +667,67 @@ impl Zoom {
     }
     pub fn is_all(self) -> bool {
         self.0 == 0
+    }
+}
+
+fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
+    if show_decimals {
+        if step >= 1.0 {
+            format!("{:+.1}%", val)
+        } else if step >= 0.1 {
+            format!("{:+.2}%", val)
+        } else {
+            format!("{:+.3}%", val)
+        }
+    } else if step >= 1.0 {
+        format!("{:+.0}%", val)
+    } else if step >= 0.1 {
+        format!("{:+.1}%", val)
+    } else {
+        format!("{:+.2}%", val)
+    }
+}
+
+fn resolve_label_overlaps(end_labels: &mut [EndLabel], plot: Rectangle) {
+    if end_labels.len() <= 1 {
+        return;
+    }
+
+    let half_h = TEXT_SIZE * 0.5 + 2.0;
+    let mut min_y = plot.y + half_h;
+    let mut max_y = plot.y + plot.height - half_h;
+    if max_y < min_y {
+        core::mem::swap(&mut min_y, &mut max_y);
+    }
+
+    let mut sep = TEXT_SIZE + 4.0;
+
+    if end_labels.len() > 1 {
+        let avail = (max_y - min_y).max(0.0);
+        let needed = sep * (end_labels.len() as f32 - 1.0);
+        if needed > avail {
+            sep = if end_labels.len() > 1 {
+                avail / (end_labels.len() as f32 - 1.0)
+            } else {
+                sep
+            };
+        }
+    }
+
+    end_labels.sort_by(|a, b| {
+        a.pos
+            .y
+            .partial_cmp(&b.pos.y)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let mut prev_y = f32::NAN;
+    for i in 0..end_labels.len() {
+        let low = if i == 0 { min_y } else { prev_y + sep };
+        let high = max_y - sep * (end_labels.len() as f32 - 1.0 - i as f32);
+        let target = end_labels[i].pos.y;
+        let y = target.clamp(low, high);
+        end_labels[i].pos.y = y;
+        prev_y = y;
     }
 }

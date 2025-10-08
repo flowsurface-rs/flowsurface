@@ -678,6 +678,14 @@ impl Dashboard {
                         }
                     }
                 }
+                pane::Message::ComparisonChartInteraction(pane, message) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Comparison(ref mut chart) = state.content
+                        && let Some(comparison_chart) = chart
+                    {
+                        comparison_chart.update(message);
+                    }
+                }
             },
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
