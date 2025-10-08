@@ -6,6 +6,7 @@ use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget};
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
+use iced::window;
 use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 const Y_AXIS_GUTTER: f32 = 66.0; // px
@@ -28,21 +29,24 @@ pub struct LineComparison<Message> {
     stroke_width: f32,
     zoom: Zoom,
     on_zoom_chg: Option<fn(Zoom) -> Message>,
+    update_interval: u128,
 }
 
 #[derive(Default)]
 struct State {
     plot_cache: canvas::Cache,
     label_cache: canvas::Cache,
+    last_draw: Option<std::time::Instant>,
 }
 
 impl<Message> LineComparison<Message> {
-    pub fn new(series: Vec<Series>) -> Self {
+    pub fn new(series: Vec<Series>, update_interval: u64) -> Self {
         Self {
             series,
             stroke_width: 2.0,
             zoom: Zoom::all(),
             on_zoom_chg: None,
+            update_interval: update_interval as u128,
         }
     }
 
@@ -521,6 +525,22 @@ where
                     }
                 }
             }
+            Event::Window(window::Event::RedrawRequested(now)) => {
+                let state = tree.state.downcast_mut::<State>();
+
+                if let Some(last) = state.last_draw {
+                    let dur = now.saturating_duration_since(last);
+
+                    if dur.as_millis() < self.update_interval {
+                        return;
+                    } else {
+                        state.plot_cache.clear();
+                        state.label_cache.clear();
+                    }
+                }
+                state.last_draw = Some(*now);
+            }
+
             _ => {}
         }
     }

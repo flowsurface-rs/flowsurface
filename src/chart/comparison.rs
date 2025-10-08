@@ -9,6 +9,7 @@ pub struct ComparisonChart {
     zoom: Zoom,
     last_tick: Instant,
     series: Vec<Series>,
+    update_interval: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ impl ComparisonChart {
             last_tick: Instant::now(),
             zoom: Zoom::all(),
             series: sample_data(),
+            update_interval: 100,
         }
     }
 
@@ -34,9 +36,8 @@ impl ComparisonChart {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let on_zoom = |z| Message::ZoomChanged(z);
-        let chart = LineComparison::new(self.series.clone())
-            .on_zoom(on_zoom)
+        let chart = LineComparison::new(self.series.clone(), self.update_interval)
+            .on_zoom(|z| Message::ZoomChanged(z))
             .with_zoom(self.zoom);
 
         row![chart].padding(1).into()
@@ -47,7 +48,7 @@ impl ComparisonChart {
             self.last_tick = t;
         }
 
-        //rng_to_sample_data(&mut self.series);
+        rng_to_sample_data(&mut self.series);
 
         None
     }
