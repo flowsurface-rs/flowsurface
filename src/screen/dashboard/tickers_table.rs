@@ -905,6 +905,7 @@ fn create_expanded_ticker_card<'a>(
             init_content_button("Candlestick Chart", "candlestick", *ticker, 180.0),
             init_content_button("Time&Sales", "time&sales", *ticker, 160.0),
             init_content_button("DOM/Ladder", "ladder", *ticker, 160.0),
+            init_content_button("Comparison Chart", "comparison", *ticker, 180.0),
         ]
         .width(Length::Fill)
         .spacing(2)

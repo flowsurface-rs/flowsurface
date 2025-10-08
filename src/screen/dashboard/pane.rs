@@ -7,13 +7,15 @@ use crate::{
             stack_modal,
         },
     },
-    screen::dashboard::panel::ladder::Ladder,
     screen::{
         DashboardError,
-        dashboard::panel::{self, timeandsales::TimeAndSales},
+        dashboard::panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
     },
     style::{self, Icon, icon_text},
-    widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
+    widget::{
+        self, button_with_tooltip, chart::LineComparison, column_drag, link_group_button,
+        toast::Toast,
+    },
     window::{self, Window},
 };
 use data::{
@@ -35,7 +37,7 @@ use iced::{
     widget::{button, center, column, container, pane_grid, row, text, tooltip},
 };
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::{char, time::Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InfoType {
@@ -343,6 +345,11 @@ impl State {
                 }];
                 Ok((content, streams))
             }
+            "comparison" => {
+                let content = Content::Comparison(Some(LineComparison::sample()));
+                let streams = vec![];
+                Ok((content, streams))
+            }
             _ => Err(DashboardError::PaneSet(
                 "A content must be set first.".to_string(),
             )),
@@ -494,6 +501,11 @@ impl State {
                 } else {
                     base
                 }
+            }
+            Content::Comparison(chart) => {
+                let chart = LineComparison::sample();
+
+                row![chart].padding(1).into()
             }
             Content::TimeAndSales(panel) => {
                 if let Some(panel) = panel {
@@ -990,6 +1002,9 @@ impl State {
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
             Content::Starter => None,
+            Content::Comparison(chart) => chart
+                .as_mut()
+                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
         }
     }
 
@@ -1006,6 +1021,7 @@ impl State {
             Content::TimeAndSales(_) => Some(100),
             Content::Ladder(_) => Some(100),
             Content::Starter => None,
+            Content::Comparison(_) => Some(100),
         }
     }
 
@@ -1085,6 +1101,7 @@ pub enum Content {
     },
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
+    Comparison(Option<LineComparison>),
 }
 
 impl Content {
@@ -1255,6 +1272,7 @@ impl Content {
             Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
+            Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
             Content::Starter => None,
         }
     }
@@ -1310,7 +1328,10 @@ impl Content {
         match self {
             Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
             Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => {
+            Content::TimeAndSales(_)
+            | Content::Ladder(_)
+            | Content::Starter
+            | Content::Comparison(_) => {
                 panic!("indicator reorder on {} pane", self)
             }
         }
@@ -1341,7 +1362,10 @@ impl Content {
                     None
                 }
             }
-            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => None,
+            Content::TimeAndSales(_)
+            | Content::Ladder(_)
+            | Content::Starter
+            | Content::Comparison(_) => None,
         }
     }
 
@@ -1387,6 +1411,7 @@ impl Content {
             },
             Content::TimeAndSales(_) => "time&sales".to_string(),
             Content::Ladder(_) => "ladder".to_string(),
+            Content::Comparison(_) => "comparison".to_string(),
         }
     }
 
@@ -1396,6 +1421,7 @@ impl Content {
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
+            Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
         }
     }
@@ -1416,6 +1442,7 @@ impl std::fmt::Display for Content {
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales"),
             Content::Ladder(_) => write!(f, "DOM/Ladder"),
+            Content::Comparison(_) => write!(f, "Comparison chart"),
         }
     }
 }

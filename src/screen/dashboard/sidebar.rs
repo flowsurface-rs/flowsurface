@@ -46,6 +46,7 @@ impl Sidebar {
                 tickers_table,
             },
             initial_fetch.map(Message::TickersTable),
+            //Task::none(),
         )
     }
 

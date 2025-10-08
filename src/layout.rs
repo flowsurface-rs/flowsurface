@@ -144,6 +144,12 @@ impl From<&pane::State> for data::Pane {
                 settings: pane.settings,
                 link_group: pane.link_group,
             },
+            pane::Content::Comparison(_) => data::Pane::ComparisonChart {
+                layout: data::chart::ViewConfig::default(),
+                stream_type: streams,
+                settings: pane.settings,
+                link_group: pane.link_group,
+            },
         }
     }
 }
@@ -201,6 +207,21 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                 layout,
                 kind,
             };
+
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
+        data::Pane::ComparisonChart {
+            layout,
+            stream_type,
+            settings,
+            link_group,
+        } => {
+            let content = pane::Content::Comparison(None);
 
             Configuration::Pane(pane::State::from_config(
                 content,
