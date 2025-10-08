@@ -32,11 +32,26 @@ pub struct LineComparison<Message> {
     update_interval: u128,
 }
 
-#[derive(Default)]
 struct State {
     plot_cache: canvas::Cache,
     label_cache: canvas::Cache,
     last_draw: Option<std::time::Instant>,
+    pan_dx: f64,
+    is_panning: bool,
+    last_cursor: Option<Point>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            plot_cache: canvas::Cache::new(),
+            label_cache: canvas::Cache::new(),
+            last_draw: None,
+            pan_dx: 0.0,
+            is_panning: false,
+            last_cursor: None,
+        }
+    }
 }
 
 impl<Message> LineComparison<Message> {
@@ -111,7 +126,7 @@ impl<Message> LineComparison<Message> {
         self
     }
 
-    fn compute_domains(&self) -> Option<((f64, f64), (f32, f32))> {
+    fn compute_domains(&self, pan_dx: f64) -> Option<((f64, f64), (f32, f32))> {
         if self.series.is_empty() {
             return None;
         }
@@ -135,8 +150,7 @@ impl<Message> LineComparison<Message> {
             data_max_x = data_min_x + 1.0;
         }
 
-        // Determine the X window from zoom.
-        let (win_min_x, win_max_x) = if self.zoom.is_all() {
+        let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
             (data_min_x, data_max_x)
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
@@ -144,8 +158,10 @@ impl<Message> LineComparison<Message> {
             let span = ((n.saturating_sub(1)) as f64) * dt;
             (data_max_x - span, data_max_x)
         };
+        win_min_x += pan_dx;
+        win_max_x += pan_dx;
 
-        // Y domain (percent) over the window [win_min_x, win_max_x]
+        // Y domain (percent) over [win_min_x, win_max_x]
         let mut min_pct = f32::INFINITY;
         let mut max_pct = f32::NEG_INFINITY;
         let mut any_point = false;
@@ -184,7 +200,6 @@ impl<Message> LineComparison<Message> {
             max_pct += 1.0;
         }
 
-        // Apply 5% padding in value space (top & bottom)
         let span = (max_pct - min_pct).max(1e-6);
         let pad = span * 0.05;
         let min_pct = min_pct - pad;
@@ -269,10 +284,50 @@ impl<Message> LineComparison<Message> {
             if s.points.is_empty() {
                 continue;
             }
-            let base = s.points[0].1;
-            if base == 0.0 {
+            let global_base = s.points[0].1;
+            if global_base == 0.0 {
                 continue;
             }
+
+            let last_vis = s
+                .points
+                .iter()
+                .rev()
+                .find(|(x, _)| (*x >= min_x) && (*x <= max_x));
+            let (_x1, y1) = match last_vis {
+                Some(p) => *p,
+                None => continue, // nothing visible for this series
+            };
+
+            let idx_right = s.points.iter().position(|(x, _)| *x >= min_x);
+            let y0 = match idx_right {
+                Some(0) => s.points[0].1,
+                Some(i) => {
+                    let (x0, y0) = s.points[i - 1];
+                    let (x2, y2) = s.points[i];
+                    let dx = x2 - x0;
+                    if dx.is_finite() && dx > 0.0 {
+                        let t = ((min_x - x0) / dx).clamp(0.0, 1.0);
+                        y0 + (y2 - y0) * t
+                    } else {
+                        y0
+                    }
+                }
+                None => {
+                    continue;
+                }
+            };
+
+            if y0 == 0.0 {
+                continue;
+            }
+            let pct_label = ((y1 / y0) - 1.0) as f32 * 100.0;
+
+            let pct_line = ((y1 / global_base) - 1.0) as f32 * 100.0;
+            let mut py = map_y(pct_line);
+            let half_txt = TEXT_SIZE * 0.5;
+            py = py.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
+
             let text_color = s.color.unwrap_or_else(|| {
                 text_color_pool
                     .get(si % text_color_pool.len())
@@ -286,19 +341,7 @@ impl<Message> LineComparison<Message> {
                     .unwrap_or(Color::BLACK)
             });
 
-            let last = s
-                .points
-                .iter()
-                .rev()
-                .find(|(x, _)| (*x >= min_x) && (*x <= max_x))
-                .unwrap_or(&s.points[s.points.len() - 1]);
-
-            let pct = ((last.1 / base) - 1.0) as f32 * 100.0;
-            let mut py = map_y(pct);
-            let half_txt = TEXT_SIZE * 0.5;
-            py = py.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
-
-            let lbl = format_pct(pct, step, true);
+            let lbl = format_pct(pct_label, step, true);
             end_labels.push(EndLabel {
                 pos: Point::new(plot.x + plot.width + gutter, py),
                 text: lbl,
@@ -460,6 +503,32 @@ impl<Message> LineComparison<Message> {
     pub fn invalidate(&mut self, _now: Option<std::time::Instant>) -> Option<Action> {
         None
     }
+
+    /// Current x-span in domain units for the active zoom.
+    fn current_x_span(&self) -> f64 {
+        let mut data_min_x = f64::INFINITY;
+        let mut data_max_x = f64::NEG_INFINITY;
+        for s in &self.series {
+            for (x, _) in &s.points {
+                if *x < data_min_x {
+                    data_min_x = *x;
+                }
+                if *x > data_max_x {
+                    data_max_x = *x;
+                }
+            }
+        }
+        if !data_min_x.is_finite() || !data_max_x.is_finite() {
+            return 1.0;
+        }
+        if self.zoom.is_all() {
+            (data_max_x - data_min_x).max(1.0)
+        } else {
+            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+            let dt = self.estimated_dt().max(1e-9);
+            ((n.saturating_sub(1)) as f64 * dt).max(1.0)
+        }
+    }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for LineComparison<Message>
@@ -494,7 +563,7 @@ where
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        _layout: Layout<'_>,
+        layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
@@ -504,6 +573,9 @@ where
         if shell.is_event_captured() {
             return;
         }
+
+        let bounds = layout.bounds();
+        let plot_width = (bounds.width - Y_AXIS_GUTTER).max(1.0) as f64;
 
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -523,6 +595,35 @@ where
                         state.plot_cache.clear();
                         state.label_cache.clear();
                     }
+                }
+            }
+            Event::Mouse(mouse_event) => {
+                let state = tree.state.downcast_mut::<State>();
+
+                match mouse_event {
+                    mouse::Event::ButtonPressed(mouse::Button::Left) => {
+                        state.is_panning = true;
+                        state.last_cursor = None;
+                    }
+                    mouse::Event::ButtonReleased(mouse::Button::Left) => {
+                        state.is_panning = false;
+                        state.last_cursor = None;
+                    }
+                    mouse::Event::CursorMoved { position } => {
+                        if state.is_panning {
+                            let prev = state.last_cursor.unwrap_or(*position);
+                            let dx_px = (position.x - prev.x) as f64;
+                            if dx_px.abs() > 0.0 {
+                                let x_span = self.current_x_span();
+                                let dx_domain = -(dx_px) * (x_span / plot_width);
+                                state.pan_dx += dx_domain;
+                                state.plot_cache.clear();
+                                state.label_cache.clear();
+                            }
+                            state.last_cursor = Some(*position);
+                        }
+                    }
+                    _ => {}
                 }
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
@@ -560,7 +661,7 @@ where
         let bounds = layout.bounds();
 
         let palette = theme.extended_palette();
-        let Some(((min_x, max_x), (min_pct, max_pct))) = self.compute_domains() else {
+        let Some(((min_x, max_x), (min_pct, max_pct))) = self.compute_domains(state.pan_dx) else {
             return;
         };
 
