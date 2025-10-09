@@ -14,21 +14,40 @@ const TEXT_SIZE: f32 = 12.0;
 
 const MIN_ZOOM_POINTS: usize = 2;
 const MAX_ZOOM_POINTS: usize = 5000;
-const ZOOM_STEP_PCT: f64 = 0.05; // 5% per scroll "line"
+const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
 
 #[derive(Debug, Clone)]
 pub struct Series {
     pub name: String,
     /// (x, y) where x is a time-like domain (e.g., timestamp seconds) and y is raw value
-    pub points: Vec<(f64, f64)>,
+    pub points: Vec<(f32, f32)>,
     pub color: Option<Color>,
 }
 
-pub struct LineComparison<Message> {
-    series: Vec<Series>,
+pub trait SeriesLike {
+    fn name(&self) -> &str;
+    fn points(&self) -> &[(f32, f32)];
+    fn color(&self) -> Option<Color>;
+}
+
+impl SeriesLike for Series {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn points(&self) -> &[(f32, f32)] {
+        &self.points
+    }
+    fn color(&self) -> Option<Color> {
+        self.color
+    }
+}
+
+pub struct LineComparison<'a, S, Message> {
+    series: &'a [S],
     stroke_width: f32,
     zoom: Zoom,
     on_zoom_chg: Option<fn(Zoom) -> Message>,
+    /// in milliseconds
     update_interval: u128,
 }
 
@@ -36,7 +55,7 @@ struct State {
     plot_cache: canvas::Cache,
     label_cache: canvas::Cache,
     last_draw: Option<std::time::Instant>,
-    pan_dx: f64,
+    pan_dx: f32,
     is_panning: bool,
     last_cursor: Option<Point>,
 }
@@ -54,8 +73,11 @@ impl Default for State {
     }
 }
 
-impl<Message> LineComparison<Message> {
-    pub fn new(series: Vec<Series>, update_interval: u64) -> Self {
+impl<'a, S, Message> LineComparison<'a, S, Message>
+where
+    S: SeriesLike,
+{
+    pub fn new(series: &'a [S], update_interval: u64) -> Self {
         Self {
             series,
             stroke_width: 2.0,
@@ -70,10 +92,15 @@ impl<Message> LineComparison<Message> {
         self
     }
 
+    pub fn on_zoom(mut self, f: fn(Zoom) -> Message) -> Self {
+        self.on_zoom_chg = Some(f);
+        self
+    }
+
     fn max_points_available(&self) -> usize {
         self.series
             .iter()
-            .map(|s| s.points.len())
+            .map(|s| s.points().len())
             .max()
             .unwrap_or(0)
     }
@@ -86,31 +113,26 @@ impl<Message> LineComparison<Message> {
         Zoom::points(n)
     }
 
-    fn estimated_dt(&self) -> f64 {
-        let mut dts: Vec<f64> = self
+    fn estimated_dt(&self) -> f32 {
+        let mut dts: Vec<f32> = self
             .series
             .iter()
             .filter_map(|s| {
-                if s.points.len() >= 2 {
-                    let first = s.points.first().unwrap().0;
-                    let last = s.points.last().unwrap().0;
-                    let steps = (s.points.len() - 1) as f64;
+                let pts = s.points();
+                if pts.len() >= 2 {
+                    let first = pts.first().unwrap().0;
+                    let last = pts.last().unwrap().0;
+                    let steps = (pts.len() - 1) as f32;
                     let dt = (last - first) / steps;
-                    if dt.is_finite() && dt > 0.0 {
-                        Some(dt)
-                    } else {
-                        None
-                    }
+                    (dt.is_finite() && dt > 0.0).then_some(dt)
                 } else {
                     None
                 }
             })
             .collect();
-
         if dts.is_empty() {
             return 1.0;
         }
-
         dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = dts.len() / 2;
         if dts.len() % 2 == 1 {
@@ -120,21 +142,14 @@ impl<Message> LineComparison<Message> {
         }
     }
 
-    /// Builder to set zoom change callback.
-    pub fn on_zoom(mut self, f: fn(Zoom) -> Message) -> Self {
-        self.on_zoom_chg = Some(f);
-        self
-    }
-
-    fn compute_domains(&self, pan_dx: f64) -> Option<((f64, f64), (f32, f32))> {
+    fn compute_domains(&self, pan_dx: f32) -> Option<((f32, f32), (f32, f32))> {
         if self.series.is_empty() {
             return None;
         }
-
-        let mut data_min_x = f64::INFINITY;
-        let mut data_max_x = f64::NEG_INFINITY;
-        for s in &self.series {
-            for (x, _) in &s.points {
+        let mut data_min_x = f32::INFINITY;
+        let mut data_max_x = f32::NEG_INFINITY;
+        for s in self.series {
+            for (x, _) in s.points() {
                 if *x < data_min_x {
                     data_min_x = *x;
                 }
@@ -146,7 +161,7 @@ impl<Message> LineComparison<Message> {
         if !data_min_x.is_finite() || !data_max_x.is_finite() {
             return None;
         }
-        if (data_max_x - data_min_x).abs() < f64::EPSILON {
+        if (data_max_x - data_min_x).abs() < f32::EPSILON {
             data_max_x = data_min_x + 1.0;
         }
 
@@ -155,7 +170,7 @@ impl<Message> LineComparison<Message> {
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
             let dt = self.estimated_dt().max(1e-9);
-            let span = ((n.saturating_sub(1)) as f64) * dt;
+            let span = ((n.saturating_sub(1)) as f32) * dt;
             (data_max_x - span, data_max_x)
         };
         win_min_x += pan_dx;
@@ -166,17 +181,17 @@ impl<Message> LineComparison<Message> {
         let mut max_pct = f32::NEG_INFINITY;
         let mut any_point = false;
 
-        for s in &self.series {
-            if s.points.is_empty() {
+        for s in self.series {
+            if s.points().is_empty() {
                 continue;
             }
-            let base = s.points[0].1;
+            let base = s.points()[0].1;
             if base == 0.0 {
                 continue;
             }
 
             for (_, y) in s
-                .points
+                .points()
                 .iter()
                 .filter(|(x, _)| *x >= win_min_x && *x <= win_max_x)
             {
@@ -253,7 +268,7 @@ impl<Message> LineComparison<Message> {
             current.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS)
         };
 
-        let step = ((base_n as f64) * ZOOM_STEP_PCT).ceil().max(1.0) as usize;
+        let step = ((base_n as f32) * ZOOM_STEP_PCT).ceil().max(1.0) as usize;
 
         let new_n = if zoom_in {
             base_n.saturating_sub(step).max(MIN_ZOOM_POINTS)
@@ -268,8 +283,8 @@ impl<Message> LineComparison<Message> {
         &self,
         plot: Rectangle,
         map_y: &Fy,
-        min_x: f64,
-        max_x: f64,
+        min_x: f32,
+        max_x: f32,
         step: f32,
         line_color_pool: &[Color; 5],
         text_color_pool: &[Color; 5],
@@ -281,16 +296,16 @@ impl<Message> LineComparison<Message> {
         let mut end_labels: Vec<EndLabel> = Vec::new();
 
         for (si, s) in self.series.iter().enumerate() {
-            if s.points.is_empty() {
+            if s.points().is_empty() {
                 continue;
             }
-            let global_base = s.points[0].1;
+            let global_base = s.points()[0].1;
             if global_base == 0.0 {
                 continue;
             }
 
             let last_vis = s
-                .points
+                .points()
                 .iter()
                 .rev()
                 .find(|(x, _)| (*x >= min_x) && (*x <= max_x));
@@ -299,12 +314,12 @@ impl<Message> LineComparison<Message> {
                 None => continue, // nothing visible for this series
             };
 
-            let idx_right = s.points.iter().position(|(x, _)| *x >= min_x);
+            let idx_right = s.points().iter().position(|(x, _)| *x >= min_x);
             let y0 = match idx_right {
-                Some(0) => s.points[0].1,
+                Some(0) => s.points()[0].1,
                 Some(i) => {
-                    let (x0, y0) = s.points[i - 1];
-                    let (x2, y2) = s.points[i];
+                    let (x0, y0) = s.points()[i - 1];
+                    let (x2, y2) = s.points()[i];
                     let dx = x2 - x0;
                     if dx.is_finite() && dx > 0.0 {
                         let t = ((min_x - x0) / dx).clamp(0.0, 1.0);
@@ -328,13 +343,13 @@ impl<Message> LineComparison<Message> {
             let half_txt = TEXT_SIZE * 0.5;
             py = py.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
 
-            let text_color = s.color.unwrap_or_else(|| {
+            let text_color = s.color().unwrap_or_else(|| {
                 text_color_pool
                     .get(si % text_color_pool.len())
                     .copied()
                     .unwrap_or(Color::BLACK)
             });
-            let bg_color = s.color.unwrap_or_else(|| {
+            let bg_color = s.color().unwrap_or_else(|| {
                 line_color_pool
                     .get(si % line_color_pool.len())
                     .copied()
@@ -396,10 +411,10 @@ impl<Message> LineComparison<Message> {
         map_y: &Fy,
         line_color_pool: &[Color; 5],
         palette: &Extended,
-        min_x: f64,
-        max_x: f64,
+        min_x: f32,
+        max_x: f32,
     ) where
-        Fx: Fn(f64) -> f32,
+        Fx: Fn(f32) -> f32,
         Fy: Fn(f32) -> f32,
     {
         // splitter / gutter background
@@ -434,15 +449,15 @@ impl<Message> LineComparison<Message> {
         }
 
         for (si, s) in self.series.iter().enumerate() {
-            if s.points.len() < 2 {
+            if s.points().len() < 2 {
                 continue;
             }
-            let base = s.points[0].1;
+            let base = s.points()[0].1;
             if base == 0.0 {
                 continue;
             }
 
-            let color = s.color.unwrap_or_else(|| {
+            let color = s.color().unwrap_or_else(|| {
                 line_color_pool
                     .get(si % line_color_pool.len())
                     .copied()
@@ -456,16 +471,16 @@ impl<Message> LineComparison<Message> {
 
             // Find the first index >= min_x
             let mut i0 = s
-                .points
+                .points()
                 .iter()
                 .position(|(x, _)| *x >= min_x)
-                .unwrap_or(s.points.len().saturating_sub(1));
+                .unwrap_or(s.points().len().saturating_sub(1));
 
             if i0 > 0 {
                 i0 -= 1; // include one point before window for continuity
             }
 
-            for (idx, (x, y)) in s.points.iter().enumerate().skip(i0) {
+            for (idx, (x, y)) in s.points().iter().enumerate().skip(i0) {
                 if *x > max_x && started {
                     break;
                 }
@@ -482,7 +497,7 @@ impl<Message> LineComparison<Message> {
                 }
 
                 // If we never found a point >= min_x, ensure we at least draw the last point
-                if idx + 1 >= s.points.len() && !started {
+                if idx + 1 >= s.points().len() && !started {
                     builder.move_to(Point::new(px, py));
                     started = true;
                 }
@@ -505,11 +520,11 @@ impl<Message> LineComparison<Message> {
     }
 
     /// Current x-span in domain units for the active zoom.
-    fn current_x_span(&self) -> f64 {
-        let mut data_min_x = f64::INFINITY;
-        let mut data_max_x = f64::NEG_INFINITY;
-        for s in &self.series {
-            for (x, _) in &s.points {
+    fn current_x_span(&self) -> f32 {
+        let mut data_min_x = f32::INFINITY;
+        let mut data_max_x = f32::NEG_INFINITY;
+        for s in self.series {
+            for (x, _) in s.points() {
                 if *x < data_min_x {
                     data_min_x = *x;
                 }
@@ -526,13 +541,14 @@ impl<Message> LineComparison<Message> {
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
             let dt = self.estimated_dt().max(1e-9);
-            ((n.saturating_sub(1)) as f64 * dt).max(1.0)
+            ((n.saturating_sub(1)) as f32 * dt).max(1.0)
         }
     }
 }
 
-impl<Message> Widget<Message, Theme, Renderer> for LineComparison<Message>
+impl<'a, S, Message> Widget<Message, Theme, Renderer> for LineComparison<'a, S, Message>
 where
+    S: SeriesLike,
     Message: Clone + 'static,
 {
     fn tag(&self) -> tree::Tag {
@@ -575,7 +591,7 @@ where
         }
 
         let bounds = layout.bounds();
-        let plot_width = (bounds.width - Y_AXIS_GUTTER).max(1.0) as f64;
+        let plot_width = (bounds.width - Y_AXIS_GUTTER).max(1.0) as f32;
 
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -592,6 +608,7 @@ where
 
                     if new_zoom != self.zoom {
                         shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
+
                         state.plot_cache.clear();
                         state.label_cache.clear();
                     }
@@ -612,11 +629,13 @@ where
                     mouse::Event::CursorMoved { position } => {
                         if state.is_panning {
                             let prev = state.last_cursor.unwrap_or(*position);
-                            let dx_px = (position.x - prev.x) as f64;
+                            let dx_px = (position.x - prev.x) as f32;
+
                             if dx_px.abs() > 0.0 {
                                 let x_span = self.current_x_span();
                                 let dx_domain = -(dx_px) * (x_span / plot_width);
                                 state.pan_dx += dx_domain;
+
                                 state.plot_cache.clear();
                                 state.label_cache.clear();
                             }
@@ -689,7 +708,7 @@ where
         // Domain -> screen
         let x_span = (max_x - min_x) as f32;
         let y_span = (max_pct - min_pct).max(1e-6);
-        let map_x = |x: f64| -> f32 {
+        let map_x = |x: f32| -> f32 {
             let t = ((x - min_x) as f32) / x_span;
             plot.x + t.clamp(0.0, 1.0) * plot.width
         };
@@ -760,11 +779,12 @@ where
     }
 }
 
-impl<'a, Message> From<LineComparison<Message>> for Element<'a, Message, Theme, Renderer>
+impl<'a, S, Message> From<LineComparison<'a, S, Message>> for Element<'a, Message, Theme, Renderer>
 where
     Message: Clone + 'a + 'static,
+    S: SeriesLike,
 {
-    fn from(chart: LineComparison<Message>) -> Self {
+    fn from(chart: LineComparison<'a, S, Message>) -> Self {
         Element::new(chart)
     }
 }
@@ -780,6 +800,7 @@ struct EndLabel {
 pub struct Zoom(pub usize);
 
 impl Zoom {
+    /// "show all data"
     pub fn all() -> Self {
         Self(0)
     }

@@ -216,7 +216,7 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             ))
         }
         data::Pane::ComparisonChart {
-            layout,
+            layout: _,
             stream_type,
             settings,
             link_group,

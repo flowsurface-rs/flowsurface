@@ -36,7 +36,7 @@ impl ComparisonChart {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let chart = LineComparison::new(self.series.clone(), self.update_interval)
+        let chart = LineComparison::new(&self.series, self.update_interval)
             .on_zoom(|z| Message::ZoomChanged(z))
             .with_zoom(self.zoom);
 
@@ -63,7 +63,7 @@ fn rng_to_sample_data(data: &mut Vec<Series>) {
     for s in data {
         if let Some((last_x, last_y)) = s.points.last().cloned() {
             let mut rng = rand::rng();
-            let step: f64 = rng.random_range(-1.2..1.2) + 0.1;
+            let step = rng.random_range(-1.2..1.2) + 0.1;
             let new_y = (last_y + step).max(1e-6);
             s.points.push((last_x + 1.0, new_y));
             if s.points.len() > 500 {
@@ -78,13 +78,13 @@ fn sample_data() -> Vec<Series> {
     let mut rng = rand::rng();
     let n = 120;
 
-    let mut make_series = |name: &str, start: f64, drift: f64, noise: f64| -> Series {
+    let mut make_series = |name: &str, start: f32, drift: f32, noise: f32| -> Series {
         let mut y = start;
         let mut points = Vec::with_capacity(n);
         for i in 0..n {
-            let step: f64 = rng.random_range(-noise..noise) + drift;
+            let step = rng.random_range(-noise..noise) + drift;
             y = (y + step).max(1e-6);
-            points.push((i as f64, y));
+            points.push((i as f32, y));
         }
         Series {
             name: name.into(),
