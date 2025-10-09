@@ -507,11 +507,9 @@ impl State {
             }
             Content::Comparison(chart) => {
                 if let Some(chart) = chart {
-                    let base = chart
+                    chart
                         .view()
-                        .map(move |message| Message::ComparisonChartInteraction(id, message));
-
-                    base.into()
+                        .map(move |message| Message::ComparisonChartInteraction(id, message))
                 } else {
                     center(text("Loading...").size(16)).into()
                 }
@@ -1019,7 +1017,7 @@ impl State {
 
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
-            Content::Kline { .. } => Some(1000),
+            Content::Kline { .. } | Content::Comparison(_) => Some(1000),
             Content::Heatmap { chart, .. } => {
                 if let Some(chart) = chart {
                     chart.basis_interval()
@@ -1027,10 +1025,8 @@ impl State {
                     None
                 }
             }
-            Content::TimeAndSales(_) => Some(100),
-            Content::Ladder(_) => Some(100),
+            Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
             Content::Starter => None,
-            Content::Comparison(_) => Some(100),
         }
     }
 

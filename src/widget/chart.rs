@@ -1,4 +1,3 @@
-use crate::chart::Action;
 use crate::style;
 use iced::advanced::layout;
 use iced::advanced::renderer;
@@ -16,17 +15,20 @@ const MIN_ZOOM_POINTS: usize = 2;
 const MAX_ZOOM_POINTS: usize = 5000;
 const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
 
+/// Gap breaker to avoid drawing across missing data
+const GAP_BREAK_MULTIPLIER: f32 = 3.0;
+
 #[derive(Debug, Clone)]
 pub struct Series {
     pub name: String,
-    /// (x, y) where x is a time-like domain (e.g., timestamp seconds) and y is raw value
-    pub points: Vec<(f32, f32)>,
+    /// (x, y) where x is a time-like domain (e.g., timestamp) and y is raw value
+    pub points: Vec<(u64, f32)>,
     pub color: Option<Color>,
 }
 
 pub trait SeriesLike {
     fn name(&self) -> &str;
-    fn points(&self) -> &[(f32, f32)];
+    fn points(&self) -> &[(u64, f32)];
     fn color(&self) -> Option<Color>;
 }
 
@@ -34,7 +36,7 @@ impl SeriesLike for Series {
     fn name(&self) -> &str {
         &self.name
     }
-    fn points(&self) -> &[(f32, f32)] {
+    fn points(&self) -> &[(u64, f32)] {
         &self.points
     }
     fn color(&self) -> Option<Color> {
@@ -122,8 +124,11 @@ where
                 if pts.len() >= 2 {
                     let first = pts.first().unwrap().0;
                     let last = pts.last().unwrap().0;
+                    if last <= first {
+                        return None;
+                    }
                     let steps = (pts.len() - 1) as f32;
-                    let dt = (last - first) / steps;
+                    let dt = (last - first) as f32 / steps;
                     (dt.is_finite() && dt > 0.0).then_some(dt)
                 } else {
                     None
@@ -142,14 +147,16 @@ where
         }
     }
 
-    fn compute_domains(&self, pan_dx: f32) -> Option<((f32, f32), (f32, f32))> {
+    fn compute_domains(&self, pan_dx: f32) -> Option<((u64, u64), (f32, f32))> {
         if self.series.is_empty() {
             return None;
         }
-        let mut data_min_x = f32::INFINITY;
-        let mut data_max_x = f32::NEG_INFINITY;
+        let mut any = false;
+        let mut data_min_x = u64::MAX;
+        let mut data_max_x = u64::MIN;
         for s in self.series {
             for (x, _) in s.points() {
+                any = true;
                 if *x < data_min_x {
                     data_min_x = *x;
                 }
@@ -158,50 +165,91 @@ where
                 }
             }
         }
-        if !data_min_x.is_finite() || !data_max_x.is_finite() {
+        if !any {
             return None;
         }
-        if (data_max_x - data_min_x).abs() < f32::EPSILON {
-            data_max_x = data_min_x + 1.0;
+        if data_max_x == data_min_x {
+            data_max_x = data_max_x.saturating_add(1);
         }
 
         let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
             (data_min_x, data_max_x)
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = self.estimated_dt().max(1e-9);
-            let span = ((n.saturating_sub(1)) as f32) * dt;
-            (data_max_x - span, data_max_x)
+            let dt = self.estimated_dt().max(1e-6);
+            let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
+            if span == 0 {
+                span = 1;
+            }
+            let max_x = data_max_x;
+            let min_x = max_x.saturating_sub(span);
+            (min_x, max_x)
         };
-        win_min_x += pan_dx;
-        win_max_x += pan_dx;
 
-        // Y domain (percent) over [win_min_x, win_max_x]
+        let delta = pan_dx.round() as i64;
+        let shift = |v: u64, d: i64| -> u64 {
+            if d >= 0 {
+                v.saturating_add(d as u64)
+            } else {
+                v.saturating_sub((-d) as u64)
+            }
+        };
+        win_min_x = shift(win_min_x, delta);
+        win_max_x = shift(win_max_x, delta);
+
         let mut min_pct = f32::INFINITY;
         let mut max_pct = f32::NEG_INFINITY;
         let mut any_point = false;
 
         for s in self.series {
-            if s.points().is_empty() {
-                continue;
-            }
-            let base = s.points()[0].1;
-            if base == 0.0 {
+            let pts = s.points();
+            if pts.is_empty() {
                 continue;
             }
 
-            for (_, y) in s
-                .points()
+            let idx_right = pts.iter().position(|(x, _)| *x >= win_min_x);
+            let y0 = match idx_right {
+                Some(0) => pts[0].1,
+                Some(i) => {
+                    let (x0, y0_) = pts[i - 1];
+                    let (x1, y1_) = pts[i];
+                    let dx = (x1.saturating_sub(x0)) as f32;
+                    if dx > 0.0 {
+                        let t = (win_min_x.saturating_sub(x0)) as f32 / dx;
+                        y0_ + (y1_ - y0_) * t.clamp(0.0, 1.0)
+                    } else {
+                        y0_
+                    }
+                }
+                None => continue,
+            };
+
+            if y0 == 0.0 {
+                continue;
+            }
+
+            let mut has_visible = false;
+            for (_x, y) in pts
                 .iter()
                 .filter(|(x, _)| *x >= win_min_x && *x <= win_max_x)
             {
-                any_point = true;
-                let pct = ((*y / base) - 1.0) as f32 * 100.0;
+                has_visible = true;
+                let pct = ((*y / y0) - 1.0) * 100.0;
                 if pct < min_pct {
                     min_pct = pct;
                 }
                 if pct > max_pct {
                     max_pct = pct;
+                }
+            }
+
+            if has_visible {
+                any_point = true;
+                if 0.0 < min_pct {
+                    min_pct = 0.0;
+                }
+                if 0.0 > max_pct {
+                    max_pct = 0.0;
                 }
             }
         }
@@ -283,8 +331,8 @@ where
         &self,
         plot: Rectangle,
         map_y: &Fy,
-        min_x: f32,
-        max_x: f32,
+        min_x: u64,
+        max_x: u64,
         step: f32,
         line_color_pool: &[Color; 5],
         text_color_pool: &[Color; 5],
@@ -296,50 +344,44 @@ where
         let mut end_labels: Vec<EndLabel> = Vec::new();
 
         for (si, s) in self.series.iter().enumerate() {
-            if s.points().is_empty() {
+            let pts = s.points();
+            if pts.is_empty() {
                 continue;
             }
-            let global_base = s.points()[0].1;
+            let global_base = pts[0].1;
             if global_base == 0.0 {
                 continue;
             }
 
-            let last_vis = s
-                .points()
-                .iter()
-                .rev()
-                .find(|(x, _)| (*x >= min_x) && (*x <= max_x));
+            let last_vis = pts.iter().rev().find(|(x, _)| *x >= min_x && *x <= max_x);
             let (_x1, y1) = match last_vis {
-                Some(p) => *p,
-                None => continue, // nothing visible for this series
+                Some((_x, y)) => (0u64, *y),
+                None => continue,
             };
 
-            let idx_right = s.points().iter().position(|(x, _)| *x >= min_x);
+            let idx_right = pts.iter().position(|(x, _)| *x >= min_x);
             let y0 = match idx_right {
-                Some(0) => s.points()[0].1,
+                Some(0) => pts[0].1,
                 Some(i) => {
-                    let (x0, y0) = s.points()[i - 1];
-                    let (x2, y2) = s.points()[i];
-                    let dx = x2 - x0;
-                    if dx.is_finite() && dx > 0.0 {
-                        let t = ((min_x - x0) / dx).clamp(0.0, 1.0);
-                        y0 + (y2 - y0) * t
+                    let (x0, y0) = pts[i - 1];
+                    let (x2, y2) = pts[i];
+                    let dx = (x2.saturating_sub(x0)) as f32;
+                    if dx > 0.0 {
+                        let t = (min_x.saturating_sub(x0)) as f32 / dx;
+                        y0 + (y2 - y0) * t.clamp(0.0, 1.0)
                     } else {
                         y0
                     }
                 }
-                None => {
-                    continue;
-                }
+                None => continue,
             };
 
             if y0 == 0.0 {
                 continue;
             }
-            let pct_label = ((y1 / y0) - 1.0) as f32 * 100.0;
+            let pct_label = ((y1 / y0) - 1.0) * 100.0;
 
-            let pct_line = ((y1 / global_base) - 1.0) as f32 * 100.0;
-            let mut py = map_y(pct_line);
+            let mut py = map_y(pct_label);
             let half_txt = TEXT_SIZE * 0.5;
             py = py.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
 
@@ -400,6 +442,7 @@ where
         }
     }
 
+    #[allow(unused_assignments)]
     fn fill_main_geometry<Fx, Fy>(
         &self,
         frame: &mut canvas::Frame,
@@ -411,10 +454,10 @@ where
         map_y: &Fy,
         line_color_pool: &[Color; 5],
         palette: &Extended,
-        min_x: f32,
-        max_x: f32,
+        min_x: u64,
+        max_x: u64,
     ) where
-        Fx: Fn(f32) -> f32,
+        Fx: Fn(u64) -> f32,
         Fy: Fn(f32) -> f32,
     {
         // splitter / gutter background
@@ -449,11 +492,29 @@ where
         }
 
         for (si, s) in self.series.iter().enumerate() {
-            if s.points().len() < 2 {
+            let pts = s.points();
+            if pts.len() < 1 {
                 continue;
             }
-            let base = s.points()[0].1;
-            if base == 0.0 {
+
+            let idx_right = pts.iter().position(|(x, _)| *x >= min_x);
+            let y0 = match idx_right {
+                Some(0) => pts[0].1,
+                Some(i) => {
+                    let (x0, y0_) = pts[i - 1];
+                    let (x1, y1_) = pts[i];
+                    let dx = (x1.saturating_sub(x0)) as f32;
+                    if dx > 0.0 {
+                        let t = (min_x.saturating_sub(x0)) as f32 / dx;
+                        y0_ + (y1_ - y0_) * t.clamp(0.0, 1.0)
+                    } else {
+                        y0_
+                    }
+                }
+                None => continue,
+            };
+
+            if y0 == 0.0 {
                 continue;
             }
 
@@ -464,67 +525,74 @@ where
                     .unwrap_or(Color::BLACK)
             });
 
-            // Build a path only for the visible X-range [min_x, max_x],
-            // while preserving continuity by including the point right before the window, if any.
             let mut builder = canvas::path::Builder::new();
-            let mut started = false;
 
-            // Find the first index >= min_x
-            let mut i0 = s
-                .points()
-                .iter()
-                .position(|(x, _)| *x >= min_x)
-                .unwrap_or(s.points().len().saturating_sub(1));
+            let gap_thresh: u64 = (self.estimated_dt() * GAP_BREAK_MULTIPLIER)
+                .max(1.0)
+                .round() as u64;
 
-            if i0 > 0 {
-                i0 -= 1; // include one point before window for continuity
+            let mut prev_x: Option<u64> = None;
+            match idx_right {
+                Some(ir) if ir > 0 => {
+                    let px0 = map_x(min_x);
+                    let py0 = map_y(0.0);
+                    builder.move_to(Point::new(px0, py0));
+                    prev_x = Some(min_x);
+                }
+                Some(0) => {
+                    let (fx, fy) = pts[0];
+                    if fx <= max_x {
+                        let pct = ((fy / y0) - 1.0) * 100.0;
+                        builder.move_to(Point::new(map_x(fx), map_y(pct)));
+                        prev_x = Some(fx);
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
             }
 
-            for (idx, (x, y)) in s.points().iter().enumerate().skip(i0) {
-                if *x > max_x && started {
+            let start_idx = idx_right.unwrap_or(pts.len());
+
+            for (x, y) in pts.iter().skip(start_idx) {
+                if *x > max_x {
                     break;
                 }
-
-                let pct = ((*y / base) - 1.0) as f32 * 100.0;
+                let pct = ((*y / y0) - 1.0) * 100.0;
                 let px = map_x(*x);
                 let py = map_y(pct);
 
-                if !started {
-                    builder.move_to(Point::new(px, py));
-                    started = true;
-                } else {
+                let connect = match prev_x {
+                    Some(prev) => x.saturating_sub(prev) <= gap_thresh,
+                    None => false,
+                };
+
+                if connect {
                     builder.line_to(Point::new(px, py));
-                }
-
-                // If we never found a point >= min_x, ensure we at least draw the last point
-                if idx + 1 >= s.points().len() && !started {
+                } else {
                     builder.move_to(Point::new(px, py));
-                    started = true;
                 }
+                prev_x = Some(*x);
             }
 
-            if started {
-                let path = builder.build();
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default()
-                        .with_color(color)
-                        .with_width(self.stroke_width),
-                );
-            }
+            let path = builder.build();
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(color)
+                    .with_width(self.stroke_width),
+            );
         }
     }
 
-    pub fn invalidate(&mut self, _now: Option<std::time::Instant>) -> Option<Action> {
-        None
-    }
-
-    /// Current x-span in domain units for the active zoom.
+    /// Current x-span in domain units (ms) for the active zoom.
     fn current_x_span(&self) -> f32 {
-        let mut data_min_x = f32::INFINITY;
-        let mut data_max_x = f32::NEG_INFINITY;
+        let mut any = false;
+        let mut data_min_x = u64::MAX;
+        let mut data_max_x = u64::MIN;
         for s in self.series {
             for (x, _) in s.points() {
+                any = true;
                 if *x < data_min_x {
                     data_min_x = *x;
                 }
@@ -533,14 +601,14 @@ where
                 }
             }
         }
-        if !data_min_x.is_finite() || !data_max_x.is_finite() {
+        if !any {
             return 1.0;
         }
         if self.zoom.is_all() {
-            (data_max_x - data_min_x).max(1.0)
+            ((data_max_x - data_min_x) as f32).max(1.0)
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = self.estimated_dt().max(1e-9);
+            let dt = self.estimated_dt().max(1e-6);
             ((n.saturating_sub(1)) as f32 * dt).max(1.0)
         }
     }
@@ -590,34 +658,31 @@ where
             return;
         }
 
-        let bounds = layout.bounds();
-        let plot_width = (bounds.width - Y_AXIS_GUTTER).max(1.0) as f32;
-
         match event {
-            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if let mouse::ScrollDelta::Lines { y, .. } = delta {
-                    let state = tree.state.downcast_mut::<State>();
-
-                    let on_zoom_chg = match self.on_zoom_chg {
-                        Some(f) => f,
-                        None => return,
-                    };
-
-                    let zoom_in = *y > 0.0;
-                    let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
-
-                    if new_zoom != self.zoom {
-                        shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
-
-                        state.plot_cache.clear();
-                        state.label_cache.clear();
-                    }
-                }
-            }
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
 
                 match mouse_event {
+                    mouse::Event::WheelScrolled {
+                        delta: mouse::ScrollDelta::Lines { y, .. },
+                    } => {
+                        let state = tree.state.downcast_mut::<State>();
+
+                        let on_zoom_chg = match self.on_zoom_chg {
+                            Some(f) => f,
+                            None => return,
+                        };
+
+                        let zoom_in = *y > 0.0;
+                        let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
+
+                        if new_zoom != self.zoom {
+                            shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
+
+                            state.plot_cache.clear();
+                            state.label_cache.clear();
+                        }
+                    }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         state.is_panning = true;
                         state.last_cursor = None;
@@ -629,11 +694,12 @@ where
                     mouse::Event::CursorMoved { position } => {
                         if state.is_panning {
                             let prev = state.last_cursor.unwrap_or(*position);
-                            let dx_px = (position.x - prev.x) as f32;
+                            let dx_px = position.x - prev.x;
 
                             if dx_px.abs() > 0.0 {
                                 let x_span = self.current_x_span();
-                                let dx_domain = -(dx_px) * (x_span / plot_width);
+                                let dx_domain = -(dx_px)
+                                    * (x_span / (layout.bounds().width - Y_AXIS_GUTTER).max(1.0));
                                 state.pan_dx += dx_domain;
 
                                 state.plot_cache.clear();
@@ -705,13 +771,16 @@ where
             height: bounds.height.max(1.0),
         };
 
-        // Domain -> screen
-        let x_span = (max_x - min_x) as f32;
-        let y_span = (max_pct - min_pct).max(1e-6);
-        let map_x = |x: f32| -> f32 {
-            let t = ((x - min_x) as f32) / x_span;
-            plot.x + t.clamp(0.0, 1.0) * plot.width
+        let win_min_u64 = min_x;
+        let win_max_u64 = max_x;
+        let span_ms = win_max_u64.saturating_sub(win_min_u64).max(1);
+        let px_per_ms = plot.width / span_ms as f32;
+
+        let map_x = |x: u64| -> f32 {
+            let dx = x.saturating_sub(win_min_u64) as f32;
+            plot.x + dx * px_per_ms
         };
+        let y_span = (max_pct - min_pct).max(1e-6);
         let map_y = |pct: f32| -> f32 {
             let t = (pct - min_pct) / y_span;
             plot.y + plot.height - t.clamp(0.0, 1.0) * plot.height
@@ -735,14 +804,13 @@ where
         let mut end_labels = self.collect_end_labels(
             plot,
             &map_y,
-            min_x,
-            max_x,
+            win_min_u64,
+            win_max_u64,
             step,
             &line_color_pool,
             &text_color_pool,
             gutter,
         );
-
         resolve_label_overlaps(&mut end_labels, plot);
 
         let geometry = state.plot_cache.draw(renderer, bounds.size(), |frame| {
@@ -756,11 +824,10 @@ where
                 &map_y,
                 &line_color_pool,
                 palette,
-                min_x,
-                max_x,
+                win_min_u64,
+                win_max_u64,
             );
         });
-
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
             use iced::advanced::graphics::geometry::Renderer as _;
             renderer.draw_geometry(geometry);
@@ -769,13 +836,32 @@ where
         let labels_geo = state.label_cache.draw(renderer, bounds.size(), |frame| {
             self.fill_label_geometry(frame, &end_labels, gutter);
         });
-
         renderer.with_layer(bounds, |renderer| {
             renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 renderer.draw_geometry(labels_geo);
             });
         });
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Tree,
+        layout: Layout<'_>,
+        cursor: advanced::mouse::Cursor,
+        _viewport: &Rectangle,
+        _renderer: &Renderer,
+    ) -> advanced::mouse::Interaction {
+        if cursor.is_over(layout.bounds()) {
+            let state = state.state.downcast_ref::<State>();
+            if state.is_panning {
+                advanced::mouse::Interaction::Grabbing
+            } else {
+                advanced::mouse::Interaction::default()
+            }
+        } else {
+            advanced::mouse::Interaction::default()
+        }
     }
 }
 

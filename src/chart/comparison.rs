@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use iced::{Element, widget::row};
 use rand::Rng;
@@ -12,6 +12,12 @@ pub struct ComparisonChart {
     update_interval: u64,
 }
 
+impl Default for ComparisonChart {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     ZoomChanged(Zoom),
@@ -23,7 +29,7 @@ impl ComparisonChart {
             last_tick: Instant::now(),
             zoom: Zoom::all(),
             series: sample_data(),
-            update_interval: 100,
+            update_interval: 1000,
         }
     }
 
@@ -37,7 +43,7 @@ impl ComparisonChart {
 
     pub fn view(&self) -> Element<'_, Message> {
         let chart = LineComparison::new(&self.series, self.update_interval)
-            .on_zoom(|z| Message::ZoomChanged(z))
+            .on_zoom(Message::ZoomChanged)
             .with_zoom(self.zoom);
 
         row![chart].padding(1).into()
@@ -58,25 +64,12 @@ impl ComparisonChart {
     }
 }
 
-/// Modifies the data in place by adding a new point to each series.
-fn rng_to_sample_data(data: &mut Vec<Series>) {
-    for s in data {
-        if let Some((last_x, last_y)) = s.points.last().cloned() {
-            let mut rng = rand::rng();
-            let step = rng.random_range(-1.2..1.2) + 0.1;
-            let new_y = (last_y + step).max(1e-6);
-            s.points.push((last_x + 1.0, new_y));
-            if s.points.len() > 500 {
-                s.points.remove(0);
-            }
-        }
-    }
-}
-
+/// Generate sample data with UNIX ms timestamps
 fn sample_data() -> Vec<Series> {
     use rand::prelude::*;
     let mut rng = rand::rng();
     let n = 120;
+    let now = unix_ms_now();
 
     let mut make_series = |name: &str, start: f32, drift: f32, noise: f32| -> Series {
         let mut y = start;
@@ -84,7 +77,8 @@ fn sample_data() -> Vec<Series> {
         for i in 0..n {
             let step = rng.random_range(-noise..noise) + drift;
             y = (y + step).max(1e-6);
-            points.push((i as f32, y));
+            let x = now - (n - i) as u64 * 1000; // each second back
+            points.push((x, y));
         }
         Series {
             name: name.into(),
@@ -98,4 +92,27 @@ fn sample_data() -> Vec<Series> {
         make_series("Beta", 80.0, 0.18, 1.2),
         make_series("Gamma", 120.0, 0.04, 1.6),
     ]
+}
+
+/// Update rng_to_sample_data to use current UNIX ms
+fn rng_to_sample_data(data: &mut Vec<Series>) {
+    for s in data {
+        if let Some((_last_x, last_y)) = s.points.last().cloned() {
+            let mut rng = rand::rng();
+            let step = rng.random_range(-1.2..1.2) + 0.1;
+            let new_y = (last_y + step).max(1e-6);
+            let new_x = unix_ms_now();
+            s.points.push((new_x, new_y));
+            if s.points.len() > 500 {
+                s.points.remove(0);
+            }
+        }
+    }
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
