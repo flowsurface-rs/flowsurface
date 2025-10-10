@@ -9,6 +9,9 @@ use iced::window;
 use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 const Y_AXIS_GUTTER: f32 = 66.0; // px
+const X_AXIS_HEIGHT: f32 = 24.0;
+
+const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 
 const MIN_ZOOM_POINTS: usize = 2;
@@ -55,7 +58,8 @@ pub struct LineComparison<'a, S, Message> {
 
 struct State {
     plot_cache: canvas::Cache,
-    label_cache: canvas::Cache,
+    overlay_cache: canvas::Cache,
+    labels_cache: canvas::Cache,
     last_draw: Option<std::time::Instant>,
     pan_dx: f32,
     is_panning: bool,
@@ -66,12 +70,21 @@ impl Default for State {
     fn default() -> Self {
         Self {
             plot_cache: canvas::Cache::new(),
-            label_cache: canvas::Cache::new(),
+            overlay_cache: canvas::Cache::new(),
+            labels_cache: canvas::Cache::new(),
             last_draw: None,
             pan_dx: 0.0,
             is_panning: false,
             last_cursor: None,
         }
+    }
+}
+
+impl State {
+    fn clear_all_caches(&mut self) {
+        self.plot_cache.clear();
+        self.overlay_cache.clear();
+        self.labels_cache.clear();
     }
 }
 
@@ -410,181 +423,6 @@ where
         end_labels
     }
 
-    fn fill_label_geometry(&self, frame: &mut canvas::Frame, end_labels: &[EndLabel], gutter: f32) {
-        for label in end_labels {
-            frame.fill_rectangle(
-                Point {
-                    x: label.pos.x,
-                    y: label.pos.y - TEXT_SIZE * 0.5 - 2.0,
-                },
-                Size {
-                    width: -gutter,
-                    height: TEXT_SIZE + 4.0,
-                },
-                label.bg_color,
-            );
-
-            frame.fill(
-                &canvas::Path::circle(Point::new(label.pos.x, label.pos.y), 4.0),
-                label.bg_color,
-            );
-
-            frame.fill_text(canvas::Text {
-                content: label.text.clone(),
-                position: label.pos - Vector::new(4.0, 0.0),
-                color: label.text_color,
-                size: 12.0.into(),
-                font: style::AZERET_MONO,
-                align_x: iced::Alignment::End.into(),
-                align_y: iced::Alignment::Center.into(),
-                ..Default::default()
-            });
-        }
-    }
-
-    #[allow(unused_assignments)]
-    fn fill_main_geometry<Fx, Fy>(
-        &self,
-        frame: &mut canvas::Frame,
-        plot: Rectangle,
-        gutter: f32,
-        ticks: &[f32],
-        labels: &[String],
-        map_x: &Fx,
-        map_y: &Fy,
-        line_color_pool: &[Color; 5],
-        palette: &Extended,
-        min_x: u64,
-        max_x: u64,
-    ) where
-        Fx: Fn(u64) -> f32,
-        Fy: Fn(f32) -> f32,
-    {
-        // splitter / gutter background
-        frame.fill_rectangle(
-            Point {
-                x: plot.x + plot.width,
-                y: 0.0,
-            },
-            Size {
-                width: gutter,
-                height: plot.height,
-            },
-            palette.background.weak.color,
-        );
-
-        // Y-axis tick labels
-        for (i, tick) in ticks.iter().enumerate() {
-            let mut y = map_y(*tick);
-            let half_txt = TEXT_SIZE * 0.5;
-            y = y.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
-            let txt = &labels[i];
-            frame.fill_text(canvas::Text {
-                content: txt.clone(),
-                position: Point::new(plot.x + plot.width + gutter - 4.0, y),
-                color: palette.background.base.text,
-                size: 12.0.into(),
-                font: style::AZERET_MONO,
-                align_x: iced::Alignment::End.into(),
-                align_y: iced::Alignment::Center.into(),
-                ..Default::default()
-            });
-        }
-
-        for (si, s) in self.series.iter().enumerate() {
-            let pts = s.points();
-            if pts.len() < 1 {
-                continue;
-            }
-
-            let idx_right = pts.iter().position(|(x, _)| *x >= min_x);
-            let y0 = match idx_right {
-                Some(0) => pts[0].1,
-                Some(i) => {
-                    let (x0, y0_) = pts[i - 1];
-                    let (x1, y1_) = pts[i];
-                    let dx = (x1.saturating_sub(x0)) as f32;
-                    if dx > 0.0 {
-                        let t = (min_x.saturating_sub(x0)) as f32 / dx;
-                        y0_ + (y1_ - y0_) * t.clamp(0.0, 1.0)
-                    } else {
-                        y0_
-                    }
-                }
-                None => continue,
-            };
-
-            if y0 == 0.0 {
-                continue;
-            }
-
-            let color = s.color().unwrap_or_else(|| {
-                line_color_pool
-                    .get(si % line_color_pool.len())
-                    .copied()
-                    .unwrap_or(Color::BLACK)
-            });
-
-            let mut builder = canvas::path::Builder::new();
-
-            let gap_thresh: u64 = (self.estimated_dt() * GAP_BREAK_MULTIPLIER)
-                .max(1.0)
-                .round() as u64;
-
-            let mut prev_x: Option<u64> = None;
-            match idx_right {
-                Some(ir) if ir > 0 => {
-                    let px0 = map_x(min_x);
-                    let py0 = map_y(0.0);
-                    builder.move_to(Point::new(px0, py0));
-                    prev_x = Some(min_x);
-                }
-                Some(0) => {
-                    let (fx, fy) = pts[0];
-                    if fx <= max_x {
-                        let pct = ((fy / y0) - 1.0) * 100.0;
-                        builder.move_to(Point::new(map_x(fx), map_y(pct)));
-                        prev_x = Some(fx);
-                    } else {
-                        continue;
-                    }
-                }
-                _ => continue,
-            }
-
-            let start_idx = idx_right.unwrap_or(pts.len());
-
-            for (x, y) in pts.iter().skip(start_idx) {
-                if *x > max_x {
-                    break;
-                }
-                let pct = ((*y / y0) - 1.0) * 100.0;
-                let px = map_x(*x);
-                let py = map_y(pct);
-
-                let connect = match prev_x {
-                    Some(prev) => x.saturating_sub(prev) <= gap_thresh,
-                    None => false,
-                };
-
-                if connect {
-                    builder.line_to(Point::new(px, py));
-                } else {
-                    builder.move_to(Point::new(px, py));
-                }
-                prev_x = Some(*x);
-            }
-
-            let path = builder.build();
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_color(color)
-                    .with_width(self.stroke_width),
-            );
-        }
-    }
-
     /// Current x-span in domain units (ms) for the active zoom.
     fn current_x_span(&self) -> f32 {
         let mut any = false;
@@ -679,8 +517,7 @@ where
                         if new_zoom != self.zoom {
                             shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
 
-                            state.plot_cache.clear();
-                            state.label_cache.clear();
+                            state.clear_all_caches();
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
@@ -702,8 +539,7 @@ where
                                     * (x_span / (layout.bounds().width - Y_AXIS_GUTTER).max(1.0));
                                 state.pan_dx += dx_domain;
 
-                                state.plot_cache.clear();
-                                state.label_cache.clear();
+                                state.clear_all_caches();
                             }
                             state.last_cursor = Some(*position);
                         }
@@ -720,8 +556,7 @@ where
                     if dur.as_millis() < self.update_interval {
                         return;
                     } else {
-                        state.plot_cache.clear();
-                        state.label_cache.clear();
+                        state.clear_all_caches();
                     }
                 }
                 state.last_draw = Some(*now);
@@ -768,16 +603,16 @@ where
             x: 0.0,
             y: 0.0,
             width: (bounds.width - gutter).max(1.0),
-            height: bounds.height.max(1.0),
+            height: (bounds.height - X_AXIS_HEIGHT).max(1.0),
         };
 
-        let win_min_u64 = min_x;
-        let win_max_u64 = max_x;
-        let span_ms = win_max_u64.saturating_sub(win_min_u64).max(1);
+        let visible_min_u64 = min_x;
+        let visible_max_u64 = max_x;
+        let span_ms = visible_max_u64.saturating_sub(visible_min_u64).max(1);
         let px_per_ms = plot.width / span_ms as f32;
 
         let map_x = |x: u64| -> f32 {
-            let dx = x.saturating_sub(win_min_u64) as f32;
+            let dx = x.saturating_sub(visible_min_u64) as f32;
             plot.x + dx * px_per_ms
         };
         let y_span = (max_pct - min_pct).max(1e-6);
@@ -804,8 +639,8 @@ where
         let mut end_labels = self.collect_end_labels(
             plot,
             &map_y,
-            win_min_u64,
-            win_max_u64,
+            visible_min_u64,
+            visible_max_u64,
             step,
             &line_color_pool,
             &text_color_pool,
@@ -813,19 +648,45 @@ where
         );
         resolve_label_overlaps(&mut end_labels, plot);
 
+        // Plot geometry: vectors only
         let geometry = state.plot_cache.draw(renderer, bounds.size(), |frame| {
             self.fill_main_geometry(
                 frame,
-                plot,
-                gutter,
-                &ticks,
-                &labels,
                 &map_x,
                 &map_y,
                 &line_color_pool,
-                palette,
-                win_min_u64,
-                win_max_u64,
+                visible_min_u64,
+                visible_max_u64,
+            );
+
+            let axis_color = palette.background.strongest.color.scale_alpha(0.25);
+
+            // Y-axis baseline/splitter
+            let path = {
+                let mut b = canvas::path::Builder::new();
+                b.move_to(Point::new(plot.x + plot.width, 0.0));
+                b.line_to(Point::new(plot.x + plot.width, plot.height));
+                b.build()
+            };
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(axis_color)
+                    .with_width(1.0),
+            );
+            // X-axis baseline/splitter
+            let axis_y = plot.y + plot.height + 0.5;
+            let path = {
+                let mut b = canvas::path::Builder::new();
+                b.move_to(Point::new(plot.x, axis_y));
+                b.line_to(Point::new(plot.x + plot.width + gutter, axis_y));
+                b.build()
+            };
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(axis_color)
+                    .with_width(1.0),
             );
         });
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
@@ -833,13 +694,34 @@ where
             renderer.draw_geometry(geometry);
         });
 
-        let labels_geo = state.label_cache.draw(renderer, bounds.size(), |frame| {
-            self.fill_label_geometry(frame, &end_labels, gutter);
+        // Axis labels layer (under overlay)
+        let labels_geo = state.labels_cache.draw(renderer, bounds.size(), |frame| {
+            self.fill_y_axis_labels(frame, plot, &ticks, &labels, &map_y, gutter, palette);
+            self.fill_x_axis_labels(
+                frame,
+                plot,
+                visible_min_u64,
+                visible_max_u64,
+                &map_x,
+                px_per_ms,
+                palette,
+            );
         });
         renderer.with_layer(bounds, |renderer| {
             renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 renderer.draw_geometry(labels_geo);
+            });
+        });
+
+        let overlay_geo = state.overlay_cache.draw(renderer, bounds.size(), |frame| {
+            self.fill_overlay_y_labels(frame, &end_labels, gutter);
+            // Future: other overlay annotations here
+        });
+        renderer.with_layer(bounds, |renderer| {
+            renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                renderer.draw_geometry(overlay_geo);
             });
         });
     }
@@ -865,13 +747,215 @@ where
     }
 }
 
-impl<'a, S, Message> From<LineComparison<'a, S, Message>> for Element<'a, Message, Theme, Renderer>
+impl<'a, S, Message> LineComparison<'a, S, Message>
 where
-    Message: Clone + 'a + 'static,
     S: SeriesLike,
 {
-    fn from(chart: LineComparison<'a, S, Message>) -> Self {
-        Element::new(chart)
+    #[allow(unused_assignments)]
+    fn fill_main_geometry<Fx, Fy>(
+        &self,
+        frame: &mut canvas::Frame,
+        map_x: &Fx,
+        map_y: &Fy,
+        line_color_pool: &[Color; 5],
+        min_x: u64,
+        max_x: u64,
+    ) where
+        Fx: Fn(u64) -> f32,
+        Fy: Fn(f32) -> f32,
+    {
+        for (si, s) in self.series.iter().enumerate() {
+            let pts = s.points();
+            if pts.is_empty() {
+                continue;
+            }
+
+            let idx_right = pts.iter().position(|(x, _)| *x >= min_x);
+            let y0 = match idx_right {
+                Some(0) => pts[0].1,
+                Some(i) => {
+                    let (x0, y0_) = pts[i - 1];
+                    let (x1, y1_) = pts[i];
+                    let dx = (x1.saturating_sub(x0)) as f32;
+                    if dx > 0.0 {
+                        let t = (min_x.saturating_sub(x0)) as f32 / dx;
+                        y0_ + (y1_ - y0_) * t.clamp(0.0, 1.0)
+                    } else {
+                        y0_
+                    }
+                }
+                None => continue,
+            };
+
+            if y0 == 0.0 {
+                continue;
+            }
+
+            let color = s.color().unwrap_or_else(|| {
+                line_color_pool
+                    .get(si % line_color_pool.len())
+                    .copied()
+                    .unwrap_or(Color::BLACK)
+            });
+
+            let mut builder = canvas::path::Builder::new();
+
+            let gap_thresh: u64 = (self.estimated_dt() * GAP_BREAK_MULTIPLIER)
+                .max(1.0)
+                .round() as u64;
+
+            let mut prev_x: Option<u64> = None;
+            match idx_right {
+                Some(ir) if ir > 0 => {
+                    let px0 = map_x(min_x);
+                    let py0 = map_y(0.0);
+                    builder.move_to(Point::new(px0, py0));
+                    prev_x = Some(min_x);
+                }
+                Some(0) => {
+                    let (fx, fy) = pts[0];
+                    if fx <= max_x {
+                        let pct = ((fy / y0) - 1.0) * 100.0;
+                        builder.move_to(Point::new(map_x(fx), map_y(pct)));
+                        prev_x = Some(fx);
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            }
+
+            let start_idx = idx_right.unwrap_or(pts.len());
+
+            for (x, y) in pts.iter().skip(start_idx) {
+                if *x > max_x {
+                    break;
+                }
+                let pct = ((*y / y0) - 1.0) * 100.0;
+                let px = map_x(*x);
+                let py = map_y(pct);
+
+                let connect = match prev_x {
+                    Some(prev) => x.saturating_sub(prev) <= gap_thresh,
+                    None => false,
+                };
+
+                if connect {
+                    builder.line_to(Point::new(px, py));
+                } else {
+                    builder.move_to(Point::new(px, py));
+                }
+                prev_x = Some(*x);
+            }
+
+            let path = builder.build();
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(color)
+                    .with_width(self.stroke_width),
+            );
+        }
+    }
+
+    fn fill_overlay_y_labels(
+        &self,
+        frame: &mut canvas::Frame,
+        end_labels: &[EndLabel],
+        gutter: f32,
+    ) {
+        for label in end_labels {
+            frame.fill_rectangle(
+                Point {
+                    x: label.pos.x,
+                    y: label.pos.y - TEXT_SIZE * 0.5 - 2.0,
+                },
+                Size {
+                    width: -gutter,
+                    height: TEXT_SIZE + 4.0,
+                },
+                label.bg_color,
+            );
+
+            frame.fill(
+                &canvas::Path::circle(Point::new(label.pos.x, label.pos.y), 4.0),
+                label.bg_color,
+            );
+
+            frame.fill_text(canvas::Text {
+                content: label.text.clone(),
+                position: label.pos - Vector::new(4.0, 0.0),
+                color: label.text_color,
+                size: 12.0.into(),
+                font: style::AZERET_MONO,
+                align_x: iced::Alignment::End.into(),
+                align_y: iced::Alignment::Center.into(),
+                ..Default::default()
+            });
+        }
+    }
+
+    // underlay: y-axis tick labels (text only)
+    fn fill_y_axis_labels<Fy>(
+        &self,
+        frame: &mut canvas::Frame,
+        plot: Rectangle,
+        ticks: &[f32],
+        labels: &[String],
+        map_y: &Fy,
+        gutter: f32,
+        palette: &Extended,
+    ) where
+        Fy: Fn(f32) -> f32,
+    {
+        for (i, tick) in ticks.iter().enumerate() {
+            let mut y = map_y(*tick);
+            let half_txt = TEXT_SIZE * 0.5;
+            y = y.clamp(plot.y + half_txt, plot.y + plot.height - half_txt);
+            let txt = &labels[i];
+            frame.fill_text(canvas::Text {
+                content: txt.clone(),
+                position: Point::new(plot.x + plot.width + gutter - 4.0, y),
+                color: palette.background.base.text,
+                size: TEXT_SIZE.into(),
+                font: style::AZERET_MONO,
+                align_x: iced::Alignment::End.into(),
+                align_y: iced::Alignment::Center.into(),
+                ..Default::default()
+            });
+        }
+    }
+
+    // underlay, x-axis labels (text only)
+    fn fill_x_axis_labels<Fx>(
+        &self,
+        frame: &mut canvas::Frame,
+        plot: Rectangle,
+        min_x: u64,
+        max_x: u64,
+        map_x: &Fx,
+        px_per_ms: f32,
+        palette: &Extended,
+    ) where
+        Fx: Fn(u64) -> f32,
+    {
+        let axis_y = plot.y + plot.height + 0.5;
+        let (ticks, step_ms) = time_ticks(min_x, max_x, px_per_ms, MIN_X_TICK_PX);
+        let baseline_to_text = 4.0;
+        for t in ticks {
+            let x = map_x(t).clamp(plot.x, plot.x + plot.width);
+            let label = format_time_label(t, step_ms);
+            frame.fill_text(canvas::Text {
+                content: label,
+                position: Point::new(x, axis_y + baseline_to_text + 2.0 + TEXT_SIZE * 0.5),
+                color: palette.background.base.text,
+                size: TEXT_SIZE.into(),
+                font: style::AZERET_MONO,
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                ..Default::default()
+            });
+        }
     }
 }
 
@@ -957,5 +1041,104 @@ fn resolve_label_overlaps(end_labels: &mut [EndLabel], plot: Rectangle) {
         let y = target.clamp(low, high);
         end_labels[i].pos.y = y;
         prev_y = y;
+    }
+}
+
+fn time_tick_candidates() -> &'static [u64] {
+    // milliseconds for: 1s, 2s, 5s, 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d, 2d, 1w
+    const S: u64 = 1_000;
+    const M: u64 = 60 * S;
+    const H: u64 = 60 * M;
+    const D: u64 = 24 * H;
+    &[
+        S,
+        2 * S,
+        5 * S,
+        10 * S,
+        15 * S,
+        30 * S, //
+        M,
+        2 * M,
+        5 * M,
+        10 * M,
+        15 * M,
+        30 * M, //
+        H,
+        2 * H,
+        4 * H,
+        6 * H,
+        12 * H, //
+        D,
+        2 * D,
+        7 * D,
+    ]
+}
+
+fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>, u64) {
+    let span = max_x.saturating_sub(min_x).max(1);
+    let mut step = *time_tick_candidates().first().unwrap_or(&1_000);
+    for &candidate in time_tick_candidates() {
+        let px = candidate as f32 * px_per_ms;
+        if px >= min_px {
+            step = candidate;
+            break;
+        } else {
+            step = candidate;
+        }
+    }
+    // Align first tick to the step boundary >= min_x
+    let first = if min_x % step == 0 {
+        min_x
+    } else {
+        (min_x / step + 1) * step
+    };
+    let mut out = Vec::new();
+    let mut t = first;
+    // Protect against infinite loop
+    for _ in 0..=2000 {
+        if t > max_x {
+            break;
+        }
+        out.push(t);
+        t = t.saturating_add(step);
+        if (t - first) > span + step {
+            break;
+        }
+    }
+    (out, step)
+}
+
+fn format_time_label(ts_ms: u64, step_ms: u64) -> String {
+    use chrono::{TimeZone, Utc};
+    let Some(dt) = Utc.timestamp_millis_opt(ts_ms as i64).single() else {
+        return String::new();
+    };
+    // Choose format based on step size
+    const S: u64 = 1_000;
+    const M: u64 = 60 * S;
+    const H: u64 = 60 * M;
+    const D: u64 = 24 * H;
+    if step_ms < M {
+        // show seconds
+        dt.format("%H:%M:%S").to_string()
+    } else if step_ms < D {
+        // show time
+        dt.format("%H:%M").to_string()
+    } else if step_ms < 7 * D {
+        // show day and month
+        dt.format("%b %d").to_string()
+    } else {
+        // show date
+        dt.format("%Y-%m-%d").to_string()
+    }
+}
+
+impl<'a, S, Message> From<LineComparison<'a, S, Message>> for Element<'a, Message, Theme, Renderer>
+where
+    Message: Clone + 'a + 'static,
+    S: SeriesLike,
+{
+    fn from(chart: LineComparison<'a, S, Message>) -> Self {
+        Element::new(chart)
     }
 }
