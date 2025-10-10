@@ -3,7 +3,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use iced::{Element, widget::row};
 use rand::Rng;
 
-use crate::widget::chart::{LineComparison, Series, Zoom};
+use crate::widget::chart::comparison::LineComparison;
+use crate::widget::chart::{Series, Zoom};
 
 pub struct ComparisonChart {
     zoom: Zoom,
@@ -91,6 +92,8 @@ fn sample_data() -> Vec<Series> {
         make_series("Alpha", 100.0, 0.08, 0.9),
         make_series("Beta", 80.0, 0.18, 1.2),
         make_series("Gamma", 120.0, 0.04, 1.6),
+        make_series("Delta", 60.0, 0.22, 1.0),
+        make_series("Epsilon", 200.0, -0.02, 2.0),
     ]
 }
 
