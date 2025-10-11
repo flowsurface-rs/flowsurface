@@ -1,6 +1,7 @@
 pub mod comparison;
 
 use chrono::{TimeZone, Utc};
+use exchange::TickerInfo;
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Zoom(pub usize);
@@ -20,21 +21,22 @@ impl Zoom {
 
 #[derive(Debug, Clone)]
 pub struct Series {
-    pub name: String,
+    pub name: TickerInfo,
     /// (x, y) where x is a time-like domain (e.g., timestamp) and y is raw value
     pub points: Vec<(u64, f32)>,
     pub color: Option<iced::Color>,
 }
 
 pub trait SeriesLike {
-    fn name(&self) -> &str;
+    fn name(&self) -> String;
     fn points(&self) -> &[(u64, f32)];
     fn color(&self) -> Option<iced::Color>;
+    fn ticker_info(&self) -> &TickerInfo;
 }
 
 impl SeriesLike for Series {
-    fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> String {
+        self.name.ticker.symbol_and_exchange_string()
     }
     fn points(&self) -> &[(u64, f32)] {
         &self.points
@@ -42,37 +44,8 @@ impl SeriesLike for Series {
     fn color(&self) -> Option<iced::Color> {
         self.color
     }
-}
-
-fn estimated_dt<S: SeriesLike>(series: &[S]) -> f32 {
-    let mut dts: Vec<f32> = series
-        .iter()
-        .filter_map(|s| {
-            let pts = s.points();
-            if pts.len() >= 2 {
-                let first = pts.first().unwrap().0;
-                let last = pts.last().unwrap().0;
-                if last <= first {
-                    return None;
-                }
-                let steps = (pts.len() - 1) as f32;
-                let dt = (last - first) as f32 / steps;
-                (dt.is_finite() && dt > 0.0).then_some(dt)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if dts.is_empty() {
-        return 1.0;
-    }
-    dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = dts.len() / 2;
-    if dts.len() % 2 == 1 {
-        dts[mid]
-    } else {
-        (dts[mid - 1] + dts[mid]) * 0.5
+    fn ticker_info(&self) -> &TickerInfo {
+        &self.name
     }
 }
 

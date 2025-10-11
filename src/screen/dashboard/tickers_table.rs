@@ -92,6 +92,7 @@ pub struct TickersTable {
     selected_exchanges: FxHashSet<ExchangeInclusive>,
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
+    pub available_tickers: Vec<TickerInfo>,
 }
 
 impl TickersTable {
@@ -115,6 +116,7 @@ impl TickersTable {
                 selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
+                available_tickers: Vec::new(),
             },
             fetch_tickers_info(),
         )
@@ -303,6 +305,12 @@ impl TickersTable {
         for (ticker, ticker_info) in info.into_iter() {
             self.tickers_info.insert(ticker, ticker_info);
         }
+
+        self.available_tickers = self
+            .tickers_info
+            .iter()
+            .filter_map(|(_, info)| *info)
+            .collect();
     }
 
     pub fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {

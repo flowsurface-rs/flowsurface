@@ -1,7 +1,13 @@
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use crate::style;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 
+use exchange::TickerInfo;
+use exchange::Timeframe;
+use exchange::fetcher::FetchRange;
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget};
 use iced::advanced::{layout, renderer};
@@ -29,8 +35,10 @@ pub struct LineComparison<'a, S, Message> {
     stroke_width: f32,
     zoom: Zoom,
     on_zoom_chg: Option<fn(Zoom) -> Message>,
+    on_data_req: Option<fn(FetchRange, TickerInfo) -> Message>,
     /// in milliseconds
     update_interval: u128,
+    timeframe: Timeframe,
 }
 
 struct State {
@@ -69,13 +77,15 @@ impl<'a, S, Message> LineComparison<'a, S, Message>
 where
     S: SeriesLike,
 {
-    pub fn new(series: &'a [S], update_interval: u64) -> Self {
+    pub fn new(series: &'a [S], update_interval: u64, timeframe: Timeframe) -> Self {
         Self {
             series,
             stroke_width: 2.0,
-            zoom: Zoom::all(),
+            zoom: Zoom::points(100),
             on_zoom_chg: None,
+            on_data_req: None,
             update_interval: update_interval as u128,
+            timeframe,
         }
     }
 
@@ -87,6 +97,27 @@ where
     pub fn on_zoom(mut self, f: fn(Zoom) -> Message) -> Self {
         self.on_zoom_chg = Some(f);
         self
+    }
+
+    pub fn on_data_request(mut self, f: fn(FetchRange, TickerInfo) -> Message) -> Self {
+        self.on_data_req = Some(f);
+        self
+    }
+
+    // Snap helpers
+    fn align_floor(ts: u64, dt: u64) -> u64 {
+        if dt == 0 {
+            return ts;
+        }
+        (ts / dt) * dt
+    }
+
+    fn align_ceil(ts: u64, dt: u64) -> u64 {
+        if dt == 0 {
+            return ts;
+        }
+        let f = (ts / dt) * dt;
+        if f == ts { ts } else { f.saturating_add(dt) }
     }
 
     fn max_points_available(&self) -> usize {
@@ -134,7 +165,7 @@ where
             (data_min_x, data_max_x)
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = super::estimated_dt(self.series).max(1e-6);
+            let dt = (self.dt_ms_est() as f32).max(1e-6);
             let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
             if span == 0 {
                 span = 1;
@@ -354,9 +385,110 @@ where
             ((data_max_x - data_min_x) as f32).max(1.0)
         } else {
             let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = super::estimated_dt(self.series).max(1e-6);
+            let dt = (self.dt_ms_est() as f32).max(1e-6);
             ((n.saturating_sub(1)) as f32 * dt).max(1.0)
         }
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    fn dt_ms_est(&self) -> u64 {
+        self.timeframe.to_milliseconds()
+    }
+
+    fn compute_visible_window(&self, pan_dx: f32) -> Option<(u64, u64)> {
+        // X-only window, does not depend on y computations
+        if self.series.is_empty() {
+            return None;
+        }
+        let mut any = false;
+        let mut data_min_x = u64::MAX;
+        let mut data_max_x = u64::MIN;
+        for s in self.series {
+            for (x, _) in s.points() {
+                any = true;
+                if *x < data_min_x {
+                    data_min_x = *x;
+                }
+                if *x > data_max_x {
+                    data_max_x = *x;
+                }
+            }
+        }
+        if !any {
+            return None;
+        }
+        if data_max_x == data_min_x {
+            data_max_x = data_max_x.saturating_add(1);
+        }
+
+        let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
+            (data_min_x, data_max_x)
+        } else {
+            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+            let dt = (self.dt_ms_est() as f32).max(1e-6);
+            let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
+            if span == 0 {
+                span = 1;
+            }
+            let max_x = data_max_x;
+            let min_x = max_x.saturating_sub(span);
+            (min_x, max_x)
+        };
+
+        let delta = pan_dx.round() as i64;
+        let shift = |v: u64, d: i64| -> u64 {
+            if d >= 0 {
+                v.saturating_add(d as u64)
+            } else {
+                v.saturating_sub((-d) as u64)
+            }
+        };
+
+        win_min_x = shift(win_min_x, delta);
+        win_max_x = shift(win_max_x, delta);
+
+        let dt = self.dt_ms_est().max(1);
+        win_min_x = Self::align_floor(win_min_x, dt);
+        win_max_x = Self::align_ceil(win_max_x, dt);
+
+        Some((win_min_x, win_max_x))
+    }
+
+    fn desired_fetch_range(&self, pan_dx: f32) -> Option<(FetchRange, TickerInfo)> {
+        let dt = self.dt_ms_est().max(1);
+        let span = 500u64.saturating_mul(dt);
+        let last_closed = Self::align_floor(Self::now_ms(), dt);
+
+        // 1) Seed: if any series is empty, fetch last 500 candles for the first one.
+        for s in self.series {
+            if s.points().is_empty() {
+                let end = last_closed;
+                let start = end.saturating_sub(span);
+                return Some((FetchRange::Kline(start, end), *s.ticker_info()));
+            }
+        }
+
+        // 2) If we have some data, optionally backfill left when the visible window
+        //    starts before the first candle of a series.
+        if let Some((win_min, _win_max)) = self.compute_visible_window(pan_dx) {
+            for s in self.series {
+                if let Some(series_min) = s.points().first().map(|(x, _)| *x)
+                    && win_min < series_min
+                {
+                    let end = series_min;
+                    let start = end.saturating_sub(span);
+                    return Some((FetchRange::Kline(start, end), *s.ticker_info()));
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -467,6 +599,12 @@ where
                         return;
                     } else {
                         state.clear_all_caches();
+
+                        if let Some(on_req) = self.on_data_req
+                            && let Some((range, info)) = self.desired_fetch_range(state.pan_dx)
+                        {
+                            shell.publish(on_req(range, info));
+                        }
                     }
                 }
                 state.last_draw = Some(*now);
@@ -819,7 +957,7 @@ where
 
             let mut builder = canvas::path::Builder::new();
 
-            let gap_thresh: u64 = (super::estimated_dt(self.series) * GAP_BREAK_MULTIPLIER)
+            let gap_thresh: u64 = ((self.dt_ms_est() as f32) * GAP_BREAK_MULTIPLIER)
                 .max(1.0)
                 .round() as u64;
 
@@ -1149,6 +1287,7 @@ where
         let (_ticks, step_ms) =
             super::time_ticks(visible_min_x, visible_max_x, px_per_ms, MIN_X_TICK_PX);
         let time_str = super::format_time_label(cx_domain, step_ms);
+        //let time_str = ((cx_domain) as i64).to_string();
 
         let text_col = palette.primary.base.text;
         let bg_col = palette.primary.base.color;

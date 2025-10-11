@@ -683,7 +683,69 @@ impl Dashboard {
                         && let pane::Content::Comparison(ref mut chart) = state.content
                         && let Some(comparison_chart) = chart
                     {
-                        comparison_chart.update(message);
+                        let action = comparison_chart.update(message);
+                        match action {
+                            Some(crate::chart::comparison::Action::FetchRequested(
+                                req_id,
+                                range,
+                                ticker_info,
+                                timeframe,
+                            )) => {
+                                let pane_id = state.unique_id();
+
+                                let update_status = Task::done(Message::ChangePaneStatus(
+                                    pane_id,
+                                    pane::Status::Loading(pane::InfoType::FetchingKlines),
+                                ));
+
+                                if let FetchRange::Kline(from, to) = range {
+                                    let stream = StreamKind::Kline {
+                                        ticker_info,
+                                        timeframe,
+                                    };
+
+                                    let fetch_task = kline_fetch_task(
+                                        *layout_id,
+                                        pane_id,
+                                        stream,
+                                        Some(req_id),
+                                        Some((from, to)),
+                                    );
+
+                                    return (update_status.chain(fetch_task), None);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                pane::Message::UpdateSearchQuery(pane, search_query) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && matches!(state.modal, Some(pane::Modal::MiniTickersList(_)))
+                    {
+                        state.modal = Some(pane::Modal::MiniTickersList(Some(search_query)));
+                    }
+                }
+                pane::Message::UnselectTicker(pane, ticker) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Comparison(ref mut chart) = state.content
+                        && let Some(c) = chart
+                    {
+                        let rebuilt_streams = c.remove_ticker(&ticker);
+                        state.streams = ResolvedStream::Ready(rebuilt_streams.clone());
+
+                        return (self.refresh_streams(main_window.id), None);
+                    }
+                }
+                pane::Message::SelectTicker(pane, ticker) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Comparison(ref mut chart) = state.content
+                        && let Some(c) = chart
+                    {
+                        let rebuilt_streams = c.add_ticker(&ticker);
+                        state.streams = ResolvedStream::Ready(rebuilt_streams.clone());
+
+                        return (self.refresh_streams(main_window.id), None);
                     }
                 }
             },
@@ -887,6 +949,7 @@ impl Dashboard {
     pub fn view<'a>(
         &'a self,
         main_window: &'a Window,
+        available_tickers: &'a [exchange::TickerInfo],
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
@@ -899,6 +962,7 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
+                available_tickers,
             )
         })
         .min_size(240)
@@ -916,6 +980,7 @@ impl Dashboard {
         &'a self,
         window: window::Id,
         main_window: &'a Window,
+        available_tickers: &'a [exchange::TickerInfo],
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
@@ -930,6 +995,7 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
+                        available_tickers,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -1160,8 +1226,12 @@ impl Dashboard {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
-                    if let StreamKind::Kline { timeframe, .. } = stream_type {
-                        pane_state.insert_klines_vec(req_id, timeframe, &data);
+                    if let StreamKind::Kline {
+                        timeframe,
+                        ticker_info,
+                    } = stream_type
+                    {
+                        pane_state.insert_klines_vec(req_id, timeframe, ticker_info, &data);
                     }
                 }
             }
@@ -1236,12 +1306,15 @@ impl Dashboard {
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
-                    if let pane::Content::Kline { chart, .. } = &mut pane_state.content
-                        && let Some(c) = chart
-                    {
-                        c.update_latest_kline(kline);
+                    match &mut pane_state.content {
+                        pane::Content::Kline { chart: Some(c), .. } => {
+                            c.update_latest_kline(kline);
+                        }
+                        pane::Content::Comparison(Some(c)) => {
+                            c.update_latest_kline(&stream.ticker_info(), kline);
+                        }
+                        _ => {}
                     }
-
                     found_match = true;
                 }
             });

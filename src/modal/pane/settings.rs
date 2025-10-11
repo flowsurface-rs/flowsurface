@@ -437,6 +437,14 @@ pub fn timesales_cfg_view<'a>(
     cfg_view_container(320, content)
 }
 
+pub fn comparison_cfg_view<'a>(_pane: pane_grid::Pane) -> Element<'a, Message> {
+    let content = column![text(
+        "This chart type doesn't have any configurations, WIP..."
+    )];
+
+    cfg_view_container(320, content)
+}
+
 pub fn kline_cfg_view<'a>(
     study_config: &'a study::Configurator<FootprintStudy>,
     cfg: data::chart::kline::Config,
