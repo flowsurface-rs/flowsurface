@@ -1,16 +1,20 @@
 use crate::{
-    chart::{self, heatmap::HeatmapChart, kline::KlineChart},
+    chart::{
+        self,
+        comparison::{self, ComparisonChart},
+        heatmap::HeatmapChart,
+        kline::KlineChart,
+    },
     modal::{
         self, ModifierKind,
         pane::{
-            settings::{heatmap_cfg_view, kline_cfg_view},
+            settings::{comparison_cfg_view, heatmap_cfg_view, kline_cfg_view},
             stack_modal,
         },
     },
-    screen::dashboard::panel::ladder::Ladder,
     screen::{
         DashboardError,
-        dashboard::panel::{self, timeandsales::TimeAndSales},
+        dashboard::panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
     },
     style::{self, Icon, icon_text},
     widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
@@ -32,7 +36,9 @@ use iced::{
     Alignment, Element, Length, Renderer, Theme,
     alignment::Vertical,
     padding,
-    widget::{button, center, column, container, pane_grid, row, text, tooltip},
+    widget::{
+        button, center, column, container, pane_grid, row, scrollable, text, text_input, tooltip,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -52,9 +58,10 @@ pub enum Status {
     Stale(String),
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum Modal {
     StreamModifier(modal::stream::Modifier),
+    MiniTickersList(Option<String>),
     Settings,
     Indicators,
     LinkGroup,
@@ -93,6 +100,10 @@ pub enum Message {
     StreamModifierChanged(pane_grid::Pane, modal::stream::Message),
     StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
+    ComparisonChartInteraction(pane_grid::Pane, comparison::Message),
+    UpdateSearchQuery(pane_grid::Pane, String),
+    UnselectTicker(pane_grid::Pane, exchange::TickerInfo),
+    SelectTicker(pane_grid::Pane, TickerInfo),
 }
 
 pub struct State {
@@ -343,6 +354,25 @@ impl State {
                 }];
                 Ok((content, streams))
             }
+            "comparison" => {
+                let basis = self
+                    .settings
+                    .selected_basis
+                    .unwrap_or(Timeframe::M15.into());
+
+                let content =
+                    Content::Comparison(Some(ComparisonChart::new(basis, &[ticker_info], &[])));
+                let streams = match basis {
+                    Basis::Time(timeframe) => {
+                        vec![StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        }]
+                    }
+                    Basis::Tick(_) => todo!("WIP: ComparisonChart does not support tick basis"),
+                };
+                Ok((content, streams))
+            }
             _ => Err(DashboardError::PaneSet(
                 "A content must be set first.".to_string(),
             )),
@@ -376,13 +406,13 @@ impl State {
         &mut self,
         req_id: Option<uuid::Uuid>,
         timeframe: Timeframe,
+        ticker_info: TickerInfo,
         klines: &[Kline],
     ) {
-        if let Some(ticker_info) = self.stream_pair() {
-            if let Content::Kline {
+        match &mut self.content {
+            Content::Kline {
                 chart, indicators, ..
-            } = &mut self.content
-            {
+            } => {
                 let Some(chart) = chart else {
                     panic!("chart wasn't initialized when inserting klines");
                 };
@@ -404,7 +434,19 @@ impl State {
                         chart.kind(),
                     );
                 }
-            } else {
+            }
+            Content::Comparison(chart) => {
+                let Some(chart) = chart else {
+                    panic!("Comparison chart wasn't initialized when inserting klines");
+                };
+
+                if let Some(id) = req_id {
+                    chart.insert_history(id, ticker_info, klines);
+                } else {
+                    *chart = ComparisonChart::new(Basis::Time(timeframe), &[ticker_info], klines);
+                }
+            }
+            _ => {
                 log::error!("pane content not candlestick or footprint");
             }
         }
@@ -419,6 +461,7 @@ impl State {
         window: window::Id,
         main_window: &'a Window,
         timezone: UserTimezone,
+        available_tickers: &'a [exchange::TickerInfo],
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut stream_info_element = if Content::Starter == self.content {
             row![]
@@ -447,7 +490,7 @@ impl State {
             );
         }
 
-        let modifier: Option<modal::stream::Modifier> = self.modal.and_then(|m| {
+        let modifier: Option<modal::stream::Modifier> = self.modal.clone().and_then(|m| {
             if let Modal::StreamModifier(modifier) = m {
                 Some(modifier)
             } else {
@@ -493,6 +536,41 @@ impl State {
                     )
                 } else {
                     base
+                }
+            }
+            Content::Comparison(chart) => {
+                if let Some(chart) = chart {
+                    let tickers_list_button = button(icon_text(Icon::Edit, 12))
+                        .on_press(Message::ShowModal(id, Modal::MiniTickersList(None)));
+
+                    let selected_basis = self
+                        .settings
+                        .selected_basis
+                        .unwrap_or(Timeframe::M15.into());
+                    let kind = ModifierKind::Candlestick(selected_basis);
+
+                    let modifiers =
+                        row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
+
+                    stream_info_element = stream_info_element
+                        .push(tickers_list_button)
+                        .push(modifiers);
+
+                    let base = chart
+                        .view()
+                        .map(move |message| Message::ComparisonChartInteraction(id, message));
+
+                    self.compose_chart_view(
+                        base,
+                        id,
+                        &[HeatmapIndicator::Volume],
+                        compact_controls,
+                        || comparison_cfg_view(id),
+                        available_tickers,
+                        Some(chart.selected_tickers()),
+                    )
+                } else {
+                    center(text("Loading...").size(16)).into()
                 }
             }
             Content::TimeAndSales(panel) => {
@@ -586,7 +664,15 @@ impl State {
                         )
                     };
 
-                    self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
+                    self.compose_chart_view(
+                        base,
+                        id,
+                        indicators,
+                        compact_controls,
+                        settings_modal,
+                        available_tickers,
+                        None,
+                    )
                 } else {
                     center(text("Loading...").size(16)).into()
                 }
@@ -653,7 +739,15 @@ impl State {
                         )
                     };
 
-                    self.compose_chart_view(base, id, indicators, compact_controls, settings_modal)
+                    self.compose_chart_view(
+                        base,
+                        id,
+                        indicators,
+                        compact_controls,
+                        settings_modal,
+                        available_tickers,
+                        None,
+                    )
                 } else {
                     center(text("Loading...").size(16)).into()
                 }
@@ -821,6 +915,8 @@ impl State {
         indicators: &'a [impl Indicator + Copy + Into<UiIndicator>],
         compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
+        available_tickers: &[TickerInfo],
+        selected_tickers: Option<&[TickerInfo]>,
     ) -> Element<'a, Message>
     where
         F: FnOnce() -> Element<'a, Message>,
@@ -833,7 +929,7 @@ impl State {
 
         let stack_padding = padding::right(12).left(12);
 
-        match self.modal {
+        match &self.modal {
             Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
                 modifier
@@ -874,6 +970,25 @@ impl State {
                 padding::left(12),
                 Alignment::End,
             ),
+            Some(Modal::MiniTickersList(search_query)) => {
+                if let Some(selected_tickers) = selected_tickers {
+                    let content = mini_tickers_list(
+                        pane,
+                        available_tickers,
+                        selected_tickers,
+                        search_query.as_deref(),
+                    );
+                    stack_modal(
+                        base,
+                        content,
+                        Message::HideModal(pane),
+                        padding::left(12),
+                        Alignment::Start,
+                    )
+                } else {
+                    base
+                }
+            }
             None => base,
         }
     }
@@ -990,12 +1105,15 @@ impl State {
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
             Content::Starter => None,
+            Content::Comparison(chart) => chart
+                .as_mut()
+                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
         }
     }
 
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
-            Content::Kline { .. } => Some(1000),
+            Content::Kline { .. } | Content::Comparison(_) => Some(1000),
             Content::Heatmap { chart, .. } => {
                 if let Some(chart) = chart {
                     chart.basis_interval()
@@ -1003,8 +1121,7 @@ impl State {
                     None
                 }
             }
-            Content::TimeAndSales(_) => Some(100),
-            Content::Ladder(_) => Some(100),
+            Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
             Content::Starter => None,
         }
     }
@@ -1085,6 +1202,7 @@ pub enum Content {
     },
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
+    Comparison(Option<ComparisonChart>),
 }
 
 impl Content {
@@ -1255,6 +1373,7 @@ impl Content {
             Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
+            Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
             Content::Starter => None,
         }
     }
@@ -1310,7 +1429,10 @@ impl Content {
         match self {
             Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
             Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => {
+            Content::TimeAndSales(_)
+            | Content::Ladder(_)
+            | Content::Starter
+            | Content::Comparison(_) => {
                 panic!("indicator reorder on {} pane", self)
             }
         }
@@ -1341,7 +1463,10 @@ impl Content {
                     None
                 }
             }
-            Content::TimeAndSales(_) | Content::Ladder(_) | Content::Starter => None,
+            Content::TimeAndSales(_)
+            | Content::Ladder(_)
+            | Content::Starter
+            | Content::Comparison(_) => None,
         }
     }
 
@@ -1387,6 +1512,7 @@ impl Content {
             },
             Content::TimeAndSales(_) => "time&sales".to_string(),
             Content::Ladder(_) => "ladder".to_string(),
+            Content::Comparison(_) => "comparison".to_string(),
         }
     }
 
@@ -1396,6 +1522,7 @@ impl Content {
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
+            Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
         }
     }
@@ -1416,6 +1543,7 @@ impl std::fmt::Display for Content {
             },
             Content::TimeAndSales(_) => write!(f, "Time&Sales"),
             Content::Ladder(_) => write!(f, "DOM/Ladder"),
+            Content::Comparison(_) => write!(f, "Comparison chart"),
         }
     }
 }
@@ -1431,6 +1559,104 @@ impl PartialEq for Content {
                 | (Content::Ladder(_), Content::Ladder(_))
         )
     }
+}
+
+fn mini_tickers_list<'a>(
+    pane: pane_grid::Pane,
+    available: &[TickerInfo],
+    selected_tickers: &[TickerInfo],
+    search_query: Option<&str>,
+) -> Element<'a, Message> {
+    let ticker_rows = available.iter().collect::<Vec<_>>();
+
+    let (selected, unselected): (Vec<TickerInfo>, Vec<TickerInfo>) =
+        ticker_rows.into_iter().partition(|ticker_row| {
+            selected_tickers
+                .iter()
+                .any(|t| t.ticker == ticker_row.ticker && t.exchange() == ticker_row.exchange())
+        });
+
+    let mut selected_column = column![].width(Length::Fill).padding(8);
+    let mut unselected_column = column![].width(Length::Fill).padding(8);
+
+    let search_box = text_input("Search...", search_query.unwrap_or(""))
+        .on_input(move |query| Message::UpdateSearchQuery(pane, query))
+        .style(|theme, status| style::validated_text_input(theme, status, true))
+        .align_x(Alignment::Start);
+
+    for ticker_row in selected.iter() {
+        let icon = icon_text(style::exchange_icon(ticker_row.exchange()), 12);
+
+        let ticker_str = ticker_row.ticker.display_symbol_and_type().0;
+        let ticker_element = row![icon, text(ticker_str),]
+            .spacing(2)
+            .align_y(Alignment::Center);
+
+        let unselect_btn = button(icon_text(Icon::Close, 12))
+            .on_press(Message::UnselectTicker(pane, *ticker_row))
+            .style(move |theme, status| style::button::transparent(theme, status, true));
+
+        selected_column = selected_column.push(
+            row![
+                ticker_element,
+                iced::widget::space::horizontal(),
+                unselect_btn
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+
+    for ticker_row in unselected.iter().filter(|ticker_row| {
+        if let Some(query) = search_query {
+            let symbol = ticker_row.ticker.display_symbol_and_type().0.to_lowercase();
+            symbol.contains(&query.to_lowercase())
+        } else {
+            true
+        }
+    }) {
+        let icon = icon_text(style::exchange_icon(ticker_row.exchange()), 12);
+
+        let ticker_str = ticker_row.ticker.display_symbol_and_type().0;
+        let ticker_element = row![icon, text(ticker_str),]
+            .spacing(2)
+            .align_y(Alignment::Center);
+
+        let select_btn = button(text("Add"))
+            .on_press(Message::SelectTicker(pane, *ticker_row))
+            .style(move |theme, status| style::button::transparent(theme, status, true));
+
+        unselected_column = unselected_column.push(
+            row![
+                ticker_element,
+                iced::widget::space::horizontal(),
+                select_btn
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+
+    let content = column![
+        search_box,
+        selected_column,
+        iced::widget::rule::horizontal(1).style(style::split_ruler),
+        scrollable::Scrollable::with_direction(
+            unselected_column,
+            scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new().width(4).scroller_width(4)
+            ),
+        )
+    ]
+    .spacing(8)
+    .align_x(Alignment::Start);
+
+    container(content)
+        .max_width(240)
+        .max_height(360)
+        .padding(16)
+        .style(style::chart_modal)
+        .into()
 }
 
 fn link_group_modal(
