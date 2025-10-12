@@ -474,7 +474,6 @@ impl Dashboard {
                         match action {
                             Some(modal::stream::Action::TabSelected(tab)) => {
                                 modifier.tab = tab;
-
                                 state.modal = Some(pane::Modal::StreamModifier(modifier));
                             }
                             Some(modal::stream::Action::BasisSelected(new_basis)) => {
@@ -515,6 +514,32 @@ impl Dashboard {
                                     }
 
                                     return (Task::none(), None);
+                                }
+
+                                if let pane::Content::Comparison(ref mut chart_opt) = state.content
+                                {
+                                    if let Some(chart) = chart_opt {
+                                        match new_basis {
+                                            data::chart::Basis::Time(new_tf) => {
+                                                let streams: Vec<StreamKind> = chart
+                                                    .selected_tickers()
+                                                    .iter()
+                                                    .copied()
+                                                    .map(|ticker_info| StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe: new_tf,
+                                                    })
+                                                    .collect();
+                                                state.streams =
+                                                    ResolvedStream::Ready(streams.clone());
+
+                                                chart.set_basis(new_basis);
+                                            }
+                                            data::chart::Basis::Tick(_) => unimplemented!(),
+                                        }
+                                    }
+
+                                    return (self.refresh_streams(main_window.id), None);
                                 }
 
                                 if let Some(ticker_info) = state.stream_pair() {

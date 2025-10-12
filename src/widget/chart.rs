@@ -147,7 +147,7 @@ fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>,
         }
     }
     // Align first tick to the step boundary >= min_x
-    let first = if min_x % step == 0 {
+    let first = if min_x.is_multiple_of(step) {
         min_x
     } else {
         (min_x / step + 1) * step

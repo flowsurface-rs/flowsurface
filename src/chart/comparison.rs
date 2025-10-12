@@ -277,6 +277,28 @@ impl ComparisonChart {
         new_streams
     }
 
+    pub fn set_basis(&mut self, basis: data::chart::Basis) {
+        match basis {
+            Basis::Time(tf) => {
+                self.timeframe = tf;
+            }
+            Basis::Tick(_) => {
+                todo!("WIP: ComparisonChart does not support tick basis");
+            }
+        }
+
+        let tickers = self.selected_tickers.clone();
+
+        for t in tickers {
+            let _ = self.get_or_create_series_idx(&t);
+            self.request_handler.insert(t, RequestHandler::new());
+        }
+
+        self.series.clear();
+        self.series_index.clear();
+        self.request_handler.clear();
+    }
+
     pub fn selected_tickers(&self) -> &Vec<TickerInfo> {
         &self.selected_tickers
     }

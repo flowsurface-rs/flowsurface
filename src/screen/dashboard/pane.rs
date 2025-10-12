@@ -144,6 +144,10 @@ impl State {
         })
     }
 
+    pub fn stream_pairs(&self) -> Option<Vec<TickerInfo>> {
+        self.streams.ready_tickers()
+    }
+
     pub fn set_content_and_streams(
         &mut self,
         ticker_info: TickerInfo,
@@ -547,7 +551,7 @@ impl State {
                         .settings
                         .selected_basis
                         .unwrap_or(Timeframe::M15.into());
-                    let kind = ModifierKind::Candlestick(selected_basis);
+                    let kind = ModifierKind::Comparison(selected_basis);
 
                     let modifiers =
                         row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
