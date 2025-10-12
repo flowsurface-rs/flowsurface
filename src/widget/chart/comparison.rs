@@ -39,6 +39,8 @@ pub struct LineComparison<'a, S, Message> {
     /// in milliseconds
     update_interval: u128,
     timeframe: Timeframe,
+    pan: f32,
+    on_pan_chg: Option<fn(f32) -> Message>,
 }
 
 struct State {
@@ -46,7 +48,6 @@ struct State {
     overlay_cache: canvas::Cache,
     labels_cache: canvas::Cache,
     last_draw: Option<std::time::Instant>,
-    pan_dx: f32,
     is_panning: bool,
     last_cursor: Option<Point>,
 }
@@ -58,7 +59,6 @@ impl Default for State {
             overlay_cache: canvas::Cache::new(),
             labels_cache: canvas::Cache::new(),
             last_draw: None,
-            pan_dx: 0.0,
             is_panning: false,
             last_cursor: None,
         }
@@ -86,6 +86,8 @@ where
             on_data_req: None,
             update_interval: update_interval as u128,
             timeframe,
+            pan: 0.0,
+            on_pan_chg: None,
         }
     }
 
@@ -94,8 +96,18 @@ where
         self
     }
 
+    pub fn with_pan(mut self, pan: f32) -> Self {
+        self.pan = pan;
+        self
+    }
+
     pub fn on_zoom(mut self, f: fn(Zoom) -> Message) -> Self {
         self.on_zoom_chg = Some(f);
+        self
+    }
+
+    pub fn on_pan(mut self, f: fn(f32) -> Message) -> Self {
+        self.on_pan_chg = Some(f);
         self
     }
 
@@ -401,6 +413,37 @@ where
         self.timeframe.to_milliseconds()
     }
 
+    /// rectangles in the widget-local coordinates
+    fn compute_regions(&self, bounds: Rectangle) -> Regions {
+        let gutter = Y_AXIS_GUTTER;
+
+        let plot = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: (bounds.width - gutter).max(0.0),
+            height: (bounds.height - X_AXIS_HEIGHT).max(0.0),
+        };
+
+        let x_axis = Rectangle {
+            x: 0.0,
+            y: plot.y + plot.height,
+            width: bounds.width,
+            height: X_AXIS_HEIGHT.max(0.0),
+        };
+        let y_axis = Rectangle {
+            x: plot.x + plot.width,
+            y: 0.0,
+            width: gutter.max(0.0),
+            height: plot.height,
+        };
+
+        Regions {
+            plot,
+            x_axis,
+            y_axis,
+        }
+    }
+
     fn compute_visible_window(&self, pan_dx: f32) -> Option<(u64, u64)> {
         // X-only window, does not depend on y computations
         if self.series.is_empty() {
@@ -539,12 +582,27 @@ where
         match event {
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
+                let bounds = layout.bounds();
+                let regions = self.compute_regions(bounds);
+
+                let Some(cursor_pos) = cursor.position_in(bounds) else {
+                    if state.is_panning {
+                        state.is_panning = false;
+                        state.last_cursor = None;
+                    }
+                    return;
+                };
+
+                let zone = regions.hit_test(cursor_pos);
 
                 match mouse_event {
                     mouse::Event::WheelScrolled {
                         delta: mouse::ScrollDelta::Lines { y, .. },
                     } => {
-                        let state = tree.state.downcast_mut::<State>();
+                        // Only zoom when hovering plot or x-axis
+                        if !matches!(zone, HitZone::Plot | HitZone::XAxis) {
+                            return;
+                        }
 
                         let on_zoom_chg = match self.on_zoom_chg {
                             Some(f) => f,
@@ -556,33 +614,39 @@ where
 
                         if new_zoom != self.zoom {
                             shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
-
                             state.clear_all_caches();
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                        state.is_panning = true;
-                        state.last_cursor = None;
+                        // Start panning from plot or x-axis (store local coords)
+                        if matches!(zone, HitZone::Plot | HitZone::XAxis) {
+                            state.is_panning = true;
+                            state.last_cursor = Some(cursor_pos);
+                        }
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
                         state.is_panning = false;
                         state.last_cursor = None;
                     }
-                    mouse::Event::CursorMoved { position } => {
+                    mouse::Event::CursorMoved { .. } => {
+                        let Some(on_pan_chg) = self.on_pan_chg else {
+                            return;
+                        };
+
                         if state.is_panning {
-                            let prev = state.last_cursor.unwrap_or(*position);
-                            let dx_px = position.x - prev.x;
+                            let prev = state.last_cursor.unwrap_or(cursor_pos);
+                            let dx_px = cursor_pos.x - prev.x;
 
                             if dx_px.abs() > 0.0 {
                                 let x_span = self.current_x_span();
-                                let dx_domain = -(dx_px)
-                                    * (x_span / (layout.bounds().width - Y_AXIS_GUTTER).max(1.0));
-                                state.pan_dx += dx_domain;
+                                let plot_w = regions.plot.width.max(1.0);
+                                let dx_domain = -(dx_px) * (x_span / plot_w);
 
+                                shell.publish((on_pan_chg)(self.pan + dx_domain));
                                 state.clear_all_caches();
                             }
-                            state.last_cursor = Some(*position);
-                        } else if cursor.is_over(layout.bounds()) {
+                            state.last_cursor = Some(cursor_pos);
+                        } else if matches!(zone, HitZone::Plot) {
                             state.overlay_cache.clear();
                         }
                     }
@@ -601,7 +665,7 @@ where
                         state.clear_all_caches();
 
                         if let Some(on_req) = self.on_data_req
-                            && let Some((range, info)) = self.desired_fetch_range(state.pan_dx)
+                            && let Some((range, info)) = self.desired_fetch_range(self.pan)
                         {
                             shell.publish(on_req(range, info));
                         }
@@ -628,7 +692,7 @@ where
         let bounds = layout.bounds();
 
         let palette = theme.extended_palette();
-        let Some(((min_x, max_x), (min_pct, max_pct))) = self.compute_domains(state.pan_dx) else {
+        let Some(((min_x, max_x), (min_pct, max_pct))) = self.compute_domains(self.pan) else {
             return;
         };
 
@@ -649,12 +713,8 @@ where
 
         let gutter = Y_AXIS_GUTTER;
 
-        let plot = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: (bounds.width - gutter).max(1.0),
-            height: (bounds.height - X_AXIS_HEIGHT).max(1.0),
-        };
+        let regions = self.compute_regions(bounds);
+        let plot = regions.plot;
 
         let visible_min_u64 = min_x;
         let visible_max_u64 = max_x;
@@ -701,21 +761,18 @@ where
         let (cursor_x_domain, cursor_y_pct): (Option<u64>, Option<f32>) = {
             if let Some(global) = cursor.position() {
                 let local = Point::new(global.x - bounds.x, global.y - bounds.y);
-                if local.x >= plot.x
-                    && local.x <= plot.x + plot.width
-                    && local.y >= plot.y
-                    && local.y <= plot.y + plot.height
-                {
-                    let cx = local.x.clamp(plot.x, plot.x + plot.width);
-                    let ms_from_min = ((cx - plot.x) / px_per_ms).round() as u64;
-                    let x_domain = visible_min_u64.saturating_add(ms_from_min);
+                match regions.hit_test(local) {
+                    HitZone::Plot => {
+                        let cx = local.x.clamp(plot.x, plot.x + plot.width);
+                        let ms_from_min = ((cx - plot.x) / px_per_ms).round() as u64;
+                        let x_domain = visible_min_u64.saturating_add(ms_from_min);
 
-                    let t = ((local.y - plot.y) / plot.height).clamp(0.0, 1.0);
-                    let pct = min_pct + (1.0 - t) * (max_pct - min_pct);
+                        let t = ((local.y - plot.y) / plot.height).clamp(0.0, 1.0);
+                        let pct = min_pct + (1.0 - t) * (max_pct - min_pct);
 
-                    (Some(x_domain), Some(pct))
-                } else {
-                    (None, None)
+                        (Some(x_domain), Some(pct))
+                    }
+                    _ => (None, None),
                 }
             } else {
                 (None, None)
@@ -891,12 +948,16 @@ where
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> advanced::mouse::Interaction {
-        if cursor.is_over(layout.bounds()) {
+        if let Some(cursor_in_layout) = cursor.position_in(layout.bounds()) {
             let state = state.state.downcast_ref::<State>();
             if state.is_panning {
-                advanced::mouse::Interaction::Grabbing
-            } else {
-                advanced::mouse::Interaction::default()
+                return advanced::mouse::Interaction::Grabbing;
+            }
+
+            let regions = self.compute_regions(layout.bounds());
+            match regions.hit_test(cursor_in_layout) {
+                HitZone::Plot => advanced::mouse::Interaction::Crosshair,
+                _ => advanced::mouse::Interaction::default(),
             }
         } else {
             advanced::mouse::Interaction::default()
@@ -1289,8 +1350,8 @@ where
         let time_str = super::format_time_label(cx_domain, step_ms);
         //let time_str = ((cx_domain) as i64).to_string();
 
-        let text_col = palette.primary.base.text;
-        let bg_col = palette.primary.base.color;
+        let text_col = palette.secondary.base.text;
+        let bg_col = palette.secondary.base.color;
 
         // Rough text width estimate
         let est_w = (time_str.len() as f32) * (TEXT_SIZE * 0.6) + 10.0;
@@ -1327,8 +1388,8 @@ where
         let ylbl_y = cy.clamp(plot.y + label_h * 0.5, plot.y + plot.height - label_h * 0.5);
 
         frame.fill_rectangle(
-            Point::new(ylbl_x, ylbl_y - label_h * 0.5),
-            Size::new(label_w, label_h),
+            Point::new(plot.x + plot.width, ylbl_y - label_h * 0.5),
+            Size::new(Y_AXIS_GUTTER, label_h),
             bg_col,
         );
         frame.fill_text(canvas::Text {
@@ -1402,5 +1463,55 @@ where
 {
     fn from(chart: LineComparison<'a, S, Message>) -> Self {
         Element::new(chart)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HitZone {
+    Plot,
+    XAxis,
+    YAxis,
+    Outside,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Regions {
+    plot: Rectangle,
+    x_axis: Rectangle,
+    y_axis: Rectangle,
+}
+
+impl Regions {
+    fn is_in_plot(&self, p: Point) -> bool {
+        p.x >= self.plot.x
+            && p.x <= self.plot.x + self.plot.width
+            && p.y >= self.plot.y
+            && p.y <= self.plot.y + self.plot.height
+    }
+
+    fn is_in_x_axis(&self, p: Point) -> bool {
+        p.x >= self.x_axis.x
+            && p.x <= self.x_axis.x + self.x_axis.width
+            && p.y >= self.x_axis.y
+            && p.y <= self.x_axis.y + self.x_axis.height
+    }
+
+    fn is_in_y_axis(&self, p: Point) -> bool {
+        p.x >= self.y_axis.x
+            && p.x <= self.y_axis.x + self.y_axis.width
+            && p.y >= self.y_axis.y
+            && p.y <= self.y_axis.y + self.y_axis.height
+    }
+
+    fn hit_test(&self, p: Point) -> HitZone {
+        if self.is_in_plot(p) {
+            HitZone::Plot
+        } else if self.is_in_x_axis(p) {
+            HitZone::XAxis
+        } else if self.is_in_y_axis(p) {
+            HitZone::YAxis
+        } else {
+            HitZone::Outside
+        }
     }
 }

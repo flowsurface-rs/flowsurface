@@ -18,6 +18,7 @@ pub enum Action {
 
 pub struct ComparisonChart {
     zoom: Zoom,
+    pan: f32,
     last_tick: Instant,
     series: Vec<Series>,
     series_index: HashMap<TickerInfo, usize>,
@@ -36,6 +37,7 @@ impl Default for ComparisonChart {
 #[derive(Debug, Clone)]
 pub enum Message {
     ZoomChanged(Zoom),
+    PanChanged(f32),
     DataRequest(FetchRange, TickerInfo),
 }
 
@@ -69,6 +71,7 @@ impl ComparisonChart {
                 .map(|t| (*t, RequestHandler::new()))
                 .collect(),
             selected_tickers: tickers.to_vec(),
+            pan: 0.0,
         }
     }
 
@@ -76,6 +79,10 @@ impl ComparisonChart {
         match message {
             Message::ZoomChanged(zoom) => {
                 self.zoom = zoom;
+                None
+            }
+            Message::PanChanged(pan) => {
+                self.pan = pan;
                 None
             }
             Message::DataRequest(range, ticker_info) => {
@@ -101,7 +108,9 @@ impl ComparisonChart {
     pub fn view(&self) -> Element<'_, Message> {
         let chart = LineComparison::new(&self.series, self.update_interval, self.timeframe)
             .on_zoom(Message::ZoomChanged)
+            .on_pan(Message::PanChanged)
             .on_data_request(Message::DataRequest)
+            .with_pan(self.pan)
             .with_zoom(self.zoom);
 
         row![chart].padding(1).into()
