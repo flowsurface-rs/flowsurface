@@ -4,6 +4,7 @@ use iced::{
 };
 
 pub mod indicators;
+pub mod mini_tickers_list;
 pub mod settings;
 pub mod stream;
 

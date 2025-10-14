@@ -9,6 +9,7 @@ use super::DashboardError;
 use crate::{
     chart,
     modal::{self, pane::settings::study::StudyMessage},
+    screen::dashboard::tickers_table::TickersTable,
     style,
     widget::toast::Toast,
     window::{self, Window},
@@ -744,33 +745,58 @@ impl Dashboard {
                         }
                     }
                 }
-                pane::Message::UpdateSearchQuery(pane, search_query) => {
+                pane::Message::MiniTickersListInteraction(pane, msg) => {
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                        && matches!(state.modal, Some(pane::Modal::MiniTickersList(_)))
+                        && let Some(pane::Modal::MiniTickersList(ref mut mini_panel)) = state.modal
                     {
-                        state.modal = Some(pane::Modal::MiniTickersList(Some(search_query)));
-                    }
-                }
-                pane::Message::UnselectTicker(pane, ticker) => {
-                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                        && let pane::Content::Comparison(ref mut chart) = state.content
-                        && let Some(c) = chart
-                    {
-                        let rebuilt_streams = c.remove_ticker(&ticker);
-                        state.streams = ResolvedStream::Ready(rebuilt_streams.clone());
+                        let action = mini_panel.update(msg);
+                        state.modal = Some(pane::Modal::MiniTickersList(mini_panel.clone()));
 
-                        return (self.refresh_streams(main_window.id), None);
-                    }
-                }
-                pane::Message::SelectTicker(pane, ticker) => {
-                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                        && let pane::Content::Comparison(ref mut chart) = state.content
-                        && let Some(c) = chart
-                    {
-                        let rebuilt_streams = c.add_ticker(&ticker);
-                        state.streams = ResolvedStream::Ready(rebuilt_streams.clone());
+                        match action {
+                            Some(modal::pane::mini_tickers_list::Action::RowSelected(
+                                row_selection,
+                            )) => match row_selection {
+                                modal::pane::mini_tickers_list::RowSelection::Switch(
+                                    ticker_info,
+                                ) => {
+                                    return (
+                                        self.switch_tickers_in_group(main_window.id, ticker_info),
+                                        None,
+                                    );
+                                }
+                                modal::pane::mini_tickers_list::RowSelection::Add(ticker_info) => {
+                                    if let Some(state) =
+                                        self.get_mut_pane(main_window.id, window, pane)
+                                        && let pane::Content::Comparison(ref mut chart) =
+                                            state.content
+                                        && let Some(c) = chart
+                                    {
+                                        let rebuilt_streams = c.add_ticker(&ticker_info);
+                                        state.streams =
+                                            ResolvedStream::Ready(rebuilt_streams.clone());
 
-                        return (self.refresh_streams(main_window.id), None);
+                                        return (self.refresh_streams(main_window.id), None);
+                                    }
+                                }
+                                modal::pane::mini_tickers_list::RowSelection::Remove(
+                                    ticker_info,
+                                ) => {
+                                    if let Some(state) =
+                                        self.get_mut_pane(main_window.id, window, pane)
+                                        && let pane::Content::Comparison(ref mut chart) =
+                                            state.content
+                                        && let Some(c) = chart
+                                    {
+                                        let rebuilt_streams = c.remove_ticker(&ticker_info);
+                                        state.streams =
+                                            ResolvedStream::Ready(rebuilt_streams.clone());
+
+                                        return (self.refresh_streams(main_window.id), None);
+                                    }
+                                }
+                            },
+                            None => {}
+                        }
                     }
                 }
             },
@@ -974,7 +1000,7 @@ impl Dashboard {
     pub fn view<'a>(
         &'a self,
         main_window: &'a Window,
-        available_tickers: &'a [exchange::TickerInfo],
+        tickers_table: &'a TickersTable,
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
@@ -987,7 +1013,7 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
-                available_tickers,
+                tickers_table,
             )
         })
         .min_size(240)
@@ -1005,7 +1031,7 @@ impl Dashboard {
         &'a self,
         window: window::Id,
         main_window: &'a Window,
-        available_tickers: &'a [exchange::TickerInfo],
+        tickers_table: &'a TickersTable,
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
@@ -1020,7 +1046,7 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
-                        available_tickers,
+                        tickers_table,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),

@@ -8,13 +8,17 @@ use crate::{
     modal::{
         self, ModifierKind,
         pane::{
+            mini_tickers_list::MiniPanel,
             settings::{comparison_cfg_view, heatmap_cfg_view, kline_cfg_view},
             stack_modal,
         },
     },
     screen::{
         DashboardError,
-        dashboard::panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
+        dashboard::{
+            panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
+            tickers_table::TickersTable,
+        },
     },
     style::{self, Icon, icon_text},
     widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
@@ -36,11 +40,8 @@ use iced::{
     Alignment, Element, Length, Renderer, Theme,
     alignment::Vertical,
     padding,
-    widget::{
-        button, center, column, container, pane_grid, row, scrollable, text, text_input, tooltip,
-    },
+    widget::{button, center, column, container, pane_grid, row, text, tooltip},
 };
-use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,10 +59,10 @@ pub enum Status {
     Stale(String),
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     StreamModifier(modal::stream::Modifier),
-    MiniTickersList(Option<String>),
+    MiniTickersList(modal::pane::mini_tickers_list::MiniPanel),
     Settings,
     Indicators,
     LinkGroup,
@@ -101,9 +102,10 @@ pub enum Message {
     StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     ComparisonChartInteraction(pane_grid::Pane, comparison::Message),
-    UpdateSearchQuery(pane_grid::Pane, String),
-    UnselectTicker(pane_grid::Pane, exchange::TickerInfo),
-    SelectTicker(pane_grid::Pane, TickerInfo),
+    MiniTickersListInteraction(
+        pane_grid::Pane,
+        crate::modal::pane::mini_tickers_list::Message,
+    ),
 }
 
 pub struct State {
@@ -465,7 +467,7 @@ impl State {
         window: window::Id,
         main_window: &'a Window,
         timezone: UserTimezone,
-        available_tickers: &'a [exchange::TickerInfo],
+        tickers_table: &'a TickersTable,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut stream_info_element = if Content::Starter == self.content {
             row![]
@@ -543,9 +545,10 @@ impl State {
                 }
             }
             Content::Comparison(chart) => {
-                if let Some(chart) = chart {
-                    let tickers_list_button = button(icon_text(Icon::Edit, 12))
-                        .on_press(Message::ShowModal(id, Modal::MiniTickersList(None)));
+                if let Some(c) = chart {
+                    let tickers_list_button = button(icon_text(Icon::Edit, 12)).on_press(
+                        Message::ShowModal(id, Modal::MiniTickersList(MiniPanel::new())),
+                    );
 
                     let selected_basis = self
                         .settings
@@ -560,7 +563,7 @@ impl State {
                         .push(tickers_list_button)
                         .push(modifiers);
 
-                    let base = chart
+                    let base = c
                         .view()
                         .map(move |message| Message::ComparisonChartInteraction(id, message));
 
@@ -570,8 +573,8 @@ impl State {
                         &[HeatmapIndicator::Volume],
                         compact_controls,
                         || comparison_cfg_view(id),
-                        available_tickers,
-                        Some(chart.selected_tickers()),
+                        Some(c.selected_tickers()),
+                        tickers_table,
                     )
                 } else {
                     center(text("Loading...").size(16)).into()
@@ -674,8 +677,8 @@ impl State {
                         indicators,
                         compact_controls,
                         settings_modal,
-                        available_tickers,
                         None,
+                        tickers_table,
                     )
                 } else {
                     center(text("Loading...").size(16)).into()
@@ -749,8 +752,8 @@ impl State {
                         indicators,
                         compact_controls,
                         settings_modal,
-                        available_tickers,
                         None,
+                        tickers_table,
                     )
                 } else {
                     center(text("Loading...").size(16)).into()
@@ -919,8 +922,8 @@ impl State {
         indicators: &'a [impl Indicator + Copy + Into<UiIndicator>],
         compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
-        available_tickers: &[TickerInfo],
-        selected_tickers: Option<&[TickerInfo]>,
+        selected_tickers: Option<&'a [TickerInfo]>,
+        tickers_table: &'a TickersTable,
     ) -> Element<'a, Message>
     where
         F: FnOnce() -> Element<'a, Message>,
@@ -974,24 +977,24 @@ impl State {
                 padding::left(12),
                 Alignment::End,
             ),
-            Some(Modal::MiniTickersList(search_query)) => {
-                if let Some(selected_tickers) = selected_tickers {
-                    let content = mini_tickers_list(
-                        pane,
-                        available_tickers,
-                        selected_tickers,
-                        search_query.as_deref(),
-                    );
-                    stack_modal(
-                        base,
-                        content,
-                        Message::HideModal(pane),
-                        padding::left(12),
-                        Alignment::Start,
-                    )
-                } else {
-                    base
-                }
+            Some(Modal::MiniTickersList(panel)) => {
+                let mini_list = panel
+                    .view(tickers_table, selected_tickers, self.stream_pair())
+                    .map(move |msg| Message::MiniTickersListInteraction(pane, msg));
+
+                let content: Element<_> = container(mini_list)
+                    .max_width(200)
+                    .padding(16)
+                    .style(style::chart_modal)
+                    .into();
+
+                stack_modal(
+                    base,
+                    content,
+                    Message::HideModal(pane),
+                    padding::left(12),
+                    Alignment::Start,
+                )
             }
             None => base,
         }
@@ -1563,104 +1566,6 @@ impl PartialEq for Content {
                 | (Content::Ladder(_), Content::Ladder(_))
         )
     }
-}
-
-fn mini_tickers_list<'a>(
-    pane: pane_grid::Pane,
-    available: &[TickerInfo],
-    selected_tickers: &[TickerInfo],
-    search_query: Option<&str>,
-) -> Element<'a, Message> {
-    let ticker_rows = available.iter().collect::<Vec<_>>();
-
-    let (selected, unselected): (Vec<TickerInfo>, Vec<TickerInfo>) =
-        ticker_rows.into_iter().partition(|ticker_row| {
-            selected_tickers
-                .iter()
-                .any(|t| t.ticker == ticker_row.ticker && t.exchange() == ticker_row.exchange())
-        });
-
-    let mut selected_column = column![].width(Length::Fill).padding(8);
-    let mut unselected_column = column![].width(Length::Fill).padding(8);
-
-    let search_box = text_input("Search...", search_query.unwrap_or(""))
-        .on_input(move |query| Message::UpdateSearchQuery(pane, query))
-        .style(|theme, status| style::validated_text_input(theme, status, true))
-        .align_x(Alignment::Start);
-
-    for ticker_row in selected.iter() {
-        let icon = icon_text(style::exchange_icon(ticker_row.exchange()), 12);
-
-        let ticker_str = ticker_row.ticker.display_symbol_and_type().0;
-        let ticker_element = row![icon, text(ticker_str),]
-            .spacing(2)
-            .align_y(Alignment::Center);
-
-        let unselect_btn = button(icon_text(Icon::Close, 12))
-            .on_press(Message::UnselectTicker(pane, *ticker_row))
-            .style(move |theme, status| style::button::transparent(theme, status, true));
-
-        selected_column = selected_column.push(
-            row![
-                ticker_element,
-                iced::widget::space::horizontal(),
-                unselect_btn
-            ]
-            .align_y(Alignment::Center)
-            .spacing(8),
-        );
-    }
-
-    for ticker_row in unselected.iter().filter(|ticker_row| {
-        if let Some(query) = search_query {
-            let symbol = ticker_row.ticker.display_symbol_and_type().0.to_lowercase();
-            symbol.contains(&query.to_lowercase())
-        } else {
-            true
-        }
-    }) {
-        let icon = icon_text(style::exchange_icon(ticker_row.exchange()), 12);
-
-        let ticker_str = ticker_row.ticker.display_symbol_and_type().0;
-        let ticker_element = row![icon, text(ticker_str),]
-            .spacing(2)
-            .align_y(Alignment::Center);
-
-        let select_btn = button(text("Add"))
-            .on_press(Message::SelectTicker(pane, *ticker_row))
-            .style(move |theme, status| style::button::transparent(theme, status, true));
-
-        unselected_column = unselected_column.push(
-            row![
-                ticker_element,
-                iced::widget::space::horizontal(),
-                select_btn
-            ]
-            .align_y(Alignment::Center)
-            .spacing(8),
-        );
-    }
-
-    let content = column![
-        search_box,
-        selected_column,
-        iced::widget::rule::horizontal(1).style(style::split_ruler),
-        scrollable::Scrollable::with_direction(
-            unselected_column,
-            scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(4).scroller_width(4)
-            ),
-        )
-    ]
-    .spacing(8)
-    .align_x(Alignment::Start);
-
-    container(content)
-        .max_width(240)
-        .max_height(360)
-        .padding(16)
-        .style(style::chart_modal)
-        .into()
 }
 
 fn link_group_modal(

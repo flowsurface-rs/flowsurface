@@ -1,4 +1,5 @@
 use crate::{
+    modal::pane::mini_tickers_list::RowSelection,
     style::{self, Icon, icon_text},
     widget::button_with_tooltip,
 };
@@ -38,6 +39,8 @@ const FAVORITES_EMPTY_HINT_HEIGHT: f32 = 32.0;
 
 const TOP_BAR_HEIGHT: f32 = 40.0;
 const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
+
+const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
 pub fn fetch_tickers_info() -> Task<Message> {
     let fetch_tasks = Exchange::ALL
@@ -92,7 +95,6 @@ pub struct TickersTable {
     selected_exchanges: FxHashSet<ExchangeInclusive>,
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
-    pub available_tickers: Vec<TickerInfo>,
 }
 
 impl TickersTable {
@@ -116,7 +118,6 @@ impl TickersTable {
                 selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
-                available_tickers: Vec::new(),
             },
             fetch_tickers_info(),
         )
@@ -305,12 +306,6 @@ impl TickersTable {
         for (ticker, ticker_info) in info.into_iter() {
             self.tickers_info.insert(ticker, ticker_info);
         }
-
-        self.available_tickers = self
-            .tickers_info
-            .iter()
-            .filter_map(|(_, info)| *info)
-            .collect();
     }
 
     pub fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {
@@ -765,6 +760,330 @@ impl TickersTable {
         .into()
     }
 
+    pub fn view_compact_with<'a, M, FSel, FSearch, FScroll>(
+        &'a self,
+        bounds: Size,
+        search_query: &'a str,
+        scroll_offset: AbsoluteOffset,
+        on_select: FSel,
+        on_search: FSearch,
+        on_scroll: FScroll,
+        selected_tickers: Option<&'a [TickerInfo]>,
+        base_ticker: Option<TickerInfo>,
+    ) -> Element<'a, M>
+    where
+        M: 'a + Clone,
+        FSel: 'static + Copy + Fn(RowSelection) -> M,
+        FSearch: 'static + Copy + Fn(String) -> M,
+        FScroll: 'static + Copy + Fn(scrollable::Viewport) -> M,
+    {
+        let injected_q = search_query.to_uppercase();
+
+        // Build lookup set for exclusion from main list: selected + base
+        let mut selected_set: FxHashSet<Ticker> = selected_tickers
+            .map(|slice| slice.iter().map(|ti| ti.ticker).collect())
+            .unwrap_or_default();
+        if let Some(bt) = base_ticker {
+            selected_set.insert(bt.ticker);
+        }
+
+        let matches_search = |row: &TickerRowData| {
+            if injected_q.is_empty() {
+                return true;
+            }
+            let (display_str, _) = row.ticker.display_symbol_and_type();
+            let (raw_str, _) = row.ticker.to_full_symbol_and_type();
+            display_str.contains(&injected_q) || raw_str.contains(&injected_q)
+        };
+        let matches_market =
+            |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
+        let matches_exchange = |row: &TickerRowData| {
+            self.selected_exchanges
+                .contains(&ExchangeInclusive::of(row.exchange))
+        };
+
+        let mut fav_rows: Vec<&TickerRowData> = Vec::new();
+        if self.show_favorites {
+            fav_rows = self
+                .ticker_rows
+                .iter()
+                .filter(|row| {
+                    row.is_favorited
+                        && !selected_set.contains(&row.ticker)
+                        && matches_market(row)
+                        && matches_exchange(row)
+                        && matches_search(row)
+                })
+                .collect();
+        }
+
+        let rest_rows: Vec<&TickerRowData> = self
+            .ticker_rows
+            .iter()
+            .filter(|row| {
+                (!self.show_favorites || !row.is_favorited)
+                    && !selected_set.contains(&row.ticker)
+                    && matches_market(row)
+                    && matches_exchange(row)
+                    && matches_search(row)
+            })
+            .collect();
+
+        // Prepare selected list excluding base (we render base separately at the top)
+        let base_ticker_id = base_ticker.map(|bt| bt.ticker);
+        let selected_list: Vec<TickerInfo> = selected_tickers
+            .map(|slice| {
+                slice
+                    .iter()
+                    .copied()
+                    .filter(|ti| Some(ti.ticker) != base_ticker_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Dynamic header height: top bar + optional selected section (base + others)
+        const GAP: f32 = 8.0;
+        let selected_count = selected_list.len() + if base_ticker_id.is_some() { 1 } else { 0 };
+        let selected_block_height = if selected_count > 0 {
+            let rows_h = (selected_count as f32) * COMPACT_ROW_HEIGHT;
+            let gaps_h = ((selected_count.saturating_sub(1)) as f32) * 2.0; // column spacing=2 between rows
+            rows_h + gaps_h
+        } else {
+            0.0
+        };
+        let header_offset = TOP_BAR_HEIGHT
+            + GAP
+            + if selected_count > 0 {
+                selected_block_height + GAP
+            } else {
+                0.0
+            };
+
+        // Virtualization for compact rows
+        let total_n = fav_rows.len() + rest_rows.len();
+        let total_height = (total_n as f32) * COMPACT_ROW_HEIGHT;
+
+        let pos_to_index = |y: f32| -> usize {
+            let rel_y = (y - header_offset).max(0.0);
+            (rel_y / COMPACT_ROW_HEIGHT).floor().max(0.0) as usize
+        };
+        let scroll_y = scroll_offset.y.max(0.0);
+        let scroll_bottom = scroll_y + bounds.height;
+
+        let mut first_visible = pos_to_index(scroll_y).saturating_sub(OVERSCAN_BUFFER as usize);
+        if first_visible > total_n {
+            first_visible = total_n;
+        }
+        let last_visible =
+            (pos_to_index(scroll_bottom) + 1 + OVERSCAN_BUFFER as usize).min(total_n);
+
+        let index_start_y = |idx: usize| -> f32 { (idx as f32) * COMPACT_ROW_HEIGHT };
+
+        let get_row = |idx: usize| -> &TickerRowData {
+            if idx < fav_rows.len() {
+                fav_rows[idx]
+            } else {
+                rest_rows[idx - fav_rows.len()]
+            }
+        };
+
+        let top_bar = row![
+            text_input("Search for a ticker...", search_query)
+                .style(|theme, status| crate::style::validated_text_input(theme, status, true))
+                .on_input(on_search)
+                .align_x(Alignment::Start)
+                .padding(6),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(4);
+
+        // Base row renderer (no Remove, distinct “Base” chip), uses TickerInfo
+        let base_row = |info: &TickerInfo| {
+            let ticker = info.ticker;
+            let label = if let Some(dd) = self.display_cache.get(&ticker) {
+                let mut s = dd.display_ticker.clone();
+                s.push_str(match ticker.market_type() {
+                    MarketKind::Spot => "",
+                    MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+                });
+                s
+            } else {
+                let (s0, _) = ticker.display_symbol_and_type();
+                let mut s = s0;
+                s.push_str(match ticker.market_type() {
+                    MarketKind::Spot => "",
+                    MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+                });
+                s
+            };
+            let icon = icon_text(style::exchange_icon(ticker.exchange), 12);
+
+            let select_btn = button(
+                row![icon, text(label)]
+                    .spacing(6)
+                    .align_y(alignment::Vertical::Center),
+            )
+            .on_press(on_select(RowSelection::Switch(*info)))
+            .style(|theme, status| style::button::transparent(theme, status, false))
+            .width(Length::Fill);
+
+            let base_chip = container(text("Base").size(11))
+                .padding([2, 6])
+                .style(style::dragger_row_container);
+
+            container(
+                row![select_btn, base_chip]
+                    .spacing(6)
+                    .align_y(alignment::Vertical::Center),
+            )
+            .style(style::ticker_card)
+            .height(Length::Fixed(COMPACT_ROW_HEIGHT))
+            .width(Length::Fill)
+        };
+
+        // Selected section (Base first, then the rest with Remove) – all TickerInfo
+        let selected_section: Option<Element<'a, M>> = if selected_count == 0 {
+            None
+        } else {
+            let mut col = column!().spacing(2);
+
+            if let Some(bt) = base_ticker {
+                col = col.push(base_row(&bt));
+            }
+
+            for info in &selected_list {
+                let ticker = info.ticker;
+                let label = if let Some(dd) = self.display_cache.get(&ticker) {
+                    let mut s = dd.display_ticker.clone();
+                    s.push_str(match ticker.market_type() {
+                        MarketKind::Spot => "",
+                        MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+                    });
+                    s
+                } else {
+                    let (s0, _) = ticker.display_symbol_and_type();
+                    let mut s = s0;
+                    s.push_str(match ticker.market_type() {
+                        MarketKind::Spot => "",
+                        MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+                    });
+                    s
+                };
+                let icon = icon_text(style::exchange_icon(ticker.exchange), 12);
+
+                let select_btn = button(
+                    row![icon, text(label)]
+                        .spacing(6)
+                        .align_y(alignment::Vertical::Center),
+                )
+                .on_press(on_select(RowSelection::Switch(*info)))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .width(Length::Fill);
+
+                let remove_btn = button(text("Remove").size(11))
+                    .on_press(on_select(RowSelection::Remove(*info)))
+                    .style(|theme, status| style::button::transparent(theme, status, false));
+
+                let row_el = container(
+                    row![select_btn, remove_btn]
+                        .spacing(6)
+                        .align_y(alignment::Vertical::Center),
+                )
+                .style(style::ticker_card)
+                .height(Length::Fixed(COMPACT_ROW_HEIGHT))
+                .width(Length::Fill);
+
+                col = col.push(row_el);
+            }
+            Some(col.into())
+        };
+
+        // Non-selected compact rows with Add; resolve TickerInfo from self.tickers_info
+        let compact_row = |row: &TickerRowData| {
+            let mut label = if let Some(dd) = self.display_cache.get(&row.ticker) {
+                dd.display_ticker.clone()
+            } else {
+                let (s, _) = row.ticker.display_symbol_and_type();
+                s
+            };
+            label.push_str(match row.ticker.market_type() {
+                MarketKind::Spot => "",
+                MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+            });
+
+            let icon = icon_text(style::exchange_icon(row.exchange), 12);
+
+            // Lookup TickerInfo; if missing, leave buttons disabled
+            let info_opt: Option<TickerInfo> =
+                self.tickers_info.get(&row.ticker).cloned().flatten();
+
+            let base_select_btn = button(
+                row![icon, text(label)]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            )
+            .style(|theme, status| style::button::transparent(theme, status, false))
+            .width(Length::Fill);
+
+            let select_btn = if let Some(ref info) = info_opt {
+                base_select_btn.on_press(on_select(RowSelection::Switch(*info)))
+            } else {
+                base_select_btn
+            };
+
+            let base_add_btn = button(text("Add").size(11))
+                .style(|theme, status| style::button::transparent(theme, status, false));
+
+            let add_btn = if let Some(info) = info_opt {
+                base_add_btn.on_press(on_select(RowSelection::Add(info)))
+            } else {
+                base_add_btn
+            };
+
+            container(
+                row![select_btn, add_btn]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            )
+            .style(style::ticker_card)
+            .height(Length::Fixed(COMPACT_ROW_HEIGHT))
+            .width(Length::Fill)
+        };
+
+        let top_space = Space::new()
+            .width(Length::Shrink)
+            .height(Length::Fixed(index_start_y(first_visible)));
+        let bottom_space = Space::new().width(Length::Shrink).height(Length::Fixed(
+            (total_height - index_start_y(last_visible)).max(0.0),
+        ));
+
+        let mut list = column![top_space].spacing(2);
+        for idx in first_visible..last_visible {
+            let row = get_row(idx);
+            list = list.push(compact_row(row));
+        }
+        list = list.push(bottom_space);
+
+        let mut content = column![top_bar]
+            .spacing(8)
+            .padding(padding::right(8))
+            .width(Length::Fill);
+        if let Some(sel) = selected_section {
+            content = content.push(sel);
+        }
+        content = content.push(list);
+
+        scrollable::Scrollable::with_direction(
+            content,
+            scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new().width(8).scroller_width(6),
+            ),
+        )
+        .on_scroll(on_scroll)
+        .style(style::scroll_bar)
+        .into()
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         iced::time::every(std::time::Duration::from_secs(if self.is_shown {
             ACTIVE_UPDATE_INTERVAL
@@ -803,6 +1122,17 @@ fn create_ticker_card<'a>(
     };
 
     let icon = icon_text(style::exchange_icon(ticker.exchange), 12);
+    let ticker_str = &display_data.display_ticker;
+    let display_ticker = if ticker_str.len() >= 11 {
+        ticker_str[..9].to_string() + "..."
+    } else {
+        ticker_str.clone() + {
+            match ticker.market_type() {
+                MarketKind::Spot => "",
+                MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+            }
+        }
+    };
 
     container(
         button(
@@ -810,7 +1140,7 @@ fn create_ticker_card<'a>(
                 color_column,
                 column![
                     row![
-                        row![icon, text(&display_data.display_ticker),]
+                        row![icon, text(display_ticker),]
                             .spacing(2)
                             .align_y(alignment::Vertical::Center),
                         Space::new().width(Length::Fill).height(Length::Shrink),

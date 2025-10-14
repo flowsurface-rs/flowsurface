@@ -23,7 +23,7 @@ pub enum Message {
 
 pub struct Sidebar {
     pub state: data::Sidebar,
-    tickers_table: TickersTable,
+    pub tickers_table: TickersTable,
 }
 
 pub enum Action {
@@ -231,9 +231,5 @@ impl Sidebar {
 
     pub fn tickers_info(&self) -> &FxHashMap<exchange::Ticker, Option<exchange::TickerInfo>> {
         &self.tickers_table.tickers_info
-    }
-
-    pub fn available_tickers(&self) -> &Vec<exchange::TickerInfo> {
-        &self.tickers_table.available_tickers
     }
 }
