@@ -337,6 +337,8 @@ impl TickersTable {
     {
         let injected_q = search_query.to_uppercase();
 
+        let selection_enabled = selected_tickers.is_some();
+
         let mut selected_set: FxHashSet<Ticker> = selected_tickers
             .map(|slice| slice.iter().map(|ti| ti.ticker).collect())
             .unwrap_or_default();
@@ -368,9 +370,17 @@ impl TickersTable {
         let win = virtual_list.window(scroll_offset.y, bounds.height, total_n);
 
         let top_bar = self.compact_top_bar(search_query, on_search);
-        let selected_section = self.compact_selected_section(base_ticker, selected_list, on_select);
+        let selected_section =
+            self.compact_selected_section(base_ticker, selected_list, on_select, selection_enabled);
 
-        let list = self.compact_list(&virtual_list, win, &fav_rows, &rest_rows, on_select);
+        let list = self.compact_list(
+            &virtual_list,
+            win,
+            &fav_rows,
+            &rest_rows,
+            on_select,
+            selection_enabled,
+        );
 
         let mut content = column![top_bar]
             .spacing(8)
@@ -866,6 +876,7 @@ impl TickersTable {
         base_ticker: Option<TickerInfo>,
         selected_list: Vec<TickerInfo>,
         on_select: FSelect,
+        selection_enabled: bool,
     ) -> Option<Element<'a, M>>
     where
         M: 'a + Clone,
@@ -891,11 +902,21 @@ impl TickersTable {
 
         for info in selected_list {
             let label = self.label_with_suffix(info.ticker);
+
+            let (left_action, right) = if selection_enabled {
+                (
+                    Some(RowSelection::Switch(info)),
+                    Some(("Remove", Some(RowSelection::Remove(info)))),
+                )
+            } else {
+                (Some(RowSelection::Switch(info)), None)
+            };
+
             col = col.push(mini_ticker_card(
                 info.ticker.exchange,
                 label,
-                Some(RowSelection::Switch(info)),
-                Some(("Remove", Some(RowSelection::Remove(info)))),
+                left_action,
+                right,
                 None,
                 on_select,
             ));
@@ -911,6 +932,7 @@ impl TickersTable {
         fav_rows: &[&'a TickerRowData],
         rest_rows: &[&'a TickerRowData],
         on_select: FSelect,
+        selection_enabled: bool,
     ) -> Element<'a, M>
     where
         M: 'a + Clone,
@@ -938,8 +960,14 @@ impl TickersTable {
             let info_opt: Option<TickerInfo> =
                 self.tickers_info.get(&row_ref.ticker).cloned().flatten();
 
-            let left_action = info_opt.map(RowSelection::Switch);
-            let right = Some(("Add", info_opt.map(RowSelection::Add)));
+            let (left_action, right) = if selection_enabled {
+                (
+                    info_opt.map(RowSelection::Switch),
+                    Some(("Add", info_opt.map(RowSelection::Add))),
+                )
+            } else {
+                (info_opt.map(RowSelection::Switch), None)
+            };
 
             let row_el =
                 mini_ticker_card(row_ref.exchange, label, left_action, right, None, on_select);

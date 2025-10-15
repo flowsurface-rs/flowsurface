@@ -489,11 +489,25 @@ impl State {
                 }
             };
 
-            stream_info_element = stream_info_element.push(
-                row![exchange_icon, text(ticker_str).size(14),]
-                    .align_y(Vertical::Center)
-                    .spacing(4),
-            );
+            let content = row![exchange_icon, text(ticker_str).size(14),]
+                .align_y(Vertical::Center)
+                .spacing(4);
+
+            let tickers_list_btn = button(content)
+                .on_press(Message::ShowModal(
+                    id,
+                    Modal::MiniTickersList(MiniPanel::new()),
+                ))
+                .style(|theme, status| {
+                    style::button::modifier(
+                        theme,
+                        status,
+                        !matches!(self.modal, Some(Modal::MiniTickersList(_))),
+                    )
+                })
+                .padding([4, 10]);
+
+            stream_info_element = stream_info_element.push(tickers_list_btn);
         }
 
         let modifier: Option<modal::stream::Modifier> = self.modal.clone().and_then(|m| {
@@ -546,10 +560,6 @@ impl State {
             }
             Content::Comparison(chart) => {
                 if let Some(c) = chart {
-                    let tickers_list_button = button(icon_text(Icon::Edit, 12)).on_press(
-                        Message::ShowModal(id, Modal::MiniTickersList(MiniPanel::new())),
-                    );
-
                     let selected_basis = self
                         .settings
                         .selected_basis
@@ -559,9 +569,7 @@ impl State {
                     let modifiers =
                         row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
 
-                    stream_info_element = stream_info_element
-                        .push(tickers_list_button)
-                        .push(modifiers);
+                    stream_info_element = stream_info_element.push(modifiers);
 
                     let base = c
                         .view()
