@@ -11,6 +11,7 @@ use exchange::fetcher::FetchRange;
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget};
 use iced::advanced::{layout, renderer};
+use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{
     Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
@@ -453,10 +454,9 @@ where
     fn compute_scene(
         &self,
         bounds: Rectangle,
-        theme: &Theme,
+        palette: &Extended,
         cursor: mouse::Cursor,
     ) -> Option<Scene> {
-        let palette = theme.extended_palette();
         let ((min_x, max_x), (min_pct, max_pct)) = self.compute_domains(self.pan)?;
 
         let regions = self.compute_regions(bounds);
@@ -811,18 +811,19 @@ where
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
 
-        let Some(scene) = self.compute_scene(bounds, theme, cursor) else {
+        let palette = theme.extended_palette();
+
+        let Some(scene) = self.compute_scene(bounds, palette, cursor) else {
             return;
         };
 
         let labels = state.labels_cache.draw(renderer, bounds.size(), |frame| {
-            self.fill_y_axis_labels(frame, &scene.ctx, &scene.y_ticks, &scene.y_labels, theme);
-            self.fill_x_axis_labels(frame, &scene.ctx, theme);
+            self.fill_y_axis_labels(frame, &scene.ctx, &scene.y_ticks, &scene.y_labels, palette);
+            self.fill_x_axis_labels(frame, &scene.ctx, palette);
         });
         let plots = state.plot_cache.draw(renderer, bounds.size(), |frame| {
             self.fill_main_geometry(frame, &scene.ctx, &scene.line_color_pool);
 
-            let palette = theme.extended_palette();
             let axis_color = palette.background.strongest.color.scale_alpha(0.25);
 
             // Y-axis splitter
@@ -878,10 +879,10 @@ where
                 &scene.ctx,
                 scene.cursor.map(|c| c.x_domain),
                 &scene.line_color_pool,
-                theme,
+                palette,
                 scene.y_step,
             );
-            self.fill_crosshair(frame, &scene, theme);
+            self.fill_crosshair(frame, &scene, palette);
         });
         renderer.with_layer(bounds, |renderer| {
             renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
@@ -1079,9 +1080,8 @@ where
         ctx: &PlotContext,
         ticks: &[f32],
         labels: &[String],
-        theme: &Theme,
+        palette: &Extended,
     ) {
-        let palette = theme.extended_palette();
         for (i, tick) in ticks.iter().enumerate() {
             let mut y = ctx.map_y(*tick);
             let half_txt = TEXT_SIZE * 0.5;
@@ -1106,8 +1106,7 @@ where
         }
     }
 
-    fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, theme: &Theme) {
-        let palette = theme.extended_palette();
+    fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
         let axis_y = ctx.plot.y + ctx.plot.height + 0.5;
         let (ticks, step_ms) =
             super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
@@ -1136,61 +1135,90 @@ where
         ctx: &PlotContext,
         cursor_x: Option<u64>,
         line_color_pool: &[Color; 5],
-        theme: &Theme,
+        palette: &Extended,
         step: f32,
     ) {
-        let palette = theme.extended_palette();
         let padding = 8.0;
-        let r = 4.0;
         let line_h = TEXT_SIZE + 6.0;
 
-        let rows = self.series.len() as f32;
-        if rows > 0.0 {
-            let bg_h = (rows * line_h + padding * 2.0).min(ctx.plot.height * 0.6);
+        let mut max_chars: usize = 0;
+        let mut rows_count: usize = 0;
+
+        for s in self.series.iter() {
+            rows_count += 1;
+
+            let pct_len = super::interpolate_y_at(s.points(), ctx.min_x)
+                .filter(|&y0| y0 != 0.0)
+                .and_then(|y0| {
+                    cursor_x.and_then(|cx| {
+                        super::interpolate_y_at(s.points(), cx).map(|yc| {
+                            let pct = ((yc / y0) - 1.0) * 100.0;
+                            super::format_pct(pct, step, true)
+                        })
+                    })
+                })
+                .map(|s| s.len())
+                .unwrap_or(0);
+
+            let name_len = s.name().len();
+            let total = if pct_len > 0 {
+                name_len + 1 + pct_len
+            } else {
+                name_len
+            };
+            if total > max_chars {
+                max_chars = total;
+            }
+        }
+
+        let max_chars_f = max_chars as f32;
+        let char_w = TEXT_SIZE * 0.64;
+        let text_w = max_chars_f * char_w;
+        let bg_w = (text_w + padding * 2.0).clamp(80.0, (ctx.plot.width * 0.6).max(80.0));
+
+        let rows_count_f = rows_count as f32;
+        if rows_count_f > 0.0 {
+            let bg_h = ((rows_count_f - 1.0) * line_h + padding * 2.0).min(ctx.plot.height * 0.6);
             frame.fill_rectangle(
-                Point::new(ctx.plot.x + 2.0, ctx.plot.y + 2.0),
-                Size::new(120.0, bg_h),
+                Point::new(ctx.plot.x + 4.0, ctx.plot.y + 4.0),
+                Size::new(bg_w, bg_h),
                 palette.background.weakest.color.scale_alpha(0.9),
             );
         }
 
         let mut y = ctx.plot.y + padding + TEXT_SIZE * 0.5;
-        let x0 = ctx.plot.x + padding + r;
+        let x0 = ctx.plot.x + padding;
 
         for (si, s) in self.series.iter().enumerate() {
             if y > ctx.plot.y + ctx.plot.height - TEXT_SIZE {
                 break;
             }
+
             let color = s
                 .color()
                 .unwrap_or_else(|| line_color_pool[si % line_color_pool.len()]);
 
-            frame.fill(&canvas::Path::circle(Point::new(x0, y), r), color);
-
-            let pct_str = if let Some(y0) = super::interpolate_y_at(s.points(), ctx.min_x) {
-                if y0 != 0.0 {
-                    if let Some(cx) = cursor_x {
-                        if let Some(yc) = super::interpolate_y_at(s.points(), cx) {
+            let pct_str = super::interpolate_y_at(s.points(), ctx.min_x)
+                .filter(|&y0| y0 != 0.0)
+                .and_then(|y0| {
+                    cursor_x.and_then(|cx| {
+                        super::interpolate_y_at(s.points(), cx).map(|yc| {
                             let pct = ((yc / y0) - 1.0) * 100.0;
                             super::format_pct(pct, step, true)
-                        } else {
-                            "—".into()
-                        }
-                    } else {
-                        "—".into()
-                    }
-                } else {
-                    "—".into()
-                }
+                        })
+                    })
+                });
+
+            let content = if let Some(pct) = pct_str {
+                format!("{} {}", s.name(), pct)
             } else {
-                "—".into()
+                s.name().to_string()
             };
 
-            let content = format!("{}  {}", s.name(), pct_str);
             frame.fill_text(canvas::Text {
                 content,
-                position: Point::new(x0 + r + 6.0, y),
-                color: palette.background.base.text,
+                position: Point::new(x0, y),
+                color,
                 size: TEXT_SIZE.into(),
                 font: style::AZERET_MONO,
                 align_x: iced::Alignment::Start.into(),
@@ -1202,7 +1230,7 @@ where
         }
     }
 
-    fn fill_crosshair(&self, frame: &mut canvas::Frame, scene: &Scene, theme: &Theme) {
+    fn fill_crosshair(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let Some(ci) = scene.cursor else {
             return;
         };
@@ -1216,7 +1244,6 @@ where
         let t = ((ci.y_pct - ctx.min_pct) / y_span).clamp(0.0, 1.0);
         let cy = ctx.plot.y + ctx.plot.height - t * ctx.plot.height;
 
-        let palette = theme.extended_palette();
         let stroke = style::dashed_line_from_palette(palette);
 
         // Vertical
