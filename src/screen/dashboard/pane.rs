@@ -367,7 +367,7 @@ impl State {
                     .unwrap_or(Timeframe::M15.into());
 
                 let content =
-                    Content::Comparison(Some(ComparisonChart::new(basis, &[ticker_info], &[])));
+                    Content::Comparison(Some(ComparisonChart::new(basis, &[ticker_info])));
                 let streams = match basis {
                     Basis::Time(timeframe) => {
                         vec![StreamKind::Kline {
@@ -449,7 +449,7 @@ impl State {
                 if let Some(id) = req_id {
                     chart.insert_history(id, ticker_info, klines);
                 } else {
-                    *chart = ComparisonChart::new(Basis::Time(timeframe), &[ticker_info], klines);
+                    *chart = ComparisonChart::new(Basis::Time(timeframe), &[ticker_info]);
                 }
             }
             _ => {
@@ -575,12 +575,14 @@ impl State {
                         .view()
                         .map(move |message| Message::ComparisonChartInteraction(id, message));
 
+                    let settings_modal = || comparison_cfg_view(id, c);
+
                     self.compose_chart_view(
                         base,
                         id,
-                        &[HeatmapIndicator::Volume],
+                        &[HeatmapIndicator::Volume], // TODO: indicators are not supported in comparison chart, but compiler needs a type here
                         compact_controls,
-                        || comparison_cfg_view(id),
+                        settings_modal,
                         Some(c.selected_tickers()),
                         tickers_table,
                     )

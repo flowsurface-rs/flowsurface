@@ -1,3 +1,4 @@
+use crate::chart::comparison::ComparisonChart;
 use crate::screen::dashboard::pane::Message;
 use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
@@ -437,10 +438,19 @@ pub fn timesales_cfg_view<'a>(
     cfg_view_container(320, content)
 }
 
-pub fn comparison_cfg_view<'a>(_pane: pane_grid::Pane) -> Element<'a, Message> {
-    let content = column![text(
-        "This chart type doesn't have any configurations, WIP..."
-    )];
+pub fn comparison_cfg_view<'a>(
+    pane: pane_grid::Pane,
+    chart: &'a ComparisonChart,
+) -> Element<'a, Message> {
+    let series = &chart.series;
+    let color_editor = &chart.color_editor;
+
+    let content = column![color_editor.view(series).map(move |msg| {
+        Message::ComparisonChartInteraction(
+            pane,
+            crate::chart::comparison::Message::ColorEditor(msg),
+        )
+    })];
 
     cfg_view_container(320, content)
 }

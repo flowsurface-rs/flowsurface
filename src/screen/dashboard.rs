@@ -741,6 +741,12 @@ impl Dashboard {
                                     return (update_status.chain(fetch_task), None);
                                 }
                             }
+                            Some(crate::chart::comparison::Action::TickerColorChanged(
+                                ticker,
+                                color,
+                            )) => {
+                                comparison_chart.set_ticker_color(ticker, color);
+                            }
                             None => {}
                         }
                     }

@@ -24,13 +24,13 @@ pub struct Series {
     pub name: TickerInfo,
     /// (x, y) where x is a time-like domain (e.g., timestamp) and y is raw value
     pub points: Vec<(u64, f32)>,
-    pub color: Option<iced::Color>,
+    pub color: iced::Color,
 }
 
 pub trait SeriesLike {
     fn name(&self) -> String;
     fn points(&self) -> &[(u64, f32)];
-    fn color(&self) -> Option<iced::Color>;
+    fn color(&self) -> iced::Color;
     fn ticker_info(&self) -> &TickerInfo;
 }
 
@@ -41,7 +41,7 @@ impl SeriesLike for Series {
     fn points(&self) -> &[(u64, f32)] {
         &self.points
     }
-    fn color(&self) -> Option<iced::Color> {
+    fn color(&self) -> iced::Color {
         self.color
     }
     fn ticker_info(&self) -> &TickerInfo {

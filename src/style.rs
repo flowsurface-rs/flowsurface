@@ -535,6 +535,21 @@ pub fn modal_container(theme: &Theme) -> Style {
     }
 }
 
+pub fn colored_circle_container(theme: &Theme, color: iced::Color) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        background: Some(color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.weak.color,
+            radius: 16.0.into(),
+        },
+        snap: true,
+        ..Default::default()
+    }
+}
+
 pub fn dragger_row_container(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 

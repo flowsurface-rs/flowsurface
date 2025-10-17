@@ -30,6 +30,8 @@ const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
 /// Gap breaker to avoid drawing across missing data
 const GAP_BREAK_MULTIPLIER: f32 = 3.0;
 
+pub const DEFAULT_ZOOM_POINTS: usize = 100;
+
 pub struct LineComparison<'a, S, Message> {
     series: &'a [S],
     stroke_width: f32,
@@ -81,7 +83,7 @@ where
         Self {
             series,
             stroke_width: 2.0,
-            zoom: Zoom::points(100),
+            zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
             on_zoom_chg: None,
             on_data_req: None,
             update_interval: update_interval as u128,
@@ -451,12 +453,7 @@ where
         Some(((win_min_x, win_max_x), (min_pct, max_pct)))
     }
 
-    fn compute_scene(
-        &self,
-        bounds: Rectangle,
-        palette: &Extended,
-        cursor: mouse::Cursor,
-    ) -> Option<Scene> {
+    fn compute_scene(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Scene> {
         let ((min_x, max_x), (min_pct, max_pct)) = self.compute_domains(self.pan)?;
 
         let regions = self.compute_regions(bounds);
@@ -495,24 +492,8 @@ where
             .map(|t| super::format_pct(*t, step, false))
             .collect();
 
-        let line_color_pool = [
-            palette.primary.base.color,
-            palette.secondary.base.color,
-            palette.success.base.color,
-            palette.danger.base.color,
-            palette.warning.base.color,
-        ];
-        let text_color_pool = [
-            palette.primary.base.text,
-            palette.secondary.base.text,
-            palette.success.base.text,
-            palette.danger.base.text,
-            palette.warning.base.text,
-        ];
-
         // End labels
-        let mut end_labels =
-            self.collect_end_labels(&ctx, step, &line_color_pool, &text_color_pool);
+        let mut end_labels = self.collect_end_labels(&ctx, step);
         resolve_label_overlaps(&mut end_labels, ctx.plot);
 
         // Cursor
@@ -566,7 +547,6 @@ where
             ctx,
             y_ticks: ticks,
             y_labels: labels,
-            line_color_pool,
             end_labels,
             cursor: cursor_info,
             reserved_y,
@@ -574,16 +554,10 @@ where
         })
     }
 
-    fn collect_end_labels(
-        &self,
-        ctx: &PlotContext,
-        step: f32,
-        line_color_pool: &[Color; 5],
-        text_color_pool: &[Color; 5],
-    ) -> Vec<EndLabel> {
+    fn collect_end_labels(&self, ctx: &PlotContext, step: f32) -> Vec<EndLabel> {
         let mut end_labels: Vec<EndLabel> = Vec::new();
 
-        for (si, s) in self.series.iter().enumerate() {
+        for s in self.series.iter() {
             let pts = s.points();
             if pts.is_empty() {
                 continue;
@@ -631,18 +605,14 @@ where
                 ctx.plot.y + ctx.plot.height - half_txt,
             );
 
-            let text_color = s.color().unwrap_or_else(|| {
-                text_color_pool
-                    .get(si % text_color_pool.len())
-                    .copied()
-                    .unwrap_or(Color::BLACK)
-            });
-            let bg_color = s.color().unwrap_or_else(|| {
-                line_color_pool
-                    .get(si % line_color_pool.len())
-                    .copied()
-                    .unwrap_or(Color::BLACK)
-            });
+            let is_color_dark = data::config::theme::is_dark(s.color());
+
+            let text_color = if is_color_dark {
+                Color::WHITE
+            } else {
+                Color::BLACK
+            };
+            let bg_color = s.color();
 
             let lbl = super::format_pct(pct_label, step, true);
             end_labels.push(EndLabel {
@@ -779,10 +749,9 @@ where
                 if let Some(last) = state.last_draw {
                     let dur = now.saturating_duration_since(last);
 
-                    if dur.as_millis() < self.update_interval {
-                        return;
-                    } else {
+                    if dur.as_millis() > self.update_interval {
                         state.clear_all_caches();
+                        state.last_draw = Some(*now);
 
                         if let Some(on_req) = self.on_data_req
                             && let Some((range, info)) = self.desired_fetch_range(self.pan)
@@ -790,8 +759,9 @@ where
                             shell.publish(on_req(range, info));
                         }
                     }
+                } else {
+                    state.last_draw = Some(*now);
                 }
-                state.last_draw = Some(*now);
             }
             _ => {}
         }
@@ -813,7 +783,7 @@ where
 
         let palette = theme.extended_palette();
 
-        let Some(scene) = self.compute_scene(bounds, palette, cursor) else {
+        let Some(scene) = self.compute_scene(bounds, cursor) else {
             return;
         };
 
@@ -822,7 +792,7 @@ where
             self.fill_x_axis_labels(frame, &scene.ctx, palette);
         });
         let plots = state.plot_cache.draw(renderer, bounds.size(), |frame| {
-            self.fill_main_geometry(frame, &scene.ctx, &scene.line_color_pool);
+            self.fill_main_geometry(frame, &scene.ctx);
 
             let axis_color = palette.background.strongest.color.scale_alpha(0.25);
 
@@ -878,7 +848,6 @@ where
                 frame,
                 &scene.ctx,
                 scene.cursor.map(|c| c.x_domain),
-                &scene.line_color_pool,
                 palette,
                 scene.y_step,
             );
@@ -922,13 +891,8 @@ where
     S: SeriesLike,
 {
     #[allow(unused_assignments)]
-    fn fill_main_geometry(
-        &self,
-        frame: &mut canvas::Frame,
-        ctx: &PlotContext,
-        line_color_pool: &[Color; 5],
-    ) {
-        for (si, s) in self.series.iter().enumerate() {
+    fn fill_main_geometry(&self, frame: &mut canvas::Frame, ctx: &PlotContext) {
+        for s in self.series.iter() {
             let pts = s.points();
             if pts.is_empty() {
                 continue;
@@ -954,13 +918,6 @@ where
             if y0 == 0.0 {
                 continue;
             }
-
-            let color = s.color().unwrap_or_else(|| {
-                line_color_pool
-                    .get(si % line_color_pool.len())
-                    .copied()
-                    .unwrap_or(Color::BLACK)
-            });
 
             let mut builder = canvas::path::Builder::new();
 
@@ -1016,7 +973,7 @@ where
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
-                    .with_color(color)
+                    .with_color(s.color())
                     .with_width(self.stroke_width),
             );
         }
@@ -1134,7 +1091,6 @@ where
         frame: &mut canvas::Frame,
         ctx: &PlotContext,
         cursor_x: Option<u64>,
-        line_color_pool: &[Color; 5],
         palette: &Extended,
         step: f32,
     ) {
@@ -1189,14 +1145,10 @@ where
         let mut y = ctx.plot.y + padding + TEXT_SIZE * 0.5;
         let x0 = ctx.plot.x + padding;
 
-        for (si, s) in self.series.iter().enumerate() {
+        for s in self.series.iter() {
             if y > ctx.plot.y + ctx.plot.height - TEXT_SIZE {
                 break;
             }
-
-            let color = s
-                .color()
-                .unwrap_or_else(|| line_color_pool[si % line_color_pool.len()]);
 
             let pct_str = super::interpolate_y_at(s.points(), ctx.min_x)
                 .filter(|&y0| y0 != 0.0)
@@ -1218,7 +1170,7 @@ where
             frame.fill_text(canvas::Text {
                 content,
                 position: Point::new(x0, y),
-                color,
+                color: s.color(),
                 size: TEXT_SIZE.into(),
                 font: style::AZERET_MONO,
                 align_x: iced::Alignment::Start.into(),
@@ -1468,7 +1420,6 @@ struct Scene {
     ctx: PlotContext,
     y_ticks: Vec<f32>,
     y_labels: Vec<String>,
-    line_color_pool: [Color; 5],
     end_labels: Vec<EndLabel>,
     cursor: Option<CursorInfo>,
     reserved_y: Option<Rectangle>,
