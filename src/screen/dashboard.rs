@@ -9,7 +9,7 @@ use super::DashboardError;
 use crate::{
     chart,
     modal::{self, pane::settings::study::StudyMessage},
-    screen::dashboard::tickers_table::TickersTable,
+    screen::dashboard::{pane::StreamPairKind, tickers_table::TickersTable},
     style,
     widget::toast::Toast,
     window::{self, Window},
@@ -379,7 +379,7 @@ impl Dashboard {
                         {
                             let content = state.content.identifier_str();
 
-                            match state.set_content_and_streams(ticker_info, &content) {
+                            match state.set_content_and_streams(vec![ticker_info], &content) {
                                 Ok(streams) => {
                                     let pane_id = state.unique_id();
                                     self.streams.extend(streams.iter());
@@ -1111,7 +1111,7 @@ impl Dashboard {
         content: &str,
     ) -> Task<Message> {
         if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            match state.set_content_and_streams(ticker_info, content) {
+            match state.set_content_and_streams(vec![ticker_info], content) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
                     self.streams.extend(streams.iter());
@@ -1153,7 +1153,7 @@ impl Dashboard {
                 state.link_group = None;
             }
 
-            match state.set_content_and_streams(ticker_info, content) {
+            match state.set_content_and_streams(vec![ticker_info], content) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
                     self.streams.extend(streams.iter());
@@ -1463,13 +1463,19 @@ impl Dashboard {
                         streams,
                     )));
                 }
-                Some(pane::Action::ResolveContent) => {
-                    if let Some(ticker_info) = state.stream_pair() {
+                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                    Some(StreamPairKind::MultiSource(tickers)) => {
                         state
-                            .set_content_and_streams(ticker_info, &state.content.identifier_str())
+                            .set_content_and_streams(tickers, &state.content.identifier_str())
                             .ok();
                     }
-                }
+                    Some(StreamPairKind::SingleSource(ticker)) => {
+                        state
+                            .set_content_and_streams(vec![ticker], &state.content.identifier_str())
+                            .ok();
+                    }
+                    None => {}
+                },
                 None => {}
             });
 

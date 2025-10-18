@@ -51,6 +51,11 @@ pub enum InfoType {
     FetchingOI,
 }
 
+pub enum StreamPairKind {
+    SingleSource(TickerInfo),
+    MultiSource(Vec<TickerInfo>),
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum Status {
     #[default]
@@ -146,13 +151,29 @@ impl State {
         })
     }
 
-    pub fn stream_pairs(&self) -> Option<Vec<TickerInfo>> {
-        self.streams.ready_tickers()
+    pub fn stream_pair_kind(&self) -> Option<StreamPairKind> {
+        let mut tickers_iter = self
+            .streams
+            .ready_iter()?
+            .map(|s| s.ticker_info())
+            .peekable();
+        let first_ticker = tickers_iter.next()?;
+
+        if tickers_iter.peek().is_some() {
+            let (lo, _) = tickers_iter.size_hint();
+            let mut v = Vec::with_capacity(1 + lo);
+            v.push(first_ticker);
+            v.extend(tickers_iter);
+
+            Some(StreamPairKind::MultiSource(v))
+        } else {
+            Some(StreamPairKind::SingleSource(first_ticker))
+        }
     }
 
     pub fn set_content_and_streams(
         &mut self,
-        ticker_info: TickerInfo,
+        tickers: Vec<TickerInfo>,
         content_str: &str,
     ) -> Result<Vec<StreamKind>, DashboardError> {
         if (matches!(&self.content, Content::Heatmap { .. }) && content_str != "heatmap")
@@ -160,10 +181,12 @@ impl State {
         {
             self.settings.selected_basis = None;
         }
-        let ticker = ticker_info.ticker;
 
         let result = match content_str {
             "heatmap" => {
+                let ticker_info = tickers[0];
+                let ticker = ticker_info.ticker;
+
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
 
@@ -219,6 +242,9 @@ impl State {
                 Ok((content, streams))
             }
             "footprint" => {
+                let ticker_info = tickers[0];
+                let ticker = ticker_info.ticker;
+
                 let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
                     tm
                 } else {
@@ -269,6 +295,9 @@ impl State {
                 Ok((content, streams))
             }
             "candlestick" => {
+                let ticker_info = tickers[0];
+                let ticker = ticker_info.ticker;
+
                 self.settings.tick_multiply = None;
                 let tick_size = ticker_info.min_ticksize;
 
@@ -306,6 +335,9 @@ impl State {
                 Ok((content, streams))
             }
             "time&sales" => {
+                let ticker_info = tickers[0];
+                let ticker = ticker_info.ticker;
+
                 let config = self
                     .settings
                     .visual_config
@@ -323,6 +355,9 @@ impl State {
                 Ok((content, streams))
             }
             "ladder" => {
+                let ticker_info = tickers[0];
+                let ticker = ticker_info.ticker;
+
                 let config = self.settings.visual_config.and_then(|cfg| cfg.ladder());
 
                 let exchange = ticker.exchange;
@@ -366,15 +401,18 @@ impl State {
                     .selected_basis
                     .unwrap_or(Timeframe::M15.into());
 
+                dbg!(&tickers);
+
                 let content =
-                    Content::Comparison(Some(ComparisonChart::new(basis, &[ticker_info])));
+                    Content::Comparison(Some(ComparisonChart::new(basis, tickers.as_slice())));
                 let streams = match basis {
-                    Basis::Time(timeframe) => {
-                        vec![StreamKind::Kline {
-                            ticker_info,
+                    Basis::Time(timeframe) => tickers
+                        .iter()
+                        .map(|ti| StreamKind::Kline {
+                            ticker_info: *ti,
                             timeframe,
-                        }]
-                    }
+                        })
+                        .collect(),
                     Basis::Tick(_) => todo!("WIP: ComparisonChart does not support tick basis"),
                 };
                 Ok((content, streams))
@@ -477,19 +515,25 @@ impl State {
             })]
         };
 
-        if let Some(info) = self.stream_pair() {
-            let ticker = info.ticker;
-            let exchange_icon = icon_text(style::exchange_icon(ticker.exchange), 14);
+        if let Some(kind) = self.stream_pair_kind() {
+            let (base_ti, extra) = match kind {
+                StreamPairKind::MultiSource(list) => (list[0], list.len().saturating_sub(1)),
+                StreamPairKind::SingleSource(ti) => (ti, 0),
+            };
 
-            let ticker_str = {
-                let symbol = ticker.display_symbol_and_type().0;
-                match ticker.market_type() {
+            let exchange_icon = icon_text(style::exchange_icon(base_ti.ticker.exchange), 14);
+            let mut label = {
+                let symbol = base_ti.ticker.display_symbol_and_type().0;
+                match base_ti.ticker.market_type() {
                     MarketKind::Spot => symbol,
                     MarketKind::LinearPerps | MarketKind::InversePerps => symbol + " PERP",
                 }
             };
+            if extra > 0 {
+                label = format!("{label} +{extra}");
+            }
 
-            let content = row![exchange_icon, text(ticker_str).size(14),]
+            let content = row![exchange_icon, text(label).size(14)]
                 .align_y(Vertical::Center)
                 .spacing(4);
 
