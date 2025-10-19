@@ -401,8 +401,6 @@ impl State {
                     .selected_basis
                     .unwrap_or(Timeframe::M15.into());
 
-                dbg!(&tickers);
-
                 let content =
                     Content::Comparison(Some(ComparisonChart::new(basis, tickers.as_slice())));
                 let streams = match basis {
@@ -583,7 +581,15 @@ impl State {
                 .into();
 
                 if let Some(Modal::LinkGroup) = self.modal {
-                    link_group_modal(base, id, self.link_group)
+                    let content = link_group_modal(id, self.link_group);
+
+                    stack_modal(
+                        base,
+                        content,
+                        Message::HideModal(id),
+                        padding::right(12).left(4),
+                        Alignment::Start,
+                    )
                 } else if self.modal == Some(Modal::Controls) {
                     stack_modal(
                         base,
@@ -621,10 +627,10 @@ impl State {
 
                     let settings_modal = || comparison_cfg_view(id, c);
 
-                    self.compose_chart_view(
+                    self.compose_stack_view(
                         base,
                         id,
-                        &[HeatmapIndicator::Volume], // TODO: indicators are not supported in comparison chart, but compiler needs a type here
+                        None,
                         compact_controls,
                         settings_modal,
                         Some(c.selected_tickers()),
@@ -642,7 +648,15 @@ impl State {
                     let settings_modal =
                         || modal::pane::settings::timesales_cfg_view(panel.config, id);
 
-                    self.compose_panel_view(base, id, compact_controls, settings_modal)
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        settings_modal,
+                        None,
+                        tickers_table,
+                    )
                 } else {
                     center(text("Loading...").size(16)).into()
                 }
@@ -677,7 +691,15 @@ impl State {
                     let settings_modal =
                         || modal::pane::settings::ladder_cfg_view(panel.config, id);
 
-                    self.compose_panel_view_with_stream(base, id, compact_controls, settings_modal)
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        settings_modal,
+                        None,
+                        tickers_table,
+                    )
                 } else {
                     center(text("Loading...").size(16)).into()
                 }
@@ -725,10 +747,21 @@ impl State {
                         )
                     };
 
-                    self.compose_chart_view(
+                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
+                        Some(modal::indicators::view(
+                            id,
+                            self,
+                            indicators,
+                            self.stream_pair().map(|i| i.ticker.market_type()),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    self.compose_stack_view(
                         base,
                         id,
-                        indicators,
+                        indicator_modal,
                         compact_controls,
                         settings_modal,
                         None,
@@ -800,10 +833,21 @@ impl State {
                         )
                     };
 
-                    self.compose_chart_view(
+                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
+                        Some(modal::indicators::view(
+                            id,
+                            self,
+                            indicators,
+                            self.stream_pair().map(|i| i.ticker.market_type()),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    self.compose_stack_view(
                         base,
                         id,
-                        indicators,
+                        indicator_modal,
                         compact_controls,
                         settings_modal,
                         None,
@@ -840,7 +884,12 @@ impl State {
                 button(text("...").size(13).align_y(Alignment::End))
                     .on_press(Message::ShowModal(id, Modal::Controls))
                     .style(move |theme, status| {
-                        style::button::transparent(theme, status, self.modal.is_some())
+                        style::button::transparent(
+                            theme,
+                            status,
+                            self.modal == Some(Modal::Controls)
+                                || self.modal == Some(Modal::Settings),
+                        )
                     }),
             )
             .align_y(Alignment::Center)
@@ -969,11 +1018,11 @@ impl State {
             .into()
     }
 
-    fn compose_chart_view<'a, F>(
+    fn compose_stack_view<'a, F>(
         &'a self,
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
-        indicators: &'a [impl Indicator + Copy + Into<UiIndicator>],
+        indicator_modal: Option<Element<'a, Message>>,
         compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
         selected_tickers: Option<&'a [TickerInfo]>,
@@ -988,48 +1037,26 @@ impl State {
             })
             .into();
 
-        let stack_padding = padding::right(12).left(12);
-
         match &self.modal {
+            Some(Modal::LinkGroup) => {
+                let content = link_group_modal(pane, self.link_group);
+
+                stack_modal(
+                    base,
+                    content,
+                    Message::HideModal(pane),
+                    padding::right(12).left(4),
+                    Alignment::Start,
+                )
+            }
             Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
                 modifier
                     .view(self.stream_pair())
                     .map(move |message| Message::StreamModifierChanged(pane, message)),
                 Message::HideModal(pane),
-                stack_padding,
+                padding::right(12).left(48),
                 Alignment::Start,
-            ),
-            Some(Modal::Indicators) => stack_modal(
-                base,
-                modal::indicators::view(
-                    pane,
-                    self,
-                    indicators,
-                    self.stream_pair().map(|i| i.ticker.market_type()),
-                ),
-                Message::HideModal(pane),
-                stack_padding,
-                Alignment::End,
-            ),
-            Some(Modal::Settings) => stack_modal(
-                base,
-                settings_modal(),
-                Message::HideModal(pane),
-                stack_padding,
-                Alignment::End,
-            ),
-            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
-            Some(Modal::Controls) => stack_modal(
-                base,
-                if let Some(controls) = compact_controls {
-                    controls
-                } else {
-                    column![].into()
-                },
-                Message::HideModal(pane),
-                padding::left(12),
-                Alignment::End,
             ),
             Some(Modal::MiniTickersList(panel)) => {
                 let mini_list = panel
@@ -1037,7 +1064,7 @@ impl State {
                     .map(move |msg| Message::MiniTickersListInteraction(pane, msg));
 
                 let content: Element<_> = container(mini_list)
-                    .max_width(200)
+                    .max_width(260)
                     .padding(16)
                     .style(style::chart_modal)
                     .into();
@@ -1050,100 +1077,32 @@ impl State {
                     Alignment::Start,
                 )
             }
+            Some(Modal::Settings) => stack_modal(
+                base,
+                settings_modal(),
+                Message::HideModal(pane),
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            Some(Modal::Indicators) => stack_modal(
+                base,
+                indicator_modal.unwrap_or_else(|| column![].into()),
+                Message::HideModal(pane),
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            Some(Modal::Controls) => stack_modal(
+                base,
+                if let Some(controls) = compact_controls {
+                    controls
+                } else {
+                    column![].into()
+                },
+                Message::HideModal(pane),
+                padding::left(12),
+                Alignment::End,
+            ),
             None => base,
-        }
-    }
-
-    fn compose_panel_view<'a, F>(
-        &'a self,
-        base: Element<'a, Message>,
-        pane: pane_grid::Pane,
-        compact_controls: Option<Element<'a, Message>>,
-        settings_modal: F,
-    ) -> Element<'a, Message>
-    where
-        F: FnOnce() -> Element<'a, Message>,
-    {
-        let base: Element<_> =
-            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
-                Message::DeleteNotification(pane, msg)
-            })
-            .into();
-
-        let stack_padding = padding::right(12).left(12);
-
-        match self.modal {
-            Some(Modal::Settings) => stack_modal(
-                base,
-                settings_modal(),
-                Message::HideModal(pane),
-                stack_padding,
-                Alignment::End,
-            ),
-            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
-            Some(Modal::Controls) => stack_modal(
-                base,
-                if let Some(controls) = compact_controls {
-                    controls
-                } else {
-                    column![].into()
-                },
-                Message::HideModal(pane),
-                padding::left(12),
-                Alignment::End,
-            ),
-            _ => base,
-        }
-    }
-
-    fn compose_panel_view_with_stream<'a, F>(
-        &'a self,
-        base: Element<'a, Message>,
-        pane: pane_grid::Pane,
-        compact_controls: Option<Element<'a, Message>>,
-        settings_modal: F,
-    ) -> Element<'a, Message>
-    where
-        F: FnOnce() -> Element<'a, Message>,
-    {
-        let base: Element<_> =
-            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
-                Message::DeleteNotification(pane, msg)
-            })
-            .into();
-
-        let stack_padding = padding::right(12).left(12);
-
-        match self.modal {
-            Some(Modal::Settings) => stack_modal(
-                base,
-                settings_modal(),
-                Message::HideModal(pane),
-                stack_padding,
-                Alignment::End,
-            ),
-            Some(Modal::StreamModifier(modifier)) => stack_modal(
-                base,
-                modifier
-                    .view(self.stream_pair())
-                    .map(move |message| Message::StreamModifierChanged(pane, message)),
-                Message::HideModal(pane),
-                stack_padding,
-                Alignment::Start,
-            ),
-            Some(Modal::LinkGroup) => link_group_modal(base, pane, self.link_group),
-            Some(Modal::Controls) => stack_modal(
-                base,
-                if let Some(controls) = compact_controls {
-                    controls
-                } else {
-                    column![].into()
-                },
-                Message::HideModal(pane),
-                padding::left(12),
-                Alignment::End,
-            ),
-            _ => base,
         }
     }
 
@@ -1622,11 +1581,10 @@ impl PartialEq for Content {
     }
 }
 
-fn link_group_modal(
-    base: Element<Message>,
+fn link_group_modal<'a>(
     pane: pane_grid::Pane,
     selected_group: Option<LinkGroup>,
-) -> Element<Message> {
+) -> Element<'a, Message> {
     let mut grid = column![].spacing(4);
     let rows = LinkGroup::ALL.chunks(3);
 
@@ -1658,19 +1616,11 @@ fn link_group_modal(
         grid = grid.push(button_row);
     }
 
-    let content: Element<_> = container(grid)
+    container(grid)
         .max_width(240)
         .padding(16)
         .style(style::chart_modal)
-        .into();
-
-    stack_modal(
-        base,
-        content,
-        Message::HideModal(pane),
-        padding::right(12).left(4),
-        Alignment::Start,
-    )
+        .into()
 }
 
 fn ticksize_modifier<'a>(
