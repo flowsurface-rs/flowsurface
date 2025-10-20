@@ -341,6 +341,7 @@ impl State {
                 let config = self
                     .settings
                     .visual_config
+                    .clone()
                     .and_then(|cfg| cfg.time_and_sales());
                 let content = Content::TimeAndSales(Some(TimeAndSales::new(config, ticker_info)));
                 let streams = vec![StreamKind::DepthAndTrades {
@@ -358,7 +359,11 @@ impl State {
                 let ticker_info = tickers[0];
                 let ticker = ticker_info.ticker;
 
-                let config = self.settings.visual_config.and_then(|cfg| cfg.ladder());
+                let config = self
+                    .settings
+                    .visual_config
+                    .clone()
+                    .and_then(|cfg| cfg.ladder());
 
                 let exchange = ticker.exchange;
                 let is_depth_client_aggr = exchange.is_depth_client_aggr();
@@ -396,13 +401,22 @@ impl State {
                 Ok((content, streams))
             }
             "comparison" => {
+                let config = self
+                    .settings
+                    .visual_config
+                    .clone()
+                    .and_then(|cfg| cfg.comparison());
+
                 let basis = self
                     .settings
                     .selected_basis
                     .unwrap_or(Timeframe::M15.into());
 
-                let content =
-                    Content::Comparison(Some(ComparisonChart::new(basis, tickers.as_slice())));
+                let content = Content::Comparison(Some(ComparisonChart::new(
+                    basis,
+                    tickers.as_slice(),
+                    config,
+                )));
                 let streams = match basis {
                     Basis::Time(timeframe) => tickers
                         .iter()
@@ -485,7 +499,11 @@ impl State {
                 if let Some(id) = req_id {
                     chart.insert_history(id, ticker_info, klines);
                 } else {
-                    *chart = ComparisonChart::new(Basis::Time(timeframe), &[ticker_info]);
+                    *chart = ComparisonChart::new(
+                        Basis::Time(timeframe),
+                        &[ticker_info],
+                        Some(chart.serializable_config()),
+                    );
                 }
             }
             _ => {
@@ -1263,7 +1281,7 @@ impl Content {
         let basis = settings
             .selected_basis
             .unwrap_or_else(|| Basis::default_heatmap_time(Some(ticker_info)));
-        let config = settings.visual_config.and_then(|cfg| cfg.heatmap());
+        let config = settings.visual_config.clone().and_then(|cfg| cfg.heatmap());
 
         let chart = HeatmapChart::new(
             layout.clone(),
@@ -1468,6 +1486,9 @@ impl Content {
             }
             (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
                 panel.config = cfg;
+            }
+            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
+                chart.config = cfg;
             }
             _ => {}
         }

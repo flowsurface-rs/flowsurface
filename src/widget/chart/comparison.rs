@@ -794,7 +794,7 @@ where
         let plots = state.plot_cache.draw(renderer, bounds.size(), |frame| {
             self.fill_main_geometry(frame, &scene.ctx);
 
-            let axis_color = palette.background.strongest.color.scale_alpha(0.25);
+            let axis_color = palette.background.strong.color.scale_alpha(0.25);
 
             // Y-axis splitter
             let path = {

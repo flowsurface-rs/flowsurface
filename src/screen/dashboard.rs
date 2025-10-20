@@ -324,13 +324,16 @@ impl Dashboard {
                                             ) | (
                                                 data::layout::pane::VisualConfig::TimeAndSales(_),
                                                 pane::Content::TimeAndSales(_)
+                                            ) | (
+                                                data::layout::pane::VisualConfig::Comparison(_),
+                                                pane::Content::Comparison(_)
                                             )
                                         ),
                                     };
 
                                     if should_apply {
-                                        state.settings.visual_config = Some(cfg);
-                                        state.content.change_visual_config(cfg);
+                                        state.settings.visual_config = Some(cfg.clone());
+                                        state.content.change_visual_config(cfg.clone());
 
                                         if let Some(studies) = &studies_cfg {
                                             state.content.update_studies(studies.clone());
@@ -347,7 +350,7 @@ impl Dashboard {
                                 });
                         }
                     } else if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                        state.settings.visual_config = Some(cfg);
+                        state.settings.visual_config = Some(cfg.clone());
                         state.content.change_visual_config(cfg);
                     }
                 }

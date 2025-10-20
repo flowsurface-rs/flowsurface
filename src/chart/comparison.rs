@@ -2,9 +2,10 @@ use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison};
 use crate::widget::chart::{Series, Zoom};
 
 use data::chart::Basis;
+use data::chart::comparison::Config;
 use exchange::adapter::StreamKind;
 use exchange::fetcher::{FetchRange, RequestHandler};
-use exchange::{Kline, TickerInfo, Timeframe};
+use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
 
 use iced::Element;
 use rustc_hash::FxHashMap;
@@ -32,12 +33,6 @@ pub struct ComparisonChart {
     pub color_editor: color_editor::TickerColorEditor,
 }
 
-impl Default for ComparisonChart {
-    fn default() -> Self {
-        Self::new(Basis::Time(Timeframe::M15), &[])
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
     ZoomChanged(Zoom),
@@ -48,19 +43,29 @@ pub enum Message {
 }
 
 impl ComparisonChart {
-    pub fn new(basis: Basis, tickers: &[TickerInfo]) -> Self {
+    pub fn new(basis: Basis, tickers: &[TickerInfo], config: Option<Config>) -> Self {
         let timeframe = match basis {
             Basis::Time(tf) => tf,
             Basis::Tick(_) => todo!("WIP: ComparisonChart does not support tick basis"),
         };
 
+        let cfg = config.unwrap_or_default();
+
+        let color_map: FxHashMap<SerTicker, iced::Color> = cfg.colors.iter().cloned().collect();
+
         let mut series = Vec::with_capacity(tickers.len());
         let mut series_index = FxHashMap::default();
         for (i, t) in tickers.iter().enumerate() {
+            let ser = SerTicker::from_parts(t.ticker.exchange, t.ticker);
+            let color = color_map
+                .get(&ser)
+                .copied()
+                .unwrap_or_else(|| default_color_for(t));
+
             series.push(Series {
                 name: *t,
                 points: Vec::new(),
-                color: default_color_for(t),
+                color,
             });
             series_index.insert(*t, i);
         }
@@ -78,7 +83,7 @@ impl ComparisonChart {
                 .collect(),
             selected_tickers: tickers.to_vec(),
             pan: 0.0,
-            config: data::chart::comparison::Config::default(),
+            config: cfg,
             color_editor: color_editor::TickerColorEditor {
                 show_color_for: None,
                 pending: None,
@@ -249,7 +254,7 @@ impl ComparisonChart {
             self.series.push(Series {
                 name: *ticker_info,
                 points: Vec::new(),
-                color: default_color_for(ticker_info),
+                color: self.color_for_or_default(ticker_info),
             });
             self.series_index.insert(*ticker_info, i);
             i
@@ -337,6 +342,24 @@ impl ComparisonChart {
             && let Some(s) = self.series.get_mut(*idx)
         {
             s.color = color;
+        }
+    }
+
+    pub fn serializable_config(&self) -> data::chart::comparison::Config {
+        let mut colors = vec![];
+        for s in &self.series {
+            let ser_ticker = SerTicker::from_parts(s.name.ticker.exchange, s.name.ticker);
+            colors.push((ser_ticker, s.color));
+        }
+        data::chart::comparison::Config { colors }
+    }
+
+    fn color_for_or_default(&self, ticker_info: &TickerInfo) -> iced::Color {
+        let ser = SerTicker::from_parts(ticker_info.ticker.exchange, ticker_info.ticker);
+        if let Some((_, c)) = self.config.colors.iter().find(|(s, _)| s == &ser) {
+            *c
+        } else {
+            default_color_for(ticker_info)
         }
     }
 }

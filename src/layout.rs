@@ -115,7 +115,7 @@ impl From<&pane::State> for data::Pane {
                     .as_ref()
                     .map_or(data::chart::ViewConfig::default(), |c| c.chart_layout()),
                 stream_type: streams,
-                settings: pane.settings,
+                settings: pane.settings.clone(),
                 indicators: indicators.clone(),
                 studies: chart.as_ref().map_or(vec![], |c| c.studies.clone()),
                 link_group: pane.link_group,
@@ -130,26 +130,34 @@ impl From<&pane::State> for data::Pane {
                     .as_ref()
                     .map_or(data::chart::KlineChartKind::Candles, |c| c.kind().clone()),
                 stream_type: streams,
-                settings: pane.settings,
+                settings: pane.settings.clone(),
                 indicators: indicators.clone(),
                 link_group: pane.link_group,
             },
             pane::Content::TimeAndSales(_) => data::Pane::TimeAndSales {
                 stream_type: streams,
-                settings: pane.settings,
+                settings: pane.settings.clone(),
                 link_group: pane.link_group,
             },
             pane::Content::Ladder(_) => data::Pane::Ladder {
                 stream_type: streams,
-                settings: pane.settings,
+                settings: pane.settings.clone(),
                 link_group: pane.link_group,
             },
-            pane::Content::Comparison(_) => data::Pane::ComparisonChart {
-                layout: data::chart::ViewConfig::default(),
-                stream_type: streams,
-                settings: pane.settings,
-                link_group: pane.link_group,
-            },
+            pane::Content::Comparison(chart) => {
+                let settings = data::layout::pane::Settings {
+                    visual_config: chart.as_ref().map(|c| {
+                        data::layout::pane::VisualConfig::Comparison(c.serializable_config())
+                    }),
+                    ..pane.settings.clone()
+                };
+
+                data::Pane::ComparisonChart {
+                    stream_type: streams,
+                    settings,
+                    link_group: pane.link_group,
+                }
+            }
         }
     }
 }
@@ -216,7 +224,6 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             ))
         }
         data::Pane::ComparisonChart {
-            layout: _,
             stream_type,
             settings,
             link_group,
