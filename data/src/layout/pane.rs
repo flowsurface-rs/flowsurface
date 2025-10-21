@@ -1,7 +1,7 @@
 use exchange::adapter::PersistStreamKind;
 use serde::{Deserialize, Serialize};
 
-use crate::chart::{heatmap, kline};
+use crate::chart::{comparison, heatmap, kline};
 use crate::panel::{ladder, timeandsales};
 use crate::util::ok_or_default;
 
@@ -55,6 +55,13 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
+    ComparisonChart {
+        stream_type: Vec<PersistStreamKind>,
+        #[serde(deserialize_with = "ok_or_default")]
+        settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
     TimeAndSales {
         stream_type: Vec<PersistStreamKind>,
         settings: Settings,
@@ -75,7 +82,7 @@ impl Default for Pane {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Settings {
     pub tick_multiply: Option<exchange::TickMultiplier>,
@@ -128,12 +135,13 @@ impl std::fmt::Display for LinkGroup {
 }
 
 /// Defines the specific configuration for different types of pane settings.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum VisualConfig {
     Heatmap(heatmap::Config),
     TimeAndSales(timeandsales::Config),
     Kline(kline::Config),
     Ladder(ladder::Config),
+    Comparison(comparison::Config),
 }
 
 impl VisualConfig {
@@ -161,6 +169,13 @@ impl VisualConfig {
     pub fn ladder(&self) -> Option<ladder::Config> {
         match self {
             Self::Ladder(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
+
+    pub fn comparison(&self) -> Option<comparison::Config> {
+        match self {
+            Self::Comparison(cfg) => Some(cfg.clone()),
             _ => None,
         }
     }

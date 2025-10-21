@@ -23,7 +23,7 @@ pub enum Message {
 
 pub struct Sidebar {
     pub state: data::Sidebar,
-    tickers_table: TickersTable,
+    pub tickers_table: TickersTable,
 }
 
 pub enum Action {

@@ -97,6 +97,15 @@ impl ResolvedStream {
             _ => None,
         }
     }
+
+    pub fn ready_tickers(&self) -> Option<Vec<TickerInfo>> {
+        match self {
+            ResolvedStream::Ready(streams) => {
+                Some(streams.iter().map(|s| s.ticker_info()).collect())
+            }
+            ResolvedStream::Waiting(_) => None,
+        }
+    }
 }
 
 impl IntoIterator for &ResolvedStream {

@@ -9,6 +9,7 @@ use super::DashboardError;
 use crate::{
     chart,
     modal::{self, pane::settings::study::StudyMessage},
+    screen::dashboard::{pane::StreamPairKind, tickers_table::TickersTable},
     style,
     widget::toast::Toast,
     window::{self, Window},
@@ -323,13 +324,16 @@ impl Dashboard {
                                             ) | (
                                                 data::layout::pane::VisualConfig::TimeAndSales(_),
                                                 pane::Content::TimeAndSales(_)
+                                            ) | (
+                                                data::layout::pane::VisualConfig::Comparison(_),
+                                                pane::Content::Comparison(_)
                                             )
                                         ),
                                     };
 
                                     if should_apply {
-                                        state.settings.visual_config = Some(cfg);
-                                        state.content.change_visual_config(cfg);
+                                        state.settings.visual_config = Some(cfg.clone());
+                                        state.content.change_visual_config(cfg.clone());
 
                                         if let Some(studies) = &studies_cfg {
                                             state.content.update_studies(studies.clone());
@@ -346,7 +350,7 @@ impl Dashboard {
                                 });
                         }
                     } else if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                        state.settings.visual_config = Some(cfg);
+                        state.settings.visual_config = Some(cfg.clone());
                         state.content.change_visual_config(cfg);
                     }
                 }
@@ -378,7 +382,7 @@ impl Dashboard {
                         {
                             let content = state.content.identifier_str();
 
-                            match state.set_content_and_streams(ticker_info, &content) {
+                            match state.set_content_and_streams(vec![ticker_info], &content) {
                                 Ok(streams) => {
                                     let pane_id = state.unique_id();
                                     self.streams.extend(streams.iter());
@@ -474,7 +478,6 @@ impl Dashboard {
                         match action {
                             Some(modal::stream::Action::TabSelected(tab)) => {
                                 modifier.tab = tab;
-
                                 state.modal = Some(pane::Modal::StreamModifier(modifier));
                             }
                             Some(modal::stream::Action::BasisSelected(new_basis)) => {
@@ -515,6 +518,32 @@ impl Dashboard {
                                     }
 
                                     return (Task::none(), None);
+                                }
+
+                                if let pane::Content::Comparison(ref mut chart_opt) = state.content
+                                {
+                                    if let Some(chart) = chart_opt {
+                                        match new_basis {
+                                            data::chart::Basis::Time(new_tf) => {
+                                                let streams: Vec<StreamKind> = chart
+                                                    .selected_tickers()
+                                                    .iter()
+                                                    .copied()
+                                                    .map(|ticker_info| StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe: new_tf,
+                                                    })
+                                                    .collect();
+                                                state.streams =
+                                                    ResolvedStream::Ready(streams.clone());
+
+                                                chart.set_basis(new_basis);
+                                            }
+                                            data::chart::Basis::Tick(_) => unimplemented!(),
+                                        }
+                                    }
+
+                                    return (self.refresh_streams(main_window.id), None);
                                 }
 
                                 if let Some(ticker_info) = state.stream_pair() {
@@ -675,6 +704,113 @@ impl Dashboard {
                             None => {
                                 state.modal = Some(pane::Modal::StreamModifier(modifier));
                             }
+                        }
+                    }
+                }
+                pane::Message::ComparisonChartInteraction(pane, message) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let pane::Content::Comparison(ref mut chart) = state.content
+                        && let Some(comparison_chart) = chart
+                    {
+                        let action = comparison_chart.update(message);
+                        match action {
+                            Some(chart::comparison::Action::FetchRequested(
+                                req_id,
+                                range,
+                                ticker_info,
+                                timeframe,
+                            )) => {
+                                let pane_id = state.unique_id();
+
+                                let update_status = Task::done(Message::ChangePaneStatus(
+                                    pane_id,
+                                    pane::Status::Loading(pane::InfoType::FetchingKlines),
+                                ));
+
+                                if let FetchRange::Kline(from, to) = range {
+                                    let stream = StreamKind::Kline {
+                                        ticker_info,
+                                        timeframe,
+                                    };
+
+                                    let fetch_task = kline_fetch_task(
+                                        *layout_id,
+                                        pane_id,
+                                        stream,
+                                        Some(req_id),
+                                        Some((from, to)),
+                                    );
+
+                                    return (update_status.chain(fetch_task), None);
+                                }
+                            }
+                            Some(chart::comparison::Action::TickerColorChanged(ticker, color)) => {
+                                comparison_chart.set_ticker_color(ticker, color);
+                            }
+                            Some(chart::comparison::Action::OpenColorEditor) => {
+                                state.modal = Some(pane::Modal::Settings);
+                            }
+                            Some(chart::comparison::Action::RemoveSeries(ticker_info)) => {
+                                let rebuilt_streams = comparison_chart.remove_ticker(&ticker_info);
+                                state.streams = ResolvedStream::Ready(rebuilt_streams.clone());
+
+                                return (self.refresh_streams(main_window.id), None);
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                pane::Message::MiniTickersListInteraction(pane, msg) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                        && let Some(pane::Modal::MiniTickersList(ref mut mini_panel)) = state.modal
+                    {
+                        let action = mini_panel.update(msg);
+                        state.modal = Some(pane::Modal::MiniTickersList(mini_panel.clone()));
+
+                        match action {
+                            Some(modal::pane::mini_tickers_list::Action::RowSelected(
+                                row_selection,
+                            )) => match row_selection {
+                                modal::pane::mini_tickers_list::RowSelection::Switch(
+                                    ticker_info,
+                                ) => {
+                                    return (
+                                        self.switch_tickers_in_group(main_window.id, ticker_info),
+                                        None,
+                                    );
+                                }
+                                modal::pane::mini_tickers_list::RowSelection::Add(ticker_info) => {
+                                    if let Some(state) =
+                                        self.get_mut_pane(main_window.id, window, pane)
+                                        && let pane::Content::Comparison(ref mut chart) =
+                                            state.content
+                                        && let Some(c) = chart
+                                    {
+                                        let rebuilt_streams = c.add_ticker(&ticker_info);
+                                        state.streams =
+                                            ResolvedStream::Ready(rebuilt_streams.clone());
+
+                                        return (self.refresh_streams(main_window.id), None);
+                                    }
+                                }
+                                modal::pane::mini_tickers_list::RowSelection::Remove(
+                                    ticker_info,
+                                ) => {
+                                    if let Some(state) =
+                                        self.get_mut_pane(main_window.id, window, pane)
+                                        && let pane::Content::Comparison(ref mut chart) =
+                                            state.content
+                                        && let Some(c) = chart
+                                    {
+                                        let rebuilt_streams = c.remove_ticker(&ticker_info);
+                                        state.streams =
+                                            ResolvedStream::Ready(rebuilt_streams.clone());
+
+                                        return (self.refresh_streams(main_window.id), None);
+                                    }
+                                }
+                            },
+                            None => {}
                         }
                     }
                 }
@@ -879,6 +1015,7 @@ impl Dashboard {
     pub fn view<'a>(
         &'a self,
         main_window: &'a Window,
+        tickers_table: &'a TickersTable,
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
@@ -891,6 +1028,7 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
+                tickers_table,
             )
         })
         .min_size(240)
@@ -908,6 +1046,7 @@ impl Dashboard {
         &'a self,
         window: window::Id,
         main_window: &'a Window,
+        tickers_table: &'a TickersTable,
         timezone: UserTimezone,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
@@ -922,6 +1061,7 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
+                        tickers_table,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -980,7 +1120,7 @@ impl Dashboard {
         content: &str,
     ) -> Task<Message> {
         if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            match state.set_content_and_streams(ticker_info, content) {
+            match state.set_content_and_streams(vec![ticker_info], content) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
                     self.streams.extend(streams.iter());
@@ -1022,7 +1162,7 @@ impl Dashboard {
                 state.link_group = None;
             }
 
-            match state.set_content_and_streams(ticker_info, content) {
+            match state.set_content_and_streams(vec![ticker_info], content) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
                     self.streams.extend(streams.iter());
@@ -1152,8 +1292,12 @@ impl Dashboard {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
-                    if let StreamKind::Kline { timeframe, .. } = stream_type {
-                        pane_state.insert_klines_vec(req_id, timeframe, &data);
+                    if let StreamKind::Kline {
+                        timeframe,
+                        ticker_info,
+                    } = stream_type
+                    {
+                        pane_state.insert_klines_vec(req_id, timeframe, ticker_info, &data);
                     }
                 }
             }
@@ -1228,12 +1372,15 @@ impl Dashboard {
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
-                    if let pane::Content::Kline { chart, .. } = &mut pane_state.content
-                        && let Some(c) = chart
-                    {
-                        c.update_latest_kline(kline);
+                    match &mut pane_state.content {
+                        pane::Content::Kline { chart: Some(c), .. } => {
+                            c.update_latest_kline(kline);
+                        }
+                        pane::Content::Comparison(Some(c)) => {
+                            c.update_latest_kline(&stream.ticker_info(), kline);
+                        }
+                        _ => {}
                     }
-
                     found_match = true;
                 }
             });
@@ -1325,13 +1472,19 @@ impl Dashboard {
                         streams,
                     )));
                 }
-                Some(pane::Action::ResolveContent) => {
-                    if let Some(ticker_info) = state.stream_pair() {
+                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                    Some(StreamPairKind::MultiSource(tickers)) => {
                         state
-                            .set_content_and_streams(ticker_info, &state.content.identifier_str())
+                            .set_content_and_streams(tickers, &state.content.identifier_str())
                             .ok();
                     }
-                }
+                    Some(StreamPairKind::SingleSource(ticker)) => {
+                        state
+                            .set_content_and_streams(vec![ticker], &state.content.identifier_str())
+                            .ok();
+                    }
+                    None => {}
+                },
                 None => {}
             });
 

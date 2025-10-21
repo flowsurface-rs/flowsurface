@@ -67,17 +67,7 @@ pub fn compute_display_data(
     stats: &TickerStats,
     previous_price: Option<f32>,
 ) -> TickerDisplayData {
-    let (ticker_str, market) = ticker.display_symbol_and_type();
-    let display_ticker = if ticker_str.len() >= 11 {
-        ticker_str[..9].to_string() + "..."
-    } else {
-        ticker_str + {
-            match market {
-                MarketKind::Spot => "",
-                MarketKind::LinearPerps | MarketKind::InversePerps => "P",
-            }
-        }
-    };
+    let (display_ticker, _market) = ticker.display_symbol_and_type();
 
     let current_price = stats.mark_price;
     let (price_unchanged_part, price_changed_part, price_change_direction) =
