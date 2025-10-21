@@ -110,6 +110,14 @@ impl ComparisonChart {
                     && let Some(s) = self.series.get_mut(*idx)
                 {
                     s.color = color;
+
+                    let ser =
+                        SerTicker::from_parts(ticker_info.ticker.exchange, ticker_info.ticker);
+                    if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
+                        *c = color;
+                    } else {
+                        self.config.colors.push((ser, color));
+                    }
                 }
                 None
             }
@@ -306,6 +314,15 @@ impl ComparisonChart {
             }
         }
 
+        if self
+            .color_editor
+            .show_color_for
+            .is_some_and(|t| t == *ticker_info)
+        {
+            self.color_editor.show_color_for = None;
+            self.color_editor.pending = None;
+        }
+
         self.selected_tickers.retain(|t| t != ticker_info);
 
         let mut new_streams = vec![];
@@ -342,6 +359,9 @@ impl ComparisonChart {
         self.series.clear();
         self.series_index.clear();
         self.request_handler.clear();
+
+        self.color_editor.show_color_for = None;
+        self.color_editor.pending = None;
     }
 
     pub fn selected_tickers(&self) -> &Vec<TickerInfo> {
@@ -353,6 +373,13 @@ impl ComparisonChart {
             && let Some(s) = self.series.get_mut(*idx)
         {
             s.color = color;
+
+            let ser = SerTicker::from_parts(ticker.ticker.exchange, ticker.ticker);
+            if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
+                *c = color;
+            } else {
+                self.config.colors.push((ser, color));
+            }
         }
     }
 
