@@ -90,7 +90,6 @@ impl ComparisonChart {
             config: cfg,
             color_editor: color_editor::TickerColorEditor {
                 show_color_for: None,
-                pending: None,
             },
         }
     }
@@ -110,14 +109,7 @@ impl ComparisonChart {
                     && let Some(s) = self.series.get_mut(*idx)
                 {
                     s.color = color;
-
-                    let ser =
-                        SerTicker::from_parts(ticker_info.ticker.exchange, ticker_info.ticker);
-                    if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
-                        *c = color;
-                    } else {
-                        self.config.colors.push((ser, color));
-                    }
+                    self.upsert_config_color(ticker_info, color);
                 }
                 None
             }
@@ -285,24 +277,13 @@ impl ComparisonChart {
     }
 
     pub fn add_ticker(&mut self, ticker_info: &TickerInfo) -> Vec<StreamKind> {
-        let _ = self.get_or_create_series_idx(ticker_info);
         if !self.selected_tickers.contains(ticker_info) {
             self.selected_tickers.push(*ticker_info);
         }
 
-        let mut new_streams = vec![];
-
-        for ticker in self.selected_tickers.iter() {
-            let stream = StreamKind::Kline {
-                ticker_info: *ticker,
-                timeframe: self.timeframe,
-            };
-            if !new_streams.contains(&stream) {
-                new_streams.push(stream);
-            }
-        }
-
-        new_streams
+        let _ = self.get_or_create_series_idx(ticker_info);
+        self.rebuild_handlers();
+        self.streams_for_all()
     }
 
     pub fn remove_ticker(&mut self, ticker_info: &TickerInfo) -> Vec<StreamKind> {
@@ -313,6 +294,7 @@ impl ComparisonChart {
                 self.series_index.insert(s.name, i);
             }
         }
+        self.selected_tickers.retain(|t| t != ticker_info);
 
         if self
             .color_editor
@@ -320,23 +302,10 @@ impl ComparisonChart {
             .is_some_and(|t| t == *ticker_info)
         {
             self.color_editor.show_color_for = None;
-            self.color_editor.pending = None;
         }
 
-        self.selected_tickers.retain(|t| t != ticker_info);
-
-        let mut new_streams = vec![];
-
-        for ticker in self.selected_tickers.iter() {
-            let stream = StreamKind::Kline {
-                ticker_info: *ticker,
-                timeframe: self.timeframe,
-            };
-            if !new_streams.contains(&stream) {
-                new_streams.push(stream);
-            }
-        }
-        new_streams
+        self.rebuild_handlers();
+        self.streams_for_all()
     }
 
     pub fn set_basis(&mut self, basis: data::chart::Basis) {
@@ -349,23 +318,29 @@ impl ComparisonChart {
             }
         }
 
-        let tickers = self.selected_tickers.clone();
-
-        for t in tickers {
-            let _ = self.get_or_create_series_idx(&t);
-            self.request_handler.insert(t, RequestHandler::new());
-        }
-
+        let prev_colors: FxHashMap<TickerInfo, iced::Color> =
+            self.series.iter().map(|s| (s.name, s.color)).collect();
         self.series.clear();
         self.series_index.clear();
-        self.request_handler.clear();
 
+        for (i, &t) in self.selected_tickers.iter().enumerate() {
+            let color = prev_colors
+                .get(&t)
+                .copied()
+                .unwrap_or_else(|| self.color_for_or_default(&t));
+            self.series.push(Series {
+                name: t,
+                points: Vec::new(),
+                color,
+            });
+            self.series_index.insert(t, i);
+        }
+
+        self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
+        self.pan = 0.0;
+
+        self.rebuild_handlers();
         self.color_editor.show_color_for = None;
-        self.color_editor.pending = None;
-    }
-
-    pub fn selected_tickers(&self) -> &Vec<TickerInfo> {
-        &self.selected_tickers
     }
 
     pub fn set_ticker_color(&mut self, ticker: TickerInfo, color: iced::Color) {
@@ -373,13 +348,7 @@ impl ComparisonChart {
             && let Some(s) = self.series.get_mut(*idx)
         {
             s.color = color;
-
-            let ser = SerTicker::from_parts(ticker.ticker.exchange, ticker.ticker);
-            if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
-                *c = color;
-            } else {
-                self.config.colors.push((ser, color));
-            }
+            self.upsert_config_color(ticker, color);
         }
     }
 
@@ -398,6 +367,38 @@ impl ComparisonChart {
             *c
         } else {
             default_color_for(ticker_info)
+        }
+    }
+
+    pub fn selected_tickers(&self) -> &[TickerInfo] {
+        &self.selected_tickers
+    }
+
+    fn rebuild_handlers(&mut self) {
+        self.request_handler.clear();
+
+        for &t in &self.selected_tickers {
+            self.request_handler.insert(t, RequestHandler::new());
+        }
+    }
+
+    fn streams_for_all(&self) -> Vec<StreamKind> {
+        let mut streams = Vec::with_capacity(self.selected_tickers.len());
+        for &t in &self.selected_tickers {
+            streams.push(StreamKind::Kline {
+                ticker_info: t,
+                timeframe: self.timeframe,
+            });
+        }
+        streams
+    }
+
+    fn upsert_config_color(&mut self, ticker: TickerInfo, color: iced::Color) {
+        let ser = SerTicker::from_parts(ticker.ticker.exchange, ticker.ticker);
+        if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
+            *c = color;
+        } else {
+            self.config.colors.push((ser, color));
         }
     }
 }
@@ -459,7 +460,6 @@ pub mod color_editor {
 
     pub struct TickerColorEditor {
         pub show_color_for: Option<TickerInfo>,
-        pub pending: Option<iced::Color>,
     }
 
     impl TickerColorEditor {
@@ -470,16 +470,13 @@ pub mod color_editor {
                         && current == ticker
                     {
                         self.show_color_for = None;
-                        self.pending = None;
                         return None;
                     }
 
                     self.show_color_for = Some(ticker);
-                    self.pending = None;
                     None
                 }
                 Message::ColorChanged(color) => {
-                    self.pending = Some(color);
                     if let Some(t) = self.show_color_for {
                         return Some(super::Action::TickerColorChanged(t, color));
                     }
@@ -494,7 +491,6 @@ pub mod color_editor {
             for s in series {
                 let applied = s.color;
                 let is_open = self.show_color_for.is_some_and(|t| t == s.name);
-                let preview = self.pending.unwrap_or(s.color);
 
                 let header = button(
                     row![
@@ -515,7 +511,7 @@ pub mod color_editor {
                 let mut col = column![header].spacing(6);
 
                 if is_open {
-                    col = col.push(color_picker(preview, Message::ColorChanged));
+                    col = col.push(color_picker(applied, Message::ColorChanged));
                 }
 
                 content = content.push(container(col).padding(6).style(style::modal_container));
