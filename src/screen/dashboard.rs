@@ -714,7 +714,7 @@ impl Dashboard {
                     {
                         let action = comparison_chart.update(message);
                         match action {
-                            Some(crate::chart::comparison::Action::FetchRequested(
+                            Some(chart::comparison::Action::FetchRequested(
                                 req_id,
                                 range,
                                 ticker_info,
@@ -744,11 +744,17 @@ impl Dashboard {
                                     return (update_status.chain(fetch_task), None);
                                 }
                             }
-                            Some(crate::chart::comparison::Action::TickerColorChanged(
-                                ticker,
-                                color,
-                            )) => {
+                            Some(chart::comparison::Action::TickerColorChanged(ticker, color)) => {
                                 comparison_chart.set_ticker_color(ticker, color);
+                            }
+                            Some(chart::comparison::Action::OpenColorEditor) => {
+                                state.modal = Some(pane::Modal::Settings);
+                            }
+                            Some(chart::comparison::Action::RemoveSeries(ticker_info)) => {
+                                let rebuilt_streams = comparison_chart.remove_ticker(&ticker_info);
+                                state.streams = ResolvedStream::Ready(rebuilt_streams.clone());
+
+                                return (self.refresh_streams(main_window.id), None);
                             }
                             None => {}
                         }

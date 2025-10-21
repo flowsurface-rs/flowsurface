@@ -17,6 +17,8 @@ const DEFAULT_UPDATE_INTERVAL_MS: u64 = 1000;
 pub enum Action {
     FetchRequested(uuid::Uuid, FetchRange, TickerInfo, Timeframe),
     TickerColorChanged(TickerInfo, iced::Color),
+    RemoveSeries(TickerInfo),
+    OpenColorEditor,
 }
 
 pub struct ComparisonChart {
@@ -40,6 +42,8 @@ pub enum Message {
     DataRequested(FetchRange, TickerInfo),
     ColorUpdated(TickerInfo, iced::Color),
     ColorEditor(color_editor::Message),
+    OpenColorEditorFor(TickerInfo),
+    RemoveSeries(TickerInfo),
 }
 
 impl ComparisonChart {
@@ -127,6 +131,11 @@ impl ComparisonChart {
                 }
             }
             Message::ColorEditor(msg) => self.color_editor.update(msg),
+            Message::OpenColorEditorFor(ticker_info) => {
+                self.color_editor.show_color_for = Some(ticker_info);
+                Some(Action::OpenColorEditor)
+            }
+            Message::RemoveSeries(ticker_info) => Some(Action::RemoveSeries(ticker_info)),
         }
     }
 
@@ -135,6 +144,8 @@ impl ComparisonChart {
             .on_zoom(Message::ZoomChanged)
             .on_pan(Message::PanChanged)
             .on_data_request(Message::DataRequested)
+            .on_series_cog(Message::OpenColorEditorFor)
+            .on_series_remove(Message::RemoveSeries)
             .with_pan(self.pan)
             .with_zoom(self.zoom);
 
