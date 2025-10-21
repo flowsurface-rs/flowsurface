@@ -410,6 +410,14 @@ impl Ticker {
     pub fn market_type(&self) -> MarketKind {
         self.exchange.market_type()
     }
+
+    pub fn symbol_and_exchange_string(&self) -> String {
+        format!(
+            "{}:{}",
+            SerTicker::exchange_to_string(self.exchange),
+            self.as_str()
+        )
+    }
 }
 
 impl fmt::Display for Ticker {

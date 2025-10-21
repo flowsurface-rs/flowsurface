@@ -8,6 +8,7 @@ use iced::{
     widget::{button, column, container, row, scrollable, slider, space, text, tooltip::Position},
 };
 
+pub mod chart;
 pub mod color_picker;
 pub mod column_drag;
 pub mod decorate;

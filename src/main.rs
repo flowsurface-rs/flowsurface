@@ -313,31 +313,37 @@ impl Flowsurface {
                             let tickers_info = self.sidebar.tickers_info();
 
                             let resolved_streams =
-                                streams
-                                    .into_iter()
-                                    .filter_map(|persist| {
-                                        let resolver = |t: &exchange::Ticker| {
-                                            tickers_info.get(t).and_then(|opt| *opt)
-                                        };
+                                streams.into_iter().try_fold(vec![], |mut acc, persist| {
+                                    let resolver = |t: &exchange::Ticker| {
+                                        tickers_info.get(t).and_then(|opt| *opt)
+                                    };
 
-                                        match persist.into_stream_kind(resolver) {
-                                            Ok(stream) => Some(stream),
-                                            Err(err) => {
-                                                log::warn!(
-                                                    "Failed to resolve persisted stream: {err}",
-                                                );
-                                                None
-                                            }
+                                    match persist.into_stream_kind(resolver) {
+                                        Ok(stream) => {
+                                            acc.push(stream);
+                                            Ok(acc)
                                         }
-                                    })
-                                    .collect::<Vec<_>>();
+                                        Err(err) => Err(format!(
+                                            "Failed to resolve persisted stream: {}",
+                                            err
+                                        )),
+                                    }
+                                });
 
-                            if !resolved_streams.is_empty() {
-                                dashboard
-                                    .resolve_streams(main_window.id, pane_id, resolved_streams)
-                                    .map(move |msg| Message::Dashboard(None, msg))
-                            } else {
-                                Task::none()
+                            match resolved_streams {
+                                Ok(resolved) => {
+                                    if resolved.is_empty() {
+                                        Task::none()
+                                    } else {
+                                        dashboard
+                                            .resolve_streams(main_window.id, pane_id, resolved)
+                                            .map(move |msg| Message::Dashboard(None, msg))
+                                    }
+                                }
+                                Err(err) => {
+                                    log::warn!("{err}",);
+                                    Task::none()
+                                }
                             }
                         }
                         None => Task::none(),
@@ -511,6 +517,8 @@ impl Flowsurface {
         let dashboard = self.active_dashboard();
         let sidebar_pos = self.sidebar.position();
 
+        let tickers_table = &self.sidebar.tickers_table;
+
         let content = if id == self.main_window.id {
             let sidebar_view = self
                 .sidebar
@@ -518,7 +526,7 @@ impl Flowsurface {
                 .map(Message::Sidebar);
 
             let dashboard_view = dashboard
-                .view(&self.main_window, self.timezone)
+                .view(&self.main_window, tickers_table, self.timezone)
                 .map(move |msg| Message::Dashboard(None, msg));
 
             let header_title = {
@@ -561,7 +569,7 @@ impl Flowsurface {
         } else {
             container(
                 dashboard
-                    .view_window(id, &self.main_window, self.timezone)
+                    .view_window(id, &self.main_window, tickers_table, self.timezone)
                     .map(move |msg| Message::Dashboard(None, msg)),
             )
             .padding(padding::top(style::TITLE_PADDING_TOP))

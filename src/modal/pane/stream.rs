@@ -30,6 +30,7 @@ pub enum ModifierKind {
     Footprint(Basis, TickMultiplier),
     Heatmap(Basis, TickMultiplier),
     Orderbook(Basis, TickMultiplier),
+    Comparison(Basis),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -192,6 +193,9 @@ impl Modifier {
     pub fn update_kind_with_basis(&mut self, basis: Basis) {
         match self.kind {
             ModifierKind::Candlestick(_) => self.kind = ModifierKind::Candlestick(basis),
+            ModifierKind::Comparison(_) => {
+                self.kind = ModifierKind::Comparison(basis);
+            }
             ModifierKind::Footprint(_, ticksize) => {
                 self.kind = ModifierKind::Footprint(basis, ticksize);
             }
@@ -324,7 +328,9 @@ impl Modifier {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
-            ModifierKind::Candlestick(basis) => (Some(basis), None),
+            ModifierKind::Candlestick(basis) | ModifierKind::Comparison(basis) => {
+                (Some(basis), None)
+            }
             ModifierKind::Footprint(basis, ticksize)
             | ModifierKind::Heatmap(basis, ticksize)
             | ModifierKind::Orderbook(basis, ticksize) => (Some(basis), Some(ticksize)),
@@ -349,9 +355,11 @@ impl Modifier {
                 let mut basis_selection_column =
                     column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
-                let is_kline_chart = match kind {
+                let allows_tick_basis = match kind {
                     ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
-                    ModifierKind::Heatmap(_, _) | ModifierKind::Orderbook(_, _) => false,
+                    ModifierKind::Heatmap(_, _)
+                    | ModifierKind::Orderbook(_, _)
+                    | ModifierKind::Comparison(_) => false,
                 };
 
                 if selected_basis.is_some() {
@@ -361,7 +369,7 @@ impl Modifier {
                     };
 
                     let tabs_row = {
-                        if is_kline_chart {
+                        if allows_tick_basis {
                             let is_timeframe_selected =
                                 matches!(selected_basis, Some(Basis::Time(_)));
 
@@ -432,7 +440,11 @@ impl Modifier {
                             ]
                             .spacing(4)
                         } else {
-                            row![text("Aggregation").size(13)]
+                            let text_content = match kind {
+                                ModifierKind::Comparison(_) => "Timeframe",
+                                _ => "Aggregation",
+                            };
+                            row![text(text_content).size(13)]
                         }
                     };
 
@@ -448,7 +460,7 @@ impl Modifier {
                             _ => None,
                         };
 
-                        if is_kline_chart {
+                        if allows_tick_basis {
                             let kline_timeframe_grid = modifiers_grid(
                                 &Timeframe::KLINE,
                                 selected_tf,
@@ -459,20 +471,38 @@ impl Modifier {
                             basis_selection_column =
                                 basis_selection_column.push(kline_timeframe_grid);
                         } else if let Some(info) = ticker_info {
-                            let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
-                                .iter()
-                                .copied()
-                                .filter(|tf| info.exchange().supports_heatmap_timeframe(*tf))
-                                .collect();
-                            let heatmap_timeframe_grid = modifiers_grid(
-                                &heatmap_timeframes,
-                                selected_tf,
-                                |tf| Message::BasisSelected(tf.into()),
-                                &create_button,
-                                2,
-                            );
-                            basis_selection_column =
-                                basis_selection_column.push(heatmap_timeframe_grid);
+                            match kind {
+                                ModifierKind::Comparison(_) => {
+                                    let kline_timeframe_grid = modifiers_grid(
+                                        &Timeframe::KLINE,
+                                        selected_tf,
+                                        |tf| Message::BasisSelected(tf.into()),
+                                        &create_button,
+                                        3,
+                                    );
+                                    basis_selection_column =
+                                        basis_selection_column.push(kline_timeframe_grid);
+                                }
+                                ModifierKind::Heatmap(_, _) => {
+                                    let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
+                                        .iter()
+                                        .copied()
+                                        .filter(|tf| {
+                                            info.exchange().supports_heatmap_timeframe(*tf)
+                                        })
+                                        .collect();
+                                    let heatmap_timeframe_grid = modifiers_grid(
+                                        &heatmap_timeframes,
+                                        selected_tf,
+                                        |tf| Message::BasisSelected(tf.into()),
+                                        &create_button,
+                                        2,
+                                    );
+                                    basis_selection_column =
+                                        basis_selection_column.push(heatmap_timeframe_grid);
+                                }
+                                _ => { /* No other chart types support non-time basis */ }
+                            }
                         }
                     }
                     SelectedTab::TickCount {
@@ -671,7 +701,8 @@ impl From<&ModifierKind> for SelectedTab {
             ModifierKind::Candlestick(basis)
             | ModifierKind::Footprint(basis, _)
             | ModifierKind::Heatmap(basis, _)
-            | ModifierKind::Orderbook(basis, _) => match basis {
+            | ModifierKind::Orderbook(basis, _)
+            | ModifierKind::Comparison(basis) => match basis {
                 Basis::Time(_) => SelectedTab::Timeframe,
                 Basis::Tick(tc) => SelectedTab::TickCount {
                     raw_input_buf: if tc.is_custom() {

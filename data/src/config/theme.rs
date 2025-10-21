@@ -297,6 +297,11 @@ fn to_hsl(color: Color) -> Hsl {
     }
 }
 
+pub fn is_dark(color: Color) -> bool {
+    let brightness = (color.r * 299.0 + color.g * 587.0 + color.b * 114.0) / 1000.0;
+    brightness < 0.5
+}
+
 struct Hsl {
     h: f32,
     s: f32,
