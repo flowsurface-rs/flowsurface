@@ -33,9 +33,11 @@ const GAP_BREAK_MULTIPLIER: f32 = 3.0;
 
 pub const DEFAULT_ZOOM_POINTS: usize = 100;
 
-const LEGEND_PADDING: f32 = 8.0;
+const LEGEND_PADDING: f32 = 4.0;
 const LEGEND_LINE_H: f32 = TEXT_SIZE + 6.0;
+
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
+
 const ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const ICON_SPACING: f32 = 4.0;
 const ICON_GAP_AFTER_TEXT: f32 = 8.0;
@@ -578,7 +580,7 @@ where
                         row_idx = Some(i);
                         if row.cog.contains(local) {
                             hi = Some((i, IconKind::Cog));
-                        } else if row.close.contains(local) {
+                        } else if row.has_close && row.close.contains(local) {
                             hi = Some((i, IconKind::Close));
                         }
                         break;
@@ -659,8 +661,14 @@ where
         if rows_count == 0 {
             return None;
         }
-        let mut bg_h = ((rows_count as f32) * line_h + padding * 2.0).min(ctx.plot.height * 0.6);
-        bg_h = bg_h.max(line_h + padding * 2.0);
+
+        let bg_max_h = ((rows_count as f32) * line_h + padding * 2.0)
+            .min(ctx.plot.height * 0.6)
+            .max(line_h + padding * 2.0);
+
+        let max_rows_fit = (((bg_max_h - padding * 2.0) / line_h).floor() as usize).max(1);
+        let visible_rows = rows_count.min(max_rows_fit);
+        let bg_h = (visible_rows as f32) * line_h + padding * 2.0;
 
         let bg = Rectangle {
             x: ctx.plot.x + 4.0,
@@ -669,38 +677,45 @@ where
             height: bg_h,
         };
 
-        let max_rows_fit = (((bg.height - padding * 2.0) / line_h).floor() as usize).max(1);
-        let visible_rows = rows_count.min(max_rows_fit);
-
         let x_left = bg.x + padding;
         let x_right = bg.x + bg.width - padding;
 
         let mut rows: Vec<LegendRowHit> = Vec::with_capacity(visible_rows);
         let mut row_top = bg.y + padding;
 
-        for s in self.series.iter().take(visible_rows) {
+        for (i, s) in self.series.iter().take(visible_rows).enumerate() {
             let y_center = row_top + line_h * 0.5;
 
-            let row_rect = Rectangle {
-                x: bg.x,
-                y: row_top,
-                width: bg.width,
-                height: line_h,
-            };
+            // Base ticker (i == 0) cannot be removed
+            let has_close = i != 0;
 
             let name_len = s.name().len() as f32;
             let text_end_x = x_left + name_len * CHAR_W;
 
+            let icons_pack_w = if has_close {
+                2.0 * ICON_BOX + ICON_SPACING
+            } else {
+                ICON_BOX
+            };
+
             let free_left = text_end_x + ICON_GAP_AFTER_TEXT;
             let free_right = x_right;
-            let icons_pack_w = 2.0 * ICON_BOX + ICON_SPACING;
 
-            let (cog_left, close_left) = if free_right - free_left >= icons_pack_w {
-                (free_left, free_left + ICON_BOX + ICON_SPACING)
-            } else {
+            let (cog_left, close_left_opt) = if free_right - free_left >= icons_pack_w {
+                let cog_left = free_left;
+                let close_left_opt = if has_close {
+                    Some(cog_left + ICON_BOX + ICON_SPACING)
+                } else {
+                    None
+                };
+                (cog_left, close_left_opt)
+            } else if has_close {
                 let close_left = free_right - ICON_BOX;
                 let cog_left = (close_left - ICON_SPACING - ICON_BOX).max(free_left);
-                (cog_left, close_left)
+                (cog_left, Some(close_left))
+            } else {
+                let cog_left = (free_right - ICON_BOX).max(free_left);
+                (cog_left, None)
             };
 
             let cog = Rectangle {
@@ -709,11 +724,34 @@ where
                 width: ICON_BOX,
                 height: ICON_BOX,
             };
-            let close = Rectangle {
-                x: close_left,
-                y: y_center - ICON_BOX * 0.5,
-                width: ICON_BOX,
-                height: ICON_BOX,
+            let close = if let Some(cl) = close_left_opt {
+                Rectangle {
+                    x: cl,
+                    y: y_center - ICON_BOX * 0.5,
+                    width: ICON_BOX,
+                    height: ICON_BOX,
+                }
+            } else {
+                Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                }
+            };
+
+            let content_right = if has_close {
+                close.x + close.width
+            } else {
+                cog.x + cog.width
+            };
+            let row_width = (content_right + padding) - bg.x;
+
+            let row_rect = Rectangle {
+                x: bg.x,
+                y: row_top,
+                width: row_width.clamp(0.0, bg.width),
+                height: line_h,
             };
 
             rows.push(LegendRowHit {
@@ -722,6 +760,7 @@ where
                 close,
                 y_center,
                 row_rect,
+                has_close,
             });
             row_top += line_h;
         }
@@ -895,7 +934,7 @@ where
                                     }
                                     return;
                                 }
-                                if row.close.contains(cursor_pos) {
+                                if row.has_close && row.close.contains(cursor_pos) {
                                     if let Some(f) = self.on_series_remove {
                                         shell.publish(f(row.ticker));
                                         state.clear_all_caches();
@@ -1085,7 +1124,7 @@ where
                 if let Some(legend) = scene.legend.as_ref() {
                     for row in &legend.rows {
                         if row.cog.contains(cursor_in_layout)
-                            || row.close.contains(cursor_in_layout)
+                            || (row.has_close && row.close.contains(cursor_in_layout))
                         {
                             return advanced::mouse::Interaction::Pointer;
                         }
@@ -1349,9 +1388,9 @@ where
 
                 if show_buttons && hovered_row == Some(i) {
                     let hl = Rectangle {
-                        x: layout.bg.x + 1.0,
+                        x: row.row_rect.x + 1.0,
                         y: row.row_rect.y,
-                        width: layout.bg.width - 2.0,
+                        width: (row.row_rect.width - 2.0).max(0.0),
                         height: row.row_rect.height,
                     };
                     frame.fill_rectangle(hl.position(), hl.size(), row_hover_fill);
@@ -1409,19 +1448,22 @@ where
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
                     });
-                    frame.fill_text(canvas::Text {
-                        content: char::from(style::Icon::Close).to_string(),
-                        position: Point {
-                            x: row.close.center_x(),
-                            y,
-                        },
-                        color: close_col,
-                        size: TEXT_SIZE.into(),
-                        font: style::ICONS_FONT,
-                        align_x: iced::Alignment::Center.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        ..Default::default()
-                    });
+
+                    if row.has_close {
+                        frame.fill_text(canvas::Text {
+                            content: char::from(style::Icon::Close).to_string(),
+                            position: Point {
+                                x: row.close.center_x(),
+                                y,
+                            },
+                            color: close_col,
+                            size: TEXT_SIZE.into(),
+                            font: style::ICONS_FONT,
+                            align_x: iced::Alignment::Center.into(),
+                            align_y: iced::Alignment::Center.into(),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
             return;
@@ -1775,6 +1817,7 @@ struct LegendRowHit {
     close: Rectangle,
     y_center: f32,
     row_rect: Rectangle,
+    has_close: bool,
 }
 
 #[derive(Debug, Clone)]
