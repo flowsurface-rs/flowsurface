@@ -42,18 +42,22 @@ const ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const ICON_SPACING: f32 = 4.0;
 const ICON_GAP_AFTER_TEXT: f32 = 8.0;
 
-pub struct LineComparison<'a, S, Message> {
+#[derive(Debug, Clone)]
+pub enum LineComparisonEvent {
+    ZoomChanged(Zoom),
+    PanChanged(f32),
+    DataRequested(FetchRange, TickerInfo),
+    SeriesCog(TickerInfo),
+    SeriesRemove(TickerInfo),
+}
+
+pub struct LineComparison<'a, S> {
     series: &'a [S],
     stroke_width: f32,
     zoom: Zoom,
-    on_zoom_chg: Option<fn(Zoom) -> Message>,
-    on_data_req: Option<fn(FetchRange, TickerInfo) -> Message>,
+    pan: f32,
     update_interval: u128, // in UNIX ms
     timeframe: Timeframe,
-    pan: f32,
-    on_pan_chg: Option<fn(f32) -> Message>,
-    on_series_cog: Option<fn(TickerInfo) -> Message>,
-    on_series_remove: Option<fn(TickerInfo) -> Message>,
 }
 
 struct State {
@@ -86,7 +90,7 @@ impl State {
     }
 }
 
-impl<'a, S, Message> LineComparison<'a, S, Message>
+impl<'a, S> LineComparison<'a, S>
 where
     S: SeriesLike,
 {
@@ -95,14 +99,9 @@ where
             series,
             stroke_width: 2.0,
             zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
-            on_zoom_chg: None,
-            on_data_req: None,
             update_interval: update_interval as u128,
             timeframe,
             pan: 0.0,
-            on_pan_chg: None,
-            on_series_cog: None,
-            on_series_remove: None,
         }
     }
 
@@ -113,31 +112,6 @@ where
 
     pub fn with_pan(mut self, pan: f32) -> Self {
         self.pan = pan;
-        self
-    }
-
-    pub fn on_zoom(mut self, f: fn(Zoom) -> Message) -> Self {
-        self.on_zoom_chg = Some(f);
-        self
-    }
-
-    pub fn on_pan(mut self, f: fn(f32) -> Message) -> Self {
-        self.on_pan_chg = Some(f);
-        self
-    }
-
-    pub fn on_data_request(mut self, f: fn(FetchRange, TickerInfo) -> Message) -> Self {
-        self.on_data_req = Some(f);
-        self
-    }
-
-    pub fn on_series_cog(mut self, f: fn(TickerInfo) -> Message) -> Self {
-        self.on_series_cog = Some(f);
-        self
-    }
-
-    pub fn on_series_remove(mut self, f: fn(TickerInfo) -> Message) -> Self {
-        self.on_series_remove = Some(f);
         self
     }
 
@@ -230,35 +204,84 @@ where
         self.timeframe.to_milliseconds()
     }
 
-    fn desired_fetch_range(&self, pan_dx: f32) -> Option<(FetchRange, TickerInfo)> {
+    fn desired_fetch_batches(&self, pan_dx: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
         let dt = self.dt_ms_est().max(1);
         let span = 500u64.saturating_mul(dt);
         let last_closed = Self::align_floor(Self::now_ms(), dt);
 
-        // 1) Seed: if any series is empty, fetch last 500 candles for the first one.
+        let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
+
+        // 1) Seed: all empty series get the same tail batch
+        let mut empty_tickers: Vec<TickerInfo> = Vec::new();
         for s in self.series {
             if s.points().is_empty() {
-                let end = last_closed;
-                let start = end.saturating_sub(span);
-                return Some((FetchRange::Kline(start, end), *s.ticker_info()));
+                empty_tickers.push(*s.ticker_info());
             }
         }
+        if !empty_tickers.is_empty() {
+            let end = last_closed;
+            let start = end.saturating_sub(span);
+            batches.push((FetchRange::Kline(start, end), empty_tickers));
+        }
 
-        // 2) If we have some data, optionally backfill left when the visible window
-        //    starts before the first candle of a series.
+        // 2) Backfill-left: group all series that start after the visible min.
         if let Some((win_min, _win_max)) = self.compute_visible_window(pan_dx) {
+            let mut need: Vec<(u64, TickerInfo)> = Vec::new();
             for s in self.series {
                 if let Some(series_min) = s.points().first().map(|(x, _)| *x)
                     && win_min < series_min
                 {
-                    let end = series_min;
-                    let start = end.saturating_sub(span);
-                    return Some((FetchRange::Kline(start, end), *s.ticker_info()));
+                    need.push((series_min, *s.ticker_info()));
                 }
+            }
+            if !need.is_empty() {
+                let mut end = need.iter().map(|(e, _)| *e).min().unwrap_or(win_min);
+                end = Self::align_floor(end, dt);
+                let start = end.saturating_sub(span);
+                let tickers = need.into_iter().map(|(_, t)| t).collect();
+                batches.push((FetchRange::Kline(start, end), tickers));
             }
         }
 
-        None
+        batches
+    }
+
+    fn desired_fetch_range(&self, pan_dx: f32) -> Option<(FetchRange, Vec<TickerInfo>)> {
+        let dt = self.dt_ms_est().max(1);
+        let last_closed = Self::align_floor(Self::now_ms(), dt);
+        let win = self.compute_visible_window(pan_dx);
+
+        let mut batches = self.desired_fetch_batches(pan_dx);
+        if batches.is_empty() {
+            return None;
+        }
+        if batches.len() == 1 {
+            return batches.pop();
+        }
+
+        // 0 = intersects visible window, 1 = backfill-left, 2 = seed, 3 = others
+        let score = |r: &FetchRange| -> u8 {
+            match r {
+                FetchRange::Kline(start, end) => {
+                    let intersects = if let Some((wmin, wmax)) = win {
+                        !(*end < wmin || *start > wmax)
+                    } else {
+                        false
+                    };
+                    if intersects {
+                        0
+                    } else if *end != last_closed {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                _ => 3,
+            }
+        };
+
+        batches.sort_by_key(|(r, _)| score(r));
+        batches.into_iter().next()
     }
 
     /// rectangles in the widget-local coordinates
@@ -841,10 +864,10 @@ where
     }
 }
 
-impl<'a, S, Message> Widget<Message, Theme, Renderer> for LineComparison<'a, S, Message>
+impl<'a, S, M> Widget<M, Theme, Renderer> for LineComparison<'a, S>
 where
     S: SeriesLike,
-    Message: Clone + 'static,
+    M: Clone + 'static + From<LineComparisonEvent>,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -878,7 +901,7 @@ where
         cursor: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
+        shell: &mut Shell<'_, M>,
         _viewport: &Rectangle,
     ) {
         if shell.is_event_captured() {
@@ -909,16 +932,14 @@ where
                             return;
                         }
 
-                        let on_zoom_chg = match self.on_zoom_chg {
-                            Some(f) => f,
-                            None => return,
-                        };
-
                         let zoom_in = *y > 0.0;
                         let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
 
                         if new_zoom != self.zoom {
-                            shell.publish((on_zoom_chg)(self.normalize_zoom(new_zoom)));
+                            let event =
+                                LineComparisonEvent::ZoomChanged(self.normalize_zoom(new_zoom));
+
+                            shell.publish(M::from(event));
                             state.clear_all_caches();
                         }
                     }
@@ -928,17 +949,17 @@ where
                         {
                             for row in &legend.rows {
                                 if row.cog.contains(cursor_pos) {
-                                    if let Some(f) = self.on_series_cog {
-                                        shell.publish(f(row.ticker));
-                                        state.clear_all_caches();
-                                    }
+                                    let event = LineComparisonEvent::SeriesCog(row.ticker);
+
+                                    shell.publish(M::from(event));
+                                    state.clear_all_caches();
                                     return;
                                 }
                                 if row.has_close && row.close.contains(cursor_pos) {
-                                    if let Some(f) = self.on_series_remove {
-                                        shell.publish(f(row.ticker));
-                                        state.clear_all_caches();
-                                    }
+                                    let event = LineComparisonEvent::SeriesRemove(row.ticker);
+
+                                    shell.publish(M::from(event));
+                                    state.clear_all_caches();
                                     return;
                                 }
                             }
@@ -954,13 +975,6 @@ where
                         state.last_cursor = None;
                     }
                     mouse::Event::CursorMoved { .. } => {
-                        let Some(on_pan_chg) = self.on_pan_chg else {
-                            if matches!(zone, HitZone::Plot) {
-                                state.overlay_cache.clear();
-                            }
-                            return;
-                        };
-
                         if state.is_panning {
                             let prev = state.last_cursor.unwrap_or(cursor_pos);
                             let dx_px = cursor_pos.x - prev.x;
@@ -970,7 +984,9 @@ where
                                 let plot_w = regions.plot.width.max(1.0);
                                 let dx_domain = -(dx_px) * (x_span / plot_w);
 
-                                shell.publish((on_pan_chg)(self.pan + dx_domain));
+                                let event = LineComparisonEvent::PanChanged(self.pan + dx_domain);
+
+                                shell.publish(M::from(event));
                                 state.clear_all_caches();
                             }
                             state.last_cursor = Some(cursor_pos);
@@ -991,10 +1007,11 @@ where
                         state.clear_all_caches();
                         state.last_draw = Some(*now);
 
-                        if let Some(on_req) = self.on_data_req
-                            && let Some((range, info)) = self.desired_fetch_range(self.pan)
-                        {
-                            shell.publish(on_req(range, info));
+                        if let Some((range, tickers)) = self.desired_fetch_range(self.pan) {
+                            for ticker in tickers {
+                                let event = LineComparisonEvent::DataRequested(range, ticker);
+                                shell.publish(M::from(event));
+                            }
                         }
                     }
                 } else {
@@ -1153,7 +1170,7 @@ where
     }
 }
 
-impl<'a, S, Message> LineComparison<'a, S, Message>
+impl<'a, S> LineComparison<'a, S>
 where
     S: SeriesLike,
 {
@@ -1706,12 +1723,12 @@ fn resolve_label_overlaps(end_labels: &mut [EndLabel], plot: Rectangle) {
     }
 }
 
-impl<'a, S, Message> From<LineComparison<'a, S, Message>> for Element<'a, Message, Theme, Renderer>
+impl<'a, S, M> From<LineComparison<'a, S>> for Element<'a, M, Theme, Renderer>
 where
-    Message: Clone + 'a + 'static,
     S: SeriesLike,
+    M: Clone + 'a + 'static + From<LineComparisonEvent>,
 {
-    fn from(chart: LineComparison<'a, S, Message>) -> Self {
+    fn from(chart: LineComparison<'a, S>) -> Self {
         Element::new(chart)
     }
 }

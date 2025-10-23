@@ -7,7 +7,7 @@ use iced_core::{
     theme::{Custom, Palette},
 };
 use palette::{
-    FromColor, Hsva,
+    FromColor, Hsva, RgbHue,
     rgb::{Rgb, Rgba},
 };
 use serde::{Deserialize, Serialize};
@@ -338,4 +338,10 @@ fn from_hsl(hsl: Hsl) -> Color {
         b: b1 + m,
         a: hsl.a,
     }
+}
+
+pub fn from_hsv_degrees(h_deg: f32, s: f32, v: f32) -> Color {
+    // Hue in degrees [0,360), s,v in [0,1]
+    let hue = RgbHue::from_degrees(h_deg);
+    from_hsva(Hsva::new(hue, s, v, 1.0))
 }

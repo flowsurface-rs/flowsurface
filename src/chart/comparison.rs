@@ -1,4 +1,4 @@
-use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison};
+use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
 use crate::widget::chart::{Series, Zoom};
 
 use data::chart::Basis;
@@ -7,7 +7,6 @@ use exchange::adapter::StreamKind;
 use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
 
-use iced::Element;
 use rustc_hash::FxHashMap;
 use std::time::Instant;
 
@@ -37,13 +36,10 @@ pub struct ComparisonChart {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ZoomChanged(Zoom),
-    PanChanged(f32),
-    DataRequested(FetchRange, TickerInfo),
+    Chart(LineComparisonEvent),
     ColorUpdated(TickerInfo, iced::Color),
     ColorEditor(color_editor::Message),
     OpenColorEditorFor(TickerInfo),
-    RemoveSeries(TickerInfo),
 }
 
 impl ComparisonChart {
@@ -96,14 +92,39 @@ impl ComparisonChart {
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
-            Message::ZoomChanged(zoom) => {
-                self.zoom = zoom;
-                None
-            }
-            Message::PanChanged(pan) => {
-                self.pan = pan;
-                None
-            }
+            Message::Chart(evt) => match evt {
+                LineComparisonEvent::ZoomChanged(zoom) => {
+                    self.zoom = zoom;
+                    None
+                }
+                LineComparisonEvent::PanChanged(pan) => {
+                    self.pan = pan;
+                    None
+                }
+                LineComparisonEvent::DataRequested(range, ticker_info) => {
+                    let handler = self.request_handler.entry(ticker_info).or_default();
+                    match handler.add_request(range) {
+                        Ok(Some(req_id)) => Some(Action::FetchRequested(
+                            req_id,
+                            range,
+                            ticker_info,
+                            self.timeframe,
+                        )),
+                        Ok(None) => None,
+                        Err(reason) => {
+                            log::error!("Failed to request {:?}: {}", range, reason);
+                            None
+                        }
+                    }
+                }
+                LineComparisonEvent::SeriesCog(ticker_info) => {
+                    self.color_editor.show_color_for = Some(ticker_info);
+                    Some(Action::OpenColorEditor)
+                }
+                LineComparisonEvent::SeriesRemove(ticker_info) => {
+                    Some(Action::RemoveSeries(ticker_info))
+                }
+            },
             Message::ColorUpdated(ticker_info, color) => {
                 if let Some(idx) = self.series_index.get(&ticker_info)
                     && let Some(s) = self.series.get_mut(*idx)
@@ -113,43 +134,24 @@ impl ComparisonChart {
                 }
                 None
             }
-            Message::DataRequested(range, ticker_info) => {
-                let handler = self.request_handler.entry(ticker_info).or_default();
-
-                match handler.add_request(range) {
-                    Ok(Some(req_id)) => Some(Action::FetchRequested(
-                        req_id,
-                        range,
-                        ticker_info,
-                        self.timeframe,
-                    )),
-                    Ok(None) => None,
-                    Err(reason) => {
-                        log::error!("Failed to request {:?}: {}", range, reason);
-                        None
-                    }
-                }
-            }
             Message::ColorEditor(msg) => self.color_editor.update(msg),
             Message::OpenColorEditorFor(ticker_info) => {
                 self.color_editor.show_color_for = Some(ticker_info);
                 Some(Action::OpenColorEditor)
             }
-            Message::RemoveSeries(ticker_info) => Some(Action::RemoveSeries(ticker_info)),
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
-        let chart = LineComparison::new(&self.series, self.update_interval, self.timeframe)
-            .on_zoom(Message::ZoomChanged)
-            .on_pan(Message::PanChanged)
-            .on_data_request(Message::DataRequested)
-            .on_series_cog(Message::OpenColorEditorFor)
-            .on_series_remove(Message::RemoveSeries)
-            .with_pan(self.pan)
-            .with_zoom(self.zoom);
+    pub fn view(&self) -> iced::Element<'_, Message> {
+        let chart: iced::Element<_> =
+            LineComparison::<Series>::new(&self.series, self.update_interval, self.timeframe)
+                .with_pan(self.pan)
+                .with_zoom(self.zoom)
+                .into();
 
-        iced::widget::container(chart).padding(1).into()
+        iced::widget::container(chart.map(Message::Chart))
+            .padding(1)
+            .into()
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
@@ -419,29 +421,7 @@ fn default_color_for(ticker: &TickerInfo) -> iced::Color {
     let s = 0.60 + (((seed >> 8) & 0xFF) as f32 / 255.0) * 0.25; // 0.60..=0.85
     let v = 0.85 + (((seed >> 16) & 0x7F) as f32 / 127.0) * 0.10; // 0.85..=0.95
 
-    hsv_to_color(hue, s.min(1.0), v.min(1.0))
-}
-
-// Simple HSV->RGB conversion, h in [0, 360), s,v in [0,1]
-fn hsv_to_color(h: f32, s: f32, v: f32) -> iced::Color {
-    let h = (h % 360.0 + 360.0) % 360.0;
-    let c = v * s;
-    let x = c * (1.0 - (((h / 60.0) % 2.0) - 1.0).abs());
-    let (r1, g1, b1) = match (h / 60.0).floor() as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = v - c;
-    iced::Color {
-        r: r1 + m,
-        g: g1 + m,
-        b: b1 + m,
-        a: 1.0,
-    }
+    data::config::theme::from_hsv_degrees(hue, s.min(1.0), v.min(1.0))
 }
 
 pub mod color_editor {
