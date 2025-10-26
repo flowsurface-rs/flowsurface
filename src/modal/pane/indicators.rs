@@ -51,7 +51,10 @@ where
     };
 
     button(content)
-        .on_press(Message::ToggleIndicator(pane, (*indicator).into()))
+        .on_press(Message::PaneEvent(
+            pane,
+            pane::Event::ToggleIndicator((*indicator).into()),
+        ))
         .width(Length::Fill)
         .style(move |theme, status| style::button::modifier(theme, status, is_selected))
         .into()
@@ -75,7 +78,7 @@ where
 
     if reorderable {
         let mut draggable_column = column_drag::Column::new()
-            .on_drag(move |event| Message::ReorderIndicator(pane, event))
+            .on_drag(move |event| Message::PaneEvent(pane, pane::Event::ReorderIndicator(event)))
             .spacing(4);
         for element in elements {
             draggable_column = draggable_column.push(element);

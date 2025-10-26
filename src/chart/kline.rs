@@ -548,11 +548,22 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    pub fn set_tick_basis(&mut self, tick_basis: data::aggr::TickCount) {
-        self.chart.basis = Basis::Tick(tick_basis);
-        let new_tick_aggr = TickAggr::new(tick_basis, self.chart.tick_size, &self.raw_trades);
+    pub fn set_basis(&mut self, new_basis: Basis) {
+        self.chart.basis = new_basis;
 
-        self.data_source = PlotData::TickBased(new_tick_aggr);
+        match new_basis {
+            Basis::Time(interval) => {
+                let step = self.chart.tick_size;
+                let timeseries =
+                    TimeSeries::<KlineDataPoint>::new(interval, step, &self.raw_trades, &[]);
+                self.data_source = PlotData::TimeBased(timeseries);
+            }
+            Basis::Tick(tick_count) => {
+                let step = self.chart.tick_size;
+                let tick_aggr = TickAggr::new(tick_count, step, &self.raw_trades);
+                self.data_source = PlotData::TickBased(tick_aggr);
+            }
+        }
 
         self.indicators
             .values_mut()

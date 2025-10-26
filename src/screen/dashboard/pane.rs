@@ -1,10 +1,5 @@
 use crate::{
-    chart::{
-        self,
-        comparison::{self, ComparisonChart},
-        heatmap::HeatmapChart,
-        kline::KlineChart,
-    },
+    chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
     modal::{
         self, ModifierKind,
         pane::{
@@ -43,6 +38,17 @@ use iced::{
     widget::{button, center, column, container, pane_grid, row, text, tooltip},
 };
 use std::time::Instant;
+
+#[derive(Debug, Clone)]
+pub enum Effect {
+    RefreshStreams,
+    FetchKlines {
+        req_id: Option<uuid::Uuid>,
+        range: Option<(u64, u64)>,
+        stream: StreamKind,
+    },
+    SwitchTickersInGroup(TickerInfo),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InfoType {
@@ -90,27 +96,29 @@ pub enum Message {
     SplitPane(pane_grid::Axis, pane_grid::Pane),
     MaximizePane(pane_grid::Pane),
     Restore,
-    ShowModal(pane_grid::Pane, Modal),
-    HideModal(pane_grid::Pane),
     ReplacePane(pane_grid::Pane),
-    ChartInteraction(pane_grid::Pane, chart::Message),
-    PanelInteraction(pane_grid::Pane, panel::Message),
-    VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
-    ToggleIndicator(pane_grid::Pane, UiIndicator),
     Popout,
     Merge,
-    DeleteNotification(pane_grid::Pane, usize),
-    ReorderIndicator(pane_grid::Pane, column_drag::DragEvent),
-    ClusterKindSelected(pane_grid::Pane, data::chart::kline::ClusterKind),
-    ClusterScalingSelected(pane_grid::Pane, data::chart::kline::ClusterScaling),
-    StreamModifierChanged(pane_grid::Pane, modal::stream::Message),
-    StudyConfigurator(pane_grid::Pane, modal::pane::settings::study::StudyMessage),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
-    ComparisonChartInteraction(pane_grid::Pane, comparison::Message),
-    MiniTickersListInteraction(
-        pane_grid::Pane,
-        crate::modal::pane::mini_tickers_list::Message,
-    ),
+    VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
+    PaneEvent(pane_grid::Pane, Event),
+}
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    ShowModal(Modal),
+    HideModal,
+    ChartInteraction(crate::chart::Message),
+    PanelInteraction(super::panel::Message),
+    ToggleIndicator(UiIndicator),
+    DeleteNotification(usize),
+    ReorderIndicator(column_drag::DragEvent),
+    ClusterKindSelected(data::chart::kline::ClusterKind),
+    ClusterScalingSelected(data::chart::kline::ClusterScaling),
+    StudyConfigurator(crate::modal::pane::settings::study::StudyMessage),
+    StreamModifierChanged(crate::modal::stream::Message),
+    ComparisonChartInteraction(crate::chart::comparison::Message),
+    MiniTickersListInteraction(crate::modal::pane::mini_tickers_list::Message),
 }
 
 pub struct State {
@@ -527,7 +535,7 @@ impl State {
             row![]
         } else {
             row![link_group_button(id, self.link_group, |id| {
-                Message::ShowModal(id, Modal::LinkGroup)
+                Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
             })]
         };
 
@@ -554,9 +562,9 @@ impl State {
                 .spacing(4);
 
             let tickers_list_btn = button(content)
-                .on_press(Message::ShowModal(
+                .on_press(Message::PaneEvent(
                     id,
-                    Modal::MiniTickersList(MiniPanel::new()),
+                    Event::ShowModal(Modal::MiniTickersList(MiniPanel::new())),
                 ))
                 .style(|theme, status| {
                     style::button::modifier(
@@ -594,7 +602,7 @@ impl State {
                     center(text("select a ticker to start").size(16)),
                     &self.notifications,
                     Alignment::End,
-                    move |msg| Message::DeleteNotification(id, msg),
+                    move |msg| Message::PaneEvent(id, Event::DeleteNotification(msg)),
                 )
                 .into();
 
@@ -604,7 +612,7 @@ impl State {
                     stack_modal(
                         base,
                         content,
-                        Message::HideModal(id),
+                        Message::PaneEvent(id, Event::HideModal),
                         padding::right(12).left(4),
                         Alignment::Start,
                     )
@@ -618,7 +626,7 @@ impl State {
                             window != main_window.id,
                         ))
                         .style(style::chart_modal),
-                        Message::HideModal(id),
+                        Message::PaneEvent(id, Event::HideModal),
                         padding::left(12),
                         Alignment::Start,
                     )
@@ -639,9 +647,9 @@ impl State {
 
                     stream_info_element = stream_info_element.push(modifiers);
 
-                    let base = c
-                        .view()
-                        .map(move |message| Message::ComparisonChartInteraction(id, message));
+                    let base = c.view().map(move |message| {
+                        Message::PaneEvent(id, Event::ComparisonChartInteraction(message))
+                    });
 
                     let settings_modal = || comparison_cfg_view(id, c);
 
@@ -660,8 +668,9 @@ impl State {
             }
             Content::TimeAndSales(panel) => {
                 if let Some(panel) = panel {
-                    let base = panel::view(panel, timezone)
-                        .map(move |message| Message::PanelInteraction(id, message));
+                    let base = panel::view(panel, timezone).map(move |message| {
+                        Message::PaneEvent(id, Event::PanelInteraction(message))
+                    });
 
                     let settings_modal =
                         || modal::pane::settings::timesales_cfg_view(panel.config, id);
@@ -703,8 +712,9 @@ impl State {
 
                     stream_info_element = stream_info_element.push(modifiers);
 
-                    let base = panel::view(panel, timezone)
-                        .map(move |message| Message::PanelInteraction(id, message));
+                    let base = panel::view(panel, timezone).map(move |message| {
+                        Message::PaneEvent(id, Event::PanelInteraction(message))
+                    });
 
                     let settings_modal =
                         || modal::pane::settings::ladder_cfg_view(panel.config, id);
@@ -753,8 +763,9 @@ impl State {
 
                     stream_info_element = stream_info_element.push(modifiers);
 
-                    let base = chart::view(chart, indicators, timezone)
-                        .map(move |message| Message::ChartInteraction(id, message));
+                    let base = chart::view(chart, indicators, timezone).map(move |message| {
+                        Message::PaneEvent(id, Event::ChartInteraction(message))
+                    });
                     let settings_modal = || {
                         heatmap_cfg_view(
                             chart.visual_config(),
@@ -839,8 +850,9 @@ impl State {
                         }
                     }
 
-                    let base = chart::view(chart, indicators, timezone)
-                        .map(move |message| Message::ChartInteraction(id, message));
+                    let base = chart::view(chart, indicators, timezone).map(move |message| {
+                        Message::PaneEvent(id, Event::ChartInteraction(message))
+                    });
                     let settings_modal = || {
                         kline_cfg_view(
                             chart.study_configurator(),
@@ -900,7 +912,7 @@ impl State {
         let controls = {
             let compact_control = container(
                 button(text("...").size(13).align_y(Alignment::End))
-                    .on_press(Message::ShowModal(id, Modal::Controls))
+                    .on_press(Message::PaneEvent(id, Event::ShowModal(Modal::Controls)))
                     .style(move |theme, status| {
                         style::button::transparent(
                             theme,
@@ -941,6 +953,321 @@ impl State {
         })
     }
 
+    pub fn update(&mut self, msg: Event) -> Option<Effect> {
+        match msg {
+            Event::ShowModal(requested_modal) => match &self.modal {
+                Some(modal) if modal == &requested_modal => {
+                    self.modal = None;
+                }
+                _ => {
+                    self.modal = Some(requested_modal);
+                }
+            },
+            Event::HideModal => {
+                self.modal = None;
+            }
+            Event::ChartInteraction(msg) => match &mut self.content {
+                Content::Heatmap { chart: Some(c), .. } => {
+                    super::chart::update(c, &msg);
+                }
+                Content::Kline { chart: Some(c), .. } => {
+                    super::chart::update(c, &msg);
+                }
+                _ => {}
+            },
+            Event::PanelInteraction(msg) => match &mut self.content {
+                Content::Ladder(Some(p)) => super::panel::update(p, msg),
+                Content::TimeAndSales(Some(p)) => super::panel::update(p, msg),
+                _ => {}
+            },
+            Event::ToggleIndicator(ind) => {
+                self.content.toggle_indicator(ind);
+            }
+            Event::DeleteNotification(idx) => {
+                if idx < self.notifications.len() {
+                    self.notifications.remove(idx);
+                }
+            }
+            Event::ReorderIndicator(e) => {
+                self.content.reorder_indicators(&e);
+            }
+            Event::ClusterKindSelected(kind) => {
+                if let Content::Kline {
+                    chart, kind: cur, ..
+                } = &mut self.content
+                    && let Some(c) = chart
+                {
+                    c.set_cluster_kind(kind);
+                    *cur = c.kind.clone();
+                }
+            }
+            Event::ClusterScalingSelected(scaling) => {
+                if let Content::Kline { chart, kind, .. } = &mut self.content
+                    && let Some(c) = chart
+                {
+                    c.set_cluster_scaling(scaling);
+                    *kind = c.kind.clone();
+                }
+            }
+            Event::StudyConfigurator(study_msg) => match study_msg {
+                modal::pane::settings::study::StudyMessage::Footprint(m) => {
+                    if let Content::Kline { chart, kind, .. } = &mut self.content
+                        && let Some(c) = chart
+                    {
+                        c.update_study_configurator(m);
+                        *kind = c.kind.clone();
+                    }
+                }
+                modal::pane::settings::study::StudyMessage::Heatmap(m) => {
+                    if let Content::Heatmap { chart, studies, .. } = &mut self.content
+                        && let Some(c) = chart
+                    {
+                        c.update_study_configurator(m);
+                        *studies = c.studies.clone();
+                    }
+                }
+            },
+            Event::StreamModifierChanged(message) => {
+                if let Some(Modal::StreamModifier(mut modifier)) = self.modal.take() {
+                    if let Some(action) = modifier.update(message) {
+                        match action {
+                            crate::modal::stream::Action::TabSelected(tab) => {
+                                modifier.tab = tab;
+                                self.modal = Some(Modal::StreamModifier(modifier));
+                            }
+                            crate::modal::stream::Action::TicksizeSelected(tm) => {
+                                modifier.update_kind_with_multiplier(tm);
+                                self.settings.tick_multiply = Some(tm);
+
+                                self.modal = Some(Modal::StreamModifier(modifier));
+
+                                if let Some(ti) = self.stream_pair() {
+                                    match &mut self.content {
+                                        Content::Kline { chart: Some(c), .. } => {
+                                            c.change_tick_size(tm.multiply_with_min_tick_size(ti));
+                                            c.reset_request_handler();
+                                        }
+                                        Content::Heatmap { chart: Some(c), .. } => {
+                                            c.change_tick_size(tm.multiply_with_min_tick_size(ti));
+                                        }
+                                        Content::Ladder(Some(p)) => {
+                                            p.set_tick_size(tm.multiply_with_min_tick_size(ti));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                let is_client = self
+                                    .stream_pair()
+                                    .map(|ti| ti.exchange().is_depth_client_aggr())
+                                    .unwrap_or(false);
+
+                                if let Some(mut it) = self.streams.ready_iter_mut() {
+                                    for s in &mut it {
+                                        if let StreamKind::DepthAndTrades { depth_aggr, .. } = s {
+                                            *depth_aggr = if is_client {
+                                                StreamTicksize::Client
+                                            } else {
+                                                StreamTicksize::ServerSide(tm)
+                                            };
+                                        }
+                                    }
+                                }
+                                if !is_client {
+                                    return Some(Effect::RefreshStreams);
+                                }
+                            }
+                            crate::modal::stream::Action::BasisSelected(new_basis) => {
+                                modifier.update_kind_with_basis(new_basis);
+                                self.settings.selected_basis = Some(new_basis);
+
+                                self.modal = Some(Modal::StreamModifier(modifier));
+
+                                let base_ticker = self.stream_pair()?;
+
+                                match &mut self.content {
+                                    Content::Heatmap { chart: Some(c), .. } => {
+                                        c.set_basis(new_basis);
+
+                                        if let Some(stream_type) =
+                                            self.streams.ready_iter_mut().and_then(|mut it| {
+                                                it.find(|s| {
+                                                    matches!(s, StreamKind::DepthAndTrades { .. })
+                                                })
+                                            })
+                                            && let StreamKind::DepthAndTrades {
+                                                push_freq,
+                                                ticker_info,
+                                                ..
+                                            } = stream_type
+                                            && ticker_info.exchange().is_custom_push_freq()
+                                        {
+                                            match new_basis {
+                                                Basis::Time(tf) => {
+                                                    *push_freq = exchange::PushFrequency::Custom(tf)
+                                                }
+                                                Basis::Tick(_) => {
+                                                    *push_freq =
+                                                        exchange::PushFrequency::ServerDefault
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Content::Kline { chart: Some(c), .. } => match new_basis {
+                                        Basis::Time(tf) => {
+                                            let kline_stream = StreamKind::Kline {
+                                                ticker_info: base_ticker,
+                                                timeframe: tf,
+                                            };
+                                            let mut streams = vec![kline_stream];
+
+                                            if matches!(
+                                                c.kind,
+                                                data::chart::KlineChartKind::Footprint { .. }
+                                            ) {
+                                                let depth_aggr = if base_ticker
+                                                    .exchange()
+                                                    .is_depth_client_aggr()
+                                                {
+                                                    StreamTicksize::Client
+                                                } else {
+                                                    StreamTicksize::ServerSide(
+                                                        self.settings
+                                                            .tick_multiply
+                                                            .unwrap_or(TickMultiplier(1)),
+                                                    )
+                                                };
+                                                streams.push(StreamKind::DepthAndTrades {
+                                                    ticker_info: base_ticker,
+                                                    depth_aggr,
+                                                    push_freq:
+                                                        exchange::PushFrequency::ServerDefault,
+                                                });
+                                            }
+
+                                            self.streams = ResolvedStream::Ready(streams);
+                                            c.set_basis(new_basis);
+                                        }
+                                        Basis::Tick(_) => {
+                                            let depth_aggr =
+                                                if base_ticker.exchange().is_depth_client_aggr() {
+                                                    StreamTicksize::Client
+                                                } else {
+                                                    StreamTicksize::ServerSide(
+                                                        self.settings
+                                                            .tick_multiply
+                                                            .unwrap_or(TickMultiplier(1)),
+                                                    )
+                                                };
+
+                                            self.streams = ResolvedStream::Ready(vec![
+                                                StreamKind::DepthAndTrades {
+                                                    ticker_info: base_ticker,
+                                                    depth_aggr,
+                                                    push_freq:
+                                                        exchange::PushFrequency::ServerDefault,
+                                                },
+                                            ]);
+                                            c.set_basis(new_basis);
+                                        }
+                                    },
+                                    Content::Comparison(Some(c)) => {
+                                        if let Basis::Time(tf) = new_basis {
+                                            let streams: Vec<StreamKind> = c
+                                                .selected_tickers()
+                                                .iter()
+                                                .copied()
+                                                .map(|ti| StreamKind::Kline {
+                                                    ticker_info: ti,
+                                                    timeframe: tf,
+                                                })
+                                                .collect();
+
+                                            self.streams = ResolvedStream::Ready(streams);
+                                            c.set_basis(new_basis);
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                }
+                                return Some(Effect::RefreshStreams);
+                            }
+                        }
+                    } else if let Some(m) = self.modal.take() {
+                        self.modal = Some(m);
+                    }
+                }
+            }
+            Event::ComparisonChartInteraction(message) => {
+                if let Content::Comparison(chart_opt) = &mut self.content
+                    && let Some(chart) = chart_opt
+                    && let Some(action) = chart.update(message)
+                {
+                    match action {
+                        super::chart::comparison::Action::FetchRequested(req_id, range, ti, tf) => {
+                            if let exchange::fetcher::FetchRange::Kline(from, to) = range {
+                                self.status = Status::Loading(InfoType::FetchingKlines);
+
+                                return Some(Effect::FetchKlines {
+                                    req_id: Some(req_id),
+                                    range: Some((from, to)),
+                                    stream: StreamKind::Kline {
+                                        ticker_info: ti,
+                                        timeframe: tf,
+                                    },
+                                });
+                            }
+                        }
+                        super::chart::comparison::Action::TickerColorChanged(t, color) => {
+                            chart.set_ticker_color(t, color);
+                        }
+                        super::chart::comparison::Action::OpenColorEditor => {
+                            self.modal = Some(Modal::Settings);
+                        }
+                        super::chart::comparison::Action::RemoveSeries(ti) => {
+                            let rebuilt = chart.remove_ticker(&ti);
+                            self.streams = ResolvedStream::Ready(rebuilt);
+
+                            return Some(Effect::RefreshStreams);
+                        }
+                    }
+                }
+            }
+            Event::MiniTickersListInteraction(message) => {
+                if let Some(Modal::MiniTickersList(ref mut mini_panel)) = self.modal
+                    && let Some(action) = mini_panel.update(message)
+                {
+                    self.modal = Some(Modal::MiniTickersList(mini_panel.clone()));
+
+                    let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
+                    match sel {
+                        crate::modal::pane::mini_tickers_list::RowSelection::Add(ti) => {
+                            if let Content::Comparison(chart) = &mut self.content
+                                && let Some(c) = chart
+                            {
+                                let rebuilt = c.add_ticker(&ti);
+                                self.streams = ResolvedStream::Ready(rebuilt);
+                                return Some(Effect::RefreshStreams);
+                            }
+                        }
+                        crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
+                            if let Content::Comparison(chart) = &mut self.content
+                                && let Some(c) = chart
+                            {
+                                let rebuilt = c.remove_ticker(&ti);
+                                self.streams = ResolvedStream::Ready(rebuilt);
+                                return Some(Effect::RefreshStreams);
+                            }
+                        }
+                        crate::modal::pane::mini_tickers_list::RowSelection::Switch(ti) => {
+                            return Some(Effect::SwitchTickersInGroup(ti));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn view_controls(
         &'_ self,
         pane: pane_grid::Pane,
@@ -964,10 +1291,12 @@ impl State {
         let tooltip_pos = tooltip::Position::Bottom;
         let mut buttons = row![];
 
+        let show_modal = |modal: Modal| Message::PaneEvent(pane, Event::ShowModal(modal));
+
         if !matches!(&self.content, Content::Starter) {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::Cog, 12),
-                Message::ShowModal(pane, Modal::Settings),
+                show_modal(Modal::Settings),
                 None,
                 tooltip_pos,
                 modal_btn_style(Modal::Settings),
@@ -980,7 +1309,7 @@ impl State {
         ) {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::ChartOutline, 12),
-                Message::ShowModal(pane, Modal::Indicators),
+                show_modal(Modal::Indicators),
                 Some("Indicators"),
                 tooltip_pos,
                 modal_btn_style(Modal::Indicators),
@@ -1051,9 +1380,11 @@ impl State {
     {
         let base =
             widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
-                Message::DeleteNotification(pane, msg)
+                Message::PaneEvent(pane, Event::DeleteNotification(msg))
             })
             .into();
+
+        let on_blur = Message::PaneEvent(pane, Event::HideModal);
 
         match &self.modal {
             Some(Modal::LinkGroup) => {
@@ -1062,24 +1393,26 @@ impl State {
                 stack_modal(
                     base,
                     content,
-                    Message::HideModal(pane),
+                    on_blur,
                     padding::right(12).left(4),
                     Alignment::Start,
                 )
             }
             Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
-                modifier
-                    .view(self.stream_pair())
-                    .map(move |message| Message::StreamModifierChanged(pane, message)),
-                Message::HideModal(pane),
+                modifier.view(self.stream_pair()).map(move |message| {
+                    Message::PaneEvent(pane, Event::StreamModifierChanged(message))
+                }),
+                Message::PaneEvent(pane, Event::HideModal),
                 padding::right(12).left(48),
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
                 let mini_list = panel
                     .view(tickers_table, selected_tickers, self.stream_pair())
-                    .map(move |msg| Message::MiniTickersListInteraction(pane, msg));
+                    .map(move |msg| {
+                        Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
+                    });
 
                 let content: Element<_> = container(mini_list)
                     .max_width(260)
@@ -1090,7 +1423,7 @@ impl State {
                 stack_modal(
                     base,
                     content,
-                    Message::HideModal(pane),
+                    Message::PaneEvent(pane, Event::HideModal),
                     padding::left(12),
                     Alignment::Start,
                 )
@@ -1098,14 +1431,14 @@ impl State {
             Some(Modal::Settings) => stack_modal(
                 base,
                 settings_modal(),
-                Message::HideModal(pane),
+                on_blur,
                 padding::right(12).left(12),
                 Alignment::End,
             ),
             Some(Modal::Indicators) => stack_modal(
                 base,
                 indicator_modal.unwrap_or_else(|| column![].into()),
-                Message::HideModal(pane),
+                on_blur,
                 padding::right(12).left(12),
                 Alignment::End,
             ),
@@ -1116,7 +1449,7 @@ impl State {
                 } else {
                     column![].into()
                 },
-                Message::HideModal(pane),
+                on_blur,
                 padding::left(12),
                 Alignment::End,
             ),
@@ -1665,7 +1998,7 @@ fn ticksize_modifier<'a>(
 
     button(text(multiplier.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
-        .on_press(Message::ShowModal(id, modifier_modal))
+        .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .into()
 }
 
@@ -1684,6 +2017,6 @@ fn basis_modifier<'a>(
 
     button(text(selected_basis.to_string()))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
-        .on_press(Message::ShowModal(id, modifier_modal))
+        .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .into()
 }
