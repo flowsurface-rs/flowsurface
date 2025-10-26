@@ -1,5 +1,5 @@
 use crate::chart::comparison::ComparisonChart;
-use crate::screen::dashboard::pane::Message;
+use crate::screen::dashboard::pane::{Event, Message};
 use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
 use crate::widget::{classic_slider_row, labeled_slider};
@@ -250,9 +250,12 @@ pub fn heatmap_cfg_view<'a>(
         col
     };
 
-    let study_cfg = study_config
-        .view(studies, basis)
-        .map(move |msg| Message::StudyConfigurator(pane, study::StudyMessage::Heatmap(msg)));
+    let study_cfg = study_config.view(studies, basis).map(move |msg| {
+        Message::PaneEvent(
+            pane,
+            Event::StudyConfigurator(study::StudyMessage::Heatmap(msg)),
+        )
+    });
 
     let content = split_column![
         size_filters_column,
@@ -446,9 +449,9 @@ pub fn comparison_cfg_view<'a>(
     let color_editor = &chart.color_editor;
 
     let content = column![color_editor.view(series).map(move |msg| {
-        Message::ComparisonChartInteraction(
+        Message::PaneEvent(
             pane,
-            crate::chart::comparison::Message::ColorEditor(msg),
+            Event::ComparisonChartInteraction(crate::chart::comparison::Message::ColorEditor(msg)),
         )
     })];
 
@@ -473,21 +476,25 @@ pub fn kline_cfg_view<'a>(
         } => {
             let cluster_picklist =
                 pick_list(ClusterKind::ALL, Some(clusters), move |new_cluster_kind| {
-                    Message::ClusterKindSelected(pane, new_cluster_kind)
+                    Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
                 });
 
             let scaling = {
                 let picklist = pick_list(
                     data::chart::kline::ClusterScaling::ALL,
                     Some(scaling),
-                    move |new_scaling| Message::ClusterScalingSelected(pane, new_scaling),
+                    move |new_scaling| {
+                        Message::PaneEvent(pane, Event::ClusterScalingSelected(new_scaling))
+                    },
                 );
 
                 if let data::chart::kline::ClusterScaling::Hybrid { weight } = scaling {
                     let hybrid_slider = slider(0.0..=1.0, *weight, move |new_weight| {
-                        Message::ClusterScalingSelected(
+                        Message::PaneEvent(
                             pane,
-                            data::chart::kline::ClusterScaling::Hybrid { weight: new_weight },
+                            Event::ClusterScalingSelected(
+                                data::chart::kline::ClusterScaling::Hybrid { weight: new_weight },
+                            ),
                         )
                     })
                     .step(0.05);
@@ -504,7 +511,10 @@ pub fn kline_cfg_view<'a>(
             };
 
             let study_cfg = study_config.view(studies, basis).map(move |msg| {
-                Message::StudyConfigurator(pane, study::StudyMessage::Footprint(msg))
+                Message::PaneEvent(
+                    pane,
+                    Event::StudyConfigurator(study::StudyMessage::Footprint(msg)),
+                )
             });
 
             split_column![
