@@ -142,11 +142,12 @@ impl ComparisonChart {
         }
     }
 
-    pub fn view(&self) -> iced::Element<'_, Message> {
+    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
         let chart: iced::Element<_> =
             LineComparison::<Series>::new(&self.series, self.update_interval, self.timeframe)
-                .with_pan(self.pan)
+                .with_timezone(timezone)
                 .with_zoom(self.zoom)
+                .with_pan(self.pan)
                 .into();
 
         iced::widget::container(chart.map(Message::Chart))

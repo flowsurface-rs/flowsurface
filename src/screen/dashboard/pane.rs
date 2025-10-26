@@ -647,7 +647,7 @@ impl State {
 
                     stream_info_element = stream_info_element.push(modifiers);
 
-                    let base = c.view().map(move |message| {
+                    let base = c.view(timezone).map(move |message| {
                         Message::PaneEvent(id, Event::ComparisonChartInteraction(message))
                     });
 

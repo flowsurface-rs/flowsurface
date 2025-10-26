@@ -1,22 +1,22 @@
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
-
 use crate::style;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 
+use data::UserTimezone;
 use exchange::TickerInfo;
 use exchange::Timeframe;
 use exchange::fetcher::FetchRange;
+
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{self, Clipboard, Layout, Shell, Widget};
-use iced::advanced::{layout, renderer};
+use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
-
 use iced::{
     Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
 };
+
+use chrono::TimeZone;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
@@ -58,6 +58,7 @@ pub struct LineComparison<'a, S> {
     pan: f32,
     update_interval: u128, // in UNIX ms
     timeframe: Timeframe,
+    timezone: UserTimezone,
 }
 
 struct State {
@@ -102,6 +103,7 @@ where
             update_interval: update_interval as u128,
             timeframe,
             pan: 0.0,
+            timezone: UserTimezone::Utc,
         }
     }
 
@@ -112,6 +114,11 @@ where
 
     pub fn with_pan(mut self, pan: f32) -> Self {
         self.pan = pan;
+        self
+    }
+
+    pub fn with_timezone(mut self, tz: UserTimezone) -> Self {
+        self.timezone = tz;
         self
     }
 
@@ -545,12 +552,24 @@ where
                 HitZone::Plot => {
                     let cx = local.x.clamp(ctx.plot.x, ctx.plot.x + ctx.plot.width);
                     let ms_from_min = ((cx - ctx.plot.x) / ctx.px_per_ms).round() as u64;
-                    let x_domain = ctx.min_x.saturating_add(ms_from_min);
+                    let x_domain_raw = ctx.min_x.saturating_add(ms_from_min);
+
+                    let dt = self.dt_ms_est().max(1);
+                    let lower = Self::align_floor(x_domain_raw, dt);
+                    let upper = Self::align_ceil(x_domain_raw, dt);
+                    let snapped_x = if x_domain_raw.saturating_sub(lower)
+                        <= upper.saturating_sub(x_domain_raw)
+                    {
+                        lower
+                    } else {
+                        upper
+                    }
+                    .clamp(ctx.min_x, ctx.max_x);
 
                     let t = ((local.y - ctx.plot.y) / ctx.plot.height).clamp(0.0, 1.0);
                     let pct = ctx.min_pct + (1.0 - t) * (ctx.max_pct - ctx.min_pct);
                     Some(CursorInfo {
-                        x_domain,
+                        x_domain: snapped_x,
                         y_pct: pct,
                     })
                 }
@@ -861,6 +880,44 @@ where
         }
 
         end_labels
+    }
+
+    fn format_crosshair_time(ts_ms: u64, tz: UserTimezone) -> String {
+        let ts_i64 = ts_ms as i64;
+        match tz {
+            UserTimezone::Utc => {
+                if let Some(dt) = chrono::Utc.timestamp_millis_opt(ts_i64).single() {
+                    dt.format("%a %b %-d %H:%M").to_string()
+                } else {
+                    ts_ms.to_string()
+                }
+            }
+            UserTimezone::Local => {
+                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_i64).single() {
+                    dt.format("%a %b %-d %H:%M").to_string()
+                } else {
+                    ts_ms.to_string()
+                }
+            }
+        }
+    }
+
+    fn to_tz_ms(ts_ms: u64, tz: UserTimezone) -> u64 {
+        match tz {
+            UserTimezone::Utc => ts_ms,
+            UserTimezone::Local => {
+                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_ms as i64).single() {
+                    let off_ms = (dt.offset().local_minus_utc() as i64) * 1000;
+                    if off_ms >= 0 {
+                        ts_ms.saturating_add(off_ms as u64)
+                    } else {
+                        ts_ms.saturating_sub((-off_ms) as u64)
+                    }
+                } else {
+                    ts_ms
+                }
+            }
+        }
     }
 }
 
@@ -1354,7 +1411,10 @@ where
         let baseline_to_text = 4.0;
         for t in ticks {
             let x = ctx.map_x(t).clamp(ctx.plot.x, ctx.plot.x + ctx.plot.width);
-            let label = super::format_time_label(t, step_ms);
+
+            let label_ts = Self::to_tz_ms(t, self.timezone);
+            let label = super::format_time_label(label_ts, step_ms);
+
             let y_center = axis_y + baseline_to_text + 2.0 + TEXT_SIZE * 0.5;
 
             frame.fill_text(canvas::Text {
@@ -1607,16 +1667,13 @@ where
         b.line_to(Point::new(ctx.plot.x + ctx.plot.width, cy));
         frame.stroke(&b.build(), stroke);
 
-        // Time label (x-axis)
-        let (_ticks, step_ms) =
-            super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
-        let time_str = super::format_time_label(ci.x_domain, step_ms);
+        let time_str = Self::format_crosshair_time(ci.x_domain, self.timezone);
 
         let text_col = palette.secondary.base.text;
         let bg_col = palette.secondary.base.color;
 
-        let est_w = (time_str.len() as f32) * (TEXT_SIZE * 0.6) + 10.0;
-        let label_w = est_w.clamp(40.0, 160.0);
+        let est_w = (time_str.len() as f32) * (TEXT_SIZE * 0.67) + 12.0;
+        let label_w = est_w.clamp(100.0, 240.0);
         let label_h = TEXT_SIZE + 6.0;
 
         let time_x = cx.clamp(
