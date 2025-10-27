@@ -1,4 +1,6 @@
-use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
+use crate::widget::chart::comparison::{
+    DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent, MAX_ZOOM_POINTS, MIN_ZOOM_POINTS,
+};
 use crate::widget::chart::{Series, Zoom};
 
 use data::chart::Basis;
@@ -11,10 +13,8 @@ use rustc_hash::FxHashMap;
 use std::time::Instant;
 
 const SERIES_MAX_POINTS: usize = 5000;
-const DEFAULT_UPDATE_INTERVAL_MS: u64 = 1000;
 
 pub enum Action {
-    FetchRequested(uuid::Uuid, FetchRange, TickerInfo, Timeframe),
     TickerColorChanged(TickerInfo, iced::Color),
     RemoveSeries(TickerInfo),
     OpenColorEditor,
@@ -26,12 +26,12 @@ pub struct ComparisonChart {
     last_tick: Instant,
     pub series: Vec<Series>,
     series_index: FxHashMap<TickerInfo, usize>,
-    update_interval: u64,
     pub timeframe: Timeframe,
     request_handler: FxHashMap<TickerInfo, RequestHandler>,
     selected_tickers: Vec<TickerInfo>,
     pub config: data::chart::comparison::Config,
     pub color_editor: color_editor::TickerColorEditor,
+    cache_rev: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -75,7 +75,6 @@ impl ComparisonChart {
             zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
             series,
             series_index,
-            update_interval: DEFAULT_UPDATE_INTERVAL_MS,
             timeframe,
             request_handler: tickers
                 .iter()
@@ -87,6 +86,7 @@ impl ComparisonChart {
             color_editor: color_editor::TickerColorEditor {
                 show_color_for: None,
             },
+            cache_rev: 0,
         }
     }
 
@@ -100,22 +100,6 @@ impl ComparisonChart {
                 LineComparisonEvent::PanChanged(pan) => {
                     self.pan = pan;
                     None
-                }
-                LineComparisonEvent::DataRequested(range, ticker_info) => {
-                    let handler = self.request_handler.entry(ticker_info).or_default();
-                    match handler.add_request(range) {
-                        Ok(Some(req_id)) => Some(Action::FetchRequested(
-                            req_id,
-                            range,
-                            ticker_info,
-                            self.timeframe,
-                        )),
-                        Ok(None) => None,
-                        Err(reason) => {
-                            log::error!("Failed to request {:?}: {}", range, reason);
-                            None
-                        }
-                    }
                 }
                 LineComparisonEvent::SeriesCog(ticker_info) => {
                     self.color_editor.show_color_for = Some(ticker_info);
@@ -131,6 +115,8 @@ impl ComparisonChart {
                 {
                     s.color = color;
                     self.upsert_config_color(ticker_info, color);
+
+                    self.cache_rev = self.cache_rev.wrapping_add(1)
                 }
                 None
             }
@@ -143,12 +129,12 @@ impl ComparisonChart {
     }
 
     pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
-        let chart: iced::Element<_> =
-            LineComparison::<Series>::new(&self.series, self.update_interval, self.timeframe)
-                .with_timezone(timezone)
-                .with_zoom(self.zoom)
-                .with_pan(self.pan)
-                .into();
+        let chart: iced::Element<_> = LineComparison::<Series>::new(&self.series, self.timeframe)
+            .with_timezone(timezone)
+            .with_zoom(self.zoom)
+            .with_pan(self.pan)
+            .version(self.cache_rev)
+            .into();
 
         iced::widget::container(chart.map(Message::Chart))
             .padding(1)
@@ -158,6 +144,20 @@ impl ComparisonChart {
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         if let Some(t) = now {
             self.last_tick = t;
+            self.cache_rev = self.cache_rev.wrapping_add(1);
+        }
+
+        if let Some((range, tickers)) = self.desired_fetch_range(self.pan) {
+            for ticker in tickers {
+                let handler = self.request_handler.entry(ticker).or_default();
+                if let Ok(Some(req_id)) = handler.add_request(range) {
+                    let stream = StreamKind::Kline {
+                        ticker_info: ticker,
+                        timeframe: self.timeframe,
+                    };
+                    return Some(super::Action::FetchRequested(req_id, range, Some(stream)));
+                }
+            }
         }
         None
     }
@@ -352,6 +352,8 @@ impl ComparisonChart {
         {
             s.color = color;
             self.upsert_config_color(ticker, color);
+
+            self.cache_rev = self.cache_rev.wrapping_add(1)
         }
     }
 
@@ -403,6 +405,171 @@ impl ComparisonChart {
         } else {
             self.config.colors.push((ser, color));
         }
+    }
+
+    fn now_ms() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    fn dt_ms_est(&self) -> u64 {
+        self.timeframe.to_milliseconds().max(1)
+    }
+
+    fn align_floor(ts: u64, dt: u64) -> u64 {
+        if dt == 0 {
+            return ts;
+        }
+        (ts / dt) * dt
+    }
+
+    fn align_ceil(ts: u64, dt: u64) -> u64 {
+        if dt == 0 {
+            return ts;
+        }
+        let f = (ts / dt) * dt;
+        if f == ts { ts } else { f.saturating_add(dt) }
+    }
+
+    fn compute_visible_window(&self, pan_dx: f32) -> Option<(u64, u64)> {
+        // X-only window based on current zoom and series data
+        if self.series.is_empty() {
+            return None;
+        }
+        let mut any = false;
+        let mut data_min_x = u64::MAX;
+        let mut data_max_x = u64::MIN;
+        for s in &self.series {
+            for (x, _) in &s.points {
+                any = true;
+                if *x < data_min_x {
+                    data_min_x = *x;
+                }
+                if *x > data_max_x {
+                    data_max_x = *x;
+                }
+            }
+        }
+        if !any {
+            return None;
+        }
+        if data_max_x == data_min_x {
+            data_max_x = data_max_x.saturating_add(1);
+        }
+
+        let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
+            (data_min_x, data_max_x)
+        } else {
+            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+            let dt = (self.dt_ms_est() as f32).max(1e-6);
+            let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
+            if span == 0 {
+                span = 1;
+            }
+            let max_x = data_max_x;
+            let min_x = max_x.saturating_sub(span);
+            (min_x, max_x)
+        };
+
+        let delta = pan_dx.round() as i64;
+        let shift = |v: u64, d: i64| -> u64 {
+            if d >= 0 {
+                v.saturating_add(d as u64)
+            } else {
+                v.saturating_sub((-d) as u64)
+            }
+        };
+        win_min_x = shift(win_min_x, delta);
+        win_max_x = shift(win_max_x, delta);
+
+        let dt = self.dt_ms_est();
+        win_min_x = Self::align_floor(win_min_x, dt);
+        win_max_x = Self::align_ceil(win_max_x, dt);
+
+        Some((win_min_x, win_max_x))
+    }
+
+    fn desired_fetch_batches(&self, pan_dx: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
+        let dt = self.dt_ms_est();
+        let span = 500u64.saturating_mul(dt);
+        let last_closed = Self::align_floor(Self::now_ms(), dt);
+
+        let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
+
+        // Seed empties: fetch tail for all empty series
+        let mut empty_tickers: Vec<TickerInfo> = Vec::new();
+        for s in &self.series {
+            if s.points.is_empty() {
+                empty_tickers.push(s.name);
+            }
+        }
+        if !empty_tickers.is_empty() {
+            let end = last_closed;
+            let start = end.saturating_sub(span);
+            batches.push((FetchRange::Kline(start, end), empty_tickers));
+        }
+
+        // Backfill-left: group all that start after visible min
+        if let Some((win_min, _win_max)) = self.compute_visible_window(pan_dx) {
+            let mut need: Vec<(u64, TickerInfo)> = Vec::new();
+            for s in &self.series {
+                if let Some(series_min) = s.points.first().map(|(x, _)| *x)
+                    && win_min < series_min
+                {
+                    need.push((series_min, s.name));
+                }
+            }
+            if !need.is_empty() {
+                let end = need.iter().map(|(e, _)| *e).min().unwrap_or(win_min);
+                let end = Self::align_floor(end, dt);
+                let start = end.saturating_sub(span);
+                let tickers = need.into_iter().map(|(_, t)| t).collect();
+                batches.push((FetchRange::Kline(start, end), tickers));
+            }
+        }
+
+        batches
+    }
+
+    fn desired_fetch_range(&self, pan_dx: f32) -> Option<(FetchRange, Vec<TickerInfo>)> {
+        let dt = self.dt_ms_est();
+        let last_closed = Self::align_floor(Self::now_ms(), dt);
+        let win = self.compute_visible_window(pan_dx);
+
+        let mut batches = self.desired_fetch_batches(pan_dx);
+        if batches.is_empty() {
+            return None;
+        }
+        if batches.len() == 1 {
+            return batches.pop();
+        }
+
+        // Prioritize: 0=intersects window, 1=backfill-left, 2=seed, 3=others
+        let score = |r: &FetchRange| -> u8 {
+            match r {
+                FetchRange::Kline(start, end) => {
+                    let intersects = if let Some((wmin, wmax)) = win {
+                        !(*end < wmin || *start > wmax)
+                    } else {
+                        false
+                    };
+                    if intersects {
+                        0
+                    } else if *end != last_closed {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                _ => 3,
+            }
+        };
+
+        batches.sort_by_key(|(r, _)| score(r));
+        batches.into_iter().next()
     }
 }
 

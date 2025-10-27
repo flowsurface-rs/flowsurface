@@ -275,7 +275,11 @@ fn canvas_interaction<T: Chart>(
 
 pub enum Action {
     ErrorOccurred(data::InternalError),
-    FetchRequested(uuid::Uuid, FetchRange),
+    FetchRequested(
+        uuid::Uuid,
+        FetchRange,
+        Option<exchange::adapter::StreamKind>,
+    ),
 }
 
 pub fn update<T: Chart>(chart: &mut T, message: &Message) {
@@ -1129,7 +1133,7 @@ impl ViewState {
 
 fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Action> {
     match handler.add_request(range) {
-        Ok(Some(req_id)) => Some(Action::FetchRequested(req_id, range)),
+        Ok(Some(req_id)) => Some(Action::FetchRequested(req_id, range, None)),
         Ok(None) => None,
         Err(reason) => {
             log::error!("Failed to request {:?}: {}", range, reason);

@@ -363,15 +363,9 @@ impl Dashboard {
                         let Some(effect) = state.update(local) else {
                             return (Task::none(), None);
                         };
-                        let pane_id = state.unique_id();
 
                         let task = match effect {
                             pane::Effect::RefreshStreams => self.refresh_streams(main_window.id),
-                            pane::Effect::FetchKlines {
-                                req_id,
-                                range,
-                                stream,
-                            } => kline_fetch_task(self.layout_id, pane_id, stream, req_id, range),
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(main_window.id, ticker_info)
                             }
@@ -1026,8 +1020,8 @@ impl Dashboard {
                         state.status = pane::Status::Ready;
                         state.notifications.push(Toast::error(err.to_string()));
                     }
-                    chart::Action::FetchRequested(req_id, fetch) => {
-                        tasks.push(request_fetch(state, layout_id, req_id, fetch));
+                    chart::Action::FetchRequested(req_id, fetch, stream) => {
+                        tasks.push(request_fetch(state, layout_id, req_id, fetch, stream));
                     }
                 },
                 Some(pane::Action::Panel(_action)) => {}
@@ -1125,19 +1119,24 @@ fn request_fetch(
     layout_id: uuid::Uuid,
     req_id: uuid::Uuid,
     fetch: FetchRange,
+    stream: Option<StreamKind>,
 ) -> Task<Message> {
     let pane_id = state.unique_id();
 
     match fetch {
         FetchRange::Kline(from, to) => {
             let kline_stream = {
-                state.streams.find_ready_map(|stream| {
-                    if let StreamKind::Kline { .. } = stream {
-                        Some((*stream, pane_id))
-                    } else {
-                        None
-                    }
-                })
+                if let Some(s) = stream {
+                    Some((s, pane_id))
+                } else {
+                    state.streams.find_ready_map(|stream| {
+                        if let StreamKind::Kline { .. } = stream {
+                            Some((*stream, pane_id))
+                        } else {
+                            None
+                        }
+                    })
+                }
             };
 
             if let Some((stream, pane_uid)) = kline_stream {
@@ -1152,13 +1151,17 @@ fn request_fetch(
         }
         FetchRange::OpenInterest(from, to) => {
             let kline_stream = {
-                state.streams.find_ready_map(|stream| {
-                    if let StreamKind::Kline { .. } = stream {
-                        Some((*stream, pane_id))
-                    } else {
-                        None
-                    }
-                })
+                if let Some(s) = stream {
+                    Some((s, pane_id))
+                } else {
+                    state.streams.find_ready_map(|stream| {
+                        if let StreamKind::Kline { .. } = stream {
+                            Some((*stream, pane_id))
+                        } else {
+                            None
+                        }
+                    })
+                }
             };
 
             if let Some((stream, pane_uid)) = kline_stream {
