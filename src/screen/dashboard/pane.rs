@@ -42,11 +42,6 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
-    FetchKlines {
-        req_id: Option<uuid::Uuid>,
-        range: Option<(u64, u64)>,
-        stream: StreamKind,
-    },
     SwitchTickersInGroup(TickerInfo),
 }
 
@@ -1203,20 +1198,6 @@ impl State {
                     && let Some(action) = chart.update(message)
                 {
                     match action {
-                        super::chart::comparison::Action::FetchRequested(req_id, range, ti, tf) => {
-                            if let exchange::fetcher::FetchRange::Kline(from, to) = range {
-                                self.status = Status::Loading(InfoType::FetchingKlines);
-
-                                return Some(Effect::FetchKlines {
-                                    req_id: Some(req_id),
-                                    range: Some((from, to)),
-                                    stream: StreamKind::Kline {
-                                        ticker_info: ti,
-                                        timeframe: tf,
-                                    },
-                                });
-                            }
-                        }
                         super::chart::comparison::Action::TickerColorChanged(t, color) => {
                             chart.set_ticker_color(t, color);
                         }

@@ -3,9 +3,7 @@ use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 
 use data::UserTimezone;
-use exchange::TickerInfo;
-use exchange::Timeframe;
-use exchange::fetcher::FetchRange;
+use exchange::{TickerInfo, Timeframe};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
@@ -16,7 +14,6 @@ use iced::{
 };
 
 use chrono::TimeZone;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
@@ -24,14 +21,14 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 
-const MIN_ZOOM_POINTS: usize = 2;
-const MAX_ZOOM_POINTS: usize = 5000;
 const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
 
 /// Gap breaker to avoid drawing across missing data
 const GAP_BREAK_MULTIPLIER: f32 = 3.0;
 
 pub const DEFAULT_ZOOM_POINTS: usize = 100;
+pub const MIN_ZOOM_POINTS: usize = 2;
+pub const MAX_ZOOM_POINTS: usize = 5000;
 
 const LEGEND_PADDING: f32 = 4.0;
 const LEGEND_LINE_H: f32 = TEXT_SIZE + 6.0;
@@ -46,28 +43,17 @@ const ICON_GAP_AFTER_TEXT: f32 = 8.0;
 pub enum LineComparisonEvent {
     ZoomChanged(Zoom),
     PanChanged(f32),
-    DataRequested(FetchRange, TickerInfo),
     SeriesCog(TickerInfo),
     SeriesRemove(TickerInfo),
-}
-
-pub struct LineComparison<'a, S> {
-    series: &'a [S],
-    stroke_width: f32,
-    zoom: Zoom,
-    pan: f32,
-    update_interval: u128, // in UNIX ms
-    timeframe: Timeframe,
-    timezone: UserTimezone,
 }
 
 struct State {
     plot_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     labels_cache: canvas::Cache,
-    last_draw: Option<std::time::Instant>,
     is_panning: bool,
     last_cursor: Option<Point>,
+    last_cache_rev: u64,
 }
 
 impl Default for State {
@@ -76,9 +62,9 @@ impl Default for State {
             plot_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
             labels_cache: canvas::Cache::new(),
-            last_draw: None,
             is_panning: false,
             last_cursor: None,
+            last_cache_rev: 0,
         }
     }
 }
@@ -91,19 +77,29 @@ impl State {
     }
 }
 
+pub struct LineComparison<'a, S> {
+    series: &'a [S],
+    stroke_width: f32,
+    zoom: Zoom,
+    pan: f32,
+    timeframe: Timeframe,
+    timezone: UserTimezone,
+    version: u64,
+}
+
 impl<'a, S> LineComparison<'a, S>
 where
     S: SeriesLike,
 {
-    pub fn new(series: &'a [S], update_interval: u64, timeframe: Timeframe) -> Self {
+    pub fn new(series: &'a [S], timeframe: Timeframe) -> Self {
         Self {
             series,
             stroke_width: 2.0,
             zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
-            update_interval: update_interval as u128,
             timeframe,
             pan: 0.0,
             timezone: UserTimezone::Utc,
+            version: 0,
         }
     }
 
@@ -119,6 +115,11 @@ where
 
     pub fn with_timezone(mut self, tz: UserTimezone) -> Self {
         self.timezone = tz;
+        self
+    }
+
+    pub fn version(mut self, rev: u64) -> Self {
+        self.version = rev;
         self
     }
 
@@ -200,95 +201,8 @@ where
         }
     }
 
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
     fn dt_ms_est(&self) -> u64 {
         self.timeframe.to_milliseconds()
-    }
-
-    fn desired_fetch_batches(&self, pan_dx: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
-        let dt = self.dt_ms_est().max(1);
-        let span = 500u64.saturating_mul(dt);
-        let last_closed = Self::align_floor(Self::now_ms(), dt);
-
-        let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
-
-        // 1) Seed: all empty series get the same tail batch
-        let mut empty_tickers: Vec<TickerInfo> = Vec::new();
-        for s in self.series {
-            if s.points().is_empty() {
-                empty_tickers.push(*s.ticker_info());
-            }
-        }
-        if !empty_tickers.is_empty() {
-            let end = last_closed;
-            let start = end.saturating_sub(span);
-            batches.push((FetchRange::Kline(start, end), empty_tickers));
-        }
-
-        // 2) Backfill-left: group all series that start after the visible min.
-        if let Some((win_min, _win_max)) = self.compute_visible_window(pan_dx) {
-            let mut need: Vec<(u64, TickerInfo)> = Vec::new();
-            for s in self.series {
-                if let Some(series_min) = s.points().first().map(|(x, _)| *x)
-                    && win_min < series_min
-                {
-                    need.push((series_min, *s.ticker_info()));
-                }
-            }
-            if !need.is_empty() {
-                let mut end = need.iter().map(|(e, _)| *e).min().unwrap_or(win_min);
-                end = Self::align_floor(end, dt);
-                let start = end.saturating_sub(span);
-                let tickers = need.into_iter().map(|(_, t)| t).collect();
-                batches.push((FetchRange::Kline(start, end), tickers));
-            }
-        }
-
-        batches
-    }
-
-    fn desired_fetch_range(&self, pan_dx: f32) -> Option<(FetchRange, Vec<TickerInfo>)> {
-        let dt = self.dt_ms_est().max(1);
-        let last_closed = Self::align_floor(Self::now_ms(), dt);
-        let win = self.compute_visible_window(pan_dx);
-
-        let mut batches = self.desired_fetch_batches(pan_dx);
-        if batches.is_empty() {
-            return None;
-        }
-        if batches.len() == 1 {
-            return batches.pop();
-        }
-
-        // 0 = intersects visible window, 1 = backfill-left, 2 = seed, 3 = others
-        let score = |r: &FetchRange| -> u8 {
-            match r {
-                FetchRange::Kline(start, end) => {
-                    let intersects = if let Some((wmin, wmax)) = win {
-                        !(*end < wmin || *start > wmax)
-                    } else {
-                        false
-                    };
-                    if intersects {
-                        0
-                    } else if *end != last_closed {
-                        1
-                    } else {
-                        2
-                    }
-                }
-                _ => 3,
-            }
-        };
-
-        batches.sort_by_key(|(r, _)| score(r));
-        batches.into_iter().next()
     }
 
     /// rectangles in the widget-local coordinates
@@ -320,65 +234,6 @@ where
             x_axis,
             y_axis,
         }
-    }
-
-    fn compute_visible_window(&self, pan_dx: f32) -> Option<(u64, u64)> {
-        // X-only window, does not depend on y computations
-        if self.series.is_empty() {
-            return None;
-        }
-        let mut any = false;
-        let mut data_min_x = u64::MAX;
-        let mut data_max_x = u64::MIN;
-        for s in self.series {
-            for (x, _) in s.points() {
-                any = true;
-                if *x < data_min_x {
-                    data_min_x = *x;
-                }
-                if *x > data_max_x {
-                    data_max_x = *x;
-                }
-            }
-        }
-        if !any {
-            return None;
-        }
-        if data_max_x == data_min_x {
-            data_max_x = data_max_x.saturating_add(1);
-        }
-
-        let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
-            (data_min_x, data_max_x)
-        } else {
-            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = (self.dt_ms_est() as f32).max(1e-6);
-            let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
-            if span == 0 {
-                span = 1;
-            }
-            let max_x = data_max_x;
-            let min_x = max_x.saturating_sub(span);
-            (min_x, max_x)
-        };
-
-        let delta = pan_dx.round() as i64;
-        let shift = |v: u64, d: i64| -> u64 {
-            if d >= 0 {
-                v.saturating_add(d as u64)
-            } else {
-                v.saturating_sub((-d) as u64)
-            }
-        };
-
-        win_min_x = shift(win_min_x, delta);
-        win_max_x = shift(win_max_x, delta);
-
-        let dt = self.dt_ms_est().max(1);
-        win_min_x = Self::align_floor(win_min_x, dt);
-        win_max_x = Self::align_ceil(win_max_x, dt);
-
-        Some((win_min_x, win_max_x))
     }
 
     fn compute_domains(&self, pan_dx: f32) -> Option<((u64, u64), (f32, f32))> {
@@ -1054,25 +909,12 @@ where
                     _ => {}
                 }
             }
-            Event::Window(window::Event::RedrawRequested(now)) => {
+            Event::Window(window::Event::RedrawRequested(_)) => {
                 let state = tree.state.downcast_mut::<State>();
 
-                if let Some(last) = state.last_draw {
-                    let dur = now.saturating_duration_since(last);
-
-                    if dur.as_millis() > self.update_interval {
-                        state.clear_all_caches();
-                        state.last_draw = Some(*now);
-
-                        if let Some((range, tickers)) = self.desired_fetch_range(self.pan) {
-                            for ticker in tickers {
-                                let event = LineComparisonEvent::DataRequested(range, ticker);
-                                shell.publish(M::from(event));
-                            }
-                        }
-                    }
-                } else {
-                    state.last_draw = Some(*now);
+                if state.last_cache_rev != self.version {
+                    state.clear_all_caches();
+                    state.last_cache_rev = self.version;
                 }
             }
             _ => {}
