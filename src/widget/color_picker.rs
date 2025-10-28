@@ -16,17 +16,19 @@ const HANDLE_RADIUS: f32 = 10.0;
 const SLIDER_HEIGHT: f32 = 15.0;
 
 pub fn color_picker<'a, Message: 'a>(
-    color: Color,
-    on_color: impl Fn(Color) -> Message + Clone + 'a,
+    hsva: Hsva,
+    on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
 ) -> Element<'a, Message> {
+    let color = data::config::theme::from_hsva(hsva);
+
     column![
         row![
             bordered(preview(color)).width(FillPortion(2)),
             bordered(grid(
                 Component::Saturation,
                 Component::Value,
-                color,
-                on_color.clone(),
+                hsva,
+                on_hsva.clone(),
                 HANDLE_RADIUS,
             ))
             .width(FillPortion(8))
@@ -34,8 +36,8 @@ pub fn color_picker<'a, Message: 'a>(
         .spacing(4),
         bordered(slider(
             Component::Hue,
-            color,
-            on_color,
+            hsva,
+            on_hsva,
             SLIDER_HEIGHT,
             HANDLE_RADIUS
         )),
@@ -248,17 +250,17 @@ impl Picker {
 fn grid<'a, Message: 'a>(
     x: Component,
     y: Component,
-    color: Color,
-    on_color: impl Fn(Color) -> Message + Clone + 'a,
+    hsva: Hsva,
+    on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
     handle_radius: f32,
 ) -> Element<'a, Message> {
     let x = Value::new(x, Direction::Horizontal);
     let y = Value::new(y, Direction::Vertical);
 
-    picker(
+    picker_hsva(
         Picker::Grid { x, y },
-        color,
-        on_color,
+        hsva,
+        on_hsva,
         Fill,
         Fill,
         handle_radius,
@@ -267,31 +269,29 @@ fn grid<'a, Message: 'a>(
 
 fn slider<'a, Message: 'a>(
     component: Component,
-    color: Color,
-    on_color: impl Fn(Color) -> Message + Clone + 'a,
+    hsva: Hsva,
+    on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
     height: f32,
     handle_radius: f32,
 ) -> Element<'a, Message> {
-    picker(
+    picker_hsva(
         Picker::Slider(Value::new(component, Direction::Horizontal)),
-        color,
-        on_color,
+        hsva,
+        on_hsva,
         Fill,
         height,
         handle_radius,
     )
 }
 
-fn picker<'a, Message: 'a>(
+fn picker_hsva<'a, Message: 'a>(
     picker: Picker,
-    color: Color,
-    on_color: impl Fn(Color) -> Message + Clone + 'a,
+    hsva: Hsva,
+    on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
     width: impl Into<Length>,
     height: impl Into<Length>,
     handle_radius: f32,
 ) -> Element<'a, Message> {
-    let color = data::config::theme::to_hsva(color);
-
     decorate(Space::new().width(width).height(height))
         .update(
             move |state: &mut Option<Rectangle>,
@@ -305,7 +305,7 @@ fn picker<'a, Message: 'a>(
                   shell: &mut advanced::Shell<'_, Message>,
                   _viewport: &iced::Rectangle| {
                 let bounds = layout.bounds();
-                let handle = picker.handle_from_color(color, bounds, handle_radius);
+                let handle = picker.handle_from_color(hsva, bounds, handle_radius);
 
                 match event {
                     iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
@@ -317,9 +317,9 @@ fn picker<'a, Message: 'a>(
                         } else if let Some(position) = cursor.position_over(bounds) {
                             let new_handle =
                                 picker.handle_from_cursor(position, bounds, handle_radius);
-                            let color = picker.color_at_handle(color, new_handle, bounds);
+                            let new_hsva = picker.color_at_handle(hsva, new_handle, bounds);
 
-                            shell.publish((on_color)(data::config::theme::from_hsva(color)));
+                            shell.publish((on_hsva)(new_hsva));
 
                             *state = Some(new_handle);
                         }
@@ -329,9 +329,9 @@ fn picker<'a, Message: 'a>(
                         if state.is_some() =>
                     {
                         if let Some(last_handle) = state.take() {
-                            let color = picker.color_at_handle(color, last_handle, bounds);
+                            let new_hsva = picker.color_at_handle(hsva, last_handle, bounds);
 
-                            shell.publish((on_color)(data::config::theme::from_hsva(color)));
+                            shell.publish((on_hsva)(new_hsva));
                         }
                     }
                     iced::Event::Mouse(mouse::Event::CursorMoved { position })
@@ -355,9 +355,9 @@ fn picker<'a, Message: 'a>(
                                 }
                             }
 
-                            let color = picker.color_at_handle(color, *last_handle, bounds);
+                            let new_hsva = picker.color_at_handle(hsva, *last_handle, bounds);
 
-                            shell.publish((on_color)(data::config::theme::from_hsva(color)));
+                            shell.publish((on_hsva)(new_hsva));
                         }
                     }
                     _ => {}
@@ -375,14 +375,14 @@ fn picker<'a, Message: 'a>(
                   _cursor: iced::advanced::mouse::Cursor,
                   viewport: &iced::Rectangle| {
                 let bounds = layout.bounds();
-                let handle = picker.handle_from_color(color, bounds, handle_radius);
+                let handle = picker.handle_from_color(hsva, bounds, handle_radius);
 
                 let cell_height = match picker {
                     Picker::Slider(_) => bounds.height,
                     Picker::Grid { .. } => 1.0,
                 };
 
-                picker.with_cells(color, bounds, |x, y, color| {
+                picker.with_cells(hsva, bounds, |x, y, color| {
                     renderer.fill_quad(
                         Quad {
                             bounds: Rectangle {
