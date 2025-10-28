@@ -85,6 +85,7 @@ impl ComparisonChart {
             config: cfg,
             color_editor: color_editor::TickerColorEditor {
                 show_color_for: None,
+                editing: None,
             },
             cache_rev: 0,
         }
@@ -599,34 +600,42 @@ pub mod color_editor {
     use exchange::TickerInfo;
     use iced::widget::{button, column, container, row, text};
     use iced::{Element, Length};
+    use palette::Hsva;
 
     #[derive(Debug, Clone)]
     pub enum Message {
-        ToggleEditFor(TickerInfo),
-        ColorChanged(iced::Color),
+        ToggleEditFor(TickerInfo, iced::Color),
+        ColorChangedHsva(Hsva),
     }
 
     pub struct TickerColorEditor {
         pub show_color_for: Option<TickerInfo>,
+        pub editing: Option<Hsva>,
     }
 
     impl TickerColorEditor {
         pub fn update(&mut self, msg: Message) -> Option<super::Action> {
             match msg {
-                Message::ToggleEditFor(ticker) => {
+                Message::ToggleEditFor(ticker, current_color) => {
                     if let Some(current) = self.show_color_for
                         && current == ticker
                     {
                         self.show_color_for = None;
+                        self.editing = None;
                         return None;
                     }
 
                     self.show_color_for = Some(ticker);
+                    self.editing = Some(data::config::theme::to_hsva(current_color));
                     None
                 }
-                Message::ColorChanged(color) => {
+                Message::ColorChangedHsva(hsva) => {
+                    self.editing = Some(hsva);
                     if let Some(t) = self.show_color_for {
-                        return Some(super::Action::TickerColorChanged(t, color));
+                        return Some(super::Action::TickerColorChanged(
+                            t,
+                            data::config::theme::from_hsva(hsva),
+                        ));
                     }
                     None
                 }
@@ -642,24 +651,26 @@ pub mod color_editor {
 
                 let header = button(
                     row![
-                        container("")
-                            .width(12)
-                            .height(12)
-                            .style(move |theme| style::colored_circle_container(theme, applied)),
+                        container("").width(12).height(12).style(move |theme| {
+                            style::colored_circle_container(theme, applied)
+                        }),
                         text(s.name.ticker.symbol_and_exchange_string()).size(14),
                     ]
                     .width(Length::Fill)
                     .spacing(8)
                     .align_y(iced::Alignment::Center),
                 )
-                .on_press(Message::ToggleEditFor(s.name))
+                .on_press(Message::ToggleEditFor(s.name, applied))
                 .style(move |theme, status| style::button::transparent(theme, status, !is_open))
                 .width(Length::Fill);
 
                 let mut col = column![header].spacing(6);
 
                 if is_open {
-                    col = col.push(color_picker(applied, Message::ColorChanged));
+                    let hsva_in = self
+                        .editing
+                        .unwrap_or_else(|| data::config::theme::to_hsva(applied));
+                    col = col.push(color_picker(hsva_in, Message::ColorChangedHsva));
                 }
 
                 content = content.push(container(col).padding(6).style(style::modal_container));

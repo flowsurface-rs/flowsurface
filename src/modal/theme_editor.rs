@@ -7,6 +7,7 @@ use crate::{
     style::{self, Icon, icon_text},
     widget::color_picker::color_picker,
 };
+use palette::Hsva;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Component {
@@ -39,7 +40,7 @@ impl Component {
 pub enum Message {
     ComponentChanged(Component),
     CloseRequested,
-    Color(iced::Color),
+    Color(Hsva),
     HexInput(String),
 }
 
@@ -53,6 +54,7 @@ pub struct ThemeEditor {
     pub custom_theme: Option<iced_core::Theme>,
     component: Component,
     hex_input: Option<String>,
+    editing: Option<Hsva>,
 }
 
 impl ThemeEditor {
@@ -61,6 +63,7 @@ impl ThemeEditor {
             custom_theme: custom_theme.map(|theme| theme.0),
             component: Component::Background,
             hex_input: None,
+            editing: None,
         }
     }
 
@@ -78,10 +81,12 @@ impl ThemeEditor {
 
     pub fn update(&mut self, message: Message, theme: &iced_core::Theme) -> Option<Action> {
         match message {
-            Message::Color(color) => {
+            Message::Color(hsva) => {
                 self.hex_input = None;
+                self.editing = Some(hsva);
 
                 let mut new_palette = theme.palette();
+                let color = data::config::theme::from_hsva(hsva);
 
                 match self.component {
                     Component::Background => new_palette.background = color,
@@ -99,6 +104,8 @@ impl ThemeEditor {
             }
             Message::ComponentChanged(component) => {
                 self.component = component;
+                let color = self.focused_color(theme);
+                self.editing = Some(data::config::theme::to_hsva(color));
                 None
             }
             Message::HexInput(input) => {
@@ -116,6 +123,8 @@ impl ThemeEditor {
                         Component::Warning => new_palette.warning = color,
                     }
 
+                    self.editing = Some(data::config::theme::to_hsva(color));
+
                     let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
                     self.custom_theme = Some(new_theme.clone());
 
@@ -131,6 +140,9 @@ impl ThemeEditor {
 
     pub fn view(&self, theme: &iced_core::Theme) -> Element<'_, Message> {
         let color = self.focused_color(theme);
+        let hsva_in = self
+            .editing
+            .unwrap_or_else(|| data::config::theme::to_hsva(color));
 
         let close_editor = button(icon_text(Icon::Return, 11)).on_press(Message::CloseRequested);
 
@@ -180,7 +192,7 @@ impl ThemeEditor {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            color_picker(color, Message::Color),
+            color_picker(hsva_in, Message::Color),
         ]
         .spacing(10);
 
