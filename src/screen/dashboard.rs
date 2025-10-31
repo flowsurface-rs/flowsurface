@@ -13,7 +13,10 @@ use crate::{
     widget::toast::Toast,
     window::{self, Window},
 };
-use data::{UserTimezone, layout::WindowSpec};
+use data::{
+    UserTimezone,
+    layout::{WindowSpec, pane::ContentKind},
+};
 use exchange::{
     Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
     adapter::{
@@ -326,9 +329,9 @@ impl Dashboard {
                         if let Some(ticker_info) = maybe_ticker_info
                             && state.stream_pair() != Some(ticker_info)
                         {
-                            let content = state.content.identifier_str();
+                            let content_kind = state.content.kind();
 
-                            match state.set_content_and_streams(vec![ticker_info], &content) {
+                            match state.set_content_and_streams(vec![ticker_info], content_kind) {
                                 Ok(streams) => {
                                     let pane_id = state.unique_id();
                                     self.streams.extend(streams.iter());
@@ -676,10 +679,10 @@ impl Dashboard {
         window: window::Id,
         selected_pane: pane_grid::Pane,
         ticker_info: TickerInfo,
-        content: &str,
+        content_kind: ContentKind,
     ) -> Task<Message> {
         if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            match state.set_content_and_streams(vec![ticker_info], content) {
+            match state.set_content_and_streams(vec![ticker_info], content_kind) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
                     self.streams.extend(streams.iter());
@@ -704,7 +707,7 @@ impl Dashboard {
         &mut self,
         main_window: window::Id,
         ticker_info: TickerInfo,
-        content: &str,
+        content_kind: ContentKind,
     ) -> Task<Message> {
         if self.focus.is_none()
             && self.panes.len() == 1
@@ -721,7 +724,7 @@ impl Dashboard {
                 state.link_group = None;
             }
 
-            match state.set_content_and_streams(vec![ticker_info], content) {
+            match state.set_content_and_streams(vec![ticker_info], content_kind) {
                 Ok(streams) => {
                     let pane_id = state.unique_id();
                     self.streams.extend(streams.iter());
@@ -763,11 +766,11 @@ impl Dashboard {
         });
 
         if let Some(group) = link_group {
-            let pane_infos: Vec<(window::Id, pane_grid::Pane, String)> = self
+            let pane_infos: Vec<(window::Id, pane_grid::Pane, ContentKind)> = self
                 .iter_all_panes_mut(main_window)
                 .filter_map(|(window, pane, state)| {
                     if state.link_group == Some(group) {
-                        Some((window, pane, state.content.identifier_str()))
+                        Some((window, pane, state.content.kind()))
                     } else {
                         None
                     }
@@ -776,15 +779,15 @@ impl Dashboard {
 
             let tasks: Vec<Task<Message>> = pane_infos
                 .iter()
-                .map(|(window, pane, content)| {
-                    self.init_pane(main_window, *window, *pane, ticker_info, content)
+                .map(|(window, pane, content_kind)| {
+                    self.init_pane(main_window, *window, *pane, ticker_info, *content_kind)
                 })
                 .collect();
 
             Task::batch(tasks)
         } else if let Some((window, pane)) = self.focus {
             if let Some(state) = self.get_mut_pane(main_window, window, pane) {
-                let content_kind = &state.content.identifier_str();
+                let content_kind = state.content.kind();
                 self.init_focused_pane(main_window, ticker_info, content_kind)
             } else {
                 Task::done(Message::Notification(Toast::warn(
@@ -1034,12 +1037,12 @@ impl Dashboard {
                 Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
                     Some(StreamPairKind::MultiSource(tickers)) => {
                         state
-                            .set_content_and_streams(tickers, &state.content.identifier_str())
+                            .set_content_and_streams(tickers, state.content.kind())
                             .ok();
                     }
                     Some(StreamPairKind::SingleSource(ticker)) => {
                         state
-                            .set_content_and_streams(vec![ticker], &state.content.identifier_str())
+                            .set_content_and_streams(vec![ticker], state.content.kind())
                             .ok();
                     }
                     None => {}

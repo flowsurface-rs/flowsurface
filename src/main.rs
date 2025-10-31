@@ -487,11 +487,11 @@ impl Flowsurface {
                         let main_window_id = self.main_window.id;
 
                         let task = {
-                            if let Some(content_str) = content {
+                            if let Some(kind) = content {
                                 self.active_dashboard_mut().init_focused_pane(
                                     main_window_id,
                                     ticker_info,
-                                    &content_str,
+                                    kind,
                                 )
                             } else {
                                 self.active_dashboard_mut()

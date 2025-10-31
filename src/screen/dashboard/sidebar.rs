@@ -27,7 +27,10 @@ pub struct Sidebar {
 }
 
 pub enum Action {
-    TickerSelected(exchange::TickerInfo, Option<String>),
+    TickerSelected(
+        exchange::TickerInfo,
+        Option<data::layout::pane::ContentKind>,
+    ),
     ErrorOccurred(data::InternalError),
 }
 
