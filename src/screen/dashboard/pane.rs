@@ -25,7 +25,7 @@ use data::{
         Basis, ViewConfig,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
     },
-    layout::pane::{LinkGroup, Settings, VisualConfig},
+    layout::pane::{ContentKind, LinkGroup, Settings, VisualConfig},
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,
@@ -35,7 +35,7 @@ use iced::{
     Alignment, Element, Length, Renderer, Theme,
     alignment::Vertical,
     padding,
-    widget::{button, center, column, container, pane_grid, row, text, tooltip},
+    widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
 };
 use std::time::Instant;
 
@@ -103,6 +103,7 @@ pub enum Message {
 pub enum Event {
     ShowModal(Modal),
     HideModal,
+    ContentSelected(ContentKind),
     ChartInteraction(crate::chart::Message),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
@@ -177,16 +178,18 @@ impl State {
     pub fn set_content_and_streams(
         &mut self,
         tickers: Vec<TickerInfo>,
-        content_str: &str,
+        content_kind: ContentKind,
     ) -> Result<Vec<StreamKind>, DashboardError> {
-        if (matches!(&self.content, Content::Heatmap { .. }) && content_str != "heatmap")
-            || (matches!(&self.content, Content::Kline { .. }) && content_str == "heatmap")
+        if (matches!(&self.content, Content::Heatmap { .. })
+            && content_kind != ContentKind::HeatmapChart)
+            || (matches!(&self.content, Content::Kline { .. })
+                && content_kind == ContentKind::HeatmapChart)
         {
             self.settings.selected_basis = None;
         }
 
-        let result = match content_str {
-            "heatmap" => {
+        let result = match content_kind {
+            ContentKind::HeatmapChart => {
                 let ticker_info = tickers[0];
                 let ticker = ticker_info.ticker;
 
@@ -244,7 +247,7 @@ impl State {
 
                 Ok((content, streams))
             }
-            "footprint" => {
+            ContentKind::FootprintChart => {
                 let ticker_info = tickers[0];
                 let ticker = ticker_info.ticker;
 
@@ -257,7 +260,7 @@ impl State {
                 let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
 
                 let content = Content::new_kline(
-                    content_str,
+                    content_kind,
                     &self.content,
                     ticker_info,
                     &self.settings,
@@ -297,7 +300,7 @@ impl State {
                 };
                 Ok((content, streams))
             }
-            "candlestick" => {
+            ContentKind::CandlestickChart => {
                 let ticker_info = tickers[0];
                 let ticker = ticker_info.ticker;
 
@@ -305,7 +308,7 @@ impl State {
                 let tick_size = ticker_info.min_ticksize;
 
                 let content = Content::new_kline(
-                    content_str,
+                    content_kind,
                     &self.content,
                     ticker_info,
                     &self.settings,
@@ -337,7 +340,7 @@ impl State {
                 };
                 Ok((content, streams))
             }
-            "time&sales" => {
+            ContentKind::TimeAndSales => {
                 let ticker_info = tickers[0];
                 let ticker = ticker_info.ticker;
 
@@ -358,7 +361,7 @@ impl State {
                 }];
                 Ok((content, streams))
             }
-            "ladder" => {
+            ContentKind::Ladder => {
                 let ticker_info = tickers[0];
                 let ticker = ticker_info.ticker;
 
@@ -403,7 +406,7 @@ impl State {
                 }];
                 Ok((content, streams))
             }
-            "comparison" => {
+            ContentKind::ComparisonChart => {
                 let config = self
                     .settings
                     .visual_config
@@ -515,6 +518,32 @@ impl State {
         }
     }
 
+    fn has_stream(&self) -> bool {
+        match &self.streams {
+            ResolvedStream::Ready(streams) => !streams.is_empty(),
+            ResolvedStream::Waiting(streams) => !streams.is_empty(),
+        }
+    }
+
+    fn view_uninitialized<'a>(&'a self, kind: ContentKind) -> Element<'a, Message> {
+        let content = column![
+            text(kind.to_string()).size(16),
+            text("No ticker selected").size(14)
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center);
+
+        center(content).into()
+    }
+
+    fn uninitialized_base<'a>(&'a self, kind: ContentKind) -> Element<'a, Message> {
+        if self.has_stream() {
+            center(text("Loading…").size(16)).into()
+        } else {
+            self.view_uninitialized(kind)
+        }
+    }
+
     pub fn view<'a>(
         &'a self,
         id: pane_grid::Pane,
@@ -571,6 +600,26 @@ impl State {
                 .padding([4, 10]);
 
             stream_info_element = stream_info_element.push(tickers_list_btn);
+        } else if !matches!(self.content, Content::Starter) && !self.has_stream() {
+            let content = row![text("Choose a ticker").size(13)]
+                .align_y(Alignment::Center)
+                .spacing(4);
+
+            let tickers_list_btn = button(content)
+                .on_press(Message::PaneEvent(
+                    id,
+                    Event::ShowModal(Modal::MiniTickersList(MiniPanel::new())),
+                ))
+                .style(|theme, status| {
+                    style::button::modifier(
+                        theme,
+                        status,
+                        !matches!(self.modal, Some(Modal::MiniTickersList(_))),
+                    )
+                })
+                .padding([4, 10]);
+
+            stream_info_element = stream_info_element.push(tickers_list_btn);
         }
 
         let modifier: Option<modal::stream::Modifier> = self.modal.clone().and_then(|m| {
@@ -593,8 +642,20 @@ impl State {
 
         let body = match &self.content {
             Content::Starter => {
+                let content_picklist =
+                    pick_list(ContentKind::ALL, Some(ContentKind::Starter), move |kind| {
+                        Message::PaneEvent(id, Event::ContentSelected(kind))
+                    });
+
                 let base: Element<_> = widget::toast::Manager::new(
-                    center(text("select a ticker to start").size(16)),
+                    center(
+                        column![
+                            text("Choose a view to get started").size(16),
+                            content_picklist
+                        ]
+                        .align_x(Alignment::Center)
+                        .spacing(12),
+                    ),
                     &self.notifications,
                     Alignment::End,
                     move |msg| Message::PaneEvent(id, Event::DeleteNotification(msg)),
@@ -658,7 +719,16 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    center(text("Loading...").size(16)).into()
+                    let base = self.uninitialized_base(ContentKind::ComparisonChart);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
                 }
             }
             Content::TimeAndSales(panel) => {
@@ -680,7 +750,16 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    center(text("Loading...").size(16)).into()
+                    let base = self.uninitialized_base(ContentKind::TimeAndSales);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
                 }
             }
             Content::Ladder(panel) => {
@@ -724,7 +803,16 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    center(text("Loading...").size(16)).into()
+                    let base = self.uninitialized_base(ContentKind::Ladder);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
                 }
             }
             Content::Heatmap {
@@ -792,7 +880,16 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    center(text("Loading...").size(16)).into()
+                    let base = self.uninitialized_base(ContentKind::HeatmapChart);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
                 }
             }
             Content::Kline {
@@ -879,7 +976,22 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    center(text("Loading...").size(16)).into()
+                    let content_kind = match chart_kind {
+                        data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
+                        data::chart::KlineChartKind::Footprint { .. } => {
+                            ContentKind::FootprintChart
+                        }
+                    };
+                    let base = self.uninitialized_base(content_kind);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
                 }
             }
         };
@@ -961,6 +1073,73 @@ impl State {
             Event::HideModal => {
                 self.modal = None;
             }
+            Event::ContentSelected(kind) => match kind {
+                ContentKind::Starter => {}
+                ContentKind::CandlestickChart => {
+                    self.content = Content::Kline {
+                        chart: None,
+                        indicators: vec![],
+                        kind: data::chart::KlineChartKind::Candles,
+                        layout: ViewConfig {
+                            splits: vec![],
+                            autoscale: Some(data::chart::Autoscale::FitToVisible),
+                        },
+                    };
+
+                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                    self.streams = ResolvedStream::Waiting(vec![]);
+                }
+                ContentKind::FootprintChart => {
+                    self.content = Content::Kline {
+                        chart: None,
+                        indicators: vec![],
+                        kind: data::chart::KlineChartKind::Footprint {
+                            clusters: data::chart::kline::ClusterKind::default(),
+                            scaling: data::chart::kline::ClusterScaling::default(),
+                            studies: vec![],
+                        },
+                        layout: ViewConfig {
+                            splits: vec![],
+                            autoscale: Some(data::chart::Autoscale::FitToVisible),
+                        },
+                    };
+
+                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                    self.streams = ResolvedStream::Waiting(vec![]);
+                }
+                ContentKind::HeatmapChart => {
+                    self.content = Content::Heatmap {
+                        chart: None,
+                        indicators: vec![],
+                        studies: vec![],
+                        layout: ViewConfig {
+                            splits: vec![],
+                            autoscale: Some(data::chart::Autoscale::CenterLatest),
+                        },
+                    };
+
+                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                    self.streams = ResolvedStream::Waiting(vec![]);
+                }
+                ContentKind::ComparisonChart => {
+                    self.content = Content::Comparison(None);
+
+                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                    self.streams = ResolvedStream::Waiting(vec![]);
+                }
+                ContentKind::TimeAndSales => {
+                    self.content = Content::TimeAndSales(None);
+
+                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                    self.streams = ResolvedStream::Waiting(vec![]);
+                }
+                ContentKind::Ladder => {
+                    self.content = Content::Ladder(None);
+
+                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                    self.streams = ResolvedStream::Waiting(vec![]);
+                }
+            },
             Event::ChartInteraction(msg) => match &mut self.content {
                 Content::Heatmap { chart: Some(c), .. } => {
                     super::chart::update(c, &msg);
@@ -1269,12 +1448,15 @@ impl State {
             }
         };
 
+        let treat_as_starter =
+            matches!(&self.content, Content::Starter) || !self.content.initialized();
+
         let tooltip_pos = tooltip::Position::Bottom;
         let mut buttons = row![];
 
         let show_modal = |modal: Modal| Message::PaneEvent(pane, Event::ShowModal(modal));
 
-        if !matches!(&self.content, Content::Starter) {
+        if !treat_as_starter {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::Cog, 12),
                 show_modal(Modal::Settings),
@@ -1283,11 +1465,12 @@ impl State {
                 modal_btn_style(Modal::Settings),
             ));
         }
-
-        if matches!(
-            &self.content,
-            Content::Heatmap { .. } | Content::Kline { .. }
-        ) {
+        if !treat_as_starter
+            && matches!(
+                &self.content,
+                Content::Heatmap { .. } | Content::Kline { .. }
+            )
+        {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::ChartOutline, 12),
                 show_modal(Modal::Indicators),
@@ -1616,7 +1799,7 @@ impl Content {
     }
 
     fn new_kline(
-        content_str: &str, // "footprint" or "candlestick"
+        content_kind: ContentKind,
         current_content: &Content,
         ticker_info: TickerInfo,
         settings: &Settings,
@@ -1638,8 +1821,8 @@ impl Content {
             (None, None, None)
         };
 
-        let (default_tf, determined_chart_kind) = match content_str {
-            "footprint" => (
+        let (default_tf, determined_chart_kind) = match content_kind {
+            ContentKind::FootprintChart => (
                 Timeframe::M5,
                 prev_kind_opt
                     .filter(|k| matches!(k, data::chart::KlineChartKind::Footprint { .. }))
@@ -1649,11 +1832,8 @@ impl Content {
                         studies: vec![],
                     }),
             ),
-            _ => (
-                // "candlestick"
-                Timeframe::M15,
-                data::chart::KlineChartKind::Candles,
-            ),
+            ContentKind::CandlestickChart => (Timeframe::M15, data::chart::KlineChartKind::Candles),
+            _ => unreachable!("invalid content kind for kline chart"),
         };
 
         let basis = settings.selected_basis.unwrap_or(Basis::Time(default_tf));
@@ -1857,17 +2037,17 @@ impl Content {
         }
     }
 
-    pub fn identifier_str(&self) -> String {
+    pub fn kind(&self) -> ContentKind {
         match self {
-            Content::Starter => "starter".to_string(),
-            Content::Heatmap { .. } => "heatmap".to_string(),
+            Content::Heatmap { .. } => ContentKind::HeatmapChart,
             Content::Kline { kind, .. } => match kind {
-                data::chart::KlineChartKind::Footprint { .. } => "footprint".to_string(),
-                data::chart::KlineChartKind::Candles => "candlestick".to_string(),
+                data::chart::KlineChartKind::Footprint { .. } => ContentKind::FootprintChart,
+                data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
             },
-            Content::TimeAndSales(_) => "time&sales".to_string(),
-            Content::Ladder(_) => "ladder".to_string(),
-            Content::Comparison(_) => "comparison".to_string(),
+            Content::TimeAndSales(_) => ContentKind::TimeAndSales,
+            Content::Ladder(_) => ContentKind::Ladder,
+            Content::Comparison(_) => ContentKind::ComparisonChart,
+            Content::Starter => ContentKind::Starter,
         }
     }
 

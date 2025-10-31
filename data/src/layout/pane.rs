@@ -180,3 +180,41 @@ impl VisualConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContentKind {
+    Starter,
+    HeatmapChart,
+    FootprintChart,
+    CandlestickChart,
+    ComparisonChart,
+    TimeAndSales,
+    Ladder,
+}
+
+impl ContentKind {
+    pub const ALL: [ContentKind; 7] = [
+        ContentKind::Starter,
+        ContentKind::HeatmapChart,
+        ContentKind::FootprintChart,
+        ContentKind::CandlestickChart,
+        ContentKind::ComparisonChart,
+        ContentKind::TimeAndSales,
+        ContentKind::Ladder,
+    ];
+}
+
+impl std::fmt::Display for ContentKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ContentKind::Starter => "Starter",
+            ContentKind::HeatmapChart => "Heatmap Chart",
+            ContentKind::FootprintChart => "Footprint Chart",
+            ContentKind::CandlestickChart => "Candlestick Chart",
+            ContentKind::ComparisonChart => "Comparison Chart",
+            ContentKind::TimeAndSales => "Time and Sales",
+            ContentKind::Ladder => "DOM/Ladder",
+        };
+        write!(f, "{s}")
+    }
+}

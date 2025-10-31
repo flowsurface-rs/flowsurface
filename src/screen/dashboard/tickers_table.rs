@@ -1,10 +1,10 @@
 use crate::{
     modal::pane::mini_tickers_list::RowSelection,
     style::{self, Icon, icon_text},
-    widget::button_with_tooltip,
 };
 use data::{
     InternalError,
+    layout::pane::ContentKind,
     tickers_table::{
         PriceChangeDirection, Settings, SortOptions, TickerDisplayData, TickerRowData,
         compute_display_data,
@@ -25,7 +25,7 @@ use iced::{
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 const ACTIVE_UPDATE_INTERVAL: u64 = 13;
 const INACTIVE_UPDATE_INTERVAL: u64 = 300;
@@ -72,7 +72,7 @@ pub fn fetch_tickers_info() -> Task<Message> {
 }
 
 pub enum Action {
-    TickerSelected(TickerInfo, Option<String>),
+    TickerSelected(TickerInfo, Option<ContentKind>),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
 }
@@ -82,7 +82,7 @@ pub enum Message {
     UpdateSearchQuery(String),
     ChangeSortOption(SortOptions),
     ShowSortingOptions,
-    TickerSelected(Ticker, Option<String>),
+    TickerSelected(Ticker, Option<ContentKind>),
     ExpandTickerCard(Option<Ticker>),
     FavoriteTicker(Ticker),
     Scrolled(scrollable::Viewport),
@@ -110,6 +110,8 @@ pub struct TickersTable {
     selected_exchanges: FxHashSet<ExchangeInclusive>,
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
+    row_index: FxHashMap<Ticker, usize>,
+    pending_stats_batches: usize,
 }
 
 impl TickersTable {
@@ -133,6 +135,8 @@ impl TickersTable {
                 selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
+                row_index: FxHashMap::default(),
+                pending_stats_batches: 0,
             },
             fetch_tickers_info(),
         )
@@ -213,6 +217,7 @@ impl TickersTable {
             }
             Message::FetchForTickerStats(exchange) => {
                 let task = if let Some(exchange) = exchange {
+                    self.pending_stats_batches = 1;
                     Task::perform(fetch_ticker_prices(exchange), move |result| match result {
                         Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
                         Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
@@ -220,6 +225,8 @@ impl TickersTable {
                 } else {
                     let exchanges: FxHashSet<Exchange> =
                         self.tickers_info.keys().map(|t| t.exchange).collect();
+
+                    self.pending_stats_batches = exchanges.len();
 
                     let fetch_tasks = exchanges
                         .into_iter()
@@ -243,6 +250,13 @@ impl TickersTable {
             }
             Message::UpdateTickerStats(exchange, stats) => {
                 self.update_ticker_rows(exchange, stats);
+
+                if self.pending_stats_batches > 0 {
+                    self.pending_stats_batches -= 1;
+                }
+                if self.pending_stats_batches == 0 {
+                    self.sort_ticker_rows();
+                }
             }
             Message::UpdateTickersInfo(exchange, info) => {
                 self.update_ticker_info(exchange, info);
@@ -413,76 +427,42 @@ impl TickersTable {
         .map(|_| Message::FetchForTickerStats(None))
     }
 
-    fn update_table(&mut self, exchange: Exchange, ticker_rows: FxHashMap<Ticker, TickerStats>) {
-        self.display_cache
-            .retain(|ticker, _| ticker.exchange != exchange);
-
-        for (ticker, new_stats) in ticker_rows {
-            let (previous_price, updated_row) = if let Some(row) = self
-                .ticker_rows
-                .iter_mut()
-                .find(|r| r.exchange == exchange && r.ticker == ticker)
-            {
-                let previous_price = Some(row.stats.mark_price);
-                row.previous_stats = Some(row.stats);
-                row.stats = new_stats;
-                (previous_price, *row)
-            } else {
-                let new_row = TickerRowData {
-                    exchange,
-                    ticker,
-                    stats: new_stats,
-                    previous_stats: None,
-                    is_favorited: self.favorited_tickers.contains(&ticker),
-                };
-                self.ticker_rows.push(new_row);
-                (None, new_row)
-            };
-
-            self.display_cache.insert(
-                ticker,
-                compute_display_data(&ticker, &updated_row.stats, previous_price),
-            );
-        }
-
-        self.sort_ticker_rows();
-    }
-
     fn sort_ticker_rows(&mut self) {
         match self.selected_sort_option {
             SortOptions::VolumeDesc => {
-                self.ticker_rows.sort_by(|a, b| {
+                self.ticker_rows.sort_unstable_by(|a, b| {
                     b.stats
                         .daily_volume
-                        .partial_cmp(&a.stats.daily_volume)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&a.stats.daily_volume)
+                        .then_with(|| Ordering::Equal)
                 });
             }
             SortOptions::VolumeAsc => {
-                self.ticker_rows.sort_by(|a, b| {
+                self.ticker_rows.sort_unstable_by(|a, b| {
                     a.stats
                         .daily_volume
-                        .partial_cmp(&b.stats.daily_volume)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&b.stats.daily_volume)
+                        .then_with(|| Ordering::Equal)
                 });
             }
             SortOptions::ChangeDesc => {
-                self.ticker_rows.sort_by(|a, b| {
+                self.ticker_rows.sort_unstable_by(|a, b| {
                     b.stats
                         .daily_price_chg
-                        .partial_cmp(&a.stats.daily_price_chg)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&a.stats.daily_price_chg)
+                        .then_with(|| Ordering::Equal)
                 });
             }
             SortOptions::ChangeAsc => {
-                self.ticker_rows.sort_by(|a, b| {
+                self.ticker_rows.sort_unstable_by(|a, b| {
                     a.stats
                         .daily_price_chg
-                        .partial_cmp(&b.stats.daily_price_chg)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&b.stats.daily_price_chg)
+                        .then_with(|| Ordering::Equal)
                 });
             }
         }
+        self.rebuild_index();
     }
 
     fn change_sort_option(&mut self, option: SortOptions) {
@@ -500,8 +480,16 @@ impl TickersTable {
         self.sort_ticker_rows();
     }
 
+    fn rebuild_index(&mut self) {
+        self.row_index.clear();
+        for (i, row) in self.ticker_rows.iter().enumerate() {
+            self.row_index.insert(row.ticker, i);
+        }
+    }
+
     fn favorite_ticker(&mut self, ticker: Ticker) {
-        if let Some(row) = self.ticker_rows.iter_mut().find(|row| row.ticker == ticker) {
+        if let Some(&idx) = self.row_index.get(&ticker) {
+            let row = &mut self.ticker_rows[idx];
             row.is_favorited = !row.is_favorited;
 
             if row.is_favorited {
@@ -585,15 +573,39 @@ impl TickersTable {
     }
 
     fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {
-        let stats_fxh = stats.into_iter().collect::<FxHashMap<_, _>>();
-
-        let tickers_set: FxHashSet<_> = self.tickers_info.keys().copied().collect();
-        let filtered = stats_fxh
+        let iter = stats
             .into_iter()
-            .filter(|(t, _)| t.exchange == exchange && tickers_set.contains(t))
-            .collect();
+            .filter(|(t, _)| self.tickers_info.contains_key(t));
 
-        self.update_table(exchange, filtered);
+        for (ticker, new_stats) in iter {
+            if let Some(&idx) = self.row_index.get(&ticker) {
+                let row = &mut self.ticker_rows[idx];
+                let previous_price = Some(row.stats.mark_price);
+                row.previous_stats = Some(row.stats);
+                row.stats = new_stats;
+
+                self.display_cache.insert(
+                    ticker,
+                    compute_display_data(&ticker, &row.stats, previous_price),
+                );
+            } else {
+                let new_row = TickerRowData {
+                    exchange,
+                    ticker,
+                    stats: new_stats,
+                    previous_stats: None,
+                    is_favorited: self.favorited_tickers.contains(&ticker),
+                };
+                self.ticker_rows.push(new_row);
+                let idx = self.ticker_rows.len() - 1;
+                self.row_index.insert(ticker, idx);
+
+                self.display_cache.insert(
+                    ticker,
+                    compute_display_data(&ticker, &self.ticker_rows[idx].stats, None),
+                );
+            }
+        }
     }
 
     fn sep_block_height(&self, fav_n: usize) -> f32 {
@@ -1137,14 +1149,6 @@ fn expanded_ticker_card<'a>(
             })
             .on_press(Message::FavoriteTicker(*ticker))
             .style(move |theme, status| { style::button::transparent(theme, status, false) }),
-            space::horizontal(),
-            button_with_tooltip(
-                icon_text(Icon::Link, 11),
-                Message::TickerSelected(*ticker, None),
-                Some("Use this ticker on selected pane/group"),
-                iced::widget::tooltip::Position::Top,
-                move |theme, status| style::button::transparent(theme, status, false)
-            ),
         ]
         .spacing(2),
         row![
@@ -1188,12 +1192,12 @@ fn expanded_ticker_card<'a>(
             }
         }),
         column![
-            init_content_button("Heatmap Chart", "heatmap", *ticker, 180.0),
-            init_content_button("Footprint Chart", "footprint", *ticker, 180.0),
-            init_content_button("Candlestick Chart", "candlestick", *ticker, 180.0),
-            init_content_button("Time&Sales", "time&sales", *ticker, 160.0),
-            init_content_button("DOM/Ladder", "ladder", *ticker, 160.0),
-            init_content_button("Comparison Chart", "comparison", *ticker, 180.0),
+            init_content_button(ContentKind::HeatmapChart, *ticker, 180.0),
+            init_content_button(ContentKind::FootprintChart, *ticker, 180.0),
+            init_content_button(ContentKind::CandlestickChart, *ticker, 180.0),
+            init_content_button(ContentKind::ComparisonChart, *ticker, 180.0),
+            init_content_button(ContentKind::TimeAndSales, *ticker, 160.0),
+            init_content_button(ContentKind::Ladder, *ticker, 160.0),
         ]
         .width(Length::Fill)
         .spacing(2)
@@ -1306,13 +1310,14 @@ fn sort_button(
 }
 
 fn init_content_button<'a>(
-    label: &'a str,
-    content: &str,
+    content: ContentKind,
     ticker: Ticker,
     width: f32,
 ) -> Button<'a, Message, Theme, Renderer> {
+    let label = content.to_string();
+
     button(text(label).align_x(Horizontal::Center))
-        .on_press(Message::TickerSelected(ticker, Some(content.to_string())))
+        .on_press(Message::TickerSelected(ticker, Some(content)))
         .width(Length::Fixed(width))
 }
 
