@@ -577,10 +577,8 @@ pub async fn fetch_ticker_prices(
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let url = format!("{}/info", API_DOMAIN);
 
-    // Step 1: Get all mid prices (contains both perp and spot)
     let mids = fetch_all_mids(&url).await?;
 
-    // Step 2: Get market-specific metadata for stats
     let (metadata_type, exchange) = match market {
         MarketKind::LinearPerps => ("metaAndAssetCtxs", Exchange::HyperliquidLinear),
         MarketKind::Spot => ("spotMetaAndAssetCtxs", Exchange::HyperliquidSpot),
@@ -589,7 +587,6 @@ pub async fn fetch_ticker_prices(
 
     let metadata = fetch_metadata(&url, metadata_type).await?;
 
-    // Step 3: Process based on market type
     match market {
         MarketKind::LinearPerps => process_perp_ticker_stats(&mids, &metadata, exchange).await,
         MarketKind::Spot => process_spot_ticker_stats(&mids, &metadata, exchange).await,
@@ -597,7 +594,6 @@ pub async fn fetch_ticker_prices(
     }
 }
 
-// Shared helper to fetch all mid prices
 async fn fetch_all_mids(url: &str) -> Result<HashMap<String, String>, AdapterError> {
     let body = json!({"type": "allMids"});
     let response_text = limiter::http_request_with_limiter(
@@ -612,19 +608,16 @@ async fn fetch_all_mids(url: &str) -> Result<HashMap<String, String>, AdapterErr
     serde_json::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))
 }
 
-// Shared helper to fetch metadata
 async fn fetch_metadata(url: &str, metadata_type: &str) -> Result<Value, AdapterError> {
     let body = json!({"type": metadata_type});
-    let response_text = limiter::http_request_with_limiter(
+    limiter::http_parse_with_limiter(
         url,
         &HYPERLIQUID_LIMITER,
         1,
         Some(Method::POST),
         Some(&body),
     )
-    .await?;
-
-    serde_json::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))
+    .await
 }
 
 async fn process_perp_ticker_stats(
@@ -632,7 +625,6 @@ async fn process_perp_ticker_stats(
     metadata: &Value,
     exchange: Exchange,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
-    // Parse metadata for perps: [meta, [asset_contexts...]]
     let meta = metadata
         .get(0)
         .ok_or_else(|| AdapterError::ParseError("Meta data not found".to_string()))?;
@@ -647,7 +639,6 @@ async fn process_perp_ticker_stats(
 
     let mut ticker_stats_map = HashMap::new();
 
-    // Process perp symbols from mids (skip spot symbols)
     for (symbol, mid_price_str) in mids {
         // Skip spot symbols: @xxx or PURR/USDC
         if symbol.starts_with('@') || symbol.contains('/') {
@@ -658,7 +649,6 @@ async fn process_perp_ticker_stats(
             .parse::<f32>()
             .map_err(|_| AdapterError::ParseError("Failed to parse mid price".to_string()))?;
 
-        // Find asset in universe and get stats
         if let Some(stats) = find_asset_stats(symbol, universe, asset_ctxs, mid_price)? {
             ticker_stats_map.insert(Ticker::new(symbol, exchange), stats);
         }
