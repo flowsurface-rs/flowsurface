@@ -655,13 +655,10 @@ pub async fn fetch_ticker_prices(
         inst_type
     );
 
-    let response_text =
-        limiter::http_request_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
+    let parsed_response: Value =
+        limiter::http_parse_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
 
-    let doc: Value = serde_json::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
-
-    let list = doc["data"]
+    let list = parsed_response["data"]
         .as_array()
         .ok_or_else(|| AdapterError::ParseError("Result list is not an array".to_string()))?;
 

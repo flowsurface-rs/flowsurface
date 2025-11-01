@@ -1123,15 +1123,14 @@ pub async fn fetch_ticker_prices(
     };
 
     let limiter = limiter_from_market_type(market);
-    let text = crate::limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
-    let value: Vec<serde_json::Value> = serde_json::from_str(&text)
-        .map_err(|e| AdapterError::ParseError(format!("Failed to parse prices: {e}")))?;
+    let parsed_response: Vec<serde_json::Value> =
+        limiter::http_parse_with_limiter(&url, limiter, weight, None, None).await?;
 
     let exchange = exchange_from_market_type(market);
     let mut ticker_price_map = HashMap::new();
 
-    for item in value {
+    for item in parsed_response {
         let symbol = item["symbol"]
             .as_str()
             .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;

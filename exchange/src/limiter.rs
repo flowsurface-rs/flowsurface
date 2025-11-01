@@ -58,6 +58,54 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
     response.text().await.map_err(AdapterError::FetchError)
 }
 
+pub async fn http_parse_with_limiter<L, V>(
+    url: &str,
+    limiter: &tokio::sync::Mutex<L>,
+    weight: usize,
+    method: Option<Method>,
+    json_body: Option<&Value>,
+) -> Result<V, AdapterError>
+where
+    L: RateLimiter,
+    V: serde::de::DeserializeOwned,
+{
+    let body = http_request_with_limiter(url, limiter, weight, method, json_body).await?;
+    let trimmed = body.trim();
+
+    let body_preview = |body: &str, n: usize| {
+        let trimmed = body.trim();
+        let mut preview = trimmed.chars().take(n).collect::<String>();
+        if trimmed.len() > n {
+            preview.push('…');
+        }
+        preview
+    };
+
+    if trimmed.is_empty() {
+        return Err(AdapterError::ParseError(format!(
+            "Empty response body | url={url}",
+        )));
+    }
+    if trimmed.starts_with('<') {
+        return Err(AdapterError::ParseError(format!(
+            "Non-JSON (HTML?) response | url={} | len={} | preview={:?}",
+            url,
+            body.len(),
+            body_preview(&body, 200)
+        )));
+    }
+
+    serde_json::from_str(&body).map_err(|e| {
+        AdapterError::ParseError(format!(
+            "JSON parse failed: {} | url={} | response_len={} | preview={:?}",
+            e,
+            url,
+            body.len(),
+            body_preview(&body, 200)
+        ))
+    })
+}
+
 /// Limiter for a fixed window rate
 pub struct FixedWindowBucket {
     max_tokens: usize,
