@@ -30,6 +30,7 @@ use data::{
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,
     adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
+    fetcher::FetchRange,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -42,6 +43,11 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
+    RequestFetch {
+        req_id: uuid::Uuid,
+        fetch: FetchRange,
+        stream: Option<StreamKind>,
+    },
     SwitchTickersInGroup(TickerInfo),
 }
 
@@ -1078,7 +1084,7 @@ impl State {
                 ContentKind::CandlestickChart => {
                     self.content = Content::Kline {
                         chart: None,
-                        indicators: vec![],
+                        indicators: vec![KlineIndicator::Volume],
                         kind: data::chart::KlineChartKind::Candles,
                         layout: ViewConfig {
                             splits: vec![],
@@ -1092,7 +1098,7 @@ impl State {
                 ContentKind::FootprintChart => {
                     self.content = Content::Kline {
                         chart: None,
-                        indicators: vec![],
+                        indicators: vec![KlineIndicator::Volume],
                         kind: data::chart::KlineChartKind::Footprint {
                             clusters: data::chart::kline::ClusterKind::default(),
                             scaling: data::chart::kline::ClusterScaling::default(),
@@ -1110,7 +1116,7 @@ impl State {
                 ContentKind::HeatmapChart => {
                     self.content = Content::Heatmap {
                         chart: None,
-                        indicators: vec![],
+                        indicators: vec![HeatmapIndicator::Volume],
                         studies: vec![],
                         layout: ViewConfig {
                             splits: vec![],
@@ -1320,7 +1326,23 @@ impl State {
                                             }
 
                                             self.streams = ResolvedStream::Ready(streams);
-                                            c.set_basis(new_basis);
+                                            let action = c.set_basis(new_basis);
+
+                                            match action {
+                                                Some(chart::Action::FetchRequested(
+                                                    req_id,
+                                                    fetch,
+                                                    stream,
+                                                )) => {
+                                                    return Some(Effect::RequestFetch {
+                                                        req_id,
+                                                        fetch,
+                                                        stream,
+                                                    });
+                                                }
+                                                Some(chart::Action::ErrorOccurred(_err)) => {}
+                                                None => {}
+                                            }
                                         }
                                         Basis::Tick(_) => {
                                             let depth_aggr =

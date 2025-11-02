@@ -369,6 +369,11 @@ impl Dashboard {
 
                         let task = match effect {
                             pane::Effect::RefreshStreams => self.refresh_streams(main_window.id),
+                            pane::Effect::RequestFetch {
+                                req_id,
+                                fetch,
+                                stream,
+                            } => request_fetch(state, *layout_id, req_id, fetch, stream),
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(main_window.id, ticker_info)
                             }
