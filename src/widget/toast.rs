@@ -207,12 +207,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
     fn operate(
         &mut self,
-        _state: &mut Tree,
+        state: &mut Tree,
         layout: Layout<'_>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds())
+        operation.container(None, layout.bounds());
+
+        self.content
+            .as_widget_mut()
+            .operate(&mut state.children[0], layout, renderer, operation);
     }
 
     fn update(
@@ -430,10 +434,21 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
     fn operate(
         &mut self,
         layout: Layout<'_>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
         operation.container(None, layout.bounds());
+
+        for ((child, state), child_layout) in self
+            .toasts
+            .iter_mut()
+            .zip(self.state.iter_mut())
+            .zip(layout.children())
+        {
+            child
+                .as_widget_mut()
+                .operate(state, child_layout, renderer, operation);
+        }
     }
 
     fn mouse_interaction(

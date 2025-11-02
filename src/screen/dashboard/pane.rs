@@ -49,6 +49,7 @@ pub enum Effect {
         stream: Option<StreamKind>,
     },
     SwitchTickersInGroup(TickerInfo),
+    FocusWidget(iced::widget::Id),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1068,84 +1069,24 @@ impl State {
 
     pub fn update(&mut self, msg: Event) -> Option<Effect> {
         match msg {
-            Event::ShowModal(requested_modal) => match &self.modal {
-                Some(modal) if modal == &requested_modal => {
-                    self.modal = None;
-                }
-                _ => {
-                    self.modal = Some(requested_modal);
-                }
-            },
+            Event::ShowModal(requested_modal) => {
+                return self.show_modal_with_focus(requested_modal);
+            }
             Event::HideModal => {
                 self.modal = None;
             }
-            Event::ContentSelected(kind) => match kind {
-                ContentKind::Starter => {}
-                ContentKind::CandlestickChart => {
-                    self.content = Content::Kline {
-                        chart: None,
-                        indicators: vec![KlineIndicator::Volume],
-                        kind: data::chart::KlineChartKind::Candles,
-                        layout: ViewConfig {
-                            splits: vec![],
-                            autoscale: Some(data::chart::Autoscale::FitToVisible),
-                        },
-                    };
+            Event::ContentSelected(kind) => {
+                self.content = Content::placeholder(kind);
 
-                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
+                if !matches!(kind, ContentKind::Starter) {
                     self.streams = ResolvedStream::Waiting(vec![]);
-                }
-                ContentKind::FootprintChart => {
-                    self.content = Content::Kline {
-                        chart: None,
-                        indicators: vec![KlineIndicator::Volume],
-                        kind: data::chart::KlineChartKind::Footprint {
-                            clusters: data::chart::kline::ClusterKind::default(),
-                            scaling: data::chart::kline::ClusterScaling::default(),
-                            studies: vec![],
-                        },
-                        layout: ViewConfig {
-                            splits: vec![],
-                            autoscale: Some(data::chart::Autoscale::FitToVisible),
-                        },
-                    };
+                    let modal = Modal::MiniTickersList(MiniPanel::new());
 
-                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
-                    self.streams = ResolvedStream::Waiting(vec![]);
+                    if let Some(effect) = self.show_modal_with_focus(modal) {
+                        return Some(effect);
+                    }
                 }
-                ContentKind::HeatmapChart => {
-                    self.content = Content::Heatmap {
-                        chart: None,
-                        indicators: vec![HeatmapIndicator::Volume],
-                        studies: vec![],
-                        layout: ViewConfig {
-                            splits: vec![],
-                            autoscale: Some(data::chart::Autoscale::CenterLatest),
-                        },
-                    };
-
-                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
-                    self.streams = ResolvedStream::Waiting(vec![]);
-                }
-                ContentKind::ComparisonChart => {
-                    self.content = Content::Comparison(None);
-
-                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
-                    self.streams = ResolvedStream::Waiting(vec![]);
-                }
-                ContentKind::TimeAndSales => {
-                    self.content = Content::TimeAndSales(None);
-
-                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
-                    self.streams = ResolvedStream::Waiting(vec![]);
-                }
-                ContentKind::Ladder => {
-                    self.content = Content::Ladder(None);
-
-                    self.modal = Some(Modal::MiniTickersList(MiniPanel::new()));
-                    self.streams = ResolvedStream::Waiting(vec![]);
-                }
-            },
+            }
             Event::ChartInteraction(msg) => match &mut self.content {
                 Content::Heatmap { chart: Some(c), .. } => {
                     super::chart::update(c, &msg);
@@ -1647,6 +1588,26 @@ impl State {
         self.streams.matches_stream(stream)
     }
 
+    fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
+        let is_same_kind = self
+            .modal
+            .as_ref()
+            .map(|open| core::mem::discriminant(open) == core::mem::discriminant(&requested_modal))
+            .unwrap_or(false);
+        if is_same_kind {
+            self.modal = None;
+            return None;
+        }
+
+        let focus_widget_id = match &requested_modal {
+            Modal::MiniTickersList(m) => Some(m.search_box_id.clone()),
+            _ => None,
+        };
+
+        self.modal = Some(requested_modal);
+        focus_widget_id.map(Effect::FocusWidget)
+    }
+
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
         match &mut self.content {
             Content::Heatmap { chart, .. } => chart
@@ -1918,6 +1879,46 @@ impl Content {
             indicators: enabled_indicators,
             layout,
             kind: determined_chart_kind,
+        }
+    }
+
+    fn placeholder(kind: ContentKind) -> Self {
+        match kind {
+            ContentKind::Starter => Content::Starter,
+            ContentKind::CandlestickChart => Content::Kline {
+                chart: None,
+                indicators: vec![KlineIndicator::Volume],
+                kind: data::chart::KlineChartKind::Candles,
+                layout: ViewConfig {
+                    splits: vec![],
+                    autoscale: Some(data::chart::Autoscale::FitToVisible),
+                },
+            },
+            ContentKind::FootprintChart => Content::Kline {
+                chart: None,
+                indicators: vec![KlineIndicator::Volume],
+                kind: data::chart::KlineChartKind::Footprint {
+                    clusters: data::chart::kline::ClusterKind::default(),
+                    scaling: data::chart::kline::ClusterScaling::default(),
+                    studies: vec![],
+                },
+                layout: ViewConfig {
+                    splits: vec![],
+                    autoscale: Some(data::chart::Autoscale::FitToVisible),
+                },
+            },
+            ContentKind::HeatmapChart => Content::Heatmap {
+                chart: None,
+                indicators: vec![HeatmapIndicator::Volume],
+                studies: vec![],
+                layout: ViewConfig {
+                    splits: vec![],
+                    autoscale: Some(data::chart::Autoscale::CenterLatest),
+                },
+            },
+            ContentKind::ComparisonChart => Content::Comparison(None),
+            ContentKind::TimeAndSales => Content::TimeAndSales(None),
+            ContentKind::Ladder => Content::Ladder(None),
         }
     }
 

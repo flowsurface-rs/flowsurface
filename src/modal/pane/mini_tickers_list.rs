@@ -16,8 +16,9 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MiniPanel {
-    compact_search: String,
-    compact_scroll: iced::widget::scrollable::AbsoluteOffset,
+    search_query: String,
+    pub search_box_id: iced::widget::Id,
+    scroll_offset: iced::widget::scrollable::AbsoluteOffset,
 }
 
 impl Default for MiniPanel {
@@ -36,19 +37,20 @@ pub enum Message {
 impl MiniPanel {
     pub fn new() -> Self {
         Self {
-            compact_search: String::new(),
-            compact_scroll: iced::widget::scrollable::AbsoluteOffset::default(),
+            search_query: String::new(),
+            search_box_id: iced::widget::Id::unique(),
+            scroll_offset: iced::widget::scrollable::AbsoluteOffset::default(),
         }
     }
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
-            Message::SearchChanged(q) => self.compact_search = q.to_uppercase(),
+            Message::SearchChanged(q) => self.search_query = q.to_uppercase(),
             Message::RowSelected(t) => {
                 return Some(Action::RowSelected(t));
             }
             Message::Scrolled(vp) => {
-                self.compact_scroll = vp.absolute_offset();
+                self.scroll_offset = vp.absolute_offset();
             }
         }
         None
@@ -63,15 +65,15 @@ impl MiniPanel {
         iced::widget::responsive(move |bounds| {
             table.view_compact_with(
                 bounds,
-                &self.compact_search,
-                self.compact_scroll,
+                &self.search_query,
+                &self.search_box_id,
+                self.scroll_offset,
                 Message::RowSelected,
                 Message::SearchChanged,
                 Message::Scrolled,
                 selected_tickers,
                 base_ticker,
             )
-            //.explain(iced::Color::WHITE)
         })
         .into()
     }

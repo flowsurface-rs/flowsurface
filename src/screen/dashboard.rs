@@ -377,6 +377,9 @@ impl Dashboard {
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(main_window.id, ticker_info)
                             }
+                            pane::Effect::FocusWidget(id) => {
+                                return (iced::widget::operation::focus(id), None);
+                            }
                         };
                         return (task, None);
                     }
