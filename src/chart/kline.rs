@@ -363,6 +363,13 @@ impl KlineChart {
                 let (kline_earliest, kline_latest) = timeseries.timerange();
                 let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
 
+                if timeseries.datapoints.is_empty() {
+                    let range = FetchRange::Kline(earliest, visible_latest + timeframe_ms);
+                    if let Some(action) = request_fetch(&mut self.request_handler, range) {
+                        return Some(action);
+                    }
+                }
+
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
                     let range = FetchRange::Kline(earliest, kline_earliest);
@@ -548,7 +555,7 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    pub fn set_basis(&mut self, new_basis: Basis) {
+    pub fn set_basis(&mut self, new_basis: Basis) -> Option<Action> {
         self.chart.basis = new_basis;
 
         match new_basis {
@@ -570,7 +577,8 @@ impl KlineChart {
             .filter_map(Option::as_mut)
             .for_each(|indi| indi.on_basis_change(&self.data_source));
 
-        self.invalidate(None);
+        self.reset_request_handler();
+        self.invalidate(Some(Instant::now()))
     }
 
     pub fn studies(&self) -> Option<Vec<FootprintStudy>> {
@@ -654,6 +662,7 @@ impl KlineChart {
                 } else {
                     self.request_handler.mark_completed(req_id);
                 }
+                self.invalidate(None);
             }
             PlotData::TickBased(_) => {}
         }
