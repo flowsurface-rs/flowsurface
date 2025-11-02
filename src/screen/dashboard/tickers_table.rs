@@ -75,6 +75,7 @@ pub enum Action {
     TickerSelected(TickerInfo, Option<ContentKind>),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
+    FocusWidget(iced::widget::Id),
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +214,8 @@ impl TickersTable {
                             compute_display_data(&row.ticker, &row.stats, None),
                         );
                     }
+
+                    return Some(Action::FocusWidget("full_ticker_search_box".into()));
                 }
             }
             Message::FetchForTickerStats(exchange) => {
@@ -336,6 +339,7 @@ impl TickersTable {
         &'a self,
         bounds: Size,
         search_query: &'a str,
+        search_box_id: &'a iced::widget::Id,
         scroll_offset: AbsoluteOffset,
         on_select: FSelect,
         on_search: FSearch,
@@ -383,7 +387,7 @@ impl TickersTable {
         let total_n = fav_rows.len() + rest_rows.len();
         let win = virtual_list.window(scroll_offset.y, bounds.height, total_n);
 
-        let top_bar = self.compact_top_bar(search_query, on_search);
+        let top_bar = self.compact_top_bar(search_query, search_box_id, on_search);
         let selected_section =
             self.compact_selected_section(base_ticker, selected_list, on_select, selection_enabled);
 
@@ -656,6 +660,7 @@ impl TickersTable {
             text_input("Search for a ticker...", &self.search_query)
                 .style(|theme, status| style::validated_text_input(theme, status, true))
                 .on_input(Message::UpdateSearchQuery)
+                .id("full_ticker_search_box")
                 .align_x(Horizontal::Left)
                 .padding(6),
             button(
@@ -865,6 +870,7 @@ impl TickersTable {
     fn compact_top_bar<'a, M, FSearch>(
         &'a self,
         search_query: &'a str,
+        search_box_id: &'a iced::widget::Id,
         on_search: FSearch,
     ) -> Element<'a, M>
     where
@@ -875,6 +881,7 @@ impl TickersTable {
             text_input("Search for a ticker...", search_query)
                 .style(|theme, status| crate::style::validated_text_input(theme, status, true))
                 .on_input(on_search)
+                .id(search_box_id.clone())
                 .align_x(Alignment::Start)
                 .padding(6),
         ]

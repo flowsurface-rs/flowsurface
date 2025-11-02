@@ -76,6 +76,9 @@ impl Sidebar {
                     Some(tickers_table::Action::ErrorOccurred(error)) => {
                         return (Task::none(), Some(Action::ErrorOccurred(error)));
                     }
+                    Some(tickers_table::Action::FocusWidget(id)) => {
+                        return (iced::widget::operation::focus(id), None);
+                    }
                     None => {}
                 }
             }
