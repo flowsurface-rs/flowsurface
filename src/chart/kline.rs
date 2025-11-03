@@ -556,6 +556,7 @@ impl KlineChart {
     }
 
     pub fn set_basis(&mut self, new_basis: Basis) -> Option<Action> {
+        self.chart.last_price = None;
         self.chart.basis = new_basis;
 
         match new_basis {

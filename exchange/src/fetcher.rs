@@ -1,4 +1,7 @@
+use crate::adapter::StreamKind;
 use crate::{Kline, OpenInterest, Trade};
+
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
@@ -139,6 +142,44 @@ impl FetchRequest {
                 e1 == e2 && s1 == s2
             }
             _ => false,
+        }
+    }
+}
+
+pub struct FetchSpec {
+    pub req_id: uuid::Uuid,
+    pub fetch: FetchRange,
+    pub stream: Option<StreamKind>,
+}
+
+impl From<(uuid::Uuid, FetchRange, Option<StreamKind>)> for FetchSpec {
+    fn from(t: (uuid::Uuid, FetchRange, Option<StreamKind>)) -> Self {
+        FetchSpec {
+            req_id: t.0,
+            fetch: t.1,
+            stream: t.2,
+        }
+    }
+}
+
+pub type FetchRequests = SmallVec<[FetchSpec; 1]>;
+
+impl std::fmt::Debug for FetchSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchSpec")
+            .field("req_id", &self.req_id)
+            .field("fetch", &self.fetch)
+            .field("stream", &self.stream)
+            .finish()
+    }
+}
+
+impl Clone for FetchSpec {
+    fn clone(&self) -> Self {
+        FetchSpec {
+            req_id: self.req_id,
+            fetch: self.fetch,
+            stream: self.stream,
         }
     }
 }

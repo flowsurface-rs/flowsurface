@@ -6,7 +6,7 @@ use crate::widget::chart::{Series, Zoom};
 use data::chart::Basis;
 use data::chart::comparison::Config;
 use exchange::adapter::StreamKind;
-use exchange::fetcher::{FetchRange, RequestHandler};
+use exchange::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
 
 use rustc_hash::FxHashMap;
@@ -130,6 +130,10 @@ impl ComparisonChart {
     }
 
     pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
+        if self.series.iter().all(|s| s.points.is_empty()) {
+            return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
+        }
+
         let chart: iced::Element<_> = LineComparison::<Series>::new(&self.series, self.timeframe)
             .with_timezone(timezone)
             .with_zoom(self.zoom)
@@ -140,27 +144,6 @@ impl ComparisonChart {
         iced::widget::container(chart.map(Message::Chart))
             .padding(1)
             .into()
-    }
-
-    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
-        if let Some(t) = now {
-            self.last_tick = t;
-            self.cache_rev = self.cache_rev.wrapping_add(1);
-        }
-
-        if let Some((range, tickers)) = self.desired_fetch_range(self.pan) {
-            for ticker in tickers {
-                let handler = self.request_handler.entry(ticker).or_default();
-                if let Ok(Some(req_id)) = handler.add_request(range) {
-                    let stream = StreamKind::Kline {
-                        ticker_info: ticker,
-                        timeframe: self.timeframe,
-                    };
-                    return Some(super::Action::FetchRequested(req_id, range, Some(stream)));
-                }
-            }
-        }
-        None
     }
 
     pub fn insert_history(
@@ -312,39 +295,102 @@ impl ComparisonChart {
         self.streams_for_all()
     }
 
-    pub fn set_basis(&mut self, basis: data::chart::Basis) {
+    fn queue_kline_fetch(
+        &mut self,
+        ticker: TickerInfo,
+        range: FetchRange,
+        out: &mut Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)>,
+    ) {
+        let handler = self.request_handler.entry(ticker).or_default();
+        if let Ok(Some(req_id)) = handler.add_request(range) {
+            out.push((
+                req_id,
+                range,
+                Some(StreamKind::Kline {
+                    ticker_info: ticker,
+                    timeframe: self.timeframe,
+                }),
+            ));
+        }
+    }
+
+    fn collect_fetch_reqs(
+        &mut self,
+        batches: Vec<(FetchRange, Vec<TickerInfo>)>,
+    ) -> Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)> {
+        let mut reqs = Vec::new();
+        for (range, tickers) in batches {
+            for ticker in tickers {
+                self.queue_kline_fetch(ticker, range, &mut reqs);
+            }
+        }
+        reqs
+    }
+
+    fn fetch_action(
+        &self,
+        reqs: Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)>,
+    ) -> Option<super::Action> {
+        if reqs.is_empty() {
+            None
+        } else {
+            let fetch_specs: Vec<FetchSpec> = reqs
+                .into_iter()
+                .map(|(req_id, fetch, stream)| FetchSpec {
+                    req_id,
+                    fetch,
+                    stream,
+                })
+                .collect();
+            let requests = exchange::fetcher::FetchRequests::from(fetch_specs);
+            Some(super::Action::RequestFetch(requests))
+        }
+    }
+
+    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
+        if let Some(t) = now {
+            self.last_tick = t;
+            self.cache_rev = self.cache_rev.wrapping_add(1);
+        }
+
+        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+        self.fetch_action(reqs)
+    }
+
+    pub fn set_basis(&mut self, basis: data::chart::Basis) -> Option<super::Action> {
         match basis {
             Basis::Time(tf) => {
                 self.timeframe = tf;
+
+                let prev_colors: FxHashMap<TickerInfo, iced::Color> =
+                    self.series.iter().map(|s| (s.name, s.color)).collect();
+                self.series.clear();
+                self.series_index.clear();
+
+                for (i, &t) in self.selected_tickers.iter().enumerate() {
+                    let color = prev_colors
+                        .get(&t)
+                        .copied()
+                        .unwrap_or_else(|| self.color_for_or_default(&t));
+                    self.series.push(Series {
+                        name: t,
+                        points: Vec::new(),
+                        color,
+                    });
+                    self.series_index.insert(t, i);
+                }
+
+                self.rebuild_handlers();
+
+                let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+
+                self.pan = 0.0;
+                self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
+
+                self.fetch_action(reqs)
             }
-            Basis::Tick(_) => {
-                todo!("WIP: ComparisonChart does not support tick basis");
-            }
+            Basis::Tick(_) => unimplemented!(),
         }
-
-        let prev_colors: FxHashMap<TickerInfo, iced::Color> =
-            self.series.iter().map(|s| (s.name, s.color)).collect();
-        self.series.clear();
-        self.series_index.clear();
-
-        for (i, &t) in self.selected_tickers.iter().enumerate() {
-            let color = prev_colors
-                .get(&t)
-                .copied()
-                .unwrap_or_else(|| self.color_for_or_default(&t));
-            self.series.push(Series {
-                name: t,
-                points: Vec::new(),
-                color,
-            });
-            self.series_index.insert(t, i);
-        }
-
-        self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
-        self.pan = 0.0;
-
-        self.rebuild_handlers();
-        self.color_editor.show_color_for = None;
     }
 
     pub fn set_ticker_color(&mut self, ticker: TickerInfo, color: iced::Color) {
@@ -533,44 +579,6 @@ impl ComparisonChart {
         }
 
         batches
-    }
-
-    fn desired_fetch_range(&self, pan_dx: f32) -> Option<(FetchRange, Vec<TickerInfo>)> {
-        let dt = self.dt_ms_est();
-        let last_closed = Self::align_floor(Self::now_ms(), dt);
-        let win = self.compute_visible_window(pan_dx);
-
-        let mut batches = self.desired_fetch_batches(pan_dx);
-        if batches.is_empty() {
-            return None;
-        }
-        if batches.len() == 1 {
-            return batches.pop();
-        }
-
-        // Prioritize: 0=intersects window, 1=backfill-left, 2=seed, 3=others
-        let score = |r: &FetchRange| -> u8 {
-            match r {
-                FetchRange::Kline(start, end) => {
-                    let intersects = if let Some((wmin, wmax)) = win {
-                        !(*end < wmin || *start > wmax)
-                    } else {
-                        false
-                    };
-                    if intersects {
-                        0
-                    } else if *end != last_closed {
-                        1
-                    } else {
-                        2
-                    }
-                }
-                _ => 3,
-            }
-        };
-
-        batches.sort_by_key(|(r, _)| score(r));
-        batches.into_iter().next()
     }
 }
 
