@@ -369,11 +369,12 @@ impl Dashboard {
 
                         let task = match effect {
                             pane::Effect::RefreshStreams => self.refresh_streams(main_window.id),
-                            pane::Effect::RequestFetch {
-                                req_id,
-                                fetch,
-                                stream,
-                            } => request_fetch(state, *layout_id, req_id, fetch, stream),
+                            pane::Effect::RequestFetch(reqs) => request_fetch_many(
+                                state,
+                                *layout_id,
+                                reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                            )
+                            .chain(self.refresh_streams(main_window.id)),
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(main_window.id, ticker_info)
                             }
@@ -1031,8 +1032,12 @@ impl Dashboard {
                         state.status = pane::Status::Ready;
                         state.notifications.push(Toast::error(err.to_string()));
                     }
-                    chart::Action::FetchRequested(req_id, fetch, stream) => {
-                        tasks.push(request_fetch(state, layout_id, req_id, fetch, stream));
+                    chart::Action::RequestFetch(reqs) => {
+                        tasks.push(request_fetch_many(
+                            state,
+                            layout_id,
+                            reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                        ));
                     }
                 },
                 Some(pane::Action::Panel(_action)) => {}
@@ -1234,6 +1239,18 @@ fn request_fetch(
     }
 
     Task::none()
+}
+
+fn request_fetch_many(
+    state: &mut pane::State,
+    layout_id: uuid::Uuid,
+    reqs: impl IntoIterator<Item = (uuid::Uuid, FetchRange, Option<StreamKind>)>,
+) -> Task<Message> {
+    let tasks = reqs
+        .into_iter()
+        .map(|(req_id, fetch, stream)| request_fetch(state, layout_id, req_id, fetch, stream))
+        .collect::<Vec<_>>();
+    Task::batch(tasks)
 }
 
 fn oi_fetch_task(

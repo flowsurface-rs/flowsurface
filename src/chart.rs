@@ -9,7 +9,7 @@ use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
-use exchange::fetcher::{FetchRange, RequestHandler};
+use exchange::fetcher::{FetchRange, FetchRequests, FetchSpec, RequestHandler};
 use exchange::util::{Price, PriceStep};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
@@ -275,11 +275,7 @@ fn canvas_interaction<T: Chart>(
 
 pub enum Action {
     ErrorOccurred(data::InternalError),
-    FetchRequested(
-        uuid::Uuid,
-        FetchRange,
-        Option<exchange::adapter::StreamKind>,
-    ),
+    RequestFetch(FetchRequests),
 }
 
 pub fn update<T: Chart>(chart: &mut T, message: &Message) {
@@ -1133,7 +1129,15 @@ impl ViewState {
 
 fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Action> {
     match handler.add_request(range) {
-        Ok(Some(req_id)) => Some(Action::FetchRequested(req_id, range, None)),
+        Ok(Some(req_id)) => {
+            let fetch_spec = FetchSpec {
+                req_id,
+                fetch: range,
+                stream: None,
+            };
+            let fetch = FetchRequests::from([fetch_spec]);
+            Some(Action::RequestFetch(fetch))
+        }
         Ok(None) => None,
         Err(reason) => {
             log::error!("Failed to request {:?}: {}", range, reason);

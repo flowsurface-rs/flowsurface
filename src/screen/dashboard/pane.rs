@@ -30,7 +30,7 @@ use data::{
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,
     adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
-    fetcher::FetchRange,
+    fetcher::FetchRequests,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -43,11 +43,7 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
-    RequestFetch {
-        req_id: uuid::Uuid,
-        fetch: FetchRange,
-        stream: Option<StreamKind>,
-    },
+    RequestFetch(FetchRequests),
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
 }
@@ -1233,6 +1229,8 @@ impl State {
                                                 }
                                             }
                                         }
+
+                                        return Some(Effect::RefreshStreams);
                                     }
                                     Content::Kline { chart: Some(c), .. } => match new_basis {
                                         Basis::Time(tf) => {
@@ -1270,19 +1268,10 @@ impl State {
                                             let action = c.set_basis(new_basis);
 
                                             match action {
-                                                Some(chart::Action::FetchRequested(
-                                                    req_id,
-                                                    fetch,
-                                                    stream,
-                                                )) => {
-                                                    return Some(Effect::RequestFetch {
-                                                        req_id,
-                                                        fetch,
-                                                        stream,
-                                                    });
+                                                Some(chart::Action::RequestFetch(fetch)) => {
+                                                    return Some(Effect::RequestFetch(fetch));
                                                 }
-                                                Some(chart::Action::ErrorOccurred(_err)) => {}
-                                                None => {}
+                                                Some(chart::Action::ErrorOccurred(_)) | None => {}
                                             }
                                         }
                                         Basis::Tick(_) => {
@@ -1306,6 +1295,8 @@ impl State {
                                                 },
                                             ]);
                                             c.set_basis(new_basis);
+
+                                            return Some(Effect::RefreshStreams);
                                         }
                                     },
                                     Content::Comparison(Some(c)) => {
@@ -1321,12 +1312,18 @@ impl State {
                                                 .collect();
 
                                             self.streams = ResolvedStream::Ready(streams);
-                                            c.set_basis(new_basis);
+                                            let action = c.set_basis(new_basis);
+
+                                            match action {
+                                                Some(chart::Action::RequestFetch(fetch)) => {
+                                                    return Some(Effect::RequestFetch(fetch));
+                                                }
+                                                Some(chart::Action::ErrorOccurred(_)) | None => {}
+                                            }
                                         }
                                     }
                                     _ => unreachable!(),
                                 }
-                                return Some(Effect::RefreshStreams);
                             }
                         }
                     } else if let Some(m) = self.modal.take() {
