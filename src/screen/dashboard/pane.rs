@@ -159,22 +159,20 @@ impl State {
     }
 
     pub fn stream_pair_kind(&self) -> Option<StreamPairKind> {
-        let mut tickers_iter = self
-            .streams
-            .ready_iter()?
-            .map(|s| s.ticker_info())
-            .peekable();
-        let first_ticker = tickers_iter.next()?;
+        let ready_streams = self.streams.ready_iter()?;
+        let mut unique = vec![];
 
-        if tickers_iter.peek().is_some() {
-            let (lo, _) = tickers_iter.size_hint();
-            let mut v = Vec::with_capacity(1 + lo);
-            v.push(first_ticker);
-            v.extend(tickers_iter);
+        for stream in ready_streams {
+            let ticker = stream.ticker_info();
+            if !unique.contains(&ticker) {
+                unique.push(ticker);
+            }
+        }
 
-            Some(StreamPairKind::MultiSource(v))
-        } else {
-            Some(StreamPairKind::SingleSource(first_ticker))
+        match unique.len() {
+            0 => None,
+            1 => Some(StreamPairKind::SingleSource(unique[0])),
+            _ => Some(StreamPairKind::MultiSource(unique)),
         }
     }
 
