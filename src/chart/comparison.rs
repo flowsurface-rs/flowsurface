@@ -1,7 +1,5 @@
-use crate::widget::chart::comparison::{
-    DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent, MAX_ZOOM_POINTS, MIN_ZOOM_POINTS,
-};
-use crate::widget::chart::{Series, Zoom};
+use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
+use crate::widget::chart::{Series, Zoom, domain};
 
 use data::chart::Basis;
 use data::chart::comparison::Config;
@@ -13,6 +11,7 @@ use rustc_hash::FxHashMap;
 use std::time::Instant;
 
 const SERIES_MAX_POINTS: usize = 5000;
+const DEFAULT_PAN_POINTS: f32 = 4.0;
 
 pub enum Action {
     TickerColorChanged(TickerInfo, iced::Color),
@@ -81,7 +80,7 @@ impl ComparisonChart {
                 .map(|t| (*t, RequestHandler::new()))
                 .collect(),
             selected_tickers: tickers.to_vec(),
-            pan: 0.0,
+            pan: DEFAULT_PAN_POINTS,
             config: cfg,
             color_editor: color_editor::TickerColorEditor {
                 show_color_for: None,
@@ -383,10 +382,6 @@ impl ComparisonChart {
                 self.rebuild_handlers();
 
                 let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
-
-                self.pan = 0.0;
-                self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
-
                 self.fetch_action(reqs)
             }
             Basis::Tick(_) => unimplemented!(),
@@ -473,80 +468,21 @@ impl ComparisonChart {
         (ts / dt) * dt
     }
 
-    fn align_ceil(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        let f = (ts / dt) * dt;
-        if f == ts { ts } else { f.saturating_add(dt) }
+    fn compute_visible_window(&self, pan_points: f32) -> Option<(u64, u64)> {
+        let dt = self.dt_ms_est().max(1);
+        let points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points.as_slice()).collect();
+
+        domain::window(&points, self.zoom, pan_points, dt)
     }
 
-    fn compute_visible_window(&self, pan_dx: f32) -> Option<(u64, u64)> {
-        // X-only window based on current zoom and series data
-        if self.series.is_empty() {
-            return None;
-        }
-        let mut any = false;
-        let mut data_min_x = u64::MAX;
-        let mut data_max_x = u64::MIN;
-        for s in &self.series {
-            for (x, _) in &s.points {
-                any = true;
-                if *x < data_min_x {
-                    data_min_x = *x;
-                }
-                if *x > data_max_x {
-                    data_max_x = *x;
-                }
-            }
-        }
-        if !any {
-            return None;
-        }
-        if data_max_x == data_min_x {
-            data_max_x = data_max_x.saturating_add(1);
-        }
-
-        let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
-            (data_min_x, data_max_x)
-        } else {
-            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = (self.dt_ms_est() as f32).max(1e-6);
-            let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
-            if span == 0 {
-                span = 1;
-            }
-            let max_x = data_max_x;
-            let min_x = max_x.saturating_sub(span);
-            (min_x, max_x)
-        };
-
-        let delta = pan_dx.round() as i64;
-        let shift = |v: u64, d: i64| -> u64 {
-            if d >= 0 {
-                v.saturating_add(d as u64)
-            } else {
-                v.saturating_sub((-d) as u64)
-            }
-        };
-        win_min_x = shift(win_min_x, delta);
-        win_max_x = shift(win_max_x, delta);
-
-        let dt = self.dt_ms_est();
-        win_min_x = Self::align_floor(win_min_x, dt);
-        win_max_x = Self::align_ceil(win_max_x, dt);
-
-        Some((win_min_x, win_max_x))
-    }
-
-    fn desired_fetch_batches(&self, pan_dx: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
-        let dt = self.dt_ms_est();
+    fn desired_fetch_batches(&self, pan_points: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
+        let dt = self.dt_ms_est().max(1);
         let span = 500u64.saturating_mul(dt);
         let last_closed = Self::align_floor(Self::now_ms(), dt);
 
         let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
 
-        // Seed empties: fetch tail for all empty series
+        // Seed empties
         let mut empty_tickers: Vec<TickerInfo> = Vec::new();
         for s in &self.series {
             if s.points.is_empty() {
@@ -559,8 +495,8 @@ impl ComparisonChart {
             batches.push((FetchRange::Kline(start, end), empty_tickers));
         }
 
-        // Backfill-left: group all that start after visible min
-        if let Some((win_min, _win_max)) = self.compute_visible_window(pan_dx) {
+        // Backfill-left relative to visible window
+        if let Some((win_min, _win_max)) = self.compute_visible_window(pan_points) {
             let mut need: Vec<(u64, TickerInfo)> = Vec::new();
             for s in &self.series {
                 if let Some(series_min) = s.points.first().map(|(x, _)| *x)
