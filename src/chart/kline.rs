@@ -562,8 +562,7 @@ impl KlineChart {
         match new_basis {
             Basis::Time(interval) => {
                 let step = self.chart.tick_size;
-                let timeseries =
-                    TimeSeries::<KlineDataPoint>::new(interval, step, &self.raw_trades, &[]);
+                let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, &[], &[]);
                 self.data_source = PlotData::TimeBased(timeseries);
             }
             Basis::Tick(tick_count) => {
