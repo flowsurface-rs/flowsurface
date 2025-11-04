@@ -1,6 +1,7 @@
 use crate::style;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
+use crate::widget::chart::domain;
 
 use data::UserTimezone;
 use exchange::{TickerInfo, Timeframe};
@@ -236,128 +237,18 @@ where
         }
     }
 
-    fn compute_domains(&self, pan_dx: f32) -> Option<((u64, u64), (f32, f32))> {
+    fn compute_domains(&self, pan_points: f32) -> Option<((u64, u64), (f32, f32))> {
         if self.series.is_empty() {
             return None;
         }
-        let mut any = false;
-        let mut data_min_x = u64::MAX;
-        let mut data_max_x = u64::MIN;
-        for s in self.series {
-            for (x, _) in s.points() {
-                any = true;
-                if *x < data_min_x {
-                    data_min_x = *x;
-                }
-                if *x > data_max_x {
-                    data_max_x = *x;
-                }
-            }
-        }
-        if !any {
-            return None;
-        }
-        if data_max_x == data_min_x {
-            data_max_x = data_max_x.saturating_add(1);
-        }
 
-        let (mut win_min_x, mut win_max_x) = if self.zoom.is_all() {
-            (data_min_x, data_max_x)
-        } else {
-            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
-            let dt = (self.dt_ms_est() as f32).max(1e-6);
-            let mut span = ((n.saturating_sub(1)) as f32 * dt).round() as u64;
-            if span == 0 {
-                span = 1;
-            }
-            let max_x = data_max_x;
-            let min_x = max_x.saturating_sub(span);
-            (min_x, max_x)
-        };
+        let dt = self.dt_ms_est().max(1);
+        let all_points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points()).collect();
 
-        let delta = pan_dx.round() as i64;
-        let shift = |v: u64, d: i64| -> u64 {
-            if d >= 0 {
-                v.saturating_add(d as u64)
-            } else {
-                v.saturating_sub((-d) as u64)
-            }
-        };
-        win_min_x = shift(win_min_x, delta);
-        win_max_x = shift(win_max_x, delta);
+        let (min_x, max_x) = domain::window(&all_points, self.zoom, pan_points, dt)?;
+        let (min_pct, max_pct) = domain::pct_domain(&all_points, min_x, max_x)?;
 
-        let mut min_pct = f32::INFINITY;
-        let mut max_pct = f32::NEG_INFINITY;
-        let mut any_point = false;
-
-        for s in self.series {
-            let pts = s.points();
-            if pts.is_empty() {
-                continue;
-            }
-
-            let idx_right = pts.iter().position(|(x, _)| *x >= win_min_x);
-            let y0 = match idx_right {
-                Some(0) => pts[0].1,
-                Some(i) => {
-                    let (x0, y0_) = pts[i - 1];
-                    let (x1, y1_) = pts[i];
-                    let dx = (x1.saturating_sub(x0)) as f32;
-                    if dx > 0.0 {
-                        let t = (win_min_x.saturating_sub(x0)) as f32 / dx;
-                        y0_ + (y1_ - y0_) * t.clamp(0.0, 1.0)
-                    } else {
-                        y0_
-                    }
-                }
-                None => continue,
-            };
-
-            if y0 == 0.0 {
-                continue;
-            }
-
-            let mut has_visible = false;
-            for (_x, y) in pts
-                .iter()
-                .filter(|(x, _)| *x >= win_min_x && *x <= win_max_x)
-            {
-                has_visible = true;
-                let pct = ((*y / y0) - 1.0) * 100.0;
-                if pct < min_pct {
-                    min_pct = pct;
-                }
-                if pct > max_pct {
-                    max_pct = pct;
-                }
-            }
-
-            if has_visible {
-                any_point = true;
-                if 0.0 < min_pct {
-                    min_pct = 0.0;
-                }
-                if 0.0 > max_pct {
-                    max_pct = 0.0;
-                }
-            }
-        }
-
-        if !any_point {
-            return None;
-        }
-
-        if (max_pct - min_pct).abs() < f32::EPSILON {
-            min_pct -= 1.0;
-            max_pct += 1.0;
-        }
-
-        let span = (max_pct - min_pct).max(1e-6);
-        let pad = span * 0.05;
-        let min_pct = min_pct - pad;
-        let max_pct = max_pct + pad;
-
-        Some(((win_min_x, win_max_x), (min_pct, max_pct)))
+        Some(((min_x, max_x), (min_pct, max_pct)))
     }
 
     fn compute_scene(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Scene> {
@@ -434,8 +325,68 @@ where
             None
         };
 
+        let show_pct_in_compact = cursor_info.is_some();
+        let compact_layout = self.compute_legend_layout(
+            &ctx,
+            cursor_info.map(|c| c.x_domain),
+            step,
+            LegendMode::Compact {
+                include_pct: show_pct_in_compact,
+            },
+        );
+        let expanded_layout = self.compute_legend_layout(
+            &ctx,
+            cursor_info.map(|c| c.x_domain),
+            step,
+            LegendMode::Expanded,
+        );
+
+        let mut hovering_legend = false;
+        let mut hovered_row: Option<usize> = None;
+        let mut hovered_icon: Option<(usize, IconKind)> = None;
+
+        let local = cursor
+            .position()
+            .map(|g| Point::new(g.x - bounds.x, g.y - bounds.y));
+
+        if let Some(local) = local {
+            let in_compact = compact_layout
+                .as_ref()
+                .map(|l| l.bg.contains(local))
+                .unwrap_or(false);
+            let in_expanded = expanded_layout
+                .as_ref()
+                .map(|l| l.bg.contains(local))
+                .unwrap_or(false);
+
+            if in_compact || in_expanded {
+                hovering_legend = true;
+            }
+        }
+
+        let legend_layout = if hovering_legend {
+            expanded_layout.clone()
+        } else {
+            compact_layout.clone()
+        };
+
+        if hovering_legend && let (Some(local), Some(layout)) = (local, expanded_layout.as_ref()) {
+            for (i, row) in layout.rows.iter().enumerate() {
+                if row.row_rect.contains(local) {
+                    hovered_row = Some(i);
+                    if row.cog.contains(local) {
+                        hovered_icon = Some((i, IconKind::Cog));
+                    } else if row.has_close && row.close.contains(local) {
+                        hovered_icon = Some((i, IconKind::Close));
+                    }
+                    break;
+                }
+            }
+        }
+
+        let should_draw_crosshair = !(hovering_legend && hovered_row.is_some());
         let mut reserved_y: Option<Rectangle> = None;
-        if let Some(ci) = cursor_info {
+        if should_draw_crosshair && let Some(ci) = cursor_info {
             let t =
                 ((ci.y_pct - ctx.min_pct) / (ctx.max_pct - ctx.min_pct).max(1e-6)).clamp(0.0, 1.0);
             let cy_px = ctx.plot.y + ctx.plot.height - t * ctx.plot.height;
@@ -458,37 +409,6 @@ where
             });
         }
 
-        let legend_layout = self.compute_legend_layout(&ctx, cursor_info.map(|c| c.x_domain), step);
-
-        let (hovering_legend, hovered_row, hovered_icon) = if let (Some(local), Some(layout)) = (
-            cursor
-                .position()
-                .map(|g| Point::new(g.x - bounds.x, g.y - bounds.y)),
-            legend_layout.as_ref(),
-        ) {
-            let in_legend = layout.bg.contains(local);
-
-            let mut row_idx: Option<usize> = None;
-            let mut hi: Option<(usize, IconKind)> = None;
-
-            if in_legend {
-                for (i, row) in layout.rows.iter().enumerate() {
-                    if row.row_rect.contains(local) {
-                        row_idx = Some(i);
-                        if row.cog.contains(local) {
-                            hi = Some((i, IconKind::Cog));
-                        } else if row.has_close && row.close.contains(local) {
-                            hi = Some((i, IconKind::Close));
-                        }
-                        break;
-                    }
-                }
-            }
-            (in_legend, row_idx, hi)
-        } else {
-            (false, None, None)
-        };
-
         Some(Scene {
             ctx,
             y_ticks: ticks,
@@ -509,6 +429,7 @@ where
         ctx: &PlotContext,
         cursor_x: Option<u64>,
         step: f32,
+        mode: LegendMode,
     ) -> Option<LegendLayout> {
         if self.series.is_empty() {
             return None;
@@ -516,6 +437,11 @@ where
 
         let padding = LEGEND_PADDING;
         let line_h = LEGEND_LINE_H;
+
+        let (include_icons, include_pct_in_width) = match mode {
+            LegendMode::Expanded => (true, false),
+            LegendMode::Compact { include_pct } => (false, include_pct),
+        };
 
         let mut max_chars: usize = 0;
         let mut max_name_chars: usize = 0;
@@ -527,18 +453,22 @@ where
             let name_len = s.name().len();
             max_name_chars = max_name_chars.max(name_len);
 
-            let pct_len = super::interpolate_y_at(s.points(), ctx.min_x)
-                .filter(|&y0| y0 != 0.0)
-                .and_then(|y0| {
-                    cursor_x.and_then(|cx| {
-                        super::interpolate_y_at(s.points(), cx).map(|yc| {
-                            let pct = ((yc / y0) - 1.0) * 100.0;
-                            super::format_pct(pct, step, true)
+            let pct_len = if include_pct_in_width {
+                domain::interpolate_y_at(s.points(), ctx.min_x)
+                    .filter(|&y0| y0 != 0.0)
+                    .and_then(|y0| {
+                        cursor_x.and_then(|cx| {
+                            domain::interpolate_y_at(s.points(), cx).map(|yc| {
+                                let pct = ((yc / y0) - 1.0) * 100.0;
+                                super::format_pct(pct, step, true)
+                            })
                         })
                     })
-                })
-                .map(|s| s.len())
-                .unwrap_or(0);
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
             let total = if pct_len > 0 {
                 name_len + 1 + pct_len
@@ -550,8 +480,17 @@ where
 
         let text_w = (max_chars as f32) * CHAR_W;
 
-        let icons_pack_w = 2.0 * ICON_BOX + ICON_SPACING;
-        let min_for_icons = (max_name_chars as f32) * CHAR_W + ICON_GAP_AFTER_TEXT + icons_pack_w;
+        let icons_pack_w = if include_icons {
+            2.0 * ICON_BOX + ICON_SPACING
+        } else {
+            0.0
+        };
+        let min_for_icons = if include_icons {
+            (max_name_chars as f32) * CHAR_W + ICON_GAP_AFTER_TEXT + icons_pack_w
+        } else {
+            0.0
+        };
+
         let bg_w = (text_w.max(min_for_icons) + padding * 2.0)
             .clamp(80.0, (ctx.plot.width * 0.6).max(80.0));
 
@@ -589,65 +528,78 @@ where
             let name_len = s.name().len() as f32;
             let text_end_x = x_left + name_len * CHAR_W;
 
-            let icons_pack_w = if has_close {
-                2.0 * ICON_BOX + ICON_SPACING
-            } else {
-                ICON_BOX
-            };
-
-            let free_left = text_end_x + ICON_GAP_AFTER_TEXT;
-            let free_right = x_right;
-
-            let (cog_left, close_left_opt) = if free_right - free_left >= icons_pack_w {
-                let cog_left = free_left;
-                let close_left_opt = if has_close {
-                    Some(cog_left + ICON_BOX + ICON_SPACING)
+            let (cog, close, row_width) = if include_icons {
+                let icons_pack_w = if has_close {
+                    2.0 * ICON_BOX + ICON_SPACING
                 } else {
-                    None
+                    ICON_BOX
                 };
-                (cog_left, close_left_opt)
-            } else if has_close {
-                let close_left = free_right - ICON_BOX;
-                let cog_left = (close_left - ICON_SPACING - ICON_BOX).max(free_left);
-                (cog_left, Some(close_left))
-            } else {
-                let cog_left = (free_right - ICON_BOX).max(free_left);
-                (cog_left, None)
-            };
 
-            let cog = Rectangle {
-                x: cog_left,
-                y: y_center - ICON_BOX * 0.5,
-                width: ICON_BOX,
-                height: ICON_BOX,
-            };
-            let close = if let Some(cl) = close_left_opt {
-                Rectangle {
-                    x: cl,
+                let free_left = text_end_x + ICON_GAP_AFTER_TEXT;
+                let free_right = x_right;
+
+                let (cog_left, close_left_opt) = if free_right - free_left >= icons_pack_w {
+                    let cog_left = free_left;
+                    let close_left_opt = if has_close {
+                        Some(cog_left + ICON_BOX + ICON_SPACING)
+                    } else {
+                        None
+                    };
+                    (cog_left, close_left_opt)
+                } else if has_close {
+                    let close_left = free_right - ICON_BOX;
+                    let cog_left = (close_left - ICON_SPACING - ICON_BOX).max(free_left);
+                    (cog_left, Some(close_left))
+                } else {
+                    let cog_left = (free_right - ICON_BOX).max(free_left);
+                    (cog_left, None)
+                };
+
+                let cog = Rectangle {
+                    x: cog_left,
                     y: y_center - ICON_BOX * 0.5,
                     width: ICON_BOX,
                     height: ICON_BOX,
-                }
+                };
+                let close = if let Some(cl) = close_left_opt {
+                    Rectangle {
+                        x: cl,
+                        y: y_center - ICON_BOX * 0.5,
+                        width: ICON_BOX,
+                        height: ICON_BOX,
+                    }
+                } else {
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 0.0,
+                        height: 0.0,
+                    }
+                };
+
+                let content_right = if has_close {
+                    close.x + close.width
+                } else {
+                    cog.x + cog.width
+                };
+                let row_width = (content_right + padding) - bg.x;
+                (cog, close, row_width.clamp(0.0, bg.width))
             } else {
-                Rectangle {
+                let cog = Rectangle {
                     x: 0.0,
                     y: 0.0,
                     width: 0.0,
                     height: 0.0,
-                }
+                };
+                let close = cog;
+                let row_width = (text_end_x + padding) - bg.x;
+                (cog, close, row_width.clamp(0.0, bg.width))
             };
-
-            let content_right = if has_close {
-                close.x + close.width
-            } else {
-                cog.x + cog.width
-            };
-            let row_width = (content_right + padding) - bg.x;
 
             let row_rect = Rectangle {
                 x: bg.x,
                 y: row_top,
-                width: row_width.clamp(0.0, bg.width),
+                width: row_width,
                 height: line_h,
             };
 
@@ -892,11 +844,13 @@ where
                             let dx_px = cursor_pos.x - prev.x;
 
                             if dx_px.abs() > 0.0 {
-                                let x_span = self.current_x_span();
+                                let x_span = self.current_x_span(); // in milliseconds
                                 let plot_w = regions.plot.width.max(1.0);
-                                let dx_domain = -(dx_px) * (x_span / plot_w);
+                                let dx_ms = -(dx_px) * (x_span / plot_w);
+                                let dt = self.dt_ms_est().max(1) as f32;
+                                let dx_pts = dx_ms / dt;
 
-                                let event = LineComparisonEvent::PanChanged(self.pan + dx_domain);
+                                let event = LineComparisonEvent::PanChanged(self.pan + dx_pts);
 
                                 shell.publish(M::from(event));
                                 state.clear_all_caches();
@@ -1318,11 +1272,11 @@ where
                 let pct_str = if hovering_legend {
                     None
                 } else {
-                    super::interpolate_y_at(s.points(), ctx.min_x)
+                    domain::interpolate_y_at(s.points(), ctx.min_x)
                         .filter(|&y0| y0 != 0.0)
                         .and_then(|y0| {
                             cursor_x.and_then(|cx| {
-                                super::interpolate_y_at(s.points(), cx).map(|yc| {
+                                domain::interpolate_y_at(s.points(), cx).map(|yc| {
                                     let pct = ((yc / y0) - 1.0) * 100.0;
                                     super::format_pct(pct, step, true)
                                 })
@@ -1397,11 +1351,11 @@ where
             let pct_len = if hovering_legend {
                 0
             } else {
-                super::interpolate_y_at(s.points(), ctx.min_x)
+                domain::interpolate_y_at(s.points(), ctx.min_x)
                     .filter(|&y0| y0 != 0.0)
                     .and_then(|y0| {
                         cursor_x.and_then(|cx| {
-                            super::interpolate_y_at(s.points(), cx).map(|yc| {
+                            domain::interpolate_y_at(s.points(), cx).map(|yc| {
                                 let pct = ((yc / y0) - 1.0) * 100.0;
                                 super::format_pct(pct, step, true)
                             })
@@ -1448,11 +1402,11 @@ where
             let pct_str = if hovering_legend {
                 None
             } else {
-                super::interpolate_y_at(s.points(), ctx.min_x)
+                domain::interpolate_y_at(s.points(), ctx.min_x)
                     .filter(|&y0| y0 != 0.0)
                     .and_then(|y0| {
                         cursor_x.and_then(|cx| {
-                            super::interpolate_y_at(s.points(), cx).map(|yc| {
+                            domain::interpolate_y_at(s.points(), cx).map(|yc| {
                                 let pct = ((yc / y0) - 1.0) * 100.0;
                                 super::format_pct(pct, step, true)
                             })
@@ -1740,6 +1694,12 @@ struct LegendRowHit {
 struct LegendLayout {
     bg: Rectangle,
     rows: Vec<LegendRowHit>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LegendMode {
+    Compact { include_pct: bool },
+    Expanded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
