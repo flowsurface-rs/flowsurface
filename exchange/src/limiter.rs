@@ -34,7 +34,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
         tokio::time::sleep(wait_time).await;
     }
 
-    let mut request_builder = HTTP_CLIENT.request(method, url);
+    let mut request_builder = HTTP_CLIENT.request(method.clone(), url);
 
     if let Some(body) = json_body {
         request_builder = request_builder.json(body);
@@ -47,8 +47,10 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
 
     if limiter_guard.should_exit_on_response(&response) {
         let status = response.status();
-        eprintln!(
-            "HTTP error {status} for: {url}. Exiting. (This may be a rate limit, geo-block, or other access issue.)",
+        log::error!(
+            "HTTP error {} for: {}. Exiting. (This may be a rate limit, geo-block, or other access issue.)",
+            status,
+            url
         );
         std::process::exit(1);
     }
@@ -69,7 +71,9 @@ where
     L: RateLimiter,
     V: serde::de::DeserializeOwned,
 {
-    let body = http_request_with_limiter(url, limiter, weight, method, json_body).await?;
+    let method = method.unwrap_or(Method::GET);
+
+    let body = http_request_with_limiter(url, limiter, weight, Some(method), json_body).await?;
     let trimmed = body.trim();
 
     let body_preview = |body: &str, n: usize| {
@@ -82,27 +86,31 @@ where
     };
 
     if trimmed.is_empty() {
-        return Err(AdapterError::ParseError(format!(
-            "Empty response body | url={url}",
-        )));
+        let msg = format!("Empty response body | url={url}");
+        log::error!("{}", msg);
+        return Err(AdapterError::ParseError(msg));
     }
     if trimmed.starts_with('<') {
-        return Err(AdapterError::ParseError(format!(
+        let msg = format!(
             "Non-JSON (HTML?) response | url={} | len={} | preview={:?}",
             url,
             body.len(),
             body_preview(&body, 200)
-        )));
+        );
+        log::error!("{}", msg);
+        return Err(AdapterError::ParseError(msg));
     }
 
     serde_json::from_str(&body).map_err(|e| {
-        AdapterError::ParseError(format!(
+        let msg = format!(
             "JSON parse failed: {} | url={} | response_len={} | preview={:?}",
             e,
             url,
             body.len(),
             body_preview(&body, 200)
-        ))
+        );
+        log::error!("{}", msg);
+        AdapterError::ParseError(msg)
     })
 }
 

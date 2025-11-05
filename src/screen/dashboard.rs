@@ -1308,7 +1308,8 @@ fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_klines(ticker_info, timeframe, range).map_err(|err| format!("{err}")),
+            adapter::fetch_klines(ticker_info, timeframe, range)
+                .map_err(|err| err.to_user_message()),
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines {
@@ -1322,7 +1323,9 @@ fn kline_fetch_task(
                         stream,
                     }
                 }
-                Err(err) => Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(err)),
+                Err(err) => {
+                    Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(err.to_string()))
+                }
             },
         ),
         _ => Task::none(),

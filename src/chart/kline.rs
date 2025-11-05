@@ -73,9 +73,13 @@ impl Chart for KlineChart {
         elements
     }
 
-    fn visible_timerange(&self) -> (u64, u64) {
+    fn visible_timerange(&self) -> Option<(u64, u64)> {
         let chart = self.state();
         let region = chart.visible_region(chart.bounds.size());
+
+        if region.width == 0.0 {
+            return None;
+        }
 
         match &chart.basis {
             Basis::Time(timeframe) => {
@@ -86,7 +90,7 @@ impl Chart for KlineChart {
                     chart.x_to_interval(region.x + region.width) + (interval / 2),
                 );
 
-                (earliest, latest)
+                Some((earliest, latest))
             }
             Basis::Tick(_) => {
                 unimplemented!()
@@ -359,7 +363,7 @@ impl KlineChart {
             PlotData::TimeBased(timeseries) => {
                 let timeframe_ms = timeseries.interval.to_milliseconds();
 
-                let (visible_earliest, visible_latest) = self.visible_timerange();
+                let (visible_earliest, visible_latest) = self.visible_timerange()?;
                 let (kline_earliest, kline_latest) = timeseries.timerange();
                 let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
 

@@ -71,14 +71,18 @@ impl Chart for HeatmapChart {
         vec![]
     }
 
-    fn visible_timerange(&self) -> (u64, u64) {
+    fn visible_timerange(&self) -> Option<(u64, u64)> {
         let chart = self.state();
-        let visible_region = chart.visible_region(chart.bounds.size());
+        let region = chart.visible_region(chart.bounds.size());
 
-        (
-            chart.x_to_interval(visible_region.x),
-            chart.x_to_interval(visible_region.x + visible_region.width),
-        )
+        if region.width == 0.0 {
+            return None;
+        }
+
+        Some((
+            chart.x_to_interval(region.x),
+            chart.x_to_interval(region.x + region.width),
+        ))
     }
 
     fn interval_keys(&self) -> Option<Vec<u64>> {
