@@ -109,26 +109,30 @@ impl From<&pane::State> for data::Pane {
                 link_group: pane.link_group,
             },
             pane::Content::Heatmap {
-                chart, indicators, ..
+                chart,
+                indicators,
+                studies,
+                layout,
+                ..
             } => data::Pane::HeatmapChart {
-                layout: chart
-                    .as_ref()
-                    .map_or(data::chart::ViewConfig::default(), |c| c.chart_layout()),
+                layout: chart.as_ref().map_or(layout.clone(), |c| c.chart_layout()),
                 stream_type: streams,
                 settings: pane.settings.clone(),
                 indicators: indicators.clone(),
-                studies: chart.as_ref().map_or(vec![], |c| c.studies.clone()),
+                studies: chart
+                    .as_ref()
+                    .map_or(studies.clone(), |c| c.studies.clone()),
                 link_group: pane.link_group,
             },
             pane::Content::Kline {
-                chart, indicators, ..
+                chart,
+                indicators,
+                kind,
+                layout,
+                ..
             } => data::Pane::KlineChart {
-                layout: chart
-                    .as_ref()
-                    .map_or(data::chart::ViewConfig::default(), |c| c.chart_layout()),
-                kind: chart
-                    .as_ref()
-                    .map_or(data::chart::KlineChartKind::Candles, |c| c.kind().clone()),
+                layout: chart.as_ref().map_or(layout.clone(), |c| c.chart_layout()),
+                kind: kind.clone(),
                 stream_type: streams,
                 settings: pane.settings.clone(),
                 indicators: indicators.clone(),
