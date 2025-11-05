@@ -783,7 +783,6 @@ pub async fn fetch_klines(
 
     log::debug!("Fetching klines for ticker symbol: '{}'", symbol_str);
 
-    // Hyperliquid requires startTime and endTime - use provided range or default to 500 candles
     let (start_time, end_time) = if let Some((start, end)) = range {
         (start, end)
     } else {
@@ -793,7 +792,7 @@ pub async fn fetch_klines(
             .unwrap()
             .as_millis() as u64;
         let interval_ms = timeframe.to_milliseconds();
-        let candles_ago = now - (interval_ms * 500); // 500 candles ago
+        let candles_ago = now - (interval_ms * 500);
         (candles_ago, now)
     };
 
@@ -807,7 +806,7 @@ pub async fn fetch_klines(
         }
     });
 
-    let response_text = limiter::http_request_with_limiter(
+    let klines_data: Vec<Value> = limiter::http_parse_with_limiter(
         &url,
         &HYPERLIQUID_LIMITER,
         1,
@@ -816,14 +815,7 @@ pub async fn fetch_klines(
     )
     .await?;
 
-    let klines_data: Vec<Value> = serde_json::from_str(&response_text).map_err(|e| {
-        AdapterError::ParseError(format!(
-            "Failed to parse response as Vec<Value>: {}. Response was: {}",
-            e, response_text
-        ))
-    })?;
-
-    let mut klines = Vec::new();
+    let mut klines = vec![];
     for kline_data in klines_data {
         if let Ok(hl_kline) = serde_json::from_value::<HyperliquidKline>(kline_data) {
             let volume = if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {

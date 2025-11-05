@@ -752,11 +752,7 @@ pub async fn fetch_klines(
         url.push_str(&format!("&before={start}&after={end}"));
     }
 
-    let response_text =
-        limiter::http_request_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
-
-    let doc: Value = serde_json::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    let doc: Value = limiter::http_parse_with_limiter(&url, &OKEX_LIMITER, 1, None, None).await?;
 
     let list = doc["data"]
         .as_array()

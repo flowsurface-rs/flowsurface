@@ -972,10 +972,9 @@ pub async fn fetch_klines(
     };
 
     let limiter = limiter_from_market_type(market_type);
-    let text = crate::limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
-    let fetched_klines: Vec<FetchedKlines> = serde_json::from_str(&text)
-        .map_err(|e| AdapterError::ParseError(format!("Failed to parse klines: {e}")))?;
+    let fetched_klines: Vec<FetchedKlines> =
+        limiter::http_parse_with_limiter(&url, limiter, weight, None, None).await?;
 
     let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
 

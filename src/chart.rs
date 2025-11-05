@@ -72,7 +72,7 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
 
     fn view_indicators(&'_ self, enabled: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>>;
 
-    fn visible_timerange(&self) -> (u64, u64);
+    fn visible_timerange(&self) -> Option<(u64, u64)>;
 
     fn interval_keys(&self) -> Option<Vec<u64>>;
 

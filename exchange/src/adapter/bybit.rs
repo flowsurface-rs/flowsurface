@@ -753,15 +753,13 @@ pub async fn fetch_klines(
         url.push_str(&format!("&limit={}", 200));
     }
 
-    let response_text = http_request_with_limiter(&url, &BYBIT_LIMITER, 1, None, None).await?;
-
-    let value: ApiResponse =
-        sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    let response: ApiResponse =
+        limiter::http_parse_with_limiter(&url, &BYBIT_LIMITER, 1, None, None).await?;
 
     let size_in_quote_currency =
         SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && *market_type != MarketKind::InversePerps;
 
-    let klines: Result<Vec<Kline>, AdapterError> = value
+    let klines: Result<Vec<Kline>, AdapterError> = response
         .result
         .list
         .iter()
