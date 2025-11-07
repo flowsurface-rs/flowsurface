@@ -1,8 +1,14 @@
 ///
 /// This widget is slight modification of `color_picker` widget at [`Halloy`]: <https://github.com/squidowl/halloy/blob/main/src/widget/color_picker.rs>
-/// All credits goes to authors of [`Halloy`], <https://github.com/squidowl/halloy/>
-/// I just removed alpha channel support as to fully rely on Iced's color palette generation.
+/// Credits to the authors of [`Halloy`], <https://github.com/squidowl/halloy/>
 ///
+/// Modifications:
+///
+/// Removed alpha channel support as to fully rely on Iced's color palette generation.
+///
+/// Used cursor.position() with manual bounds checking instead of cursor.position_over(bounds) inside `decorate::update`,
+/// to support correct mouse interactions when it's inside a Scrollable widget and prevent being offsetted by scrolling.
+///  
 use iced::Length::{self, Fill, FillPortion};
 use iced::advanced::Layout;
 use iced::advanced::renderer::{Quad, Renderer as _};
@@ -314,7 +320,9 @@ fn picker_hsva<'a, Message: 'a>(
                     {
                         if cursor.is_over(handle) {
                             *state = Some(handle);
-                        } else if let Some(position) = cursor.position_over(bounds) {
+                        } else if let Some(position) = cursor.position()
+                            && bounds.contains(position)
+                        {
                             let new_handle =
                                 picker.handle_from_cursor(position, bounds, handle_radius);
                             let new_hsva = picker.color_at_handle(hsva, new_handle, bounds);
@@ -334,11 +342,13 @@ fn picker_hsva<'a, Message: 'a>(
                             shell.publish((on_hsva)(new_hsva));
                         }
                     }
-                    iced::Event::Mouse(mouse::Event::CursorMoved { position })
-                    | iced::Event::Touch(touch::Event::FingerMoved { position, .. })
+                    iced::Event::Mouse(mouse::Event::CursorMoved { .. })
+                    | iced::Event::Touch(touch::Event::FingerMoved { .. })
                         if state.is_some() =>
                     {
-                        if let Some(last_handle) = state.as_mut() {
+                        if let Some(last_handle) = state.as_mut()
+                            && let Some(position) = cursor.position()
+                        {
                             match picker {
                                 Picker::Slider(_) => {
                                     last_handle.x =
