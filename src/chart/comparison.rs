@@ -102,8 +102,7 @@ impl ComparisonChart {
                     None
                 }
                 LineComparisonEvent::SeriesCog(ticker_info) => {
-                    self.color_editor.show_color_for = Some(ticker_info);
-                    Some(Action::OpenColorEditor)
+                    self.open_color_editor_for_ticker(ticker_info)
                 }
                 LineComparisonEvent::SeriesRemove(ticker_info) => {
                     Some(Action::RemoveSeries(ticker_info))
@@ -122,8 +121,7 @@ impl ComparisonChart {
             }
             Message::ColorEditor(msg) => self.color_editor.update(msg),
             Message::OpenColorEditorFor(ticker_info) => {
-                self.color_editor.show_color_for = Some(ticker_info);
-                Some(Action::OpenColorEditor)
+                self.open_color_editor_for_ticker(ticker_info)
             }
         }
     }
@@ -386,6 +384,17 @@ impl ComparisonChart {
             }
             Basis::Tick(_) => unimplemented!(),
         }
+    }
+
+    fn open_color_editor_for_ticker(&mut self, ticker_info: TickerInfo) -> Option<Action> {
+        self.color_editor.show_color_for = Some(ticker_info);
+        if let Some(idx) = self.series_index.get(&ticker_info) {
+            let current = self.series[*idx].color;
+            self.color_editor.editing = Some(data::config::theme::to_hsva(current));
+        } else {
+            self.color_editor.editing = None;
+        }
+        Some(Action::OpenColorEditor)
     }
 
     pub fn set_ticker_color(&mut self, ticker: TickerInfo, color: iced::Color) {
