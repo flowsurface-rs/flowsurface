@@ -183,3 +183,10 @@ impl Clone for FetchSpec {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InfoKind {
+    FetchingKlines,
+    FetchingTrades(usize),
+    FetchingOI,
+}
