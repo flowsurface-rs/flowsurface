@@ -538,6 +538,11 @@ impl<'de> Deserialize<'de> for Ticker {
     }
 }
 
+pub enum StreamPairKind {
+    SingleSource(TickerInfo),
+    MultiSource(Vec<TickerInfo>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Hash, Eq)]
 pub struct TickerInfo {
     pub ticker: Ticker,

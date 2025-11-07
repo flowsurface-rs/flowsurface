@@ -3,6 +3,7 @@ use crate::{
     modal::{
         self, ModifierKind,
         pane::{
+            Modal,
             mini_tickers_list::MiniPanel,
             settings::{comparison_cfg_view, heatmap_cfg_view, kline_cfg_view},
             stack_modal,
@@ -28,7 +29,7 @@ use data::{
     layout::pane::{ContentKind, LinkGroup, Settings, VisualConfig},
 };
 use exchange::{
-    Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe,
+    Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
     adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
     fetcher::FetchRequests,
 };
@@ -48,34 +49,12 @@ pub enum Effect {
     FocusWidget(iced::widget::Id),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InfoType {
-    FetchingKlines,
-    FetchingTrades(usize),
-    FetchingOI,
-}
-
-pub enum StreamPairKind {
-    SingleSource(TickerInfo),
-    MultiSource(Vec<TickerInfo>),
-}
-
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum Status {
     #[default]
     Ready,
-    Loading(InfoType),
+    Loading(exchange::fetcher::InfoKind),
     Stale(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Modal {
-    StreamModifier(modal::stream::Modifier),
-    MiniTickersList(modal::pane::mini_tickers_list::MiniPanel),
-    Settings,
-    Indicators,
-    LinkGroup,
-    Controls,
 }
 
 pub enum Action {
@@ -107,17 +86,17 @@ pub enum Event {
     ShowModal(Modal),
     HideModal,
     ContentSelected(ContentKind),
-    ChartInteraction(crate::chart::Message),
+    ChartInteraction(super::chart::Message),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
     DeleteNotification(usize),
     ReorderIndicator(column_drag::DragEvent),
     ClusterKindSelected(data::chart::kline::ClusterKind),
     ClusterScalingSelected(data::chart::kline::ClusterScaling),
-    StudyConfigurator(crate::modal::pane::settings::study::StudyMessage),
-    StreamModifierChanged(crate::modal::stream::Message),
-    ComparisonChartInteraction(crate::chart::comparison::Message),
-    MiniTickersListInteraction(crate::modal::pane::mini_tickers_list::Message),
+    StudyConfigurator(modal::pane::settings::study::StudyMessage),
+    StreamModifierChanged(modal::stream::Message),
+    ComparisonChartInteraction(super::chart::comparison::Message),
+    MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
 }
 
 pub struct State {
@@ -526,25 +505,6 @@ impl State {
         }
     }
 
-    fn view_uninitialized<'a>(&'a self, kind: ContentKind) -> Element<'a, Message> {
-        let content = column![
-            text(kind.to_string()).size(16),
-            text("No ticker selected").size(14)
-        ]
-        .spacing(8)
-        .align_x(Alignment::Center);
-
-        center(content).into()
-    }
-
-    fn uninitialized_base<'a>(&'a self, kind: ContentKind) -> Element<'a, Message> {
-        if self.has_stream() {
-            center(text("Loading…").size(16)).into()
-        } else {
-            self.view_uninitialized(kind)
-        }
-    }
-
     pub fn view<'a>(
         &'a self,
         id: pane_grid::Pane,
@@ -641,6 +601,21 @@ impl State {
             None
         };
 
+        let uninitialized_base = |kind: ContentKind| -> Element<'a, Message> {
+            if self.has_stream() {
+                center(text("Loading…").size(16)).into()
+            } else {
+                let content = column![
+                    text(kind.to_string()).size(16),
+                    text("No ticker selected").size(14)
+                ]
+                .spacing(8)
+                .align_x(Alignment::Center);
+
+                center(content).into()
+            }
+        };
+
         let body = match &self.content {
             Content::Starter => {
                 let content_picklist =
@@ -663,33 +638,15 @@ impl State {
                 )
                 .into();
 
-                if let Some(Modal::LinkGroup) = self.modal {
-                    let content = link_group_modal(id, self.link_group);
-
-                    stack_modal(
-                        base,
-                        content,
-                        Message::PaneEvent(id, Event::HideModal),
-                        padding::right(12).left(4),
-                        Alignment::Start,
-                    )
-                } else if self.modal == Some(Modal::Controls) {
-                    stack_modal(
-                        base,
-                        container(self.view_controls(
-                            id,
-                            panes,
-                            maximized,
-                            window != main_window.id,
-                        ))
-                        .style(style::chart_modal),
-                        Message::PaneEvent(id, Event::HideModal),
-                        padding::left(12),
-                        Alignment::Start,
-                    )
-                } else {
-                    base
-                }
+                self.compose_stack_view(
+                    base,
+                    id,
+                    None,
+                    compact_controls,
+                    || column![].into(),
+                    None,
+                    tickers_table,
+                )
             }
             Content::Comparison(chart) => {
                 if let Some(c) = chart {
@@ -720,7 +677,7 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    let base = self.uninitialized_base(ContentKind::ComparisonChart);
+                    let base = uninitialized_base(ContentKind::ComparisonChart);
                     self.compose_stack_view(
                         base,
                         id,
@@ -751,7 +708,7 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    let base = self.uninitialized_base(ContentKind::TimeAndSales);
+                    let base = uninitialized_base(ContentKind::TimeAndSales);
                     self.compose_stack_view(
                         base,
                         id,
@@ -804,7 +761,7 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    let base = self.uninitialized_base(ContentKind::Ladder);
+                    let base = uninitialized_base(ContentKind::Ladder);
                     self.compose_stack_view(
                         base,
                         id,
@@ -881,7 +838,7 @@ impl State {
                         tickers_table,
                     )
                 } else {
-                    let base = self.uninitialized_base(ContentKind::HeatmapChart);
+                    let base = uninitialized_base(ContentKind::HeatmapChart);
                     self.compose_stack_view(
                         base,
                         id,
@@ -983,7 +940,7 @@ impl State {
                             ContentKind::FootprintChart
                         }
                     };
-                    let base = self.uninitialized_base(content_kind);
+                    let base = uninitialized_base(content_kind);
                     self.compose_stack_view(
                         base,
                         id,
@@ -998,14 +955,14 @@ impl State {
         };
 
         match &self.status {
-            Status::Loading(InfoType::FetchingKlines) => {
+            Status::Loading(exchange::fetcher::InfoKind::FetchingKlines) => {
                 stream_info_element = stream_info_element.push(text("Fetching Klines..."));
             }
-            Status::Loading(InfoType::FetchingTrades(count)) => {
+            Status::Loading(exchange::fetcher::InfoKind::FetchingTrades(count)) => {
                 stream_info_element =
                     stream_info_element.push(text(format!("Fetching Trades... {count} fetched")));
             }
-            Status::Loading(InfoType::FetchingOI) => {
+            Status::Loading(exchange::fetcher::InfoKind::FetchingOI) => {
                 stream_info_element = stream_info_element.push(text("Fetching Open Interest..."));
             }
             Status::Stale(msg) => {
@@ -1584,12 +1541,15 @@ impl State {
     }
 
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
-        let is_same_kind = self
-            .modal
-            .as_ref()
-            .map(|open| core::mem::discriminant(open) == core::mem::discriminant(&requested_modal))
-            .unwrap_or(false);
-        if is_same_kind {
+        let should_toggle_close = match (&self.modal, &requested_modal) {
+            (Some(Modal::StreamModifier(open)), Modal::StreamModifier(req)) => {
+                open.view_mode == req.view_mode
+            }
+            (Some(open), req) => core::mem::discriminant(open) == core::mem::discriminant(req),
+            _ => false,
+        };
+
+        if should_toggle_close {
             self.modal = None;
             return None;
         }
@@ -2083,21 +2043,7 @@ impl Content {
 
 impl std::fmt::Display for Content {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Content::Starter => write!(f, "Starter pane"),
-            Content::Heatmap { .. } => write!(f, "Heatmap chart"),
-            Content::Kline { kind, .. } => match kind {
-                data::chart::KlineChartKind::Footprint { .. } => {
-                    write!(f, "Footprint chart")
-                }
-                data::chart::KlineChartKind::Candles => {
-                    write!(f, "Candlestick chart")
-                }
-            },
-            Content::TimeAndSales(_) => write!(f, "Time&Sales"),
-            Content::Ladder(_) => write!(f, "DOM/Ladder"),
-            Content::Comparison(_) => write!(f, "Comparison chart"),
-        }
+        write!(f, "{}", self.kind())
     }
 }
 

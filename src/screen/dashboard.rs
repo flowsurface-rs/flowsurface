@@ -8,7 +8,7 @@ pub use sidebar::Sidebar;
 use super::DashboardError;
 use crate::{
     chart,
-    screen::dashboard::{pane::StreamPairKind, tickers_table::TickersTable},
+    screen::dashboard::tickers_table::TickersTable,
     style,
     widget::toast::Toast,
     window::{self, Window},
@@ -18,7 +18,7 @@ use data::{
     layout::{WindowSpec, pane::ContentKind},
 };
 use exchange::{
-    Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
+    Kline, PushFrequency, StreamPairKind, TickMultiplier, TickerInfo, Timeframe, Trade,
     adapter::{
         self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
         StreamTicksize, UniqueStreams, binance, bybit, hyperliquid, okex,
@@ -902,12 +902,13 @@ impl Dashboard {
             })?;
 
         match &mut pane_state.status {
-            pane::Status::Loading(pane::InfoType::FetchingTrades(count)) => {
+            pane::Status::Loading(exchange::fetcher::InfoKind::FetchingTrades(count)) => {
                 *count += trades.len();
             }
             _ => {
-                pane_state.status =
-                    pane::Status::Loading(pane::InfoType::FetchingTrades(trades.len()));
+                pane_state.status = pane::Status::Loading(
+                    exchange::fetcher::InfoKind::FetchingTrades(trades.len()),
+                );
             }
         }
 
@@ -1262,7 +1263,7 @@ fn oi_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane_id,
-        pane::Status::Loading(pane::InfoType::FetchingOI),
+        pane::Status::Loading(exchange::fetcher::InfoKind::FetchingOI),
     ));
 
     let fetch_task = match stream {
@@ -1300,7 +1301,7 @@ fn kline_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane_id,
-        pane::Status::Loading(pane::InfoType::FetchingKlines),
+        pane::Status::Loading(exchange::fetcher::InfoKind::FetchingKlines),
     ));
 
     let fetch_task = match stream {

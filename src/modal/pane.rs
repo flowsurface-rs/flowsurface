@@ -8,6 +8,16 @@ pub mod mini_tickers_list;
 pub mod settings;
 pub mod stream;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Modal {
+    StreamModifier(super::stream::Modifier),
+    MiniTickersList(mini_tickers_list::MiniPanel),
+    Settings,
+    Indicators,
+    LinkGroup,
+    Controls,
+}
+
 pub fn stack_modal<'a, Message>(
     base: impl Into<Element<'a, Message>>,
     content: impl Into<Element<'a, Message>>,

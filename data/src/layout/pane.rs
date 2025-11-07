@@ -207,12 +207,12 @@ impl ContentKind {
 impl std::fmt::Display for ContentKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            ContentKind::Starter => "Starter",
+            ContentKind::Starter => "Starter Pane",
             ContentKind::HeatmapChart => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
             ContentKind::ComparisonChart => "Comparison Chart",
-            ContentKind::TimeAndSales => "Time and Sales",
+            ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
         };
         write!(f, "{s}")
