@@ -868,7 +868,7 @@ impl Dashboard {
                         ticker_info,
                     } = stream_type
                     {
-                        pane_state.insert_klines_vec(req_id, timeframe, ticker_info, &data);
+                        pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
                     }
                 }
             }
@@ -877,7 +877,7 @@ impl Dashboard {
                     pane_state.status = pane::Status::Ready;
 
                     if let StreamKind::Kline { .. } = stream_type {
-                        pane_state.insert_oi_vec(req_id, &data);
+                        pane_state.insert_hist_oi(req_id, &data);
                     }
                 }
             }

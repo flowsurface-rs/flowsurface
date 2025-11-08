@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggr::time::DataPoint;
 
+#[derive(Clone)]
 pub struct KlineDataPoint {
     pub kline: Kline,
     pub footprint: KlineTrades,

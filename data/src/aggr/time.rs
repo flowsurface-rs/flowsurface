@@ -161,12 +161,7 @@ impl<D: DataPoint> TimeSeries<D> {
 }
 
 impl TimeSeries<KlineDataPoint> {
-    pub fn new(
-        interval: Timeframe,
-        tick_size: PriceStep,
-        raw_trades: &[Trade],
-        klines: &[Kline],
-    ) -> Self {
+    pub fn new(interval: Timeframe, tick_size: PriceStep, klines: &[Kline]) -> Self {
         let mut timeseries = Self {
             datapoints: BTreeMap::new(),
             interval,
@@ -174,12 +169,18 @@ impl TimeSeries<KlineDataPoint> {
         };
 
         timeseries.insert_klines(klines);
-
-        if !raw_trades.is_empty() {
-            timeseries.insert_trades(raw_trades);
-        }
-
         timeseries
+    }
+
+    pub fn with_trades(&self, trades: &[Trade]) -> TimeSeries<KlineDataPoint> {
+        let mut new_series = Self {
+            datapoints: self.datapoints.clone(),
+            interval: self.interval,
+            tick_size: self.tick_size,
+        };
+
+        new_series.insert_trades_or_create_bucket(trades);
+        new_series
     }
 
     pub fn insert_klines(&mut self, klines: &[Kline]) {
@@ -198,7 +199,7 @@ impl TimeSeries<KlineDataPoint> {
         self.update_poc_status();
     }
 
-    pub fn insert_trades(&mut self, buffer: &[Trade]) {
+    pub fn insert_trades_or_create_bucket(&mut self, buffer: &[Trade]) {
         if buffer.is_empty() {
             return;
         }
@@ -237,12 +238,37 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn change_tick_size(&mut self, tick_size: f32, all_raw_trades: &[Trade]) {
+    pub fn insert_trades_existing_buckets(&mut self, buffer: &[Trade]) {
+        if buffer.is_empty() {
+            return;
+        }
+        let aggr_time = self.interval.to_milliseconds();
+        let mut updated_times: Vec<u64> = Vec::new();
+
+        for trade in buffer {
+            let rounded_time = (trade.time / aggr_time) * aggr_time;
+
+            if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
+                if !updated_times.contains(&rounded_time) {
+                    updated_times.push(rounded_time);
+                }
+                entry.add_trade(trade, self.tick_size);
+            }
+        }
+
+        for time in updated_times {
+            if let Some(data_point) = self.datapoints.get_mut(&time) {
+                data_point.calculate_poc();
+            }
+        }
+    }
+
+    pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
         self.tick_size = PriceStep::from_f32(tick_size);
         self.clear_trades();
 
-        if !all_raw_trades.is_empty() {
-            self.insert_trades(all_raw_trades);
+        if !raw_trades.is_empty() {
+            self.insert_trades_existing_buckets(raw_trades);
         }
     }
 

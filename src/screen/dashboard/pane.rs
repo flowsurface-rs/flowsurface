@@ -430,7 +430,7 @@ impl State {
         }
     }
 
-    pub fn insert_oi_vec(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
+    pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
         match &mut self.content {
             Content::Kline { chart, .. } => {
                 let Some(chart) = chart else {
@@ -444,7 +444,7 @@ impl State {
         }
     }
 
-    pub fn insert_klines_vec(
+    pub fn insert_hist_klines(
         &mut self,
         req_id: Option<uuid::Uuid>,
         timeframe: Timeframe,
@@ -460,7 +460,7 @@ impl State {
                 };
 
                 if let Some(id) = req_id {
-                    chart.insert_new_klines(id, klines);
+                    chart.insert_hist_klines(id, klines);
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
@@ -1101,29 +1101,32 @@ impl State {
             },
             Event::StreamModifierChanged(message) => {
                 if let Some(Modal::StreamModifier(mut modifier)) = self.modal.take() {
+                    let mut effect: Option<Effect> = None;
+
                     if let Some(action) = modifier.update(message) {
                         match action {
-                            crate::modal::stream::Action::TabSelected(tab) => {
+                            modal::stream::Action::TabSelected(tab) => {
                                 modifier.tab = tab;
-                                self.modal = Some(Modal::StreamModifier(modifier));
                             }
-                            crate::modal::stream::Action::TicksizeSelected(tm) => {
+                            modal::stream::Action::TicksizeSelected(tm) => {
                                 modifier.update_kind_with_multiplier(tm);
                                 self.settings.tick_multiply = Some(tm);
 
-                                self.modal = Some(Modal::StreamModifier(modifier));
-
-                                if let Some(ti) = self.stream_pair() {
+                                if let Some(ticker) = self.stream_pair() {
                                     match &mut self.content {
                                         Content::Kline { chart: Some(c), .. } => {
-                                            c.change_tick_size(tm.multiply_with_min_tick_size(ti));
+                                            c.change_tick_size(
+                                                tm.multiply_with_min_tick_size(ticker),
+                                            );
                                             c.reset_request_handler();
                                         }
                                         Content::Heatmap { chart: Some(c), .. } => {
-                                            c.change_tick_size(tm.multiply_with_min_tick_size(ti));
+                                            c.change_tick_size(
+                                                tm.multiply_with_min_tick_size(ticker),
+                                            );
                                         }
                                         Content::Ladder(Some(p)) => {
-                                            p.set_tick_size(tm.multiply_with_min_tick_size(ti));
+                                            p.set_tick_size(tm.multiply_with_min_tick_size(ticker));
                                         }
                                         _ => {}
                                     }
@@ -1146,16 +1149,14 @@ impl State {
                                     }
                                 }
                                 if !is_client {
-                                    return Some(Effect::RefreshStreams);
+                                    effect = Some(Effect::RefreshStreams);
                                 }
                             }
-                            crate::modal::stream::Action::BasisSelected(new_basis) => {
+                            modal::stream::Action::BasisSelected(new_basis) => {
                                 modifier.update_kind_with_basis(new_basis);
                                 self.settings.selected_basis = Some(new_basis);
 
-                                self.modal = Some(Modal::StreamModifier(modifier));
-
-                                let base_ticker = self.stream_pair()?;
+                                let base_ticker = self.stream_pair();
 
                                 match &mut self.content {
                                     Content::Heatmap { chart: Some(c), .. } => {
@@ -1185,75 +1186,78 @@ impl State {
                                             }
                                         }
 
-                                        return Some(Effect::RefreshStreams);
+                                        effect = Some(Effect::RefreshStreams);
                                     }
-                                    Content::Kline { chart: Some(c), .. } => match new_basis {
-                                        Basis::Time(tf) => {
-                                            let kline_stream = StreamKind::Kline {
-                                                ticker_info: base_ticker,
-                                                timeframe: tf,
-                                            };
-                                            let mut streams = vec![kline_stream];
+                                    Content::Kline { chart: Some(c), .. } => {
+                                        if let Some(base_ticker) = base_ticker {
+                                            match new_basis {
+                                                Basis::Time(tf) => {
+                                                    let kline_stream = StreamKind::Kline {
+                                                        ticker_info: base_ticker,
+                                                        timeframe: tf,
+                                                    };
+                                                    let mut streams = vec![kline_stream];
 
-                                            if matches!(
-                                                c.kind,
-                                                data::chart::KlineChartKind::Footprint { .. }
-                                            ) {
-                                                let depth_aggr = if base_ticker
-                                                    .exchange()
-                                                    .is_depth_client_aggr()
-                                                {
-                                                    StreamTicksize::Client
-                                                } else {
-                                                    StreamTicksize::ServerSide(
-                                                        self.settings
-                                                            .tick_multiply
-                                                            .unwrap_or(TickMultiplier(1)),
-                                                    )
-                                                };
-                                                streams.push(StreamKind::DepthAndTrades {
-                                                    ticker_info: base_ticker,
-                                                    depth_aggr,
-                                                    push_freq:
-                                                        exchange::PushFrequency::ServerDefault,
-                                                });
-                                            }
+                                                    if matches!(
+                                                        c.kind,
+                                                        data::chart::KlineChartKind::Footprint { .. }
+                                                    ) {
+                                                        let depth_aggr = if base_ticker
+                                                            .exchange()
+                                                            .is_depth_client_aggr()
+                                                        {
+                                                            StreamTicksize::Client
+                                                        } else {
+                                                            StreamTicksize::ServerSide(
+                                                                self.settings
+                                                                    .tick_multiply
+                                                                    .unwrap_or(TickMultiplier(1)),
+                                                            )
+                                                        };
+                                                        streams.push(StreamKind::DepthAndTrades {
+                                                            ticker_info: base_ticker,
+                                                            depth_aggr,
+                                                            push_freq: exchange::PushFrequency::ServerDefault,
+                                                        });
+                                                    }
 
-                                            self.streams = ResolvedStream::Ready(streams);
-                                            let action = c.set_basis(new_basis);
+                                                    self.streams = ResolvedStream::Ready(streams);
+                                                    let action = c.set_basis(new_basis);
 
-                                            match action {
-                                                Some(chart::Action::RequestFetch(fetch)) => {
-                                                    return Some(Effect::RequestFetch(fetch));
+                                                    if let Some(chart::Action::RequestFetch(
+                                                        fetch,
+                                                    )) = action
+                                                    {
+                                                        effect = Some(Effect::RequestFetch(fetch));
+                                                    }
                                                 }
-                                                Some(chart::Action::ErrorOccurred(_)) | None => {}
+                                                Basis::Tick(_) => {
+                                                    let depth_aggr = if base_ticker
+                                                        .exchange()
+                                                        .is_depth_client_aggr()
+                                                    {
+                                                        StreamTicksize::Client
+                                                    } else {
+                                                        StreamTicksize::ServerSide(
+                                                            self.settings
+                                                                .tick_multiply
+                                                                .unwrap_or(TickMultiplier(1)),
+                                                        )
+                                                    };
+
+                                                    self.streams = ResolvedStream::Ready(vec![
+                                                        StreamKind::DepthAndTrades {
+                                                            ticker_info: base_ticker,
+                                                            depth_aggr,
+                                                            push_freq: exchange::PushFrequency::ServerDefault,
+                                                        },
+                                                    ]);
+                                                    c.set_basis(new_basis);
+                                                    effect = Some(Effect::RefreshStreams);
+                                                }
                                             }
                                         }
-                                        Basis::Tick(_) => {
-                                            let depth_aggr =
-                                                if base_ticker.exchange().is_depth_client_aggr() {
-                                                    StreamTicksize::Client
-                                                } else {
-                                                    StreamTicksize::ServerSide(
-                                                        self.settings
-                                                            .tick_multiply
-                                                            .unwrap_or(TickMultiplier(1)),
-                                                    )
-                                                };
-
-                                            self.streams = ResolvedStream::Ready(vec![
-                                                StreamKind::DepthAndTrades {
-                                                    ticker_info: base_ticker,
-                                                    depth_aggr,
-                                                    push_freq:
-                                                        exchange::PushFrequency::ServerDefault,
-                                                },
-                                            ]);
-                                            c.set_basis(new_basis);
-
-                                            return Some(Effect::RefreshStreams);
-                                        }
-                                    },
+                                    }
                                     Content::Comparison(Some(c)) => {
                                         if let Basis::Time(tf) = new_basis {
                                             let streams: Vec<StreamKind> = c
@@ -1269,20 +1273,22 @@ impl State {
                                             self.streams = ResolvedStream::Ready(streams);
                                             let action = c.set_basis(new_basis);
 
-                                            match action {
-                                                Some(chart::Action::RequestFetch(fetch)) => {
-                                                    return Some(Effect::RequestFetch(fetch));
-                                                }
-                                                Some(chart::Action::ErrorOccurred(_)) | None => {}
+                                            if let Some(chart::Action::RequestFetch(fetch)) = action
+                                            {
+                                                effect = Some(Effect::RequestFetch(fetch));
                                             }
                                         }
                                     }
-                                    _ => unreachable!(),
+                                    _ => {}
                                 }
                             }
                         }
-                    } else if let Some(m) = self.modal.take() {
-                        self.modal = Some(m);
+                    }
+
+                    self.modal = Some(Modal::StreamModifier(modifier));
+
+                    if let Some(e) = effect {
+                        return Some(e);
                     }
                 }
             }

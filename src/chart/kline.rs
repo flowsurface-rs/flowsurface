@@ -194,8 +194,8 @@ impl KlineChart {
             Basis::Time(interval) => {
                 let step = PriceStep::from_f32(tick_size);
 
-                let timeseries =
-                    TimeSeries::<KlineDataPoint>::new(interval, step, &raw_trades, klines_raw);
+                let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, klines_raw)
+                    .with_trades(&raw_trades);
 
                 let base_price_y = timeseries.base_price();
                 let latest_x = timeseries.latest_timestamp().unwrap_or(0);
@@ -444,23 +444,6 @@ impl KlineChart {
         self.raw_trades.clone()
     }
 
-    pub fn clear_trades(&mut self, clear_raw: bool) {
-        match self.data_source {
-            PlotData::TimeBased(ref mut source) => {
-                source.clear_trades();
-
-                if clear_raw {
-                    self.raw_trades.clear();
-                } else {
-                    source.insert_trades(&self.raw_trades);
-                }
-            }
-            PlotData::TickBased(_) => {
-                // TODO: implement
-            }
-        }
-    }
-
     pub fn set_handle(&mut self, handle: Handle) {
         self.fetching_trades.1 = Some(handle);
     }
@@ -555,7 +538,6 @@ impl KlineChart {
             .filter_map(Option::as_mut)
             .for_each(|indi| indi.on_ticksize_change(&self.data_source));
 
-        self.clear_trades(false);
         self.invalidate(None);
     }
 
@@ -566,7 +548,7 @@ impl KlineChart {
         match new_basis {
             Basis::Time(interval) => {
                 let step = self.chart.tick_size;
-                let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, &[], &[]);
+                let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, &[]);
                 self.data_source = PlotData::TimeBased(timeseries);
             }
             Basis::Tick(tick_count) => {
@@ -628,7 +610,7 @@ impl KlineChart {
                 self.invalidate(None);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.insert_trades(trades_buffer);
+                timeseries.insert_trades_existing_buckets(trades_buffer);
             }
         }
     }
@@ -639,7 +621,7 @@ impl KlineChart {
                 tick_aggr.insert_trades(&raw_trades);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.insert_trades(&raw_trades);
+                timeseries.insert_trades_existing_buckets(&raw_trades);
             }
         }
 
@@ -650,10 +632,11 @@ impl KlineChart {
         }
     }
 
-    pub fn insert_new_klines(&mut self, req_id: uuid::Uuid, klines_raw: &[Kline]) {
+    pub fn insert_hist_klines(&mut self, req_id: uuid::Uuid, klines_raw: &[Kline]) {
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(klines_raw);
+                timeseries.insert_trades_existing_buckets(&self.raw_trades);
 
                 self.indicators
                     .values_mut()
