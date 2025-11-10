@@ -13,6 +13,7 @@ use iced::widget::canvas;
 use iced::{
     Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
 };
+use iced_core::renderer::Quad;
 
 use chrono::TimeZone;
 
@@ -50,8 +51,9 @@ pub enum LineComparisonEvent {
 
 struct State {
     plot_cache: canvas::Cache,
+    y_axis_cache: canvas::Cache,
+    x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
-    labels_cache: canvas::Cache,
     is_panning: bool,
     last_cursor: Option<Point>,
     last_cache_rev: u64,
@@ -61,8 +63,9 @@ impl Default for State {
     fn default() -> Self {
         Self {
             plot_cache: canvas::Cache::new(),
+            y_axis_cache: canvas::Cache::new(),
+            x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
-            labels_cache: canvas::Cache::new(),
             is_panning: false,
             last_cursor: None,
             last_cache_rev: 0,
@@ -73,8 +76,9 @@ impl Default for State {
 impl State {
     fn clear_all_caches(&mut self) {
         self.plot_cache.clear();
+        self.y_axis_cache.clear();
+        self.x_axis_cache.clear();
         self.overlay_cache.clear();
-        self.labels_cache.clear();
     }
 }
 
@@ -124,7 +128,6 @@ where
         self
     }
 
-    // Snap helpers
     fn align_floor(ts: u64, dt: u64) -> u64 {
         if dt == 0 {
             return ts;
@@ -206,37 +209,6 @@ where
         self.timeframe.to_milliseconds()
     }
 
-    /// rectangles in the widget-local coordinates
-    fn compute_regions(&self, bounds: Rectangle) -> Regions {
-        let gutter = Y_AXIS_GUTTER;
-
-        let plot = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: (bounds.width - gutter).max(0.0),
-            height: (bounds.height - X_AXIS_HEIGHT).max(0.0),
-        };
-
-        let x_axis = Rectangle {
-            x: 0.0,
-            y: plot.y + plot.height,
-            width: bounds.width,
-            height: X_AXIS_HEIGHT.max(0.0),
-        };
-        let y_axis = Rectangle {
-            x: plot.x + plot.width,
-            y: 0.0,
-            width: gutter.max(0.0),
-            height: plot.height,
-        };
-
-        Regions {
-            plot,
-            x_axis,
-            y_axis,
-        }
-    }
-
     fn compute_domains(&self, pan_points: f32) -> Option<((u64, u64), (f32, f32))> {
         if self.series.is_empty() {
             return None;
@@ -251,12 +223,11 @@ where
         Some(((min_x, max_x), (min_pct, max_pct)))
     }
 
-    fn compute_scene(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Scene> {
+    fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
         let ((min_x, max_x), (min_pct, max_pct)) = self.compute_domains(self.pan)?;
 
-        let regions = self.compute_regions(bounds);
+        let regions = Regions::from_layout(layout);
         let plot = regions.plot;
-
         let span_ms = max_x.saturating_sub(min_x).max(1) as f32;
         let px_per_ms = if plot.width > 0.0 {
             plot.width / span_ms
@@ -266,8 +237,6 @@ where
 
         let ctx = PlotContext {
             regions,
-            plot,
-            gutter: Y_AXIS_GUTTER,
             min_x,
             max_x,
             min_pct,
@@ -275,7 +244,7 @@ where
             px_per_ms,
         };
 
-        let total_ticks = (bounds.height / TEXT_SIZE / 3.).floor() as usize;
+        let total_ticks = (plot.height / TEXT_SIZE / 3.).floor() as usize;
         let (all_ticks, step) = super::ticks(min_pct, max_pct, total_ticks);
         let mut ticks: Vec<f32> = all_ticks
             .into_iter()
@@ -290,14 +259,17 @@ where
             .collect();
 
         let mut end_labels = self.collect_end_labels(&ctx, step);
-        resolve_label_overlaps(&mut end_labels, ctx.plot);
+        let plot_rect = ctx.plot_rect();
 
-        let cursor_info: Option<CursorInfo> = if let Some(global) = cursor.position() {
-            let local = Point::new(global.x - bounds.x, global.y - bounds.y);
+        resolve_label_overlaps(&mut end_labels, plot_rect);
+
+        let cursor_root_local = cursor.position_in(layout.bounds());
+
+        let cursor_info: Option<CursorInfo> = if let Some(local) = cursor_root_local {
             match ctx.regions.hit_test(local) {
                 HitZone::Plot => {
-                    let cx = local.x.clamp(ctx.plot.x, ctx.plot.x + ctx.plot.width);
-                    let ms_from_min = ((cx - ctx.plot.x) / ctx.px_per_ms).round() as u64;
+                    let cx = local.x.clamp(plot_rect.x, plot_rect.x + plot_rect.width);
+                    let ms_from_min = ((cx - plot_rect.x) / ctx.px_per_ms).round() as u64;
                     let x_domain_raw = ctx.min_x.saturating_add(ms_from_min);
 
                     let dt = self.dt_ms_est().max(1);
@@ -312,7 +284,7 @@ where
                     }
                     .clamp(ctx.min_x, ctx.max_x);
 
-                    let t = ((local.y - ctx.plot.y) / ctx.plot.height).clamp(0.0, 1.0);
+                    let t = ((local.y - plot_rect.y) / plot_rect.height).clamp(0.0, 1.0);
                     let pct = ctx.min_pct + (1.0 - t) * (ctx.max_pct - ctx.min_pct);
                     Some(CursorInfo {
                         x_domain: snapped_x,
@@ -345,11 +317,7 @@ where
         let mut hovered_row: Option<usize> = None;
         let mut hovered_icon: Option<(usize, IconKind)> = None;
 
-        let local = cursor
-            .position()
-            .map(|g| Point::new(g.x - bounds.x, g.y - bounds.y));
-
-        if let Some(local) = local {
+        if let Some(local) = cursor_root_local {
             let in_compact = compact_layout
                 .as_ref()
                 .map(|l| l.bg.contains(local))
@@ -370,7 +338,9 @@ where
             compact_layout.clone()
         };
 
-        if hovering_legend && let (Some(local), Some(layout)) = (local, expanded_layout.as_ref()) {
+        if hovering_legend
+            && let (Some(local), Some(layout)) = (cursor_root_local, expanded_layout.as_ref())
+        {
             for (i, row) in layout.rows.iter().enumerate() {
                 if row.row_rect.contains(local) {
                     hovered_row = Some(i);
@@ -387,19 +357,24 @@ where
         let should_draw_crosshair = !(hovering_legend && hovered_row.is_some());
         let mut reserved_y: Option<Rectangle> = None;
         if should_draw_crosshair && let Some(ci) = cursor_info {
+            let plot_rect = ctx.plot_rect();
+
             let t =
                 ((ci.y_pct - ctx.min_pct) / (ctx.max_pct - ctx.min_pct).max(1e-6)).clamp(0.0, 1.0);
-            let cy_px = ctx.plot.y + ctx.plot.height - t * ctx.plot.height;
+            let cy_px = plot_rect.y + plot_rect.height - t * plot_rect.height;
 
             let pct_str = super::format_pct(ci.y_pct, step, true);
             let pct_est_w = (pct_str.len() as f32) * (TEXT_SIZE * 0.6) + 10.0;
-            let y_w = pct_est_w.clamp(40.0, Y_AXIS_GUTTER - 8.0);
+
+            let gutter_w = ctx.gutter_width();
+            let y_w = pct_est_w.clamp(40.0, gutter_w - 8.0);
             let y_h = TEXT_SIZE + 6.0;
-            let ylbl_x_right = ctx.plot.x + ctx.plot.width + Y_AXIS_GUTTER - 2.0;
-            let ylbl_x = (ylbl_x_right - y_w).max(ctx.plot.x + ctx.plot.width + 2.0);
+
+            let ylbl_x_right = ctx.regions.y_axis.x + gutter_w - 2.0;
+            let ylbl_x = (ylbl_x_right - y_w).max(ctx.regions.y_axis.x + 2.0);
             let ylbl_y = cy_px.clamp(
-                ctx.plot.y + y_h * 0.5,
-                ctx.plot.y + ctx.plot.height - y_h * 0.5,
+                plot_rect.y + y_h * 0.5,
+                plot_rect.y + plot_rect.height - y_h * 0.5,
             );
             reserved_y = Some(Rectangle {
                 x: ylbl_x,
@@ -491,15 +466,17 @@ where
             0.0
         };
 
+        let plot_rect = ctx.plot_rect();
+
         let bg_w = (text_w.max(min_for_icons) + padding * 2.0)
-            .clamp(80.0, (ctx.plot.width * 0.6).max(80.0));
+            .clamp(80.0, (plot_rect.width * 0.6).max(80.0));
 
         if rows_count == 0 {
             return None;
         }
 
         let bg_max_h = ((rows_count as f32) * line_h + padding * 2.0)
-            .min(ctx.plot.height * 0.6)
+            .min(plot_rect.height * 0.6)
             .max(line_h + padding * 2.0);
 
         let max_rows_fit = (((bg_max_h - padding * 2.0) / line_h).floor() as usize).max(1);
@@ -507,8 +484,8 @@ where
         let bg_h = (visible_rows as f32) * line_h + padding * 2.0;
 
         let bg = Rectangle {
-            x: ctx.plot.x + 4.0,
-            y: ctx.plot.y + 4.0,
+            x: plot_rect.x + 4.0,
+            y: plot_rect.y + 4.0,
             width: bg_w,
             height: bg_h,
         };
@@ -619,6 +596,7 @@ where
 
     fn collect_end_labels(&self, ctx: &PlotContext, step: f32) -> Vec<EndLabel> {
         let mut end_labels: Vec<EndLabel> = Vec::new();
+        let plot_height = ctx.plot_rect().height;
 
         for s in self.series.iter() {
             let pts = s.points();
@@ -661,15 +639,11 @@ where
             }
             let pct_label = ((y1 / y0) - 1.0) * 100.0;
 
-            let mut py = ctx.map_y(pct_label);
+            let mut py_local = ctx.map_y(pct_label);
             let half_txt = TEXT_SIZE * 0.5;
-            py = py.clamp(
-                ctx.plot.y + half_txt,
-                ctx.plot.y + ctx.plot.height - half_txt,
-            );
+            py_local = py_local.clamp(half_txt, plot_height - half_txt);
 
             let is_color_dark = data::config::theme::is_dark(s.color());
-
             let text_color = if is_color_dark {
                 Color::WHITE
             } else {
@@ -677,10 +651,12 @@ where
             };
             let bg_color = s.color();
 
-            let lbl = super::format_pct(pct_label, step, true);
             end_labels.push(EndLabel {
-                pos: Point::new(ctx.plot.x + ctx.plot.width + ctx.gutter, py),
-                text: lbl,
+                pos: Point::new(
+                    ctx.regions.y_axis.x + ctx.regions.y_axis.width,
+                    ctx.regions.plot.y + py_local,
+                ),
+                text: super::format_pct(pct_label, step, true),
                 bg_color,
                 text_color,
             });
@@ -754,7 +730,39 @@ where
         _renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::atomic(limits, Length::Fill, Length::Fill)
+        // Column: [ Row(plot, y_axis) , x_axis ]
+        let gutter_w = Y_AXIS_GUTTER;
+        let x_axis_h = X_AXIS_HEIGHT;
+
+        // First row: plot + y-axis
+        let row_node = layout::next_to_each_other(
+            &limits.shrink(Size::new(0.0, x_axis_h)),
+            0.0,
+            |l| {
+                layout::atomic(
+                    &l.shrink(Size::new(gutter_w, 0.0)),
+                    Length::Fill,
+                    Length::Fill,
+                )
+            },
+            |l| layout::atomic(l, gutter_w, Length::Fill),
+        );
+
+        // X axis full width at bottom
+        let x_axis_node = layout::atomic(limits, Length::Fill, x_axis_h);
+
+        let row_node_height = row_node.size().height;
+
+        let total_w = row_node.size().width;
+        let total_h = row_node_height + x_axis_h;
+
+        layout::Node::with_children(
+            Size::new(total_w, total_h),
+            vec![
+                row_node.move_to(Point::new(0.0, 0.0)),
+                x_axis_node.move_to(Point::new(0.0, row_node_height)),
+            ],
+        )
     }
 
     fn update(
@@ -776,7 +784,7 @@ where
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
-                let regions = self.compute_regions(bounds);
+                let regions = Regions::from_layout(layout);
 
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
                     if state.is_panning {
@@ -800,15 +808,14 @@ where
                         let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
 
                         if new_zoom != self.zoom {
-                            let event =
-                                LineComparisonEvent::ZoomChanged(self.normalize_zoom(new_zoom));
-
-                            shell.publish(M::from(event));
+                            shell.publish(M::from(LineComparisonEvent::ZoomChanged(
+                                self.normalize_zoom(new_zoom),
+                            )));
                             state.clear_all_caches();
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                        if let Some(scene) = self.compute_scene(bounds, cursor)
+                        if let Some(scene) = self.compute_scene(layout, cursor)
                             && let Some(legend) = scene.legend.as_ref()
                         {
                             for row in &legend.rows {
@@ -886,98 +893,118 @@ where
         _viewport: &Rectangle,
     ) {
         use advanced::Renderer as _;
+
         let state = tree.state.downcast_ref::<State>();
-        let bounds = layout.bounds();
-
-        let palette = theme.extended_palette();
-
-        let Some(scene) = self.compute_scene(bounds, cursor) else {
+        let Some(scene) = self.compute_scene(layout, cursor) else {
             return;
         };
 
-        let labels = state.labels_cache.draw(renderer, bounds.size(), |frame| {
-            self.fill_y_axis_labels(frame, &scene.ctx, &scene.y_ticks, &scene.y_labels, palette);
-            self.fill_x_axis_labels(frame, &scene.ctx, palette);
-        });
-        let plots = state.plot_cache.draw(renderer, bounds.size(), |frame| {
-            self.fill_main_geometry(frame, &scene.ctx);
+        let bounds = layout.bounds();
+        let palette = theme.extended_palette();
 
-            let axis_color = palette.background.strong.color.scale_alpha(0.25);
+        renderer.with_translation(Vector::new(bounds.x, bounds.y), |r| {
+            let plot_rect = scene.ctx.plot_rect();
 
-            // Y-axis splitter
-            let path = {
-                let mut b = canvas::path::Builder::new();
-                b.move_to(Point::new(scene.ctx.plot.x + scene.ctx.plot.width, 0.0));
-                b.line_to(Point::new(
-                    scene.ctx.plot.x + scene.ctx.plot.width,
-                    scene.ctx.plot.height,
-                ));
-                b.build()
-            };
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_color(axis_color)
-                    .with_width(1.0),
-            );
-
-            // X-axis splitter
-            let axis_y = scene.ctx.plot.y + scene.ctx.plot.height + 0.5;
-            let path = {
-                let mut b = canvas::path::Builder::new();
-                b.move_to(Point::new(scene.ctx.plot.x, axis_y));
-                b.line_to(Point::new(
-                    scene.ctx.plot.x + scene.ctx.plot.width + scene.ctx.gutter,
-                    axis_y,
-                ));
-                b.build()
-            };
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_color(axis_color)
-                    .with_width(1.0),
-            );
-        });
-        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
-            use iced::advanced::graphics::geometry::Renderer as _;
-            renderer.draw_geometry(plots);
-            renderer.draw_geometry(labels);
-        });
-
-        let overlays = state.overlay_cache.draw(renderer, bounds.size(), |frame| {
-            self.fill_overlay_y_labels(
-                frame,
-                &scene.end_labels,
-                scene.ctx.gutter,
-                scene.reserved_y.as_ref(),
-            );
-
-            self.fill_top_left_legend(
-                frame,
-                &scene.ctx,
-                if scene.hovering_legend {
-                    None
-                } else {
-                    scene.cursor.map(|c| c.x_domain)
-                },
-                palette,
-                scene.y_step,
-                scene.legend.as_ref(),
-                scene.hovering_legend,
-                scene.hovered_icon,
-                scene.hovered_row,
-            );
-
-            if !(scene.hovering_legend && scene.hovered_row.is_some()) {
-                self.fill_crosshair(frame, &scene, palette);
-            }
-        });
-        renderer.with_layer(bounds, |renderer| {
-            renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
-                use iced::advanced::graphics::geometry::Renderer as _;
-                renderer.draw_geometry(overlays);
+            let plot_geom = state.plot_cache.draw(r, plot_rect.size(), |frame| {
+                self.fill_main_geometry(frame, &scene.ctx);
             });
+
+            let splitter_color = palette.background.strong.color.scale_alpha(0.25);
+            r.fill_quad(
+                Quad {
+                    bounds: Rectangle {
+                        x: plot_rect.x,
+                        y: plot_rect.y + plot_rect.height,
+                        width: plot_rect.width,
+                        height: 1.0,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                splitter_color,
+            );
+            r.fill_quad(
+                Quad {
+                    bounds: Rectangle {
+                        x: plot_rect.x + plot_rect.width,
+                        y: plot_rect.y,
+                        width: 1.0,
+                        height: plot_rect.height,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                splitter_color,
+            );
+
+            let y_rect = scene.ctx.regions.y_axis;
+            let y_geom = state.y_axis_cache.draw(r, y_rect.size(), |frame| {
+                self.fill_y_axis_labels(
+                    frame,
+                    &scene.ctx,
+                    &scene.y_ticks,
+                    &scene.y_labels,
+                    palette,
+                );
+            });
+
+            let x_rect = scene.ctx.regions.x_axis;
+            let x_geom = state.x_axis_cache.draw(r, x_rect.size(), |frame| {
+                self.fill_x_axis_labels(frame, &scene.ctx, palette);
+            });
+
+            let overlay_geom = state.overlay_cache.draw(r, bounds.size(), |frame| {
+                self.fill_overlay_y_labels(
+                    frame,
+                    &scene.end_labels,
+                    scene.ctx.gutter_width(),
+                    scene.reserved_y.as_ref(),
+                );
+                self.fill_top_left_legend(
+                    frame,
+                    &scene.ctx,
+                    if scene.hovering_legend {
+                        None
+                    } else {
+                        scene.cursor.map(|c| c.x_domain)
+                    },
+                    palette,
+                    scene.y_step,
+                    scene.legend.as_ref(),
+                    scene.hovering_legend,
+                    scene.hovered_icon,
+                    scene.hovered_row,
+                );
+                if !(scene.hovering_legend && scene.hovered_row.is_some()) {
+                    self.fill_crosshair(frame, &scene, palette);
+                }
+            });
+
+            r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(plot_geom);
+            });
+            r.with_translation(Vector::new(y_rect.x, y_rect.y), |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(y_geom);
+            });
+            r.with_translation(Vector::new(x_rect.x, x_rect.y), |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(x_geom);
+            });
+
+            r.with_layer(
+                Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: bounds.width,
+                    height: bounds.height,
+                },
+                |r| {
+                    use iced::advanced::graphics::geometry::Renderer as _;
+                    r.draw_geometry(overlay_geom);
+                },
+            );
         });
     }
 
@@ -990,7 +1017,7 @@ where
         _renderer: &Renderer,
     ) -> advanced::mouse::Interaction {
         if let Some(cursor_in_layout) = cursor.position_in(layout.bounds()) {
-            if let Some(scene) = self.compute_scene(layout.bounds(), cursor) {
+            if let Some(scene) = self.compute_scene(layout, cursor) {
                 if let Some(legend) = scene.legend.as_ref() {
                     for row in &legend.rows {
                         if row.cog.contains(cursor_in_layout)
@@ -1176,20 +1203,16 @@ where
         labels: &[String],
         palette: &Extended,
     ) {
+        let plot = ctx.plot_rect();
         for (i, tick) in ticks.iter().enumerate() {
-            let mut y = ctx.map_y(*tick);
+            let mut y_local = ctx.map_y(*tick);
             let half_txt = TEXT_SIZE * 0.5;
-            y = y.clamp(
-                ctx.plot.y + half_txt,
-                ctx.plot.y + ctx.plot.height - half_txt,
-            );
+            y_local = y_local.clamp(half_txt, plot.height - half_txt);
 
-            let txt = &labels[i];
-            let right_x = ctx.plot.x + ctx.plot.width + ctx.gutter - 4.0;
-
+            let right_x = ctx.gutter_width() - 4.0;
             frame.fill_text(canvas::Text {
-                content: txt.clone(),
-                position: Point::new(right_x, y),
+                content: labels[i].clone(),
+                position: Point::new(right_x, y_local),
                 color: palette.background.base.text,
                 size: TEXT_SIZE.into(),
                 font: style::AZERET_MONO,
@@ -1201,21 +1224,32 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
-        let axis_y = ctx.plot.y + ctx.plot.height + 0.5;
         let (ticks, step_ms) =
             super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
+
         let baseline_to_text = 4.0;
+        let y_center_local = baseline_to_text + 2.0 + TEXT_SIZE * 0.5;
+
+        let plot_rect = ctx.plot_rect();
+
+        let mut last_right = f32::NEG_INFINITY;
         for t in ticks {
-            let x = ctx.map_x(t).clamp(ctx.plot.x, ctx.plot.x + ctx.plot.width);
+            let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
 
             let label_ts = Self::to_tz_ms(t, self.timezone);
             let label = super::format_time_label(label_ts, step_ms);
 
-            let y_center = axis_y + baseline_to_text + 2.0 + TEXT_SIZE * 0.5;
+            let est_w = (label.len() as f32) * CHAR_W + 8.0;
+            let left = x_local - est_w * 0.5;
+            let right = x_local + est_w * 0.5;
+
+            if left <= last_right {
+                continue;
+            }
 
             frame.fill_text(canvas::Text {
                 content: label,
-                position: Point::new(x, y_center),
+                position: Point::new(x_local, y_center_local),
                 color: palette.background.base.text,
                 size: TEXT_SIZE.into(),
                 font: style::AZERET_MONO,
@@ -1223,6 +1257,8 @@ where
                 align_y: iced::Alignment::Center.into(),
                 ..Default::default()
             });
+
+            last_right = right;
         }
     }
 
@@ -1376,26 +1412,28 @@ where
             }
         }
 
+        let plot_rect = ctx.plot_rect();
+
         let max_chars_f = max_chars as f32;
         let char_w = TEXT_SIZE * 0.64;
         let text_w = max_chars_f * char_w;
-        let bg_w = (text_w + padding * 2.0).clamp(80.0, (ctx.plot.width * 0.6).max(80.0));
+        let bg_w = (text_w + padding * 2.0).clamp(80.0, (plot_rect.width * 0.6).max(80.0));
 
         let rows_count_f = rows_count as f32;
         if rows_count_f > 0.0 {
-            let bg_h = (rows_count_f * line_h + padding * 2.0).min(ctx.plot.height * 0.6);
+            let bg_h = (rows_count_f * line_h + padding * 2.0).min(plot_rect.height * 0.6);
             frame.fill_rectangle(
-                Point::new(ctx.plot.x + 4.0, ctx.plot.y + 4.0),
+                Point::new(plot_rect.x + 4.0, plot_rect.y + 4.0),
                 Size::new(bg_w, bg_h),
                 palette.background.weakest.color.scale_alpha(0.9),
             );
         }
 
-        let mut y = ctx.plot.y + padding + TEXT_SIZE * 0.5;
-        let x0 = ctx.plot.x + padding;
+        let mut y = plot_rect.y + padding + TEXT_SIZE * 0.5;
+        let x0 = plot_rect.x + padding;
 
         for s in self.series.iter() {
-            if y > ctx.plot.y + ctx.plot.height - TEXT_SIZE {
+            if y > plot_rect.y + plot_rect.height - TEXT_SIZE {
                 break;
             }
 
@@ -1440,27 +1478,28 @@ where
             return;
         };
         let ctx = &scene.ctx;
+        let plot_rect = ctx.plot_rect();
 
         let cx = {
             let dx = ci.x_domain.saturating_sub(ctx.min_x) as f32;
-            ctx.plot.x + dx * ctx.px_per_ms
+            plot_rect.x + dx * ctx.px_per_ms
         };
         let y_span = (ctx.max_pct - ctx.min_pct).max(1e-6);
         let t = ((ci.y_pct - ctx.min_pct) / y_span).clamp(0.0, 1.0);
-        let cy = ctx.plot.y + ctx.plot.height - t * ctx.plot.height;
+        let cy = plot_rect.y + plot_rect.height - t * plot_rect.height;
 
         let stroke = style::dashed_line_from_palette(palette);
 
         // Vertical
         let mut b = canvas::path::Builder::new();
-        b.move_to(Point::new(cx, ctx.plot.y));
-        b.line_to(Point::new(cx, ctx.plot.y + ctx.plot.height));
+        b.move_to(Point::new(cx, plot_rect.y));
+        b.line_to(Point::new(cx, plot_rect.y + plot_rect.height));
         frame.stroke(&b.build(), stroke);
 
         // Horizontal
         let mut b = canvas::path::Builder::new();
-        b.move_to(Point::new(ctx.plot.x, cy));
-        b.line_to(Point::new(ctx.plot.x + ctx.plot.width, cy));
+        b.move_to(Point::new(plot_rect.x, cy));
+        b.line_to(Point::new(plot_rect.x + plot_rect.width, cy));
         frame.stroke(&b.build(), stroke);
 
         let time_str = Self::format_crosshair_time(ci.x_domain, self.timezone);
@@ -1473,10 +1512,10 @@ where
         let label_h = TEXT_SIZE + 6.0;
 
         let time_x = cx.clamp(
-            ctx.plot.x + label_w * 0.5,
-            ctx.plot.x + ctx.plot.width - label_w * 0.5,
+            plot_rect.x + label_w * 0.5,
+            plot_rect.x + plot_rect.width - label_w * 0.5,
         );
-        let time_y = ctx.plot.y + ctx.plot.height + 2.0 + label_h * 0.5;
+        let time_y = plot_rect.y + plot_rect.height + 2.0 + label_h * 0.5;
 
         frame.fill_rectangle(
             Point::new(time_x - label_w * 0.5, time_y - label_h * 0.5),
@@ -1494,22 +1533,22 @@ where
             ..Default::default()
         });
 
-        // Percentage label at y-axis gutter
+        let gutter = ctx.gutter_width();
         let pct_str = super::format_pct(ci.y_pct, scene.y_step, true);
         let est_w = (pct_str.len() as f32) * (TEXT_SIZE * 0.6) + 10.0;
-        let label_w = est_w.clamp(40.0, Y_AXIS_GUTTER - 8.0);
+        let label_w = est_w.clamp(40.0, gutter - 8.0);
         let label_h = TEXT_SIZE + 6.0;
 
-        let ylbl_x_right = ctx.plot.x + ctx.plot.width + Y_AXIS_GUTTER - 2.0;
-        let ylbl_x = (ylbl_x_right - label_w).max(ctx.plot.x + ctx.plot.width + 2.0);
+        let ylbl_x_right = plot_rect.x + plot_rect.width + gutter - 2.0;
+        let ylbl_x = (ylbl_x_right - label_w).max(plot_rect.x + plot_rect.width + 2.0);
         let ylbl_y = cy.clamp(
-            ctx.plot.y + label_h * 0.5,
-            ctx.plot.y + ctx.plot.height - label_h * 0.5,
+            plot_rect.y + label_h * 0.5,
+            plot_rect.y + plot_rect.height - label_h * 0.5,
         );
 
         frame.fill_rectangle(
-            Point::new(ctx.plot.x + ctx.plot.width, ylbl_y - label_h * 0.5),
-            Size::new(Y_AXIS_GUTTER, label_h),
+            Point::new(plot_rect.x + plot_rect.width, ylbl_y - label_h * 0.5),
+            Size::new(gutter, label_h),
             bg_col,
         );
         frame.fill_text(canvas::Text {
@@ -1602,6 +1641,31 @@ struct Regions {
 }
 
 impl Regions {
+    fn from_layout(root: Layout<'_>) -> Self {
+        let root_bounds = root.bounds();
+
+        // root.children = [ row, x_axis ]
+        let row = root.child(0);
+        let x_abs = root.child(1).bounds();
+
+        // row.children  = [ plot, y_axis ]
+        let plot_abs = row.child(0).bounds();
+        let y_abs = row.child(1).bounds();
+
+        let to_local = |r: Rectangle| Rectangle {
+            x: r.x - root_bounds.x,
+            y: r.y - root_bounds.y,
+            width: r.width,
+            height: r.height,
+        };
+
+        Regions {
+            plot: to_local(plot_abs),
+            y_axis: to_local(y_abs),
+            x_axis: to_local(x_abs),
+        }
+    }
+
     fn is_in_plot(&self, p: Point) -> bool {
         p.x >= self.plot.x
             && p.x <= self.plot.x + self.plot.width
@@ -1638,8 +1702,6 @@ impl Regions {
 
 struct PlotContext {
     regions: Regions,
-    plot: Rectangle,
-    gutter: f32,
     min_x: u64,
     max_x: u64,
     min_pct: f32,
@@ -1648,15 +1710,24 @@ struct PlotContext {
 }
 
 impl PlotContext {
+    fn plot_rect(&self) -> Rectangle {
+        self.regions.plot
+    }
+
+    fn gutter_width(&self) -> f32 {
+        self.regions.y_axis.width
+    }
+
     fn map_x(&self, x: u64) -> f32 {
         let dx = x.saturating_sub(self.min_x) as f32;
-        self.plot.x + dx * self.px_per_ms
+        dx * self.px_per_ms
     }
 
     fn map_y(&self, pct: f32) -> f32 {
         let span = (self.max_pct - self.min_pct).max(1e-6);
         let t = (pct - self.min_pct) / span;
-        self.plot.y + self.plot.height - t.clamp(0.0, 1.0) * self.plot.height
+        let plot = self.plot_rect();
+        plot.height - t.clamp(0.0, 1.0) * plot.height
     }
 }
 
