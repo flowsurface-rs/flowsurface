@@ -22,7 +22,6 @@ impl Zoom {
 #[derive(Debug, Clone)]
 pub struct Series {
     pub name: TickerInfo,
-    /// (x, y) where x is a time-like domain (e.g., timestamp) and y is raw value
     pub points: Vec<(u64, f32)>,
     pub color: iced::Color,
 }
@@ -105,7 +104,6 @@ fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
 }
 
 fn time_tick_candidates() -> &'static [u64] {
-    // milliseconds for: 1s, 2s, 5s, 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d, 2d, 1w
     const S: u64 = 1_000;
     const M: u64 = 60 * S;
     const H: u64 = 60 * M;
@@ -131,7 +129,35 @@ fn time_tick_candidates() -> &'static [u64] {
         D,
         2 * D,
         7 * D,
+        14 * D, //
+        30 * D,
+        90 * D,
+        180 * D,
+        365 * D,
     ]
+}
+
+fn format_time_label(ts_ms: u64, step_ms: u64) -> String {
+    let Some(dt) = Utc.timestamp_millis_opt(ts_ms as i64).single() else {
+        return String::new();
+    };
+
+    const S: u64 = 1_000;
+    const M: u64 = 60 * S;
+    const H: u64 = 60 * M;
+    const D: u64 = 24 * H;
+
+    if step_ms < M {
+        dt.format("%H:%M:%S").to_string()
+    } else if step_ms < D {
+        dt.format("%H:%M").to_string()
+    } else if step_ms < 7 * D {
+        dt.format("%b %d").to_string()
+    } else if step_ms < 365 * D {
+        dt.format("%Y-%m").to_string()
+    } else {
+        dt.format("%Y").to_string()
+    }
 }
 
 fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>, u64) {
@@ -165,26 +191,6 @@ fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>,
         }
     }
     (out, step)
-}
-
-fn format_time_label(ts_ms: u64, step_ms: u64) -> String {
-    let Some(dt) = Utc.timestamp_millis_opt(ts_ms as i64).single() else {
-        return String::new();
-    };
-    // Choose format based on step size
-    const S: u64 = 1_000;
-    const M: u64 = 60 * S;
-    const H: u64 = 60 * M;
-    const D: u64 = 24 * H;
-    if step_ms < M {
-        dt.format("%H:%M:%S").to_string()
-    } else if step_ms < D {
-        dt.format("%H:%M").to_string()
-    } else if step_ms < 7 * D {
-        dt.format("%b %d").to_string()
-    } else {
-        dt.format("%Y-%m-%d").to_string()
-    }
 }
 
 pub mod domain {
