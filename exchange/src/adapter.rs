@@ -7,7 +7,7 @@ use crate::{
 use enum_map::{Enum, EnumMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 pub mod binance;
 pub mod bybit;
@@ -587,7 +587,7 @@ impl Exchange {
 pub enum Event {
     Connected(Exchange),
     Disconnected(Exchange, String),
-    DepthReceived(StreamKind, u64, Depth, Box<[Trade]>),
+    DepthReceived(StreamKind, u64, Arc<Depth>, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),
 }
 

@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use crate::{MinTicksize, Price};
 
 use serde::Deserializer;
 use serde::de::Error as SerdeError;
 use serde_json::Value;
 
-use crate::{MinTicksize, Price};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Copy)]
 pub struct DeOrder {
@@ -79,7 +79,7 @@ impl std::fmt::Debug for Depth {
 }
 
 impl Depth {
-    pub fn update(&mut self, diff: &DepthPayload, min_ticksize: MinTicksize) {
+    fn update(&mut self, diff: &DepthPayload, min_ticksize: MinTicksize) {
         Self::diff_price_levels(&mut self.bids, &diff.bids, min_ticksize);
         Self::diff_price_levels(&mut self.asks, &diff.asks, min_ticksize);
     }
@@ -103,7 +103,7 @@ impl Depth {
         });
     }
 
-    pub fn replace_all(&mut self, snapshot: &DepthPayload, min_ticksize: MinTicksize) {
+    fn replace_all(&mut self, snapshot: &DepthPayload, min_ticksize: MinTicksize) {
         self.bids = snapshot
             .bids
             .iter()
@@ -138,7 +138,7 @@ impl Depth {
 pub struct LocalDepthCache {
     pub last_update_id: u64,
     pub time: u64,
-    pub depth: Depth,
+    pub depth: Arc<Depth>,
 }
 
 impl LocalDepthCache {
@@ -147,12 +147,16 @@ impl LocalDepthCache {
             DepthUpdate::Snapshot(snapshot) => {
                 self.last_update_id = snapshot.last_update_id;
                 self.time = snapshot.time;
-                self.depth.replace_all(&snapshot, min_ticksize);
+
+                let depth = Arc::make_mut(&mut self.depth);
+                depth.replace_all(&snapshot, min_ticksize);
             }
             DepthUpdate::Diff(diff) => {
                 self.last_update_id = diff.last_update_id;
                 self.time = diff.time;
-                self.depth.update(&diff, min_ticksize);
+
+                let depth = Arc::make_mut(&mut self.depth);
+                depth.update(&diff, min_ticksize);
             }
         }
     }
