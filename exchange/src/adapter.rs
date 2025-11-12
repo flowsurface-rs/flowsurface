@@ -23,10 +23,6 @@ pub enum ResolvedStream {
 }
 
 impl ResolvedStream {
-    pub fn rebuild_ready_from(&mut self, streams: &[StreamKind]) {
-        *self = ResolvedStream::Ready(streams.to_vec());
-    }
-
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
         match self {
             ResolvedStream::Ready(existing) => existing.iter().any(|s| s == stream),
@@ -580,6 +576,18 @@ impl Exchange {
                 | Exchange::OkexLinear
                 | Exchange::OkexInverse
         )
+    }
+
+    pub fn stream_ticksize(
+        &self,
+        multiplier: Option<TickMultiplier>,
+        server_fallback: TickMultiplier,
+    ) -> StreamTicksize {
+        if self.is_depth_client_aggr() {
+            StreamTicksize::Client
+        } else {
+            StreamTicksize::ServerSide(multiplier.unwrap_or(server_fallback))
+        }
     }
 }
 
