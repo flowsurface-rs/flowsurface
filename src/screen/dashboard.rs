@@ -329,27 +329,19 @@ impl Dashboard {
                         if let Some(ticker_info) = maybe_ticker_info
                             && state.stream_pair() != Some(ticker_info)
                         {
+                            let pane_id = state.unique_id();
                             let content_kind = state.content.kind();
 
-                            match state.set_content_and_streams(vec![ticker_info], content_kind) {
-                                Ok(streams) => {
-                                    let pane_id = state.unique_id();
-                                    self.streams.extend(streams.iter());
+                            let streams =
+                                state.set_content_and_streams(vec![ticker_info], content_kind);
+                            self.streams.extend(streams.iter());
 
-                                    for stream in &streams {
-                                        if let StreamKind::Kline { .. } = stream {
-                                            return (
-                                                kline_fetch_task(
-                                                    *layout_id, pane_id, *stream, None, None,
-                                                ),
-                                                None,
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    state.status = pane::Status::Ready;
-                                    state.notifications.push(Toast::error(err.to_string()));
+                            for stream in &streams {
+                                if let StreamKind::Kline { .. } = stream {
+                                    return (
+                                        kline_fetch_task(*layout_id, pane_id, *stream, None, None),
+                                        None,
+                                    );
                                 }
                             }
                         }
@@ -691,20 +683,14 @@ impl Dashboard {
         content_kind: ContentKind,
     ) -> Task<Message> {
         if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            match state.set_content_and_streams(vec![ticker_info], content_kind) {
-                Ok(streams) => {
-                    let pane_id = state.unique_id();
-                    self.streams.extend(streams.iter());
+            let pane_id = state.unique_id();
 
-                    for stream in &streams {
-                        if let StreamKind::Kline { .. } = stream {
-                            return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
-                        }
-                    }
-                }
-                Err(err) => {
-                    state.status = pane::Status::Ready;
-                    state.notifications.push(Toast::error(err.to_string()));
+            let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
+            self.streams.extend(streams.iter());
+
+            for stream in &streams {
+                if let StreamKind::Kline { .. } = stream {
+                    return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
         }
@@ -733,20 +719,14 @@ impl Dashboard {
                 state.link_group = None;
             }
 
-            match state.set_content_and_streams(vec![ticker_info], content_kind) {
-                Ok(streams) => {
-                    let pane_id = state.unique_id();
-                    self.streams.extend(streams.iter());
+            let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
 
-                    for stream in &streams {
-                        if let StreamKind::Kline { .. } = stream {
-                            return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
-                        }
-                    }
-                }
-                Err(err) => {
-                    state.status = pane::Status::Ready;
-                    state.notifications.push(Toast::error(err.to_string()));
+            let pane_id = state.unique_id();
+            self.streams.extend(streams.iter());
+
+            for stream in &streams {
+                if let StreamKind::Kline { .. } = stream {
+                    return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
             return Task::none();
@@ -1050,14 +1030,10 @@ impl Dashboard {
                 }
                 Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
                     Some(StreamPairKind::MultiSource(tickers)) => {
-                        state
-                            .set_content_and_streams(tickers, state.content.kind())
-                            .ok();
+                        state.set_content_and_streams(tickers, state.content.kind());
                     }
                     Some(StreamPairKind::SingleSource(ticker)) => {
-                        state
-                            .set_content_and_streams(vec![ticker], state.content.kind())
-                            .ok();
+                        state.set_content_and_streams(vec![ticker], state.content.kind());
                     }
                     None => {}
                 },

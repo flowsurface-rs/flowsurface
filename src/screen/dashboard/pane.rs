@@ -9,12 +9,9 @@ use crate::{
             stack_modal,
         },
     },
-    screen::{
-        DashboardError,
-        dashboard::{
-            panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
-            tickers_table::TickersTable,
-        },
+    screen::dashboard::{
+        panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
+        tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
     widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
@@ -26,7 +23,7 @@ use data::{
         Basis, ViewConfig,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
     },
-    layout::pane::{ContentKind, LinkGroup, Settings, VisualConfig},
+    layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
 };
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
@@ -158,276 +155,170 @@ impl State {
     pub fn set_content_and_streams(
         &mut self,
         tickers: Vec<TickerInfo>,
-        content_kind: ContentKind,
-    ) -> Result<Vec<StreamKind>, DashboardError> {
-        if (matches!(&self.content, Content::Heatmap { .. })
-            && content_kind != ContentKind::HeatmapChart)
-            || (matches!(&self.content, Content::Kline { .. })
-                && content_kind == ContentKind::HeatmapChart)
-        {
+        kind: ContentKind,
+    ) -> Vec<StreamKind> {
+        if !(self.content.kind() == kind) {
             self.settings.selected_basis = None;
+            self.settings.tick_multiply = None;
         }
 
-        let result = match content_kind {
-            ContentKind::HeatmapChart => {
-                let ticker_info = tickers[0];
-                let ticker = ticker_info.ticker;
+        let base_ticker = tickers[0];
+        let prev_base_ticker = self.stream_pair();
 
-                let exchange = ticker.exchange;
-                let is_depth_client_aggr = exchange.is_depth_client_aggr();
+        let derived_plan = PaneSetup::new(
+            kind,
+            base_ticker,
+            prev_base_ticker,
+            self.settings.selected_basis,
+            self.settings.tick_multiply,
+        );
 
-                if !matches!(
-                    self.settings.selected_basis,
-                    Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf)
-                ) {
-                    self.settings.selected_basis =
-                        Some(Basis::default_heatmap_time(Some(ticker_info)));
+        self.settings.selected_basis = derived_plan.basis;
+        self.settings.tick_multiply = derived_plan.tick_multiplier;
+
+        let (content, streams) = {
+            let kline_stream = |ti: TickerInfo, tf: Timeframe| StreamKind::Kline {
+                ticker_info: ti,
+                timeframe: tf,
+            };
+            let depth_stream = |derived_plan: &PaneSetup| StreamKind::DepthAndTrades {
+                ticker_info: derived_plan.ticker_info,
+                depth_aggr: derived_plan.depth_aggr,
+                push_freq: derived_plan.push_freq,
+            };
+
+            match kind {
+                ContentKind::HeatmapChart => {
+                    let content = Content::new_heatmap(
+                        &self.content,
+                        derived_plan.ticker_info,
+                        &self.settings,
+                        derived_plan.tick_size,
+                    );
+
+                    let streams = vec![depth_stream(&derived_plan)];
+
+                    (content, streams)
                 }
+                ContentKind::FootprintChart => {
+                    let content = Content::new_kline(
+                        kind,
+                        &self.content,
+                        derived_plan.ticker_info,
+                        &self.settings,
+                        derived_plan.tick_size,
+                    );
 
-                let prev_is_client = self
-                    .stream_pair()
-                    .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
-                    .unwrap_or(is_depth_client_aggr);
-
-                let tick_multiplier = if !is_depth_client_aggr && prev_is_client {
-                    TickMultiplier(10)
-                } else if let Some(tm) = self.settings.tick_multiply {
-                    tm
-                } else if is_depth_client_aggr {
-                    TickMultiplier(5)
-                } else {
-                    TickMultiplier(10)
-                };
-                self.settings.tick_multiply = Some(tick_multiplier);
-                let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
-
-                let push_freq = if exchange.is_custom_push_freq() {
-                    match self.settings.selected_basis {
-                        Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf) => {
-                            exchange::PushFrequency::Custom(tf)
-                        }
-                        _ => exchange::PushFrequency::ServerDefault,
-                    }
-                } else {
-                    exchange::PushFrequency::ServerDefault
-                };
-
-                let content =
-                    Content::new_heatmap(&self.content, ticker_info, &self.settings, tick_size);
-
-                let streams = vec![StreamKind::DepthAndTrades {
-                    ticker_info,
-                    depth_aggr: if is_depth_client_aggr {
-                        StreamTicksize::Client
-                    } else {
-                        StreamTicksize::ServerSide(TickMultiplier(10))
-                    },
-                    push_freq,
-                }];
-
-                Ok((content, streams))
-            }
-            ContentKind::FootprintChart => {
-                let ticker_info = tickers[0];
-                let ticker = ticker_info.ticker;
-
-                let tick_multiplier = if let Some(tm) = self.settings.tick_multiply {
-                    tm
-                } else {
-                    TickMultiplier(50)
-                };
-                self.settings.tick_multiply = Some(tick_multiplier);
-                let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
-
-                let content = Content::new_kline(
-                    content_kind,
-                    &self.content,
-                    ticker_info,
-                    &self.settings,
-                    tick_size,
-                );
-
-                let push_freq = exchange::PushFrequency::ServerDefault;
-
-                let basis = self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
-                let streams = match basis {
-                    Basis::Time(timeframe) => vec![
-                        StreamKind::DepthAndTrades {
-                            ticker_info,
-                            depth_aggr: if ticker.exchange.is_depth_client_aggr() {
-                                StreamTicksize::Client
-                            } else {
-                                StreamTicksize::ServerSide(TickMultiplier(50))
-                            },
-                            push_freq,
+                    let streams = by_basis_default(
+                        derived_plan.basis,
+                        Timeframe::M5,
+                        |tf| {
+                            vec![
+                                depth_stream(&derived_plan),
+                                kline_stream(derived_plan.ticker_info, tf),
+                            ]
                         },
-                        StreamKind::Kline {
-                            ticker_info,
-                            timeframe,
+                        || vec![depth_stream(&derived_plan)],
+                    );
+
+                    (content, streams)
+                }
+                ContentKind::CandlestickChart => {
+                    let content = {
+                        let base_ticker = tickers[0];
+                        Content::new_kline(
+                            kind,
+                            &self.content,
+                            derived_plan.ticker_info,
+                            &self.settings,
+                            base_ticker.min_ticksize.into(),
+                        )
+                    };
+
+                    let streams = by_basis_default(
+                        derived_plan.basis,
+                        Timeframe::M15,
+                        |tf| vec![kline_stream(derived_plan.ticker_info, tf)],
+                        || {
+                            let depth_aggr = derived_plan
+                                .ticker_info
+                                .exchange()
+                                .stream_ticksize(None, TickMultiplier(50));
+                            let temp = PaneSetup {
+                                depth_aggr,
+                                ..derived_plan
+                            };
+                            vec![depth_stream(&temp)]
                         },
-                    ],
-                    Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades {
-                            ticker_info,
-                            depth_aggr: if ticker.exchange.is_depth_client_aggr() {
-                                StreamTicksize::Client
-                            } else {
-                                StreamTicksize::ServerSide(TickMultiplier(50))
-                            },
-                            push_freq,
-                        }]
-                    }
-                };
-                Ok((content, streams))
+                    );
+
+                    (content, streams)
+                }
+                ContentKind::TimeAndSales => {
+                    let config = self
+                        .settings
+                        .visual_config
+                        .clone()
+                        .and_then(|cfg| cfg.time_and_sales());
+                    let content = Content::TimeAndSales(Some(TimeAndSales::new(
+                        config,
+                        derived_plan.ticker_info,
+                    )));
+
+                    let temp = PaneSetup {
+                        push_freq: exchange::PushFrequency::ServerDefault,
+                        ..derived_plan
+                    };
+
+                    (content, vec![depth_stream(&temp)])
+                }
+                ContentKind::Ladder => {
+                    let config = self
+                        .settings
+                        .visual_config
+                        .clone()
+                        .and_then(|cfg| cfg.ladder());
+                    let content = Content::Ladder(Some(Ladder::new(
+                        config,
+                        derived_plan.ticker_info,
+                        derived_plan.tick_size,
+                    )));
+
+                    (content, vec![depth_stream(&derived_plan)])
+                }
+                ContentKind::ComparisonChart => {
+                    let config = self
+                        .settings
+                        .visual_config
+                        .clone()
+                        .and_then(|cfg| cfg.comparison());
+                    let basis = derived_plan.basis.unwrap_or(Basis::Time(Timeframe::M15));
+                    let content =
+                        Content::Comparison(Some(ComparisonChart::new(basis, &tickers, config)));
+
+                    let streams = by_basis_default(
+                        derived_plan.basis,
+                        Timeframe::M15,
+                        |tf| {
+                            tickers
+                                .iter()
+                                .copied()
+                                .map(|ti| kline_stream(ti, tf))
+                                .collect()
+                        },
+                        || todo!("WIP: ComparisonChart does not support tick basis"),
+                    );
+
+                    (content, streams)
+                }
+                ContentKind::Starter => unreachable!(),
             }
-            ContentKind::CandlestickChart => {
-                let ticker_info = tickers[0];
-                let ticker = ticker_info.ticker;
-
-                self.settings.tick_multiply = None;
-                let tick_size = ticker_info.min_ticksize;
-
-                let content = Content::new_kline(
-                    content_kind,
-                    &self.content,
-                    ticker_info,
-                    &self.settings,
-                    tick_size.into(),
-                );
-
-                let basis = self
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Timeframe::M15.into());
-                let streams = match basis {
-                    Basis::Time(timeframe) => {
-                        vec![StreamKind::Kline {
-                            ticker_info,
-                            timeframe,
-                        }]
-                    }
-                    Basis::Tick(_) => {
-                        vec![StreamKind::DepthAndTrades {
-                            ticker_info,
-                            depth_aggr: if ticker.exchange.is_depth_client_aggr() {
-                                StreamTicksize::Client
-                            } else {
-                                StreamTicksize::ServerSide(TickMultiplier(50))
-                            },
-                            push_freq: exchange::PushFrequency::ServerDefault,
-                        }]
-                    }
-                };
-                Ok((content, streams))
-            }
-            ContentKind::TimeAndSales => {
-                let ticker_info = tickers[0];
-                let ticker = ticker_info.ticker;
-
-                let config = self
-                    .settings
-                    .visual_config
-                    .clone()
-                    .and_then(|cfg| cfg.time_and_sales());
-                let content = Content::TimeAndSales(Some(TimeAndSales::new(config, ticker_info)));
-                let streams = vec![StreamKind::DepthAndTrades {
-                    ticker_info,
-                    depth_aggr: if ticker.exchange.is_depth_client_aggr() {
-                        StreamTicksize::Client
-                    } else {
-                        StreamTicksize::ServerSide(TickMultiplier(50))
-                    },
-                    push_freq: exchange::PushFrequency::ServerDefault,
-                }];
-                Ok((content, streams))
-            }
-            ContentKind::Ladder => {
-                let ticker_info = tickers[0];
-                let ticker = ticker_info.ticker;
-
-                let config = self
-                    .settings
-                    .visual_config
-                    .clone()
-                    .and_then(|cfg| cfg.ladder());
-
-                let exchange = ticker.exchange;
-                let is_depth_client_aggr = exchange.is_depth_client_aggr();
-
-                let prev_is_client = self
-                    .stream_pair()
-                    .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
-                    .unwrap_or(is_depth_client_aggr);
-
-                let tick_multiplier = if !is_depth_client_aggr && prev_is_client {
-                    TickMultiplier(10)
-                } else if let Some(tm) = self.settings.tick_multiply {
-                    tm
-                } else if is_depth_client_aggr {
-                    TickMultiplier(5)
-                } else {
-                    TickMultiplier(10)
-                };
-                self.settings.tick_multiply = Some(tick_multiplier);
-                let tick_size = tick_multiplier.multiply_with_min_tick_size(ticker_info);
-
-                let push_freq = exchange::PushFrequency::ServerDefault;
-
-                let content = Content::Ladder(Some(Ladder::new(config, ticker_info, tick_size)));
-
-                let streams = vec![StreamKind::DepthAndTrades {
-                    ticker_info,
-                    depth_aggr: if ticker_info.ticker.exchange.is_depth_client_aggr() {
-                        StreamTicksize::Client
-                    } else {
-                        StreamTicksize::ServerSide(TickMultiplier(10))
-                    },
-                    push_freq,
-                }];
-                Ok((content, streams))
-            }
-            ContentKind::ComparisonChart => {
-                let config = self
-                    .settings
-                    .visual_config
-                    .clone()
-                    .and_then(|cfg| cfg.comparison());
-
-                let basis = self
-                    .settings
-                    .selected_basis
-                    .unwrap_or(Timeframe::M15.into());
-
-                let content = Content::Comparison(Some(ComparisonChart::new(
-                    basis,
-                    tickers.as_slice(),
-                    config,
-                )));
-                let streams = match basis {
-                    Basis::Time(timeframe) => tickers
-                        .iter()
-                        .map(|ti| StreamKind::Kline {
-                            ticker_info: *ti,
-                            timeframe,
-                        })
-                        .collect(),
-                    Basis::Tick(_) => todo!("WIP: ComparisonChart does not support tick basis"),
-                };
-                Ok((content, streams))
-            }
-            _ => Err(DashboardError::PaneSet(
-                "A content must be set first.".to_string(),
-            )),
         };
 
-        match result {
-            Ok((content, streams)) => {
-                self.content = content;
-                self.streams.rebuild_ready_from(&streams);
-                Ok(streams)
-            }
-            Err(e) => Err(e),
-        }
+        self.content = content;
+        self.streams = ResolvedStream::Ready(streams.clone());
+
+        streams
     }
 
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
@@ -2150,4 +2041,16 @@ fn basis_modifier<'a>(
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .into()
+}
+
+fn by_basis_default<T>(
+    basis: Option<Basis>,
+    default_tf: Timeframe,
+    on_time: impl FnOnce(Timeframe) -> T,
+    on_tick: impl FnOnce() -> T,
+) -> T {
+    match basis.unwrap_or(Basis::Time(default_tf)) {
+        Basis::Time(tf) => on_time(tf),
+        Basis::Tick(_) => on_tick(),
+    }
 }

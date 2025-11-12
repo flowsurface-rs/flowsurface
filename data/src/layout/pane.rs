@@ -1,4 +1,5 @@
 use exchange::adapter::PersistStreamKind;
+use exchange::{TickMultiplier, TickerInfo, Timeframe};
 use serde::{Deserialize, Serialize};
 
 use crate::chart::{comparison, heatmap, kline};
@@ -216,5 +217,100 @@ impl std::fmt::Display for ContentKind {
             ContentKind::Ladder => "DOM/Ladder",
         };
         write!(f, "{s}")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PaneSetup {
+    pub ticker_info: exchange::TickerInfo,
+    pub basis: Option<Basis>,
+    pub tick_multiplier: Option<TickMultiplier>,
+    pub tick_size: f32,
+    pub depth_aggr: exchange::adapter::StreamTicksize,
+    pub push_freq: exchange::PushFrequency,
+}
+
+impl PaneSetup {
+    pub fn new(
+        content_kind: ContentKind,
+        base_ticker: TickerInfo,
+        prev_base_ticker: Option<TickerInfo>,
+        current_basis: Option<Basis>,
+        current_tick_multiplier: Option<TickMultiplier>,
+    ) -> Self {
+        let exchange = base_ticker.ticker.exchange;
+
+        let is_client_aggr = exchange.is_depth_client_aggr();
+        let prev_is_client_aggr = prev_base_ticker
+            .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
+            .unwrap_or(is_client_aggr);
+
+        let basis = match content_kind {
+            ContentKind::HeatmapChart => {
+                let current = current_basis.and_then(|b| match b {
+                    Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
+                    _ => None,
+                });
+                Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
+            }
+            ContentKind::Ladder => Some(
+                current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+            ),
+            ContentKind::FootprintChart => {
+                Some(current_basis.unwrap_or(Basis::Time(Timeframe::M5)))
+            }
+            ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
+                Some(current_basis.unwrap_or(Basis::Time(Timeframe::M15)))
+            }
+            ContentKind::Starter | ContentKind::TimeAndSales => None,
+        };
+
+        let tick_multiplier = match content_kind {
+            ContentKind::HeatmapChart | ContentKind::Ladder => {
+                let tm = if !is_client_aggr && prev_is_client_aggr {
+                    TickMultiplier(10)
+                } else if let Some(tm) = current_tick_multiplier {
+                    tm
+                } else if is_client_aggr {
+                    TickMultiplier(5)
+                } else {
+                    TickMultiplier(10)
+                };
+                Some(tm)
+            }
+            ContentKind::FootprintChart => {
+                Some(current_tick_multiplier.unwrap_or(TickMultiplier(50)))
+            }
+            ContentKind::CandlestickChart
+            | ContentKind::ComparisonChart
+            | ContentKind::TimeAndSales
+            | ContentKind::Starter => current_tick_multiplier,
+        };
+
+        let tick_size = match tick_multiplier {
+            Some(tm) => tm.multiply_with_min_tick_size(base_ticker),
+            None => base_ticker.min_ticksize.into(),
+        };
+
+        let depth_aggr = exchange.stream_ticksize(tick_multiplier, TickMultiplier(50));
+
+        let push_freq = match content_kind {
+            ContentKind::HeatmapChart if exchange.is_custom_push_freq() => match basis {
+                Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf) => {
+                    exchange::PushFrequency::Custom(tf)
+                }
+                _ => exchange::PushFrequency::ServerDefault,
+            },
+            _ => exchange::PushFrequency::ServerDefault,
+        };
+
+        Self {
+            ticker_info: base_ticker,
+            basis,
+            tick_multiplier,
+            tick_size,
+            depth_aggr,
+            push_freq,
+        }
     }
 }
