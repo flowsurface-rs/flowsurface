@@ -27,14 +27,18 @@ pub struct Series {
 }
 
 pub trait SeriesLike {
-    fn name(&self) -> String;
+    fn symbol(&self) -> String;
+    fn symbol_and_exchange(&self) -> String;
     fn points(&self) -> &[(u64, f32)];
     fn color(&self) -> iced::Color;
     fn ticker_info(&self) -> &TickerInfo;
 }
 
 impl SeriesLike for Series {
-    fn name(&self) -> String {
+    fn symbol(&self) -> String {
+        self.name.ticker.to_string()
+    }
+    fn symbol_and_exchange(&self) -> String {
         self.name.ticker.symbol_and_exchange_string()
     }
     fn points(&self) -> &[(u64, f32)] {
