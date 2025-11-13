@@ -425,7 +425,7 @@ where
         for s in self.series.iter() {
             rows_count += 1;
 
-            let name_len = s.name().len();
+            let name_len = s.symbol_and_exchange().len();
             max_name_chars = max_name_chars.max(name_len);
 
             let pct_len = if include_pct_in_width {
@@ -502,7 +502,7 @@ where
             // Base ticker (i == 0) cannot be removed
             let has_close = i != 0;
 
-            let name_len = s.name().len() as f32;
+            let name_len = s.symbol_and_exchange().len() as f32;
             let text_end_x = x_left + name_len * CHAR_W;
 
             let (cog, close, row_width) = if include_icons {
@@ -651,14 +651,17 @@ where
             };
             let bg_color = s.color();
 
+            let label_text = super::format_pct(pct_label, step, true);
+
             end_labels.push(EndLabel {
                 pos: Point::new(
                     ctx.regions.y_axis.x + ctx.regions.y_axis.width,
                     ctx.regions.plot.y + py_local,
                 ),
-                text: super::format_pct(pct_label, step, true),
+                pct_change: label_text,
                 bg_color,
                 text_color,
+                symbol: s.symbol().to_string(),
             });
         }
 
@@ -915,7 +918,7 @@ where
                     bounds: Rectangle {
                         x: plot_rect.x,
                         y: plot_rect.y + plot_rect.height,
-                        width: plot_rect.width,
+                        width: plot_rect.width + scene.ctx.regions.y_axis.width,
                         height: 1.0,
                     },
                     snap: true,
@@ -957,6 +960,7 @@ where
                 self.fill_overlay_y_labels(
                     frame,
                     &scene.end_labels,
+                    scene.ctx.regions.y_axis.x,
                     scene.ctx.gutter_width(),
                     scene.reserved_y.as_ref(),
                 );
@@ -1147,46 +1151,74 @@ where
         &self,
         frame: &mut canvas::Frame,
         end_labels: &[EndLabel],
+        plot_right_x: f32,
         gutter: f32,
         reserved_y: Option<&Rectangle>,
     ) {
+        let split_x = plot_right_x;
+
         for label in end_labels {
             let label_h = TEXT_SIZE + 4.0;
+
             let rect = Rectangle {
-                x: label.pos.x - gutter,
+                x: split_x + 2.0,
                 y: label.pos.y - TEXT_SIZE * 0.5 - 2.0,
-                width: gutter,
+                width: (gutter - 1.0).max(0.0),
                 height: label_h,
             };
 
-            if let Some(res) = reserved_y
-                && rect.intersects(res)
-            {
-                continue;
+            let intersects_reserved = reserved_y.map(|res| rect.intersects(res)).unwrap_or(false);
+
+            if !intersects_reserved {
+                frame.fill_rectangle(
+                    Point {
+                        x: rect.x,
+                        y: rect.y,
+                    },
+                    Size {
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    label.bg_color,
+                );
+
+                frame.fill(
+                    &canvas::Path::circle(Point::new(label.pos.x, label.pos.y), 4.0),
+                    label.bg_color,
+                );
+
+                frame.fill_text(canvas::Text {
+                    content: label.pct_change.clone(),
+                    position: label.pos - Vector::new(4.0, 0.0),
+                    color: label.text_color,
+                    size: TEXT_SIZE.into(),
+                    font: style::AZERET_MONO,
+                    align_x: iced::Alignment::End.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    ..Default::default()
+                });
             }
 
+            let sym_right = split_x - 1.0;
+            let sym_h = TEXT_SIZE + 4.0;
+            let sym_w = (label.symbol.len() as f32) * CHAR_W + 8.0;
+            let sym_rect = Rectangle {
+                x: sym_right - sym_w,
+                y: label.pos.y - sym_h * 0.5,
+                width: sym_w,
+                height: sym_h,
+            };
+
             frame.fill_rectangle(
-                Point {
-                    x: rect.x,
-                    y: rect.y,
-                },
-                Size {
-                    width: rect.width,
-                    height: rect.height,
-                },
+                Point::new(sym_rect.x, sym_rect.y),
+                Size::new(sym_rect.width, sym_rect.height),
                 label.bg_color,
             );
-
-            frame.fill(
-                &canvas::Path::circle(Point::new(label.pos.x, label.pos.y), 4.0),
-                label.bg_color,
-            );
-
             frame.fill_text(canvas::Text {
-                content: label.text.clone(),
-                position: label.pos - Vector::new(4.0, 0.0),
+                content: label.symbol.clone(),
+                position: Point::new(sym_rect.x + sym_rect.width - 4.0, label.pos.y),
                 color: label.text_color,
-                size: 12.0.into(),
+                size: TEXT_SIZE.into(),
                 font: style::AZERET_MONO,
                 align_x: iced::Alignment::End.into(),
                 align_y: iced::Alignment::Center.into(),
@@ -1321,9 +1353,9 @@ where
                 };
 
                 let content = if let Some(pct) = pct_str {
-                    format!("{} {}", s.name(), pct)
+                    format!("{} {}", s.symbol_and_exchange(), pct)
                 } else {
-                    s.name().to_string()
+                    s.symbol_and_exchange().to_string()
                 };
 
                 frame.fill_text(canvas::Text {
@@ -1401,7 +1433,7 @@ where
                     .unwrap_or(0)
             };
 
-            let name_len = s.name().len();
+            let name_len = s.symbol_and_exchange().len();
             let total = if pct_len > 0 {
                 name_len + 1 + pct_len
             } else {
@@ -1453,9 +1485,9 @@ where
             };
 
             let content = if let Some(pct) = pct_str {
-                format!("{} {}", s.name(), pct)
+                format!("{} {}", s.symbol_and_exchange(), pct)
             } else {
-                s.name().to_string()
+                s.symbol_and_exchange().to_string()
             };
 
             frame.fill_text(canvas::Text {
@@ -1566,9 +1598,10 @@ where
 
 struct EndLabel {
     pos: Point,
-    text: String,
     bg_color: Color,
     text_color: Color,
+    pct_change: String,
+    symbol: String,
 }
 
 fn resolve_label_overlaps(end_labels: &mut [EndLabel], plot: Rectangle) {
