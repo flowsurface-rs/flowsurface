@@ -9,7 +9,7 @@ use iced::widget::canvas::{self, Path, Stroke, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const TEXT_SIZE: f32 = 11.0;
 const ROW_HEIGHT: f32 = 16.0;
@@ -27,6 +27,8 @@ const MONO_CHAR_ADVANCE: f32 = 0.62;
 const PRICE_TEXT_SIDE_PAD_MIN: f32 = 12.0;
 
 const CHASE_CIRCLE_RADIUS: f32 = 4.0;
+/// Maximum interval between chase updates to consider them part of the same chase
+const CHASE_MIN_INTERVAL: Duration = Duration::from_millis(200);
 
 impl super::Panel for Ladder {
     fn scroll(&mut self, delta: f32) {
@@ -95,9 +97,16 @@ impl Ladder {
             _ => None,
         };
 
-        self.chase_tracker_mut(Side::Bid).update(raw_best_bid, true);
-        self.chase_tracker_mut(Side::Ask)
-            .update(raw_best_ask, false);
+        if self.config.show_chase_tracker {
+            let max_int = CHASE_MIN_INTERVAL;
+            self.chase_tracker_mut(Side::Bid)
+                .update(raw_best_bid, true, update_t, max_int);
+            self.chase_tracker_mut(Side::Ask)
+                .update(raw_best_ask, false, update_t, max_int);
+        } else {
+            self.chase_tracker_mut(Side::Bid).reset();
+            self.chase_tracker_mut(Side::Ask).reset();
+        }
 
         let step = self.tick_size;
         self.trades.insert_trades(trades_buffer, step);
@@ -150,6 +159,18 @@ impl Ladder {
         let step = PriceStep::from_f32(tick_size);
         self.pending_tick_size = Some(step);
         self.invalidate(Some(Instant::now()));
+    }
+
+    pub fn set_show_chase_tracker(&mut self, enabled: bool) {
+        if self.config.show_chase_tracker != enabled {
+            self.config.show_chase_tracker = enabled;
+            if !enabled {
+                self.chase_tracker_mut(Side::Bid).reset();
+                self.chase_tracker_mut(Side::Ask).reset();
+            }
+
+            self.invalidate(Some(Instant::now()));
+        }
     }
 
     fn regroup_from_depth(&mut self, depth: &Depth) {
@@ -324,32 +345,31 @@ impl canvas::Program<Message> for Ladder {
                     }
                 }
 
-                // Chase indicators with trail lines
-                let left_gap_mid_x = cols.sell.1 + (layout.inside_pad_px + COL_PADDING) * 0.5;
-                let right_gap_mid_x = cols.buy.0 - (layout.inside_pad_px + COL_PADDING) * 0.5;
+                if self.config.show_chase_tracker {
+                    let left_gap_mid_x = cols.sell.1 + (layout.inside_pad_px + COL_PADDING) * 0.5;
+                    let right_gap_mid_x = cols.buy.0 - (layout.inside_pad_px + COL_PADDING) * 0.5;
 
-                // Bid tracker shown near the right split (buy side)
-                self.draw_chase_trail(
-                    frame,
-                    &grid,
-                    bounds,
-                    self.chase_tracker(Side::Bid),
-                    right_gap_mid_x,
-                    best_ask_y.map(|y| y + ROW_HEIGHT / 2.0),
-                    palette.success.weak.color,
-                    true, // is_bid
-                );
-                // Ask tracker shown near the left split (sell side)
-                self.draw_chase_trail(
-                    frame,
-                    &grid,
-                    bounds,
-                    self.chase_tracker(Side::Ask),
-                    left_gap_mid_x,
-                    best_bid_y.map(|y| y + ROW_HEIGHT / 2.0),
-                    palette.danger.weak.color,
-                    false,
-                );
+                    self.draw_chase_trail(
+                        frame,
+                        &grid,
+                        bounds,
+                        self.chase_tracker(Side::Bid),
+                        right_gap_mid_x,
+                        best_ask_y.map(|y| y + ROW_HEIGHT / 2.0),
+                        palette.success.weak.color,
+                        true, // is_bid
+                    );
+                    self.draw_chase_trail(
+                        frame,
+                        &grid,
+                        bounds,
+                        self.chase_tracker(Side::Ask),
+                        left_gap_mid_x,
+                        best_bid_y.map(|y| y + ROW_HEIGHT / 2.0),
+                        palette.danger.weak.color,
+                        false,
+                    );
+                }
 
                 // Price column vertical dividers with a gap over the spread row (if visible)
                 let mut draw_vsplit = |x: f32, gap: Option<(f32, f32)>| {

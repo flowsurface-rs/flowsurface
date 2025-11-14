@@ -1,4 +1,5 @@
 use crate::chart::kline::KlineTrades;
+use crate::util::ok_or_default;
 use exchange::{
     Trade,
     util::{Price, PriceStep},
@@ -11,11 +12,13 @@ use std::{
 };
 
 const TRADE_RETENTION_MS: u64 = 8 * 60_000;
-const MIN_VISIBLE_ALPHA: f32 = 0.15;
+const CHASE_MIN_VISIBLE_OPACITY: f32 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub show_spread: bool,
+    #[serde(deserialize_with = "ok_or_default", default)]
+    pub show_chase_tracker: bool,
     pub trade_retention: Duration,
 }
 
@@ -23,6 +26,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             show_spread: false,
+            show_chase_tracker: true,
             trade_retention: Duration::from_millis(TRADE_RETENTION_MS),
         }
     }
@@ -206,10 +210,27 @@ pub struct ChaseTracker {
     /// Last known best price (raw ungrouped)
     last_best: Option<Price>,
     state: ChaseProgress,
+    last_update_ms: Option<u64>,
 }
 
 impl ChaseTracker {
-    pub fn update(&mut self, current_best: Option<Price>, is_bid: bool) {
+    pub fn update(
+        &mut self,
+        current_best: Option<Price>,
+        is_bid: bool,
+        now_ms: u64,
+        max_interval: Duration,
+    ) {
+        let max_ms = max_interval.as_millis() as u64;
+        if let Some(prev) = self.last_update_ms
+            && max_ms > 0
+            && now_ms.saturating_sub(prev) > max_ms
+        {
+            self.reset();
+        }
+
+        self.last_update_ms = Some(now_ms);
+
         let Some(current) = current_best else {
             self.reset();
             return;
@@ -346,7 +367,7 @@ impl ChaseTracker {
             {
                 let base = Self::consecutive_to_alpha(start_consecutive);
                 let alpha = base / (1.0 + fade_steps as f32);
-                if alpha < MIN_VISIBLE_ALPHA {
+                if alpha < CHASE_MIN_VISIBLE_OPACITY {
                     self.state = ChaseProgress::Idle;
                 }
             }
@@ -355,9 +376,10 @@ impl ChaseTracker {
         self.last_best = Some(current);
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.last_best = None;
         self.state = ChaseProgress::Idle;
+        self.last_update_ms = None;
     }
 
     /// Maps consecutive steps n to [0,1): 1 - 1/(1+n)

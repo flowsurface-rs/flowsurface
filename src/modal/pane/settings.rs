@@ -534,8 +534,8 @@ pub fn kline_cfg_view<'a>(
 }
 
 pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
-    let show_spread_toggle = {
-        let checkbox =
+    let display_options = {
+        let spread =
             iced::widget::checkbox("Show Spread", cfg.show_spread).on_toggle(move |value| {
                 Message::VisualConfigChanged(
                     pane,
@@ -547,11 +547,41 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
                 )
             });
 
-        column![text("Display Options").size(14), checkbox].spacing(8)
+        let chase_tracker = iced::widget::checkbox("Show Chase Tracker", cfg.show_chase_tracker)
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Ladder(ladder::Config {
+                        show_chase_tracker: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        column![
+            text("Display Options").size(14),
+            column![
+                spread,
+                row![
+                    chase_tracker,
+                    tooltip(
+                        button("i").style(style::button::info),
+                        Some("Highlights consecutive best-price moves and fades when momentum stalls.\nCalculated using raw ungrouped data."),
+                        TooltipPosition::Top,
+                    )
+                ]
+                .align_y(Alignment::Center)
+                .spacing(4)
+            ]
+            .spacing(4)
+        ]
+        .spacing(8)
     };
 
-    let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
     let retention_slider = {
+        let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
+
         let slider_ui = slider(1.0..=60.0, retention_minutes, move |new_minutes| {
             let mins = new_minutes.round().max(1.0) as u64;
             Message::VisualConfigChanged(
@@ -575,9 +605,13 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
     let history_column = column![text("History").size(14), retention_slider].spacing(8);
 
     let content = split_column![
-        show_spread_toggle,
-        history_column;
-        spacing = 12, align_x = Alignment::Start
+        display_options,
+        history_column,
+        row![
+            space::horizontal(),
+            sync_all_button(pane, VisualConfig::Ladder(cfg))
+        ],
+        ; spacing = 12, align_x = Alignment::Start
     ];
 
     cfg_view_container(320, content)
