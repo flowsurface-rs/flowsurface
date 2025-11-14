@@ -1,7 +1,6 @@
 use super::Message;
 use crate::style;
-use data::chart::kline::KlineTrades;
-use data::panel::ladder::{ChaseTracker, Config};
+use data::panel::ladder::{ChaseTracker, Config, GroupedDepth, Side, TradeStore};
 use exchange::Trade;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};
@@ -9,7 +8,7 @@ use exchange::{TickerInfo, depth::Depth};
 use iced::widget::canvas::{self, Path, Stroke, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 const TEXT_SIZE: f32 = 11.0;
@@ -45,14 +44,14 @@ impl super::Panel for Ladder {
     }
 
     fn is_empty(&self) -> bool {
-        self.depth.bids.is_empty() && self.depth.asks.is_empty() && self.raw_trades.is_empty()
+        if self.pending_tick_size.is_some() {
+            return true;
+        }
+        self.grouped_asks().is_empty() && self.grouped_bids().is_empty() && self.trades.is_empty()
     }
 }
 
 pub struct Ladder {
-    depth: Depth,
-    raw_trades: VecDeque<Trade>,
-    grouped_trades: KlineTrades,
     ticker_info: TickerInfo,
     pub config: Config,
     cache: canvas::Cache,
@@ -60,18 +59,16 @@ pub struct Ladder {
     tick_size: PriceStep,
     scroll_px: f32,
     last_exchange_ts_ms: Option<u64>,
-    grouped_asks: BTreeMap<Price, f32>,
-    grouped_bids: BTreeMap<Price, f32>,
-    bid_chase: ChaseTracker,
-    ask_chase: ChaseTracker,
+    orderbook: [GroupedDepth; 2],
+    trades: TradeStore,
+    pending_tick_size: Option<PriceStep>,
+    raw_price_spread: Option<Price>,
 }
 
 impl Ladder {
     pub fn new(config: Option<Config>, ticker_info: TickerInfo, tick_size: f32) -> Self {
         Self {
-            depth: Depth::default(),
-            raw_trades: VecDeque::new(),
-            grouped_trades: KlineTrades::new(),
+            trades: TradeStore::new(),
             config: config.unwrap_or_default(),
             ticker_info,
             cache: canvas::Cache::default(),
@@ -79,81 +76,70 @@ impl Ladder {
             tick_size: PriceStep::from_f32(tick_size),
             scroll_px: 0.0,
             last_exchange_ts_ms: None,
-            grouped_asks: BTreeMap::new(),
-            grouped_bids: BTreeMap::new(),
-            bid_chase: ChaseTracker::default(),
-            ask_chase: ChaseTracker::default(),
+            orderbook: [GroupedDepth::new(), GroupedDepth::new()],
+            raw_price_spread: None,
+            pending_tick_size: None,
         }
     }
 
     pub fn insert_buffers(&mut self, update_t: u64, depth: &Depth, trades_buffer: &[Trade]) {
+        if let Some(next) = self.pending_tick_size.take() {
+            self.tick_size = next;
+            self.trades.rebuild_grouped(self.tick_size);
+        }
+
         let raw_best_bid = depth.bids.last_key_value().map(|(p, _)| *p);
         let raw_best_ask = depth.asks.first_key_value().map(|(p, _)| *p);
-
-        self.bid_chase.update(raw_best_bid, true);
-        self.ask_chase.update(raw_best_ask, false);
-
-        self.depth = depth.clone();
-        let tick_size = self.tick_size;
-
-        for trade in trades_buffer {
-            self.grouped_trades.add_trade_to_side_bin(trade, tick_size);
-            self.raw_trades.push_back(*trade);
-        }
-
-        self.recompute_grouped_depth();
-
-        self.last_exchange_ts_ms = Some(update_t);
-        self.maybe_cleanup_trades(update_t);
-    }
-
-    fn maybe_cleanup_trades(&mut self, now_ms: u64) {
-        let Some(oldest_trade) = self.raw_trades.front() else {
-            return;
+        self.raw_price_spread = match (raw_best_bid, raw_best_ask) {
+            (Some(bid), Some(ask)) => Some(ask - bid),
+            _ => None,
         };
 
-        let oldest_ms = oldest_trade.time;
+        self.chase_tracker_mut(Side::Bid).update(raw_best_bid, true);
+        self.chase_tracker_mut(Side::Ask)
+            .update(raw_best_ask, false);
 
-        // Derive cleanup step from retention: ~1/10th (min 5s)
-        let retention_ms = self.config.trade_retention.as_millis() as u64;
-        if retention_ms == 0 {
-            return;
-        }
-        let cleanup_step_ms = (retention_ms / 10).max(5_000);
+        let step = self.tick_size;
+        self.trades.insert_trades(trades_buffer, step);
 
-        let threshold_ms = retention_ms + cleanup_step_ms;
-        if now_ms.saturating_sub(oldest_ms) < threshold_ms {
-            return;
-        }
+        self.regroup_from_depth(depth);
 
-        let keep_from_ms = now_ms.saturating_sub(retention_ms);
+        self.last_exchange_ts_ms = Some(update_t);
 
-        let mut removed = 0usize;
-        while let Some(trade) = self.raw_trades.front() {
-            if trade.time < keep_from_ms {
-                self.raw_trades.pop_front();
-                removed += 1;
-            } else {
-                break;
-            }
-        }
-
-        if removed > 0 {
-            self.grouped_trades.clear();
-            for trade in &self.raw_trades {
-                self.grouped_trades
-                    .add_trade_to_side_bin(trade, self.tick_size);
-            }
+        if self
+            .trades
+            .maybe_cleanup(update_t, self.config.trade_retention, self.tick_size)
+        {
             self.invalidate(Some(Instant::now()));
         }
+    }
+
+    fn trade_qty_at(&self, price: Price) -> (f32, f32) {
+        self.trades.trade_qty_at(price)
     }
 
     pub fn last_update(&self) -> Instant {
         self.last_tick
     }
 
-    pub fn current_price(&self) -> Option<Price> {
-        self.depth.mid_price()
+    fn grouped_asks(&self) -> &BTreeMap<Price, f32> {
+        &self.orderbook[Side::Ask.idx()].orders
+    }
+
+    fn grouped_bids(&self) -> &BTreeMap<Price, f32> {
+        &self.orderbook[Side::Bid.idx()].orders
+    }
+
+    fn chase_tracker(&self, side: Side) -> &ChaseTracker {
+        &self.orderbook[side.idx()].chase
+    }
+
+    fn chase_tracker_mut(&mut self, side: Side) -> &mut ChaseTracker {
+        &mut self.orderbook[side.idx()].chase
+    }
+
+    fn best_price(&self, side: Side) -> Option<Price> {
+        self.orderbook[side.idx()].best_price(side)
     }
 
     pub fn min_tick_size(&self) -> f32 {
@@ -162,16 +148,15 @@ impl Ladder {
 
     pub fn set_tick_size(&mut self, tick_size: f32) {
         let step = PriceStep::from_f32(tick_size);
-        self.tick_size = step;
-
-        self.grouped_trades.clear();
-        for trade in &self.raw_trades {
-            self.grouped_trades.add_trade_to_side_bin(trade, step);
-        }
-
-        self.recompute_grouped_depth();
-
+        self.pending_tick_size = Some(step);
         self.invalidate(Some(Instant::now()));
+    }
+
+    fn regroup_from_depth(&mut self, depth: &Depth) {
+        let step = self.tick_size;
+
+        self.orderbook[Side::Ask.idx()].regroup_from_raw(&depth.asks, Side::Ask, step);
+        self.orderbook[Side::Bid.idx()].regroup_from_raw(&depth.bids, Side::Bid, step);
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
@@ -193,55 +178,6 @@ impl Ladder {
 
     fn format_quantity(&self, qty: f32) -> String {
         data::util::abbr_large_numbers(qty)
-    }
-
-    fn calculate_spread(&self) -> Option<Price> {
-        if let (Some((best_ask, _)), Some((best_bid, _))) = (
-            self.depth.asks.first_key_value(),
-            self.depth.bids.last_key_value(),
-        ) {
-            Some(*best_ask - *best_bid)
-        } else {
-            None
-        }
-    }
-
-    fn recompute_grouped_depth(&mut self) {
-        self.grouped_asks = self.group_price_levels(&self.depth.asks, false);
-        self.grouped_bids = self.group_price_levels(&self.depth.bids, true);
-    }
-
-    fn price_to_screen_y(&self, price: Price, grid: &PriceGrid, bounds_height: f32) -> Option<f32> {
-        let mid_screen_y = bounds_height * 0.5;
-        let scroll = self.scroll_px;
-
-        let idx = if price >= grid.best_ask {
-            let steps = Price::steps_between_inclusive(grid.best_ask, price, grid.tick)?;
-            -(steps as i32)
-        } else if price <= grid.best_bid {
-            let steps = Price::steps_between_inclusive(price, grid.best_bid, grid.tick)?;
-            steps as i32
-        } else {
-            return Some(mid_screen_y - scroll);
-        };
-
-        let y = mid_screen_y + PriceGrid::top_y(idx) - scroll + ROW_HEIGHT / 2.0;
-        Some(y)
-    }
-
-    fn group_price_levels(
-        &self,
-        levels: &BTreeMap<Price, f32>,
-        is_bid: bool,
-    ) -> BTreeMap<Price, f32> {
-        let mut grouped = BTreeMap::new();
-
-        for (price, qty) in levels.iter() {
-            let grouped_price = price.round_to_side_step(is_bid, self.tick_size);
-            *grouped.entry(grouped_price).or_insert(0.0) += qty;
-        }
-
-        grouped
     }
 }
 
@@ -304,13 +240,13 @@ impl canvas::Program<Message> for Ladder {
                     match visible_row.row {
                         DomRow::Ask { price, .. }
                             if Some(price)
-                                == self.grouped_asks.first_key_value().map(|(p, _)| *p) =>
+                                == self.grouped_asks().first_key_value().map(|(p, _)| *p) =>
                         {
                             best_ask_y = Some(visible_row.y);
                         }
                         DomRow::Bid { price, .. }
                             if Some(price)
-                                == self.grouped_bids.last_key_value().map(|(p, _)| *p) =>
+                                == self.grouped_bids().last_key_value().map(|(p, _)| *p) =>
                         {
                             best_bid_y = Some(visible_row.y);
                         }
@@ -355,7 +291,7 @@ impl canvas::Program<Message> for Ladder {
                             );
                         }
                         DomRow::Spread => {
-                            if let Some(spread) = self.calculate_spread() {
+                            if let Some(spread) = self.raw_price_spread {
                                 let min_ticksize = self.ticker_info.min_ticksize;
                                 spread_row = Some((visible_row.y, visible_row.y + ROW_HEIGHT));
 
@@ -397,7 +333,7 @@ impl canvas::Program<Message> for Ladder {
                     frame,
                     &grid,
                     bounds,
-                    &self.bid_chase,
+                    self.chase_tracker(Side::Bid),
                     right_gap_mid_x,
                     best_ask_y.map(|y| y + ROW_HEIGHT / 2.0),
                     palette.success.weak.color,
@@ -408,7 +344,7 @@ impl canvas::Program<Message> for Ladder {
                     frame,
                     &grid,
                     bounds,
-                    &self.ask_chase,
+                    self.chase_tracker(Side::Ask),
                     left_gap_mid_x,
                     best_bid_y.map(|y| y + ROW_HEIGHT / 2.0),
                     palette.danger.weak.color,
@@ -589,14 +525,6 @@ impl Ladder {
             price: price_range,
             buy: buy_trades_range,
             ask_order: ask_order_range,
-        }
-    }
-
-    fn trade_qty_at(&self, price: Price) -> (f32, f32) {
-        if let Some(g) = self.grouped_trades.trades.get(&price) {
-            (g.buy_qty, g.sell_qty)
-        } else {
-            (0.0, 0.0)
         }
     }
 
@@ -811,24 +739,11 @@ impl Ladder {
     }
 
     fn build_price_grid(&self) -> Option<PriceGrid> {
-        let best_bid = match (
-            self.grouped_bids.last_key_value().map(|(k, _)| *k),
-            self.grouped_asks.first_key_value().map(|(k, _)| *k),
-        ) {
+        let best_bid = match (self.best_price(Side::Bid), self.best_price(Side::Ask)) {
             (Some(bb), _) => bb,
             (None, Some(ba)) => ba.add_steps(-1, self.tick_size),
             (None, None) => {
-                let mut min_t: Option<Price> = None;
-                let mut max_t: Option<Price> = None;
-
-                for &p in self.grouped_trades.trades.keys() {
-                    min_t = Some(min_t.map_or(p, |cur| cur.min(p)));
-                    max_t = Some(max_t.map_or(p, |cur| cur.max(p)));
-                }
-                let (Some(min_t), Some(max_t)) = (min_t, max_t) else {
-                    return None;
-                };
-
+                let (min_t, max_t) = self.trades.price_range()?;
                 let steps =
                     Price::steps_between_inclusive(min_t, max_t, self.tick_size).unwrap_or(1);
                 max_t.add_steps(-(steps as i64 / 2), self.tick_size)
@@ -844,8 +759,8 @@ impl Ladder {
     }
 
     fn visible_rows(&self, bounds: Rectangle, grid: &PriceGrid) -> (Vec<VisibleRow>, Maxima) {
-        let asks_grouped = &self.grouped_asks;
-        let bids_grouped = &self.grouped_bids;
+        let asks_grouped = self.grouped_asks();
+        let bids_grouped = self.grouped_bids();
 
         let mut visible: Vec<VisibleRow> = Vec::new();
         let mut maxima = Maxima::default();
@@ -923,6 +838,24 @@ impl Ladder {
 
         visible.sort_by(|a, b| a.y.total_cmp(&b.y));
         (visible, maxima)
+    }
+
+    fn price_to_screen_y(&self, price: Price, grid: &PriceGrid, bounds_height: f32) -> Option<f32> {
+        let mid_screen_y = bounds_height * 0.5;
+        let scroll = self.scroll_px;
+
+        let idx = if price >= grid.best_ask {
+            let steps = Price::steps_between_inclusive(grid.best_ask, price, grid.tick)?;
+            -(steps as i32)
+        } else if price <= grid.best_bid {
+            let steps = Price::steps_between_inclusive(price, grid.best_bid, grid.tick)?;
+            steps as i32
+        } else {
+            return Some(mid_screen_y - scroll);
+        };
+
+        let y = mid_screen_y + PriceGrid::top_y(idx) - scroll + ROW_HEIGHT / 2.0;
+        Some(y)
     }
 }
 
