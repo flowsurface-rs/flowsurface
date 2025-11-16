@@ -13,21 +13,36 @@ jobs:
         strategy:
             matrix:
                 target:
-                    - target: macos
+                    - target: macos-arm
                       os: macos-latest
-                      make: bash scripts/build-macos.sh
+                      make: bash scripts/build-macos.sh aarch64
                       artifact_path: |
-                          echo "ARTIFACT_PATH=target/release/flowsurface-universal-macos.tar.gz" >> "$GITHUB_ENV"
-                    - target: windows
+                          echo "ARTIFACT_PATH=target/release/flowsurface-aarch64-macos.tar.gz" >> "$GITHUB_ENV"
+                    - target: macos-x86
+                      os: macos-15-intel
+                      make: bash scripts/build-macos.sh x86_64
+                      artifact_path: |
+                          echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-macos.tar.gz" >> "$GITHUB_ENV"
+                    - target: windows-x86
                       os: windows-latest
-                      make: bash scripts/build-windows.sh
+                      make: bash scripts/build-windows.sh x86_64
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-windows.zip" >> $env:GITHUB_ENV
-                    - target: linux
-                      os: ubuntu-latest
-                      make: bash scripts/package-linux.sh package
+                    - target: windows-arm
+                      os: windows-11-arm
+                      make: bash scripts/build-windows.sh aarch64
                       artifact_path: |
-                          echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path)" >> "$GITHUB_ENV"
+                          echo "ARTIFACT_PATH=target/release/flowsurface-aarch64-windows.zip" >> $env:GITHUB_ENV
+                    - target: linux-x86
+                      os: ubuntu-latest
+                      make: bash scripts/package-linux.sh package x86_64
+                      artifact_path: |
+                          echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path x86_64)" >> "$GITHUB_ENV"
+                    - target: linux-arm
+                      os: ubuntu-24.04-arm
+                      make: bash scripts/package-linux.sh package aarch64
+                      artifact_path: |
+                          echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path aarch64)" >> "$GITHUB_ENV"
         runs-on: ${{ matrix.target.os }}
         steps:
             - uses: actions/checkout@v3
@@ -38,7 +53,7 @@ jobs:
                   override: true
 
             - name: Install linux deps
-              if: matrix.target.target == 'linux'
+              if: startsWith(matrix.target.target, 'linux')
               run: |
                   sudo apt update
                   sudo apt install -y \
@@ -103,6 +118,34 @@ jobs:
                   draft: true
                   prerelease: false
 
+    create-universal:
+        needs: build
+        runs-on: macos-latest
+        steps:
+            - name: Download arm artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: macos-arm
+                  path: macos-arm
+
+            - name: Download x86 artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: macos-x86
+                  path: macos-x86
+
+            - name: Create universal binary
+              run: |
+                  mkdir -p target/release
+                  lipo macos-arm/flowsurface macos-x86/flowsurface -create -output target/release/flowsurface
+                  tar -czf target/release/flowsurface-universal-macos.tar.gz -C target/release flowsurface
+
+            - name: Upload universal artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: macos-universal
+                  path: target/release/flowsurface-universal-macos.tar.gz
+
     add-assets:
         needs: create-release
         name: Add Assets
@@ -110,17 +153,25 @@ jobs:
         strategy:
             matrix:
                 target:
-                    - artifact: macos
+                    - artifact: macos-universal
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-universal-macos.tar.gz" >> "$GITHUB_ENV"
                       asset_type: application/gzip
-                    - artifact: windows
+                    - artifact: windows-x86
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-x86_64-windows.zip" >> "$GITHUB_ENV"
                       asset_type: application/x-dosexec
-                    - artifact: linux
+                    - artifact: windows-arm
                       artifact_name: |
-                          echo "ARTIFACT_NAME=$(bash scripts/package-linux.sh archive_name)" >> "$GITHUB_ENV"
+                          echo "ARTIFACT_NAME=flowsurface-aarch64-windows.zip" >> "$GITHUB_ENV"
+                      asset_type: application/x-dosexec
+                    - artifact: linux-x86
+                      artifact_name: |
+                          echo "ARTIFACT_NAME=flowsurface-x86_64-linux.tar.gz" >> "$GITHUB_ENV"
+                      asset_type: application/gzip
+                    - artifact: linux-arm
+                      artifact_name: |
+                          echo "ARTIFACT_NAME=flowsurface-aarch64-linux.tar.gz" >> "$GITHUB_ENV"
                       asset_type: application/gzip
 
         runs-on: ubuntu-latest
