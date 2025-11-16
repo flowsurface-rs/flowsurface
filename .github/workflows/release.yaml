@@ -19,7 +19,7 @@ jobs:
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-aarch64-macos.tar.gz" >> "$GITHUB_ENV"
                     - target: macos-x86
-                      os: macos-15-intel
+                      os: macos-13
                       make: bash scripts/build-macos.sh x86_64
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-macos.tar.gz" >> "$GITHUB_ENV"
