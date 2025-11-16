@@ -979,7 +979,7 @@ impl TickersTable {
             let info_opt: Option<TickerInfo> =
                 self.tickers_info.get(&row_ref.ticker).cloned().flatten();
 
-            let (left_action, right) = if selection_enabled {
+            let (left_action, right_action) = if selection_enabled {
                 (
                     info_opt.map(RowSelection::Switch),
                     Some(("Add", info_opt.map(RowSelection::Add))),
@@ -988,8 +988,14 @@ impl TickersTable {
                 (info_opt.map(RowSelection::Switch), None)
             };
 
-            let row_el =
-                mini_ticker_card(row_ref.exchange, label, left_action, right, None, on_select);
+            let row_el = mini_ticker_card(
+                row_ref.exchange,
+                label,
+                left_action,
+                right_action,
+                None,
+                on_select,
+            );
 
             list = list.push(row_el);
         }
@@ -1269,14 +1275,13 @@ where
             .into()
     });
 
-    let mut row_content = row![left_btn]
-        .spacing(6)
-        .align_y(alignment::Vertical::Center);
+    let mut row_content = row![left_btn].align_y(alignment::Vertical::Center);
 
     if let Some(chip) = chip_el {
         row_content = row_content.push(chip);
     }
     if let Some(right) = right_el {
+        row_content = row_content.push(iced::widget::rule::vertical(1.0));
         row_content = row_content.push(right);
     }
 

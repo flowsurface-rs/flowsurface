@@ -28,7 +28,7 @@ const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
 /// Gap breaker to avoid drawing across missing data
 const GAP_BREAK_MULTIPLIER: f32 = 3.0;
 
-pub const DEFAULT_ZOOM_POINTS: usize = 100;
+pub const DEFAULT_ZOOM_POINTS: usize = 150;
 pub const MIN_ZOOM_POINTS: usize = 2;
 pub const MAX_ZOOM_POINTS: usize = 5000;
 
@@ -47,6 +47,7 @@ pub enum LineComparisonEvent {
     PanChanged(f32),
     SeriesCog(TickerInfo),
     SeriesRemove(TickerInfo),
+    XAxisDoubleClick,
 }
 
 struct State {
@@ -57,6 +58,8 @@ struct State {
     is_panning: bool,
     last_cursor: Option<Point>,
     last_cache_rev: u64,
+    // Track previous click for double-click detection
+    previous_click: Option<iced_core::mouse::Click>,
 }
 
 impl Default for State {
@@ -69,6 +72,7 @@ impl Default for State {
             is_panning: false,
             last_cursor: None,
             last_cache_rev: 0,
+            previous_click: None,
         }
     }
 }
@@ -803,7 +807,7 @@ where
                     mouse::Event::WheelScrolled {
                         delta: mouse::ScrollDelta::Lines { y, .. },
                     } => {
-                        if !matches!(zone, HitZone::Plot | HitZone::XAxis) {
+                        if !matches!(zone, HitZone::Plot) {
                             return;
                         }
 
@@ -818,28 +822,53 @@ where
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
+                        if let Some(global_pos) = cursor.position() {
+                            let new_click = iced_core::mouse::Click::new(
+                                global_pos,
+                                mouse::Button::Left,
+                                state.previous_click,
+                            );
+
+                            if matches!(zone, HitZone::XAxis)
+                                && new_click.kind() == iced_core::mouse::click::Kind::Double
+                            {
+                                shell.publish(M::from(LineComparisonEvent::XAxisDoubleClick));
+                                state.clear_all_caches();
+                                state.previous_click = Some(new_click);
+                                return;
+                            }
+
+                            state.previous_click = Some(new_click);
+                        } else {
+                            state.previous_click = None;
+                        }
+
+                        if matches!(zone, HitZone::XAxis) {
+                            return;
+                        }
+
                         if let Some(scene) = self.compute_scene(layout, cursor)
                             && let Some(legend) = scene.legend.as_ref()
                         {
                             for row in &legend.rows {
                                 if row.cog.contains(cursor_pos) {
-                                    let event = LineComparisonEvent::SeriesCog(row.ticker);
-
-                                    shell.publish(M::from(event));
+                                    shell.publish(M::from(LineComparisonEvent::SeriesCog(
+                                        row.ticker,
+                                    )));
                                     state.clear_all_caches();
                                     return;
                                 }
                                 if row.has_close && row.close.contains(cursor_pos) {
-                                    let event = LineComparisonEvent::SeriesRemove(row.ticker);
-
-                                    shell.publish(M::from(event));
+                                    shell.publish(M::from(LineComparisonEvent::SeriesRemove(
+                                        row.ticker,
+                                    )));
                                     state.clear_all_caches();
                                     return;
                                 }
                             }
                         }
 
-                        if matches!(zone, HitZone::Plot | HitZone::XAxis) {
+                        if matches!(zone, HitZone::Plot) {
                             state.is_panning = true;
                             state.last_cursor = Some(cursor_pos);
                         }

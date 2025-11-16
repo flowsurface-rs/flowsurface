@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 use std::time::Instant;
 
 const SERIES_MAX_POINTS: usize = 5000;
-const DEFAULT_PAN_POINTS: f32 = 4.0;
+const DEFAULT_PAN_POINTS: f32 = 8.0;
 
 pub enum Action {
     TickerColorChanged(TickerInfo, iced::Color),
@@ -92,7 +92,7 @@ impl ComparisonChart {
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
-            Message::Chart(evt) => match evt {
+            Message::Chart(event) => match event {
                 LineComparisonEvent::ZoomChanged(zoom) => {
                     self.zoom = zoom;
                     None
@@ -106,6 +106,11 @@ impl ComparisonChart {
                 }
                 LineComparisonEvent::SeriesRemove(ticker_info) => {
                     Some(Action::RemoveSeries(ticker_info))
+                }
+                LineComparisonEvent::XAxisDoubleClick => {
+                    self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
+                    self.pan = DEFAULT_PAN_POINTS;
+                    None
                 }
             },
             Message::ColorUpdated(ticker_info, color) => {
