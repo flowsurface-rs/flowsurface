@@ -136,7 +136,7 @@ jobs:
                   draft: true
                   prerelease: false
 
-        create-universal:
+    create-universal:
         needs: build
         runs-on: macos-latest
         steps:
