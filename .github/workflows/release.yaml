@@ -19,7 +19,7 @@ jobs:
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-aarch64-macos.tar.gz" >> "$GITHUB_ENV"
                     - target: macos-x86
-                      os: macos-13
+                      os: macos-15-intel
                       make: bash scripts/build-macos.sh x86_64
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-macos.tar.gz" >> "$GITHUB_ENV"
@@ -65,13 +65,13 @@ jobs:
                     libasound2-dev
 
             - name: Configure optimized release profile
+              if: ${{ matrix.target.target != 'macos-x86' }}
               shell: bash
               run: |
                   if grep -q "\[profile.release\]" Cargo.toml; then
                     sed -i '/\[profile.release\]/,/^\[/s/^lto.*//g' Cargo.toml
                     sed -i '/\[profile.release\]/,/^\[/s/^codegen-units.*//g' Cargo.toml
                     sed -i '/\[profile.release\]/,/^\[/s/^opt-level.*//g' Cargo.toml
-                    
                     sed -i '/\[profile.release\]/a opt-level = 3\ncodegen-units = 1\nlto = "fat"' Cargo.toml
                   else
                     cat >> Cargo.toml << EOF
@@ -82,7 +82,25 @@ jobs:
                   opt-level = 3
                   EOF
                   fi
+                  rm -f .cargo/config.toml
 
+            - name: Configure macOS x86_64 release profile (fast)
+              if: ${{ matrix.target.target == 'macos-x86' }}
+              shell: bash
+              run: |
+                  if grep -q "\[profile.release\]" Cargo.toml; then
+                    sed -i '/\[profile.release\]/,/^\[/s/^lto.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/,/^\[/s/^codegen-units.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/,/^\[/s/^opt-level.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/a opt-level = 2\ncodegen-units = 2' Cargo.toml
+                  else
+                    cat >> Cargo.toml << EOF
+
+                  [profile.release]
+                  codegen-units = 2
+                  opt-level = 2
+                  EOF
+                  fi
                   rm -f .cargo/config.toml
 
             - name: Build
@@ -118,7 +136,7 @@ jobs:
                   draft: true
                   prerelease: false
 
-    create-universal:
+        create-universal:
         needs: build
         runs-on: macos-latest
         steps:
@@ -134,10 +152,20 @@ jobs:
                   name: macos-x86
                   path: macos-x86
 
+            - name: Extract macOS arm artifact
+              run: |
+                  mkdir -p macos-arm/extracted
+                  tar -xzf macos-arm/flowsurface-aarch64-macos.tar.gz -C macos-arm/extracted
+
+            - name: Extract macOS x86 artifact
+              run: |
+                  mkdir -p macos-x86/extracted
+                  tar -xzf macos-x86/flowsurface-x86_64-macos.tar.gz -C macos-x86/extracted
+
             - name: Create universal binary
               run: |
                   mkdir -p target/release
-                  lipo macos-arm/flowsurface macos-x86/flowsurface -create -output target/release/flowsurface
+                  lipo macos-arm/extracted/flowsurface macos-x86/extracted/flowsurface -create -output target/release/flowsurface
                   tar -czf target/release/flowsurface-universal-macos.tar.gz -C target/release flowsurface
 
             - name: Upload universal artifact
