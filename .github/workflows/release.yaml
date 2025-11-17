@@ -28,11 +28,6 @@ jobs:
                       make: bash scripts/build-windows.sh x86_64
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-windows.zip" >> $env:GITHUB_ENV
-                    - target: windows-arm
-                      os: windows-11-arm
-                      make: bash scripts/build-windows.sh aarch64
-                      artifact_path: |
-                          echo "ARTIFACT_PATH=target/release/flowsurface-aarch64-windows.zip" >> $env:GITHUB_ENV
                     - target: linux-x86
                       os: ubuntu-latest
                       make: bash scripts/package-linux.sh package x86_64
@@ -188,10 +183,6 @@ jobs:
                     - artifact: windows-x86
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-x86_64-windows.zip" >> "$GITHUB_ENV"
-                      asset_type: application/x-dosexec
-                    - artifact: windows-arm
-                      artifact_name: |
-                          echo "ARTIFACT_NAME=flowsurface-aarch64-windows.zip" >> "$GITHUB_ENV"
                       asset_type: application/x-dosexec
                     - artifact: linux-x86
                       artifact_name: |
