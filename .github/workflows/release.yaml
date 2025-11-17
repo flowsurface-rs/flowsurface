@@ -170,7 +170,7 @@ jobs:
                   path: target/release/flowsurface-universal-macos.tar.gz
 
     add-assets:
-        needs: create-release
+        needs: [create-release, create-universal]
         name: Add Assets
 
         strategy:
