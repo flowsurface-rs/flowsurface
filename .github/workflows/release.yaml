@@ -87,13 +87,14 @@ jobs:
                     sed -i '/\[profile.release\]/,/^\[/s/^lto.*//g' Cargo.toml
                     sed -i '/\[profile.release\]/,/^\[/s/^codegen-units.*//g' Cargo.toml
                     sed -i '/\[profile.release\]/,/^\[/s/^opt-level.*//g' Cargo.toml
-                    sed -i '/\[profile.release\]/a opt-level = 2\ncodegen-units = 2' Cargo.toml
+                    sed -i '/\[profile.release\]/a opt-level = 3\ncodegen-units = 1\nlto = "thin"' Cargo.toml
                   else
                     cat >> Cargo.toml << EOF
 
                   [profile.release]
-                  codegen-units = 2
-                  opt-level = 2
+                  lto = "thin"
+                  codegen-units = 1
+                  opt-level = 3
                   EOF
                   fi
                   rm -f .cargo/config.toml
