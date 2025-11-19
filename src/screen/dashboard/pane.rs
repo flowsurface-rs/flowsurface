@@ -1189,10 +1189,13 @@ impl State {
                     && let Some(action) = chart.update(message)
                 {
                     match action {
-                        super::chart::comparison::Action::TickerColorChanged(t, color) => {
-                            chart.set_ticker_color(t, color);
+                        super::chart::comparison::Action::SeriesColorChanged(t, color) => {
+                            chart.set_series_color(t, color);
                         }
-                        super::chart::comparison::Action::OpenColorEditor => {
+                        super::chart::comparison::Action::SeriesNameChanged(t, name) => {
+                            chart.set_series_name(t, name);
+                        }
+                        super::chart::comparison::Action::OpenSeriesEditor => {
                             self.modal = Some(Modal::Settings);
                         }
                         super::chart::comparison::Action::RemoveSeries(ti) => {

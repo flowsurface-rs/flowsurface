@@ -21,34 +21,49 @@ impl Zoom {
 
 #[derive(Debug, Clone)]
 pub struct Series {
-    pub name: TickerInfo,
+    pub ticker_info: TickerInfo,
+    pub name: Option<String>,
     pub points: Vec<(u64, f32)>,
     pub color: iced::Color,
 }
 
+impl Series {
+    pub fn new(ticker_info: TickerInfo, color: iced::Color, name: Option<String>) -> Self {
+        Self {
+            ticker_info,
+            name,
+            points: Vec::new(),
+            color,
+        }
+    }
+}
+
 pub trait SeriesLike {
-    fn symbol(&self) -> String;
-    fn symbol_and_exchange(&self) -> String;
+    fn name(&self) -> String;
     fn points(&self) -> &[(u64, f32)];
     fn color(&self) -> iced::Color;
     fn ticker_info(&self) -> &TickerInfo;
 }
 
 impl SeriesLike for Series {
-    fn symbol(&self) -> String {
-        self.name.ticker.to_string()
+    fn name(&self) -> String {
+        if let Some(name) = &self.name {
+            name.clone()
+        } else {
+            self.ticker_info.ticker.to_string()
+        }
     }
-    fn symbol_and_exchange(&self) -> String {
-        self.name.ticker.symbol_and_exchange_string()
-    }
+
     fn points(&self) -> &[(u64, f32)] {
         &self.points
     }
+
     fn color(&self) -> iced::Color {
         self.color
     }
+
     fn ticker_info(&self) -> &TickerInfo {
-        &self.name
+        &self.ticker_info
     }
 }
 
