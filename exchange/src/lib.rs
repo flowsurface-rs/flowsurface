@@ -196,14 +196,11 @@ impl SerTicker {
         Self { exchange, ticker }
     }
 
-    pub fn from_parts(exchange: Exchange, ticker: Ticker) -> Self {
-        assert_eq!(
-            ticker.market_type(),
-            exchange.market_type(),
-            "Ticker market type must match Exchange market type"
-        );
-
-        Self { exchange, ticker }
+    pub fn from_parts(ticker: Ticker) -> Self {
+        Self {
+            exchange: ticker.exchange,
+            ticker,
+        }
     }
 
     fn exchange_to_string(exchange: Exchange) -> &'static str {

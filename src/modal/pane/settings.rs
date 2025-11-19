@@ -446,12 +446,12 @@ pub fn comparison_cfg_view<'a>(
     chart: &'a ComparisonChart,
 ) -> Element<'a, Message> {
     let series = &chart.series;
-    let color_editor = &chart.color_editor;
+    let series_editor = &chart.series_editor;
 
-    let content = column![color_editor.view(series).map(move |msg| {
+    let content = column![series_editor.view(series).map(move |msg| {
         Message::PaneEvent(
             pane,
-            Event::ComparisonChartInteraction(crate::chart::comparison::Message::ColorEditor(msg)),
+            Event::ComparisonChartInteraction(crate::chart::comparison::Message::Editor(msg)),
         )
     })];
 

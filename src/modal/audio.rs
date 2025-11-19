@@ -329,9 +329,9 @@ impl From<&AudioStream> for data::AudioStream {
     fn from(audio_stream: &AudioStream) -> Self {
         let mut streams = FxHashMap::default();
 
-        for (&exchange, ticker_map) in &audio_stream.streams {
+        for ticker_map in audio_stream.streams.values() {
             for (&ticker, cfg) in ticker_map {
-                let exchange_ticker = exchange::SerTicker::from_parts(exchange, ticker);
+                let exchange_ticker = exchange::SerTicker::from_parts(ticker);
                 streams.insert(exchange_ticker, *cfg);
             }
         }

@@ -429,7 +429,7 @@ where
         for s in self.series.iter() {
             rows_count += 1;
 
-            let name_len = s.symbol_and_exchange().len();
+            let name_len = s.ticker_info().ticker.symbol_and_exchange_string().len();
             max_name_chars = max_name_chars.max(name_len);
 
             let pct_len = if include_pct_in_width {
@@ -506,7 +506,7 @@ where
             // Base ticker (i == 0) cannot be removed
             let has_close = i != 0;
 
-            let name_len = s.symbol_and_exchange().len() as f32;
+            let name_len = s.ticker_info().ticker.symbol_and_exchange_string().len() as f32;
             let text_end_x = x_left + name_len * CHAR_W;
 
             let (cog, close, row_width) = if include_icons {
@@ -665,7 +665,7 @@ where
                 pct_change: label_text,
                 bg_color,
                 text_color,
-                symbol: s.symbol().to_string(),
+                symbol: s.name(),
             });
         }
 
@@ -1381,10 +1381,11 @@ where
                         })
                 };
 
+                let symbol_and_exchange = s.ticker_info().ticker.symbol_and_exchange_string();
                 let content = if let Some(pct) = pct_str {
-                    format!("{} {}", s.symbol_and_exchange(), pct)
+                    format!("{symbol_and_exchange} {pct}")
                 } else {
-                    s.symbol_and_exchange().to_string()
+                    symbol_and_exchange
                 };
 
                 frame.fill_text(canvas::Text {
@@ -1462,7 +1463,7 @@ where
                     .unwrap_or(0)
             };
 
-            let name_len = s.symbol_and_exchange().len();
+            let name_len = s.ticker_info().ticker.symbol_and_exchange_string().len();
             let total = if pct_len > 0 {
                 name_len + 1 + pct_len
             } else {
@@ -1513,10 +1514,11 @@ where
                     })
             };
 
+            let symbol_and_exchange = s.ticker_info().ticker.symbol_and_exchange_string();
             let content = if let Some(pct) = pct_str {
-                format!("{} {}", s.symbol_and_exchange(), pct)
+                format!("{symbol_and_exchange} {pct}")
             } else {
-                s.symbol_and_exchange().to_string()
+                symbol_and_exchange
             };
 
             frame.fill_text(canvas::Text {
@@ -1596,25 +1598,25 @@ where
 
         let gutter = ctx.gutter_width();
         let pct_str = super::format_pct(ci.y_pct, scene.y_step, true);
-        let est_w = (pct_str.len() as f32) * (TEXT_SIZE * 0.6) + 10.0;
-        let label_w = est_w.clamp(40.0, gutter - 8.0);
         let label_h = TEXT_SIZE + 6.0;
 
-        let ylbl_x_right = plot_rect.x + plot_rect.width + gutter - 2.0;
-        let ylbl_x = (ylbl_x_right - label_w).max(plot_rect.x + plot_rect.width + 2.0);
+        let split_x = plot_rect.x + plot_rect.width;
+        let gutter_right = split_x + gutter;
+
+        let ylbl_x_right = gutter_right;
         let ylbl_y = cy.clamp(
             plot_rect.y + label_h * 0.5,
             plot_rect.y + plot_rect.height - label_h * 0.5,
         );
 
         frame.fill_rectangle(
-            Point::new(plot_rect.x + plot_rect.width, ylbl_y - label_h * 0.5),
-            Size::new(gutter, label_h),
+            Point::new(split_x + 2.0, ylbl_y - label_h * 0.5),
+            Size::new((gutter - 1.0).max(0.0), label_h),
             bg_col,
         );
         frame.fill_text(canvas::Text {
             content: pct_str,
-            position: Point::new(ylbl_x + label_w - 6.0, ylbl_y),
+            position: Point::new(ylbl_x_right - 4.0, ylbl_y),
             color: text_col,
             size: TEXT_SIZE.into(),
             font: style::AZERET_MONO,

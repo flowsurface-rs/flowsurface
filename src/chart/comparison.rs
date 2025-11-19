@@ -14,9 +14,10 @@ const SERIES_MAX_POINTS: usize = 5000;
 const DEFAULT_PAN_POINTS: f32 = 8.0;
 
 pub enum Action {
-    TickerColorChanged(TickerInfo, iced::Color),
+    SeriesColorChanged(TickerInfo, iced::Color),
+    SeriesNameChanged(TickerInfo, String),
     RemoveSeries(TickerInfo),
-    OpenColorEditor,
+    OpenSeriesEditor,
 }
 
 pub struct ComparisonChart {
@@ -29,16 +30,15 @@ pub struct ComparisonChart {
     request_handler: FxHashMap<TickerInfo, RequestHandler>,
     selected_tickers: Vec<TickerInfo>,
     pub config: data::chart::comparison::Config,
-    pub color_editor: color_editor::TickerColorEditor,
+    pub series_editor: series_editor::TickerSeriesEditor,
     cache_rev: u64,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Chart(LineComparisonEvent),
-    ColorUpdated(TickerInfo, iced::Color),
-    ColorEditor(color_editor::Message),
-    OpenColorEditorFor(TickerInfo),
+    Editor(series_editor::Message),
+    OpenEditorFor(TickerInfo),
 }
 
 impl ComparisonChart {
@@ -51,21 +51,21 @@ impl ComparisonChart {
         let cfg = config.unwrap_or_default();
 
         let color_map: FxHashMap<SerTicker, iced::Color> = cfg.colors.iter().cloned().collect();
+        let name_map: FxHashMap<SerTicker, String> = cfg.names.iter().cloned().collect();
 
         let mut series = Vec::with_capacity(tickers.len());
         let mut series_index = FxHashMap::default();
         for (i, t) in tickers.iter().enumerate() {
-            let ser = SerTicker::from_parts(t.ticker.exchange, t.ticker);
+            let ser = SerTicker::from_parts(t.ticker);
+
             let color = color_map
                 .get(&ser)
                 .copied()
                 .unwrap_or_else(|| default_color_for(t));
+            let name = name_map.get(&ser).cloned();
 
-            series.push(Series {
-                name: *t,
-                points: Vec::new(),
-                color,
-            });
+            series.push(Series::new(*t, color, name));
+
             series_index.insert(*t, i);
         }
 
@@ -82,10 +82,7 @@ impl ComparisonChart {
             selected_tickers: tickers.to_vec(),
             pan: DEFAULT_PAN_POINTS,
             config: cfg,
-            color_editor: color_editor::TickerColorEditor {
-                show_color_for: None,
-                editing: None,
-            },
+            series_editor: series_editor::TickerSeriesEditor::default(),
             cache_rev: 0,
         }
     }
@@ -102,7 +99,7 @@ impl ComparisonChart {
                     None
                 }
                 LineComparisonEvent::SeriesCog(ticker_info) => {
-                    self.open_color_editor_for_ticker(ticker_info)
+                    self.open_editor_for_ticker(ticker_info)
                 }
                 LineComparisonEvent::SeriesRemove(ticker_info) => {
                     Some(Action::RemoveSeries(ticker_info))
@@ -113,21 +110,8 @@ impl ComparisonChart {
                     None
                 }
             },
-            Message::ColorUpdated(ticker_info, color) => {
-                if let Some(idx) = self.series_index.get(&ticker_info)
-                    && let Some(s) = self.series.get_mut(*idx)
-                {
-                    s.color = color;
-                    self.upsert_config_color(ticker_info, color);
-
-                    self.cache_rev = self.cache_rev.wrapping_add(1)
-                }
-                None
-            }
-            Message::ColorEditor(msg) => self.color_editor.update(msg),
-            Message::OpenColorEditorFor(ticker_info) => {
-                self.open_color_editor_for_ticker(ticker_info)
-            }
+            Message::Editor(msg) => self.series_editor.update(msg),
+            Message::OpenEditorFor(ticker_info) => self.open_editor_for_ticker(ticker_info),
         }
     }
 
@@ -252,7 +236,8 @@ impl ComparisonChart {
         } else {
             let i = self.series.len();
             self.series.push(Series {
-                name: *ticker_info,
+                ticker_info: *ticker_info,
+                name: None,
                 points: Vec::new(),
                 color: self.color_for_or_default(ticker_info),
             });
@@ -280,17 +265,17 @@ impl ComparisonChart {
             self.series.remove(idx);
             self.series_index.clear();
             for (i, s) in self.series.iter().enumerate() {
-                self.series_index.insert(s.name, i);
+                self.series_index.insert(s.ticker_info, i);
             }
         }
         self.selected_tickers.retain(|t| t != ticker_info);
 
         if self
-            .color_editor
-            .show_color_for
+            .series_editor
+            .show_config_for
             .is_some_and(|t| t == *ticker_info)
         {
-            self.color_editor.show_color_for = None;
+            self.series_editor.show_config_for = None;
         }
 
         self.rebuild_handlers();
@@ -364,8 +349,17 @@ impl ComparisonChart {
             Basis::Time(tf) => {
                 self.timeframe = tf;
 
-                let prev_colors: FxHashMap<TickerInfo, iced::Color> =
-                    self.series.iter().map(|s| (s.name, s.color)).collect();
+                let prev_colors: FxHashMap<TickerInfo, iced::Color> = self
+                    .series
+                    .iter()
+                    .map(|s| (s.ticker_info, s.color))
+                    .collect();
+                let prev_names: FxHashMap<TickerInfo, Option<String>> = self
+                    .series
+                    .iter()
+                    .map(|s| (s.ticker_info, s.name.clone()))
+                    .collect();
+
                 self.series.clear();
                 self.series_index.clear();
 
@@ -374,11 +368,9 @@ impl ComparisonChart {
                         .get(&t)
                         .copied()
                         .unwrap_or_else(|| self.color_for_or_default(&t));
-                    self.series.push(Series {
-                        name: t,
-                        points: Vec::new(),
-                        color,
-                    });
+                    let name = prev_names.get(&t).cloned().unwrap_or(None);
+
+                    self.series.push(Series::new(t, color, name));
                     self.series_index.insert(t, i);
                 }
 
@@ -391,18 +383,26 @@ impl ComparisonChart {
         }
     }
 
-    fn open_color_editor_for_ticker(&mut self, ticker_info: TickerInfo) -> Option<Action> {
-        self.color_editor.show_color_for = Some(ticker_info);
+    fn open_editor_for_ticker(&mut self, ticker_info: TickerInfo) -> Option<Action> {
+        self.series_editor.show_config_for = Some(ticker_info);
+
         if let Some(idx) = self.series_index.get(&ticker_info) {
-            let current = self.series[*idx].color;
-            self.color_editor.editing = Some(data::config::theme::to_hsva(current));
+            self.series_editor.editing_color =
+                Some(data::config::theme::to_hsva(self.series[*idx].color));
+            self.series_editor.editing_name = self.series[*idx].name.clone();
         } else {
-            self.color_editor.editing = None;
+            self.series_editor.editing_color = None;
+            self.series_editor.editing_name = None;
         }
-        Some(Action::OpenColorEditor)
+
+        Some(Action::OpenSeriesEditor)
     }
 
-    pub fn set_ticker_color(&mut self, ticker: TickerInfo, color: iced::Color) {
+    fn clamp_label(name: &str) -> String {
+        name.chars().take(24).collect()
+    }
+
+    pub fn set_series_color(&mut self, ticker: TickerInfo, color: iced::Color) {
         if let Some(idx) = self.series_index.get(&ticker)
             && let Some(s) = self.series.get_mut(*idx)
         {
@@ -413,17 +413,38 @@ impl ComparisonChart {
         }
     }
 
+    pub fn set_series_name(&mut self, ticker: TickerInfo, name: String) {
+        let clamped = Self::clamp_label(name.trim());
+        if let Some(idx) = self.series_index.get(&ticker)
+            && let Some(s) = self.series.get_mut(*idx)
+        {
+            s.name = if clamped.is_empty() {
+                None
+            } else {
+                Some(clamped)
+            };
+
+            self.cache_rev = self.cache_rev.wrapping_add(1)
+        }
+    }
+
     pub fn serializable_config(&self) -> data::chart::comparison::Config {
         let mut colors = vec![];
+        let mut names = vec![];
+
         for s in &self.series {
-            let ser_ticker = SerTicker::from_parts(s.name.ticker.exchange, s.name.ticker);
-            colors.push((ser_ticker, s.color));
+            let ser_ticker = SerTicker::from_parts(s.ticker_info.ticker);
+
+            colors.push((ser_ticker.clone(), s.color));
+            if let Some(name) = &s.name {
+                names.push((ser_ticker, name.clone()));
+            }
         }
-        data::chart::comparison::Config { colors }
+        data::chart::comparison::Config { colors, names }
     }
 
     fn color_for_or_default(&self, ticker_info: &TickerInfo) -> iced::Color {
-        let ser = SerTicker::from_parts(ticker_info.ticker.exchange, ticker_info.ticker);
+        let ser = SerTicker::from_parts(ticker_info.ticker);
         if let Some((_, c)) = self.config.colors.iter().find(|(s, _)| s == &ser) {
             *c
         } else {
@@ -454,8 +475,8 @@ impl ComparisonChart {
         streams
     }
 
-    fn upsert_config_color(&mut self, ticker: TickerInfo, color: iced::Color) {
-        let ser = SerTicker::from_parts(ticker.ticker.exchange, ticker.ticker);
+    fn upsert_config_color(&mut self, ticker_info: TickerInfo, color: iced::Color) {
+        let ser = SerTicker::from_parts(ticker_info.ticker);
         if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
             *c = color;
         } else {
@@ -500,7 +521,7 @@ impl ComparisonChart {
         let mut empty_tickers: Vec<TickerInfo> = Vec::new();
         for s in &self.series {
             if s.points.is_empty() {
-                empty_tickers.push(s.name);
+                empty_tickers.push(s.ticker_info);
             }
         }
         if !empty_tickers.is_empty() {
@@ -516,7 +537,7 @@ impl ComparisonChart {
                 if let Some(series_min) = s.points.first().map(|(x, _)| *x)
                     && win_min < series_min
                 {
-                    need.push((series_min, s.name));
+                    need.push((series_min, s.ticker_info));
                 }
             }
             if !need.is_empty() {
@@ -551,7 +572,7 @@ fn default_color_for(ticker: &TickerInfo) -> iced::Color {
     data::config::theme::from_hsv_degrees(hue, s.min(1.0), v.min(1.0))
 }
 
-pub mod color_editor {
+pub mod series_editor {
     use crate::style;
     use crate::widget::chart::Series;
     use crate::widget::color_picker::color_picker;
@@ -560,40 +581,63 @@ pub mod color_editor {
     use iced::{Element, Length};
     use palette::Hsva;
 
+    const MAX_LABEL_CHARS: usize = 24;
+
     #[derive(Debug, Clone)]
     pub enum Message {
-        ToggleEditFor(TickerInfo, iced::Color),
+        ToggleEditFor {
+            ticker: TickerInfo,
+            applied_color: iced::Color,
+            applied_name: Option<String>,
+        },
         ColorChangedHsva(Hsva),
+        NameChanged(String),
     }
 
-    pub struct TickerColorEditor {
-        pub show_color_for: Option<TickerInfo>,
-        pub editing: Option<Hsva>,
+    #[derive(Default)]
+    pub struct TickerSeriesEditor {
+        pub show_config_for: Option<TickerInfo>,
+        pub editing_color: Option<Hsva>,
+        pub editing_name: Option<String>,
     }
 
-    impl TickerColorEditor {
+    impl TickerSeriesEditor {
         pub fn update(&mut self, msg: Message) -> Option<super::Action> {
             match msg {
-                Message::ToggleEditFor(ticker, current_color) => {
-                    if let Some(current) = self.show_color_for
+                Message::ToggleEditFor {
+                    ticker,
+                    applied_color,
+                    applied_name,
+                } => {
+                    if let Some(current) = self.show_config_for
                         && current == ticker
                     {
-                        self.show_color_for = None;
-                        self.editing = None;
+                        self.show_config_for = None;
+                        self.editing_color = None;
+                        self.editing_name = None;
                         return None;
                     }
-
-                    self.show_color_for = Some(ticker);
-                    self.editing = Some(data::config::theme::to_hsva(current_color));
+                    self.show_config_for = Some(ticker);
+                    self.editing_color = Some(data::config::theme::to_hsva(applied_color));
+                    self.editing_name = applied_name;
                     None
                 }
                 Message::ColorChangedHsva(hsva) => {
-                    self.editing = Some(hsva);
-                    if let Some(t) = self.show_color_for {
-                        return Some(super::Action::TickerColorChanged(
+                    self.editing_color = Some(hsva);
+                    if let Some(t) = self.show_config_for {
+                        return Some(super::Action::SeriesColorChanged(
                             t,
                             data::config::theme::from_hsva(hsva),
                         ));
+                    }
+                    None
+                }
+                Message::NameChanged(new_name) => {
+                    let trimmed = new_name.trim();
+                    let limited = Self::clamp(trimmed);
+                    self.editing_name = Some(limited.clone());
+                    if let Some(t) = self.show_config_for {
+                        return Some(super::Action::SeriesNameChanged(t, limited));
                     }
                     None
                 }
@@ -601,40 +645,63 @@ pub mod color_editor {
         }
 
         pub fn view<'a>(&'a self, series: &'a Vec<Series>) -> Element<'a, Message> {
-            let mut content = column![].spacing(6).padding(4);
+            let mut content = column![].spacing(6);
 
             for s in series {
                 let applied = s.color;
-                let is_open = self.show_color_for.is_some_and(|t| t == s.name);
+                let is_open = self.show_config_for.is_some_and(|t| t == s.ticker_info);
 
                 let header = button(
                     row![
-                        container("").width(12).height(12).style(move |theme| {
+                        container("").width(14).height(14).style(move |theme| {
                             style::colored_circle_container(theme, applied)
                         }),
-                        text(s.name.ticker.symbol_and_exchange_string()).size(14),
+                        text(s.ticker_info.ticker.symbol_and_exchange_string()).size(13),
                     ]
                     .width(Length::Fill)
                     .spacing(8)
                     .align_y(iced::Alignment::Center),
                 )
-                .on_press(Message::ToggleEditFor(s.name, applied))
-                .style(move |theme, status| style::button::transparent(theme, status, !is_open))
+                .on_press(Message::ToggleEditFor {
+                    ticker: s.ticker_info,
+                    applied_color: applied,
+                    applied_name: s.name.clone(),
+                })
+                .style(move |theme, status| style::button::transparent(theme, status, is_open))
                 .width(Length::Fill);
 
-                let mut col = column![header].spacing(6);
+                let mut col = column![header].padding(4);
+                let mut inner_col = column![];
 
                 if is_open {
                     let hsva_in = self
-                        .editing
+                        .editing_color
                         .unwrap_or_else(|| data::config::theme::to_hsva(applied));
-                    col = col.push(color_picker(hsva_in, Message::ColorChangedHsva));
+                    inner_col = inner_col.push(color_picker(hsva_in, Message::ColorChangedHsva));
+
+                    let label_name = self
+                        .editing_name
+                        .clone()
+                        .unwrap_or_else(|| s.name.clone().unwrap_or_default());
+                    inner_col = inner_col.push(
+                        iced::widget::text_input("Set a custom label name", &label_name)
+                            .on_input(Message::NameChanged)
+                            .size(14)
+                            .padding(4)
+                            .width(Length::Fill),
+                    );
+
+                    col = col.push(inner_col.spacing(12).padding(4)).spacing(4);
                 }
 
-                content = content.push(container(col).padding(6).style(style::modal_container));
+                content = content.push(container(col).style(style::modal_container));
             }
 
             content.into()
+        }
+
+        fn clamp(s: &str) -> String {
+            s.chars().take(MAX_LABEL_CHARS).collect()
         }
     }
 }
