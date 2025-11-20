@@ -1,14 +1,14 @@
-use crate::{Price, PushFrequency, adapter::StreamTicksize, de_string_to_f32};
-
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
-        TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, SizeUnit, StreamKind,
+        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        adapter::StreamTicksize,
         connect::{State, connect_ws},
+        de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, RateLimiter},
-        str_f32_parse,
+        str_f32_parse, volume_size_unit,
     },
     AdapterError, Event,
 };
@@ -347,7 +347,7 @@ pub fn connect_market_stream(
         let mut prev_id: u64 = 0;
 
         let contract_size = get_contract_size(&ticker, market);
-        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         loop {
             match &mut state {
@@ -414,7 +414,7 @@ pub fn connect_market_stream(
                                             let price = Price::from_f32(de_trade.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize);
                                             let qty = contract_size.map_or(
-                                                if size_in_quote_currency {
+                                                if size_in_quote_ccy {
                                                     (de_trade.qty * de_trade.price).round()
                                                 } else {
                                                     de_trade.qty
@@ -614,6 +614,8 @@ pub fn connect_kline_stream(
             .map(|(ticker_info, _)| (ticker_info.ticker, *ticker_info))
             .collect::<HashMap<Ticker, TickerInfo>>();
 
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -659,7 +661,7 @@ pub fn connect_kline_stream(
 
                                     if let Some(c_size) = get_contract_size(&ticker, market) {
                                         (buy_volume * c_size, sell_volume * c_size)
-                                    } else if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+                                    } else if size_in_quote_ccy {
                                         (
                                             (buy_volume * de_kline.close).round(),
                                             (sell_volume * de_kline.close).round(),
@@ -747,7 +749,7 @@ fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> DepthPaylo
         SonicDepth::Perp(de) => (de.time, de.final_id, &de.bids, &de.asks),
     };
 
-    let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
     DepthPayload {
         last_update_id: final_id,
@@ -756,14 +758,14 @@ fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> DepthPaylo
             .iter()
             .map(|x| DeOrder {
                 price: x.price,
-                qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
+                qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
             })
             .collect(),
         asks: asks
             .iter()
             .map(|x| DeOrder {
                 price: x.price,
-                qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
+                qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
             })
             .collect(),
     }
@@ -813,7 +815,7 @@ async fn fetch_depth(
     let limiter = limiter_from_market_type(market_type);
     let text = crate::limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
-    let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
     match market_type {
         MarketKind::Spot => {
@@ -828,7 +830,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
+                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
                     })
                     .collect(),
                 asks: fetched_depth
@@ -836,7 +838,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
+                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
                     })
                     .collect(),
             };
@@ -855,7 +857,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
+                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
                     })
                     .collect(),
                 asks: fetched_depth
@@ -863,7 +865,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_currency),
+                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
                     })
                     .collect(),
             };
@@ -873,11 +875,11 @@ async fn fetch_depth(
     }
 }
 
-fn calc_qty(qty: f32, price: f32, contract_size: Option<f32>, size_in_quote_currency: bool) -> f32 {
+fn calc_qty(qty: f32, price: f32, contract_size: Option<f32>, size_in_quote_ccy: bool) -> f32 {
     match contract_size {
         Some(size) => qty * size,
         None => {
-            if size_in_quote_currency {
+            if size_in_quote_ccy {
                 (qty * price).round()
             } else {
                 qty
@@ -976,7 +978,7 @@ pub async fn fetch_klines(
     let fetched_klines: Vec<FetchedKlines> =
         limiter::http_parse_with_limiter(&url, limiter, weight, None, None).await?;
 
-    let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
     let klines: Vec<_> = fetched_klines
         .into_iter()
@@ -988,12 +990,12 @@ pub async fn fetch_klines(
             close: Price::from_f32(k.4).round_to_min_tick(ticker_info.min_ticksize),
             volume: match market_type {
                 MarketKind::Spot | MarketKind::LinearPerps => {
-                    let sell_volume = if size_in_quote_currency {
+                    let sell_volume = if size_in_quote_ccy {
                         ((k.5 - k.9) * k.4).round()
                     } else {
                         k.5 - k.9
                     };
-                    let buy_volume = if size_in_quote_currency {
+                    let buy_volume = if size_in_quote_ccy {
                         (k.9 * k.4).round()
                     } else {
                         k.9
@@ -1354,7 +1356,7 @@ pub async fn fetch_intraday_trades(
         let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)
             .map_err(|e| AdapterError::ParseError(format!("Failed to parse trades: {e}")))?;
 
-        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         de_trades
             .into_iter()
@@ -1362,7 +1364,7 @@ pub async fn fetch_intraday_trades(
                 time: de_trade.time,
                 is_sell: de_trade.is_sell,
                 price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
-                qty: if size_in_quote_currency {
+                qty: if size_in_quote_ccy {
                     (de_trade.qty * de_trade.price).round()
                 } else {
                     de_trade.qty
@@ -1435,7 +1437,7 @@ pub async fn get_hist_trades(
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| AdapterError::ParseError(format!("Failed to unzip file: {e}")))?;
 
-            let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
             let mut trades = Vec::new();
             for i in 0..archive.len() {
@@ -1458,7 +1460,7 @@ pub async fn get_hist_trades(
 
                         let mut qty = str_f32_parse(&record[2]);
 
-                        qty = if size_in_quote_currency {
+                        qty = if size_in_quote_ccy {
                             (qty * price_f32).round()
                         } else {
                             qty

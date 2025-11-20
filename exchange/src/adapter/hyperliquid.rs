@@ -1,13 +1,12 @@
-use crate::{Price, PushFrequency, TickMultiplier};
-
 use super::{
     super::{
-        Exchange, Kline, MarketKind, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker, TickerInfo,
-        TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, Price, PushFrequency, SizeUnit, StreamKind, TickMultiplier,
+        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
+        volume_size_unit,
     },
     AdapterError, Event,
 };
@@ -815,10 +814,12 @@ pub async fn fetch_klines(
     )
     .await?;
 
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+
     let mut klines = vec![];
     for kline_data in klines_data {
         if let Ok(hl_kline) = serde_json::from_value::<HyperliquidKline>(kline_data) {
-            let volume = if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+            let volume = if size_in_quote_ccy {
                 (hl_kline.volume * hl_kline.close).round()
             } else {
                 hl_kline.volume
@@ -894,7 +895,7 @@ pub fn connect_market_stream(
         let mut local_depth_cache = LocalDepthCache::default();
         let mut trades_buffer = Vec::new();
 
-        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
@@ -1010,7 +1011,7 @@ pub fn connect_market_stream(
                                             for hl_trade in trades {
                                                 let price = Price::from_f32(hl_trade.px)
                                                     .round_to_min_tick(ticker_info.min_ticksize);
-                                                let qty = if size_in_quote_currency {
+                                                let qty = if size_in_quote_ccy {
                                                     (hl_trade.sz * hl_trade.px).round()
                                                 } else {
                                                     hl_trade.sz
@@ -1030,7 +1031,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|level| DeOrder {
                                                     price: level.px,
-                                                    qty: if size_in_quote_currency {
+                                                    qty: if size_in_quote_ccy {
                                                         (level.sz * level.px).round()
                                                     } else {
                                                         level.sz
@@ -1041,7 +1042,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|level| DeOrder {
                                                     price: level.px,
-                                                    qty: if size_in_quote_currency {
+                                                    qty: if size_in_quote_ccy {
                                                         (level.sz * level.px).round()
                                                     } else {
                                                         level.sz
@@ -1128,7 +1129,7 @@ pub fn connect_kline_stream(
             .map(|(t, _)| t.exchange())
             .unwrap_or(Exchange::HyperliquidLinear);
 
-        let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         loop {
             match &mut state {
@@ -1211,7 +1212,7 @@ pub fn connect_kline_stream(
                                         _ => continue,
                                     };
 
-                                    let volume = if size_in_quote_currency {
+                                    let volume = if size_in_quote_ccy {
                                         (hl_kline.volume * hl_kline.close).round()
                                     } else {
                                         hl_kline.volume
@@ -1307,11 +1308,13 @@ async fn fetch_orderbook(
     let depth: HyperliquidDepth = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+
     let bids = depth.levels[0]
         .iter()
         .map(|level| DeOrder {
             price: level.px,
-            qty: if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+            qty: if size_in_quote_ccy {
                 (level.sz * level.px).round()
             } else {
                 level.sz
@@ -1322,7 +1325,7 @@ async fn fetch_orderbook(
         .iter()
         .map(|level| DeOrder {
             price: level.px,
-            qty: if SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) {
+            qty: if size_in_quote_ccy {
                 (level.sz * level.px).round()
             } else {
                 level.sz

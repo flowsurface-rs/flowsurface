@@ -1,14 +1,14 @@
-use crate::{Price, PushFrequency, adapter::StreamTicksize};
-
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, SIZE_IN_QUOTE_CURRENCY, StreamKind, Ticker,
-        TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, SizeUnit, StreamKind,
+        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        adapter::StreamTicksize,
         connect::{State, connect_ws},
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, http_request_with_limiter},
+        volume_size_unit,
     },
     AdapterError, Event,
 };
@@ -316,8 +316,8 @@ pub fn connect_market_stream(
         let mut trades_buffer: Vec<Trade> = Vec::new();
         let mut orderbook = LocalDepthCache::default();
 
-        let size_in_quote_currency =
-            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
+        let size_in_quote_ccy =
+            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps;
 
         loop {
             match &mut state {
@@ -325,12 +325,12 @@ pub fn connect_market_stream(
                     let depth_level = if let PushFrequency::Custom(tf) = push_freq {
                         match market_type {
                             MarketKind::Spot => match tf {
-                                Timeframe::MS100 => "200",
+                                Timeframe::MS200 => "200",
                                 Timeframe::MS300 => "1000",
                                 _ => "200",
                             },
                             MarketKind::LinearPerps | MarketKind::InversePerps => match tf {
-                                Timeframe::MS200 => "200",
+                                Timeframe::MS100 => "200",
                                 Timeframe::MS300 => "1000",
                                 _ => "200",
                             },
@@ -357,7 +357,7 @@ pub fn connect_market_stream(
                                         for de_trade in &de_trade_vec {
                                             let price = Price::from_f32(de_trade.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = if size_in_quote_currency {
+                                            let qty = if size_in_quote_ccy {
                                                 (de_trade.qty * de_trade.price).round()
                                             } else {
                                                 de_trade.qty
@@ -382,7 +382,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: if size_in_quote_currency {
+                                                    qty: if size_in_quote_ccy {
                                                         (x.qty * x.price).round()
                                                     } else {
                                                         x.qty
@@ -394,7 +394,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: if size_in_quote_currency {
+                                                    qty: if size_in_quote_ccy {
                                                         (x.qty * x.price).round()
                                                     } else {
                                                         x.qty
@@ -470,8 +470,8 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
 
         let exchange = exchange_from_market_type(market_type);
-        let size_in_quote_currency =
-            SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && market_type != MarketKind::InversePerps;
+        let size_in_quote_ccy =
+            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps;
 
         let ticker_info_map = streams
             .iter()
@@ -512,7 +512,7 @@ pub fn connect_kline_stream(
                                 feed_de(&msg.payload[..], None, market_type)
                             {
                                 for de_kline in &de_kline_vec {
-                                    let volume = if size_in_quote_currency {
+                                    let volume = if size_in_quote_ccy {
                                         (de_kline.volume * de_kline.close).round()
                                     } else {
                                         de_kline.volume
@@ -756,8 +756,8 @@ pub async fn fetch_klines(
     let response: ApiResponse =
         limiter::http_parse_with_limiter(&url, &BYBIT_LIMITER, 1, None, None).await?;
 
-    let size_in_quote_currency =
-        SIZE_IN_QUOTE_CURRENCY.get() == Some(&true) && *market_type != MarketKind::InversePerps;
+    let size_in_quote_ccy =
+        volume_size_unit() == SizeUnit::Quote && *market_type != MarketKind::InversePerps;
 
     let klines: Result<Vec<Kline>, AdapterError> = response
         .result
@@ -772,7 +772,7 @@ pub async fn fetch_klines(
             let close = parse_kline_field::<f32>(kline[4].as_str())?;
 
             let mut volume = parse_kline_field::<f32>(kline[5].as_str())?;
-            volume = if size_in_quote_currency {
+            volume = if size_in_quote_ccy {
                 (volume * close).round()
             } else {
                 volume

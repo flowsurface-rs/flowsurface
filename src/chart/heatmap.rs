@@ -18,8 +18,12 @@ use data::{
     aggr::time::{DataPoint, TimeSeries},
     chart::Autoscale,
 };
-use exchange::util::{Price, PriceStep};
-use exchange::{SIZE_IN_QUOTE_CURRENCY, TickerInfo, Trade, depth::Depth};
+use exchange::{
+    TickerInfo, Trade,
+    depth::Depth,
+    util::{Price, PriceStep},
+    volume_size_unit,
+};
 
 use iced::widget::canvas::{self, Event, Geometry, Path};
 use iced::{
@@ -496,7 +500,7 @@ impl canvas::Program<Message> for HeatmapChart {
             let (max_aggr_volume, max_trade_qty) =
                 (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
 
-            let size_in_quote_currency = SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+            let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
 
             let volume_indicator = self.indicators[HeatmapIndicator::Volume].is_some();
 
@@ -547,7 +551,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 let order_size = market_type.qty_in_quote_value(
                                     run.qty(),
                                     *price,
-                                    size_in_quote_currency,
+                                    size_in_quote_ccy,
                                 );
                                 order_size > self.visual_config.order_size_filter
                             })
@@ -621,7 +625,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         let trade_size = market_type.qty_in_quote_value(
                             trade.qty,
                             trade.price,
-                            size_in_quote_currency,
+                            size_in_quote_ccy,
                         );
 
                         if trade_size > self.visual_config.trade_size_filter {
