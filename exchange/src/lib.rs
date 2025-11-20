@@ -5,23 +5,50 @@ pub mod fetcher;
 mod limiter;
 pub mod util;
 
+use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{fmt, hash::Hash};
 
-use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
-
-pub static SIZE_IN_QUOTE_CURRENCY: OnceLock<bool> = OnceLock::new();
-
-pub fn is_flag_enabled() -> bool {
-    *SIZE_IN_QUOTE_CURRENCY.get().unwrap_or(&false)
+/// Unit for displaying volume/quantity size values.
+///
+/// - `Base`: Display in base asset units (e.g., BTC for BTCUSDT)
+/// - `Quote`: Display in quote currency value (e.g., USD/USDT equivalent)
+///
+/// Note: Only applies to linear perpetuals and spot markets.
+/// Inverse perpetuals always display in USD regardless of this setting.
+#[repr(u8)]
+#[derive(Default, Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+pub enum SizeUnit {
+    Base = 0,
+    #[default]
+    Quote = 1,
 }
 
+static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Base as u8);
+
+pub fn set_preferred_currency(v: SizeUnit) {
+    SIZE_CALC_UNIT.store(v as u8, Ordering::Relaxed);
+}
+
+pub fn volume_size_unit() -> SizeUnit {
+    match SIZE_CALC_UNIT.load(Ordering::Relaxed) {
+        0 => SizeUnit::Base,
+        1 => SizeUnit::Quote,
+        _ => SizeUnit::Base,
+    }
+}
+
+/// Desired frequency for orderbook depth updates.
+///
+/// Maps user-selected update intervals to exchange-specific depth levels.
+/// Used for some exchanges that determine push frequency based on subscribed depth level
+/// (e.g., Bybit pushes every 300ms for 1000-level depth, 100ms for 200-level).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum PushFrequency {
     #[default]
@@ -36,23 +63,6 @@ impl std::fmt::Display for PushFrequency {
             PushFrequency::Custom(tf) => write!(f, "{}", tf),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum PreferredCurrency {
-    Quote,
-    Base,
-}
-
-pub fn set_size_in_quote_currency(preferred: PreferredCurrency) {
-    let enabled = match preferred {
-        PreferredCurrency::Quote => true,
-        PreferredCurrency::Base => false,
-    };
-
-    SIZE_IN_QUOTE_CURRENCY
-        .set(enabled)
-        .expect("Failed to set SIZE_IN_QUOTE_CURRENCY");
 }
 
 impl std::fmt::Display for Timeframe {

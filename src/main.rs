@@ -58,8 +58,8 @@ struct Flowsurface {
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
     audio_stream: audio::AudioStream,
-    confirm_dialog: Option<(String, Box<Message>)>,
-    preferred_currency: exchange::PreferredCurrency,
+    confirm_dialog: Option<screen::ConfirmDialog<Message>>,
+    volume_size_unit: exchange::SizeUnit,
     scale_factor: data::ScaleFactor,
     timezone: data::UserTimezone,
     theme: data::Theme,
@@ -74,15 +74,16 @@ enum Message {
     Tick(std::time::Instant),
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
+    RestartRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
     ThemeSelected(data::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
     ToggleTradeFetch(bool),
-    ToggleShowQuoteCurrency(bool),
+    ApplyVolumeSizeUnit(exchange::SizeUnit),
     RemoveNotification(usize),
-    ToggleDialogModal(Option<(String, Box<Message>)>),
+    ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
     ThemeEditor(modal::theme_editor::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
@@ -114,7 +115,7 @@ impl Flowsurface {
             confirm_dialog: None,
             timezone: saved_state.timezone,
             scale_factor: saved_state.scale_factor,
-            preferred_currency: saved_state.preferred_currency,
+            volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: vec![],
         };
@@ -192,80 +193,23 @@ impl Flowsurface {
                         return window::close(window);
                     }
 
-                    let mut opened_windows = dashboard
+                    let mut active_windows = dashboard
                         .popout
                         .keys()
                         .copied()
                         .collect::<Vec<window::Id>>();
+                    active_windows.push(main_window);
 
-                    opened_windows.push(main_window);
-
-                    return window::collect_window_specs(opened_windows, Message::ExitRequested);
+                    return window::collect_window_specs(active_windows, Message::ExitRequested);
                 }
             },
             Message::ExitRequested(windows) => {
-                self.active_dashboard_mut()
-                    .popout
-                    .iter_mut()
-                    .for_each(|(id, (_, window_spec))| {
-                        if let Some(new_window_spec) = windows.get(id) {
-                            *window_spec = *new_window_spec;
-                        }
-                    });
-
-                let mut ser_layouts = vec![];
-
-                for id in &self.layout_manager.layout_order {
-                    if let Some((layout, dashboard)) = self.layout_manager.get_layout(*id) {
-                        let serialized_dashboard = data::Dashboard::from(dashboard);
-
-                        ser_layouts.push(data::Layout {
-                            name: layout.name.clone(),
-                            dashboard: serialized_dashboard,
-                        });
-                    }
-                }
-
-                let layouts = data::Layouts {
-                    layouts: ser_layouts,
-                    active_layout: self.layout_manager.active_layout().name.clone(),
-                };
-
-                let main_window = windows
-                    .iter()
-                    .find(|(id, _)| **id == self.main_window.id)
-                    .map(|(_, spec)| *spec);
-
-                let audio_cfg = data::AudioStream::from(&self.audio_stream);
-
-                self.sidebar.sync_tickers_table_settings();
-
-                let layout = data::State::from_parts(
-                    layouts,
-                    self.theme.clone(),
-                    self.theme_editor.custom_theme.clone().map(data::Theme),
-                    main_window,
-                    self.timezone,
-                    self.sidebar.state.clone(),
-                    self.scale_factor,
-                    audio_cfg,
-                    self.preferred_currency,
-                );
-
-                match serde_json::to_string(&layout) {
-                    Ok(layout_str) => {
-                        let file_name = data::SAVED_STATE_PATH;
-
-                        if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
-                            log::error!("Failed to write layout state to file: {}", e);
-                        } else {
-                            log::info!("Successfully wrote layout state to {file_name}");
-                        }
-                    }
-                    Err(e) => log::error!("Failed to serialize layout: {}", e),
-                }
-
+                self.save_state_to_disk(&windows);
                 return iced::exit();
+            }
+            Message::RestartRequested(windows) => {
+                self.save_state_to_disk(&windows);
+                return self.restart();
             }
             Message::GoBack => {
                 let main_window = self.main_window.id;
@@ -373,17 +317,6 @@ impl Flowsurface {
                     });
 
                 if checked {
-                    self.confirm_dialog = None;
-                }
-            }
-            Message::ToggleShowQuoteCurrency(checked) => {
-                self.preferred_currency = if checked {
-                    exchange::PreferredCurrency::Quote
-                } else {
-                    exchange::PreferredCurrency::Base
-                };
-
-                if self.confirm_dialog.is_some() {
                     self.confirm_dialog = None;
                 }
             }
@@ -508,6 +441,16 @@ impl Flowsurface {
                 }
 
                 return task.map(Message::Sidebar);
+            }
+            Message::ApplyVolumeSizeUnit(pref) => {
+                self.volume_size_unit = pref;
+                self.confirm_dialog = None;
+
+                let mut active_windows: Vec<window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+
+                return window::collect_window_specs(active_windows, Message::RestartRequested);
             }
         }
         Task::none()
@@ -684,24 +627,33 @@ impl Flowsurface {
                     );
 
                     let size_in_quote_currency_checkbox = {
-                        let is_active = match self.preferred_currency {
-                            exchange::PreferredCurrency::Quote => true,
-                            exchange::PreferredCurrency::Base => false,
+                        let is_active = match self.volume_size_unit {
+                            exchange::SizeUnit::Quote => true,
+                            exchange::SizeUnit::Base => false,
                         };
 
                         let checkbox = iced::widget::checkbox("Size in quote currency", is_active)
                             .on_toggle(|checked| {
-                                Message::ToggleDialogModal(Some((
-                                    "Preferred currency change will take effect after restart"
+                                let on_dialog_confirm = Message::ApplyVolumeSizeUnit(if checked {
+                                    exchange::SizeUnit::Quote
+                                } else {
+                                    exchange::SizeUnit::Base
+                                });
+
+                                let confirm_dialog = screen::ConfirmDialog::new(
+                                    "Changing size display currency requires application restart"
                                         .to_string(),
-                                    Box::new(Message::ToggleShowQuoteCurrency(checked)),
-                                )))
+                                    Box::new(on_dialog_confirm.clone()),
+                                )
+                                .with_confirm_btn_text("Restart now".to_string());
+
+                                Message::ToggleDialogModal(Some(confirm_dialog))
                             });
 
                         tooltip(
                             checkbox,
                             Some(
-                                "Display sizes/volumes in quote currency (USD)\n( ! )Has no effect on inverse perps or open interest",
+                                "Display sizes/volumes in quote currency (USD)\nHas no effect on inverse perps or open interest",
                             ),
                             TooltipPosition::Top,
                         )
@@ -751,11 +703,12 @@ impl Flowsurface {
                         let checkbox = iced::widget::checkbox("Fetch trades (Binance)", is_active)
                             .on_toggle(|checked| {
                                 if checked {
-                                    Message::ToggleDialogModal(Some((
-                                        "This might be unreliable and take some time to complete"
+                                    let confirm_dialog = screen::ConfirmDialog::new(
+                                        "This might be unreliable and take some time to complete. Proceed?"
                                             .to_string(),
                                         Box::new(Message::ToggleTradeFetch(true)),
-                                    )))
+                                    );
+                                    Message::ToggleDialogModal(Some(confirm_dialog))
                                 } else {
                                     Message::ToggleTradeFetch(false)
                                 }
@@ -822,12 +775,9 @@ impl Flowsurface {
                     align_x,
                 );
 
-                if let Some((dialog, on_confirm)) = &self.confirm_dialog {
-                    let dialog_content = confirm_dialog_container(
-                        dialog,
-                        *on_confirm.to_owned(),
-                        Message::ToggleDialogModal(None),
-                    );
+                if let Some(dialog) = &self.confirm_dialog {
+                    let dialog_content =
+                        confirm_dialog_container(dialog.clone(), Message::ToggleDialogModal(None));
 
                     main_dialog_modal(
                         base_content,
@@ -983,5 +933,83 @@ impl Flowsurface {
                 )
             }
         }
+    }
+
+    fn save_state_to_disk(&mut self, windows: &HashMap<window::Id, WindowSpec>) {
+        self.active_dashboard_mut()
+            .popout
+            .iter_mut()
+            .for_each(|(id, (_, window_spec))| {
+                if let Some(new_window_spec) = windows.get(id) {
+                    *window_spec = *new_window_spec;
+                }
+            });
+
+        self.sidebar.sync_tickers_table_settings();
+
+        let mut ser_layouts = vec![];
+        for id in &self.layout_manager.layout_order {
+            if let Some((layout, dashboard)) = self.layout_manager.get_layout(*id) {
+                let serialized_dashboard = data::Dashboard::from(dashboard);
+                ser_layouts.push(data::Layout {
+                    name: layout.name.clone(),
+                    dashboard: serialized_dashboard,
+                });
+            }
+        }
+
+        let layouts = data::Layouts {
+            layouts: ser_layouts,
+            active_layout: self.layout_manager.active_layout().name.clone(),
+        };
+
+        let main_window_spec = windows
+            .iter()
+            .find(|(id, _)| **id == self.main_window.id)
+            .map(|(_, spec)| *spec);
+
+        let audio_cfg = data::AudioStream::from(&self.audio_stream);
+
+        let state = data::State::from_parts(
+            layouts,
+            self.theme.clone(),
+            self.theme_editor.custom_theme.clone().map(data::Theme),
+            main_window_spec,
+            self.timezone,
+            self.sidebar.state.clone(),
+            self.scale_factor,
+            audio_cfg,
+            self.volume_size_unit,
+        );
+
+        match serde_json::to_string(&state) {
+            Ok(layout_str) => {
+                let file_name = data::SAVED_STATE_PATH;
+                if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
+                    log::error!("Failed to write layout state to file: {}", e);
+                } else {
+                    log::info!("Persisted state to {file_name}");
+                }
+            }
+            Err(e) => log::error!("Failed to serialize layout: {}", e),
+        }
+    }
+
+    fn restart(&mut self) -> Task<Message> {
+        let mut windows_to_close: Vec<window::Id> =
+            self.active_dashboard().popout.keys().copied().collect();
+        windows_to_close.push(self.main_window.id);
+
+        let close_windows = Task::batch(
+            windows_to_close
+                .into_iter()
+                .map(window::close)
+                .collect::<Vec<_>>(),
+        );
+
+        let (new_state, init_task) = Flowsurface::new();
+        *self = new_state;
+
+        close_windows.chain(init_task)
     }
 }

@@ -1,12 +1,11 @@
+use super::Basis;
+use super::aggr::time::DataPoint;
 use exchange::util::{Price, PriceStep};
+use exchange::{adapter::MarketKind, depth::Depth, volume_size_unit};
+
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-use exchange::{adapter::MarketKind, depth::Depth};
-
-use super::Basis;
-use super::aggr::time::DataPoint;
 
 pub const CLEANUP_THRESHOLD: usize = 4800;
 
@@ -285,7 +284,7 @@ impl HistoricalDepth {
             CoalesceKind::Average(t) | CoalesceKind::First(t) | CoalesceKind::Max(t) => t,
         };
 
-        let size_in_quote_currency = exchange::SIZE_IN_QUOTE_CURRENCY.get() == Some(&true);
+        let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
 
         for (price_at_level, runs_at_price_level) in
             self.iter_time_filtered(earliest, latest, highest, lowest)
@@ -299,7 +298,7 @@ impl HistoricalDepth {
                     let order_size = market_type.qty_in_quote_value(
                         run_ref.qty(),
                         *price_at_level,
-                        size_in_quote_currency,
+                        size_in_quote_ccy,
                     );
                     order_size > order_size_filter
                 })
@@ -450,6 +449,8 @@ impl HistoricalDepth {
     ) -> f32 {
         let mut max_depth_qty = 0.0f32;
 
+        let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+
         self.iter_time_filtered(earliest, latest, highest, lowest)
             .for_each(|(price, runs)| {
                 runs.iter()
@@ -459,7 +460,7 @@ impl HistoricalDepth {
                         let order_size = market_type.qty_in_quote_value(
                             visible_run.qty(),
                             *price,
-                            exchange::SIZE_IN_QUOTE_CURRENCY.get() == Some(&true),
+                            size_in_quote_ccy,
                         );
 
                         if order_size > order_size_filter {

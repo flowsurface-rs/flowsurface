@@ -24,7 +24,7 @@ pub struct SavedState {
     pub theme: data::Theme,
     pub custom_theme: Option<data::Theme>,
     pub audio_cfg: data::AudioStream,
-    pub preferred_currency: exchange::PreferredCurrency,
+    pub volume_size_unit: exchange::SizeUnit,
 }
 
 impl SavedState {
@@ -52,7 +52,7 @@ impl Default for SavedState {
             theme: data::Theme::default(),
             custom_theme: None,
             audio_cfg: data::AudioStream::default(),
-            preferred_currency: exchange::PreferredCurrency::Base,
+            volume_size_unit: exchange::SizeUnit::Base,
         }
     }
 }
@@ -326,10 +326,7 @@ pub fn load_saved_state() -> SavedState {
             };
 
             exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
-
-            exchange::SIZE_IN_QUOTE_CURRENCY
-                .set(state.size_in_quote_currency)
-                .expect("Failed to set SIZE_IN_QUOTE_CURRENCY");
+            exchange::set_preferred_currency(state.size_in_quote_ccy);
 
             SavedState {
                 theme: state.selected_theme,
@@ -340,11 +337,7 @@ pub fn load_saved_state() -> SavedState {
                 sidebar: state.sidebar,
                 scale_factor: state.scale_factor,
                 audio_cfg: state.audio_cfg,
-                preferred_currency: if state.size_in_quote_currency {
-                    exchange::PreferredCurrency::Quote
-                } else {
-                    exchange::PreferredCurrency::Base
-                },
+                volume_size_unit: state.size_in_quote_ccy,
             }
         }
         Err(e) => {

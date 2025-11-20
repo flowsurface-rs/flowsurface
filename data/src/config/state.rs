@@ -24,7 +24,7 @@ pub struct State {
     pub scale_factor: ScaleFactor,
     pub audio_cfg: AudioStream,
     pub trade_fetch_enabled: bool,
-    pub size_in_quote_currency: bool,
+    pub size_in_quote_ccy: exchange::SizeUnit,
 }
 
 impl State {
@@ -37,7 +37,7 @@ impl State {
         sidebar: Sidebar,
         scale_factor: ScaleFactor,
         audio_cfg: AudioStream,
-        preferred_currency: exchange::PreferredCurrency,
+        volume_size_unit: exchange::SizeUnit,
     ) -> Self {
         State {
             layout_manager,
@@ -49,7 +49,7 @@ impl State {
             scale_factor,
             audio_cfg,
             trade_fetch_enabled: exchange::fetcher::is_trade_fetch_enabled(),
-            size_in_quote_currency: preferred_currency == exchange::PreferredCurrency::Quote,
+            size_in_quote_ccy: volume_size_unit,
         }
     }
 }

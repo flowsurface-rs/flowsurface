@@ -1,5 +1,8 @@
 use super::Element;
-use crate::style::{self, Icon, icon_text, modal_container};
+use crate::{
+    screen::ConfirmDialog,
+    style::{self, Icon, icon_text, modal_container},
+};
 use iced::{
     Alignment::{self, Center},
     Color,
@@ -42,10 +45,13 @@ pub fn scrollable_content<'a, Message: 'a>(
 }
 
 pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
-    dialog: &'a str,
-    on_confirm: Message,
+    confirm_dialog: ConfirmDialog<Message>,
     on_cancel: Message,
 ) -> Element<'a, Message> {
+    let dialog = confirm_dialog.message;
+    let on_confirm = *confirm_dialog.on_confirm;
+    let on_confirm_msg = confirm_dialog.on_confirm_btn_text;
+
     container(
         column![
             text(dialog).size(14),
@@ -53,7 +59,7 @@ pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
                 button(text("Cancel"))
                     .style(|theme, status| style::button::transparent(theme, status, false))
                     .on_press(on_cancel),
-                button(text("Confirm")).on_press(on_confirm),
+                button(text(on_confirm_msg.unwrap_or("Confirm".to_string()))).on_press(on_confirm),
             ]
             .spacing(8),
         ]
