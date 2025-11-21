@@ -11,7 +11,7 @@ mod window;
 
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
-use layout::{Layout, configuration};
+use layout::{LayoutId, configuration};
 use modal::{LayoutManager, ThemeEditor, audio};
 use modal::{dashboard_modal, main_dialog_modal};
 use screen::dashboard::{self, Dashboard};
@@ -60,7 +60,7 @@ struct Flowsurface {
     audio_stream: audio::AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
-    scale_factor: data::ScaleFactor,
+    ui_scale_factor: data::ScaleFactor,
     timezone: data::UserTimezone,
     theme: data::Theme,
     notifications: Vec<Toast>,
@@ -70,7 +70,11 @@ struct Flowsurface {
 enum Message {
     Sidebar(dashboard::sidebar::Message),
     MarketWsEvent(exchange::Event),
-    Dashboard(Option<uuid::Uuid>, dashboard::Message),
+    Dashboard {
+        /// If `None`, the active layout is used for the event.
+        layout_id: Option<uuid::Uuid>,
+        event: dashboard::Message,
+    },
     Tick(std::time::Instant),
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
@@ -114,14 +118,21 @@ impl Flowsurface {
             sidebar,
             confirm_dialog: None,
             timezone: saved_state.timezone,
-            scale_factor: saved_state.scale_factor,
+            ui_scale_factor: saved_state.scale_factor,
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: vec![],
         };
 
-        let last_active_layout = state.layout_manager.active_layout();
-        let load_layout = state.load_layout(last_active_layout, main_window_id);
+        let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
+            &state
+                .layout_manager
+                .layouts
+                .first()
+                .expect("No layouts available")
+                .id,
+        );
+        let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
         (
             state,
@@ -159,7 +170,10 @@ impl Flowsurface {
                                 &trades_buffer,
                                 main_window_id,
                             )
-                            .map(move |msg| Message::Dashboard(None, msg));
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
 
                         if let Err(err) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
                         {
@@ -171,7 +185,10 @@ impl Flowsurface {
                     exchange::Event::KlineReceived(stream, kline) => {
                         return dashboard
                             .update_latest_klines(&stream, &kline, main_window_id)
-                            .map(move |msg| Message::Dashboard(None, msg));
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
                     }
                 }
             }
@@ -181,7 +198,10 @@ impl Flowsurface {
                 return self
                     .active_dashboard_mut()
                     .tick(now, main_window_id)
-                    .map(move |msg| Message::Dashboard(None, msg));
+                    .map(move |msg| Message::Dashboard {
+                        layout_id: None,
+                        event: msg,
+                    });
             }
             Message::WindowEvent(event) => match event {
                 window::Event::CloseRequested(window) => {
@@ -233,12 +253,20 @@ impl Flowsurface {
             Message::ThemeSelected(theme) => {
                 self.theme = theme.clone();
             }
-            Message::Dashboard(id, message) => {
-                let main_window = self.main_window;
-                let layout_id = id.unwrap_or(self.layout_manager.active_layout().id);
+            Message::Dashboard {
+                layout_id: id,
+                event: msg,
+            } => {
+                let Some(active_layout) = self.layout_manager.active_layout_id() else {
+                    log::error!("No active layout to handle dashboard message");
+                    return Task::none();
+                };
 
-                if let Some(dashboard) = self.layout_manager.mut_dashboard(&layout_id) {
-                    let (main_task, event) = dashboard.update(message, &main_window, &layout_id);
+                let main_window = self.main_window;
+                let layout_id = id.unwrap_or(active_layout.unique);
+
+                if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
+                    let (main_task, event) = dashboard.update(msg, &main_window, &layout_id);
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {
@@ -248,7 +276,10 @@ impl Flowsurface {
                             stream,
                         }) => dashboard
                             .distribute_fetched_data(main_window.id, pane_id, data, stream)
-                            .map(move |msg| Message::Dashboard(Some(layout_id), msg)),
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: Some(layout_id),
+                                event: msg,
+                            }),
                         Some(dashboard::Event::Notification(toast)) => {
                             self.notifications.push(toast);
                             Task::none()
@@ -281,7 +312,10 @@ impl Flowsurface {
                                     } else {
                                         dashboard
                                             .resolve_streams(main_window.id, pane_id, resolved)
-                                            .map(move |msg| Message::Dashboard(None, msg))
+                                            .map(move |msg| Message::Dashboard {
+                                                layout_id: None,
+                                                event: msg,
+                                            })
                                     }
                                 }
                                 Err(err) => {
@@ -294,7 +328,10 @@ impl Flowsurface {
                     };
 
                     return main_task
-                        .map(move |msg| Message::Dashboard(Some(layout_id), msg))
+                        .map(move |msg| Message::Dashboard {
+                            layout_id: Some(layout_id),
+                            event: msg,
+                        })
                         .chain(additional_task);
                 }
             }
@@ -307,7 +344,7 @@ impl Flowsurface {
                 self.timezone = tz;
             }
             Message::ScaleFactorChanged(value) => {
-                self.scale_factor = value;
+                self.ui_scale_factor = value;
             }
             Message::ToggleTradeFetch(checked) => {
                 self.layout_manager
@@ -328,8 +365,6 @@ impl Flowsurface {
 
                 match action {
                     Some(modal::layout_manager::Action::Select(layout)) => {
-                        let old_layout = self.layout_manager.active_layout().clone();
-
                         let active_popout_keys = self
                             .active_dashboard()
                             .popout
@@ -340,30 +375,45 @@ impl Flowsurface {
                         let window_tasks = Task::batch(
                             active_popout_keys
                                 .iter()
-                                .map(|&popout_id| window::close(popout_id))
+                                .map(|&popout_id| window::close::<window::Id>(popout_id))
                                 .collect::<Vec<_>>(),
                         )
-                        .then(|_: Task<window::Id>| Task::none());
+                        .discard();
+
+                        let old_layout_id = self
+                            .layout_manager
+                            .active_layout_id()
+                            .as_ref()
+                            .map(|layout| layout.unique);
 
                         return window::collect_window_specs(
                             active_popout_keys,
                             dashboard::Message::SavePopoutSpecs,
                         )
-                        .map(move |msg| Message::Dashboard(Some(old_layout.id), msg))
+                        .map(move |msg| Message::Dashboard {
+                            layout_id: old_layout_id,
+                            event: msg,
+                        })
                         .chain(window_tasks)
                         .chain(self.load_layout(layout, self.main_window.id));
                     }
                     Some(modal::layout_manager::Action::Clone(id)) => {
                         let manager = &mut self.layout_manager;
 
-                        if let Some((layout, dashboard)) = manager.get_layout(id) {
-                            let new_id = uuid::Uuid::new_v4();
-                            let new_layout = Layout {
-                                id: new_id,
-                                name: manager.ensure_unique_name(&layout.name, new_id),
-                            };
+                        let source_data = manager.get(id).map(|layout| {
+                            (
+                                layout.id.name.clone(),
+                                layout.id.unique,
+                                data::Dashboard::from(&layout.dashboard),
+                            )
+                        });
 
-                            let ser_dashboard = data::Dashboard::from(dashboard);
+                        if let Some((name, old_id, ser_dashboard)) = source_data {
+                            let new_uid = uuid::Uuid::new_v4();
+                            let new_layout = LayoutId {
+                                unique: new_uid,
+                                name: manager.ensure_unique_name(&name, new_uid),
+                            };
 
                             let mut popout_windows = Vec::new();
 
@@ -375,13 +425,10 @@ impl Flowsurface {
                             let dashboard = Dashboard::from_config(
                                 configuration(ser_dashboard.pane.clone()),
                                 popout_windows,
-                                layout.id,
+                                old_id,
                             );
 
-                            manager.layout_order.push(new_layout.id);
-                            manager
-                                .layouts
-                                .insert(new_layout.id, (new_layout.clone(), dashboard));
+                            manager.insert_layout(new_layout.clone(), dashboard);
                         }
                     }
                     None => {}
@@ -432,7 +479,10 @@ impl Flowsurface {
                             }
                         };
 
-                        return task.map(move |msg| Message::Dashboard(None, msg));
+                        return task.map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        });
                     }
                     Some(dashboard::sidebar::Action::ErrorOccurred(err)) => {
                         self.notifications.push(Toast::error(err.to_string()));
@@ -470,7 +520,10 @@ impl Flowsurface {
 
             let dashboard_view = dashboard
                 .view(&self.main_window, tickers_table, self.timezone)
-                .map(move |msg| Message::Dashboard(None, msg));
+                .map(move |msg| Message::Dashboard {
+                    layout_id: None,
+                    event: msg,
+                });
 
             let header_title = {
                 #[cfg(target_os = "macos")]
@@ -513,7 +566,10 @@ impl Flowsurface {
             container(
                 dashboard
                     .view_window(id, &self.main_window, tickers_table, self.timezone)
-                    .map(move |msg| Message::Dashboard(None, msg)),
+                    .map(move |msg| Message::Dashboard {
+                        layout_id: None,
+                        event: msg,
+                    }),
             )
             .padding(padding::top(style::TITLE_PADDING_TOP))
             .into()
@@ -536,11 +592,15 @@ impl Flowsurface {
     }
 
     fn title(&self, _window: window::Id) -> String {
-        format!("Flowsurface [{}]", self.layout_manager.active_layout().name)
+        if let Some(id) = self.layout_manager.active_layout_id() {
+            format!("Flowsurface [{}]", id.name)
+        } else {
+            "Flowsurface".to_string()
+        }
     }
 
     fn scale_factor(&self, _window: window::Id) -> f32 {
-        self.scale_factor.into()
+        self.ui_scale_factor.into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -569,23 +629,43 @@ impl Flowsurface {
     }
 
     fn active_dashboard(&self) -> &Dashboard {
+        let active_layout = self
+            .layout_manager
+            .active_layout_id()
+            .expect("No active layout");
         self.layout_manager
-            .active_dashboard()
+            .get(active_layout.unique)
+            .map(|layout| &layout.dashboard)
             .expect("No active dashboard")
     }
 
     fn active_dashboard_mut(&mut self) -> &mut Dashboard {
+        let active_layout = self
+            .layout_manager
+            .active_layout_id()
+            .expect("No active layout");
         self.layout_manager
-            .active_dashboard_mut()
+            .get_mut(active_layout.unique)
+            .map(|layout| &mut layout.dashboard)
             .expect("No active dashboard")
     }
 
-    fn load_layout(&mut self, layout: layout::Layout, main_window: window::Id) -> Task<Message> {
-        self.layout_manager
-            .set_active_layout(layout.clone())
-            .expect("Failed to set active layout")
-            .load_layout(main_window)
-            .map(move |msg| Message::Dashboard(Some(layout.id), msg))
+    fn load_layout(&mut self, layout_uid: uuid::Uuid, main_window: window::Id) -> Task<Message> {
+        match self.layout_manager.set_active_layout(layout_uid) {
+            Ok(layout) => {
+                layout
+                    .dashboard
+                    .load_layout(main_window)
+                    .map(move |msg| Message::Dashboard {
+                        layout_id: Some(layout_uid),
+                        event: msg,
+                    })
+            }
+            Err(err) => {
+                log::error!("Failed to set active layout: {}", err);
+                Task::none()
+            }
+        }
     }
 
     fn view_with_modal<'a>(
@@ -668,7 +748,7 @@ impl Flowsurface {
                     );
 
                     let scale_factor = {
-                        let current_value: f32 = self.scale_factor.into();
+                        let current_value: f32 = self.ui_scale_factor.into();
 
                         let decrease_btn = if current_value > data::config::MIN_SCALE {
                             button(text("-"))
@@ -810,13 +890,15 @@ impl Flowsurface {
                         let btn = button(text("Reset").align_x(Alignment::Center))
                             .width(iced::Length::Fill);
                         if is_main_window {
-                            btn.on_press(Message::Dashboard(
-                                None,
-                                dashboard::Message::Pane(
+                            let dashboard_msg = Message::Dashboard {
+                                layout_id: None,
+                                event: dashboard::Message::Pane(
                                     main_window,
                                     dashboard::pane::Message::ReplacePane(pane_id),
                                 ),
-                            ))
+                            };
+
+                            btn.on_press(dashboard_msg)
                         } else {
                             btn
                         }
@@ -825,16 +907,17 @@ impl Flowsurface {
                         let btn = button(text("Split").align_x(Alignment::Center))
                             .width(iced::Length::Fill);
                         if is_main_window {
-                            btn.on_press(Message::Dashboard(
-                                None,
-                                dashboard::Message::Pane(
+                            let dashboard_msg = Message::Dashboard {
+                                layout_id: None,
+                                event: dashboard::Message::Pane(
                                     main_window,
                                     dashboard::pane::Message::SplitPane(
                                         pane_grid::Axis::Horizontal,
                                         pane_id,
                                     ),
                                 ),
-                            ))
+                            };
+                            btn.on_press(dashboard_msg)
                         } else {
                             btn
                         }
@@ -948,11 +1031,11 @@ impl Flowsurface {
         self.sidebar.sync_tickers_table_settings();
 
         let mut ser_layouts = vec![];
-        for id in &self.layout_manager.layout_order {
-            if let Some((layout, dashboard)) = self.layout_manager.get_layout(*id) {
-                let serialized_dashboard = data::Dashboard::from(dashboard);
+        for layout in &self.layout_manager.layouts {
+            if let Some(layout) = self.layout_manager.get(layout.id.unique) {
+                let serialized_dashboard = data::Dashboard::from(&layout.dashboard);
                 ser_layouts.push(data::Layout {
-                    name: layout.name.clone(),
+                    name: layout.id.name.clone(),
                     dashboard: serialized_dashboard,
                 });
             }
@@ -960,7 +1043,11 @@ impl Flowsurface {
 
         let layouts = data::Layouts {
             layouts: ser_layouts,
-            active_layout: self.layout_manager.active_layout().name.clone(),
+            active_layout: self
+                .layout_manager
+                .active_layout_id()
+                .map(|layout| layout.name.to_string())
+                .clone(),
         };
 
         let main_window_spec = windows
@@ -977,7 +1064,7 @@ impl Flowsurface {
             main_window_spec,
             self.timezone,
             self.sidebar.state.clone(),
-            self.scale_factor,
+            self.ui_scale_factor,
             audio_cfg,
             self.volume_size_unit,
         );

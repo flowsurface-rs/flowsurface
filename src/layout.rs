@@ -6,12 +6,17 @@ use data::{
 };
 
 use iced::widget::pane_grid::{self, Configuration};
-use std::{collections::HashMap, vec};
+use std::vec;
 use uuid::Uuid;
 
-#[derive(Eq, Hash, Debug, Clone, PartialEq)]
 pub struct Layout {
-    pub id: Uuid,
+    pub id: LayoutId,
+    pub dashboard: Dashboard,
+}
+
+#[derive(Debug, Clone)]
+pub struct LayoutId {
+    pub unique: Uuid,
     pub name: String,
 }
 
@@ -296,33 +301,30 @@ pub fn load_saved_state() -> SavedState {
                 de_layouts.push((layout.name.clone(), layout_id, dashboard));
             }
 
-            let layout_manager: LayoutManager = {
-                let mut layouts = HashMap::new();
-
-                let active_layout = Layout {
-                    id: Uuid::new_v4(),
-                    name: state.layout_manager.active_layout.clone(),
-                };
-
-                let mut layout_order = vec![];
+            let layout_manager = {
+                let mut layouts = Vec::with_capacity(de_layouts.len());
 
                 for (name, layout_id, dashboard) in de_layouts {
-                    let layout = Layout {
-                        id: {
-                            if name == active_layout.name {
-                                active_layout.id
-                            } else {
-                                layout_id
-                            }
-                        },
+                    let id = LayoutId {
+                        unique: layout_id,
                         name,
                     };
-
-                    layout_order.push(layout.id);
-                    layouts.insert(layout.id, (layout.clone(), dashboard));
+                    layouts.push(Layout { id, dashboard });
                 }
 
-                LayoutManager::from_config(layout_order, layouts, active_layout)
+                let active_layout =
+                    state
+                        .layout_manager
+                        .active_layout
+                        .as_ref()
+                        .and_then(|target_name| {
+                            layouts
+                                .iter()
+                                .find(|layout| layout.id.name == *target_name)
+                                .map(|layout| layout.id.clone())
+                        });
+
+                LayoutManager::from_config(layouts, active_layout)
             };
 
             exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);

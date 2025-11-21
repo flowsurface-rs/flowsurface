@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Layouts {
     pub layouts: Vec<Layout>,
-    pub active_layout: String,
+    pub active_layout: Option<String>,
 }
 
 #[derive(Default, Clone, Deserialize, Serialize)]
