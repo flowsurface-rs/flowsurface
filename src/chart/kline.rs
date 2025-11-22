@@ -363,16 +363,19 @@ impl KlineChart {
             PlotData::TimeBased(timeseries) => {
                 let timeframe_ms = timeseries.interval.to_milliseconds();
 
-                let (visible_earliest, visible_latest) = self.visible_timerange()?;
-                let (kline_earliest, kline_latest) = timeseries.timerange();
-                let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
-
                 if timeseries.datapoints.is_empty() {
-                    let range = FetchRange::Kline(earliest, visible_latest + timeframe_ms);
+                    let latest = chrono::Utc::now().timestamp_millis() as u64;
+                    let earliest = latest.saturating_sub(450 * timeframe_ms);
+
+                    let range = FetchRange::Kline(earliest, latest);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }
                 }
+
+                let (visible_earliest, visible_latest) = self.visible_timerange()?;
+                let (kline_earliest, kline_latest) = timeseries.timerange();
+                let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
 
                 // priority 1, basic kline data fetch
                 if visible_earliest < kline_earliest {
