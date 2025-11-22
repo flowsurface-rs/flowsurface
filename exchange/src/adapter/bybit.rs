@@ -749,8 +749,6 @@ pub async fn fetch_klines(
         let num_intervals = ((end - start) / interval_ms).min(1000);
 
         url.push_str(&format!("&start={start}&end={end}&limit={num_intervals}"));
-    } else {
-        url.push_str(&format!("&limit={}", 200));
     }
 
     let response: ApiResponse =

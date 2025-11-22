@@ -131,14 +131,22 @@ pub enum AdapterError {
 impl AdapterError {
     pub fn to_user_message(&self) -> &'static str {
         match self {
-            AdapterError::InvalidRequest(_) => {
+            AdapterError::InvalidRequest(err) => {
+                log::error!("Adapter invalid request: {err}");
                 "Invalid request made to the exchange. Check logs for details."
             }
-            AdapterError::FetchError(_) => "Network error while contacting the exchange.",
-            AdapterError::ParseError(_) => {
+            AdapterError::FetchError(err) => {
+                log::error!("Adapter fetch error: {err}");
+                "Network error while contacting the exchange."
+            }
+            AdapterError::ParseError(err) => {
+                log::error!("Adapter parse error: {err}");
                 "Unexpected response from the exchange. Check logs for details."
             }
-            AdapterError::WebsocketError(_) => "Realtime connection error. Trying to reconnect...",
+            AdapterError::WebsocketError(err) => {
+                log::error!("Adapter websocket error: {err}");
+                "Realtime connection error. Trying to reconnect..."
+            }
         }
     }
 }

@@ -763,16 +763,20 @@ pub async fn fetch_klines(
 
     let interval = match timeframe {
         Timeframe::M1 => "1m",
+        Timeframe::M3 => "3m",
         Timeframe::M5 => "5m",
         Timeframe::M15 => "15m",
         Timeframe::M30 => "30m",
         Timeframe::H1 => "1h",
+        Timeframe::H2 => "2h",
         Timeframe::H4 => "4h",
+        Timeframe::H12 => "12h",
         Timeframe::D1 => "1d",
         _ => {
-            return Err(AdapterError::InvalidRequest(
-                "Unsupported timeframe".to_string(),
-            ));
+            return Err(AdapterError::InvalidRequest(format!(
+                "Unsupported timeframe for Hyperliquid klines: {:?}",
+                timeframe
+            )));
         }
     };
 
@@ -780,12 +784,9 @@ pub async fn fetch_klines(
     // Use the internal symbol (e.g., "@107" for spot, "BTC" for perps)
     let (symbol_str, _) = ticker.to_full_symbol_and_type();
 
-    log::debug!("Fetching klines for ticker symbol: '{}'", symbol_str);
-
     let (start_time, end_time) = if let Some((start, end)) = range {
         (start, end)
     } else {
-        // Default to last 500 candles
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1140,11 +1141,14 @@ pub fn connect_kline_stream(
 
                             let interval = match timeframe {
                                 Timeframe::M1 => "1m",
+                                Timeframe::M3 => "3m",
                                 Timeframe::M5 => "5m",
                                 Timeframe::M15 => "15m",
                                 Timeframe::M30 => "30m",
                                 Timeframe::H1 => "1h",
+                                Timeframe::H2 => "2h",
                                 Timeframe::H4 => "4h",
+                                Timeframe::H12 => "12h",
                                 Timeframe::D1 => "1d",
                                 _ => continue,
                             };

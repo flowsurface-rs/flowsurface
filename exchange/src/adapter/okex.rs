@@ -739,9 +739,9 @@ pub async fn fetch_klines(
         bar,
         match range {
             Some((start, end)) => {
-                ((end - start) / timeframe.to_milliseconds()).clamp(1, 1000)
+                ((end - start) / timeframe.to_milliseconds()).clamp(1, 300)
             }
-            None => 200,
+            None => 300,
         }
     );
 
