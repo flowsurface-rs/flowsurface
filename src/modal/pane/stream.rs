@@ -655,6 +655,12 @@ impl Modifier {
     }
 }
 
+/// A `Column` grid of buttons from `items_source`.
+///
+/// Buttons are arranged in rows of up to `items_per_row`.
+/// If the last row would otherwise contain only one item,
+/// one item is shifted from the previous row so that no row ends up
+/// with a single button.
 fn modifiers_grid<'a, T, FMsg>(
     items_source: &[T],
     selected_value: Option<T>,
@@ -671,8 +677,23 @@ where
     FMsg: Fn(T) -> Message,
 {
     let mut grid_column = column![].spacing(4);
+    let mut remaining_slice = items_source;
 
-    for chunk in items_source.chunks(items_per_row) {
+    while !remaining_slice.is_empty() {
+        let count = remaining_slice.len();
+        let mut take = items_per_row;
+
+        let rows_left = count.div_ceil(items_per_row);
+        let last_row_size = count % items_per_row;
+
+        if rows_left == 2 && last_row_size == 1 {
+            take -= 1;
+        }
+
+        take = take.min(count);
+        let (chunk, rest) = remaining_slice.split_at(take);
+        remaining_slice = rest;
+
         let mut button_row = row![].spacing(4);
 
         for &item_value in chunk {

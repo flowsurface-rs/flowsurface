@@ -84,7 +84,6 @@ impl std::fmt::Display for Timeframe {
                 Timeframe::H1 => "1h",
                 Timeframe::H2 => "2h",
                 Timeframe::H4 => "4h",
-                Timeframe::H6 => "6h",
                 Timeframe::H12 => "12h",
                 Timeframe::D1 => "1d",
             }
@@ -107,13 +106,12 @@ pub enum Timeframe {
     H1,
     H2,
     H4,
-    H6,
     H12,
     D1,
 }
 
 impl Timeframe {
-    pub const KLINE: [Timeframe; 11] = [
+    pub const KLINE: [Timeframe; 10] = [
         Timeframe::M1,
         Timeframe::M3,
         Timeframe::M5,
@@ -122,7 +120,6 @@ impl Timeframe {
         Timeframe::H1,
         Timeframe::H2,
         Timeframe::H4,
-        Timeframe::H6,
         Timeframe::H12,
         Timeframe::D1,
     ];
@@ -148,7 +145,6 @@ impl Timeframe {
             Timeframe::H1 => 60,
             Timeframe::H2 => 120,
             Timeframe::H4 => 240,
-            Timeframe::H6 => 360,
             Timeframe::H12 => 720,
             Timeframe::D1 => 1440,
             _ => panic!("Invalid timeframe: {:?}", self),
