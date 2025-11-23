@@ -351,6 +351,14 @@ impl State {
                 };
 
                 if let Some(id) = req_id {
+                    if chart.basis() != Basis::Time(timeframe) {
+                        log::warn!(
+                            "Ignoring stale kline fetch for timeframe {:?}; chart basis = {:?}",
+                            timeframe,
+                            chart.basis()
+                        );
+                        return;
+                    }
                     chart.insert_hist_klines(id, klines);
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
@@ -374,6 +382,14 @@ impl State {
                 };
 
                 if let Some(id) = req_id {
+                    if chart.timeframe != timeframe {
+                        log::warn!(
+                            "Ignoring stale kline fetch for timeframe {:?}; chart timeframe = {:?}",
+                            timeframe,
+                            chart.timeframe
+                        );
+                        return;
+                    }
                     chart.insert_history(id, ticker_info, klines);
                 } else {
                     *chart = ComparisonChart::new(

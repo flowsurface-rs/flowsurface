@@ -760,25 +760,7 @@ pub async fn fetch_klines(
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
-
-    let interval = match timeframe {
-        Timeframe::M1 => "1m",
-        Timeframe::M3 => "3m",
-        Timeframe::M5 => "5m",
-        Timeframe::M15 => "15m",
-        Timeframe::M30 => "30m",
-        Timeframe::H1 => "1h",
-        Timeframe::H2 => "2h",
-        Timeframe::H4 => "4h",
-        Timeframe::H12 => "12h",
-        Timeframe::D1 => "1d",
-        _ => {
-            return Err(AdapterError::InvalidRequest(format!(
-                "Unsupported timeframe for Hyperliquid klines: {:?}",
-                timeframe
-            )));
-        }
-    };
+    let interval = timeframe.to_string();
 
     let url = format!("{}/info", API_DOMAIN);
     // Use the internal symbol (e.g., "@107" for spot, "BTC" for perps)
@@ -1138,20 +1120,7 @@ pub fn connect_kline_stream(
                     Ok(mut websocket) => {
                         for (ticker_info, timeframe) in &streams {
                             let ticker = ticker_info.ticker;
-
-                            let interval = match timeframe {
-                                Timeframe::M1 => "1m",
-                                Timeframe::M3 => "3m",
-                                Timeframe::M5 => "5m",
-                                Timeframe::M15 => "15m",
-                                Timeframe::M30 => "30m",
-                                Timeframe::H1 => "1h",
-                                Timeframe::H2 => "2h",
-                                Timeframe::H4 => "4h",
-                                Timeframe::H12 => "12h",
-                                Timeframe::D1 => "1d",
-                                _ => continue,
-                            };
+                            let interval = timeframe.to_string();
 
                             let (symbol_str, _) = ticker.to_full_symbol_and_type();
                             let subscribe_msg = json!({
@@ -1162,12 +1131,6 @@ pub fn connect_kline_stream(
                                     "interval": interval
                                 }
                             });
-
-                            log::debug!(
-                                "Hyperliquid WS Kline Subscription: {}",
-                                serde_json::to_string_pretty(&subscribe_msg)
-                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
-                            );
 
                             if (websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -1198,47 +1161,33 @@ pub fn connect_kline_stream(
                         OpCode::Text => {
                             if let Ok(StreamData::Kline(hl_kline)) =
                                 parse_websocket_message(&msg.payload)
+                                && let Some((ticker_info, timeframe)) =
+                                    streams.iter().find(|(t, tf)| {
+                                        t.ticker.as_str() == hl_kline.symbol
+                                            && tf.to_string() == hl_kline.interval.as_str()
+                                    })
                             {
-                                let ticker_info = streams
-                                    .iter()
-                                    .find(|(t, _)| t.ticker.as_str() == hl_kline.symbol)
-                                    .map(|(t, _)| *t);
+                                let volume = if size_in_quote_ccy {
+                                    (hl_kline.volume * hl_kline.close).round()
+                                } else {
+                                    hl_kline.volume
+                                };
 
-                                if let Some(info) = ticker_info {
-                                    let timeframe = match hl_kline.interval.as_str() {
-                                        "1m" => Timeframe::M1,
-                                        "5m" => Timeframe::M5,
-                                        "15m" => Timeframe::M15,
-                                        "30m" => Timeframe::M30,
-                                        "1h" => Timeframe::H1,
-                                        "4h" => Timeframe::H4,
-                                        "1d" => Timeframe::D1,
-                                        _ => continue,
-                                    };
+                                let kline = Kline::new(
+                                    hl_kline.time,
+                                    hl_kline.open,
+                                    hl_kline.high,
+                                    hl_kline.low,
+                                    hl_kline.close,
+                                    (-1.0, volume),
+                                    ticker_info.min_ticksize,
+                                );
 
-                                    let volume = if size_in_quote_ccy {
-                                        (hl_kline.volume * hl_kline.close).round()
-                                    } else {
-                                        hl_kline.volume
-                                    };
-
-                                    let kline = Kline::new(
-                                        hl_kline.time,
-                                        hl_kline.open,
-                                        hl_kline.high,
-                                        hl_kline.low,
-                                        hl_kline.close,
-                                        (-1.0, volume),
-                                        info.min_ticksize,
-                                    );
-
-                                    let stream_kind = StreamKind::Kline {
-                                        ticker_info: info,
-                                        timeframe,
-                                    };
-                                    let _ =
-                                        output.send(Event::KlineReceived(stream_kind, kline)).await;
-                                }
+                                let stream_kind = StreamKind::Kline {
+                                    ticker_info: *ticker_info,
+                                    timeframe: *timeframe,
+                                };
+                                let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
                             }
                         }
                         OpCode::Close => {
