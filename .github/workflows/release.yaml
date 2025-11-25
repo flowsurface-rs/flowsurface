@@ -1,5 +1,7 @@
 name: "Release"
 
+permissions:
+    contents: write
 on:
     workflow_dispatch:
         inputs:
@@ -8,26 +10,76 @@ on:
                 required: true
 
 jobs:
+    create-signed-tag:
+        name: Create Signed Tag
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Import GPG key and configure Git
+              env:
+                  GPG_NAME: ${{ secrets.GPG_NAME }}
+                  GPG_EMAIL: ${{ secrets.GPG_EMAIL }}
+              run: |
+                  echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+                  echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
+                  echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
+                  gpg-connect-agent reloadagent /bye
+                  KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+                  git config user.name "${GPG_NAME}"
+                  git config user.email "${GPG_EMAIL}"
+                  git config user.signingkey "$KEY_ID"
+                  cat > "$RUNNER_TEMP/gpg-wrapper.sh" << 'EOF'
+                  #!/usr/bin/env bash
+                  exec gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" "$@"
+                  EOF
+                  chmod +x "$RUNNER_TEMP/gpg-wrapper.sh"
+                  git config gpg.program "$RUNNER_TEMP/gpg-wrapper.sh"
+
+            - name: Create signed tag
+              env:
+                  TAG: ${{ github.event.inputs.tag }}
+                  GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+              run: |
+                  if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+                    echo "Tag $TAG already exists, skipping."
+                    exit 0
+                  fi
+                  git tag -s "$TAG" -m "Release $TAG" HEAD
+                  git push origin "refs/tags/$TAG"
+
     build:
         name: Build
         strategy:
             matrix:
                 target:
-                    - target: macos
+                    - target: macos-arm
                       os: macos-latest
-                      make: bash scripts/build-macos.sh
+                      make: bash scripts/build-macos.sh aarch64
                       artifact_path: |
-                          echo "ARTIFACT_PATH=target/release/flowsurface-universal-macos.tar.gz" >> "$GITHUB_ENV"
-                    - target: windows
+                          echo "ARTIFACT_PATH=target/release/flowsurface-aarch64-macos.tar.gz" >> "$GITHUB_ENV"
+                    - target: macos-x64
+                      os: macos-15-intel
+                      make: bash scripts/build-macos.sh x86_64
+                      artifact_path: |
+                          echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-macos.tar.gz" >> "$GITHUB_ENV"
+                    - target: windows-x64
                       os: windows-latest
-                      make: bash scripts/build-windows.sh
+                      make: bash scripts/build-windows.sh x86_64
                       artifact_path: |
                           echo "ARTIFACT_PATH=target/release/flowsurface-x86_64-windows.zip" >> $env:GITHUB_ENV
-                    - target: linux
+                    - target: linux-x64
                       os: ubuntu-latest
-                      make: bash scripts/package-linux.sh package
+                      make: bash scripts/package-linux.sh package x86_64
                       artifact_path: |
-                          echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path)" >> "$GITHUB_ENV"
+                          echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path x86_64)" >> "$GITHUB_ENV"
+                    - target: linux-arm
+                      os: ubuntu-24.04-arm
+                      make: bash scripts/package-linux.sh package aarch64
+                      artifact_path: |
+                          echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path aarch64)" >> "$GITHUB_ENV"
         runs-on: ${{ matrix.target.os }}
         steps:
             - uses: actions/checkout@v3
@@ -38,7 +90,7 @@ jobs:
                   override: true
 
             - name: Install linux deps
-              if: matrix.target.target == 'linux'
+              if: startsWith(matrix.target.target, 'linux')
               run: |
                   sudo apt update
                   sudo apt install -y \
@@ -50,13 +102,13 @@ jobs:
                     libasound2-dev
 
             - name: Configure optimized release profile
+              if: ${{ matrix.target.target != 'macos-x64' }}
               shell: bash
               run: |
                   if grep -q "\[profile.release\]" Cargo.toml; then
                     sed -i '/\[profile.release\]/,/^\[/s/^lto.*//g' Cargo.toml
                     sed -i '/\[profile.release\]/,/^\[/s/^codegen-units.*//g' Cargo.toml
                     sed -i '/\[profile.release\]/,/^\[/s/^opt-level.*//g' Cargo.toml
-                    
                     sed -i '/\[profile.release\]/a opt-level = 3\ncodegen-units = 1\nlto = "fat"' Cargo.toml
                   else
                     cat >> Cargo.toml << EOF
@@ -67,7 +119,26 @@ jobs:
                   opt-level = 3
                   EOF
                   fi
+                  rm -f .cargo/config.toml
 
+            - name: Configure macOS x64 release profile (thin LTO)
+              if: ${{ matrix.target.target == 'macos-x64' }}
+              shell: bash
+              run: |
+                  if grep -q "\[profile.release\]" Cargo.toml; then
+                    sed -i '/\[profile.release\]/,/^\[/s/^lto.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/,/^\[/s/^codegen-units.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/,/^\[/s/^opt-level.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/a opt-level = 3\ncodegen-units = 1\nlto = "thin"' Cargo.toml
+                  else
+                    cat >> Cargo.toml << EOF
+
+                  [profile.release]
+                  lto = "thin"
+                  codegen-units = 1
+                  opt-level = 3
+                  EOF
+                  fi
                   rm -f .cargo/config.toml
 
             - name: Build
@@ -103,24 +174,67 @@ jobs:
                   draft: true
                   prerelease: false
 
+    create-universal:
+        name: Create Universal macOS Binary
+        needs: build
+        runs-on: macos-latest
+        steps:
+            - name: Download arm artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: macos-arm
+                  path: macos-arm
+
+            - name: Download x64 artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: macos-x64
+                  path: macos-x64
+
+            - name: Extract macOS arm artifact
+              run: |
+                  mkdir -p macos-arm/extracted
+                  tar -xzf macos-arm/flowsurface-aarch64-macos.tar.gz -C macos-arm/extracted
+
+            - name: Extract macOS x64 artifact
+              run: |
+                  mkdir -p macos-x64/extracted
+                  tar -xzf macos-x64/flowsurface-x86_64-macos.tar.gz -C macos-x64/extracted
+
+            - name: Create universal binary
+              run: |
+                  mkdir -p target/release
+                  lipo macos-arm/extracted/flowsurface macos-x64/extracted/flowsurface -create -output target/release/flowsurface
+                  tar -czf target/release/flowsurface-universal-macos.tar.gz -C target/release flowsurface
+
+            - name: Upload universal artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: macos-universal
+                  path: target/release/flowsurface-universal-macos.tar.gz
+
     add-assets:
-        needs: create-release
+        needs: [create-release, create-universal]
         name: Add Assets
 
         strategy:
             matrix:
                 target:
-                    - artifact: macos
+                    - artifact: macos-universal
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-universal-macos.tar.gz" >> "$GITHUB_ENV"
                       asset_type: application/gzip
-                    - artifact: windows
+                    - artifact: windows-x64
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-x86_64-windows.zip" >> "$GITHUB_ENV"
                       asset_type: application/x-dosexec
-                    - artifact: linux
+                    - artifact: linux-x64
                       artifact_name: |
-                          echo "ARTIFACT_NAME=$(bash scripts/package-linux.sh archive_name)" >> "$GITHUB_ENV"
+                          echo "ARTIFACT_NAME=flowsurface-x86_64-linux.tar.gz" >> "$GITHUB_ENV"
+                      asset_type: application/gzip
+                    - artifact: linux-arm
+                      artifact_name: |
+                          echo "ARTIFACT_NAME=flowsurface-aarch64-linux.tar.gz" >> "$GITHUB_ENV"
                       asset_type: application/gzip
 
         runs-on: ubuntu-latest
@@ -148,3 +262,62 @@ jobs:
                   asset_path: ./${{ matrix.target.artifact }}/${{ env.ARTIFACT_NAME }}
                   asset_name: ${{ env.ARTIFACT_NAME }}
                   asset_content_type: ${{ matrix.target.asset_type }}
+
+    generate-checksums:
+        needs: [create-release, create-universal]
+        name: Generate Checksums
+        runs-on: ubuntu-latest
+        steps:
+            - name: Download all artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: artifacts
+
+            - name: Generate checksums
+              run: |
+                  # Universal macOS
+                  sha256sum artifacts/macos-universal/flowsurface-universal-macos.tar.gz | awk '{print $1 "  flowsurface-universal-macos.tar.gz"}' >> SHA256SUMS
+                  # Windows x64
+                  sha256sum artifacts/windows-x64/flowsurface-x86_64-windows.zip | awk '{print $1 "  flowsurface-x86_64-windows.zip"}' >> SHA256SUMS
+                  # Linux x64
+                  sha256sum artifacts/linux-x64/flowsurface-x86_64-linux.tar.gz | awk '{print $1 "  flowsurface-x86_64-linux.tar.gz"}' >> SHA256SUMS
+                  # Linux ARM
+                  sha256sum artifacts/linux-arm/flowsurface-aarch64-linux.tar.gz | awk '{print $1 "  flowsurface-aarch64-linux.tar.gz"}' >> SHA256SUMS
+
+                  cat SHA256SUMS
+
+            - name: Import GPG key
+              run: |
+                  echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+                  echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
+                  gpg-connect-agent reloadagent /bye
+
+            - name: Sign checksums
+              env:
+                  GPG_TTY: /dev/null
+              run: |
+                  if [ -n "${{ secrets.GPG_PASSPHRASE }}" ]; then
+                    echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback --armor --detach-sign SHA256SUMS
+                  else
+                    gpg --batch --yes --pinentry-mode loopback --armor --detach-sign SHA256SUMS
+                  fi
+
+            - name: Upload checksums as release asset
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                  upload_url: ${{ needs.create-release.outputs.upload_url }}
+                  asset_path: ./SHA256SUMS
+                  asset_name: SHA256SUMS
+                  asset_content_type: text/plain
+
+            - name: Upload signature as release asset
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                  upload_url: ${{ needs.create-release.outputs.upload_url }}
+                  asset_path: ./SHA256SUMS.asc
+                  asset_name: SHA256SUMS.asc
+                  asset_content_type: text/plain
