@@ -1,23 +1,36 @@
 #!/bin/bash
 TARGET="flowsurface"
 VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
-ARCH="universal"
+ARCH=${1:-universal} # x86_64 | aarch64 | universal
 RELEASE_DIR="target/release"
-ARCHIVE_NAME="$TARGET-$ARCH-macos.tar.gz"
-ARCHIVE_PATH="$RELEASE_DIR/$ARCHIVE_NAME"
 
-# build binaries
 export MACOSX_DEPLOYMENT_TARGET="11.0"
+
 rustup target add x86_64-apple-darwin
 rustup target add aarch64-apple-darwin
+
+mkdir -p "$RELEASE_DIR"
+
+if [ "$ARCH" = "x86_64" ]; then
+  cargo build --release --target=x86_64-apple-darwin
+  cp "target/x86_64-apple-darwin/release/$TARGET" "$RELEASE_DIR/$TARGET"
+  tar -czf "$RELEASE_DIR/${TARGET}-x86_64-macos.tar.gz" -C "$RELEASE_DIR" "$TARGET"
+  echo "Created $RELEASE_DIR/${TARGET}-x86_64-macos.tar.gz"
+  exit 0
+fi
+
+if [ "$ARCH" = "aarch64" ]; then
+  cargo build --release --target=aarch64-apple-darwin
+  cp "target/aarch64-apple-darwin/release/$TARGET" "$RELEASE_DIR/$TARGET"
+  tar -czf "$RELEASE_DIR/${TARGET}-aarch64-macos.tar.gz" -C "$RELEASE_DIR" "$TARGET"
+  echo "Created $RELEASE_DIR/${TARGET}-aarch64-macos.tar.gz"
+  exit 0
+fi
+
+# default: build both and create universal
 cargo build --release --target=x86_64-apple-darwin
 cargo build --release --target=aarch64-apple-darwin
 
-# create universal binary
-mkdir -p "$RELEASE_DIR"
 lipo "target/x86_64-apple-darwin/release/$TARGET" "target/aarch64-apple-darwin/release/$TARGET" -create -output "$RELEASE_DIR/$TARGET"
-
-# create tar archive
-tar -czf "$ARCHIVE_PATH" -C "$RELEASE_DIR" "$TARGET"
-
-echo "Created archive at $ARCHIVE_PATH"
+tar -czf "$RELEASE_DIR/${TARGET}-universal-macos.tar.gz" -C "$RELEASE_DIR" "$TARGET"
+echo "Created $RELEASE_DIR/${TARGET}-universal-macos.tar.gz"
