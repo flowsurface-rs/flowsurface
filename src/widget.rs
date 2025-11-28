@@ -18,10 +18,22 @@ pub mod decorate;
 pub mod multi_split;
 pub mod toast;
 
+#[allow(dead_code)]
+pub const DEFAULT_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub fn tooltip<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
     tooltip: Option<&'a str>,
     position: Position,
+) -> Element<'a, Message> {
+    tooltip_with_delay(content, tooltip, position, std::time::Duration::ZERO)
+}
+
+pub fn tooltip_with_delay<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    tooltip: Option<&'a str>,
+    position: Position,
+    delay: std::time::Duration,
 ) -> Element<'a, Message> {
     match tooltip {
         Some(tooltip) => iced::widget::tooltip(
@@ -29,6 +41,7 @@ pub fn tooltip<'a, Message: 'a>(
             container(text(tooltip)).style(style::tooltip).padding(8),
             position,
         )
+        .delay(delay)
         .into(),
         None => content.into(),
     }

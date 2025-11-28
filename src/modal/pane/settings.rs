@@ -17,7 +17,7 @@ use data::panel::ladder;
 use data::panel::timeandsales::{StackedBar, StackedBarRatio};
 use data::util::format_with_commas;
 
-use iced::widget::space;
+use iced::widget::{checkbox, space};
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -203,24 +203,22 @@ pub fn heatmap_cfg_view<'a>(
     .spacing(8);
 
     let noise_filters_column = {
-        let merge_checkbox = iced::widget::checkbox(
-            "Merge orders if sizes are similar",
-            cfg.coalescing.is_some(),
-        )
-        .on_toggle(move |value| {
-            Message::VisualConfigChanged(
-                pane,
-                VisualConfig::Heatmap(heatmap::Config {
-                    coalescing: if value {
-                        Some(CoalesceKind::Average(0.15))
-                    } else {
-                        None
-                    },
-                    ..cfg
-                }),
-                false,
-            )
-        });
+        let merge_checkbox = checkbox(cfg.coalescing.is_some())
+            .label("Merge orders if sizes are similar")
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        coalescing: if value {
+                            Some(CoalesceKind::Average(0.15))
+                        } else {
+                            None
+                        },
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
 
         let mut col = column![text("Noise filters").size(14), merge_checkbox].spacing(8);
         if let Some(c) = coalescer_cfg {
@@ -230,18 +228,18 @@ pub fn heatmap_cfg_view<'a>(
     };
 
     let trade_viz_column = {
-        let dyn_checkbox =
-            iced::widget::checkbox("Dynamic circle radius", cfg.trade_size_scale.is_some())
-                .on_toggle(move |value| {
-                    Message::VisualConfigChanged(
-                        pane,
-                        VisualConfig::Heatmap(heatmap::Config {
-                            trade_size_scale: if value { Some(100) } else { None },
-                            ..cfg
-                        }),
-                        false,
-                    )
-                });
+        let dyn_checkbox = checkbox(cfg.trade_size_scale.is_some())
+            .label("Dynamic circle radius")
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        trade_size_scale: if value { Some(100) } else { None },
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
 
         let mut col = column![text("Trade visualization").size(14), dyn_checkbox].spacing(8);
         if let Some(slider) = circle_scaling_slider {
@@ -339,7 +337,7 @@ pub fn timesales_cfg_view<'a>(
     let stacked_bar: Element<_> = {
         let is_shown = cfg.stacked_bar.is_some();
 
-        let enable_checkbox = iced::widget::checkbox("Show stacked bar", is_shown).on_toggle({
+        let enable_checkbox = checkbox(is_shown).label("Show stacked bar").on_toggle({
             move |value| {
                 let current_ratio = cfg.stacked_bar.map(|h| h.ratio()).unwrap_or_default();
                 Message::VisualConfigChanged(
@@ -535,8 +533,9 @@ pub fn kline_cfg_view<'a>(
 
 pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
     let display_options = {
-        let spread =
-            iced::widget::checkbox("Show Spread", cfg.show_spread).on_toggle(move |value| {
+        let spread = checkbox(cfg.show_spread)
+            .label("Show Spread")
+            .on_toggle(move |value| {
                 Message::VisualConfigChanged(
                     pane,
                     VisualConfig::Ladder(ladder::Config {
@@ -547,7 +546,8 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
                 )
             });
 
-        let chase_tracker = iced::widget::checkbox("Show Chase Tracker", cfg.show_chase_tracker)
+        let chase_tracker = checkbox(cfg.show_chase_tracker)
+            .label("Show Chase Tracker")
             .on_toggle(move |value| {
                 Message::VisualConfigChanged(
                     pane,
@@ -634,7 +634,7 @@ pub mod study {
     use data::chart::kline::FootprintStudy;
     use iced::{
         Element, padding,
-        widget::{button, column, container, row, slider, space, text},
+        widget::{button, checkbox, column, container, row, slider, space, text},
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -706,19 +706,19 @@ pub mod study {
                         let color_scale_enabled = color_scale.is_some();
                         let color_scale_value = color_scale.unwrap_or(100);
 
-                        let color_scale_checkbox =
-                            iced::widget::checkbox("Dynamic color scaling", color_scale_enabled)
-                                .on_toggle(move |is_enabled| {
-                                    on_change(FootprintStudy::Imbalance {
-                                        threshold,
-                                        color_scale: if is_enabled {
-                                            Some(color_scale_value)
-                                        } else {
-                                            None
-                                        },
-                                        ignore_zeros,
-                                    })
-                                });
+                        let color_scale_checkbox = checkbox(color_scale_enabled)
+                            .label("Dynamic color scaling")
+                            .on_toggle(move |is_enabled| {
+                                on_change(FootprintStudy::Imbalance {
+                                    threshold,
+                                    color_scale: if is_enabled {
+                                        Some(color_scale_value)
+                                    } else {
+                                        None
+                                    },
+                                    ignore_zeros,
+                                })
+                            });
 
                         if color_scale_enabled {
                             let scaling_slider = column![
@@ -743,7 +743,7 @@ pub mod study {
                     };
 
                     let ignore_zeros_checkbox = {
-                        let cbox = iced::widget::checkbox("Ignore zeros", ignore_zeros).on_toggle(
+                        let cbox = checkbox(ignore_zeros).label("Ignore zeros").on_toggle(
                             move |is_checked| {
                                 on_change(FootprintStudy::Imbalance {
                                     threshold,
@@ -939,8 +939,8 @@ pub mod study {
                 (is_selected, study_config)
             };
 
-            let label = study_config.map_or(study.to_string(), |s| s.to_string());
-            let checkbox = iced::widget::checkbox(label, is_selected)
+            let checkbox = checkbox(is_selected)
+                .label(study_config.map_or(study.to_string(), |s| s.to_string()))
                 .on_toggle(move |checked| Message::StudyToggled(study, checked));
 
             let mut checkbox_row = row![checkbox, space::horizontal()]

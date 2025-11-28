@@ -149,10 +149,11 @@ impl AudioStream {
                             push_freq: PushFrequency::ServerDefault,
                         });
 
-                    let stream_checkbox =
-                        checkbox(format!("{exchange} - {ticker}"), is_audio_enabled).on_toggle(
-                            move |is_checked| Message::ToggleStream(is_checked, (exchange, ticker)),
-                        );
+                    let stream_checkbox = checkbox(is_audio_enabled)
+                        .label(format!("{exchange} - {ticker}"))
+                        .on_toggle(move |is_checked| {
+                            Message::ToggleStream(is_checked, (exchange, ticker))
+                        });
 
                     let mut stream_row = row![stream_checkbox, space::horizontal(),]
                         .height(36)

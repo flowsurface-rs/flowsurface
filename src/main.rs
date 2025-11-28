@@ -712,7 +712,8 @@ impl Flowsurface {
                             exchange::SizeUnit::Base => false,
                         };
 
-                        let checkbox = iced::widget::checkbox("Size in quote currency", is_active)
+                        let checkbox = iced::widget::checkbox(is_active)
+                            .label("Size in quote currency")
                             .on_toggle(|checked| {
                                 let on_dialog_confirm = Message::ApplyVolumeSizeUnit(if checked {
                                     exchange::SizeUnit::Quote
@@ -780,7 +781,8 @@ impl Flowsurface {
                     let trade_fetch_checkbox = {
                         let is_active = exchange::fetcher::is_trade_fetch_enabled();
 
-                        let checkbox = iced::widget::checkbox("Fetch trades (Binance)", is_active)
+                        let checkbox = iced::widget::checkbox(is_active)
+                            .label("Fetch trades (Binance)")
                             .on_toggle(|checked| {
                                 if checked {
                                     let confirm_dialog = screen::ConfirmDialog::new(
