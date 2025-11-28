@@ -33,6 +33,9 @@ iced = { version = "0.14.0-dev", default-features = false, features = [
     "sipper",
     "advanced",
     "unconditional-rendering",
+    "crisp",
+    "x11",
+    "wayland",
 ] }
 iced_core.workspace = true
 iced_futures.workspace = true
@@ -55,6 +58,6 @@ data = { version = "0.1.0", path = "data" }
 debug = ["iced/hot"]
 
 [patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "c538311ee0ed9026a7d6fabc00971b306a56fe61" }
-iced_futures = { git = "https://github.com/iced-rs/iced", rev = "c538311ee0ed9026a7d6fabc00971b306a56fe61" }
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "c538311ee0ed9026a7d6fabc00971b306a56fe61"}
+iced = { git = "https://github.com/iced-rs/iced", rev = "d94c080dd4cf94a799c5d5437fc755c1f24b7c1a" }
+iced_futures = { git = "https://github.com/iced-rs/iced", rev = "d94c080dd4cf94a799c5d5437fc755c1f24b7c1a" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "d94c080dd4cf94a799c5d5437fc755c1f24b7c1a"}
