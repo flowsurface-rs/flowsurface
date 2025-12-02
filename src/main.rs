@@ -156,6 +156,14 @@ impl Flowsurface {
                     exchange::Event::Disconnected(exchange, reason) => {
                         log::info!("a stream disconnected from {exchange} WS: {reason:?}");
                     }
+                    exchange::Event::BboReceived { stream, time, bbo } => {
+                        return dashboard
+                            .update_bbo(&stream, time, &bbo, main_window_id)
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
+                    }
                     exchange::Event::DepthReceived(
                         stream,
                         depth_update_t,

@@ -46,9 +46,26 @@ impl<'de> serde::Deserialize<'de> for DeOrder {
     }
 }
 
-struct Order {
-    price: Price,
-    qty: f32,
+#[derive(Debug, Clone, Copy)]
+pub struct BestBidAsk {
+    pub bid: Order,
+    pub ask: Order,
+}
+
+impl BestBidAsk {
+    pub fn mid_price(&self) -> Option<Price> {
+        if self.bid.qty > 0.0 && self.ask.qty > 0.0 {
+            Some((self.bid.price + self.ask.price) / 2)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Order {
+    pub price: Price,
+    pub qty: f32,
 }
 
 pub struct DepthPayload {

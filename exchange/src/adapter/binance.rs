@@ -1,3 +1,5 @@
+use crate::depth::{BestBidAsk, Order};
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, SizeUnit, StreamKind,
@@ -202,16 +204,32 @@ struct PerpDepth {
     asks: Vec<DeOrder>,
 }
 
+#[derive(Deserialize)]
+struct BookTicker {
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "b", deserialize_with = "de_string_to_f32")]
+    bid_price: f32,
+    #[serde(rename = "B", deserialize_with = "de_string_to_f32")]
+    bid_qty: f32,
+    #[serde(rename = "a", deserialize_with = "de_string_to_f32")]
+    ask_price: f32,
+    #[serde(rename = "A", deserialize_with = "de_string_to_f32")]
+    ask_qty: f32,
+}
+
 enum StreamData {
     Trade(SonicTrade),
     Depth(Ticker, SonicDepth),
     Kline(Ticker, SonicKline),
+    Bbo(Ticker, BookTicker),
 }
 
 enum StreamWrapper {
     Trade,
     Depth,
     Kline,
+    Bbo,
 }
 
 impl StreamWrapper {
@@ -223,6 +241,7 @@ impl StreamWrapper {
                 s if s.starts_with("de") => Some(StreamWrapper::Depth),
                 s if s.starts_with("ag") => Some(StreamWrapper::Trade),
                 s if s.starts_with("kl") => Some(StreamWrapper::Kline),
+                s if s.starts_with("bo") => Some(StreamWrapper::Bbo),
                 _ => None,
             })
     }
@@ -269,6 +288,12 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
                         ));
                     }
                 },
+                Some(StreamWrapper::Bbo) => {
+                    let bbo: BookTicker = sonic_rs::from_str(&v.as_raw_faststr())
+                        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+
+                    return Ok(StreamData::Bbo(Ticker::new(&bbo.symbol, exchange), bbo));
+                }
                 Some(StreamWrapper::Kline) => {
                     let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())
                         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -338,17 +363,9 @@ async fn try_resync(
     *already_fetching = false;
 }
 
-pub fn partial_book_stream(
-    tickers: Vec<TickerInfo>,
-    market: MarketKind,
-) -> impl Stream<Item = Event> {
+pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
-
-        let mut orderbooks = tickers
-            .iter()
-            .map(|ti| (ti.ticker, LocalDepthCache::default()))
-            .collect::<HashMap<Ticker, LocalDepthCache>>();
 
         let mut last_send_times: HashMap<Ticker, std::time::Instant> = HashMap::new();
         const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
@@ -365,7 +382,7 @@ pub fn partial_book_stream(
                         .map(|ticker_info| {
                             let (symbol_str, _market) =
                                 ticker_info.ticker.to_full_symbol_and_type();
-                            format!("{}@depth5@0ms", symbol_str.to_lowercase())
+                            format!("{}@bookTicker", symbol_str.to_lowercase())
                         })
                         .collect::<Vec<String>>()
                         .join("/");
@@ -391,8 +408,7 @@ pub fn partial_book_stream(
                         Ok(msg) => match msg.opcode {
                             OpCode::Text => match feed_de(&msg.payload[..], market) {
                                 Ok(data) => {
-                                    if let StreamData::Depth(ticker, depth_type) = data
-                                        && let Some(orderbook) = orderbooks.get_mut(&ticker)
+                                    if let StreamData::Bbo(ticker, book) = data
                                         && let Some(ticker_info) =
                                             tickers.iter().find(|ti| ti.ticker == ticker)
                                     {
@@ -408,26 +424,31 @@ pub fn partial_book_stream(
 
                                         let contract_size = get_contract_size(&ticker, market);
 
-                                        orderbook.update(
-                                            DepthUpdate::Snapshot(new_depth_cache(
-                                                &depth_type,
-                                                contract_size,
-                                            )),
-                                            ticker_info.min_ticksize,
-                                        );
+                                        let time = chrono::Utc::now().timestamp_millis() as u64;
 
-                                        let time = match &depth_type {
-                                            SonicDepth::Perp(de_depth) => de_depth.time,
-                                            SonicDepth::Spot(de_depth) => de_depth.time,
+                                        let bbo = BestBidAsk {
+                                            bid: Order {
+                                                price: Price::from_f32(book.bid_price)
+                                                    .round_to_min_tick(ticker_info.min_ticksize),
+                                                qty: contract_size.map_or(book.bid_qty, |size| {
+                                                    (book.bid_qty * size).round()
+                                                }),
+                                            },
+                                            ask: Order {
+                                                price: Price::from_f32(book.ask_price)
+                                                    .round_to_min_tick(ticker_info.min_ticksize),
+                                                qty: contract_size.map_or(book.ask_qty, |size| {
+                                                    (book.ask_qty * size).round()
+                                                }),
+                                            },
                                         };
 
                                         let _ = output
-                                            .send(Event::DepthReceived(
-                                                StreamKind::PartialBook(*ticker_info),
+                                            .send(Event::BboReceived {
+                                                stream: StreamKind::PartialBook(*ticker_info),
                                                 time,
-                                                orderbook.depth.clone(),
-                                                vec![].into_boxed_slice(),
-                                            ))
+                                                bbo,
+                                            })
                                             .await;
 
                                         last_send_times.insert(ticker, now);

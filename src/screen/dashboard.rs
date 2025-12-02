@@ -981,12 +981,41 @@ impl Dashboard {
                         }
                         pane::Content::Comparison(chart) => {
                             if let Some(c) = chart {
-                                c.insert_bbo(&stream.ticker_info(), depth_update_t, depth);
+                                c.insert_depth(&stream.ticker_info(), depth_update_t, depth);
                             }
                         }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");
                         }
+                    }
+                    found_match = true;
+                }
+            });
+
+        if found_match {
+            Task::none()
+        } else {
+            log::debug!("No matching pane found for the stream: {stream:?}");
+            self.refresh_streams(main_window)
+        }
+    }
+
+    pub fn update_bbo(
+        &mut self,
+        stream: &StreamKind,
+        bbo_update_t: u64,
+        bbo: &exchange::depth::BestBidAsk,
+        main_window: window::Id,
+    ) -> Task<Message> {
+        let mut found_match = false;
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                if pane_state.matches_stream(stream) {
+                    if let pane::Content::Comparison(chart) = &mut pane_state.content
+                        && let Some(c) = chart
+                    {
+                        c.insert_bbo(&stream.ticker_info(), bbo_update_t, bbo);
                     }
                     found_match = true;
                 }
@@ -1087,7 +1116,7 @@ impl Dashboard {
 
                 let partial_book_params = specs.partial_book.to_vec();
                 if !specs.partial_book.is_empty() {
-                    subs.push(partial_book_sub(exchange, partial_book_params));
+                    subs.push(bbo_subscription(exchange, partial_book_params));
                 }
 
                 let kline_params = specs
@@ -1385,7 +1414,7 @@ pub fn depth_subscription(
     }
 }
 
-pub fn partial_book_sub(
+pub fn bbo_subscription(
     exchange: Exchange,
     tickers: Vec<TickerInfo>,
 ) -> Subscription<exchange::Event> {
@@ -1394,7 +1423,7 @@ pub fn partial_book_sub(
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
             let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
-                binance::partial_book_stream(cfg.id.clone(), cfg.market_type)
+                binance::bbo_stream(cfg.id.clone(), cfg.market_type)
             };
             Subscription::run_with(config, builder)
         }

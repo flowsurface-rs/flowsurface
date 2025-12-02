@@ -1,7 +1,7 @@
 use super::{Ticker, Timeframe};
 use crate::{
     Kline, OpenInterest, Price, PushFrequency, TickMultiplier, TickerInfo, TickerStats, Trade,
-    depth::Depth,
+    depth::{self, Depth},
 };
 
 use enum_map::{Enum, EnumMap};
@@ -624,6 +624,11 @@ pub enum Event {
     Disconnected(Exchange, String),
     DepthReceived(StreamKind, u64, Arc<Depth>, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),
+    BboReceived {
+        stream: StreamKind,
+        time: u64,
+        bbo: depth::BestBidAsk,
+    },
 }
 
 #[derive(Debug, Clone, Hash)]
