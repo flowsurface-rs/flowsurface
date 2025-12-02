@@ -82,6 +82,9 @@ impl ResolvedStream {
                         };
                         PersistStreamKind::Kline(persist_kline)
                     }
+                    StreamKind::PartialBook(ticker_info) => {
+                        PersistStreamKind::PartialBook(ticker_info.ticker)
+                    }
                 })
                 .collect(),
         }
@@ -205,13 +208,15 @@ pub enum StreamKind {
         depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     },
+    PartialBook(TickerInfo),
 }
 
 impl StreamKind {
     pub fn ticker_info(&self) -> TickerInfo {
         match self {
             StreamKind::Kline { ticker_info, .. }
-            | StreamKind::DepthAndTrades { ticker_info, .. } => *ticker_info,
+            | StreamKind::DepthAndTrades { ticker_info, .. }
+            | StreamKind::PartialBook(ticker_info) => *ticker_info,
         }
     }
 
@@ -258,6 +263,7 @@ impl UniqueStreams {
             | StreamKind::DepthAndTrades { ticker_info, .. } => {
                 (ticker_info.exchange(), ticker_info)
             }
+            StreamKind::PartialBook(ticker_info) => (ticker_info.exchange(), ticker_info),
         };
 
         self.streams[exchange]
@@ -278,10 +284,15 @@ impl UniqueStreams {
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));
+        let partial_book = self.streams(Some(exchange), |_, stream| match stream {
+            StreamKind::PartialBook(ticker_info) => Some(*ticker_info),
+            _ => None,
+        });
 
         self.specs[exchange] = Some(StreamSpecs {
             depth: depth_streams,
             kline: kline_streams,
+            partial_book,
         });
     }
 
@@ -331,6 +342,7 @@ impl UniqueStreams {
 pub enum PersistStreamKind {
     Kline(PersistKline),
     DepthAndTrades(PersistDepth),
+    PartialBook(Ticker),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -367,6 +379,9 @@ impl From<StreamKind> for PersistStreamKind {
                 depth_aggr,
                 push_freq,
             }),
+            StreamKind::PartialBook(ticker_info) => {
+                PersistStreamKind::PartialBook(ticker_info.ticker)
+            }
         }
     }
 }
@@ -392,6 +407,9 @@ impl PersistStreamKind {
                     push_freq: d.push_freq,
                 })
                 .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
+            PersistStreamKind::PartialBook(d) => resolver(&d)
+                .map(StreamKind::PartialBook)
+                .ok_or_else(|| format!("TickerInfo not found for {}", d)),
         }
     }
 }
@@ -415,6 +433,7 @@ fn default_push_freq() -> PushFrequency {
 pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
+    pub partial_book: Vec<TickerInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]

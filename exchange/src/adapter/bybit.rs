@@ -112,7 +112,7 @@ pub struct SonicKline {
 
 enum StreamData {
     Trade(Vec<SonicTrade>),
-    Depth(SonicDepth, String, u64),
+    Depth(Ticker, SonicDepth, String, u64),
     Kline(Ticker, Vec<SonicKline>),
 }
 
@@ -234,13 +234,15 @@ fn feed_de(
                 }
             }
         } else if k == "cts"
+            && depth_wrap.is_some()
+            && let Some(t) = topic_ticker
             && let Some(dw) = depth_wrap
         {
             let time: u64 = v
                 .as_u64()
                 .ok_or_else(|| AdapterError::ParseError("Failed to parse u64".to_string()))?;
 
-            return Ok(StreamData::Depth(dw, data_type.to_string(), time));
+            return Ok(StreamData::Depth(t, dw, data_type.to_string(), time));
         }
     }
 
@@ -299,6 +301,134 @@ async fn try_connect(
             State::Disconnected
         }
     }
+}
+
+pub fn partial_book_stream(
+    tickers: Vec<TickerInfo>,
+    market: MarketKind,
+) -> impl Stream<Item = Event> {
+    stream::channel(100, async move |mut output| {
+        let mut state: State = State::Disconnected;
+
+        let exchange = exchange_from_market_type(market);
+
+        let mut orderbooks: HashMap<Ticker, LocalDepthCache> = tickers
+            .iter()
+            .map(|ti| (ti.ticker, LocalDepthCache::default()))
+            .collect::<HashMap<Ticker, LocalDepthCache>>();
+
+        let size_in_quote_ccy =
+            volume_size_unit() == SizeUnit::Quote && market != MarketKind::InversePerps;
+
+        loop {
+            match &mut state {
+                State::Disconnected => {
+                    let stream_str = tickers
+                        .iter()
+                        .map(|ticker_info| {
+                            let (symbol_str, _market) =
+                                ticker_info.ticker.to_full_symbol_and_type();
+                            format!("orderbook.1.{symbol_str}")
+                        })
+                        .collect::<Vec<String>>();
+
+                    let subscribe_message = serde_json::json!({
+                        "op": "subscribe",
+                        "args": stream_str
+                    });
+
+                    state = try_connect(&subscribe_message, market, &mut output).await;
+                }
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => match feed_de(&msg.payload[..], None, market) {
+                            Ok(data) => {
+                                if let StreamData::Depth(ticker, de_depth, data_type, time) = data
+                                    && let Some(orderbook) = orderbooks.get_mut(&ticker)
+                                    && let Some(ticker_info) =
+                                        tickers.iter().find(|ti| ti.ticker == ticker)
+                                {
+                                    let depth = DepthPayload {
+                                        last_update_id: de_depth.update_id,
+                                        time,
+                                        bids: de_depth
+                                            .bids
+                                            .iter()
+                                            .map(|x| DeOrder {
+                                                price: x.price,
+                                                qty: if size_in_quote_ccy {
+                                                    (x.qty * x.price).round()
+                                                } else {
+                                                    x.qty
+                                                },
+                                            })
+                                            .collect(),
+                                        asks: de_depth
+                                            .asks
+                                            .iter()
+                                            .map(|x| DeOrder {
+                                                price: x.price,
+                                                qty: if size_in_quote_ccy {
+                                                    (x.qty * x.price).round()
+                                                } else {
+                                                    x.qty
+                                                },
+                                            })
+                                            .collect(),
+                                    };
+
+                                    if (data_type == "snapshot") || (depth.last_update_id == 1) {
+                                        orderbook.update(
+                                            DepthUpdate::Snapshot(depth),
+                                            ticker_info.min_ticksize,
+                                        );
+
+                                        let _ = output
+                                            .send(Event::DepthReceived(
+                                                StreamKind::PartialBook(*ticker_info),
+                                                time,
+                                                orderbook.depth.clone(),
+                                                vec![].into_boxed_slice(),
+                                            ))
+                                            .await;
+                                    } else if data_type == "delta" {
+                                        orderbook.update(
+                                            DepthUpdate::Diff(depth),
+                                            ticker_info.min_ticksize,
+                                        );
+
+                                        dbg!("Sending PartialBook DepthReceived");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Error parsing data: {}", e);
+                            }
+                        },
+                        OpCode::Close => {
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Connection closed".to_string(),
+                                ))
+                                .await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                },
+            }
+        }
+    })
 }
 
 pub fn connect_market_stream(
@@ -373,7 +503,7 @@ pub fn connect_market_stream(
                                             trades_buffer.push(trade);
                                         }
                                     }
-                                    StreamData::Depth(de_depth, data_type, time) => {
+                                    StreamData::Depth(_ticker, de_depth, data_type, time) => {
                                         let depth = DepthPayload {
                                             last_update_id: de_depth.update_id,
                                             time,
@@ -481,6 +611,8 @@ pub fn connect_kline_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
+                    dbg!("Bybit Kline Disconnected, trying to connect");
+
                     let stream_str = streams
                         .iter()
                         .map(|(ticker_info, timeframe)| {
@@ -723,6 +855,8 @@ pub async fn fetch_klines(
     let ticker = ticker_info.ticker;
 
     let (symbol_str, market_type) = &ticker.to_full_symbol_and_type();
+    dbg!(&symbol_str, &market_type);
+
     let timeframe_str = {
         if Timeframe::D1 == timeframe {
             "D".to_string()

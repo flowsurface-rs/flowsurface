@@ -172,6 +172,8 @@ enum SonicDepth {
 struct SpotDepth {
     #[serde(rename = "E")]
     time: u64,
+    #[serde(rename = "s")]
+    symbol: String,
     #[serde(rename = "U")]
     first_id: u64,
     #[serde(rename = "u")]
@@ -186,6 +188,8 @@ struct SpotDepth {
 struct PerpDepth {
     #[serde(rename = "T")]
     time: u64,
+    #[serde(rename = "s")]
+    symbol: String,
     #[serde(rename = "U")]
     first_id: u64,
     #[serde(rename = "u")]
@@ -200,7 +204,7 @@ struct PerpDepth {
 
 enum StreamData {
     Trade(SonicTrade),
-    Depth(SonicDepth),
+    Depth(Ticker, SonicDepth),
     Kline(Ticker, SonicKline),
 }
 
@@ -250,13 +254,19 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
                         let depth: SpotDepth = sonic_rs::from_str(&v.as_raw_faststr())
                             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-                        return Ok(StreamData::Depth(SonicDepth::Spot(depth)));
+                        return Ok(StreamData::Depth(
+                            Ticker::new(&depth.symbol, exchange),
+                            SonicDepth::Spot(depth),
+                        ));
                     }
                     MarketKind::LinearPerps | MarketKind::InversePerps => {
                         let depth: PerpDepth = sonic_rs::from_str(&v.as_raw_faststr())
                             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-                        return Ok(StreamData::Depth(SonicDepth::Perp(depth)));
+                        return Ok(StreamData::Depth(
+                            Ticker::new(&depth.symbol, exchange),
+                            SonicDepth::Perp(depth),
+                        ));
                     }
                 },
                 Some(StreamWrapper::Kline) => {
@@ -326,6 +336,133 @@ async fn try_resync(
         }
     }
     *already_fetching = false;
+}
+
+pub fn partial_book_stream(
+    tickers: Vec<TickerInfo>,
+    market: MarketKind,
+) -> impl Stream<Item = Event> {
+    stream::channel(100, async move |mut output| {
+        let mut state = State::Disconnected;
+
+        let mut orderbooks = tickers
+            .iter()
+            .map(|ti| (ti.ticker, LocalDepthCache::default()))
+            .collect::<HashMap<Ticker, LocalDepthCache>>();
+
+        let mut last_send_times: HashMap<Ticker, std::time::Instant> = HashMap::new();
+        const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+        let exchange = exchange_from_market_type(market);
+
+        loop {
+            match &mut state {
+                State::Disconnected => {
+                    let domain = ws_domain_from_market_type(market);
+
+                    let streams = tickers
+                        .iter()
+                        .map(|ticker_info| {
+                            let (symbol_str, _market) =
+                                ticker_info.ticker.to_full_symbol_and_type();
+                            format!("{}@depth5@0ms", symbol_str.to_lowercase())
+                        })
+                        .collect::<Vec<String>>()
+                        .join("/");
+
+                    let url = format!("wss://{domain}/stream?streams={streams}");
+
+                    if let Ok(websocket) = connect_ws(domain, &url).await {
+                        state = State::Connected(websocket);
+                        let _ = output.send(Event::Connected(exchange)).await;
+                    } else {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Failed to connect to websocket".to_string(),
+                            ))
+                            .await;
+                    }
+                }
+                State::Connected(ws) => {
+                    match ws.read_frame().await {
+                        Ok(msg) => match msg.opcode {
+                            OpCode::Text => match feed_de(&msg.payload[..], market) {
+                                Ok(data) => {
+                                    if let StreamData::Depth(ticker, depth_type) = data
+                                        && let Some(orderbook) = orderbooks.get_mut(&ticker)
+                                        && let Some(ticker_info) =
+                                            tickers.iter().find(|ti| ti.ticker == ticker)
+                                    {
+                                        let now = std::time::Instant::now();
+                                        let should_send =
+                                            last_send_times.get(&ticker).is_none_or(|last| {
+                                                now.duration_since(*last) >= MIN_INTERVAL
+                                            });
+
+                                        if !should_send {
+                                            continue;
+                                        }
+
+                                        let contract_size = get_contract_size(&ticker, market);
+
+                                        orderbook.update(
+                                            DepthUpdate::Snapshot(new_depth_cache(
+                                                &depth_type,
+                                                contract_size,
+                                            )),
+                                            ticker_info.min_ticksize,
+                                        );
+
+                                        let time = match &depth_type {
+                                            SonicDepth::Perp(de_depth) => de_depth.time,
+                                            SonicDepth::Spot(de_depth) => de_depth.time,
+                                        };
+
+                                        let _ = output
+                                            .send(Event::DepthReceived(
+                                                StreamKind::PartialBook(*ticker_info),
+                                                time,
+                                                orderbook.depth.clone(),
+                                                vec![].into_boxed_slice(),
+                                            ))
+                                            .await;
+
+                                        last_send_times.insert(ticker, now);
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Error parsing depth data: {}", e);
+                                    return;
+                                }
+                            },
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Error reading frame: ".to_string() + &e.to_string(),
+                                ))
+                                .await;
+                        }
+                    };
+                }
+            }
+        }
+    })
 }
 
 #[allow(unused_assignments)]
@@ -431,7 +568,7 @@ pub fn connect_market_stream(
 
                                             trades_buffer.push(trade);
                                         }
-                                        StreamData::Depth(depth_type) => {
+                                        StreamData::Depth(_ticker, depth_type) => {
                                             if already_fetching {
                                                 log::warn!("Already fetching...\n");
                                                 continue;

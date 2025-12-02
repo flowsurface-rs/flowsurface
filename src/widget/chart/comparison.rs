@@ -1089,6 +1089,8 @@ where
 {
     #[allow(unused_assignments)]
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, ctx: &PlotContext) {
+        let is_bbo_mode = self.timeframe.to_milliseconds() < 60_000;
+
         for s in self.series.iter() {
             let pts = s.points();
             if pts.is_empty() {
@@ -1118,9 +1120,13 @@ where
 
             let mut builder = canvas::path::Builder::new();
 
-            let gap_thresh: u64 = ((self.dt_ms_est() as f32) * GAP_BREAK_MULTIPLIER)
-                .max(1.0)
-                .round() as u64;
+            let gap_thresh: u64 = if is_bbo_mode {
+                u64::MAX // Never break lines for BBO data
+            } else {
+                ((self.dt_ms_est() as f32) * GAP_BREAK_MULTIPLIER)
+                    .max(1.0)
+                    .round() as u64
+            };
 
             let mut prev_x: Option<u64> = None;
             match idx_right {

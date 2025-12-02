@@ -131,6 +131,7 @@ impl State {
         self.streams.find_ready_map(|stream| match stream {
             StreamKind::DepthAndTrades { ticker_info, .. }
             | StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+            StreamKind::PartialBook(ticker) => Some(*ticker),
         })
     }
 
@@ -186,6 +187,8 @@ impl State {
                 depth_aggr: derived_plan.depth_aggr,
                 push_freq: derived_plan.push_freq,
             };
+            let partial_book_stream =
+                |derived_plan: &PaneSetup| StreamKind::PartialBook(derived_plan.ticker_info);
 
             match kind {
                 ContentKind::HeatmapChart => {
@@ -303,7 +306,13 @@ impl State {
                             tickers
                                 .iter()
                                 .copied()
-                                .map(|ti| kline_stream(ti, tf))
+                                .map(|ti| {
+                                    if tf.to_milliseconds() < 60_000 {
+                                        partial_book_stream(&derived_plan)
+                                    } else {
+                                        kline_stream(ti, tf)
+                                    }
+                                })
                                 .collect()
                         },
                         || todo!("WIP: ComparisonChart does not support tick basis"),
@@ -1171,9 +1180,15 @@ impl State {
                                                 .selected_tickers()
                                                 .iter()
                                                 .copied()
-                                                .map(|ti| StreamKind::Kline {
-                                                    ticker_info: ti,
-                                                    timeframe: tf,
+                                                .map(|ti| {
+                                                    if tf.to_milliseconds() < 60_000 {
+                                                        StreamKind::PartialBook(ti)
+                                                    } else {
+                                                        StreamKind::Kline {
+                                                            ticker_info: ti,
+                                                            timeframe: tf,
+                                                        }
+                                                    }
                                                 })
                                                 .collect();
 
@@ -1502,7 +1517,14 @@ impl State {
 
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
-            Content::Kline { .. } | Content::Comparison(_) => Some(1000),
+            Content::Kline { .. } => Some(1000),
+            Content::Comparison(c) => {
+                if let Some(chart) = c {
+                    Some(chart.update_interval())
+                } else {
+                    Some(1000)
+                }
+            }
             Content::Heatmap { chart, .. } => {
                 if let Some(chart) = chart {
                     chart.basis_interval()

@@ -979,6 +979,11 @@ impl Dashboard {
                                 panel.insert_buffers(depth_update_t, depth, trades_buffer);
                             }
                         }
+                        pane::Content::Comparison(chart) => {
+                            if let Some(c) = chart {
+                                c.insert_bbo(&stream.ticker_info(), depth_update_t, depth);
+                            }
+                        }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");
                         }
@@ -1078,6 +1083,11 @@ impl Dashboard {
                     if !depth_subs.is_empty() {
                         subs.push(Subscription::batch(depth_subs));
                     }
+                }
+
+                let partial_book_params = specs.partial_book.to_vec();
+                if !specs.partial_book.is_empty() {
+                    subs.push(partial_book_sub(exchange, partial_book_params));
                 }
 
                 let kline_params = specs
@@ -1375,11 +1385,43 @@ pub fn depth_subscription(
     }
 }
 
+pub fn partial_book_sub(
+    exchange: Exchange,
+    tickers: Vec<TickerInfo>,
+) -> Subscription<exchange::Event> {
+    let config = StreamConfig::new(tickers, exchange, None, PushFrequency::ServerDefault);
+
+    match exchange {
+        Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
+            let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
+                binance::partial_book_stream(cfg.id.clone(), cfg.market_type)
+            };
+            Subscription::run_with(config, builder)
+        }
+        Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
+            let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
+                bybit::partial_book_stream(cfg.id.clone(), cfg.market_type)
+            };
+            Subscription::run_with(config, builder)
+        }
+        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
+            let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
+                okex::partial_book_stream(cfg.id.clone(), cfg.market_type)
+            };
+            Subscription::run_with(config, builder)
+        }
+        Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
+            todo!("Hyperliquid partial book stream not implemented yet")
+        }
+    }
+}
+
 pub fn kline_subscription(
     exchange: Exchange,
     kline_subs: Vec<(TickerInfo, Timeframe)>,
 ) -> Subscription<exchange::Event> {
     let config = StreamConfig::new(kline_subs, exchange, None, PushFrequency::ServerDefault);
+
     match exchange {
         Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
             let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {

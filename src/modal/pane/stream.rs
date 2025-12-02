@@ -480,8 +480,18 @@ impl Modifier {
                                         &create_button,
                                         3,
                                     );
-                                    basis_selection_column =
-                                        basis_selection_column.push(kline_timeframe_grid);
+                                    let bbo_timeframe_grid = modifiers_grid(
+                                        &Timeframe::BBO,
+                                        selected_tf,
+                                        |tf| Message::BasisSelected(tf.into()),
+                                        &create_button,
+                                        4,
+                                    );
+
+                                    basis_selection_column = basis_selection_column
+                                        .push(kline_timeframe_grid)
+                                        .push(iced::widget::rule::horizontal(1))
+                                        .push(bbo_timeframe_grid);
                                 }
                                 ModifierKind::Heatmap(_, _) => {
                                     let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP

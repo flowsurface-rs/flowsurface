@@ -230,6 +230,86 @@ impl ComparisonChart {
         }
     }
 
+    pub fn update_interval(&self) -> u64 {
+        if self.is_bbo_based() {
+            self.timeframe.to_milliseconds().max(10)
+        } else {
+            1000
+        }
+    }
+
+    /// Returns true if the current timeframe is sub-minute (BBO-based, no history)
+    fn is_bbo_based(&self) -> bool {
+        self.timeframe.to_milliseconds() < 60_000
+    }
+
+    pub fn insert_bbo(
+        &mut self,
+        ticker_info: &TickerInfo,
+        update_time: u64,
+        depth: &exchange::depth::Depth,
+    ) {
+        if !self.is_bbo_based() {
+            return;
+        }
+
+        let Some(mid_price) = depth.mid_price() else {
+            return;
+        };
+
+        let idx = self.get_or_create_series_idx(ticker_info);
+        let series = &mut self.series[idx];
+
+        let dt = self.timeframe.to_milliseconds().max(1);
+        let aligned_time = (update_time / dt) * dt;
+        let price = mid_price.to_f32();
+
+        if let Some((last_x, last_y)) = series.points.last_mut() {
+            if *last_x == aligned_time {
+                // Same time bucket - update the price (last value wins, or you could average)
+                *last_y = price;
+            } else if aligned_time > *last_x {
+                // New time bucket - push new point
+                series.points.push((aligned_time, price));
+            }
+            // Ignore out-of-order updates (aligned_time < *last_x)
+        } else {
+            // First point for this series
+            series.points.push((aligned_time, price));
+        }
+
+        // Cap the series length
+        if series.points.len() > SERIES_MAX_POINTS {
+            let drop = series.points.len() - SERIES_MAX_POINTS;
+            series.points.drain(0..drop);
+        }
+
+        self.cache_rev = self.cache_rev.wrapping_add(1);
+    }
+
+    /// Returns the required stream kinds for all selected tickers
+    /// based on the current timeframe mode
+    pub fn streams_for_all(&self) -> Vec<StreamKind> {
+        let mut streams = Vec::with_capacity(self.selected_tickers.len());
+
+        if self.is_bbo_based() {
+            // For sub-minute timeframes, subscribe to BBO/depth streams
+            for &t in &self.selected_tickers {
+                streams.push(StreamKind::PartialBook(t));
+            }
+        } else {
+            // For minute+ timeframes, subscribe to kline streams
+            for &t in &self.selected_tickers {
+                streams.push(StreamKind::Kline {
+                    ticker_info: t,
+                    timeframe: self.timeframe,
+                });
+            }
+        }
+
+        streams
+    }
+
     fn get_or_create_series_idx(&mut self, ticker_info: &TickerInfo) -> usize {
         if let Some(&i) = self.series_index.get(ticker_info) {
             i
@@ -340,6 +420,10 @@ impl ComparisonChart {
             self.cache_rev = self.cache_rev.wrapping_add(1);
         }
 
+        if self.is_bbo_based() {
+            return None;
+        }
+
         let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
         self.fetch_action(reqs)
     }
@@ -348,6 +432,7 @@ impl ComparisonChart {
         match basis {
             Basis::Time(tf) => {
                 self.timeframe = tf;
+                let is_bbo_based = self.is_bbo_based();
 
                 let prev_colors: FxHashMap<TickerInfo, iced::Color> = self
                     .series
@@ -360,6 +445,8 @@ impl ComparisonChart {
                     .map(|s| (s.ticker_info, s.name.clone()))
                     .collect();
 
+                // Clear series data when switching timeframes
+                // (especially important when switching between kline and BBO modes)
                 self.series.clear();
                 self.series_index.clear();
 
@@ -376,8 +463,13 @@ impl ComparisonChart {
 
                 self.rebuild_handlers();
 
-                let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
-                self.fetch_action(reqs)
+                // Only fetch for kline-based timeframes
+                if is_bbo_based {
+                    None
+                } else {
+                    let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+                    self.fetch_action(reqs)
+                }
             }
             Basis::Tick(_) => unimplemented!(),
         }
@@ -462,17 +554,6 @@ impl ComparisonChart {
         for &t in &self.selected_tickers {
             self.request_handler.insert(t, RequestHandler::new());
         }
-    }
-
-    fn streams_for_all(&self) -> Vec<StreamKind> {
-        let mut streams = Vec::with_capacity(self.selected_tickers.len());
-        for &t in &self.selected_tickers {
-            streams.push(StreamKind::Kline {
-                ticker_info: t,
-                timeframe: self.timeframe,
-            });
-        }
-        streams
     }
 
     fn upsert_config_color(&mut self, ticker_info: TickerInfo, color: iced::Color) {

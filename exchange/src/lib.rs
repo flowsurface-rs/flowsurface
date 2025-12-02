@@ -71,6 +71,9 @@ impl std::fmt::Display for Timeframe {
             f,
             "{}",
             match self {
+                Timeframe::MS10 => "10ms",
+                Timeframe::MS20 => "20ms",
+                Timeframe::MS50 => "50ms",
                 Timeframe::MS100 => "100ms",
                 Timeframe::MS200 => "200ms",
                 Timeframe::MS300 => "300ms",
@@ -93,6 +96,9 @@ impl std::fmt::Display for Timeframe {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, PartialOrd, Ord)]
 pub enum Timeframe {
+    MS10,
+    MS20,
+    MS50,
     MS100,
     MS200,
     MS300,
@@ -132,6 +138,8 @@ impl Timeframe {
         Timeframe::MS1000,
     ];
 
+    pub const BBO: [Timeframe; 1] = [Timeframe::MS10];
+
     /// # Panics
     ///
     /// Will panic if the `Timeframe` is not one of the defined variants
@@ -153,6 +161,7 @@ impl Timeframe {
 
     pub fn to_milliseconds(self) -> u64 {
         match self {
+            Timeframe::MS10 => 10,
             Timeframe::MS100 => 100,
             Timeframe::MS200 => 200,
             Timeframe::MS300 => 300,
