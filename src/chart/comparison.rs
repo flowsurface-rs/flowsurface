@@ -243,50 +243,6 @@ impl ComparisonChart {
         self.timeframe.to_milliseconds() < 60_000
     }
 
-    pub fn insert_depth(
-        &mut self,
-        ticker_info: &TickerInfo,
-        update_time: u64,
-        depth: &exchange::depth::Depth,
-    ) {
-        if !self.is_bbo_based() {
-            return;
-        }
-
-        let Some(mid_price) = depth.mid_price() else {
-            return;
-        };
-
-        let idx = self.get_or_create_series_idx(ticker_info);
-        let series = &mut self.series[idx];
-
-        let dt = self.timeframe.to_milliseconds().max(1);
-        let aligned_time = (update_time / dt) * dt;
-        let price = mid_price.to_f32();
-
-        if let Some((last_x, last_y)) = series.points.last_mut() {
-            if *last_x == aligned_time {
-                // Same time bucket - update the price (last value wins, or you could average)
-                *last_y = price;
-            } else if aligned_time > *last_x {
-                // New time bucket - push new point
-                series.points.push((aligned_time, price));
-            }
-            // Ignore out-of-order updates (aligned_time < *last_x)
-        } else {
-            // First point for this series
-            series.points.push((aligned_time, price));
-        }
-
-        // Cap the series length
-        if series.points.len() > SERIES_MAX_POINTS {
-            let drop = series.points.len() - SERIES_MAX_POINTS;
-            series.points.drain(0..drop);
-        }
-
-        self.cache_rev = self.cache_rev.wrapping_add(1);
-    }
-
     pub fn insert_bbo(
         &mut self,
         ticker_info: &TickerInfo,
@@ -310,7 +266,6 @@ impl ComparisonChart {
 
         if let Some((last_x, last_y)) = series.points.last_mut() {
             if *last_x == aligned_time {
-                // Same time bucket - update the price (last value wins, or you could average)
                 *last_y = price;
             } else if aligned_time > *last_x {
                 // New time bucket - push new point
@@ -318,7 +273,6 @@ impl ComparisonChart {
             }
             // Ignore out-of-order updates (aligned_time < *last_x)
         } else {
-            // First point for this series
             series.points.push((aligned_time, price));
         }
 

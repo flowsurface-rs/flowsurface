@@ -979,11 +979,6 @@ impl Dashboard {
                                 panel.insert_buffers(depth_update_t, depth, trades_buffer);
                             }
                         }
-                        pane::Content::Comparison(chart) => {
-                            if let Some(c) = chart {
-                                c.insert_depth(&stream.ticker_info(), depth_update_t, depth);
-                            }
-                        }
                         _ => {
                             log::error!("No chart found for the stream: {stream:?}");
                         }
@@ -1429,7 +1424,7 @@ pub fn bbo_subscription(
         }
         Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
             let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
-                bybit::partial_book_stream(cfg.id.clone(), cfg.market_type)
+                bybit::bbo_stream(cfg.id.clone(), cfg.market_type)
             };
             Subscription::run_with(config, builder)
         }

@@ -1,6 +1,7 @@
 use crate::{
     OpenInterest, Price, PushFrequency, SizeUnit,
     adapter::{StreamKind, StreamTicksize},
+    depth::{BestBidAsk, Order},
     limiter::{self, RateLimiter},
     volume_size_unit,
 };
@@ -241,11 +242,6 @@ pub fn partial_book_stream(
             "args": args,
         });
 
-        let mut orderbooks = tickers
-            .iter()
-            .map(|ti| (ti.ticker, LocalDepthCache::default()))
-            .collect::<HashMap<Ticker, LocalDepthCache>>();
-
         let exchange = exchange_from_market_type(market);
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -258,66 +254,46 @@ pub fn partial_book_stream(
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => match feed_de(&msg.payload[..], exchange) {
                             Ok(data) => {
-                                if let StreamData::Depth(ticker, de_depth, data_type, time) = data
-                                    && let Some(orderbook) = orderbooks.get_mut(&ticker)
+                                if let StreamData::Depth(ticker, de_depth, _data_type, time) = data
+                                    && let (Some(best_bid), Some(best_ask)) =
+                                        (de_depth.bids.first(), de_depth.asks.first())
+                                    && let Some(ticker_info) =
+                                        tickers.iter().find(|ti| ti.ticker == ticker)
                                 {
-                                    let contract_size = tickers
-                                        .iter()
-                                        .find(|ti| ti.ticker == ticker)
-                                        .and_then(|ti| ti.contract_size.map(f32::from));
+                                    let contract_size = ticker_info.contract_size.map(f32::from);
 
-                                    let depth = DepthPayload {
-                                        last_update_id: de_depth.update_id,
-                                        time,
-                                        bids: de_depth
-                                            .bids
-                                            .iter()
-                                            .map(|x| DeOrder {
-                                                price: x.price,
-                                                qty: calc_qty(
-                                                    x.qty,
-                                                    x.price,
-                                                    size_in_quote_ccy,
-                                                    contract_size,
-                                                    market,
-                                                ),
-                                            })
-                                            .collect(),
-                                        asks: de_depth
-                                            .asks
-                                            .iter()
-                                            .map(|x| DeOrder {
-                                                price: x.price,
-                                                qty: calc_qty(
-                                                    x.qty,
-                                                    x.price,
-                                                    size_in_quote_ccy,
-                                                    contract_size,
-                                                    market,
-                                                ),
-                                            })
-                                            .collect(),
+                                    let bbo = BestBidAsk {
+                                        bid: Order {
+                                            price: Price::from_f32(best_bid.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize),
+                                            qty: calc_qty(
+                                                best_bid.qty,
+                                                best_bid.price,
+                                                size_in_quote_ccy,
+                                                contract_size,
+                                                market,
+                                            ),
+                                        },
+                                        ask: Order {
+                                            price: Price::from_f32(best_ask.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize),
+                                            qty: calc_qty(
+                                                best_ask.qty,
+                                                best_ask.price,
+                                                size_in_quote_ccy,
+                                                contract_size,
+                                                market,
+                                            ),
+                                        },
                                     };
 
-                                    if let Some(ticker_info) =
-                                        tickers.iter().find(|ti| ti.ticker == ticker)
-                                        && ((data_type == "snapshot")
-                                            || (depth.last_update_id == 1))
-                                    {
-                                        orderbook.update(
-                                            DepthUpdate::Snapshot(depth),
-                                            ticker_info.min_ticksize,
-                                        );
-
-                                        let _ = output
-                                            .send(Event::DepthReceived(
-                                                StreamKind::PartialBook(*ticker_info),
-                                                time,
-                                                orderbook.depth.clone(),
-                                                vec![].into_boxed_slice(),
-                                            ))
-                                            .await;
-                                    }
+                                    let _ = output
+                                        .send(Event::BboReceived {
+                                            stream: StreamKind::PartialBook(*ticker_info),
+                                            time,
+                                            bbo,
+                                        })
+                                        .await;
                                 }
                             }
                             Err(e) => {

@@ -1,3 +1,5 @@
+use crate::depth::{BestBidAsk, Order};
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, SizeUnit, StreamKind,
@@ -303,19 +305,11 @@ async fn try_connect(
     }
 }
 
-pub fn partial_book_stream(
-    tickers: Vec<TickerInfo>,
-    market: MarketKind,
-) -> impl Stream<Item = Event> {
+pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
 
         let exchange = exchange_from_market_type(market);
-
-        let mut orderbooks: HashMap<Ticker, LocalDepthCache> = tickers
-            .iter()
-            .map(|ti| (ti.ticker, LocalDepthCache::default()))
-            .collect::<HashMap<Ticker, LocalDepthCache>>();
 
         let size_in_quote_ccy =
             volume_size_unit() == SizeUnit::Quote && market != MarketKind::InversePerps;
@@ -343,62 +337,40 @@ pub fn partial_book_stream(
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => match feed_de(&msg.payload[..], None, market) {
                             Ok(data) => {
-                                if let StreamData::Depth(ticker, de_depth, data_type, time) = data
-                                    && let Some(orderbook) = orderbooks.get_mut(&ticker)
+                                if let StreamData::Depth(ticker, de_depth, _data_type, time) = data
                                     && let Some(ticker_info) =
                                         tickers.iter().find(|ti| ti.ticker == ticker)
+                                    && let (Some(best_bid), Some(best_ask)) =
+                                        (de_depth.bids.first(), de_depth.asks.first())
                                 {
-                                    let depth = DepthPayload {
-                                        last_update_id: de_depth.update_id,
-                                        time,
-                                        bids: de_depth
-                                            .bids
-                                            .iter()
-                                            .map(|x| DeOrder {
-                                                price: x.price,
-                                                qty: if size_in_quote_ccy {
-                                                    (x.qty * x.price).round()
-                                                } else {
-                                                    x.qty
-                                                },
-                                            })
-                                            .collect(),
-                                        asks: de_depth
-                                            .asks
-                                            .iter()
-                                            .map(|x| DeOrder {
-                                                price: x.price,
-                                                qty: if size_in_quote_ccy {
-                                                    (x.qty * x.price).round()
-                                                } else {
-                                                    x.qty
-                                                },
-                                            })
-                                            .collect(),
+                                    let bbo = BestBidAsk {
+                                        bid: Order {
+                                            price: Price::from_f32(best_bid.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize),
+                                            qty: if size_in_quote_ccy {
+                                                (best_bid.qty * best_bid.price).round()
+                                            } else {
+                                                best_bid.qty
+                                            },
+                                        },
+                                        ask: Order {
+                                            price: Price::from_f32(best_ask.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize),
+                                            qty: if size_in_quote_ccy {
+                                                (best_ask.qty * best_ask.price).round()
+                                            } else {
+                                                best_ask.qty
+                                            },
+                                        },
                                     };
 
-                                    if (data_type == "snapshot") || (depth.last_update_id == 1) {
-                                        orderbook.update(
-                                            DepthUpdate::Snapshot(depth),
-                                            ticker_info.min_ticksize,
-                                        );
-
-                                        let _ = output
-                                            .send(Event::DepthReceived(
-                                                StreamKind::PartialBook(*ticker_info),
-                                                time,
-                                                orderbook.depth.clone(),
-                                                vec![].into_boxed_slice(),
-                                            ))
-                                            .await;
-                                    } else if data_type == "delta" {
-                                        orderbook.update(
-                                            DepthUpdate::Diff(depth),
-                                            ticker_info.min_ticksize,
-                                        );
-
-                                        dbg!("Sending PartialBook DepthReceived");
-                                    }
+                                    let _ = output
+                                        .send(Event::BboReceived {
+                                            stream: StreamKind::PartialBook(*ticker_info),
+                                            time,
+                                            bbo,
+                                        })
+                                        .await;
                                 }
                             }
                             Err(e) => {

@@ -21,6 +21,7 @@ use iced_futures::{
     futures::{SinkExt, Stream, channel::mpsc},
     stream,
 };
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::Deserialize;
 use sonic_rs::{FastStr, to_object_iter_unchecked};
 use tokio::sync::Mutex;
@@ -367,7 +368,8 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
 
-        let mut last_send_times: HashMap<Ticker, std::time::Instant> = HashMap::new();
+        let mut last_send_times: FxHashMap<Ticker, std::time::Instant> =
+            FxHashMap::with_capacity_and_hasher(tickers.len(), FxBuildHasher);
         const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
         let exchange = exchange_from_market_type(market);
@@ -423,7 +425,6 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                                         }
 
                                         let contract_size = get_contract_size(&ticker, market);
-
                                         let time = chrono::Utc::now().timestamp_millis() as u64;
 
                                         let bbo = BestBidAsk {
