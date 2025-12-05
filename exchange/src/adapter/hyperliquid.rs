@@ -1,3 +1,5 @@
+use crate::depth::{BestBidAsk, Order};
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, Price, PushFrequency, SizeUnit, StreamKind, TickMultiplier,
@@ -174,8 +176,15 @@ struct HyperliquidKline {
 #[allow(dead_code)]
 struct HyperliquidDepth {
     coin: String,
-    levels: [Vec<HyperliquidLevel>; 2], // [bids, asks]
     time: u64,
+    levels: [Vec<HyperliquidLevel>; 2], // [bids, asks]
+}
+
+#[derive(Debug, Deserialize)]
+struct HyperliquidBbo {
+    coin: String,
+    time: u64,
+    bbo: [HyperliquidLevel; 2], // [best_bid, best_ask]
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +194,7 @@ struct HyperliquidLevel {
     px: f32,
     #[serde(deserialize_with = "de_string_to_f32")]
     sz: f32,
+    /// Number of orders at the level
     n: u32,
 }
 
@@ -211,6 +221,7 @@ enum StreamData {
     Trade(Vec<HyperliquidTrade>),
     Depth(HyperliquidDepth),
     Kline(HyperliquidKline),
+    Bbo(HyperliquidBbo),
 }
 
 pub async fn fetch_ticksize(
@@ -857,11 +868,140 @@ fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
                 .map_err(|e| AdapterError::ParseError(e.to_string()))?;
             Ok(StreamData::Kline(kline))
         }
+        "bbo" => {
+            let bbo: HyperliquidBbo = serde_json::from_value(json["data"].clone())
+                .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+            Ok(StreamData::Bbo(bbo))
+        }
         _ => Err(AdapterError::ParseError(format!(
             "Unknown channel: {}",
             channel
         ))),
     }
+}
+
+fn exchange_from_market_type(market: MarketKind) -> Exchange {
+    match market {
+        MarketKind::LinearPerps => Exchange::HyperliquidLinear,
+        MarketKind::Spot => Exchange::HyperliquidSpot,
+        _ => panic!("Unsupported market kind for Hyperliquid"),
+    }
+}
+
+pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<Item = Event> {
+    stream::channel(100, async move |mut output| {
+        let mut state = State::Disconnected;
+
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let exchange = exchange_from_market_type(market);
+
+        loop {
+            match &mut state {
+                State::Disconnected => match connect_websocket(WS_DOMAIN, "/ws").await {
+                    Ok(mut websocket) => {
+                        for ticker_info in &tickers {
+                            let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+                            let subscribe_msg = json!({
+                                "method": "subscribe",
+                                "subscription": {
+                                    "type": "bbo",
+                                    "coin": symbol_str
+                                }
+                            });
+
+                            if (websocket
+                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                    subscribe_msg.to_string().as_bytes(),
+                                )))
+                                .await)
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+
+                        state = State::Connected(websocket);
+                        let _ = output.send(Event::Connected(exchange)).await;
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Failed to connect to websocket".to_string(),
+                            ))
+                            .await;
+                    }
+                },
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            if let Ok(StreamData::Bbo(hl_bbo)) =
+                                parse_websocket_message(&msg.payload)
+                                && let Some(ticker_info) =
+                                    tickers.iter().find(|ti| ti.ticker.as_str() == hl_bbo.coin)
+                            {
+                                let best_bid = &hl_bbo.bbo[0];
+                                let best_ask = &hl_bbo.bbo[1];
+
+                                let bbo = BestBidAsk {
+                                    bid: Order {
+                                        price: Price::from_f32(best_bid.px)
+                                            .round_to_min_tick(ticker_info.min_ticksize),
+                                        qty: if size_in_quote_ccy {
+                                            (best_bid.sz * best_bid.px).round()
+                                        } else {
+                                            best_bid.sz
+                                        },
+                                    },
+                                    ask: Order {
+                                        price: Price::from_f32(best_ask.px)
+                                            .round_to_min_tick(ticker_info.min_ticksize),
+                                        qty: if size_in_quote_ccy {
+                                            (best_ask.sz * best_ask.px).round()
+                                        } else {
+                                            best_ask.sz
+                                        },
+                                    },
+                                };
+
+                                let stream = StreamKind::PartialBook(*ticker_info);
+                                let _ = output
+                                    .send(Event::BboReceived {
+                                        stream,
+                                        time: hl_bbo.time,
+                                        bbo,
+                                    })
+                                    .await;
+                            }
+                        }
+                        OpCode::Close => {
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "WebSocket closed".to_string(),
+                                ))
+                                .await;
+                        }
+                        OpCode::Ping => {
+                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                format!("WebSocket error: {}", e),
+                            ))
+                            .await;
+                    }
+                },
+            }
+        }
+    })
 }
 
 pub fn connect_market_stream(
@@ -1064,9 +1204,7 @@ pub fn connect_market_stream(
                                                 ))
                                                 .await;
                                         }
-                                        StreamData::Kline(_) => {
-                                            // Handle kline data if needed for depth stream
-                                        }
+                                        _ => {}
                                     }
                                 }
                             }

@@ -1430,12 +1430,15 @@ pub fn bbo_subscription(
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
             let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
-                okex::partial_book_stream(cfg.id.clone(), cfg.market_type)
+                okex::bbo_stream(cfg.id.clone(), cfg.market_type)
             };
             Subscription::run_with(config, builder)
         }
         Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
-            todo!("Hyperliquid partial book stream not implemented yet")
+            let builder = |cfg: &StreamConfig<Vec<TickerInfo>>| {
+                hyperliquid::bbo_stream(cfg.id.clone(), cfg.market_type)
+            };
+            Subscription::run_with(config, builder)
         }
     }
 }

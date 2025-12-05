@@ -223,10 +223,7 @@ async fn try_connect(
     }
 }
 
-pub fn partial_book_stream(
-    tickers: Vec<TickerInfo>,
-    market: MarketKind,
-) -> impl Stream<Item = Event> {
+pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
 
