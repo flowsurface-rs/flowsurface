@@ -583,8 +583,6 @@ pub fn connect_kline_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    dbg!("Bybit Kline Disconnected, trying to connect");
-
                     let stream_str = streams
                         .iter()
                         .map(|(ticker_info, timeframe)| {
@@ -827,7 +825,6 @@ pub async fn fetch_klines(
     let ticker = ticker_info.ticker;
 
     let (symbol_str, market_type) = &ticker.to_full_symbol_and_type();
-    dbg!(&symbol_str, &market_type);
 
     let timeframe_str = {
         if Timeframe::D1 == timeframe {

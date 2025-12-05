@@ -28,9 +28,12 @@ const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
 /// Gap breaker to avoid drawing across missing data
 const GAP_BREAK_MULTIPLIER: f32 = 3.0;
 
-pub const DEFAULT_ZOOM_POINTS: usize = 150;
-pub const MIN_ZOOM_POINTS: usize = 2;
-pub const MAX_ZOOM_POINTS: usize = 5000;
+pub const DEFAULT_KLINE_ZOOM: usize = 150;
+pub const DEFAULT_BBO_ZOOM: usize = 2500;
+
+pub const MIN_ZOOM_POINTS: usize = 10;
+pub const MAX_KLINE_ZOOM: usize = 5000;
+pub const MAX_BBO_ZOOM: usize = 15000;
 
 const LEGEND_PADDING: f32 = 4.0;
 const LEGEND_LINE_H: f32 = TEXT_SIZE + 6.0;
@@ -104,7 +107,11 @@ where
         Self {
             series,
             stroke_width: 2.0,
-            zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
+            zoom: Zoom::points(if timeframe.to_milliseconds() < 60_000 {
+                DEFAULT_BBO_ZOOM
+            } else {
+                DEFAULT_KLINE_ZOOM
+            }),
             timeframe,
             pan: 0.0,
             timezone: UserTimezone::Utc,
@@ -159,16 +166,30 @@ where
         if z.is_all() {
             return Zoom::all();
         }
-        let n = z.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+        let max_zoom = self.max_zoom_points();
+        let n = z.0.clamp(MIN_ZOOM_POINTS, max_zoom);
         Zoom::points(n)
+    }
+
+    fn max_zoom_points(&self) -> usize {
+        let is_bbo_based = self.timeframe.to_milliseconds() < 60_000;
+
+        if is_bbo_based {
+            MAX_BBO_ZOOM
+        } else {
+            MAX_KLINE_ZOOM
+        }
     }
 
     fn step_zoom_percent(&self, current: Zoom, zoom_in: bool) -> Zoom {
         let len = self.max_points_available().max(MIN_ZOOM_POINTS);
+
+        let max_zoom = self.max_zoom_points();
+
         let base_n = if current.is_all() {
             len
         } else {
-            current.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS)
+            current.0.clamp(MIN_ZOOM_POINTS, max_zoom)
         };
 
         let step = ((base_n as f32) * ZOOM_STEP_PCT).ceil().max(1.0) as usize;
@@ -176,7 +197,7 @@ where
         let new_n = if zoom_in {
             base_n.saturating_sub(step).max(MIN_ZOOM_POINTS)
         } else {
-            base_n.saturating_add(step).min(MAX_ZOOM_POINTS)
+            base_n.saturating_add(step).min(max_zoom)
         };
 
         Zoom::points(new_n)
@@ -203,7 +224,7 @@ where
         if self.zoom.is_all() {
             ((data_max_x - data_min_x) as f32).max(1.0)
         } else {
-            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS);
+            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, self.max_zoom_points());
             let dt = (self.dt_ms_est() as f32).max(1e-6);
             ((n.saturating_sub(1)) as f32 * dt).max(1.0)
         }

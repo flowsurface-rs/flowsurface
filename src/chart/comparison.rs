@@ -1,4 +1,6 @@
-use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
+use crate::widget::chart::comparison::{
+    DEFAULT_BBO_ZOOM, DEFAULT_KLINE_ZOOM, LineComparison, LineComparisonEvent,
+};
 use crate::widget::chart::{Series, Zoom, domain};
 
 use data::chart::Basis;
@@ -71,7 +73,11 @@ impl ComparisonChart {
 
         Self {
             last_tick: Instant::now(),
-            zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
+            zoom: Zoom::points(if timeframe.to_milliseconds() < 60_000 {
+                DEFAULT_BBO_ZOOM
+            } else {
+                DEFAULT_KLINE_ZOOM
+            }),
             series,
             series_index,
             timeframe,
@@ -105,7 +111,11 @@ impl ComparisonChart {
                     Some(Action::RemoveSeries(ticker_info))
                 }
                 LineComparisonEvent::XAxisDoubleClick => {
-                    self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
+                    self.zoom = Zoom::points(if self.is_bbo_based() {
+                        DEFAULT_BBO_ZOOM
+                    } else {
+                        DEFAULT_KLINE_ZOOM
+                    });
                     self.pan = DEFAULT_PAN_POINTS;
                     None
                 }
@@ -429,8 +439,8 @@ impl ComparisonChart {
     pub fn set_basis(&mut self, basis: data::chart::Basis) -> Option<super::Action> {
         match basis {
             Basis::Time(tf) => {
+                let was_bbo_based = self.is_bbo_based();
                 self.timeframe = tf;
-                let is_bbo_based = self.is_bbo_based();
 
                 let prev_colors: FxHashMap<TickerInfo, iced::Color> = self
                     .series
@@ -443,10 +453,19 @@ impl ComparisonChart {
                     .map(|s| (s.ticker_info, s.name.clone()))
                     .collect();
 
-                // Clear series data when switching timeframes
-                // (especially important when switching between kline and BBO modes)
+                let is_bbo_based = self.is_bbo_based();
+
                 self.series.clear();
                 self.series_index.clear();
+
+                if is_bbo_based != was_bbo_based {
+                    self.zoom = Zoom::points(if is_bbo_based {
+                        DEFAULT_BBO_ZOOM
+                    } else {
+                        DEFAULT_KLINE_ZOOM
+                    });
+                    self.pan = DEFAULT_PAN_POINTS;
+                }
 
                 for (i, &t) in self.selected_tickers.iter().enumerate() {
                     let color = prev_colors
@@ -461,7 +480,6 @@ impl ComparisonChart {
 
                 self.rebuild_handlers();
 
-                // Only fetch for kline-based timeframes
                 if is_bbo_based {
                     None
                 } else {
