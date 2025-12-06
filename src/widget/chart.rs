@@ -105,20 +105,37 @@ fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
 }
 
 fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
-    if show_decimals {
+    let decimals = if show_decimals {
         if step >= 1.0 {
-            format!("{:+.1}%", val)
+            1
         } else if step >= 0.1 {
-            format!("{:+.2}%", val)
+            2
         } else {
-            format!("{:+.3}%", val)
+            3
         }
     } else if step >= 1.0 {
-        format!("{:+.0}%", val)
+        0
     } else if step >= 0.1 {
-        format!("{:+.1}%", val)
+        1
+    } else if step >= 0.01 {
+        2
+    } else if step >= 0.001 {
+        3
     } else {
-        format!("{:+.2}%", val)
+        4
+    };
+
+    let zero_threshold = 0.5 * 10f32.powi(-(decimals));
+    if val.abs() < zero_threshold {
+        return "0%".to_string();
+    }
+
+    match decimals {
+        0 => format!("{:+.0}%", val),
+        1 => format!("{:+.1}%", val),
+        2 => format!("{:+.2}%", val),
+        3 => format!("{:+.3}%", val),
+        _ => format!("{:+.4}%", val),
     }
 }
 

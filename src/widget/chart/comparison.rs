@@ -693,19 +693,37 @@ where
         end_labels
     }
 
-    fn format_crosshair_time(ts_ms: u64, tz: UserTimezone) -> String {
+    fn format_crosshair_time(ts_ms: u64, tz: UserTimezone, timeframe_ms: u64) -> String {
+        let format_str = if timeframe_ms < 60_000 {
+            "%H:%M:%S"
+        } else {
+            "%a %b %-d %H:%M"
+        };
+
         let ts_i64 = ts_ms as i64;
+        let ms_part = (ts_ms % 1000) as u32;
+
         match tz {
             UserTimezone::Utc => {
                 if let Some(dt) = chrono::Utc.timestamp_millis_opt(ts_i64).single() {
-                    dt.format("%a %b %-d %H:%M").to_string()
+                    let base = dt.format(format_str).to_string();
+                    if timeframe_ms < 1000 {
+                        format!("{}.{:03}", base, ms_part)
+                    } else {
+                        base
+                    }
                 } else {
                     ts_ms.to_string()
                 }
             }
             UserTimezone::Local => {
                 if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_i64).single() {
-                    dt.format("%a %b %-d %H:%M").to_string()
+                    let base = dt.format(format_str).to_string();
+                    if timeframe_ms < 1000 {
+                        format!("{}.{:03}", base, ms_part)
+                    } else {
+                        base
+                    }
                 } else {
                     ts_ms.to_string()
                 }
@@ -1592,7 +1610,11 @@ where
         b.line_to(Point::new(plot_rect.x + plot_rect.width, cy));
         frame.stroke(&b.build(), stroke);
 
-        let time_str = Self::format_crosshair_time(ci.x_domain, self.timezone);
+        let time_str = Self::format_crosshair_time(
+            ci.x_domain,
+            self.timezone,
+            self.timeframe.to_milliseconds(),
+        );
 
         let text_col = palette.secondary.base.text;
         let bg_col = palette.secondary.base.color;
