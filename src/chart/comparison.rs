@@ -5,6 +5,7 @@ use crate::widget::chart::{Series, Zoom, domain};
 
 use data::chart::Basis;
 use data::chart::comparison::Config;
+use data::config::theme::color_from_hash;
 use exchange::adapter::StreamKind;
 use exchange::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
@@ -34,6 +35,7 @@ pub struct ComparisonChart {
     pub config: data::chart::comparison::Config,
     pub series_editor: series_editor::TickerSeriesEditor,
     cache_rev: u64,
+    virtual_now_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,18 +59,17 @@ impl ComparisonChart {
 
         let mut series = Vec::with_capacity(tickers.len());
         let mut series_index = FxHashMap::default();
-        for (i, t) in tickers.iter().enumerate() {
-            let ser = SerTicker::from_parts(t.ticker);
+        for (idx, ticker_info) in tickers.iter().enumerate() {
+            let ser = SerTicker::from_parts(ticker_info.ticker);
 
             let color = color_map
                 .get(&ser)
                 .copied()
-                .unwrap_or_else(|| default_color_for(t));
+                .unwrap_or_else(|| color_from_hash(ticker_info));
             let name = name_map.get(&ser).cloned();
 
-            series.push(Series::new(*t, color, name));
-
-            series_index.insert(*t, i);
+            series.push(Series::new(*ticker_info, color, name));
+            series_index.insert(*ticker_info, idx);
         }
 
         Self {
@@ -90,6 +91,7 @@ impl ComparisonChart {
             config: cfg,
             series_editor: series_editor::TickerSeriesEditor::default(),
             cache_rev: 0,
+            virtual_now_ms: None,
         }
     }
 
@@ -134,6 +136,7 @@ impl ComparisonChart {
             .with_timezone(timezone)
             .with_zoom(self.zoom)
             .with_pan(self.pan)
+            .with_virtual_now(self.virtual_now_ms)
             .version(self.cache_rev)
             .into();
 
@@ -286,13 +289,10 @@ impl ComparisonChart {
             series.points.push((aligned_time, price));
         }
 
-        // Cap the series length
         if series.points.len() > SERIES_MAX_POINTS {
             let drop = series.points.len() - SERIES_MAX_POINTS;
             series.points.drain(0..drop);
         }
-
-        self.cache_rev = self.cache_rev.wrapping_add(1);
     }
 
     /// Returns the required stream kinds for all selected tickers
@@ -429,6 +429,8 @@ impl ComparisonChart {
         }
 
         if self.is_bbo_based() {
+            let dt = self.dt_ms_est();
+            self.virtual_now_ms = Some(Self::align_floor(Self::now_ms(), dt));
             return None;
         }
 
@@ -465,6 +467,12 @@ impl ComparisonChart {
                         DEFAULT_KLINE_ZOOM
                     });
                     self.pan = DEFAULT_PAN_POINTS;
+                    // Reset virtual_now when switching modes
+                    self.virtual_now_ms = if is_bbo_based {
+                        Some(Self::now_ms())
+                    } else {
+                        None
+                    };
                 }
 
                 for (i, &t) in self.selected_tickers.iter().enumerate() {
@@ -556,7 +564,7 @@ impl ComparisonChart {
         if let Some((_, c)) = self.config.colors.iter().find(|(s, _)| s == &ser) {
             *c
         } else {
-            default_color_for(ticker_info)
+            color_from_hash(ticker_info)
         }
     }
 
@@ -648,25 +656,6 @@ impl ComparisonChart {
 
         batches
     }
-}
-
-fn default_color_for(ticker: &TickerInfo) -> iced::Color {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    ticker.hash(&mut hasher);
-    let seed = hasher.finish();
-
-    // Golden-angle distribution for hue (in degrees)
-    let golden = 0.618_034_f32;
-    let base = ((seed as f32 / u64::MAX as f32) + 0.12345).fract();
-    let hue = (base + golden).fract() * 360.0;
-
-    // Slightly vary saturation and value in a pleasant range
-    let s = 0.60 + (((seed >> 8) & 0xFF) as f32 / 255.0) * 0.25; // 0.60..=0.85
-    let v = 0.85 + (((seed >> 16) & 0x7F) as f32 / 127.0) * 0.10; // 0.85..=0.95
-
-    data::config::theme::from_hsv_degrees(hue, s.min(1.0), v.min(1.0))
 }
 
 pub mod series_editor {

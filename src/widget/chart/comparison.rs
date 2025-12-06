@@ -97,6 +97,7 @@ pub struct LineComparison<'a, S> {
     timeframe: Timeframe,
     timezone: UserTimezone,
     version: u64,
+    virtual_now: Option<u64>,
 }
 
 impl<'a, S> LineComparison<'a, S>
@@ -116,7 +117,14 @@ where
             pan: 0.0,
             timezone: UserTimezone::Utc,
             version: 0,
+            virtual_now: None,
         }
+    }
+
+    /// Set the virtual "now" timestamp for smooth viewport scrolling in BBO mode
+    pub fn with_virtual_now(mut self, virtual_now: Option<u64>) -> Self {
+        self.virtual_now = virtual_now;
+        self
     }
 
     pub fn with_zoom(mut self, zoom: Zoom) -> Self {
@@ -242,7 +250,13 @@ where
         let dt = self.dt_ms_est().max(1);
         let all_points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points()).collect();
 
-        let (min_x, max_x) = domain::window(&all_points, self.zoom, pan_points, dt)?;
+        let (min_x, max_x) = domain::window_with_virtual_now(
+            &all_points,
+            self.zoom,
+            pan_points,
+            dt,
+            self.virtual_now,
+        )?;
         let (min_pct, max_pct) = domain::pct_domain(&all_points, min_x, max_x)?;
 
         Some(((min_x, max_x), (min_pct, max_pct)))

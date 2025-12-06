@@ -345,3 +345,22 @@ pub fn from_hsv_degrees(h_deg: f32, s: f32, v: f32) -> Color {
     let hue = RgbHue::from_degrees(h_deg);
     from_hsva(Hsva::new(hue, s, v, 1.0))
 }
+
+pub fn color_from_hash<T: std::hash::Hash>(hashable: T) -> Color {
+    use std::hash::{DefaultHasher, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    hashable.hash(&mut hasher);
+    let seed = hasher.finish();
+
+    // Golden-angle distribution for hue (in degrees)
+    let golden = 0.618_034_f32;
+    let base = ((seed as f32 / u64::MAX as f32) + 0.12345).fract();
+    let hue = (base + golden).fract() * 360.0;
+
+    // Slightly vary saturation and value in a pleasant range
+    let s = 0.60 + (((seed >> 8) & 0xFF) as f32 / 255.0) * 0.25; // 0.60..=0.85
+    let v = 0.85 + (((seed >> 16) & 0x7F) as f32 / 127.0) * 0.10; // 0.85..=0.95
+
+    from_hsv_degrees(hue, s.min(1.0), v.min(1.0))
+}

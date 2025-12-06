@@ -620,7 +620,7 @@ impl Flowsurface {
             .market_subscriptions()
             .map(Message::MarketWsEvent);
 
-        let tick = iced::time::every(std::time::Duration::from_millis(10)).map(Message::Tick);
+        let tick = iced::window::frames().map(Message::Tick);
 
         let hotkeys = keyboard::on_key_press(|key, _| match key.as_ref() {
             keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Message::GoBack),

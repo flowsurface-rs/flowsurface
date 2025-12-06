@@ -272,6 +272,19 @@ pub mod domain {
         pan_points: f32,
         dt: u64,
     ) -> Option<(u64, u64)> {
+        window_with_virtual_now(series, zoom, pan_points, dt, None)
+    }
+
+    /// Like `window`, but allows specifying a virtual "now" timestamp
+    /// that overrides data_max_x for viewport calculation.
+    /// This enables smooth scrolling for real-time data.
+    pub fn window_with_virtual_now(
+        series: &[&[(u64, f32)]],
+        zoom: super::Zoom,
+        pan_points: f32,
+        dt: u64,
+        virtual_now: Option<u64>,
+    ) -> Option<(u64, u64)> {
         if series.is_empty() {
             return None;
         }
@@ -291,11 +304,28 @@ pub mod domain {
             }
         }
         if !any {
+            if let Some(vn) = virtual_now {
+                let span = if zoom.is_all() {
+                    dt.saturating_mul(100)
+                } else {
+                    let n = zoom.0;
+                    let mut s = ((n.saturating_sub(1)) as u64).saturating_mul(dt);
+                    if s == 0 {
+                        s = 1;
+                    }
+                    s
+                };
+                let right = vn;
+                let left = right.saturating_sub(span);
+                return Some((align_floor(left, dt), align_ceil(right, dt)));
+            }
             return None;
         }
         if data_max_x == data_min_x {
             data_max_x = data_max_x.saturating_add(1);
         }
+
+        let reference_max = virtual_now.unwrap_or(data_max_x);
 
         let add_signed = |v: u64, d: i64| -> u64 {
             if d >= 0 {
@@ -306,7 +336,7 @@ pub mod domain {
         };
 
         let span = if zoom.is_all() {
-            data_max_x.saturating_sub(data_min_x).max(1)
+            reference_max.saturating_sub(data_min_x).max(1)
         } else {
             let n = zoom.0;
             let mut s = ((n.saturating_sub(1)) as u64).saturating_mul(dt);
@@ -317,8 +347,8 @@ pub mod domain {
         };
 
         let pad_ms = (pan_points * dt as f32).round() as i64;
-        let mut right = add_signed(data_max_x, pad_ms);
-        let right_cap = data_max_x.saturating_add(span);
+        let mut right = add_signed(reference_max, pad_ms);
+        let right_cap = reference_max.saturating_add(span);
         if right > right_cap {
             right = right_cap;
         }
