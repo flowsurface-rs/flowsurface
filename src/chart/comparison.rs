@@ -16,6 +16,9 @@ use std::time::Instant;
 const SERIES_MAX_POINTS: usize = 5000;
 const DEFAULT_PAN_POINTS: f32 = 8.0;
 
+const TRIM_TRIGGER_MULTIPLIER: f32 = 1.1;
+const TRIM_DRAIN_MULTIPLIER: f32 = 0.1;
+
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
     SeriesNameChanged(TickerInfo, String),
@@ -99,6 +102,16 @@ impl ComparisonChart {
         match message {
             Message::Chart(event) => match event {
                 LineComparisonEvent::ZoomChanged(zoom) => {
+                    // When zooming while looking at the head (pan > 0), scale the pan
+                    // proportionally to keep the latest data point at the same screen position.
+                    if self.pan > 0.0 && !self.zoom.is_all() && !zoom.is_all() {
+                        let old_z = self.zoom.0 as f32;
+                        let new_z = zoom.0 as f32;
+                        if old_z > 0.0 {
+                            self.pan *= new_z / old_z;
+                        }
+                    }
+
                     self.zoom = zoom;
                     None
                 }
@@ -289,9 +302,10 @@ impl ComparisonChart {
             series.points.push((aligned_time, price));
         }
 
-        if series.points.len() > SERIES_MAX_POINTS {
-            let drop = series.points.len() - SERIES_MAX_POINTS;
-            series.points.drain(0..drop);
+        let max_points = SERIES_MAX_POINTS as f32;
+        if (series.points.len() as f32) > max_points * TRIM_TRIGGER_MULTIPLIER {
+            let drain_count = (series.points.len() as f32 * TRIM_DRAIN_MULTIPLIER) as usize;
+            series.points.drain(0..drain_count.min(series.points.len()));
         }
     }
 
