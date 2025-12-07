@@ -1,6 +1,6 @@
 use crate::{
     style::{self, icon_text},
-    widget::numeric_input_box,
+    widget::{numeric_input_box, tooltip},
 };
 
 use data::chart::Basis;
@@ -488,10 +488,41 @@ impl Modifier {
                                         4,
                                     );
 
+                                    let kline_timeframes_header = row![
+                                        tooltip(
+                                            button("i").style(style::button::info),
+                                            Some(
+                                                "Uses kline close prices\nSupports historical data"
+                                            ),
+                                            iced::widget::tooltip::Position::Top,
+                                        ),
+                                        text("Kline Timeframes"),
+                                    ]
+                                    .spacing(4)
+                                    .align_y(iced::Alignment::Center);
+                                    let bbo_timeframes_header = row![
+                                        tooltip(
+                                            button("i").style(style::button::info),
+                                            Some(
+                                                "Uses mid-prices from best bids/offers\nLive data only"
+                                            ),
+                                            iced::widget::tooltip::Position::Top,
+                                        ),
+                                        text("BBO Timeframes"),
+                                    ]
+                                    .spacing(4)
+                                    .align_y(iced::Alignment::Center);
+
                                     basis_selection_column = basis_selection_column
-                                        .push(kline_timeframe_grid)
-                                        .push(iced::widget::rule::horizontal(1))
-                                        .push(bbo_timeframe_grid);
+                                        .push(
+                                            column![kline_timeframes_header, kline_timeframe_grid,]
+                                                .spacing(8),
+                                        )
+                                        .push(rule::horizontal(1).style(style::split_ruler))
+                                        .push(
+                                            column![bbo_timeframes_header, bbo_timeframe_grid]
+                                                .spacing(8),
+                                        );
                                 }
                                 ModifierKind::Heatmap(_, _) => {
                                     let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
