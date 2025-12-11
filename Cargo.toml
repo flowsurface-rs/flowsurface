@@ -1,18 +1,24 @@
 [package]
 name = "flowsurface"
 version = "0.8.6"
-edition = "2024"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 categories = ["finance", "visualization", "gui"]
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[workspace.package]
+edition = "2024"
 repository = "https://github.com/flowsurface-rs/flowsurface"
+homepage = "https://flowsurface.com"
 
 [workspace]
 members = [ "data", "exchange"]
 
 [workspace.dependencies]
-iced_futures = { version = "0.14.0-dev" }
-iced_core = { version = "0.14.0-dev", features = ["serde"] }
+iced_futures = { version = "0.14.0" }
+iced_core = { version = "0.14.0", features = ["serde"] }
 chrono = { version = "0.4.40", default-features = false, features = ["serde", "now", "clock"] }
 serde = { version = "1.0.219", default-features = false, features = ["derive"] }
 serde_json = "1.0.140"
@@ -26,7 +32,7 @@ enum-map = "2.7.3"
 uuid = { version = "1.11.0", features = ["v4"] }
 
 [dependencies]
-iced = { version = "0.14.0-dev", default-features = false, features = [
+iced = { version = "0.14.0", default-features = false, features = [
     "wgpu",
     "tokio",
     "canvas",
@@ -51,13 +57,8 @@ rustc-hash.workspace = true
 enum-map.workspace = true
 fern = "0.7.1"
 
-exchange = { version = "0.1.0", path = "exchange" }
-data = { version = "0.1.0", path = "data" }
+exchange = { version = "0.1.0", path = "exchange", package = "flowsurface-exchange" }
+data = { version = "0.1.0", path = "data", package = "flowsurface-data" }
 
 [features]
 debug = ["iced/hot"]
-
-[patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "d94c080dd4cf94a799c5d5437fc755c1f24b7c1a" }
-iced_futures = { git = "https://github.com/iced-rs/iced", rev = "d94c080dd4cf94a799c5d5437fc755c1f24b7c1a" }
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "d94c080dd4cf94a799c5d5437fc755c1f24b7c1a"}

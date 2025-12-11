@@ -1,7 +1,11 @@
 [package]
-name = "exchange"
+name = "flowsurface-exchange"
+description = "Adapters for data providers/crypto exchanges to work with Flowsurface"
 version = "0.1.0"
-edition = "2024"
+license = "MIT"
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 iced_futures.workspace = true
