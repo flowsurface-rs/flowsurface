@@ -1,7 +1,8 @@
 use crate::TooltipPosition;
+use crate::audio::{SoundCache, SoundType};
 use crate::style::{self, icon_text};
 use crate::widget::{labeled_slider, tooltip};
-use data::audio::{SoundCache, SoundType, StreamCfg};
+use data::audio::StreamCfg;
 use exchange::adapter::{Exchange, StreamKind, StreamTicksize};
 
 use exchange::{PushFrequency, Trade};
@@ -293,14 +294,14 @@ impl AudioStream {
                 let sound = |count: usize, is_sell: bool| {
                     if count > (v * HARD_THRESHOLD) {
                         if is_sell {
-                            data::audio::SoundType::HardSell
+                            SoundType::HardSell
                         } else {
-                            data::audio::SoundType::HardBuy
+                            SoundType::HardBuy
                         }
                     } else if is_sell {
-                        data::audio::SoundType::Sell
+                        SoundType::Sell
                     } else {
-                        data::audio::SoundType::Buy
+                        SoundType::Buy
                     }
                 };
 
