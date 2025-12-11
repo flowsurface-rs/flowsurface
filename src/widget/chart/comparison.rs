@@ -1182,18 +1182,24 @@ where
             };
 
             let mut prev_x: Option<u64> = None;
+            let mut last_drawn_pt: Option<Point> = None;
+
             match idx_right {
                 Some(ir) if ir > 0 => {
                     let px0 = ctx.map_x(ctx.min_x);
                     let py0 = ctx.map_y(0.0);
-                    builder.move_to(Point::new(px0, py0));
+                    let pt = Point::new(px0, py0);
+                    builder.move_to(pt);
+                    last_drawn_pt = Some(pt);
                     prev_x = Some(ctx.min_x);
                 }
                 Some(0) => {
                     let (fx, fy) = pts[0];
                     if fx <= ctx.max_x {
                         let pct = ((fy / y0) - 1.0) * 100.0;
-                        builder.move_to(Point::new(ctx.map_x(fx), ctx.map_y(pct)));
+                        let pt = Point::new(ctx.map_x(fx), ctx.map_y(pct));
+                        builder.move_to(pt);
+                        last_drawn_pt = Some(pt);
                         prev_x = Some(fx);
                     } else {
                         continue;
@@ -1211,6 +1217,7 @@ where
                 let pct = ((*y / y0) - 1.0) * 100.0;
                 let px = ctx.map_x(*x);
                 let py = ctx.map_y(pct);
+                let current_pt = Point::new(px, py);
 
                 let connect = match prev_x {
                     Some(prev) => x.saturating_sub(prev) <= gap_thresh,
@@ -1218,10 +1225,21 @@ where
                 };
 
                 if connect {
-                    builder.line_to(Point::new(px, py));
+                    // skip points that are too close to the previous one (sub-pixel)
+                    if is_bbo_mode && let Some(last) = last_drawn_pt {
+                        let dx = current_pt.x - last.x;
+                        let dy = current_pt.y - last.y;
+
+                        if dx * dx + dy * dy < 0.25 {
+                            prev_x = Some(*x);
+                            continue;
+                        }
+                    }
+                    builder.line_to(current_pt);
                 } else {
-                    builder.move_to(Point::new(px, py));
+                    builder.move_to(current_pt);
                 }
+                last_drawn_pt = Some(current_pt);
                 prev_x = Some(*x);
             }
 
