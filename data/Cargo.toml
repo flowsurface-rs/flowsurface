@@ -1,7 +1,11 @@
 [package]
-name = "data"
+name = "flowsurface-data"
+description = "Data aggregation, indexing, and configuration utilities for Flowsurface"
 version = "0.1.0"
-edition = "2024"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde_json.workspace = true
@@ -18,4 +22,4 @@ dirs-next = "2.0.0"
 rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 open = "5.3.2"
 
-exchange = { version = "0.1.0", path = "../exchange" }
+exchange = { version = "0.1.0", path = "../exchange", package = "flowsurface-exchange" }

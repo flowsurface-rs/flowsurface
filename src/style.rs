@@ -6,7 +6,7 @@ use iced::widget::Text;
 use iced::widget::canvas::{LineDash, Stroke};
 use iced::widget::container::{self, Style};
 use iced::widget::pane_grid::{Highlight, Line};
-use iced::widget::scrollable::{Rail, Scroller};
+use iced::widget::scrollable::{AutoScroll, Rail, Scroller};
 use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
 
 pub const ICONS_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
@@ -686,13 +686,27 @@ pub fn scroll_bar(theme: &Theme, status: widget::scrollable::Status) -> widget::
             color: Color::TRANSPARENT,
         },
         scroller: Scroller {
-            color: scroller_bg,
+            background: iced::Background::Color(scroller_bg),
             border: Border {
                 radius: 2.0.into(),
                 width: 0.0,
                 color: Color::TRANSPARENT,
             },
         },
+    };
+
+    let auto_scroll = AutoScroll {
+        background: iced::Background::Color(palette.background.weakest.color),
+        border: Border {
+            radius: 2.0.into(),
+            width: 1.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow {
+            color: Color::TRANSPARENT,
+            ..Default::default()
+        },
+        icon: palette.background.strong.color,
     };
 
     widget::scrollable::Style {
@@ -702,6 +716,7 @@ pub fn scroll_bar(theme: &Theme, status: widget::scrollable::Status) -> widget::
         vertical_rail: rail,
         horizontal_rail: rail,
         gap: None,
+        auto_scroll,
     }
 }
 

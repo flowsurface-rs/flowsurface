@@ -614,9 +614,14 @@ impl Flowsurface {
 
         let tick = iced::time::every(std::time::Duration::from_millis(100)).map(Message::Tick);
 
-        let hotkeys = keyboard::on_key_press(|key, _| match key.as_ref() {
-            keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Message::GoBack),
-            _ => None,
+        let hotkeys = keyboard::listen().filter_map(|event| {
+            let keyboard::Event::KeyPressed { key, .. } = event else {
+                return None;
+            };
+            match key {
+                keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Message::GoBack),
+                _ => None,
+            }
         });
 
         Subscription::batch(vec![
