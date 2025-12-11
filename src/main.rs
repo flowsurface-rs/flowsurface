@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod chart;
 mod layout;
 mod logger;
@@ -12,7 +13,7 @@ mod window;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
-use modal::{LayoutManager, ThemeEditor, audio};
+use modal::{LayoutManager, ThemeEditor, audio::AudioStream};
 use modal::{dashboard_modal, main_dialog_modal};
 use screen::dashboard::{self, Dashboard};
 use widget::{
@@ -57,7 +58,7 @@ struct Flowsurface {
     sidebar: dashboard::Sidebar,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
-    audio_stream: audio::AudioStream,
+    audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
     ui_scale_factor: data::ScaleFactor,
@@ -114,7 +115,7 @@ impl Flowsurface {
             main_window: window::Window::new(main_window_id),
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
-            audio_stream: audio::AudioStream::new(saved_state.audio_cfg),
+            audio_stream: AudioStream::new(saved_state.audio_cfg),
             sidebar,
             confirm_dialog: None,
             timezone: saved_state.timezone,

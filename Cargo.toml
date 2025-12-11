@@ -3,6 +3,7 @@ name = "flowsurface"
 version = "0.8.6"
 readme = "README.md"
 license = "GPL-3.0-or-later"
+description = "A native desktop charting platform for crypto markets"
 categories = ["finance", "visualization", "gui"]
 edition.workspace = true
 repository.workspace = true
@@ -56,6 +57,7 @@ num-traits.workspace = true
 rustc-hash.workspace = true
 enum-map.workspace = true
 fern = "0.7.1"
+rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 
 exchange = { version = "0.1.0", path = "exchange", package = "flowsurface-exchange" }
 data = { version = "0.1.0", path = "data", package = "flowsurface-data" }
