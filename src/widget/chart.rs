@@ -36,6 +36,38 @@ impl Series {
             color,
         }
     }
+
+    /// Drop points older than `min_x` (by x/time), but keep one point just before `min_x`
+    /// as an anchor for continuity/interpolation.
+    pub fn trim_before_x(&mut self, min_x: u64) {
+        if self.points.is_empty() {
+            return;
+        }
+
+        let idx = self.points.partition_point(|(x, _)| *x < min_x);
+        let drain_up_to = idx.saturating_sub(1);
+
+        if drain_up_to > 0 {
+            self.points.drain(0..drain_up_to);
+        }
+    }
+
+    /// Trim points to keep the series size manageable.
+    /// If the number of points exceeds `max_points * trigger_multiplier`,
+    /// remove `len * drain_multiplier` points from the start.
+    /// This helps to prevent unbounded memory growth for real-time data.
+    pub fn trim_to_max_points(
+        &mut self,
+        max_points: usize,
+        trigger_multiplier: f32,
+        drain_multiplier: f32,
+    ) {
+        let max_points = max_points as f32;
+        if (self.points.len() as f32) > max_points * trigger_multiplier {
+            let drain_count = (self.points.len() as f32 * drain_multiplier) as usize;
+            self.points.drain(0..drain_count.min(self.points.len()));
+        }
+    }
 }
 
 pub trait SeriesLike {

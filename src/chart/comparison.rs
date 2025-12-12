@@ -269,6 +269,49 @@ impl ComparisonChart {
         self.timeframe.to_milliseconds() < 60_000
     }
 
+    /// If oldest_x < trigger_cutoff => series is "too old",
+    /// trims to drain_cutoff (new oldest will be >= drain_cutoff, keeping one anchor point)
+    fn cleanup_old_bbo_data(&mut self) {
+        if !self.is_bbo_based() {
+            return;
+        }
+
+        let now_ref = self.virtual_now_ms.unwrap_or_else(Self::now_ms);
+        let (trigger_cutoff, drain_cutoff) = {
+            let dt = self.dt_ms_est().max(1);
+
+            let base_retention_ms = (SERIES_MAX_POINTS as u64).saturating_mul(dt);
+            let pan_ms = ((self.pan.abs() * dt as f32).round() as i64).max(0) as u64;
+            let buffer_ms = base_retention_ms / 10;
+
+            let base_keep_ms = base_retention_ms
+                .saturating_add(pan_ms)
+                .saturating_add(buffer_ms);
+
+            let trigger_keep_ms =
+                ((base_keep_ms as f64) * (TRIM_TRIGGER_MULTIPLIER as f64)).round() as u64;
+
+            (
+                now_ref.saturating_sub(trigger_keep_ms),
+                now_ref.saturating_sub(base_keep_ms),
+            )
+        };
+
+        for s in &mut self.series {
+            if let Some((oldest_x, _)) = s.points.first()
+                && *oldest_x < trigger_cutoff
+            {
+                s.trim_before_x(drain_cutoff);
+            }
+
+            s.trim_to_max_points(
+                SERIES_MAX_POINTS,
+                TRIM_TRIGGER_MULTIPLIER,
+                TRIM_DRAIN_MULTIPLIER,
+            );
+        }
+    }
+
     pub fn insert_bbo(
         &mut self,
         ticker_info: &TickerInfo,
@@ -283,30 +326,25 @@ impl ComparisonChart {
             return;
         };
 
+        let dt = self.timeframe.to_milliseconds().max(1);
+        let aligned_time = (update_time / dt) * dt;
+
         let idx = self.get_or_create_series_idx(ticker_info);
         let series = &mut self.series[idx];
 
-        let dt = self.timeframe.to_milliseconds().max(1);
-        let aligned_time = (update_time / dt) * dt;
         let price = mid_price.to_f32();
 
         if let Some((last_x, last_y)) = series.points.last_mut() {
             if *last_x == aligned_time {
                 *last_y = price;
             } else if aligned_time > *last_x {
-                // New time bucket - push new point
                 series.points.push((aligned_time, price));
             }
-            // Ignore out-of-order updates (aligned_time < *last_x)
         } else {
             series.points.push((aligned_time, price));
         }
 
-        let max_points = SERIES_MAX_POINTS as f32;
-        if (series.points.len() as f32) > max_points * TRIM_TRIGGER_MULTIPLIER {
-            let drain_count = (series.points.len() as f32 * TRIM_DRAIN_MULTIPLIER) as usize;
-            series.points.drain(0..drain_count.min(series.points.len()));
-        }
+        self.cleanup_old_bbo_data();
     }
 
     /// Returns the required stream kinds for all selected tickers
