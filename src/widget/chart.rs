@@ -3,19 +3,73 @@ pub mod comparison;
 use chrono::{TimeZone, Utc};
 use exchange::TickerInfo;
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct Zoom(pub usize);
+/// Represents the horizontal scale as pixels per time unit (bar/candle).
+/// Higher values = more zoomed in (fewer bars visible, wider bars).
+/// Lower values = more zoomed out (more bars visible, narrower bars).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BarWidth(pub f32);
 
-impl Zoom {
-    /// "show all data"
-    pub fn all() -> Self {
-        Self(0)
+impl Default for BarWidth {
+    fn default() -> Self {
+        Self(8.0) // 8 pixels per bar as default
     }
-    pub fn points(n: usize) -> Self {
-        Self(n)
+}
+
+impl BarWidth {
+    // Non-BBO (minute+ timeframes) constraints
+    pub const MIN: f32 = 1.0;
+    pub const MAX: f32 = 100.0;
+
+    // BBO (sub-minute timeframes) constraints - allow much smaller values
+    pub const MIN_BBO: f32 = 0.05;
+    pub const MAX_BBO: f32 = 20.0;
+
+    pub fn new(px: f32) -> Self {
+        Self(px.clamp(Self::MIN, Self::MAX))
     }
-    pub fn is_all(self) -> bool {
-        self.0 == 0
+
+    /// Create a new BarWidth with BBO-mode constraints
+    pub fn new_bbo(px: f32) -> Self {
+        Self(px.clamp(Self::MIN_BBO, Self::MAX_BBO))
+    }
+
+    /// Clamp to appropriate range based on whether this is BBO mode
+    pub fn clamped(self, is_bbo: bool) -> Self {
+        if is_bbo {
+            Self(self.0.clamp(Self::MIN_BBO, Self::MAX_BBO))
+        } else {
+            Self(self.0.clamp(Self::MIN, Self::MAX))
+        }
+    }
+
+    pub fn pixels(&self) -> f32 {
+        self.0
+    }
+
+    /// Calculate how many milliseconds are visible given viewport width
+    pub fn visible_span_ms(&self, viewport_width: f32, timeframe_ms: u64) -> u64 {
+        let bars_visible = (viewport_width / self.0).max(1.0);
+        (bars_visible * timeframe_ms as f32).round() as u64
+    }
+
+    /// Zoom in by a percentage (increases bar width), respecting mode constraints
+    pub fn zoom_in(&self, pct: f32) -> Self {
+        Self(self.0 * (1.0 + pct))
+    }
+
+    /// Zoom out by a percentage (decreases bar width), respecting mode constraints
+    pub fn zoom_out(&self, pct: f32) -> Self {
+        Self(self.0 / (1.0 + pct))
+    }
+
+    /// Zoom in with mode-aware clamping
+    pub fn zoom_in_clamped(&self, pct: f32, is_bbo: bool) -> Self {
+        self.zoom_in(pct).clamped(is_bbo)
+    }
+
+    /// Zoom out with mode-aware clamping
+    pub fn zoom_out_clamped(&self, pct: f32, is_bbo: bool) -> Self {
+        self.zoom_out(pct).clamped(is_bbo)
     }
 }
 
@@ -262,21 +316,6 @@ fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>,
 }
 
 pub mod domain {
-    pub fn align_floor(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        (ts / dt) * dt
-    }
-
-    pub fn align_ceil(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        let f = (ts / dt) * dt;
-        if f == ts { ts } else { f.saturating_add(dt) }
-    }
-
     pub fn interpolate_y_at(points: &[(u64, f32)], x: u64) -> Option<f32> {
         if points.is_empty() {
             return None;
@@ -296,100 +335,6 @@ pub mod domain {
                 }
             }
         })
-    }
-
-    pub fn window(
-        series: &[&[(u64, f32)]],
-        zoom: super::Zoom,
-        pan_points: f32,
-        dt: u64,
-    ) -> Option<(u64, u64)> {
-        window_with_virtual_now(series, zoom, pan_points, dt, None)
-    }
-
-    /// Like `window`, but allows specifying a virtual "now" timestamp
-    /// that overrides data_max_x for viewport calculation.
-    /// This enables smooth scrolling for real-time data.
-    pub fn window_with_virtual_now(
-        series: &[&[(u64, f32)]],
-        zoom: super::Zoom,
-        pan_points: f32,
-        dt: u64,
-        virtual_now: Option<u64>,
-    ) -> Option<(u64, u64)> {
-        if series.is_empty() {
-            return None;
-        }
-
-        let mut any = false;
-        let mut data_min_x = u64::MAX;
-        let mut data_max_x = u64::MIN;
-        for pts in series {
-            for (x, _) in *pts {
-                any = true;
-                if *x < data_min_x {
-                    data_min_x = *x;
-                }
-                if *x > data_max_x {
-                    data_max_x = *x;
-                }
-            }
-        }
-        if !any {
-            if let Some(vn) = virtual_now {
-                let span = if zoom.is_all() {
-                    dt.saturating_mul(100)
-                } else {
-                    let n = zoom.0;
-                    let mut s = ((n.saturating_sub(1)) as u64).saturating_mul(dt);
-                    if s == 0 {
-                        s = 1;
-                    }
-                    s
-                };
-                let right = vn;
-                let left = right.saturating_sub(span);
-                return Some((align_floor(left, dt), align_ceil(right, dt)));
-            }
-            return None;
-        }
-        if data_max_x == data_min_x {
-            data_max_x = data_max_x.saturating_add(1);
-        }
-
-        let reference_max = virtual_now.unwrap_or(data_max_x);
-
-        let add_signed = |v: u64, d: i64| -> u64 {
-            if d >= 0 {
-                v.saturating_add(d as u64)
-            } else {
-                v.saturating_sub((-d) as u64)
-            }
-        };
-
-        let span = if zoom.is_all() {
-            reference_max.saturating_sub(data_min_x).max(1)
-        } else {
-            let n = zoom.0;
-            let mut s = ((n.saturating_sub(1)) as u64).saturating_mul(dt);
-            if s == 0 {
-                s = 1;
-            }
-            s
-        };
-
-        let pad_ms = (pan_points * dt as f32).round() as i64;
-        let mut right = add_signed(reference_max, pad_ms);
-        let right_cap = reference_max.saturating_add(span);
-        if right > right_cap {
-            right = right_cap;
-        }
-        let left = right.saturating_sub(span);
-
-        let left = align_floor(left, dt);
-        let right = align_ceil(right, dt);
-
-        Some((left, right))
     }
 
     pub fn pct_domain(series: &[&[(u64, f32)]], min_x: u64, max_x: u64) -> Option<(f32, f32)> {

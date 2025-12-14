@@ -1,7 +1,7 @@
 use crate::widget::chart::comparison::{
-    DEFAULT_BBO_ZOOM, DEFAULT_KLINE_ZOOM, LineComparison, LineComparisonEvent,
+    DEFAULT_BBO_BAR_WIDTH, DEFAULT_KLINE_BAR_WIDTH, LineComparison, LineComparisonEvent,
 };
-use crate::widget::chart::{Series, Zoom, domain};
+use crate::widget::chart::{BarWidth, Series};
 
 use data::chart::Basis;
 use data::chart::comparison::Config;
@@ -13,8 +13,8 @@ use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
 use rustc_hash::FxHashMap;
 use std::time::Instant;
 
-const SERIES_MAX_POINTS: usize = 5000;
-const DEFAULT_PAN_POINTS: f32 = 8.0;
+const SERIES_MAX_POINTS: usize = 15000;
+const DEFAULT_PAN_MS: i64 = 0;
 
 const TRIM_TRIGGER_MULTIPLIER: f32 = 1.1;
 const TRIM_DRAIN_MULTIPLIER: f32 = 0.1;
@@ -27,8 +27,8 @@ pub enum Action {
 }
 
 pub struct ComparisonChart {
-    zoom: Zoom,
-    pan: f32,
+    bar_width: BarWidth,
+    pan_ms: i64,
     last_tick: Instant,
     pub series: Vec<Series>,
     series_index: FxHashMap<TickerInfo, usize>,
@@ -39,6 +39,7 @@ pub struct ComparisonChart {
     pub series_editor: series_editor::TickerSeriesEditor,
     cache_rev: u64,
     virtual_now_ms: Option<u64>,
+    last_viewport: Option<iced::Rectangle>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,13 +76,15 @@ impl ComparisonChart {
             series_index.insert(*ticker_info, idx);
         }
 
+        let default_bar_width = if timeframe.to_milliseconds() < 60_000 {
+            DEFAULT_BBO_BAR_WIDTH
+        } else {
+            DEFAULT_KLINE_BAR_WIDTH
+        };
+
         Self {
             last_tick: Instant::now(),
-            zoom: Zoom::points(if timeframe.to_milliseconds() < 60_000 {
-                DEFAULT_BBO_ZOOM
-            } else {
-                DEFAULT_KLINE_ZOOM
-            }),
+            bar_width: BarWidth::new(default_bar_width),
             series,
             series_index,
             timeframe,
@@ -90,33 +93,24 @@ impl ComparisonChart {
                 .map(|t| (*t, RequestHandler::new()))
                 .collect(),
             selected_tickers: tickers.to_vec(),
-            pan: DEFAULT_PAN_POINTS,
+            pan_ms: DEFAULT_PAN_MS,
             config: cfg,
             series_editor: series_editor::TickerSeriesEditor::default(),
             cache_rev: 0,
             virtual_now_ms: None,
+            last_viewport: None,
         }
     }
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::Chart(event) => match event {
-                LineComparisonEvent::ZoomChanged(zoom) => {
-                    // When zooming while looking at the head (pan > 0), scale the pan
-                    // proportionally to keep the latest data point at the same screen position.
-                    if self.pan > 0.0 && !self.zoom.is_all() && !zoom.is_all() {
-                        let old_z = self.zoom.0 as f32;
-                        let new_z = zoom.0 as f32;
-                        if old_z > 0.0 {
-                            self.pan *= new_z / old_z;
-                        }
-                    }
-
-                    self.zoom = zoom;
+                LineComparisonEvent::BarWidthChanged(bar_width) => {
+                    self.bar_width = bar_width.clamped(self.is_bbo_based());
                     None
                 }
-                LineComparisonEvent::PanChanged(pan) => {
-                    self.pan = pan;
+                LineComparisonEvent::PanMsChanged(pan_ms) => {
+                    self.pan_ms = pan_ms;
                     None
                 }
                 LineComparisonEvent::SeriesCog(ticker_info) => {
@@ -126,12 +120,18 @@ impl ComparisonChart {
                     Some(Action::RemoveSeries(ticker_info))
                 }
                 LineComparisonEvent::XAxisDoubleClick => {
-                    self.zoom = Zoom::points(if self.is_bbo_based() {
-                        DEFAULT_BBO_ZOOM
+                    self.bar_width = if self.is_bbo_based() {
+                        BarWidth::new_bbo(DEFAULT_BBO_BAR_WIDTH)
                     } else {
-                        DEFAULT_KLINE_ZOOM
-                    });
-                    self.pan = DEFAULT_PAN_POINTS;
+                        BarWidth::new(DEFAULT_KLINE_BAR_WIDTH)
+                    };
+                    self.pan_ms = DEFAULT_PAN_MS;
+                    None
+                }
+                LineComparisonEvent::BoundsChanged(rect) => {
+                    self.last_viewport = Some(rect);
+                    self.cache_rev = self.cache_rev.wrapping_add(1);
+
                     None
                 }
             },
@@ -145,13 +145,14 @@ impl ComparisonChart {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
 
-        let chart: iced::Element<_> = LineComparison::<Series>::new(&self.series, self.timeframe)
-            .with_timezone(timezone)
-            .with_zoom(self.zoom)
-            .with_pan(self.pan)
-            .with_virtual_now(self.virtual_now_ms)
-            .version(self.cache_rev)
-            .into();
+        let chart: iced::Element<_> =
+            LineComparison::<Series>::new(self.last_viewport, &self.series, self.timeframe)
+                .with_timezone(timezone)
+                .with_bar_width(self.bar_width)
+                .with_pan_ms(self.pan_ms)
+                .with_virtual_now(self.virtual_now_ms)
+                .version(self.cache_rev)
+                .into();
 
         iced::widget::container(chart.map(Message::Chart))
             .padding(1)
@@ -281,11 +282,12 @@ impl ComparisonChart {
             let dt = self.dt_ms_est().max(1);
 
             let base_retention_ms = (SERIES_MAX_POINTS as u64).saturating_mul(dt);
-            let pan_ms = ((self.pan.abs() * dt as f32).round() as i64).max(0) as u64;
+
+            let pan_buffer = self.pan_ms.unsigned_abs();
             let buffer_ms = base_retention_ms / 10;
 
             let base_keep_ms = base_retention_ms
-                .saturating_add(pan_ms)
+                .saturating_add(pan_buffer)
                 .saturating_add(buffer_ms);
 
             let trigger_keep_ms =
@@ -486,14 +488,13 @@ impl ComparisonChart {
             return None;
         }
 
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches());
         self.fetch_action(reqs)
     }
 
     pub fn set_basis(&mut self, basis: data::chart::Basis) -> Option<super::Action> {
         match basis {
             Basis::Time(tf) => {
-                let was_bbo_based = self.is_bbo_based();
                 self.timeframe = tf;
 
                 let prev_colors: FxHashMap<TickerInfo, iced::Color> = self
@@ -512,20 +513,17 @@ impl ComparisonChart {
                 self.series.clear();
                 self.series_index.clear();
 
-                if is_bbo_based != was_bbo_based {
-                    self.zoom = Zoom::points(if is_bbo_based {
-                        DEFAULT_BBO_ZOOM
-                    } else {
-                        DEFAULT_KLINE_ZOOM
-                    });
-                    self.pan = DEFAULT_PAN_POINTS;
-                    // Reset virtual_now when switching modes
-                    self.virtual_now_ms = if is_bbo_based {
-                        Some(Self::now_ms())
-                    } else {
-                        None
-                    };
-                }
+                self.bar_width = if is_bbo_based {
+                    BarWidth::new_bbo(DEFAULT_BBO_BAR_WIDTH)
+                } else {
+                    BarWidth::new(DEFAULT_KLINE_BAR_WIDTH)
+                };
+                self.pan_ms = DEFAULT_PAN_MS;
+                self.virtual_now_ms = if is_bbo_based {
+                    Some(Self::now_ms())
+                } else {
+                    None
+                };
 
                 for (i, &t) in self.selected_tickers.iter().enumerate() {
                     let color = prev_colors
@@ -543,7 +541,7 @@ impl ComparisonChart {
                 if is_bbo_based {
                     None
                 } else {
-                    let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+                    let reqs = self.collect_fetch_reqs(self.desired_fetch_batches());
                     self.fetch_action(reqs)
                 }
             }
@@ -660,14 +658,46 @@ impl ComparisonChart {
         (ts / dt) * dt
     }
 
-    fn compute_visible_window(&self, pan_points: f32) -> Option<(u64, u64)> {
+    /// Compute visible window based on bar_width and pan_ms
+    /// Returns (min_x, max_x) in milliseconds
+    fn compute_visible_window(&self, viewport_width: f32) -> Option<(u64, u64)> {
         let dt = self.dt_ms_est().max(1);
-        let points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points.as_slice()).collect();
 
-        domain::window(&points, self.zoom, pan_points, dt)
+        let mut data_max_x = u64::MIN;
+        let mut any = false;
+        for s in &self.series {
+            for (x, _) in &s.points {
+                any = true;
+                if *x > data_max_x {
+                    data_max_x = *x;
+                }
+            }
+        }
+
+        let reference_max = self.virtual_now_ms.unwrap_or(if any {
+            data_max_x
+        } else {
+            return None;
+        });
+
+        let span_ms = self.bar_width.visible_span_ms(viewport_width, dt);
+
+        // Apply pan offset (positive pan_ms = looking further into past)
+        let max_x = if self.pan_ms >= 0 {
+            reference_max.saturating_sub(self.pan_ms as u64)
+        } else {
+            reference_max.saturating_add((-self.pan_ms) as u64)
+        };
+        let min_x = max_x.saturating_sub(span_ms);
+
+        Some((min_x, max_x))
     }
 
-    fn desired_fetch_batches(&self, pan_points: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
+    fn desired_fetch_batches(&self) -> Vec<(FetchRange, Vec<TickerInfo>)> {
+        let Some(viewport_width) = self.last_viewport.map(|r| r.width) else {
+            return Vec::new();
+        };
+
         let dt = self.dt_ms_est().max(1);
         let span = 500u64.saturating_mul(dt);
         let last_closed = Self::align_floor(Self::now_ms(), dt);
@@ -687,8 +717,7 @@ impl ComparisonChart {
             batches.push((FetchRange::Kline(start, end), empty_tickers));
         }
 
-        // Backfill-left relative to visible window
-        if let Some((win_min, _win_max)) = self.compute_visible_window(pan_points) {
+        if let Some((win_min, _win_max)) = self.compute_visible_window(viewport_width) {
             let mut need: Vec<(u64, TickerInfo)> = Vec::new();
             for s in &self.series {
                 if let Some(series_min) = s.points.first().map(|(x, _)| *x)

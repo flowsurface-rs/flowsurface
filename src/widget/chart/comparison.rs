@@ -1,7 +1,5 @@
 use crate::style;
-use crate::widget::chart::SeriesLike;
-use crate::widget::chart::Zoom;
-use crate::widget::chart::domain;
+use crate::widget::chart::{BarWidth, SeriesLike, domain};
 
 use data::UserTimezone;
 use exchange::{TickerInfo, Timeframe};
@@ -23,17 +21,12 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 
-const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
+const ZOOM_STEP_PCT: f32 = 0.10; // 10% per scroll "line"
 
-/// Gap breaker to avoid drawing across missing data
+pub const DEFAULT_KLINE_BAR_WIDTH: f32 = 8.0;
+pub const DEFAULT_BBO_BAR_WIDTH: f32 = 2.0;
+
 const GAP_BREAK_MULTIPLIER: f32 = 3.0;
-
-pub const DEFAULT_KLINE_ZOOM: usize = 150;
-pub const DEFAULT_BBO_ZOOM: usize = 2500;
-
-pub const MIN_ZOOM_POINTS: usize = 10;
-pub const MAX_KLINE_ZOOM: usize = 5000;
-pub const MAX_BBO_ZOOM: usize = 15000;
 
 const LEGEND_PADDING: f32 = 4.0;
 const LEGEND_LINE_H: f32 = TEXT_SIZE + 6.0;
@@ -46,11 +39,12 @@ const ICON_GAP_AFTER_TEXT: f32 = 8.0;
 
 #[derive(Debug, Clone)]
 pub enum LineComparisonEvent {
-    ZoomChanged(Zoom),
-    PanChanged(f32),
+    BarWidthChanged(BarWidth),
+    PanMsChanged(i64),
     SeriesCog(TickerInfo),
     SeriesRemove(TickerInfo),
     XAxisDoubleClick,
+    BoundsChanged(Rectangle),
 }
 
 struct State {
@@ -92,32 +86,40 @@ impl State {
 pub struct LineComparison<'a, S> {
     series: &'a [S],
     stroke_width: f32,
-    zoom: Zoom,
-    pan: f32,
+    bar_width: BarWidth,
+    pan_ms: i64,
     timeframe: Timeframe,
     timezone: UserTimezone,
     version: u64,
     virtual_now: Option<u64>,
+    last_viewport: Option<iced::Rectangle>,
 }
 
 impl<'a, S> LineComparison<'a, S>
 where
     S: SeriesLike,
 {
-    pub fn new(series: &'a [S], timeframe: Timeframe) -> Self {
+    pub fn new(
+        last_viewport: Option<iced::Rectangle>,
+        series: &'a [S],
+        timeframe: Timeframe,
+    ) -> Self {
+        let default_bar_width = if timeframe.to_milliseconds() < 60_000 {
+            DEFAULT_BBO_BAR_WIDTH
+        } else {
+            DEFAULT_KLINE_BAR_WIDTH
+        };
+
         Self {
             series,
             stroke_width: 2.0,
-            zoom: Zoom::points(if timeframe.to_milliseconds() < 60_000 {
-                DEFAULT_BBO_ZOOM
-            } else {
-                DEFAULT_KLINE_ZOOM
-            }),
+            bar_width: BarWidth::new(default_bar_width),
             timeframe,
-            pan: 0.0,
+            pan_ms: 0,
             timezone: UserTimezone::Utc,
             version: 0,
             virtual_now: None,
+            last_viewport,
         }
     }
 
@@ -127,13 +129,13 @@ where
         self
     }
 
-    pub fn with_zoom(mut self, zoom: Zoom) -> Self {
-        self.zoom = zoom;
+    pub fn with_bar_width(mut self, bar_width: BarWidth) -> Self {
+        self.bar_width = bar_width;
         self
     }
 
-    pub fn with_pan(mut self, pan: f32) -> Self {
-        self.pan = pan;
+    pub fn with_pan_ms(mut self, pan_ms: i64) -> Self {
+        self.pan_ms = pan_ms;
         self
     }
 
@@ -162,111 +164,59 @@ where
         if f == ts { ts } else { f.saturating_add(dt) }
     }
 
-    fn max_points_available(&self) -> usize {
-        self.series
-            .iter()
-            .map(|s| s.points().len())
-            .max()
-            .unwrap_or(0)
+    fn current_x_span_ms(&self, viewport_width: f32) -> u64 {
+        let bar_w = self.bar_width.0;
+        let bars_fit = (viewport_width / bar_w).floor().max(1.0);
+        let dt_ms = self.timeframe.to_milliseconds().max(1);
+
+        (bars_fit * dt_ms as f32).round() as u64
     }
 
-    fn normalize_zoom(&self, z: Zoom) -> Zoom {
-        if z.is_all() {
-            return Zoom::all();
+    fn compute_domains(&self, viewport_width: f32) -> Option<((u64, u64), (f32, f32))> {
+        if self.series.is_empty() {
+            return None;
         }
-        let max_zoom = self.max_zoom_points();
-        let n = z.0.clamp(MIN_ZOOM_POINTS, max_zoom);
-        Zoom::points(n)
-    }
 
-    fn max_zoom_points(&self) -> usize {
-        let is_bbo_based = self.timeframe.to_milliseconds() < 60_000;
+        let all_points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points()).collect();
 
-        if is_bbo_based {
-            MAX_BBO_ZOOM
-        } else {
-            MAX_KLINE_ZOOM
-        }
-    }
-
-    fn step_zoom_percent(&self, current: Zoom, zoom_in: bool) -> Zoom {
-        let len = self.max_points_available().max(MIN_ZOOM_POINTS);
-
-        let max_zoom = self.max_zoom_points();
-
-        let base_n = if current.is_all() {
-            len
-        } else {
-            current.0.clamp(MIN_ZOOM_POINTS, max_zoom)
-        };
-
-        let step = ((base_n as f32) * ZOOM_STEP_PCT).ceil().max(1.0) as usize;
-
-        let new_n = if zoom_in {
-            base_n.saturating_sub(step).max(MIN_ZOOM_POINTS)
-        } else {
-            base_n.saturating_add(step).min(max_zoom)
-        };
-
-        Zoom::points(new_n)
-    }
-
-    fn current_x_span(&self) -> f32 {
-        let mut any = false;
-        let mut data_min_x = u64::MAX;
         let mut data_max_x = u64::MIN;
-        for s in self.series {
-            for (x, _) in s.points() {
+        let mut any = false;
+        for pts in &all_points {
+            for (x, _) in *pts {
                 any = true;
-                if *x < data_min_x {
-                    data_min_x = *x;
-                }
                 if *x > data_max_x {
                     data_max_x = *x;
                 }
             }
         }
-        if !any {
-            return 1.0;
-        }
-        if self.zoom.is_all() {
-            ((data_max_x - data_min_x) as f32).max(1.0)
+
+        let reference_max = self.virtual_now.unwrap_or(if any {
+            data_max_x
         } else {
-            let n = self.zoom.0.clamp(MIN_ZOOM_POINTS, self.max_zoom_points());
-            let dt = (self.dt_ms_est() as f32).max(1e-6);
-            ((n.saturating_sub(1)) as f32 * dt).max(1.0)
-        }
-    }
-
-    fn dt_ms_est(&self) -> u64 {
-        self.timeframe.to_milliseconds()
-    }
-
-    fn compute_domains(&self, pan_points: f32) -> Option<((u64, u64), (f32, f32))> {
-        if self.series.is_empty() {
             return None;
-        }
+        });
 
-        let dt = self.dt_ms_est().max(1);
-        let all_points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points()).collect();
+        let span_ms = self.current_x_span_ms(viewport_width);
 
-        let (min_x, max_x) = domain::window_with_virtual_now(
-            &all_points,
-            self.zoom,
-            pan_points,
-            dt,
-            self.virtual_now,
-        )?;
+        // pan offset (positive pan_ms = looking further into past)
+        let max_x = if self.pan_ms >= 0 {
+            reference_max.saturating_sub(self.pan_ms as u64)
+        } else {
+            reference_max.saturating_add((-self.pan_ms) as u64)
+        };
+        let min_x = max_x.saturating_sub(span_ms);
+
         let (min_pct, max_pct) = domain::pct_domain(&all_points, min_x, max_x)?;
 
         Some(((min_x, max_x), (min_pct, max_pct)))
     }
 
     fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
-        let ((min_x, max_x), (min_pct, max_pct)) = self.compute_domains(self.pan)?;
-
         let regions = Regions::from_layout(layout);
         let plot = regions.plot;
+
+        let ((min_x, max_x), (min_pct, max_pct)) = self.compute_domains(plot.width)?;
+
         let span_ms = max_x.saturating_sub(min_x).max(1) as f32;
         let px_per_ms = if plot.width > 0.0 {
             plot.width / span_ms
@@ -762,6 +712,14 @@ where
             }
         }
     }
+
+    fn dt_ms_est(&self) -> u64 {
+        self.timeframe.to_milliseconds()
+    }
+
+    fn is_bbo_mode(&self) -> bool {
+        self.timeframe.to_milliseconds() < 60_000
+    }
 }
 
 impl<'a, S, M> Widget<M, Theme, Renderer> for LineComparison<'a, S>
@@ -840,11 +798,12 @@ where
             return;
         }
 
+        let regions = Regions::from_layout(layout);
+
         match event {
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
-                let regions = Regions::from_layout(layout);
 
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
                     if state.is_panning {
@@ -864,12 +823,16 @@ where
                             return;
                         }
 
-                        let zoom_in = *y > 0.0;
-                        let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
+                        let is_bbo = self.is_bbo_mode();
+                        let new_bar_width = if *y > 0.0 {
+                            self.bar_width.zoom_in_clamped(ZOOM_STEP_PCT, is_bbo)
+                        } else {
+                            self.bar_width.zoom_out_clamped(ZOOM_STEP_PCT, is_bbo)
+                        };
 
-                        if new_zoom != self.zoom {
-                            shell.publish(M::from(LineComparisonEvent::ZoomChanged(
-                                self.normalize_zoom(new_zoom),
+                        if new_bar_width != self.bar_width {
+                            shell.publish(M::from(LineComparisonEvent::BarWidthChanged(
+                                new_bar_width,
                             )));
                             state.clear_all_caches();
                         }
@@ -936,15 +899,15 @@ where
                             let dx_px = cursor_pos.x - prev.x;
 
                             if dx_px.abs() > 0.0 {
-                                let x_span = self.current_x_span(); // in milliseconds
+                                let span_ms = self.current_x_span_ms(regions.plot.width);
                                 let plot_w = regions.plot.width.max(1.0);
-                                let dx_ms = -(dx_px) * (x_span / plot_w);
-                                let dt = self.dt_ms_est().max(1) as f32;
-                                let dx_pts = dx_ms / dt;
+                                let dx_ms = (dx_px * (span_ms as f32 / plot_w)).round() as i64;
 
-                                let event = LineComparisonEvent::PanChanged(self.pan + dx_pts);
+                                let new_pan_ms = self.pan_ms + dx_ms;
 
-                                shell.publish(M::from(event));
+                                shell.publish(M::from(LineComparisonEvent::PanMsChanged(
+                                    new_pan_ms,
+                                )));
                                 state.clear_all_caches();
                             }
                             state.last_cursor = Some(cursor_pos);
@@ -961,6 +924,8 @@ where
                 if state.last_cache_rev != self.version {
                     state.clear_all_caches();
                     state.last_cache_rev = self.version;
+                } else if self.last_viewport != Some(regions.plot) {
+                    shell.publish(M::from(LineComparisonEvent::BoundsChanged(regions.plot)));
                 }
             }
             _ => {}
