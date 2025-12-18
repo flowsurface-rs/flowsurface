@@ -1,6 +1,6 @@
 use std::fmt;
 
-use chrono::DateTime;
+use chrono::{DateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -48,25 +48,63 @@ impl UserTimezone {
         }
     }
 
-    /// Formats a `DateTime` with detailed format for crosshair display
-    pub fn format_crosshair_timestamp(&self, timestamp_millis: i64, interval: u64) -> String {
-        if let Some(datetime) = DateTime::from_timestamp_millis(timestamp_millis) {
-            if interval < 10000 {
-                return datetime.format("%M:%S.%3f").to_string();
-            }
-
-            match self {
-                UserTimezone::Local => datetime
-                    .with_timezone(&chrono::Local)
-                    .format("%a %b %-d %H:%M")
-                    .to_string(),
-                UserTimezone::Utc => datetime
-                    .with_timezone(&chrono::Utc)
-                    .format("%a %b %-d %H:%M")
-                    .to_string(),
-            }
+    /// Format timestamp for chart crosshair with timeframe-aware precision
+    /// Uses seconds format for sub-minute timeframes, date+time for longer ones
+    pub fn format_crosshair_timestamp(&self, timestamp_ms: u64, interval_ms: u64) -> String {
+        let format_str = if interval_ms < 60_000 {
+            "%H:%M:%S"
         } else {
-            String::new()
+            "%a %b %-d %H:%M"
+        };
+
+        let ts_i64 = timestamp_ms as i64;
+        let ms_part = (timestamp_ms % 1000) as u32;
+
+        match self {
+            UserTimezone::Utc => {
+                if let Some(dt) = chrono::Utc.timestamp_millis_opt(ts_i64).single() {
+                    let base = dt.format(format_str).to_string();
+                    if interval_ms < 1000 {
+                        format!("{}.{:03}", base, ms_part)
+                    } else {
+                        base
+                    }
+                } else {
+                    timestamp_ms.to_string()
+                }
+            }
+            UserTimezone::Local => {
+                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_i64).single() {
+                    let base = dt.format(format_str).to_string();
+                    if interval_ms < 1000 {
+                        format!("{}.{:03}", base, ms_part)
+                    } else {
+                        base
+                    }
+                } else {
+                    timestamp_ms.to_string()
+                }
+            }
+        }
+    }
+
+    /// Convert UTC timestamp to timezone-adjusted milliseconds for display alignment
+    /// Note: This shifts the timestamp value itself, useful for aligning tick marks
+    pub fn adjust_ms_for_display(&self, ts_ms: u64) -> u64 {
+        match self {
+            UserTimezone::Utc => ts_ms,
+            UserTimezone::Local => {
+                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_ms as i64).single() {
+                    let off_ms = (dt.offset().local_minus_utc() as i64) * 1000;
+                    if off_ms >= 0 {
+                        ts_ms.saturating_add(off_ms as u64)
+                    } else {
+                        ts_ms.saturating_sub((-off_ms) as u64)
+                    }
+                } else {
+                    ts_ms
+                }
+            }
         }
     }
 }

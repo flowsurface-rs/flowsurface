@@ -153,6 +153,39 @@ impl SeriesLike for Series {
     }
 }
 
+/// Align timestamp down to the nearest multiple of `dt`
+pub fn align_floor(ts: u64, dt: u64) -> u64 {
+    if dt == 0 {
+        return ts;
+    }
+    (ts / dt) * dt
+}
+
+/// Align timestamp up to the nearest multiple of `dt`
+pub fn align_ceil(ts: u64, dt: u64) -> u64 {
+    if dt == 0 {
+        return ts;
+    }
+    let f = (ts / dt) * dt;
+    if f == ts { ts } else { f.saturating_add(dt) }
+}
+
+/// Returns true if timeframe is sub-minute (BBO-based)
+pub fn is_bbo_timeframe(timeframe: &exchange::Timeframe) -> bool {
+    timeframe.to_milliseconds() < 60_000
+}
+
+/// Compute visible X window given reference max, pan offset, and span
+pub fn compute_x_window(reference_max: u64, pan_ms: i64, span_ms: u64) -> (u64, u64) {
+    let max_x = if pan_ms >= 0 {
+        reference_max.saturating_sub(pan_ms as u64)
+    } else {
+        reference_max.saturating_add((-pan_ms) as u64)
+    };
+    let min_x = max_x.saturating_sub(span_ms);
+    (min_x, max_x)
+}
+
 /// Compute a "nice" step close to range/target using 1/2/5*10^k
 fn nice_step(range: f32, target: usize) -> f32 {
     let target = target.max(2) as f32;

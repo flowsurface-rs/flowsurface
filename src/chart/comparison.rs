@@ -1,7 +1,7 @@
 use crate::widget::chart::comparison::{
     DEFAULT_BBO_BAR_WIDTH, DEFAULT_KLINE_BAR_WIDTH, LineComparison, LineComparisonEvent,
 };
-use crate::widget::chart::{BarWidth, Series};
+use crate::widget::chart::{BarWidth, Series, align_floor, compute_x_window};
 
 use data::chart::Basis;
 use data::chart::comparison::Config;
@@ -279,7 +279,7 @@ impl ComparisonChart {
 
         let now_ref = self.virtual_now_ms.unwrap_or_else(Self::now_ms);
         let (trigger_cutoff, drain_cutoff) = {
-            let dt = self.dt_ms_est().max(1);
+            let dt = self.timeframe.to_milliseconds().max(1);
 
             let base_retention_ms = (SERIES_MAX_POINTS as u64).saturating_mul(dt);
 
@@ -483,8 +483,8 @@ impl ComparisonChart {
         }
 
         if self.is_bbo_based() {
-            let dt = self.dt_ms_est();
-            self.virtual_now_ms = Some(Self::align_floor(Self::now_ms(), dt));
+            let dt = self.timeframe.to_milliseconds().max(1);
+            self.virtual_now_ms = Some(align_floor(Self::now_ms(), dt));
             return None;
         }
 
@@ -647,50 +647,21 @@ impl ComparisonChart {
             .as_millis() as u64
     }
 
-    fn dt_ms_est(&self) -> u64 {
-        self.timeframe.to_milliseconds().max(1)
-    }
-
-    fn align_floor(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        (ts / dt) * dt
-    }
-
     /// Compute visible window based on bar_width and pan_ms
     /// Returns (min_x, max_x) in milliseconds
     fn compute_visible_window(&self, viewport_width: f32) -> Option<(u64, u64)> {
-        let dt = self.dt_ms_est().max(1);
+        let dt = self.timeframe.to_milliseconds().max(1);
 
-        let mut data_max_x = u64::MIN;
-        let mut any = false;
-        for s in &self.series {
-            for (x, _) in &s.points {
-                any = true;
-                if *x > data_max_x {
-                    data_max_x = *x;
-                }
-            }
-        }
+        let data_max_x = self
+            .series
+            .iter()
+            .flat_map(|s| s.points.iter().map(|(x, _)| *x))
+            .max();
 
-        let reference_max = self.virtual_now_ms.unwrap_or(if any {
-            data_max_x
-        } else {
-            return None;
-        });
+        let reference_max = self.virtual_now_ms.or(data_max_x)?;
 
         let span_ms = self.bar_width.visible_span_ms(viewport_width, dt);
-
-        // Apply pan offset (positive pan_ms = looking further into past)
-        let max_x = if self.pan_ms >= 0 {
-            reference_max.saturating_sub(self.pan_ms as u64)
-        } else {
-            reference_max.saturating_add((-self.pan_ms) as u64)
-        };
-        let min_x = max_x.saturating_sub(span_ms);
-
-        Some((min_x, max_x))
+        Some(compute_x_window(reference_max, self.pan_ms, span_ms))
     }
 
     fn desired_fetch_batches(&self) -> Vec<(FetchRange, Vec<TickerInfo>)> {
@@ -698,9 +669,9 @@ impl ComparisonChart {
             return Vec::new();
         };
 
-        let dt = self.dt_ms_est().max(1);
+        let dt = self.timeframe.to_milliseconds().max(1);
         let span = 500u64.saturating_mul(dt);
-        let last_closed = Self::align_floor(Self::now_ms(), dt);
+        let last_closed = align_floor(Self::now_ms(), dt);
 
         let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
 
@@ -728,8 +699,9 @@ impl ComparisonChart {
             }
             if !need.is_empty() {
                 let end = need.iter().map(|(e, _)| *e).min().unwrap_or(win_min);
-                let end = Self::align_floor(end, dt);
+                let end = align_floor(end, dt);
                 let start = end.saturating_sub(span);
+
                 let tickers = need.into_iter().map(|(_, t)| t).collect();
                 batches.push((FetchRange::Kline(start, end), tickers));
             }

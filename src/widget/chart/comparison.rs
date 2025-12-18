@@ -1,8 +1,8 @@
-use crate::style;
-use crate::widget::chart::{BarWidth, SeriesLike, domain};
-
 use data::UserTimezone;
 use exchange::{TickerInfo, Timeframe};
+
+use crate::style;
+use crate::widget::chart::{BarWidth, SeriesLike, domain};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
@@ -12,8 +12,6 @@ use iced::{
     Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
 };
 use iced_core::renderer::Quad;
-
-use chrono::TimeZone;
 
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
@@ -149,21 +147,6 @@ where
         self
     }
 
-    fn align_floor(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        (ts / dt) * dt
-    }
-
-    fn align_ceil(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        let f = (ts / dt) * dt;
-        if f == ts { ts } else { f.saturating_add(dt) }
-    }
-
     fn current_x_span_ms(&self, viewport_width: f32) -> u64 {
         let bar_w = self.bar_width.0;
         let bars_fit = (viewport_width / bar_w).floor().max(1.0);
@@ -179,32 +162,15 @@ where
 
         let all_points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points()).collect();
 
-        let mut data_max_x = u64::MIN;
-        let mut any = false;
-        for pts in &all_points {
-            for (x, _) in *pts {
-                any = true;
-                if *x > data_max_x {
-                    data_max_x = *x;
-                }
-            }
-        }
+        let data_max_x = all_points
+            .iter()
+            .flat_map(|pts| pts.iter().map(|(x, _)| *x))
+            .max();
 
-        let reference_max = self.virtual_now.unwrap_or(if any {
-            data_max_x
-        } else {
-            return None;
-        });
+        let reference_max = self.virtual_now.or(data_max_x)?;
 
         let span_ms = self.current_x_span_ms(viewport_width);
-
-        // pan offset (positive pan_ms = looking further into past)
-        let max_x = if self.pan_ms >= 0 {
-            reference_max.saturating_sub(self.pan_ms as u64)
-        } else {
-            reference_max.saturating_add((-self.pan_ms) as u64)
-        };
-        let min_x = max_x.saturating_sub(span_ms);
+        let (min_x, max_x) = super::compute_x_window(reference_max, self.pan_ms, span_ms);
 
         let (min_pct, max_pct) = domain::pct_domain(&all_points, min_x, max_x)?;
 
@@ -261,9 +227,9 @@ where
                     let ms_from_min = ((cx - plot_rect.x) / ctx.px_per_ms).round() as u64;
                     let x_domain_raw = ctx.min_x.saturating_add(ms_from_min);
 
-                    let dt = self.dt_ms_est().max(1);
-                    let lower = Self::align_floor(x_domain_raw, dt);
-                    let upper = Self::align_ceil(x_domain_raw, dt);
+                    let dt = self.timeframe.to_milliseconds().max(1);
+                    let lower = super::align_floor(x_domain_raw, dt);
+                    let upper = super::align_ceil(x_domain_raw, dt);
                     let snapped_x = if x_domain_raw.saturating_sub(lower)
                         <= upper.saturating_sub(x_domain_raw)
                     {
@@ -656,70 +622,6 @@ where
 
         end_labels
     }
-
-    fn format_crosshair_time(ts_ms: u64, tz: UserTimezone, timeframe_ms: u64) -> String {
-        let format_str = if timeframe_ms < 60_000 {
-            "%H:%M:%S"
-        } else {
-            "%a %b %-d %H:%M"
-        };
-
-        let ts_i64 = ts_ms as i64;
-        let ms_part = (ts_ms % 1000) as u32;
-
-        match tz {
-            UserTimezone::Utc => {
-                if let Some(dt) = chrono::Utc.timestamp_millis_opt(ts_i64).single() {
-                    let base = dt.format(format_str).to_string();
-                    if timeframe_ms < 1000 {
-                        format!("{}.{:03}", base, ms_part)
-                    } else {
-                        base
-                    }
-                } else {
-                    ts_ms.to_string()
-                }
-            }
-            UserTimezone::Local => {
-                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_i64).single() {
-                    let base = dt.format(format_str).to_string();
-                    if timeframe_ms < 1000 {
-                        format!("{}.{:03}", base, ms_part)
-                    } else {
-                        base
-                    }
-                } else {
-                    ts_ms.to_string()
-                }
-            }
-        }
-    }
-
-    fn to_tz_ms(ts_ms: u64, tz: UserTimezone) -> u64 {
-        match tz {
-            UserTimezone::Utc => ts_ms,
-            UserTimezone::Local => {
-                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_ms as i64).single() {
-                    let off_ms = (dt.offset().local_minus_utc() as i64) * 1000;
-                    if off_ms >= 0 {
-                        ts_ms.saturating_add(off_ms as u64)
-                    } else {
-                        ts_ms.saturating_sub((-off_ms) as u64)
-                    }
-                } else {
-                    ts_ms
-                }
-            }
-        }
-    }
-
-    fn dt_ms_est(&self) -> u64 {
-        self.timeframe.to_milliseconds()
-    }
-
-    fn is_bbo_mode(&self) -> bool {
-        self.timeframe.to_milliseconds() < 60_000
-    }
 }
 
 impl<'a, S, M> Widget<M, Theme, Renderer> for LineComparison<'a, S>
@@ -823,7 +725,7 @@ where
                             return;
                         }
 
-                        let is_bbo = self.is_bbo_mode();
+                        let is_bbo = super::is_bbo_timeframe(&self.timeframe);
                         let new_bar_width = if *y > 0.0 {
                             self.bar_width.zoom_in_clamped(ZOOM_STEP_PCT, is_bbo)
                         } else {
@@ -1067,33 +969,33 @@ where
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> advanced::mouse::Interaction {
-        if let Some(cursor_in_layout) = cursor.position_in(layout.bounds()) {
-            if let Some(scene) = self.compute_scene(layout, cursor) {
-                if let Some(legend) = scene.legend.as_ref() {
-                    for row in &legend.rows {
-                        if row.cog.contains(cursor_in_layout)
-                            || (row.has_close && row.close.contains(cursor_in_layout))
-                        {
-                            return advanced::mouse::Interaction::Pointer;
-                        }
+        let Some(cursor_in_layout) = cursor.position_in(layout.bounds()) else {
+            return advanced::mouse::Interaction::default();
+        };
+
+        if let Some(scene) = self.compute_scene(layout, cursor) {
+            if let Some(legend) = scene.legend.as_ref() {
+                for row in &legend.rows {
+                    if row.cog.contains(cursor_in_layout)
+                        || (row.has_close && row.close.contains(cursor_in_layout))
+                    {
+                        return advanced::mouse::Interaction::Pointer;
                     }
                 }
+            }
 
-                if scene.hovering_legend && scene.hovered_row.is_some() {
-                    return advanced::mouse::Interaction::default();
-                }
+            if scene.hovering_legend && scene.hovered_row.is_some() {
+                return advanced::mouse::Interaction::default();
+            }
 
-                let state = _state.state.downcast_ref::<State>();
-                if state.is_panning {
-                    return advanced::mouse::Interaction::Grabbing;
-                }
+            let state = _state.state.downcast_ref::<State>();
+            if state.is_panning {
+                return advanced::mouse::Interaction::Grabbing;
+            }
 
-                match scene.ctx.regions.hit_test(cursor_in_layout) {
-                    HitZone::Plot => advanced::mouse::Interaction::Crosshair,
-                    _ => advanced::mouse::Interaction::default(),
-                }
-            } else {
-                advanced::mouse::Interaction::default()
+            match scene.ctx.regions.hit_test(cursor_in_layout) {
+                HitZone::Plot => advanced::mouse::Interaction::Crosshair,
+                _ => advanced::mouse::Interaction::default(),
             }
         } else {
             advanced::mouse::Interaction::default()
@@ -1141,9 +1043,8 @@ where
             let gap_thresh: u64 = if is_bbo_mode {
                 u64::MAX // Never break lines for BBO data
             } else {
-                ((self.dt_ms_est() as f32) * GAP_BREAK_MULTIPLIER)
-                    .max(1.0)
-                    .round() as u64
+                let dt = self.timeframe.to_milliseconds().max(1) as f32;
+                (dt * GAP_BREAK_MULTIPLIER).max(1.0).round() as u64
             };
 
             let mut prev_x: Option<u64> = None;
@@ -1339,7 +1240,7 @@ where
         for t in ticks {
             let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
 
-            let label_ts = Self::to_tz_ms(t, self.timezone);
+            let label_ts = self.timezone.adjust_ms_for_display(t);
             let label = super::format_time_label(label_ts, step_ms);
 
             let est_w = (label.len() as f32) * CHAR_W + 8.0;
@@ -1607,11 +1508,9 @@ where
         b.line_to(Point::new(plot_rect.x + plot_rect.width, cy));
         frame.stroke(&b.build(), stroke);
 
-        let time_str = Self::format_crosshair_time(
-            ci.x_domain,
-            self.timezone,
-            self.timeframe.to_milliseconds(),
-        );
+        let time_str = self
+            .timezone
+            .format_crosshair_timestamp(ci.x_domain, self.timeframe.to_milliseconds());
 
         let text_col = palette.secondary.base.text;
         let bg_col = palette.secondary.base.color;
