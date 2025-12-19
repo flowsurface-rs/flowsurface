@@ -34,6 +34,15 @@ pub enum InternalError {
 
 pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
     let path = data_path(Some(file_name));
+
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid state file path")
+    })?;
+
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)?;
+    }
+
     let mut file = File::create(path)?;
     file.write_all(json.as_bytes())?;
     Ok(())
