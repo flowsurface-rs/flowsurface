@@ -689,21 +689,17 @@ impl ComparisonChart {
         }
 
         if let Some((win_min, _win_max)) = self.compute_visible_window(viewport_width) {
-            let mut need: Vec<(u64, TickerInfo)> = Vec::new();
             for s in &self.series {
-                if let Some(series_min) = s.points.first().map(|(x, _)| *x)
-                    && win_min < series_min
-                {
-                    need.push((series_min, s.ticker_info));
-                }
-            }
-            if !need.is_empty() {
-                let end = need.iter().map(|(e, _)| *e).min().unwrap_or(win_min);
-                let end = align_floor(end, dt);
-                let start = end.saturating_sub(span);
+                let Some(series_min) = s.points.first().map(|(x, _)| *x) else {
+                    continue;
+                };
 
-                let tickers = need.into_iter().map(|(_, t)| t).collect();
-                batches.push((FetchRange::Kline(start, end), tickers));
+                if win_min < series_min {
+                    let end = align_floor(series_min, dt);
+                    let start = end.saturating_sub(span);
+
+                    batches.push((FetchRange::Kline(start, end), vec![s.ticker_info]));
+                }
             }
         }
 
