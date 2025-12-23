@@ -10,6 +10,7 @@ use iced::mouse;
 use iced::widget::shader::{self, Viewport};
 
 use crate::widget::chart::heatmap::scene::camera::Camera;
+use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +24,7 @@ fn next_scene_id() -> u64 {
 pub struct Scene {
     pub id: u64,
     pub rectangles: Vec<RectInstance>,
+    pub circles: Vec<CircleInstance>,
     pub camera: camera::Camera,
 }
 
@@ -31,12 +33,17 @@ impl Scene {
         Self {
             id: next_scene_id(),
             rectangles: Vec::new(),
+            circles: Vec::new(),
             camera: Camera::default(),
         }
     }
 
     pub fn set_rectangles(&mut self, rectangles: Vec<RectInstance>) {
         self.rectangles = rectangles;
+    }
+
+    pub fn set_circles(&mut self, circles: Vec<CircleInstance>) {
+        self.circles = circles;
     }
 }
 
@@ -110,7 +117,7 @@ impl shader::Program<Message> for Scene {
         _cursor: mouse::Cursor,
         _bounds: Rectangle,
     ) -> Self::Primitive {
-        Primitive::new(self.id, &self.rectangles, self.camera)
+        Primitive::new(self.id, &self.rectangles, &self.circles, self.camera)
     }
 
     fn mouse_interaction(
@@ -134,14 +141,21 @@ impl shader::Program<Message> for Scene {
 pub struct Primitive {
     id: u64,
     rectangles: Vec<RectInstance>,
+    circles: Vec<CircleInstance>,
     camera: camera::Camera,
 }
 
 impl Primitive {
-    pub fn new(id: u64, rectangles: &[RectInstance], camera: camera::Camera) -> Self {
+    pub fn new(
+        id: u64,
+        rectangles: &[RectInstance],
+        circles: &[CircleInstance],
+        camera: camera::Camera,
+    ) -> Self {
         Self {
             id,
             rectangles: rectangles.to_vec(),
+            circles: circles.to_vec(),
             camera,
         }
     }
@@ -158,7 +172,8 @@ impl shader::Primitive for Primitive {
         bounds: &Rectangle,
         _viewport: &Viewport,
     ) {
-        pipeline.update_instances(self.id, device, queue, &self.rectangles);
+        pipeline.update_rect_instances(self.id, device, queue, &self.rectangles);
+        pipeline.update_circle_instances(self.id, device, queue, &self.circles);
 
         let cam_u = self.camera.to_uniform(bounds.width, bounds.height);
         pipeline.update_camera(self.id, device, queue, &cam_u);
@@ -171,12 +186,19 @@ impl shader::Primitive for Primitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        pipeline.render(
+        pipeline.render_rectangles(
             self.id,
             encoder,
             target,
             *clip_bounds,
             self.rectangles.len() as u32,
+        );
+        pipeline.render_circles(
+            self.id,
+            encoder,
+            target,
+            *clip_bounds,
+            self.circles.len() as u32,
         );
     }
 }
