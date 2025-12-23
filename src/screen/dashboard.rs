@@ -52,6 +52,7 @@ pub enum Message {
         data: FetchedData,
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
+    RequestPalette,
 }
 
 pub struct Dashboard {
@@ -87,6 +88,7 @@ pub enum Event {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
     },
+    RequestPalette,
 }
 
 impl Dashboard {
@@ -378,6 +380,9 @@ impl Dashboard {
                     }
                 }
             },
+            Message::RequestPalette => {
+                return (Task::none(), Some(Event::RequestPalette));
+            }
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
                     pane_state.status = status;
@@ -964,6 +969,11 @@ impl Dashboard {
                                 c.insert_datapoint(trades_buffer, depth_update_t, depth);
                             }
                         }
+                        pane::Content::ShaderHeatmap { chart } => {
+                            if let Some(c) = chart {
+                                c.insert_datapoint(trades_buffer, depth_update_t, depth);
+                            }
+                        }
                         pane::Content::Kline { chart, .. } => {
                             if let Some(c) = chart {
                                 c.insert_trades_buffer(trades_buffer);
@@ -1019,6 +1029,9 @@ impl Dashboard {
                             layout_id,
                             reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
                         ));
+                    }
+                    chart::Action::RequestPalette => {
+                        tasks.push(Task::done(Message::RequestPalette));
                     }
                 },
                 Some(pane::Action::Panel(_action)) => {}
@@ -1095,6 +1108,13 @@ impl Dashboard {
             .collect::<Vec<Subscription<exchange::Event>>>();
 
         Subscription::batch(unique_streams)
+    }
+
+    pub fn theme_updated(&mut self, main_window: window::Id, theme: &iced_core::Theme) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| {
+                state.content.update_theme(theme);
+            });
     }
 
     fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {

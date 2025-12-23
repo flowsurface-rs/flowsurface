@@ -276,6 +276,7 @@ fn canvas_interaction<T: Chart>(
 pub enum Action {
     ErrorOccurred(data::InternalError),
     RequestFetch(FetchRequests),
+    RequestPalette,
 }
 
 pub fn update<T: Chart>(chart: &mut T, message: &Message) {

@@ -44,6 +44,14 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
+    ShaderHeatmap {
+        #[serde(deserialize_with = "ok_or_default", default)]
+        stream_type: Vec<PersistStreamKind>,
+        #[serde(deserialize_with = "ok_or_default")]
+        settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
     KlineChart {
         layout: ViewConfig,
         kind: KlineChartKind,
@@ -186,6 +194,7 @@ impl VisualConfig {
 pub enum ContentKind {
     Starter,
     HeatmapChart,
+    ShaderHeatmap,
     FootprintChart,
     CandlestickChart,
     ComparisonChart,
@@ -194,9 +203,10 @@ pub enum ContentKind {
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 7] = [
+    pub const ALL: [ContentKind; 8] = [
         ContentKind::Starter,
         ContentKind::HeatmapChart,
+        ContentKind::ShaderHeatmap,
         ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
         ContentKind::ComparisonChart,
@@ -210,6 +220,7 @@ impl std::fmt::Display for ContentKind {
         let s = match self {
             ContentKind::Starter => "Starter Pane",
             ContentKind::HeatmapChart => "Heatmap Chart",
+            ContentKind::ShaderHeatmap => "Shader Heatmap",
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
             ContentKind::ComparisonChart => "Comparison Chart",
@@ -256,6 +267,9 @@ impl PaneSetup {
             ContentKind::Ladder => Some(
                 current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
             ),
+            ContentKind::ShaderHeatmap => Some(
+                current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+            ),
             ContentKind::FootprintChart => {
                 Some(current_basis.unwrap_or(Basis::Time(Timeframe::M5)))
             }
@@ -266,7 +280,7 @@ impl PaneSetup {
         };
 
         let tick_multiplier = match content_kind {
-            ContentKind::HeatmapChart | ContentKind::Ladder => {
+            ContentKind::HeatmapChart | ContentKind::Ladder | ContentKind::ShaderHeatmap => {
                 let tm = if !is_client_aggr && prev_is_client_aggr {
                     TickMultiplier(10)
                 } else if let Some(tm) = current_tick_multiplier {

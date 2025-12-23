@@ -1,4 +1,5 @@
 pub mod comparison;
+pub mod heatmap;
 
 use chrono::{TimeZone, Utc};
 use exchange::TickerInfo;

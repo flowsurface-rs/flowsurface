@@ -82,7 +82,7 @@ enum Message {
     RestartRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
-    ThemeSelected(data::Theme),
+    ThemeSelected(iced_core::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
     ToggleTradeFetch(bool),
@@ -252,7 +252,11 @@ impl Flowsurface {
                 }
             }
             Message::ThemeSelected(theme) => {
-                self.theme = theme.clone();
+                self.theme = data::Theme(theme.clone());
+
+                let main_window = self.main_window.id;
+                self.active_dashboard_mut()
+                    .theme_updated(main_window, &theme);
             }
             Message::Dashboard {
                 layout_id: id,
@@ -324,6 +328,15 @@ impl Flowsurface {
                                     Task::none()
                                 }
                             }
+                        }
+                        Some(dashboard::Event::RequestPalette) => {
+                            let theme = self.theme.0.clone();
+
+                            let main_window = self.main_window.id;
+                            self.active_dashboard_mut()
+                                .theme_updated(main_window, &theme);
+
+                            Task::none()
                         }
                         None => Task::none(),
                     };
@@ -450,12 +463,11 @@ impl Flowsurface {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     Some(modal::theme_editor::Action::UpdateTheme(theme)) => {
-                        self.theme = data::Theme(theme);
+                        self.theme = data::Theme(theme.clone());
 
                         let main_window = self.main_window.id;
-
                         self.active_dashboard_mut()
-                            .invalidate_all_panes(main_window);
+                            .theme_updated(main_window, &theme);
                     }
                     None => {}
                 }
@@ -696,7 +708,7 @@ impl Flowsurface {
                         }
 
                         pick_list(themes, Some(self.theme.0.clone()), |theme| {
-                            Message::ThemeSelected(data::Theme(theme))
+                            Message::ThemeSelected(theme)
                         })
                     };
 

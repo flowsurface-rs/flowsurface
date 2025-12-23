@@ -129,6 +129,11 @@ impl From<&pane::State> for data::Pane {
                     .map_or(studies.clone(), |c| c.studies.clone()),
                 link_group: pane.link_group,
             },
+            pane::Content::ShaderHeatmap { .. } => data::Pane::ShaderHeatmap {
+                stream_type: streams,
+                settings: pane.settings.clone(),
+                link_group: pane.link_group,
+            },
             pane::Content::Kline {
                 chart,
                 indicators,
@@ -188,6 +193,20 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             data::layout::pane::Settings::default(),
             link_group,
         )),
+        data::Pane::ShaderHeatmap {
+            stream_type,
+            settings,
+            link_group,
+        } => {
+            let content = pane::Content::ShaderHeatmap { chart: None };
+
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
         data::Pane::HeatmapChart {
             layout,
             studies,
