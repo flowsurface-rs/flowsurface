@@ -2,6 +2,9 @@ use super::{AxisInteraction, AxisInteractionKind, Message};
 use exchange::util::{Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
 
+const DEPTH_MIN_ROW_PX: f32 = 1.25;
+const MAX_STEPS_PER_Y_BIN: i64 = 2048;
+
 pub struct AxisYLabelCanvas {
     pub base_price: Price,
     pub step: PriceStep,
@@ -93,26 +96,38 @@ impl canvas::Program<Message> for AxisYLabelCanvas {
         let max_steps = (-(y_world_top) / self.row_h).ceil() as i64;
 
         let px_per_step = (self.row_h * self.cam_sy).max(1e-6);
+        let mut steps_per_y_bin: i64 = (DEPTH_MIN_ROW_PX / px_per_step).ceil() as i64;
+        steps_per_y_bin = steps_per_y_bin.clamp(1, MAX_STEPS_PER_Y_BIN);
+
+        let px_per_bin = (px_per_step * steps_per_y_bin as f32).max(1e-6);
+
         let target_px = 26.0f32;
-        let rough_every = (target_px / px_per_step).ceil() as i64;
-        let every = super::nice_step_i64(rough_every);
+        let rough_every_bins = (target_px / px_per_bin).ceil() as i64;
+        let every_bins = super::nice_step_i64(rough_every_bins.max(1));
 
         let text_color = theme.palette().text;
-
         let tick_len = 7.0f32;
         let font_size = 12.0f32;
 
-        let mut s = (min_steps.div_euclid(every)) * every;
-        if s < min_steps {
-            s += every;
+        let min_bin = min_steps.div_euclid(steps_per_y_bin);
+        let max_bin = max_steps.div_euclid(steps_per_y_bin);
+
+        let mut b = (min_bin.div_euclid(every_bins)) * every_bins;
+        if b < min_bin {
+            b += every_bins;
         }
 
-        while s <= max_steps {
-            let y_world = -((s as f32) * self.row_h);
+        while b <= max_bin {
+            let center_steps = b * steps_per_y_bin + (steps_per_y_bin / 2);
+            let y_world = -((center_steps as f32 + 0.5) * self.row_h);
             let y_px = (y_world - self.cam_offset_y) * self.cam_sy + 0.5 * vh;
 
             if (0.0..=vh).contains(&y_px) {
-                let price = self.base_price.add_steps(s, self.step).to_f32_lossy();
+                let price = self
+                    .base_price
+                    .add_steps(center_steps, self.step)
+                    .to_f32_lossy();
+
                 frame.fill_text(canvas::Text {
                     content: format!("{price}"),
                     position: iced::Point::new(tick_len + 4.0, y_px),
@@ -124,8 +139,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas {
                 });
             }
 
-            s = s.saturating_add(every);
-            if every <= 0 {
+            b = b.saturating_add(every_bins);
+            if every_bins <= 0 {
                 break;
             }
         }
