@@ -34,7 +34,6 @@ pub struct Pipeline {
     rect_vertex_buffer: wgpu::Buffer,
     circle_vertex_buffer: wgpu::Buffer,
 
-    // can share an index buffer if you want, but simplest is keep two:
     rect_index_buffer: wgpu::Buffer,
     circle_index_buffer: wgpu::Buffer,
 
@@ -48,7 +47,7 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        // --- buffers
+        // -- buffers
         let rect_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("rect vertex buffer"),
             contents: bytemuck::cast_slice(RECT_VERTICES),
@@ -71,7 +70,7 @@ impl Pipeline {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // --- shaders
+        // -- shaders
         let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rect shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/rect.wgsl").into()),
@@ -81,7 +80,7 @@ impl Pipeline {
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/circle.wgsl").into()),
         });
 
-        // --- bind groups
+        // -- bind groups
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("camera bind group layout"),
@@ -106,7 +105,7 @@ impl Pipeline {
             push_constant_ranges: &[],
         });
 
-        // --- rect pipeline (unchanged except: stored in rect_pipeline)
+        // -- rect pipeline
         let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("rect pipeline"),
             layout: Some(&pipeline_layout),
@@ -164,9 +163,7 @@ impl Pipeline {
             cache: None,
         });
 
-        // --- circle pipeline
-        // NOTE: your circle shader outputs *premultiplied alpha*.
-        // For correct blending, use PREMULTIPLIED_ALPHA_BLENDING.
+        // -- circle pipeline
         let circle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("circle pipeline"),
             layout: Some(&pipeline_layout),
@@ -421,7 +418,7 @@ impl Pipeline {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load, // draw on top of rectangles
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,

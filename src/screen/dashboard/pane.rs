@@ -2039,13 +2039,8 @@ impl Content {
     }
 
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {
-        match self {
-            Content::ShaderHeatmap { chart } => {
-                if let Some(c) = chart {
-                    c.update_theme(theme);
-                }
-            }
-            _ => {}
+        if let Content::ShaderHeatmap { chart: Some(c), .. } = self {
+            c.update_theme(theme);
         }
     }
 

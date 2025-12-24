@@ -5,33 +5,38 @@ use exchange::depth::Depth;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
 use iced::time::Instant;
-use iced::widget::{center, column, shader};
-use iced::{Element, Fill};
+use iced::widget::{Canvas, Space, column, container, mouse_area, row, rule, shader};
+use iced::{Element, Fill, Length, padding};
 
 use crate::chart::Action;
+use crate::style::{self};
+use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
+use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
 use crate::widget::chart::heatmap::scene::Scene;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 
+mod scale;
 mod scene;
+
+const TEXT_SIZE: f32 = 12.0;
 
 const DEFAULT_ROW_H_WORLD: f32 = 0.1;
 const DEFAULT_COL_W_WORLD: f32 = 0.1;
 
-const MIN_ROW_H_WORLD: f32 = 1e-4;
-const MIN_CAMERA_SCALE: f32 = 1e-6;
+const MIN_CAMERA_SCALE: f32 = 1e-4;
 
 // Trades (circles)
-const TRADE_R_MIN_PX: f32 = 3.0;
+const TRADE_R_MIN_PX: f32 = 2.0;
 const TRADE_R_MAX_PX: f32 = 25.0;
 const TRADE_ALPHA: f32 = 0.8;
 
 // Depth (rect alpha normalization)
-const DEPTH_ALPHA_MIN: f32 = 0.05;
-const DEPTH_ALPHA_MAX: f32 = 0.95;
+const DEPTH_ALPHA_MIN: f32 = 0.01;
+const DEPTH_ALPHA_MAX: f32 = 0.99;
 
 // Zoom -> circle scaling
-const ZOOM_REF_PX: f32 = 300.0;
+const ZOOM_REF_PX: f32 = 100.0;
 const ZOOM_EXP: f32 = 0.15;
 const ZOOM_FACTOR_MIN: f32 = 0.75;
 const ZOOM_FACTOR_MAX: f32 = 1.5;
@@ -41,13 +46,19 @@ const PROFILE_COL_WIDTH_PX: f32 = 180.0;
 const PROFILE_MIN_BAR_PX: f32 = 1.0;
 const PROFILE_ALPHA: f32 = 0.8;
 
-// Volume strip (bottom band)
+// Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
 const VOLUME_BUCKET_GAP_FRAC: f32 = 0.10;
 const VOLUME_MIN_BAR_PX: f32 = 1.0;
 const VOLUME_TOTAL_RGB: [f32; 3] = [0.7, 0.7, 0.7];
 const VOLUME_TOTAL_ALPHA: f32 = 0.18;
 const VOLUME_DELTA_ALPHA: f32 = 0.8;
+
+const MIN_ROW_H_WORLD: f32 = 0.01;
+const MAX_ROW_H_WORLD: f32 = 10.;
+
+const MIN_COL_W_WORLD: f32 = 0.01;
+const MAX_COL_W_WORLD: f32 = 10.;
 
 #[derive(Debug, Clone, Copy)]
 struct ViewWindow {
@@ -65,8 +76,6 @@ struct ViewWindow {
     // Visible world bounds
     x_min: f32,
     x_max: f32,
-    y_min: f32,
-    y_max: f32,
 
     // Camera scale (world->px)
     sx: f32,
@@ -129,10 +138,22 @@ pub struct HeatmapShader {
 #[derive(Debug, Clone)]
 pub enum Message {
     BoundsChanged([f32; 2]),
-    RowHeightChanged(f32),
     Tick(Instant),
     PanDeltaPx(iced::Vector),
-    ZoomAt { factor: f32, cursor: iced::Point },
+    ZoomAt {
+        factor: f32,
+        cursor: iced::Point,
+    },
+    ZoomRowHeightAt {
+        factor: f32,
+        cursor_y: f32,
+        viewport_h: f32,
+    },
+    ZoomColumnWorldAt {
+        factor: f32,
+        cursor_x: f32,
+        viewport_w: f32,
+    },
 }
 
 impl HeatmapShader {
@@ -167,10 +188,6 @@ impl HeatmapShader {
                 self.viewport = Some(viewport);
                 self.rebuild_instances();
             }
-            Message::RowHeightChanged(h) => {
-                self.row_h = h.max(0.0001);
-                self.rebuild_instances();
-            }
             Message::Tick(now) => {
                 self.last_tick = Some(now);
             }
@@ -194,12 +211,90 @@ impl HeatmapShader {
 
                 self.rebuild_instances();
             }
+            Message::ZoomRowHeightAt {
+                factor,
+                cursor_y,
+                viewport_h,
+            } => {
+                self.zoom_row_h_at(factor, cursor_y, viewport_h);
+                self.rebuild_instances();
+            }
+            Message::ZoomColumnWorldAt {
+                factor,
+                cursor_x,
+                viewport_w,
+            } => {
+                self.zoom_column_world_at(factor, cursor_x, viewport_w);
+                self.rebuild_instances();
+            }
         }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let shader = shader(&self.scene).width(Fill).height(Fill);
-        center(column![shader]).into()
+        let aggr_time = match self.data.basis {
+            Basis::Time(interval) => Some(u64::from(interval)),
+            Basis::Tick(_) => None,
+        };
+
+        let x_axis_label = Canvas::new(AxisXLabelCanvas {
+            latest_time: self.data.latest_time,
+            aggr_time,
+            column_world: self.column_world,
+            cam_offset_x: self.scene.camera.offset[0],
+            cam_sx: self.scene.camera.scale[0].max(MIN_CAMERA_SCALE),
+            cam_right_pad_frac: self.scene.camera.right_pad_frac,
+        })
+        .width(Fill)
+        .height(iced::Length::Fixed(28.));
+
+        let y_labels_width: Length = {
+            let precision = self.data.ticker_info.min_ticksize;
+
+            let value = self.data.base_price.to_string(precision);
+            let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
+
+            Length::Fixed(width.ceil())
+        };
+
+        let content: Element<_> = {
+            let y_axis_label = Canvas::new(AxisYLabelCanvas {
+                base_price: self.data.base_price,
+                step: self.data.step,
+                row_h: self.row_h,
+                cam_offset_y: self.scene.camera.offset[1],
+                cam_sy: self.scene.camera.scale[1].max(MIN_CAMERA_SCALE),
+            })
+            .width(Fill)
+            .height(Fill);
+
+            row![
+                shader(&self.scene)
+                    .width(Fill)
+                    .height(Fill)
+                    .width(Length::FillPortion(10))
+                    .height(Length::FillPortion(120)),
+                rule::vertical(1).style(style::split_ruler),
+                container(mouse_area(y_axis_label))
+                    .width(y_labels_width)
+                    .height(Length::FillPortion(120))
+            ]
+            .into()
+        };
+
+        column![
+            content,
+            rule::horizontal(1).style(style::split_ruler),
+            row![
+                container(mouse_area(x_axis_label))
+                    .width(Length::FillPortion(10))
+                    .height(Length::Fixed(26.0)),
+                Space::new()
+                    .width(y_labels_width)
+                    .height(Length::Fixed(26.0))
+            ]
+        ]
+        .padding(padding::left(1).right(1).bottom(1))
+        .into()
     }
 
     pub fn insert_datapoint(
@@ -332,8 +427,6 @@ impl HeatmapShader {
             row_h,
             x_min,
             x_max,
-            y_min,
-            y_max,
             sx,
             sy,
             profile_max_w_world,
@@ -449,8 +542,8 @@ impl HeatmapShader {
                     continue;
                 }
 
-                let start_bucket: i64 = (run_start / w.aggr_time) as i64;
-                let end_bucket_excl: i64 = ((run_until + w.aggr_time - 1) / w.aggr_time) as i64;
+                let start_bucket = (run_start / w.aggr_time) as i64;
+                let end_bucket_excl = run_until.div_ceil(w.aggr_time) as i64;
                 let end_bucket_excl = end_bucket_excl.min(w.latest_bucket);
 
                 let mut x_left = -((w.latest_bucket - start_bucket) as f32) * self.column_world;
@@ -670,5 +763,41 @@ impl HeatmapShader {
         }
 
         None
+    }
+
+    fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32) {
+        if !factor.is_finite() || vh_px <= 1.0 {
+            return;
+        }
+
+        let sy = self.scene.camera.scale[1].max(MIN_CAMERA_SCALE);
+
+        let y_world_before = self.scene.camera.offset[1] + (cursor_y - 0.5 * vh_px) / sy;
+
+        let row_units = y_world_before / self.row_h.max(MIN_ROW_H_WORLD);
+        let new_row_h = (self.row_h * factor).clamp(MIN_ROW_H_WORLD, MAX_ROW_H_WORLD);
+
+        let y_world_after = row_units * new_row_h;
+        self.scene.camera.offset[1] = y_world_after - (cursor_y - 0.5 * vh_px) / sy;
+
+        self.row_h = new_row_h;
+    }
+
+    fn zoom_column_world_at(&mut self, factor: f32, cursor_x: f32, vw_px: f32) {
+        if !factor.is_finite() || vw_px <= 1.0 {
+            return;
+        }
+
+        let sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
+        let x_world_before = self.scene.camera.offset[0] + (cursor_x - vw_px) / sx;
+
+        let col_units = x_world_before / self.column_world.max(MIN_COL_W_WORLD);
+        let new_col_w = (self.column_world * factor).clamp(MIN_COL_W_WORLD, MAX_COL_W_WORLD);
+
+        let x_world_after = col_units * new_col_w;
+
+        self.scene.camera.offset[0] = x_world_after - (cursor_x - vw_px) / sx;
+
+        self.column_world = new_col_w;
     }
 }

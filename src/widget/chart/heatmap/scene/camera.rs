@@ -9,7 +9,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            scale: [300.0, 300.0],
+            scale: [100.0, 100.0],
             offset: [0.0, 0.0],
             right_pad_frac: 0.20, // 20% of screen for the x>0 depth profile
         }
