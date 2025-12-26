@@ -1024,14 +1024,41 @@ impl TickersTable {
         search_upper: &str,
         excluded: Option<&FxHashSet<Ticker>>,
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
-        let matches_search = |row: &TickerRowData| {
-            if search_upper.is_empty() {
-                return true;
+        /// Calculates a relevance score for search matching (lower = better match).
+        fn calc_search_score(row: &TickerRowData, query: &str) -> Option<u32> {
+            if query.is_empty() {
+                return Some(0);
             }
+
             let (display_str, _) = row.ticker.display_symbol_and_type();
             let (raw_str, _) = row.ticker.to_full_symbol_and_type();
-            display_str.contains(search_upper) || raw_str.contains(search_upper)
-        };
+
+            // Find best match position across both representations
+            let display_pos = display_str.find(query);
+            let raw_pos = raw_str.find(query);
+
+            let (best_pos, matched_len) = match (display_pos, raw_pos) {
+                (Some(d), Some(r)) => (d.min(r), display_str.len().min(raw_str.len())),
+                (Some(d), None) => (d, display_str.len()),
+                (None, Some(r)) => (r, raw_str.len()),
+                (None, None) => return None,
+            };
+
+            // Score components (lower = better):
+            // - Base: match position (0-100), prefix matches get score 0
+            // - Bonus: exact matches get negative adjustment
+            // - Penalty: longer symbols get small penalty to prefer concise matches
+            let position_score = (best_pos as u32).min(100) * 10;
+            let length_penalty = (matched_len as u32).saturating_sub(query.len() as u32);
+            let exact_bonus = if display_str == query || raw_str == query {
+                0
+            } else {
+                100
+            };
+
+            Some(exact_bonus + position_score + length_penalty)
+        }
+
         let matches_market =
             |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
         let matches_exchange = |row: &TickerRowData| {
@@ -1039,7 +1066,8 @@ impl TickersTable {
                 .contains(&ExchangeInclusive::of(row.exchange))
         };
 
-        let fav_rows = if self.show_favorites {
+        // Collect fav_rows with search scores
+        let mut fav_rows: Vec<_> = if self.show_favorites {
             self.ticker_rows
                 .iter()
                 .filter(|row| {
@@ -1047,14 +1075,23 @@ impl TickersTable {
                         && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
                         && matches_market(row)
                         && matches_exchange(row)
-                        && matches_search(row)
                 })
+                .filter_map(|row| calc_search_score(row, search_upper).map(|score| (row, score)))
                 .collect()
         } else {
             Vec::new()
         };
 
-        let rest_rows = self
+        // Sort by score, then by volume descending as tiebreaker 
+        fav_rows.sort_by(|(a, score_a), (b, score_b)| {
+            score_a
+                .cmp(score_b)
+                .then_with(|| b.stats.daily_volume.total_cmp(&a.stats.daily_volume))
+        });
+        let fav_rows: Vec<&TickerRowData> = fav_rows.into_iter().map(|(row, _)| row).collect();
+
+        // Collect rest_rows with search scores
+        let mut rest_rows: Vec<_> = self
             .ticker_rows
             .iter()
             .filter(|row| {
@@ -1062,9 +1099,17 @@ impl TickersTable {
                     && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
                     && matches_market(row)
                     && matches_exchange(row)
-                    && matches_search(row)
             })
+            .filter_map(|row| calc_search_score(row, search_upper).map(|score| (row, score)))
             .collect();
+
+        // Sort by score, then by volume descending as tiebreaker
+        rest_rows.sort_by(|(a, score_a), (b, score_b)| {
+            score_a
+                .cmp(score_b)
+                .then_with(|| b.stats.daily_volume.total_cmp(&a.stats.daily_volume))
+        });
+        let rest_rows: Vec<&TickerRowData> = rest_rows.into_iter().map(|(row, _)| row).collect();
 
         (fav_rows, rest_rows)
     }
