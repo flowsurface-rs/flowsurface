@@ -1024,14 +1024,6 @@ impl TickersTable {
         search_upper: &str,
         excluded: Option<&FxHashSet<Ticker>>,
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
-        let matches_search = |row: &TickerRowData| {
-            if search_upper.is_empty() {
-                return true;
-            }
-            let (display_str, _) = row.ticker.display_symbol_and_type();
-            let (raw_str, _) = row.ticker.to_full_symbol_and_type();
-            display_str.contains(search_upper) || raw_str.contains(search_upper)
-        };
         let matches_market =
             |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
         let matches_exchange = |row: &TickerRowData| {
@@ -1039,7 +1031,8 @@ impl TickersTable {
                 .contains(&ExchangeInclusive::of(row.exchange))
         };
 
-        let fav_rows = if self.show_favorites {
+        // Collect fav_rows with search ranks
+        let mut fav_rows: Vec<_> = if self.show_favorites {
             self.ticker_rows
                 .iter()
                 .filter(|row| {
@@ -1047,14 +1040,35 @@ impl TickersTable {
                         && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
                         && matches_market(row)
                         && matches_exchange(row)
-                        && matches_search(row)
                 })
+                .filter_map(|row| calc_search_rank(row, search_upper).map(|rank| (row, rank)))
                 .collect()
         } else {
             Vec::new()
         };
 
-        let rest_rows = self
+        // Sort by (match bucket/pos), then selected sort, then length as last resort
+        fav_rows.sort_by(|(a, ra), (b, rb)| {
+            (ra.bucket, ra.pos)
+                .cmp(&(rb.bucket, rb.pos))
+                .then_with(|| match self.selected_sort_option {
+                    SortOptions::VolumeDesc => {
+                        b.stats.daily_volume.total_cmp(&a.stats.daily_volume)
+                    }
+                    SortOptions::VolumeAsc => a.stats.daily_volume.total_cmp(&b.stats.daily_volume),
+                    SortOptions::ChangeDesc => {
+                        b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
+                    }
+                    SortOptions::ChangeAsc => {
+                        a.stats.daily_price_chg.total_cmp(&b.stats.daily_price_chg)
+                    }
+                })
+                .then_with(|| ra.len.cmp(&rb.len))
+        });
+        let fav_rows: Vec<&TickerRowData> = fav_rows.into_iter().map(|(row, _)| row).collect();
+
+        // Collect rest_rows with search ranks
+        let mut rest_rows: Vec<_> = self
             .ticker_rows
             .iter()
             .filter(|row| {
@@ -1062,9 +1076,29 @@ impl TickersTable {
                     && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
                     && matches_market(row)
                     && matches_exchange(row)
-                    && matches_search(row)
             })
+            .filter_map(|row| calc_search_rank(row, search_upper).map(|rank| (row, rank)))
             .collect();
+
+        // Sort by (match bucket/pos), then selected sort, then length as last resort
+        rest_rows.sort_by(|(a, ra), (b, rb)| {
+            (ra.bucket, ra.pos)
+                .cmp(&(rb.bucket, rb.pos))
+                .then_with(|| match self.selected_sort_option {
+                    SortOptions::VolumeDesc => {
+                        b.stats.daily_volume.total_cmp(&a.stats.daily_volume)
+                    }
+                    SortOptions::VolumeAsc => a.stats.daily_volume.total_cmp(&b.stats.daily_volume),
+                    SortOptions::ChangeDesc => {
+                        b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
+                    }
+                    SortOptions::ChangeAsc => {
+                        a.stats.daily_price_chg.total_cmp(&b.stats.daily_price_chg)
+                    }
+                })
+                .then_with(|| ra.len.cmp(&rb.len))
+        });
+        let rest_rows: Vec<&TickerRowData> = rest_rows.into_iter().map(|(row, _)| row).collect();
 
         (fav_rows, rest_rows)
     }
@@ -1080,6 +1114,94 @@ impl TickersTable {
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
         self.filtered_rows(injected_q, Some(excluded))
     }
+}
+
+/// Rank for search matching (lower = better).
+///
+/// Bucket match kind first, then apply selected sort as the primary tiebreaker:
+/// exact > prefix > suffix > substring > (no match)
+///
+/// Length is only used as a last-resort tiebreak (after sort), to avoid
+/// “shortest label wins” outcomes for queries like "USDTP".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SearchRank {
+    bucket: u8,
+    pos: u16,
+    len: u16,
+}
+
+/// Calculates a search rank for matching (lower = better match).
+fn calc_search_rank(row: &TickerRowData, query: &str) -> Option<SearchRank> {
+    if query.is_empty() {
+        return Some(SearchRank {
+            bucket: 0,
+            pos: 0,
+            len: 0,
+        });
+    }
+
+    let (mut display_str, _) = row.ticker.display_symbol_and_type();
+    let (mut raw_str, _) = row.ticker.to_full_symbol_and_type();
+
+    display_str.make_ascii_uppercase();
+    raw_str.make_ascii_uppercase();
+
+    let suffix = market_suffix(row.ticker.market_type());
+    let is_perp = !suffix.is_empty();
+
+    let display_suffixed = format!("{display_str}{suffix}");
+    let raw_suffixed = format!("{raw_str}{suffix}");
+
+    // For perps: do NOT allow "exact match" on the unsuffixed candidates, since the UI
+    // label is effectively suffixed (e.g., "...P") and unsuffixed exact hits are misleading.
+    let score_candidate = |cand: &str, allow_exact: bool| -> Option<SearchRank> {
+        let (bucket, pos) = if allow_exact && cand == query {
+            (0_u8, 0_usize) // exact
+        } else if cand.starts_with(query) {
+            (1_u8, 0_usize) // prefix
+        } else if cand.ends_with(query) {
+            (2_u8, 0_usize) // suffix
+        } else if let Some(p) = cand.find(query) {
+            (3_u8, p) // substring
+        } else {
+            return None;
+        };
+
+        Some(SearchRank {
+            bucket,
+            pos: (pos.min(u16::MAX as usize)) as u16,
+            len: (cand.len().min(u16::MAX as usize)) as u16,
+        })
+    };
+
+    let mut best: Option<SearchRank> = None;
+
+    // consider both "display" and "raw" representations, but with
+    // explicit match-kind bucketing + a perp exact-match rule.
+    for (cand, allow_exact) in [
+        (display_str.as_str(), !is_perp),
+        (display_suffixed.as_str(), true),
+        (raw_str.as_str(), !is_perp),
+        (raw_suffixed.as_str(), true),
+    ] {
+        let Some(rank) = score_candidate(cand, allow_exact) else {
+            continue;
+        };
+
+        best = Some(match best {
+            None => rank,
+            Some(cur) => {
+                // Lower bucket wins; then earlier position; then shorter candidate.
+                if (rank.bucket, rank.pos, rank.len) < (cur.bucket, cur.pos, cur.len) {
+                    rank
+                } else {
+                    cur
+                }
+            }
+        });
+    }
+
+    best
 }
 
 fn ticker_card<'a>(ticker: &Ticker, display_data: &'a TickerDisplayData) -> Element<'a, Message> {
@@ -1340,10 +1462,7 @@ fn short_card_label(ticker: &Ticker, display_data: &TickerDisplayData) -> String
         format!(
             "{}{}",
             display_data.display_ticker,
-            match ticker.market_type() {
-                MarketKind::Spot => "",
-                MarketKind::LinearPerps | MarketKind::InversePerps => "P",
-            }
+            market_suffix(ticker.market_type())
         )
     }
 }
