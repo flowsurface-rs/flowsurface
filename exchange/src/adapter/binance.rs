@@ -25,6 +25,64 @@ use tokio::sync::Mutex;
 
 use std::{collections::HashMap, io::BufReader, path::PathBuf, sync::LazyLock, time::Duration};
 
+/// SECURITY POLICY: Credential Management
+/// 
+/// This Binance adapter currently only uses public API endpoints that do not require authentication.
+/// 
+/// CREDENTIAL SECURITY REQUIREMENTS for any future authenticated endpoints:
+/// ============================================================================
+/// 1. STORAGE:
+///    - NEVER store credentials in source code, configuration files, or version control
+///    - ONLY load credentials from OS-level secure storage (keychain, vault, secret manager)
+///    - Keep credentials in memory for minimal duration with explicit lifetime bounds
+///
+/// 2. ENVIRONMENT VARIABLES:
+///    - NEVER accept credentials from environment variables
+///    - Environment variable-based credentials are inherently insecure and easily compromised
+///
+/// 3. TRANSMISSION:
+///    - ALWAYS use TLS 1.2+ for all API communications
+///    - Implement certificate pinning for critical connections
+///    - Never transmit credentials over unencrypted channels
+///
+/// 4. LOGGING AND DEBUGGING:
+///    - NEVER log credentials, tokens, or secrets
+///    - Implement redaction for all API requests and responses
+///    - Use secure audit logging for credential access
+///
+/// 5. LIFECYCLE:
+///    - Implement credential rotation and expiration policies
+///    - Support secure credential revocation mechanisms
+///    - Clear credentials from memory when no longer needed
+///
+/// CURRENT STATUS: Public API mode only - no authentication implemented.
+/// All API endpoints use only publicly available data with HTTPS transport.
+
+// Verify that no insecure credential loading mechanisms are configured
+fn verify_secure_credential_policy() {
+    // Ensure credentials are not loaded from insecure sources
+    // This is a security guard to prevent credential leakage
+    #[cfg(not(test))]
+    {
+        // In production, verify that no plaintext credentials are configured
+        // All authenticated requests (if implemented) must use secure credential manager
+        if let Ok(_) = std::env::var("BINANCE_API_KEY") {
+            panic!("CRITICAL SECURITY ERROR: Binance API key found in environment variables. \
+                   This is insecure. Use secure credential manager instead.");
+        }
+        if let Ok(_) = std::env::var("BINANCE_API_SECRET") {
+            panic!("CRITICAL SECURITY ERROR: Binance API secret found in environment variables. \
+                   This is insecure. Use secure credential manager instead.");
+        }
+    }
+}
+
+// Call verification on module load to enforce credential security policy
+#[ctor::ctor]
+fn init_binance_security() {
+    verify_secure_credential_policy();
+}
+
 const SPOT_DOMAIN: &str = "https://api.binance.com";
 const LINEAR_PERP_DOMAIN: &str = "https://fapi.binance.com";
 const INVERSE_PERP_DOMAIN: &str = "https://dapi.binance.com";

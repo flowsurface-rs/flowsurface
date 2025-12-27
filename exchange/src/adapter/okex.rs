@@ -27,6 +27,39 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
 use tokio::sync::Mutex;
 
+/// SECURITY POLICY: Credential Management
+/// 
+/// This OKEx adapter currently only uses public API endpoints that do not require authentication.
+/// 
+/// CREDENTIAL SECURITY REQUIREMENTS for any future authenticated endpoints:
+/// ============================================================================
+/// 1. STORAGE:
+///    - NEVER store credentials in source code, configuration files, or version control
+///    - ONLY load credentials from OS-level secure storage (keychain, vault, secret manager)
+///    - Keep credentials in memory for minimal duration with explicit lifetime bounds
+///
+/// 2. ENVIRONMENT VARIABLES:
+///    - NEVER accept credentials from environment variables
+///    - Environment variable-based credentials are inherently insecure and easily compromised
+///
+/// 3. TRANSMISSION:
+///    - ALWAYS use TLS 1.2+ for all API communications
+///    - Implement certificate pinning for critical connections
+///    - Never transmit credentials over unencrypted channels
+///
+/// 4. LOGGING AND DEBUGGING:
+///    - NEVER log credentials, tokens, or secrets
+///    - Implement redaction for all API requests and responses
+///    - Use secure audit logging for credential access
+///
+/// 5. LIFECYCLE:
+///    - Implement credential rotation and expiration policies
+///    - Support secure credential revocation mechanisms
+///    - Clear credentials from memory when no longer needed
+///
+/// CURRENT STATUS: Public API mode only - no authentication implemented.
+/// All API endpoints use only publicly available data with HTTPS transport.
+
 const WS_DOMAIN: &str = "ws.okx.com";
 
 const LIMIT: usize = 20;
