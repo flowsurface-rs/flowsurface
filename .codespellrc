@@ -1,0 +1,3 @@
+[codespell]
+skip = Cargo.lock
+ignore-words-list = DoubleClick

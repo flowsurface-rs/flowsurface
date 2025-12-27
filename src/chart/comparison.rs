@@ -56,13 +56,13 @@ impl ComparisonChart {
         let mut series = Vec::with_capacity(tickers.len());
         let mut series_index = FxHashMap::default();
         for (i, t) in tickers.iter().enumerate() {
-            let ser = SerTicker::from_parts(t.ticker);
+            let ser_ticker = SerTicker::from_parts(t.ticker);
 
             let color = color_map
-                .get(&ser)
+                .get(&ser_ticker)
                 .copied()
                 .unwrap_or_else(|| default_color_for(t));
-            let name = name_map.get(&ser).cloned();
+            let name = name_map.get(&ser_ticker).cloned();
 
             series.push(Series::new(*t, color, name));
 
@@ -444,8 +444,8 @@ impl ComparisonChart {
     }
 
     fn color_for_or_default(&self, ticker_info: &TickerInfo) -> iced::Color {
-        let ser = SerTicker::from_parts(ticker_info.ticker);
-        if let Some((_, c)) = self.config.colors.iter().find(|(s, _)| s == &ser) {
+        let ser_ticker = SerTicker::from_parts(ticker_info.ticker);
+        if let Some((_, c)) = self.config.colors.iter().find(|(s, _)| s == &ser_ticker) {
             *c
         } else {
             default_color_for(ticker_info)
@@ -476,11 +476,16 @@ impl ComparisonChart {
     }
 
     fn upsert_config_color(&mut self, ticker_info: TickerInfo, color: iced::Color) {
-        let ser = SerTicker::from_parts(ticker_info.ticker);
-        if let Some((_, c)) = self.config.colors.iter_mut().find(|(t, _)| *t == ser) {
+        let ser_ticker = SerTicker::from_parts(ticker_info.ticker);
+        if let Some((_, c)) = self
+            .config
+            .colors
+            .iter_mut()
+            .find(|(t, _)| *t == ser_ticker)
+        {
             *c = color;
         } else {
-            self.config.colors.push((ser, color));
+            self.config.colors.push((ser_ticker, color));
         }
     }
 
