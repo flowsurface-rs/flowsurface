@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod auth;
 mod chart;
 mod layout;
 mod logger;
@@ -65,10 +66,13 @@ struct Flowsurface {
     timezone: data::UserTimezone,
     theme: data::Theme,
     notifications: Vec<Toast>,
+    is_authenticated: bool,
+    auth_state: auth::AuthState,
 }
 
 #[derive(Debug, Clone)]
 enum Message {
+    Auth(auth::Message),
     Sidebar(dashboard::sidebar::Message),
     MarketWsEvent(exchange::Event),
     Dashboard {
@@ -123,6 +127,8 @@ impl Flowsurface {
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: vec![],
+            is_authenticated: false,
+            auth_state: auth::AuthState::new(),
         };
 
         let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
@@ -146,6 +152,13 @@ impl Flowsurface {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Auth(auth_msg) => {
+                if let auth::AuthResult::Authenticated = self.auth_state.update(auth_msg) {
+                    self.is_authenticated = true;
+                    log::info!("User authenticated successfully");
+                }
+                return Task::none();
+            }
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
                 let dashboard = self.active_dashboard_mut();
