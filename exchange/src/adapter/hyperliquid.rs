@@ -15,10 +15,11 @@ use fastwebsockets::{FragmentCollector, Frame, OpCode};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use iced_futures::{
-    futures::{future::try_join_all, SinkExt, Stream}, stream
+    futures::{SinkExt, Stream, future::join_all},
+    stream,
 };
 use reqwest::Method;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
@@ -144,6 +145,16 @@ struct HyperliquidAssetContext {
     // open_interest: f32, // Only available for perps
 }
 
+impl HyperliquidAssetContext {
+    fn price(&self) -> f32 {
+        if self.mid_price > 0.0 {
+            self.mid_price
+        } else {
+            self.mark_price
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct HyperliquidKline {
@@ -220,109 +231,106 @@ type TickerMetadata = (
 pub async fn fetch_ticksize(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
-    let (ticker_info_map, _) = match market {
-        MarketKind::LinearPerps => fetch_perps_metadata().await?,
-        MarketKind::Spot => fetch_spot_metadata().await?,
-        _ => unreachable!(),
-    };
+    let (ticker_info_map, _) = fetch_metadata(market).await?;
     Ok(ticker_info_map)
 }
 
-async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
-    let url = format!("{}/info", API_DOMAIN);
-    let body = json!({"type": "perpDexs"});
+pub async fn fetch_ticker_prices(
+    market: MarketKind,
+) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
+    let (_, ticker_stats_map) = fetch_metadata(market).await?;
+    Ok(ticker_stats_map)
+}
 
+async fn post_info<T: DeserializeOwned>(body: &Value) -> Result<T, AdapterError> {
+    let url = format!("{}/info", API_DOMAIN);
     let response_text = limiter::http_request_with_limiter(
         &url,
         &HYPERLIQUID_LIMITER,
         1,
         Some(Method::POST),
-        Some(&body),
+        Some(body),
     )
     .await?;
 
-    let response_json: Value = serde_json::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    serde_json::from_str::<T>(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))
+}
 
-    let dexes = response_json
+async fn fetch_metadata(market: MarketKind) -> Result<TickerMetadata, AdapterError> {
+    match market {
+        MarketKind::LinearPerps => fetch_perps_metadata().await,
+        MarketKind::Spot => fetch_spot_metadata().await,
+        _ => unreachable!(),
+    }
+}
+
+/// Fetch metadata and asset contexts for a specific DEX that HIP-3 on Hyperliquid supports
+async fn fetch_meta_for_dex(dex_name: Option<&str>) -> Result<TickerMetadata, AdapterError> {
+    let body = match dex_name {
+        Some(name) => json!({ "type": "metaAndAssetCtxs", "dex": name }),
+        None => json!({ "type": "metaAndAssetCtxs" }),
+    };
+
+    let response_json: Value = post_info(&body).await?;
+
+    let metadata = response_json
+        .get(0)
+        .ok_or_else(|| AdapterError::ParseError("Missing metadata".to_string()))?;
+    let asset_contexts = response_json
+        .get(1)
+        .and_then(|arr| arr.as_array())
+        .ok_or_else(|| AdapterError::ParseError("Missing asset contexts array".to_string()))?;
+
+    process_perp_assets(metadata, asset_contexts, Exchange::HyperliquidLinear)
+}
+
+async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
+    let dexes_json: Value = post_info(&json!({ "type": "perpDexs" })).await?;
+
+    let dexes = dexes_json
         .as_array()
         .ok_or_else(|| AdapterError::ParseError("Missing dexes array".to_string()))?;
 
-    let futures: Vec<_> = dexes
+    let dex_names: Vec<Option<String>> = dexes
         .iter()
-        .map(|dex| {
-            let url = url.clone();
-
-            async move {
-                let dex_name: Option<&str> = match dex {
-                    Value::Null => None,
-                    _ => dex.get("name").and_then(|n| n.as_str()),
-                };
-
-                let body = match dex_name {
-                    Some(name) => json!({
-                        "type": "metaAndAssetCtxs",
-                        "dex": name,
-                    }),
-                    None => json!({
-                        "type": "metaAndAssetCtxs",
-                    }),
-                };
-
-                let response_text = limiter::http_request_with_limiter(
-                    &url,
-                    &HYPERLIQUID_LIMITER,
-                    1,
-                    Some(Method::POST),
-                    Some(&body),
-                )
-                .await?;
-
-                let response_json: Value = serde_json::from_str(&response_text)
-                    .map_err(|e| AdapterError::ParseError(e.to_string()))?;
-
-                let metadata = response_json
-                    .get(0)
-                    .ok_or_else(|| AdapterError::ParseError("Missing metadata".to_string()))?;
-                let asset_contexts = response_json
-                    .get(1)
-                    .and_then(|arr| arr.as_array())
-                    .ok_or_else(|| {
-                        AdapterError::ParseError("Missing asset contexts array".to_string())
-                    })?;
-
-                process_perp_assets(metadata, asset_contexts, Exchange::HyperliquidLinear)
-            }
+        .map(|dex| match dex {
+            Value::Null => None,
+            _ => dex.get("name").and_then(|n| n.as_str()).map(str::to_owned),
         })
         .collect();
 
-    let results: Vec<TickerMetadata> = try_join_all(futures).await?;
+    let futures = dex_names.into_iter().map(|name| async move {
+        let result = fetch_meta_for_dex(name.as_deref()).await;
+        (name, result)
+    });
+
+    let results = join_all(futures).await;
 
     let mut combined_info = HashMap::new();
     let mut combined_stats = HashMap::new();
-    for (info_map, stats_map) in results {
-        combined_info.extend(info_map);
-        combined_stats.extend(stats_map);
+
+    for (dex_name, result) in results {
+        match result {
+            Ok((info_map, stats_map)) => {
+                combined_info.extend(info_map);
+                combined_stats.extend(stats_map);
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to fetch metadata for DEX {:?}: {}",
+                    dex_name.as_deref().unwrap_or("default"),
+                    e
+                );
+            }
+        }
     }
 
     Ok((combined_info, combined_stats))
 }
 
 async fn fetch_spot_metadata() -> Result<TickerMetadata, AdapterError> {
-    let url = format!("{}/info", API_DOMAIN);
     let body = json!({"type": "spotMetaAndAssetCtxs"});
-
-    let response_text = limiter::http_request_with_limiter(
-        &url,
-        &HYPERLIQUID_LIMITER,
-        1,
-        Some(Method::POST),
-        Some(&body),
-    )
-    .await?;
-
-    let response_json: Value = serde_json::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    let response_json: Value = post_info(&body).await?;
 
     let metadata = response_json
         .get(0)
@@ -333,6 +341,31 @@ async fn fetch_spot_metadata() -> Result<TickerMetadata, AdapterError> {
         .ok_or_else(|| AdapterError::ParseError("Missing asset contexts array".to_string()))?;
 
     process_spot_assets(metadata, asset_contexts, Exchange::HyperliquidSpot)
+}
+
+fn insert_ticker_from_ctx(
+    ticker: Ticker,
+    sz_decimals: u32,
+    ctx: &HyperliquidAssetContext,
+    ticker_info_map: &mut HashMap<Ticker, Option<TickerInfo>>,
+    ticker_stats_map: &mut HashMap<Ticker, TickerStats>,
+) {
+    let price = ctx.price();
+    if price <= 0.0 {
+        return;
+    }
+
+    let ticker_info = create_ticker_info(ticker, price, sz_decimals);
+    ticker_info_map.insert(ticker, Some(ticker_info));
+
+    ticker_stats_map.insert(
+        ticker,
+        TickerStats {
+            mark_price: ctx.mark_price,
+            daily_price_chg: daily_price_chg_pct(price, ctx.prev_day_price),
+            daily_volume: ctx.day_notional_volume,
+        },
+    );
 }
 
 fn process_perp_assets(
@@ -353,38 +386,14 @@ fn process_perp_assets(
             && let Some(asset_ctx) = asset_contexts.get(index)
             && let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
         {
-            let price = if ctx.mid_price > 0.0 {
-                ctx.mid_price
-            } else {
-                ctx.mark_price
-            };
-
-            if price > 0.0 {
-                let ticker = Ticker::new(&asset_info.name, exchange);
-
-                let ticker_info = create_ticker_info(
-                    ticker,
-                    price,
-                    asset_info.sz_decimals,
-                    MarketKind::LinearPerps,
-                );
-                ticker_info_map.insert(ticker, Some(ticker_info));
-
-                let daily_price_chg = if ctx.prev_day_price > 0.0 {
-                    ((price - ctx.prev_day_price) / ctx.prev_day_price) * 100.0
-                } else {
-                    0.0
-                };
-
-                ticker_stats_map.insert(
-                    ticker,
-                    TickerStats {
-                        mark_price: ctx.mark_price,
-                        daily_price_chg,
-                        daily_volume: ctx.day_notional_volume,
-                    },
-                );
-            }
+            let ticker = Ticker::new(&asset_info.name, exchange);
+            insert_ticker_from_ctx(
+                ticker,
+                asset_info.sz_decimals,
+                &ctx,
+                &mut ticker_info_map,
+                &mut ticker_stats_map,
+            );
         }
     }
 
@@ -405,60 +414,33 @@ fn process_spot_assets(
     for pair in &spot_meta.universe {
         if let Some(asset_ctx) = asset_contexts.get(pair.index as usize)
             && let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
+            && let Some(base_token) = spot_meta.tokens.iter().find(|t| t.index == pair.tokens[0])
         {
-            let price = if ctx.mid_price > 0.0 {
-                ctx.mid_price
-            } else {
-                ctx.mark_price
-            };
+            let display_symbol = create_display_symbol(&pair.name, &spot_meta.tokens, &pair.tokens);
+            let ticker = Ticker::new_with_display(&pair.name, exchange, Some(&display_symbol));
 
-            if price > 0.0
-                && let Some(base_token) =
-                    spot_meta.tokens.iter().find(|t| t.index == pair.tokens[0])
-            {
-                let display_symbol =
-                    create_display_symbol(&pair.name, &spot_meta.tokens, &pair.tokens);
-
-                let ticker = Ticker::new_with_display(&pair.name, exchange, Some(&display_symbol));
-
-                let ticker_info =
-                    create_ticker_info(ticker, price, base_token.sz_decimals, MarketKind::Spot);
-                ticker_info_map.insert(ticker, Some(ticker_info));
-
-                let daily_price_chg = if ctx.prev_day_price > 0.0 {
-                    ((price - ctx.prev_day_price) / ctx.prev_day_price) * 100.0
-                } else {
-                    0.0
-                };
-
-                ticker_stats_map.insert(
-                    ticker,
-                    TickerStats {
-                        mark_price: ctx.mark_price,
-                        daily_price_chg,
-                        daily_volume: ctx.day_notional_volume,
-                    },
-                );
-            }
+            insert_ticker_from_ctx(
+                ticker,
+                base_token.sz_decimals,
+                &ctx,
+                &mut ticker_info_map,
+                &mut ticker_stats_map,
+            );
         }
     }
 
     Ok((ticker_info_map, ticker_stats_map))
 }
 
-fn create_ticker_info(
-    ticker: Ticker,
-    price: f32,
-    sz_decimals: u32,
-    market: MarketKind,
-) -> TickerInfo {
+fn create_ticker_info(ticker: Ticker, price: f32, sz_decimals: u32) -> TickerInfo {
+    let market = ticker.market_type();
+
     let tick_size = compute_tick_size(price, sz_decimals, market);
     let min_qty = 10.0_f32.powi(-(sz_decimals as i32));
 
     TickerInfo::new(ticker, tick_size, min_qty, None)
 }
 
-// Helper function to create display symbols
 fn create_display_symbol(
     pair_name: &str,
     tokens: &[HyperliquidAssetInfo],
@@ -575,6 +557,14 @@ pub fn depth_tick_from_cfg(price: f32, cfg: DepthFeedConfig) -> f32 {
     tick
 }
 
+fn daily_price_chg_pct(price: f32, prev_day_price: f32) -> f32 {
+    if prev_day_price > 0.0 {
+        ((price - prev_day_price) / prev_day_price) * 100.0
+    } else {
+        0.0
+    }
+}
+
 // snap to nearest 1–2–5 × 10^k
 fn snap_multiplier_to_125(multiplier: u16) -> (i32, i32) {
     // boundaries between {1,2,5,10} in log-space
@@ -679,17 +669,6 @@ fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
             10_f32.powi(-total_decimals)
         }
     }
-}
-
-pub async fn fetch_ticker_prices(
-    market: MarketKind,
-) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
-    let (_, ticker_stats_map) = match market {
-        MarketKind::LinearPerps => fetch_perps_metadata().await?,
-        MarketKind::Spot => fetch_spot_metadata().await?,
-        _ => unreachable!(),
-    };
-    Ok(ticker_stats_map)
 }
 
 pub async fn fetch_klines(
@@ -1319,4 +1298,3 @@ mod tests {
         }
     }
 }
-
