@@ -149,6 +149,7 @@ struct RealDataState {
     base_price: Price,
     last_update_exchange_ms: Option<u64>,
     last_update_instant: Option<Instant>,
+    last_estimated_exchange_now_ms: Option<u64>,
 }
 
 impl RealDataState {
@@ -169,6 +170,7 @@ impl RealDataState {
             base_price: Price::from_units(0),
             last_update_exchange_ms: None,
             last_update_instant: None,
+            last_estimated_exchange_now_ms: None,
         }
     }
 }
@@ -185,6 +187,8 @@ pub struct HeatmapShader {
     profile_ask_acc: Vec<f32>,
     scroll_ref_bucket: i64,
     x_phase_bucket: f32,
+    render_latest_time: u64,
+    needs_rebuild: bool,
     x_axis_cache: iced::widget::canvas::Cache,
 }
 
@@ -207,6 +211,8 @@ impl HeatmapShader {
             profile_ask_acc: Vec::new(),
             scroll_ref_bucket: 0,
             x_phase_bucket: 0.0,
+            render_latest_time: 0,
+            needs_rebuild: false,
             x_axis_cache: iced::widget::canvas::Cache::new(),
         }
     }
@@ -264,7 +270,7 @@ impl HeatmapShader {
 
         let x_axis_label = Canvas::new(AxisXLabelCanvas {
             cache: &self.x_axis_cache,
-            latest_time: self.data.latest_time,
+            latest_bucket: self.scroll_ref_bucket, // <-- changed
             aggr_time,
             column_world: self.column_world,
             cam_offset_x: self.scene.camera.offset[0],
@@ -339,15 +345,30 @@ impl HeatmapShader {
         };
 
         let now_i = Instant::now();
-        let should_update_anchor = state
-            .last_update_exchange_ms
-            .map(|prev| depth_update_t >= prev)
-            .unwrap_or(true);
 
-        if should_update_anchor {
-            state.last_update_exchange_ms = Some(depth_update_t);
-            state.last_update_instant = Some(now_i);
+        let predicted_now_ms: Option<u64> =
+            match (state.last_update_exchange_ms, state.last_update_instant) {
+                (Some(ms), Some(inst)) => {
+                    let elapsed = now_i.saturating_duration_since(inst).as_millis() as u64;
+                    Some(ms.saturating_add(elapsed))
+                }
+                _ => None,
+            };
+
+        // Monotonic "now" estimate across packets:
+        // - must be >= previous estimate
+        // - must be >= packet timestamp (if packet is ahead)
+        let mut monotonic_now_ms = depth_update_t;
+        if let Some(p) = predicted_now_ms {
+            monotonic_now_ms = monotonic_now_ms.max(p);
         }
+        if let Some(prev_est) = state.last_estimated_exchange_now_ms {
+            monotonic_now_ms = monotonic_now_ms.max(prev_est);
+        }
+
+        state.last_update_exchange_ms = Some(monotonic_now_ms);
+        state.last_update_instant = Some(now_i);
+        state.last_estimated_exchange_now_ms = Some(monotonic_now_ms);
 
         let rounded_t = (depth_update_t / aggr_time) * aggr_time;
 
@@ -369,24 +390,13 @@ impl HeatmapShader {
 
         state.heatmap.insert_latest_depth(depth, rounded_t);
 
-        // Only advance "latest_*" state when time is monotonic (prevents axis wobble on late packets).
         if rounded_t >= state.latest_time {
             let mid = depth.mid_price().unwrap_or(state.base_price);
             state.base_price = mid.round_to_step(state.step);
             state.latest_time = rounded_t;
         }
-
-        self.rebuild_instances();
-    }
-
-    pub fn update_theme(&mut self, theme: &iced_core::Theme) {
-        let palette = HeatmapPalette::from_theme(theme);
-        self.palette = Some(palette);
-    }
-
-    fn clear_scene(&mut self) {
-        self.scene.set_rectangles(Vec::new());
-        self.scene.set_circles(Vec::new());
+        // DON'T rebuild synchronously here (can hitch).
+        self.needs_rebuild = true;
     }
 
     fn compute_view_window(&self, vw_px: f32, vh_px: f32) -> Option<ViewWindow> {
@@ -399,15 +409,12 @@ impl HeatmapShader {
             return None;
         }
 
-        // Camera semantics:
-        // offset.x sits at the viewport RIGHT EDGE, offset.y at the vertical center.
         let sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
         let sy = self.scene.camera.scale[1].max(MIN_CAMERA_SCALE);
 
         let x_max = self.scene.camera.right_edge(vw_px);
         let x_min = x_max - (vw_px / sx);
 
-        // Visible time window from visible world-x window.
         let bucket_min = ((x_min / self.column_world).floor() as i64).saturating_sub(2);
         let bucket_max = ((x_max / self.column_world).ceil() as i64).saturating_add(2);
 
@@ -416,7 +423,9 @@ impl HeatmapShader {
         let y_min = y_center - half_h_world;
         let y_max = y_center + half_h_world;
 
-        let latest_t = self.data.latest_time as i128;
+        let latest_time_for_view: u64 = self.render_latest_time.max(self.data.latest_time);
+
+        let latest_t = latest_time_for_view as i128;
         let aggr_i = aggr_time as i128;
 
         let t_min_i = latest_t + (bucket_min as i128) * aggr_i;
@@ -429,28 +438,25 @@ impl HeatmapShader {
             return None;
         }
 
-        // Price window from visible world-y.
         let row_h = self.row_h.max(MIN_ROW_H_WORLD);
 
-        // dy_steps = -(y_world / row_h)
         let min_steps = (-(y_max) / row_h).floor() as i64;
         let max_steps = (-(y_min) / row_h).ceil() as i64;
 
         let lowest = self.data.base_price.add_steps(min_steps, self.data.step);
         let highest = self.data.base_price.add_steps(max_steps, self.data.step);
 
-        let latest_bucket: i64 = (self.data.latest_time / aggr_time) as i64;
+        let latest_bucket: i64 = (latest_time_for_view / aggr_time) as i64;
 
-        // Latest profile overlay width: request a fixed pixel width, convert to world units,
-        // clamp to whatever is actually visible for x>0.
-        let visible_space_right_of_zero_world = (x_max - 0.0).max(0.0);
+        let full_right_edge = self.scene.camera.right_edge(vw_px);
+
+        let visible_space_right_of_zero_world = (full_right_edge - 0.0).max(0.0);
         let desired_profile_w_world = (PROFILE_COL_WIDTH_PX / sx).max(0.0);
         let profile_max_w_world = desired_profile_w_world.min(visible_space_right_of_zero_world);
 
         let strip_h_world: f32 = (vh_px * STRIP_HEIGHT_FRAC) / sy;
-        let strip_bottom_y: f32 = y_max; // anchored to bottom visible bound
+        let strip_bottom_y: f32 = y_max;
 
-        // Y downsampling: ensure each rendered "row" is at least ~N pixels tall.
         let px_per_step = row_h * sy;
         let mut steps_per_y_bin: i64 = 1;
         if px_per_step.is_finite() && px_per_step > 0.0 {
@@ -475,6 +481,270 @@ impl HeatmapShader {
             steps_per_y_bin,
             y_bin_h_world,
         })
+    }
+
+    fn build_depth_rects(&mut self, w: &ViewWindow) -> (Vec<RectInstance>, f32) {
+        let Some(palette) = &self.palette else {
+            return (vec![], 0.0);
+        };
+        let state = &self.data;
+
+        let latest_for_depth = w.latest_vis.saturating_add(w.aggr_time);
+
+        let render_bucket_end_excl_ms: u64 = (w.latest_bucket as i128 + 1)
+            .saturating_mul(w.aggr_time as i128)
+            .max(0) as u64;
+
+        let combined = self.binned_depth_rect_contribs_abs_ybin(
+            w.earliest,
+            latest_for_depth,
+            render_bucket_end_excl_ms,
+            w.highest,
+            w.lowest,
+            state.step,
+            w.steps_per_y_bin,
+            w.latest_bucket,
+        );
+
+        if combined.is_empty() {
+            return (vec![], 0.0);
+        }
+
+        let mut max_binned: f32 = 0.0;
+        for (_, q) in combined.iter() {
+            max_binned = max_binned.max(*q);
+        }
+
+        let step_units = state.step.units.max(1);
+        let base_steps = state.base_price.units / step_units;
+        let base_abs_y_bin_i64 = base_steps.div_euclid(w.steps_per_y_bin.max(1));
+
+        let ref_bucket = self.scroll_ref_bucket;
+
+        let mut rects = Vec::with_capacity(combined.len());
+        for (key, qty_sum) in combined.into_iter() {
+            let x0_rel =
+                (key.start_x_bin - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+            let x1_rel =
+                (key.end_x_bin_excl - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+
+            let y_rel =
+                (key.abs_y_bin - base_abs_y_bin_i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+
+            rects.push(RectInstance {
+                position: [0.0, 0.0],
+                size: [0.0, 0.0],
+                color: [0.0, 0.0, 0.0, 0.0],
+                qty: qty_sum.max(0.0),
+                side_sign: if key.is_bid { 1.0 } else { -1.0 },
+                x0_bin: x0_rel,
+                x1_bin_excl: x1_rel,
+                abs_y_bin: y_rel,
+                flags: 0,
+            });
+        }
+
+        let denom_depth = max_binned.max(1e-12);
+        let origin = self.scene.params.origin;
+
+        self.scene.set_params(ParamsUniform {
+            depth: [denom_depth, DEPTH_ALPHA_MIN, DEPTH_ALPHA_MAX, 0.0],
+            bid_rgb: [
+                palette.bid_rgb[0],
+                palette.bid_rgb[1],
+                palette.bid_rgb[2],
+                0.0,
+            ],
+            ask_rgb: [
+                palette.ask_rgb[0],
+                palette.ask_rgb[1],
+                palette.ask_rgb[2],
+                0.0,
+            ],
+            grid: [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0],
+            origin,
+        });
+
+        (rects, denom_depth)
+    }
+
+    pub fn binned_depth_rect_contribs_abs_ybin(
+        &self,
+        earliest: u64,
+        latest: u64,
+        render_bucket_end_excl_ms: u64, // NEW
+        highest: Price,
+        lowest: Price,
+        step: PriceStep,
+        steps_per_y_bin: i64,
+        latest_bucket: i64,
+    ) -> Vec<(BinnedDepthRectKeyAbs, f32)> {
+        if earliest >= latest {
+            return Vec::new();
+        }
+
+        let aggr_time = match self.data.basis {
+            Basis::Time(interval) => interval.into(),
+            Basis::Tick(_) => 0,
+        };
+        if aggr_time == 0 {
+            return Vec::new();
+        }
+
+        let step_units = step.units.max(1);
+        let y_div = steps_per_y_bin.max(1);
+
+        let mut pairs: Vec<(BinnedDepthRectKeyAbs, f32)> = Vec::new();
+
+        for (price, runs) in self
+            .data
+            .heatmap
+            .iter_time_filtered(earliest, latest, highest, lowest)
+        {
+            let abs_steps = price.units / step_units;
+            let abs_y_bin = abs_steps.div_euclid(y_div);
+
+            for (idx, run) in runs.iter().enumerate() {
+                let run_start = run.start_time.max(earliest);
+
+                let mut run_until = run.until_time.min(latest);
+
+                if idx + 1 == runs.len() && run.until_time >= self.data.latest_time {
+                    let extend_to = render_bucket_end_excl_ms.min(latest);
+                    if extend_to > run_until {
+                        run_until = extend_to;
+                    }
+                }
+
+                if run_until <= run_start {
+                    continue;
+                }
+
+                let start_bucket = (run_start / aggr_time) as i64;
+                let mut end_bucket_excl = div_ceil_u64(run_until, aggr_time) as i64;
+
+                end_bucket_excl = end_bucket_excl.min(latest_bucket + 1);
+
+                if end_bucket_excl <= start_bucket {
+                    continue;
+                }
+
+                pairs.push((
+                    BinnedDepthRectKeyAbs {
+                        is_bid: run.is_bid,
+                        abs_y_bin,
+                        start_x_bin: start_bucket,
+                        end_x_bin_excl: end_bucket_excl,
+                    },
+                    run.qty(),
+                ));
+            }
+        }
+
+        if pairs.is_empty() {
+            return pairs;
+        }
+
+        pairs.sort_unstable_by(|(ka, _), (kb, _)| ka.cmp(kb));
+
+        let mut combined: Vec<(BinnedDepthRectKeyAbs, f32)> = Vec::with_capacity(pairs.len());
+        let mut iter = pairs.into_iter();
+
+        let Some((mut cur_k, mut cur_sum)) = iter.next() else {
+            return combined;
+        };
+
+        for (k, q) in iter {
+            if k == cur_k {
+                cur_sum += q;
+            } else {
+                combined.push((cur_k, cur_sum));
+                cur_k = k;
+                cur_sum = q;
+            }
+        }
+        combined.push((cur_k, cur_sum));
+        combined
+    }
+
+    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<Action> {
+        let now_i = now.unwrap_or_else(Instant::now);
+        self.last_tick = Some(now_i);
+
+        let Some([vw_px, vh_px]) = self.viewport else {
+            if self.palette.is_none() {
+                return Some(Action::RequestPalette);
+            }
+            return None;
+        };
+
+        let aggr_time: u64 = match self.data.basis {
+            Basis::Time(interval) => interval.into(),
+            Basis::Tick(_) => return None,
+        };
+        if aggr_time == 0 {
+            return None;
+        }
+
+        if let (Some(anchor_ms), Some(anchor_i)) = (
+            self.data.last_update_exchange_ms,
+            self.data.last_update_instant,
+        ) {
+            let elapsed_ms = now_i.saturating_duration_since(anchor_i).as_millis() as u64;
+
+            let mut exchange_now_ms = anchor_ms.saturating_add(elapsed_ms);
+
+            if let Some(prev_est) = self.data.last_estimated_exchange_now_ms {
+                exchange_now_ms = exchange_now_ms.max(prev_est);
+            }
+            self.data.last_estimated_exchange_now_ms = Some(exchange_now_ms);
+
+            let render_latest_time = (exchange_now_ms / aggr_time) * aggr_time;
+            let phase_ms = exchange_now_ms.saturating_sub(render_latest_time);
+            let phase = (phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
+
+            if render_latest_time != self.render_latest_time {
+                self.render_latest_time = render_latest_time;
+                self.needs_rebuild = true;
+            }
+
+            self.x_phase_bucket = phase;
+
+            if let Some(w) = self.compute_view_window(vw_px, vh_px) {
+                let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
+
+                self.scene.params.origin = [
+                    self.x_phase_bucket,
+                    volume_min_w_world,
+                    VOLUME_BUCKET_GAP_FRAC,
+                    0.0,
+                ];
+                self.scene.params.grid =
+                    [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0];
+            }
+
+            if self.needs_rebuild {
+                self.needs_rebuild = false;
+                self.rebuild_instances();
+            }
+
+            self.x_axis_cache.clear();
+        }
+
+        if self.palette.is_none() {
+            return Some(Action::RequestPalette);
+        }
+        None
+    }
+
+    pub fn update_theme(&mut self, theme: &iced_core::Theme) {
+        let palette = HeatmapPalette::from_theme(theme);
+        self.palette = Some(palette);
+    }
+
+    fn clear_scene(&mut self) {
+        self.scene.set_rectangles(Vec::new());
+        self.scene.set_circles(Vec::new());
     }
 
     #[inline]
@@ -556,90 +826,6 @@ impl HeatmapShader {
         let dy_steps = (price.units - self.data.base_price.units) / self.data.step.units;
         let y_bin = Self::y_bin_for_steps(dy_steps, w.steps_per_y_bin);
         Self::y_center_for_bin(y_bin, w)
-    }
-
-    fn build_depth_rects(&mut self, w: &ViewWindow) -> (Vec<RectInstance>, f32) {
-        let Some(palette) = &self.palette else {
-            return (vec![], 0.0);
-        };
-        let state = &self.data;
-
-        let latest_for_depth = w.latest_vis.saturating_add(w.aggr_time);
-
-        let combined = self.binned_depth_rect_contribs_abs_ybin(
-            w.earliest,
-            latest_for_depth,
-            w.highest,
-            w.lowest,
-            state.step,
-            w.steps_per_y_bin,
-            w.latest_bucket,
-        );
-
-        if combined.is_empty() {
-            return (vec![], 0.0);
-        }
-
-        let mut max_binned: f32 = 0.0;
-        for (_, q) in combined.iter() {
-            max_binned = max_binned.max(*q);
-        }
-
-        // base abs y-bin as i64 (for integer subtraction)
-        let step_units = state.step.units.max(1);
-        let base_steps = state.base_price.units / step_units;
-        let base_abs_y_bin_i64 = base_steps.div_euclid(w.steps_per_y_bin.max(1));
-
-        let ref_bucket = self.scroll_ref_bucket;
-
-        let mut rects = Vec::with_capacity(combined.len());
-        for (key, qty_sum) in combined.into_iter() {
-            let x0_rel =
-                (key.start_x_bin - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-            let x1_rel =
-                (key.end_x_bin_excl - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-
-            let y_rel =
-                (key.abs_y_bin - base_abs_y_bin_i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-
-            rects.push(RectInstance {
-                position: [0.0, 0.0],
-                size: [0.0, 0.0],
-                color: [0.0, 0.0, 0.0, 0.0],
-                qty: qty_sum.max(0.0),
-                side_sign: if key.is_bid { 1.0 } else { -1.0 },
-
-                x0_bin: x0_rel,
-                x1_bin_excl: x1_rel,
-                abs_y_bin: y_rel,
-                flags: 0,
-            });
-        }
-
-        let denom_depth = max_binned.max(1e-12);
-
-        // Preserve origin (it is driven per-frame in invalidate())
-        let origin = self.scene.params.origin;
-
-        self.scene.set_params(ParamsUniform {
-            depth: [denom_depth, DEPTH_ALPHA_MIN, DEPTH_ALPHA_MAX, 0.0],
-            bid_rgb: [
-                palette.bid_rgb[0],
-                palette.bid_rgb[1],
-                palette.bid_rgb[2],
-                0.0,
-            ],
-            ask_rgb: [
-                palette.ask_rgb[0],
-                palette.ask_rgb[1],
-                palette.ask_rgb[2],
-                0.0,
-            ],
-            grid: [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0],
-            origin,
-        });
-
-        (rects, denom_depth)
     }
 
     fn push_latest_profile_rects(&mut self, w: &ViewWindow, rects: &mut Vec<RectInstance>) {
@@ -850,11 +1036,15 @@ impl HeatmapShader {
         self.scroll_ref_bucket = w.latest_bucket;
 
         if self.scroll_ref_bucket != old_ref {
-            self.x_phase_bucket = 0.0;
             self.x_axis_cache.clear();
 
             let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
-            self.scene.params.origin = [0.0, volume_min_w_world, VOLUME_BUCKET_GAP_FRAC, 0.0];
+            self.scene.params.origin = [
+                self.x_phase_bucket,
+                volume_min_w_world,
+                VOLUME_BUCKET_GAP_FRAC,
+                0.0,
+            ];
         }
 
         let max_trade_qty = self.max_trade_qty(&w);
@@ -879,102 +1069,6 @@ impl HeatmapShader {
         self.scene.set_circles(circles);
     }
 
-    pub fn binned_depth_rect_contribs_abs_ybin(
-        &self,
-        earliest: u64,
-        latest: u64,
-        highest: Price,
-        lowest: Price,
-        step: PriceStep,
-        steps_per_y_bin: i64,
-        latest_bucket: i64,
-    ) -> Vec<(BinnedDepthRectKeyAbs, f32)> {
-        if earliest >= latest {
-            return Vec::new();
-        }
-
-        let aggr_time = match self.data.basis {
-            Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) => 0,
-        };
-        if aggr_time == 0 {
-            return Vec::new();
-        }
-
-        let step_units = step.units.max(1);
-        let y_div = steps_per_y_bin.max(1);
-
-        let mut pairs: Vec<(BinnedDepthRectKeyAbs, f32)> = Vec::new();
-
-        for (price, runs) in self
-            .data
-            .heatmap
-            .iter_time_filtered(earliest, latest, highest, lowest)
-        {
-            // absolute y-bin for this price level
-            let abs_steps = price.units / step_units;
-            let abs_y_bin = abs_steps.div_euclid(y_div);
-
-            for run in runs {
-                let run_start = run.start_time.max(earliest);
-                let mut run_until = run.until_time.min(latest);
-
-                if run_until == run_start && run_until == latest {
-                    run_until = run_until.saturating_add(aggr_time);
-                }
-
-                if run_until <= run_start {
-                    continue;
-                }
-
-                let start_bucket = (run_start / aggr_time) as i64;
-                let mut end_bucket_excl = div_ceil_u64(run_until, aggr_time) as i64;
-
-                // allow rendering into the current bucket as an exclusive bound
-                end_bucket_excl = end_bucket_excl.min(latest_bucket + 1);
-
-                if end_bucket_excl <= start_bucket {
-                    continue;
-                }
-
-                pairs.push((
-                    BinnedDepthRectKeyAbs {
-                        is_bid: run.is_bid,
-                        abs_y_bin,
-                        start_x_bin: start_bucket,
-                        end_x_bin_excl: end_bucket_excl,
-                    },
-                    run.qty(),
-                ));
-            }
-        }
-
-        if pairs.is_empty() {
-            return pairs;
-        }
-
-        pairs.sort_unstable_by(|(ka, _), (kb, _)| ka.cmp(kb));
-
-        let mut combined: Vec<(BinnedDepthRectKeyAbs, f32)> = Vec::with_capacity(pairs.len());
-        let mut iter = pairs.into_iter();
-
-        let Some((mut cur_k, mut cur_sum)) = iter.next() else {
-            return combined;
-        };
-
-        for (k, q) in iter {
-            if k == cur_k {
-                cur_sum += q;
-            } else {
-                combined.push((cur_k, cur_sum));
-                cur_k = k;
-                cur_sum = q;
-            }
-        }
-        combined.push((cur_k, cur_sum));
-        combined
-    }
-
     fn max_trade_qty(&self, w: &ViewWindow) -> f32 {
         let mut max_qty = 0.0f32;
 
@@ -992,48 +1086,6 @@ impl HeatmapShader {
 
     pub fn tick_size(&self) -> f32 {
         self.data.step.to_f32_lossy()
-    }
-
-    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<Action> {
-        if let Some(now) = now {
-            self.last_tick = Some(now);
-
-            let [vw_px, vh_px] = self.viewport?;
-            let w = self.compute_view_window(vw_px, vh_px)?;
-
-            let aggr_ms = w.aggr_time.max(1) as f64;
-
-            let mut phase_buckets: f64 = 0.0;
-            if let (Some(last_ex_ms), Some(last_i)) = (
-                self.data.last_update_exchange_ms,
-                self.data.last_update_instant,
-            ) {
-                let elapsed_ms = (now - last_i).as_secs_f64() * 1000.0;
-                let est_ex_ms = (last_ex_ms as f64) + elapsed_ms;
-
-                let delta_ms = (est_ex_ms - (self.data.latest_time as f64)).max(0.0);
-                phase_buckets = (delta_ms / aggr_ms).clamp(0.0, 0.999_999);
-            }
-
-            self.x_phase_bucket = phase_buckets as f32;
-
-            let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
-
-            self.scene.params.origin = [
-                self.x_phase_bucket,
-                volume_min_w_world,
-                VOLUME_BUCKET_GAP_FRAC,
-                0.0,
-            ];
-            self.scene.params.grid = [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0];
-
-            self.x_axis_cache.clear();
-        }
-
-        if self.palette.is_none() {
-            return Some(Action::RequestPalette);
-        }
-        None
     }
 
     fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32) {

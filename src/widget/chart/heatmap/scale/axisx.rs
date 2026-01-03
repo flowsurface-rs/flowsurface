@@ -29,7 +29,7 @@ fn pick_time_format(visible_span_ms: i128) -> &'static str {
 
 pub struct AxisXLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
-    pub latest_time: u64,
+    pub latest_bucket: i64,
     pub aggr_time: Option<u64>,
     pub column_world: f32,
     pub cam_offset_x: f32,
@@ -106,8 +106,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             return vec![];
         };
 
-        if self.latest_time == 0
-            || aggr_time == 0
+        if aggr_time == 0
             || !self.column_world.is_finite()
             || self.column_world <= 0.0
             || !self.cam_sx.is_finite()
@@ -150,7 +149,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let u_min = ((x_world_left * inv_col) + phase + eps).floor() as i64;
             let u_max = ((x_world_right * inv_col) + phase - eps).ceil() as i64;
 
-            let latest_bucket: i64 = (self.latest_time / aggr_time) as i64;
+            let latest_bucket: i64 = self.latest_bucket;
             let b_min: i64 = latest_bucket.saturating_add(u_min);
             let b_max: i64 = latest_bucket.saturating_add(u_max);
 
