@@ -10,6 +10,7 @@ use iced::mouse;
 use iced::widget::shader::{self, Viewport};
 
 use crate::widget::chart::heatmap::scene::camera::Camera;
+use crate::widget::chart::heatmap::scene::pipeline::ParamsUniform;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 
@@ -26,6 +27,7 @@ pub struct Scene {
     pub rectangles: Vec<RectInstance>,
     pub circles: Vec<CircleInstance>,
     pub camera: camera::Camera,
+    pub params: ParamsUniform,
 }
 
 impl Scene {
@@ -35,7 +37,12 @@ impl Scene {
             rectangles: Vec::new(),
             circles: Vec::new(),
             camera: Camera::default(),
+            params: ParamsUniform::default(),
         }
+    }
+
+    pub fn set_params(&mut self, params: ParamsUniform) {
+        self.params = params;
     }
 
     pub fn set_rectangles(&mut self, rectangles: Vec<RectInstance>) {
@@ -117,7 +124,13 @@ impl shader::Program<Message> for Scene {
         _cursor: mouse::Cursor,
         _bounds: Rectangle,
     ) -> Self::Primitive {
-        Primitive::new(self.id, &self.rectangles, &self.circles, self.camera)
+        Primitive::new(
+            self.id,
+            &self.rectangles,
+            &self.circles,
+            self.camera,
+            self.params,
+        )
     }
 
     fn mouse_interaction(
@@ -143,6 +156,7 @@ pub struct Primitive {
     rectangles: Vec<RectInstance>,
     circles: Vec<CircleInstance>,
     camera: camera::Camera,
+    params: ParamsUniform,
 }
 
 impl Primitive {
@@ -151,12 +165,14 @@ impl Primitive {
         rectangles: &[RectInstance],
         circles: &[CircleInstance],
         camera: camera::Camera,
+        params: ParamsUniform,
     ) -> Self {
         Self {
             id,
             rectangles: rectangles.to_vec(),
             circles: circles.to_vec(),
             camera,
+            params,
         }
     }
 }
@@ -177,6 +193,8 @@ impl shader::Primitive for Primitive {
 
         let cam_u = self.camera.to_uniform(bounds.width, bounds.height);
         pipeline.update_camera(self.id, device, queue, &cam_u);
+
+        pipeline.update_params(self.id, device, queue, &self.params);
     }
 
     fn render(

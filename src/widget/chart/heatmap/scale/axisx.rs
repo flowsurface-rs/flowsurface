@@ -27,16 +27,18 @@ fn pick_time_format(visible_span_ms: i128) -> &'static str {
     }
 }
 
-pub struct AxisXLabelCanvas {
+pub struct AxisXLabelCanvas<'a> {
+    pub cache: &'a iced::widget::canvas::Cache,
     pub latest_time: u64,
     pub aggr_time: Option<u64>,
     pub column_world: f32,
     pub cam_offset_x: f32,
     pub cam_sx: f32,
-    pub cam_right_pad_frac: f32, // NEW
+    pub cam_right_pad_frac: f32,
+    pub x_phase_bucket: f32,
 }
 
-impl canvas::Program<Message> for AxisXLabelCanvas {
+impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
     type State = AxisInteraction;
 
     fn update(
@@ -100,10 +102,8 @@ impl canvas::Program<Message> for AxisXLabelCanvas {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-
         let Some(aggr_time) = self.aggr_time else {
-            return vec![frame.into_geometry()];
+            return vec![];
         };
 
         if self.latest_time == 0
@@ -113,89 +113,103 @@ impl canvas::Program<Message> for AxisXLabelCanvas {
             || !self.cam_sx.is_finite()
             || self.cam_sx <= 0.0
         {
-            return vec![frame.into_geometry()];
+            return vec![];
         }
 
-        let vw = bounds.width;
-        let vh = bounds.height;
+        let labels = self.cache.draw(renderer, bounds.size(), |frame| {
+            let vw = bounds.width;
+            let vh = bounds.height;
 
-        // Match camera.rs exactly:
-        let pad_world = (vw * self.cam_right_pad_frac) / self.cam_sx;
-        let right_edge_world = self.cam_offset_x + pad_world;
+            let vw_f = vw as f64;
+            let vh_f = vh as f64;
+            let cam_sx_f = self.cam_sx as f64;
+            let col_f = self.column_world as f64;
+            let cam_offset_f = self.cam_offset_x as f64;
+            let right_pad_frac_f = self.cam_right_pad_frac as f64;
 
-        let x_world_left = right_edge_world - (vw / self.cam_sx);
-        let x_world_right = right_edge_world;
+            // Phase should behave like shader origin.x: fraction of a bucket (0..1)
+            let mut phase = self.x_phase_bucket as f64;
+            if !phase.is_finite() {
+                phase = 0.0;
+            }
+            phase = phase.clamp(0.0, 0.999_999);
 
-        // Visible relative bucket range u where world_x = u * column_world
-        let u_min = (x_world_left / self.column_world).floor() as i64;
-        let u_max = (x_world_right / self.column_world).ceil() as i64;
+            // Camera math (matches camera.rs)
+            let pad_world = (vw_f * right_pad_frac_f) / cam_sx_f;
+            let right_edge_world = cam_offset_f + pad_world;
 
-        // Convert to ABSOLUTE bucket coordinates so ticks scroll when latest_time advances
-        let latest_bucket: i64 = (self.latest_time / aggr_time) as i64;
-        let b_min: i64 = latest_bucket.saturating_add(u_min);
-        let b_max: i64 = latest_bucket.saturating_add(u_max);
+            let x_world_left = right_edge_world - (vw_f / cam_sx_f);
+            let x_world_right = right_edge_world;
 
-        // Formatting based on visible timespan (wall-clock)
-        let visible_buckets = (b_max as i128 - b_min as i128).max(0);
-        let visible_span_ms = visible_buckets * (aggr_time as i128);
-        let fmt = pick_time_format(visible_span_ms);
+            // phase here (geometry shift), not by moving the camera.
+            // We want (u - phase) * col in [x_left, x_right]
+            // => u in [x_left/col + phase, x_right/col + phase]
+            let inv_col = 1.0f64 / col_f.max(1e-18);
+            let eps = 1e-9f64;
 
-        // Label density (aim ~110px)
-        let px_per_bucket = (self.column_world * self.cam_sx).max(1e-6);
-        let target_label_px = 110.0f32;
-        let rough_every = (target_label_px / px_per_bucket).ceil() as i64;
-        let every = super::nice_step_i64(rough_every);
+            let u_min = ((x_world_left * inv_col) + phase + eps).floor() as i64;
+            let u_max = ((x_world_right * inv_col) + phase - eps).ceil() as i64;
 
-        let text_color = theme.palette().text;
-        let font_size = 12.0f32;
+            let latest_bucket: i64 = (self.latest_time / aggr_time) as i64;
+            let b_min: i64 = latest_bucket.saturating_add(u_min);
+            let b_max: i64 = latest_bucket.saturating_add(u_max);
 
-        // Camera center_x (camera.rs: center_x = right_edge - (vw*0.5)/sx)
-        let center_x = right_edge_world - (vw * 0.5) / self.cam_sx;
+            let visible_buckets = (b_max as i128 - b_min as i128).max(0);
+            let visible_span_ms = visible_buckets * (aggr_time as i128);
+            let fmt = pick_time_format(visible_span_ms);
 
-        let world_to_screen_x =
-            |world_x: f32| -> f32 { (world_x - center_x) * self.cam_sx + vw * 0.5 };
+            let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
+            let target_label_px = 110.0f32;
+            let rough_every = (target_label_px / px_per_bucket).ceil() as i64;
+            let every = super::nice_step_i64(rough_every.max(1));
 
-        let y = 0.5 * vh;
-        let edge_pad = 26.0f32;
+            let text_color = theme.palette().text;
+            let font_size = 12.0f32;
 
-        // Start at first multiple of `every` in [b_min, b_max]
-        let mut b = (b_min.div_euclid(every)) * every;
-        if b < b_min {
-            b += every;
-        }
+            let center_x = right_edge_world - (vw_f * 0.5) / cam_sx_f;
+            let world_to_screen_x =
+                |world_x: f64| -> f32 { ((world_x - center_x) * cam_sx_f + vw_f * 0.5) as f32 };
 
-        while b <= b_max {
-            // Map absolute bucket -> world_x using same "relative to latest" convention as data
-            let rel = b - latest_bucket; // negative for past
-            let world_x = (rel as f32) * self.column_world;
-            let x_px = world_to_screen_x(world_x);
+            let y = (0.5 * vh_f) as f32;
+            let edge_pad = 26.0f32;
 
-            if x_px >= edge_pad && x_px <= (vw - edge_pad) {
-                // Label time is absolute: t = bucket * aggr_time
-                let t_ms = (b as i128) * (aggr_time as i128);
-                let label = unix_ms_to_local_string(t_ms, fmt);
+            let mut b = (b_min.div_euclid(every)) * every;
+            if b < b_min {
+                b += every;
+            }
 
-                if !label.is_empty() {
-                    frame.fill_text(canvas::Text {
-                        content: label,
-                        position: iced::Point::new(x_px, y),
-                        color: text_color,
-                        font: crate::style::AZERET_MONO,
-                        size: font_size.into(),
-                        align_x: iced::Alignment::Center.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        ..Default::default()
-                    });
+            while b <= b_max {
+                let rel = b - latest_bucket;
+
+                let world_x = ((rel as f64) - phase) * col_f;
+                let x_px = world_to_screen_x(world_x);
+
+                if x_px >= edge_pad && x_px <= (vw - edge_pad) {
+                    let t_ms = (b as i128) * (aggr_time as i128);
+                    let label = unix_ms_to_local_string(t_ms, fmt);
+
+                    if !label.is_empty() {
+                        frame.fill_text(canvas::Text {
+                            content: label,
+                            position: iced::Point::new(x_px, y),
+                            color: text_color,
+                            font: crate::style::AZERET_MONO,
+                            size: font_size.into(),
+                            align_x: iced::Alignment::Center.into(),
+                            align_y: iced::Alignment::Center.into(),
+                            ..Default::default()
+                        });
+                    }
+                }
+
+                b = b.saturating_add(every);
+                if every <= 0 {
+                    break;
                 }
             }
+        });
 
-            b = b.saturating_add(every);
-            if every <= 0 {
-                break;
-            }
-        }
-
-        vec![frame.into_geometry()]
+        vec![labels]
     }
 
     fn mouse_interaction(

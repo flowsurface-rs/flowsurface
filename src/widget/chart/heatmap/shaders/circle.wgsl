@@ -1,21 +1,32 @@
 struct Camera {
-    a: vec4<f32>, // (scale.x, scale.y, center.x, center.y)
-    b: vec4<f32>, // (viewport_w, viewport_h, 0, 0)
+    a: vec4<f32>,
+    b: vec4<f32>,
 };
-
 @group(0) @binding(0)
 var<uniform> camera: Camera;
 
+struct Params {
+    depth: vec4<f32>,
+    bid_rgb: vec4<f32>,
+    ask_rgb: vec4<f32>,
+    grid: vec4<f32>,   // (col_w, row_h, steps_per_y_bin, _)
+    origin: vec4<f32>, // (now_bucket_rel_f, _, _, _)
+};
+@group(0) @binding(1)
+var<uniform> params: Params;
+
 struct VsIn {
-    @location(0) corner: vec2<f32>, // [-1, +1]
-    @location(1) center: vec2<f32>, // world units
-    @location(2) radius_px: f32,    // SCREEN pixels
-    @location(3) color: vec4<f32>,
+    @location(0) corner: vec2<f32>,
+    @location(1) y_world: f32,
+    @location(2) x_bin_rel: i32,
+    @location(3) x_frac: f32,
+    @location(4) radius_px: f32,
+    @location(5) color: vec4<f32>,
 };
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) local: vec2<f32>, // [-1, +1]
+    @location(0) local: vec2<f32>,
     @location(1) color: vec4<f32>,
 };
 
@@ -25,21 +36,28 @@ fn vs_main(input: VsIn) -> VsOut {
     let cam_center = camera.a.zw;
     let viewport = camera.b.xy;
 
-    // Convert desired pixel radius into world offsets (separately for x/y to stay circular on screen)
+    let col_w = params.grid.x;
+    let now_bucket_rel_f = params.origin.x;
+
+    let x_trade = f32(input.x_bin_rel) + input.x_frac;
+    let center_x = -((now_bucket_rel_f) - x_trade) * col_w;
+    let center = vec2<f32>(center_x, input.y_world);
+
     let radius_world = vec2<f32>(
         input.radius_px / max(scale.x, 1e-6),
         input.radius_px / max(scale.y, 1e-6),
     );
 
-    let world_pos = input.center + input.corner * radius_world;
-
+    let world_pos = center + input.corner * radius_world;
     let view = (world_pos - cam_center) * scale;
 
-    let ndc_x = view.x / (viewport.x * 0.5);
-    let ndc_y = -view.y / (viewport.y * 0.5);
-
     var out: VsOut;
-    out.pos = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    out.pos = vec4<f32>(
+        view.x / (viewport.x * 0.5),
+        -view.y / (viewport.y * 0.5),
+        0.0,
+        1.0
+    );
     out.local = input.corner;
     out.color = input.color;
     return out;

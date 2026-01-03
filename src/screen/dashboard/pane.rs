@@ -1595,7 +1595,7 @@ impl State {
                 }
             }
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
-            Content::ShaderHeatmap { .. } => Some(100),
+            Content::ShaderHeatmap { .. } => None,
             Content::Starter => None,
         }
     }
@@ -1632,7 +1632,9 @@ impl State {
                     return self.invalidate(now);
                 }
             }
-            (None, _) => {}
+            (None, _) => {
+                return self.invalidate(now);
+            }
         }
 
         None

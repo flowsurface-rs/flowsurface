@@ -1,3 +1,4 @@
+use bytemuck::{Pod, Zeroable};
 use iced::wgpu::PipelineCompilationOptions;
 use iced::wgpu::util::DeviceExt;
 use iced::{Rectangle, wgpu};
@@ -16,6 +17,34 @@ use crate::widget::chart::heatmap::scene::pipeline::rectangle::{
 
 use rustc_hash::FxHashMap;
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct ParamsUniform {
+    /// depth: (max_depth, alpha_min, alpha_max, reserved)
+    pub depth: [f32; 4],
+    /// bid_rgb: (r,g,b, reserved)
+    pub bid_rgb: [f32; 4],
+    /// ask_rgb: (r,g,b, reserved)
+    pub ask_rgb: [f32; 4],
+
+    /// grid: (column_world, row_h, steps_per_y_bin, reserved)
+    pub grid: [f32; 4],
+    /// origin: (now_bucket_f, base_abs_y_bin, reserved, reserved)
+    pub origin: [f32; 4],
+}
+
+impl Default for ParamsUniform {
+    fn default() -> Self {
+        Self {
+            depth: [1.0, 0.01, 0.99, 0.0],
+            bid_rgb: [0.0, 1.0, 0.0, 0.0],
+            ask_rgb: [1.0, 0.0, 0.0, 0.0],
+            grid: [0.1, 0.1, 1.0, 0.0],
+            origin: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
 struct PerSceneGpu {
     rect_instance_buffer: wgpu::Buffer,
     rect_instance_capacity: usize,
@@ -24,6 +53,7 @@ struct PerSceneGpu {
     circle_instance_capacity: usize,
 
     camera_buffer: wgpu::Buffer,
+    params_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 }
 
@@ -83,20 +113,41 @@ impl Pipeline {
         // -- bind groups
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            std::num::NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64)
+                label: Some("camera+params bind group layout"),
+                entries: &[
+                    // binding(0): camera
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                std::num::NonZeroU64::new(
+                                    std::mem::size_of::<CameraUniform>() as u64
+                                )
                                 .unwrap(),
-                        ),
+                            ),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    // binding(1): params (used by rect shader in BOTH vertex + fragment)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, // <-- fix
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                std::num::NonZeroU64::new(
+                                    std::mem::size_of::<ParamsUniform>() as u64
+                                )
+                                .unwrap(),
+                            ),
+                        },
+                        count: None,
+                    },
+                ],
             });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -126,6 +177,7 @@ impl Pipeline {
                         array_stride: std::mem::size_of::<RectInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
+                            // position/size/color (overlay path)
                             wgpu::VertexAttribute {
                                 offset: 0,
                                 shader_location: 1,
@@ -140,6 +192,38 @@ impl Pipeline {
                                 offset: 16,
                                 shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x4,
+                            },
+                            // qty/side
+                            wgpu::VertexAttribute {
+                                offset: 32,
+                                shader_location: 4,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 36,
+                                shader_location: 5,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            // bins/flags
+                            wgpu::VertexAttribute {
+                                offset: 40,
+                                shader_location: 6,
+                                format: wgpu::VertexFormat::Sint32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 44,
+                                shader_location: 7,
+                                format: wgpu::VertexFormat::Sint32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 48,
+                                shader_location: 8,
+                                format: wgpu::VertexFormat::Sint32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 52,
+                                shader_location: 9,
+                                format: wgpu::VertexFormat::Uint32,
                             },
                         ],
                     },
@@ -184,19 +268,34 @@ impl Pipeline {
                         array_stride: std::mem::size_of::<CircleInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
+                            // @location(1) y_world: f32
                             wgpu::VertexAttribute {
                                 offset: 0,
                                 shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 8,
-                                shader_location: 2,
                                 format: wgpu::VertexFormat::Float32,
                             },
+                            // @location(2) x_bin_rel: i32
                             wgpu::VertexAttribute {
-                                offset: 16,
+                                offset: 4,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Sint32,
+                            },
+                            // @location(3) x_frac: f32
+                            wgpu::VertexAttribute {
+                                offset: 8,
                                 shader_location: 3,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            // @location(4) radius_px: f32
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 4,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            // @location(5) color: vec4<f32>
+                            wgpu::VertexAttribute {
+                                offset: 20,
+                                shader_location: 5,
                                 format: wgpu::VertexFormat::Float32x4,
                             },
                         ],
@@ -235,6 +334,21 @@ impl Pipeline {
         }
     }
 
+    pub fn update_params(
+        &mut self,
+        id: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: &ParamsUniform,
+    ) {
+        let gpu = self.ensure_scene(id, device);
+        queue.write_buffer(
+            &gpu.params_buffer,
+            0,
+            bytemuck::cast_slice(std::slice::from_ref(params)),
+        );
+    }
+
     fn ensure_scene(&mut self, id: u64, device: &wgpu::Device) -> &mut PerSceneGpu {
         self.per_scene.entry(id).or_insert_with(|| {
             let rect_instance_capacity: usize = 4096;
@@ -262,13 +376,25 @@ impl Pipeline {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
+            let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Params Buffer"),
+                contents: bytemuck::cast_slice(&[ParamsUniform::default()]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
             let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 layout: &self.camera_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                }],
-                label: Some("camera bind group"),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+                label: Some("camera+params bind group"),
             });
 
             PerSceneGpu {
@@ -277,6 +403,7 @@ impl Pipeline {
                 circle_instance_buffer,
                 circle_instance_capacity,
                 camera_buffer,
+                params_buffer,
                 camera_bind_group,
             }
         })
