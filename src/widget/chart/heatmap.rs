@@ -27,7 +27,7 @@ const DEFAULT_COL_W_WORLD: f32 = 0.1;
 
 const MIN_CAMERA_SCALE: f32 = 1e-4;
 
-const DEPTH_MIN_ROW_PX: f32 = 1.25;
+const DEPTH_MIN_ROW_PX: f32 = 2.0;
 const MAX_STEPS_PER_Y_BIN: i64 = 2048;
 
 // Trades (circles)
@@ -268,9 +268,14 @@ impl HeatmapShader {
             Basis::Tick(_) => None,
         };
 
+        let render_latest_bucket: i64 = match aggr_time {
+            Some(aggr) if aggr > 0 => (self.render_latest_time / aggr) as i64,
+            _ => self.scroll_ref_bucket,
+        };
+
         let x_axis_label = Canvas::new(AxisXLabelCanvas {
             cache: &self.x_axis_cache,
-            latest_bucket: self.scroll_ref_bucket, // <-- changed
+            latest_bucket: render_latest_bucket,
             aggr_time,
             column_world: self.column_world,
             cam_offset_x: self.scene.camera.offset[0],
@@ -355,9 +360,6 @@ impl HeatmapShader {
                 _ => None,
             };
 
-        // Monotonic "now" estimate across packets:
-        // - must be >= previous estimate
-        // - must be >= packet timestamp (if packet is ahead)
         let mut monotonic_now_ms = depth_update_t;
         if let Some(p) = predicted_now_ms {
             monotonic_now_ms = monotonic_now_ms.max(p);
@@ -395,7 +397,7 @@ impl HeatmapShader {
             state.base_price = mid.round_to_step(state.step);
             state.latest_time = rounded_t;
         }
-        // DON'T rebuild synchronously here (can hitch).
+
         self.needs_rebuild = true;
     }
 
@@ -522,6 +524,7 @@ impl HeatmapShader {
         let ref_bucket = self.scroll_ref_bucket;
 
         let mut rects = Vec::with_capacity(combined.len());
+
         for (key, qty_sum) in combined.into_iter() {
             let x0_rel =
                 (key.start_x_bin - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
@@ -572,7 +575,7 @@ impl HeatmapShader {
         &self,
         earliest: u64,
         latest: u64,
-        render_bucket_end_excl_ms: u64, // NEW
+        render_bucket_end_excl_ms: u64,
         highest: Price,
         lowest: Price,
         step: PriceStep,
@@ -606,10 +609,12 @@ impl HeatmapShader {
 
             for (idx, run) in runs.iter().enumerate() {
                 let run_start = run.start_time.max(earliest);
-
                 let mut run_until = run.until_time.min(latest);
 
-                if idx + 1 == runs.len() && run.until_time >= self.data.latest_time {
+                let is_open_ended =
+                    idx + 1 == runs.len() && run.until_time >= self.data.latest_time;
+
+                if is_open_ended {
                     let extend_to = render_bucket_end_excl_ms.min(latest);
                     if extend_to > run_until {
                         run_until = extend_to;
@@ -621,9 +626,14 @@ impl HeatmapShader {
                 }
 
                 let start_bucket = (run_start / aggr_time) as i64;
-                let mut end_bucket_excl = div_ceil_u64(run_until, aggr_time) as i64;
 
-                end_bucket_excl = end_bucket_excl.min(latest_bucket + 1);
+                let end_bucket_excl: i64 = if is_open_ended {
+                    i64::MAX
+                } else {
+                    let mut end = div_ceil_u64(run_until, aggr_time) as i64;
+                    end = end.min(latest_bucket + 1);
+                    end
+                };
 
                 if end_bucket_excl <= start_bucket {
                     continue;
@@ -703,29 +713,29 @@ impl HeatmapShader {
             let phase_ms = exchange_now_ms.saturating_sub(render_latest_time);
             let phase = (phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
 
-            if render_latest_time != self.render_latest_time {
-                self.render_latest_time = render_latest_time;
-                self.needs_rebuild = true;
-            }
-
+            self.render_latest_time = render_latest_time;
             self.x_phase_bucket = phase;
+
+            if self.needs_rebuild {
+                self.needs_rebuild = false;
+                self.rebuild_instances();
+            }
 
             if let Some(w) = self.compute_view_window(vw_px, vh_px) {
                 let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
 
+                let render_bucket: i64 = (render_latest_time / aggr_time) as i64;
+                let delta_buckets: i64 = render_bucket - self.scroll_ref_bucket;
+                let now_bucket_rel_f: f32 = (delta_buckets as f32) + self.x_phase_bucket;
+
                 self.scene.params.origin = [
-                    self.x_phase_bucket,
+                    now_bucket_rel_f,
                     volume_min_w_world,
                     VOLUME_BUCKET_GAP_FRAC,
                     0.0,
                 ];
                 self.scene.params.grid =
                     [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0];
-            }
-
-            if self.needs_rebuild {
-                self.needs_rebuild = false;
-                self.rebuild_instances();
             }
 
             self.x_axis_cache.clear();
@@ -930,6 +940,10 @@ impl HeatmapShader {
             return;
         }
 
+        let Some(palette) = &self.palette else {
+            return;
+        };
+
         let state = &self.data;
 
         // X downsampling: ensure each rendered bar is at least ~N pixels wide.
@@ -979,6 +993,8 @@ impl HeatmapShader {
 
         let ref_bucket = self.scroll_ref_bucket;
 
+        let eps = 1e-12f32;
+
         for (i, (buy, sell)) in acc.into_iter().enumerate() {
             let total = buy + sell;
             if total <= 0.0 {
@@ -987,10 +1003,6 @@ impl HeatmapShader {
 
             let x_bin = min_x_bin + i as i64;
 
-            let total_h = ((total / denom) * w.strip_h_world).max(min_h_world);
-            let total_center_y = w.strip_bottom_y - 0.5 * total_h;
-
-            // Bin span in buckets
             let start_bucket = x_bin * cols_per_x_bin;
             let mut end_bucket_excl = start_bucket + cols_per_x_bin;
             end_bucket_excl = end_bucket_excl.min(w.latest_bucket + 1);
@@ -999,26 +1011,59 @@ impl HeatmapShader {
                 continue;
             }
 
+            if start_bucket <= w.latest_bucket && end_bucket_excl == w.latest_bucket + 1 {
+                end_bucket_excl = i64::MAX;
+            }
+
             let x0_rel = (start_bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
             let x1_rel =
                 (end_bucket_excl - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+            let (base_rgb, is_tie) = if buy > sell + eps {
+                (palette.buy_rgb, false)
+            } else if sell > buy + eps {
+                (palette.sell_rgb, false)
+            } else {
+                (VOLUME_TOTAL_RGB, true)
+            };
+
+            let total_h = ((total / denom) * w.strip_h_world).max(min_h_world);
+            let total_center_y = w.strip_bottom_y - 0.5 * total_h;
 
             rects.push(RectInstance {
-                position: [0.0, total_center_y], // x computed in shader, y fixed
-                size: [0.0, total_h],            // width computed in shader, height fixed
-                color: [
-                    VOLUME_TOTAL_RGB[0],
-                    VOLUME_TOTAL_RGB[1],
-                    VOLUME_TOTAL_RGB[2],
-                    VOLUME_TOTAL_ALPHA,
-                ],
+                position: [0.0, total_center_y],
+                size: [0.0, total_h],
+                color: [base_rgb[0], base_rgb[1], base_rgb[2], VOLUME_TOTAL_ALPHA],
                 qty: 0.0,
                 side_sign: 0.0,
                 x0_bin: x0_rel,
                 x1_bin_excl: x1_rel,
                 abs_y_bin: 0,
-                flags: 1 | 2, // overlay + x-from-bins
+                flags: 1 | 2,
             });
+
+            if !is_tie {
+                let diff = (buy - sell).abs();
+                if diff > eps {
+                    let mut overlay_h = (diff / denom) * w.strip_h_world;
+                    overlay_h = overlay_h.min(total_h);
+
+                    if overlay_h > 0.0 {
+                        let overlay_center_y = w.strip_bottom_y - 0.5 * overlay_h;
+
+                        rects.push(RectInstance {
+                            position: [0.0, overlay_center_y],
+                            size: [0.0, overlay_h],
+                            color: [base_rgb[0], base_rgb[1], base_rgb[2], VOLUME_TOTAL_ALPHA],
+                            qty: 0.0,
+                            side_sign: 0.0,
+                            x0_bin: x0_rel,
+                            x1_bin_excl: x1_rel,
+                            abs_y_bin: 0,
+                            flags: 1 | 2,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -1037,15 +1082,11 @@ impl HeatmapShader {
 
         if self.scroll_ref_bucket != old_ref {
             self.x_axis_cache.clear();
-
-            let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
-            self.scene.params.origin = [
-                self.x_phase_bucket,
-                volume_min_w_world,
-                VOLUME_BUCKET_GAP_FRAC,
-                0.0,
-            ];
         }
+
+        let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
+        self.scene.params.origin[1] = volume_min_w_world;
+        self.scene.params.origin[2] = VOLUME_BUCKET_GAP_FRAC;
 
         let max_trade_qty = self.max_trade_qty(&w);
 
