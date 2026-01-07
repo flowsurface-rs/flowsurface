@@ -11,7 +11,7 @@ impl Default for Camera {
         Self {
             scale: [100.0, 100.0],
             offset: [0.0, 0.0],
-            right_pad_frac: 0.20, // 20% of screen for the x>0 depth profile
+            right_pad_frac: 0.10, // 20% of screen for the x>0 depth profile
         }
     }
 }
@@ -27,7 +27,6 @@ impl Camera {
     #[inline]
     fn right_pad_world(&self, viewport_w: f32) -> f32 {
         let sx = self.scale[0].max(1e-6);
-        // world units = px / (px per world)
         (viewport_w * self.right_pad_frac) / sx
     }
 
@@ -93,11 +92,69 @@ impl Camera {
     }
 
     pub fn to_uniform(self, viewport_w: f32, viewport_h: f32) -> CameraUniform {
-        let [center_x, center_y] = self.center(viewport_w);
+        let vw = viewport_w.round().max(1.0);
+        let vh = viewport_h.round().max(1.0);
+
+        let sx = self.scale[0].max(1e-6);
+        let sy = self.scale[1].max(1e-6);
+
+        let [center_x, center_y] = self.center(vw);
 
         CameraUniform {
-            a: [self.scale[0], self.scale[1], center_x, center_y],
-            b: [viewport_w, viewport_h, 0.0, 0.0],
+            a: [sx, sy, center_x, center_y],
+            b: [vw, vh, 0.0, 0.0],
         }
+    }
+
+    /// World Y at a screen Y, where screen origin is top-left of viewport and Y grows downward.
+    /// This uses the *centered* anchor (matches current row-height zoom math).
+    #[inline]
+    pub fn world_y_at_screen_y_centered(
+        &self,
+        screen_y: f32,
+        viewport_h: f32,
+        min_scale: f32,
+    ) -> f32 {
+        let sy = self.scale[1].max(min_scale);
+        self.offset[1] + (screen_y - 0.5 * viewport_h) / sy
+    }
+
+    /// Set camera.offset[1] so that `world_y` stays under `screen_y` (centered anchor).
+    #[inline]
+    pub fn set_offset_y_for_world_y_at_screen_y_centered(
+        &mut self,
+        world_y: f32,
+        screen_y: f32,
+        viewport_h: f32,
+        min_scale: f32,
+    ) {
+        let sy = self.scale[1].max(min_scale);
+        self.offset[1] = world_y - (screen_y - 0.5 * viewport_h) / sy;
+    }
+
+    /// World X at a screen X using the *right-anchored* mapping where screen_x == viewport_w maps to x=0.
+    /// This matches your existing column-width zoom math.
+    #[inline]
+    pub fn world_x_at_screen_x_right_anchored(
+        &self,
+        screen_x: f32,
+        viewport_w: f32,
+        min_scale: f32,
+    ) -> f32 {
+        let sx = self.scale[0].max(min_scale);
+        self.offset[0] + (screen_x - viewport_w) / sx
+    }
+
+    /// Set camera.offset[0] so that `world_x` stays under `screen_x` (right-anchored mapping).
+    #[inline]
+    pub fn set_offset_x_for_world_x_at_screen_x_right_anchored(
+        &mut self,
+        world_x: f32,
+        screen_x: f32,
+        viewport_w: f32,
+        min_scale: f32,
+    ) {
+        let sx = self.scale[0].max(min_scale);
+        self.offset[0] = world_x - (screen_x - viewport_w) / sx;
     }
 }

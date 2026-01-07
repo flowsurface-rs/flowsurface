@@ -32,9 +32,13 @@ struct Params {
     depth: vec4<f32>,
     bid_rgb: vec4<f32>,
     ask_rgb: vec4<f32>,
-    grid: vec4<f32>,   // (col_w, row_h, steps_per_y_bin, _)
-    origin: vec4<f32>, // (now_bucket_f, base_abs_y_bin, _, _)
+    grid: vec4<f32>,
+    origin: vec4<f32>,
+    
+    heatmap_a: vec4<f32>,
+    heatmap_b: vec4<f32>,
 };
+
 @group(0) @binding(1)
 var<uniform> params: Params;
 

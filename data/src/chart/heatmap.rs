@@ -631,3 +631,53 @@ impl std::fmt::Display for ProfileKind {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeatmapPalette {
+    pub bid_rgb: [f32; 3],
+    pub ask_rgb: [f32; 3],
+    pub buy_rgb: [f32; 3],
+    pub sell_rgb: [f32; 3],
+}
+
+impl HeatmapPalette {
+    pub fn from_theme(theme: &iced_core::Theme) -> Self {
+        let palette = theme.extended_palette();
+
+        let bid = palette.success.strong.color;
+        let bid_linear = Self::srgb_to_linear([bid.r, bid.g, bid.b]);
+
+        let ask = palette.danger.strong.color;
+        let ask_linear = Self::srgb_to_linear([ask.r, ask.g, ask.b]);
+
+        let buy = palette.success.weak.color;
+        let buy_linear = Self::srgb_to_linear([buy.r, buy.g, buy.b]);
+        let sell = palette.danger.weak.color;
+        let sell_linear = Self::srgb_to_linear([sell.r, sell.g, sell.b]);
+
+        Self {
+            bid_rgb: bid_linear,
+            ask_rgb: ask_linear,
+            buy_rgb: buy_linear,
+            sell_rgb: sell_linear,
+        }
+    }
+
+    #[inline]
+    fn srgb_to_linear_channel(u: f32) -> f32 {
+        if u <= 0.04045 {
+            u / 12.92
+        } else {
+            ((u + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    #[inline]
+    fn srgb_to_linear(rgb: [f32; 3]) -> [f32; 3] {
+        [
+            Self::srgb_to_linear_channel(rgb[0]),
+            Self::srgb_to_linear_channel(rgb[1]),
+            Self::srgb_to_linear_channel(rgb[2]),
+        ]
+    }
+}

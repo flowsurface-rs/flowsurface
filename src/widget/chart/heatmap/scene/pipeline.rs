@@ -20,17 +20,13 @@ use rustc_hash::FxHashMap;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct ParamsUniform {
-    /// depth: (max_depth, alpha_min, alpha_max, reserved)
     pub depth: [f32; 4],
-    /// bid_rgb: (r,g,b, reserved)
     pub bid_rgb: [f32; 4],
-    /// ask_rgb: (r,g,b, reserved)
     pub ask_rgb: [f32; 4],
-
-    /// grid: (column_world, row_h, steps_per_y_bin, reserved)
     pub grid: [f32; 4],
-    /// origin: (now_bucket_f, base_abs_y_bin, reserved, reserved)
     pub origin: [f32; 4],
+    pub heatmap_a: [f32; 4], // (x_start_group, y_start_bin, cols_per_x_bin, _)
+    pub heatmap_b: [f32; 4], // (tex_w, tex_h, inv_w, inv_h)
 }
 
 impl Default for ParamsUniform {
@@ -41,6 +37,8 @@ impl Default for ParamsUniform {
             ask_rgb: [1.0, 0.0, 0.0, 0.0],
             grid: [0.1, 0.1, 1.0, 0.0],
             origin: [0.0, 0.0, 0.0, 0.0],
+            heatmap_a: [0.0, 0.0, 1.0, 0.0],
+            heatmap_b: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -55,11 +53,23 @@ struct PerSceneGpu {
     camera_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+
+    heatmap_tex: wgpu::Texture,
+    heatmap_tex_view: wgpu::TextureView,
+    heatmap_tex_bind_group: wgpu::BindGroup,
+    heatmap_tex_size: (u32, u32),
+    heatmap_uploaded_gen: u64,
 }
 
 pub struct Pipeline {
     rect_pipeline: wgpu::RenderPipeline,
     circle_pipeline: wgpu::RenderPipeline,
+
+    heatmap_pipeline: wgpu::RenderPipeline,
+    heatmap_vertex_buffer: wgpu::Buffer,
+    heatmap_index_buffer: wgpu::Buffer,
+    heatmap_num_indices: u32,
+    heatmap_tex_bind_group_layout: wgpu::BindGroupLayout,
 
     rect_vertex_buffer: wgpu::Buffer,
     circle_vertex_buffer: wgpu::Buffer,
@@ -118,7 +128,7 @@ impl Pipeline {
                     // binding(0): camera
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -131,10 +141,10 @@ impl Pipeline {
                         },
                         count: None,
                     },
-                    // binding(1): params (used by rect shader in BOTH vertex + fragment)
+                    // binding(1): params
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, // <-- fix
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -320,6 +330,82 @@ impl Pipeline {
             cache: None,
         });
 
+        // NEW: heatmap shader + quad buffers (reuse RECT_* geometry)
+        let heatmap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("heatmap texture shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/heatmap_tex.wgsl").into()),
+        });
+
+        let heatmap_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("heatmap quad vertex buffer"),
+            contents: bytemuck::cast_slice(RECT_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let heatmap_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("heatmap quad index buffer"),
+            contents: bytemuck::cast_slice(RECT_INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let heatmap_num_indices = RECT_INDICES.len() as u32;
+
+        // NEW: bind group layout for heatmap texture (group=1)
+        let heatmap_tex_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("heatmap texture bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+
+        // NEW: pipeline layout includes existing camera+params group (0) + heatmap tex group (1)
+        let heatmap_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("heatmap texture pipeline layout"),
+                bind_group_layouts: &[&camera_bind_group_layout, &heatmap_tex_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let heatmap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("heatmap texture pipeline"),
+            layout: Some(&heatmap_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &heatmap_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<[f32; 2]>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x2,
+                    }],
+                }],
+                compilation_options: PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &heatmap_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Self {
             rect_pipeline,
             circle_pipeline,
@@ -331,6 +417,11 @@ impl Pipeline {
             per_scene: FxHashMap::default(),
             rect_num_indices: RECT_INDICES.len() as u32,
             circle_num_indices: CIRCLE_INDICES.len() as u32,
+            heatmap_pipeline,
+            heatmap_vertex_buffer,
+            heatmap_index_buffer,
+            heatmap_num_indices,
+            heatmap_tex_bind_group_layout,
         }
     }
 
@@ -397,6 +488,31 @@ impl Pipeline {
                 label: Some("camera+params bind group"),
             });
 
+            let heatmap_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("heatmap tex (init)"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rg32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let heatmap_tex_view = heatmap_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let heatmap_tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("heatmap tex bind group"),
+                layout: &self.heatmap_tex_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&heatmap_tex_view),
+                }],
+            });
+
             PerSceneGpu {
                 rect_instance_buffer,
                 rect_instance_capacity,
@@ -405,6 +521,12 @@ impl Pipeline {
                 camera_buffer,
                 params_buffer,
                 camera_bind_group,
+
+                heatmap_tex,
+                heatmap_tex_view,
+                heatmap_tex_bind_group,
+                heatmap_tex_size: (1, 1),
+                heatmap_uploaded_gen: 0,
             }
         })
     }
@@ -433,6 +555,158 @@ impl Pipeline {
             0,
             bytemuck::cast_slice(instances),
         );
+    }
+
+    pub fn update_heatmap_texture(
+        &mut self,
+        id: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        rg32f: &[[f32; 2]],
+        generation: u64,
+    ) {
+        // Check early exit conditions first
+        {
+            let gpu = self.ensure_scene(id, device);
+            if generation == gpu.heatmap_uploaded_gen {
+                return;
+            }
+            if width == 0 || height == 0 {
+                return;
+            }
+        }
+
+        // Now handle the resize case - split into separate borrows
+        let needs_resize = {
+            let gpu = self.per_scene.get(&id).unwrap();
+            gpu.heatmap_tex_size != (width, height)
+        };
+
+        if needs_resize {
+            self.resize_heatmap_texture(id, device, width, height);
+        }
+
+        // Upload the data
+        let gpu = self.per_scene.get_mut(&id).unwrap();
+
+        // Pad rows to 256-byte alignment
+        let bytes_per_pixel: usize = 8; // RG32F
+        let unpadded_bpr = (width as usize) * bytes_per_pixel;
+        let padded_bpr = (unpadded_bpr + 255) & !255;
+
+        let src_bytes: &[u8] = bytemuck::cast_slice(rg32f);
+        let mut staging = vec![0u8; padded_bpr * (height as usize)];
+
+        for y in 0..(height as usize) {
+            let src_off = y * unpadded_bpr;
+            let dst_off = y * padded_bpr;
+            staging[dst_off..dst_off + unpadded_bpr]
+                .copy_from_slice(&src_bytes[src_off..src_off + unpadded_bpr]);
+        }
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &gpu.heatmap_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &staging,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bpr as u32),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        gpu.heatmap_uploaded_gen = generation;
+    }
+
+    fn resize_heatmap_texture(&mut self, id: u64, device: &wgpu::Device, width: u32, height: u32) {
+        let layout = &self.heatmap_tex_bind_group_layout;
+        let gpu = self.per_scene.get_mut(&id).unwrap();
+
+        gpu.heatmap_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("heatmap tex"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rg32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.heatmap_tex_view = gpu
+            .heatmap_tex
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        gpu.heatmap_tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("heatmap tex bind group (resized)"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&gpu.heatmap_tex_view),
+            }],
+        });
+        gpu.heatmap_tex_size = (width, height);
+    }
+
+    pub fn render_heatmap_texture(
+        &self,
+        id: u64,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: Rectangle<u32>,
+    ) {
+        let Some(gpu) = self.per_scene.get(&id) else {
+            return;
+        };
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("heatmap texture pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_viewport(
+            viewport.x as f32,
+            viewport.y as f32,
+            viewport.width as f32,
+            viewport.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
+
+        pass.set_pipeline(&self.heatmap_pipeline);
+        pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
+        pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
+        pass.set_index_buffer(
+            self.heatmap_index_buffer.slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
+        pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
     }
 
     pub fn update_circle_instances(

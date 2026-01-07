@@ -1,4 +1,4 @@
-mod camera;
+pub mod camera;
 pub mod pipeline;
 
 use super::Message;
@@ -16,6 +16,16 @@ use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use std::sync::Arc;
+
+#[derive(Clone, Debug)]
+pub struct HeatmapTextureCpu {
+    pub width: u32,
+    pub height: u32,
+    pub rg: Arc<Vec<[f32; 2]>>, // RG32F texels: [bid, ask]
+    pub generation: u64,
+}
+
 fn next_scene_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -28,6 +38,7 @@ pub struct Scene {
     pub circles: Vec<CircleInstance>,
     pub camera: camera::Camera,
     pub params: ParamsUniform,
+    pub heatmap: Option<HeatmapTextureCpu>,
 }
 
 impl Scene {
@@ -38,6 +49,7 @@ impl Scene {
             circles: Vec::new(),
             camera: Camera::default(),
             params: ParamsUniform::default(),
+            heatmap: None,
         }
     }
 
@@ -51,6 +63,10 @@ impl Scene {
 
     pub fn set_circles(&mut self, circles: Vec<CircleInstance>) {
         self.circles = circles;
+    }
+
+    pub fn set_heatmap(&mut self, heatmap: Option<HeatmapTextureCpu>) {
+        self.heatmap = heatmap;
     }
 }
 
@@ -130,6 +146,7 @@ impl shader::Program<Message> for Scene {
             &self.circles,
             self.camera,
             self.params,
+            self.heatmap.clone(),
         )
     }
 
@@ -157,6 +174,9 @@ pub struct Primitive {
     circles: Vec<CircleInstance>,
     camera: camera::Camera,
     params: ParamsUniform,
+
+    // NEW
+    heatmap: Option<HeatmapTextureCpu>,
 }
 
 impl Primitive {
@@ -166,6 +186,7 @@ impl Primitive {
         circles: &[CircleInstance],
         camera: camera::Camera,
         params: ParamsUniform,
+        heatmap: Option<HeatmapTextureCpu>,
     ) -> Self {
         Self {
             id,
@@ -173,6 +194,7 @@ impl Primitive {
             circles: circles.to_vec(),
             camera,
             params,
+            heatmap,
         }
     }
 }
@@ -188,6 +210,19 @@ impl shader::Primitive for Primitive {
         bounds: &Rectangle,
         _viewport: &Viewport,
     ) {
+        // NEW: upload heatmap texture only when generation changes
+        if let Some(hm) = &self.heatmap {
+            pipeline.update_heatmap_texture(
+                self.id,
+                device,
+                queue,
+                hm.width,
+                hm.height,
+                &hm.rg,
+                hm.generation,
+            );
+        }
+
         pipeline.update_rect_instances(self.id, device, queue, &self.rectangles);
         pipeline.update_circle_instances(self.id, device, queue, &self.circles);
 
@@ -204,6 +239,10 @@ impl shader::Primitive for Primitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
+        // NEW: draw heatmap first (background layer)
+        pipeline.render_heatmap_texture(self.id, encoder, target, *clip_bounds);
+
+        // overlays
         pipeline.render_rectangles(
             self.id,
             encoder,
