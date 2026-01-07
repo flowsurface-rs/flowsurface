@@ -187,52 +187,40 @@ impl Pipeline {
                         array_stride: std::mem::size_of::<RectInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
-                            // position/size/color (overlay path)
+                            // @location(1) position: vec2<f32>
                             wgpu::VertexAttribute {
                                 offset: 0,
                                 shader_location: 1,
                                 format: wgpu::VertexFormat::Float32x2,
                             },
+                            // @location(2) size: vec2<f32>
                             wgpu::VertexAttribute {
                                 offset: 8,
                                 shader_location: 2,
                                 format: wgpu::VertexFormat::Float32x2,
                             },
+                            // @location(3) color: vec4<f32>
                             wgpu::VertexAttribute {
                                 offset: 16,
                                 shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x4,
                             },
-                            // qty/side
+                            // @location(4) x0_bin: i32
                             wgpu::VertexAttribute {
                                 offset: 32,
                                 shader_location: 4,
-                                format: wgpu::VertexFormat::Float32,
+                                format: wgpu::VertexFormat::Sint32,
                             },
+                            // @location(5) x1_bin_excl: i32
                             wgpu::VertexAttribute {
                                 offset: 36,
                                 shader_location: 5,
-                                format: wgpu::VertexFormat::Float32,
+                                format: wgpu::VertexFormat::Sint32,
                             },
-                            // bins/flags
+                            // @location(6) flags: u32
                             wgpu::VertexAttribute {
                                 offset: 40,
                                 shader_location: 6,
-                                format: wgpu::VertexFormat::Sint32,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 44,
-                                shader_location: 7,
-                                format: wgpu::VertexFormat::Sint32,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 48,
-                                shader_location: 8,
-                                format: wgpu::VertexFormat::Sint32,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 52,
-                                shader_location: 9,
                                 format: wgpu::VertexFormat::Uint32,
                             },
                         ],
@@ -330,7 +318,6 @@ impl Pipeline {
             cache: None,
         });
 
-        // NEW: heatmap shader + quad buffers (reuse RECT_* geometry)
         let heatmap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("heatmap texture shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/heatmap_tex.wgsl").into()),
@@ -348,7 +335,6 @@ impl Pipeline {
         });
         let heatmap_num_indices = RECT_INDICES.len() as u32;
 
-        // NEW: bind group layout for heatmap texture (group=1)
         let heatmap_tex_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("heatmap texture bind group layout"),
@@ -364,7 +350,6 @@ impl Pipeline {
                 }],
             });
 
-        // NEW: pipeline layout includes existing camera+params group (0) + heatmap tex group (1)
         let heatmap_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("heatmap texture pipeline layout"),

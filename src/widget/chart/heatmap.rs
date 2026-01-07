@@ -468,6 +468,7 @@ impl HeatmapShader {
     fn clear_scene(&mut self) {
         self.scene.set_rectangles(Vec::new());
         self.scene.set_circles(Vec::new());
+        self.scene.set_heatmap(None);
     }
 
     #[inline]
@@ -651,12 +652,9 @@ impl HeatmapShader {
                     position: [center_x, y],
                     size: [w_world, w.y_bin_h_world],
                     color: [rgb[0], rgb[1], rgb[2], PROFILE_ALPHA],
-                    qty: 0.0,
-                    side_sign: 0.0,
                     x0_bin: 0,
                     x1_bin_excl: 0,
-                    abs_y_bin: 0,
-                    flags: 1, // overlay
+                    x_from_bins: 0,
                 });
             }
         }
@@ -760,12 +758,9 @@ impl HeatmapShader {
                 position: [0.0, total_center_y],
                 size: [0.0, total_h],
                 color: [base_rgb[0], base_rgb[1], base_rgb[2], VOLUME_TOTAL_ALPHA],
-                qty: 0.0,
-                side_sign: 0.0,
                 x0_bin: x0_rel,
                 x1_bin_excl: x1_rel,
-                abs_y_bin: 0,
-                flags: 1 | 2,
+                x_from_bins: 1,
             });
 
             if !is_tie {
@@ -781,12 +776,9 @@ impl HeatmapShader {
                             position: [0.0, overlay_center_y],
                             size: [0.0, overlay_h],
                             color: [base_rgb[0], base_rgb[1], base_rgb[2], VOLUME_TOTAL_ALPHA],
-                            qty: 0.0,
-                            side_sign: 0.0,
                             x0_bin: x0_rel,
                             x1_bin_excl: x1_rel,
-                            abs_y_bin: 0,
-                            flags: 1 | 2,
+                            x_from_bins: 1,
                         });
                     }
                 }
@@ -960,7 +952,6 @@ impl HeatmapShader {
 
         let Some(w) = self.compute_view_window(vw_px, vh_px) else {
             self.clear_scene();
-            self.scene.set_heatmap(None);
             return;
         };
 
