@@ -57,8 +57,7 @@ const VOLUME_BUCKET_GAP_FRAC: f32 = 0.10;
 const VOLUME_MIN_BAR_PX: f32 = 1.0; // min bar height in px
 const VOLUME_MIN_BAR_W_PX: f32 = 2.0; // min bar width in px (for x-binning)
 const MAX_COLS_PER_X_BIN: i64 = 4096;
-const VOLUME_TOTAL_RGB: [f32; 3] = [0.7, 0.7, 0.7];
-const VOLUME_TOTAL_ALPHA: f32 = 0.18;
+const VOLUME_TOTAL_ALPHA: f32 = 1.0;
 
 const MIN_ROW_H_WORLD: f32 = 0.01;
 const MAX_ROW_H_WORLD: f32 = 10.;
@@ -748,7 +747,7 @@ impl HeatmapShader {
             } else if sell > buy + eps {
                 (palette.sell_rgb, false)
             } else {
-                (VOLUME_TOTAL_RGB, true)
+                (palette.secondary_rgb, true)
             };
 
             let total_h = ((total / denom) * w.strip_h_world).max(min_h_world);

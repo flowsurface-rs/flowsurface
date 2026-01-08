@@ -46,9 +46,11 @@ impl Default for ParamsUniform {
 struct PerSceneGpu {
     rect_instance_buffer: wgpu::Buffer,
     rect_instance_capacity: usize,
+    rect_uploaded_gen: u64,
 
     circle_instance_buffer: wgpu::Buffer,
     circle_instance_capacity: usize,
+    circle_uploaded_gen: u64,
 
     camera_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
@@ -59,6 +61,12 @@ struct PerSceneGpu {
     heatmap_tex_bind_group: wgpu::BindGroup,
     heatmap_tex_size: (u32, u32),
     heatmap_uploaded_gen: u64,
+    heatmap_upload_scratch: Vec<u8>,
+
+    last_camera: CameraUniform,
+    has_last_camera: bool,
+    last_params: ParamsUniform,
+    has_last_params: bool,
 }
 
 pub struct Pipeline {
@@ -217,7 +225,7 @@ impl Pipeline {
                                 shader_location: 5,
                                 format: wgpu::VertexFormat::Sint32,
                             },
-                            // @location(6) flags: u32
+                            // @location(6) x_from_bins: u32
                             wgpu::VertexAttribute {
                                 offset: 40,
                                 shader_location: 6,
@@ -418,11 +426,20 @@ impl Pipeline {
         params: &ParamsUniform,
     ) {
         let gpu = self.ensure_scene(id, device);
+
+        if gpu.has_last_params && bytemuck::bytes_of(&gpu.last_params) == bytemuck::bytes_of(params)
+        {
+            return;
+        }
+
         queue.write_buffer(
             &gpu.params_buffer,
             0,
             bytemuck::cast_slice(std::slice::from_ref(params)),
         );
+
+        gpu.last_params = *params;
+        gpu.has_last_params = true;
     }
 
     fn ensure_scene(&mut self, id: u64, device: &wgpu::Device) -> &mut PerSceneGpu {
@@ -501,8 +518,12 @@ impl Pipeline {
             PerSceneGpu {
                 rect_instance_buffer,
                 rect_instance_capacity,
+                rect_uploaded_gen: 0,
+
                 circle_instance_buffer,
                 circle_instance_capacity,
+                circle_uploaded_gen: 0,
+
                 camera_buffer,
                 params_buffer,
                 camera_bind_group,
@@ -512,6 +533,15 @@ impl Pipeline {
                 heatmap_tex_bind_group,
                 heatmap_tex_size: (1, 1),
                 heatmap_uploaded_gen: 0,
+                heatmap_upload_scratch: Vec::new(),
+
+                last_camera: CameraUniform {
+                    a: [1.0, 1.0, 0.0, 0.0],
+                    b: [1.0, 1.0, 0.0, 0.0],
+                },
+                has_last_camera: false,
+                last_params: ParamsUniform::default(),
+                has_last_params: false,
             }
         })
     }
@@ -522,8 +552,18 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         instances: &[RectInstance],
+        generation: u64,
     ) {
         let gpu = self.ensure_scene(id, device);
+
+        if generation == gpu.rect_uploaded_gen {
+            return;
+        }
+
+        if instances.is_empty() {
+            gpu.rect_uploaded_gen = generation;
+            return;
+        }
 
         if instances.len() > gpu.rect_instance_capacity {
             gpu.rect_instance_capacity = instances.len().next_power_of_two();
@@ -540,6 +580,44 @@ impl Pipeline {
             0,
             bytemuck::cast_slice(instances),
         );
+        gpu.rect_uploaded_gen = generation;
+    }
+
+    pub fn update_circle_instances(
+        &mut self,
+        id: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[CircleInstance],
+        generation: u64,
+    ) {
+        let gpu = self.ensure_scene(id, device);
+
+        if generation == gpu.circle_uploaded_gen {
+            return;
+        }
+
+        if instances.is_empty() {
+            gpu.circle_uploaded_gen = generation;
+            return;
+        }
+
+        if instances.len() > gpu.circle_instance_capacity {
+            gpu.circle_instance_capacity = instances.len().next_power_of_two();
+            gpu.circle_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("circle instance buffer (resized)"),
+                size: (gpu.circle_instance_capacity * std::mem::size_of::<CircleInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+
+        queue.write_buffer(
+            &gpu.circle_instance_buffer,
+            0,
+            bytemuck::cast_slice(instances),
+        );
+        gpu.circle_uploaded_gen = generation;
     }
 
     pub fn update_heatmap_texture(
@@ -552,7 +630,6 @@ impl Pipeline {
         rg32f: &[[f32; 2]],
         generation: u64,
     ) {
-        // Check early exit conditions first
         {
             let gpu = self.ensure_scene(id, device);
             if generation == gpu.heatmap_uploaded_gen {
@@ -563,7 +640,12 @@ impl Pipeline {
             }
         }
 
-        // Now handle the resize case - split into separate borrows
+        debug_assert_eq!(
+            rg32f.len(),
+            (width as usize) * (height as usize),
+            "rg32f slice must be width*height"
+        );
+
         let needs_resize = {
             let gpu = self.per_scene.get(&id).unwrap();
             gpu.heatmap_tex_size != (width, height)
@@ -573,16 +655,47 @@ impl Pipeline {
             self.resize_heatmap_texture(id, device, width, height);
         }
 
-        // Upload the data
         let gpu = self.per_scene.get_mut(&id).unwrap();
 
-        // Pad rows to 256-byte alignment
         let bytes_per_pixel: usize = 8; // RG32F
         let unpadded_bpr = (width as usize) * bytes_per_pixel;
-        let padded_bpr = (unpadded_bpr + 255) & !255;
 
         let src_bytes: &[u8] = bytemuck::cast_slice(rg32f);
-        let mut staging = vec![0u8; padded_bpr * (height as usize)];
+
+        // no row padding needed.
+        if unpadded_bpr.is_multiple_of(256) {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &gpu.heatmap_tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                src_bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(unpadded_bpr as u32),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+
+            gpu.heatmap_uploaded_gen = generation;
+            return;
+        }
+
+        // pad rows to 256-byte alignment.
+        let padded_bpr = (unpadded_bpr + 255) & !255;
+
+        let needed = padded_bpr * (height as usize);
+        if gpu.heatmap_upload_scratch.len() < needed {
+            gpu.heatmap_upload_scratch.resize(needed, 0u8);
+        }
+        let staging = &mut gpu.heatmap_upload_scratch[..needed];
 
         for y in 0..(height as usize) {
             let src_off = y * unpadded_bpr;
@@ -598,7 +711,7 @@ impl Pipeline {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &staging,
+            staging,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(padded_bpr as u32),
@@ -612,6 +725,30 @@ impl Pipeline {
         );
 
         gpu.heatmap_uploaded_gen = generation;
+    }
+
+    pub fn update_camera(
+        &mut self,
+        id: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        camera: &CameraUniform,
+    ) {
+        let gpu = self.ensure_scene(id, device);
+
+        if gpu.has_last_camera && bytemuck::bytes_of(&gpu.last_camera) == bytemuck::bytes_of(camera)
+        {
+            return;
+        }
+
+        queue.write_buffer(
+            &gpu.camera_buffer,
+            0,
+            bytemuck::cast_slice(std::slice::from_ref(camera)),
+        );
+
+        gpu.last_camera = *camera;
+        gpu.has_last_camera = true;
     }
 
     fn resize_heatmap_texture(&mut self, id: u64, device: &wgpu::Device, width: u32, height: u32) {
@@ -646,6 +783,7 @@ impl Pipeline {
         gpu.heatmap_tex_size = (width, height);
     }
 
+    #[allow(dead_code)]
     pub fn render_heatmap_texture(
         &self,
         id: u64,
@@ -694,48 +832,7 @@ impl Pipeline {
         pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
     }
 
-    pub fn update_circle_instances(
-        &mut self,
-        id: u64,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[CircleInstance],
-    ) {
-        let gpu = self.ensure_scene(id, device);
-
-        if instances.len() > gpu.circle_instance_capacity {
-            gpu.circle_instance_capacity = instances.len().next_power_of_two();
-            gpu.circle_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("circle instance buffer (resized)"),
-                size: (gpu.circle_instance_capacity * std::mem::size_of::<CircleInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-
-        queue.write_buffer(
-            &gpu.circle_instance_buffer,
-            0,
-            bytemuck::cast_slice(instances),
-        );
-    }
-
-    pub fn update_camera(
-        &mut self,
-        id: u64,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        camera: &CameraUniform,
-    ) {
-        let gpu = self.ensure_scene(id, device);
-
-        queue.write_buffer(
-            &gpu.camera_buffer,
-            0,
-            bytemuck::cast_slice(std::slice::from_ref(camera)),
-        );
-    }
-
+    #[allow(dead_code)]
     pub fn render_rectangles(
         &self,
         id: u64,
@@ -782,6 +879,7 @@ impl Pipeline {
         pass.draw_indexed(0..self.rect_num_indices, 0, 0..num_instances);
     }
 
+    #[allow(dead_code)]
     pub fn render_circles(
         &self,
         id: u64,
@@ -833,5 +931,80 @@ impl Pipeline {
             wgpu::IndexFormat::Uint16,
         );
         pass.draw_indexed(0..self.circle_num_indices, 0, 0..num_instances);
+    }
+
+    #[allow(dead_code)]
+    pub fn single_pass_render_all(
+        &self,
+        id: u64,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: Rectangle<u32>,
+        rect_instances: u32,
+        circle_instances: u32,
+        draw_heatmap: bool,
+    ) {
+        let Some(gpu) = self.per_scene.get(&id) else {
+            return;
+        };
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("heatmap+rect+circle render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_viewport(
+            viewport.x as f32,
+            viewport.y as f32,
+            viewport.width as f32,
+            viewport.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
+
+        // Bind group 0 is shared by all pipelines.
+        pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
+
+        if draw_heatmap {
+            pass.set_pipeline(&self.heatmap_pipeline);
+            pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
+            pass.set_index_buffer(
+                self.heatmap_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
+        }
+
+        if rect_instances > 0 {
+            pass.set_pipeline(&self.rect_pipeline);
+            pass.set_vertex_buffer(0, self.rect_vertex_buffer.slice(..));
+            pass.set_vertex_buffer(1, gpu.rect_instance_buffer.slice(..));
+            pass.set_index_buffer(self.rect_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..self.rect_num_indices, 0, 0..rect_instances);
+        }
+
+        if circle_instances > 0 {
+            pass.set_pipeline(&self.circle_pipeline);
+            pass.set_vertex_buffer(0, self.circle_vertex_buffer.slice(..));
+            pass.set_vertex_buffer(1, gpu.circle_instance_buffer.slice(..));
+            pass.set_index_buffer(
+                self.circle_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            pass.draw_indexed(0..self.circle_num_indices, 0, 0..circle_instances);
+        }
     }
 }

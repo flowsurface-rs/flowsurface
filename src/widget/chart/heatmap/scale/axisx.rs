@@ -126,7 +126,6 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let cam_offset_f = self.cam_offset_x as f64;
             let right_pad_frac_f = self.cam_right_pad_frac as f64;
 
-            // Phase should behave like shader origin.x: fraction of a bucket (0..1)
             let mut phase = self.x_phase_bucket as f64;
             if !phase.is_finite() {
                 phase = 0.0;
@@ -140,22 +139,42 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let x_world_left = right_edge_world - (vw_f / cam_sx_f);
             let x_world_right = right_edge_world;
 
-            // phase here (geometry shift), not by moving the camera.
-            // We want (u - phase) * col in [x_left, x_right]
-            // => u in [x_left/col + phase, x_right/col + phase]
             let inv_col = 1.0f64 / col_f.max(1e-18);
             let eps = 1e-9f64;
 
-            let u_min = ((x_world_left * inv_col) + phase + eps).floor() as i64;
-            let u_max = ((x_world_right * inv_col) + phase - eps).ceil() as i64;
+            let u_min0 = ((x_world_left * inv_col) + phase + eps).floor() as i64;
+            let u_max0 = ((x_world_right * inv_col) + phase - eps).ceil() as i64;
 
             let latest_bucket: i64 = self.latest_bucket;
+            let b_min0: i64 = latest_bucket.saturating_add(u_min0);
+            let b_max0: i64 = latest_bucket.saturating_add(u_max0);
+
+            let visible_buckets0 = (b_max0 as i128 - b_min0 as i128).max(0);
+            let visible_span_ms0 = visible_buckets0 * (aggr_time as i128);
+            let fmt = pick_time_format(visible_span_ms0);
+
+            // Approx label width in px for mono font; used to pad bucket-range so labels don't "pop"
+            let font_size = 12.0f32;
+            let max_label_chars: usize = match fmt {
+                "%H:%M:%S%.3f" => 12, // "23:59:59.999"
+                "%H:%M:%S" => 8,      // "23:59:59"
+                "%H:%M" => 5,         // "23:59"
+                "%m-%d %H:%M" => 11,  // "12-31 23:59"
+                _ => 16,
+            };
+            let approx_char_w_px = font_size * 0.62;
+            let half_label_w_px = (max_label_chars as f32) * approx_char_w_px * 0.5;
+            let draw_margin_px = half_label_w_px + 6.0;
+            let draw_margin_world = (draw_margin_px as f64) / cam_sx_f.max(1e-18);
+
+            let x_world_left_p = x_world_left - draw_margin_world;
+            let x_world_right_p = x_world_right + draw_margin_world;
+
+            let u_min = ((x_world_left_p * inv_col) + phase + eps).floor() as i64;
+            let u_max = ((x_world_right_p * inv_col) + phase - eps).ceil() as i64;
+
             let b_min: i64 = latest_bucket.saturating_add(u_min);
             let b_max: i64 = latest_bucket.saturating_add(u_max);
-
-            let visible_buckets = (b_max as i128 - b_min as i128).max(0);
-            let visible_span_ms = visible_buckets * (aggr_time as i128);
-            let fmt = pick_time_format(visible_span_ms);
 
             let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
             let target_label_px = 110.0f32;
@@ -163,14 +182,12 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let every = super::nice_step_i64(rough_every.max(1));
 
             let text_color = theme.palette().text;
-            let font_size = 12.0f32;
 
             let center_x = right_edge_world - (vw_f * 0.5) / cam_sx_f;
             let world_to_screen_x =
                 |world_x: f64| -> f32 { ((world_x - center_x) * cam_sx_f + vw_f * 0.5) as f32 };
 
             let y = (0.5 * vh_f) as f32;
-            let edge_pad = 26.0f32;
 
             let mut b = (b_min.div_euclid(every)) * every;
             if b < b_min {
@@ -183,7 +200,8 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 let world_x = ((rel as f64) - phase) * col_f;
                 let x_px = world_to_screen_x(world_x);
 
-                if x_px >= edge_pad && x_px <= (vw - edge_pad) {
+                // Keep this check (perf), but now b_min/b_max is also padded so we won't pop early.
+                if x_px >= -draw_margin_px && x_px <= (vw + draw_margin_px) {
                     let t_ms = (b as i128) * (aggr_time as i128);
                     let label = unix_ms_to_local_string(t_ms, fmt);
 

@@ -638,6 +638,7 @@ pub struct HeatmapPalette {
     pub ask_rgb: [f32; 3],
     pub buy_rgb: [f32; 3],
     pub sell_rgb: [f32; 3],
+    pub secondary_rgb: [f32; 3],
 }
 
 impl HeatmapPalette {
@@ -655,11 +656,15 @@ impl HeatmapPalette {
         let sell = palette.danger.weak.color;
         let sell_linear = Self::srgb_to_linear([sell.r, sell.g, sell.b]);
 
+        let secondary = palette.secondary.base.color;
+        let secondary_linear = Self::srgb_to_linear([secondary.r, secondary.g, secondary.b]);
+
         Self {
             bid_rgb: bid_linear,
             ask_rgb: ask_linear,
             buy_rgb: buy_linear,
             sell_rgb: sell_linear,
+            secondary_rgb: secondary_linear,
         }
     }
 

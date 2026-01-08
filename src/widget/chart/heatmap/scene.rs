@@ -9,14 +9,12 @@ use iced::Rectangle;
 use iced::mouse;
 use iced::widget::shader::{self, Viewport};
 
-use crate::widget::chart::heatmap::scene::camera::Camera;
 use crate::widget::chart::heatmap::scene::pipeline::ParamsUniform;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapTextureCpu {
@@ -34,8 +32,13 @@ fn next_scene_id() -> u64 {
 #[derive(Clone)]
 pub struct Scene {
     pub id: u64,
-    pub rectangles: Vec<RectInstance>,
-    pub circles: Vec<CircleInstance>,
+
+    pub rectangles: Arc<[RectInstance]>,
+    pub rectangles_gen: u64,
+
+    pub circles: Arc<[CircleInstance]>,
+    pub circles_gen: u64,
+
     pub camera: camera::Camera,
     pub params: ParamsUniform,
     pub heatmap: Option<HeatmapTextureCpu>,
@@ -45,9 +48,11 @@ impl Scene {
     pub fn new() -> Self {
         Self {
             id: next_scene_id(),
-            rectangles: Vec::new(),
-            circles: Vec::new(),
-            camera: Camera::default(),
+            rectangles: Arc::from(Vec::<RectInstance>::new()),
+            rectangles_gen: 1,
+            circles: Arc::from(Vec::<CircleInstance>::new()),
+            circles_gen: 1,
+            camera: camera::Camera::default(),
             params: ParamsUniform::default(),
             heatmap: None,
         }
@@ -58,11 +63,13 @@ impl Scene {
     }
 
     pub fn set_rectangles(&mut self, rectangles: Vec<RectInstance>) {
-        self.rectangles = rectangles;
+        self.rectangles = Arc::from(rectangles);
+        self.rectangles_gen = self.rectangles_gen.wrapping_add(1);
     }
 
     pub fn set_circles(&mut self, circles: Vec<CircleInstance>) {
-        self.circles = circles;
+        self.circles = Arc::from(circles);
+        self.circles_gen = self.circles_gen.wrapping_add(1);
     }
 
     pub fn set_heatmap(&mut self, heatmap: Option<HeatmapTextureCpu>) {
@@ -142,8 +149,10 @@ impl shader::Program<Message> for Scene {
     ) -> Self::Primitive {
         Primitive::new(
             self.id,
-            &self.rectangles,
-            &self.circles,
+            self.rectangles.clone(),
+            self.rectangles_gen,
+            self.circles.clone(),
+            self.circles_gen,
             self.camera,
             self.params,
             self.heatmap.clone(),
@@ -170,28 +179,35 @@ impl shader::Program<Message> for Scene {
 #[derive(Debug)]
 pub struct Primitive {
     id: u64,
-    rectangles: Vec<RectInstance>,
-    circles: Vec<CircleInstance>,
+
+    rectangles: Arc<[RectInstance]>,
+    rectangles_gen: u64,
+
+    circles: Arc<[CircleInstance]>,
+    circles_gen: u64,
+
     camera: camera::Camera,
     params: ParamsUniform,
-
-    // NEW
     heatmap: Option<HeatmapTextureCpu>,
 }
 
 impl Primitive {
     pub fn new(
         id: u64,
-        rectangles: &[RectInstance],
-        circles: &[CircleInstance],
+        rectangles: Arc<[RectInstance]>,
+        rectangles_gen: u64,
+        circles: Arc<[CircleInstance]>,
+        circles_gen: u64,
         camera: camera::Camera,
         params: ParamsUniform,
         heatmap: Option<HeatmapTextureCpu>,
     ) -> Self {
         Self {
             id,
-            rectangles: rectangles.to_vec(),
-            circles: circles.to_vec(),
+            rectangles,
+            rectangles_gen,
+            circles,
+            circles_gen,
             camera,
             params,
             heatmap,
@@ -210,7 +226,26 @@ impl shader::Primitive for Primitive {
         bounds: &Rectangle,
         _viewport: &Viewport,
     ) {
-        // NEW: upload heatmap texture only when generation changes
+        let cam_u = self.camera.to_uniform(bounds.width, bounds.height);
+
+        pipeline.update_camera(self.id, device, queue, &cam_u);
+        pipeline.update_params(self.id, device, queue, &self.params);
+
+        pipeline.update_rect_instances(
+            self.id,
+            device,
+            queue,
+            self.rectangles.as_ref(),
+            self.rectangles_gen,
+        );
+        pipeline.update_circle_instances(
+            self.id,
+            device,
+            queue,
+            self.circles.as_ref(),
+            self.circles_gen,
+        );
+
         if let Some(hm) = &self.heatmap {
             pipeline.update_heatmap_texture(
                 self.id,
@@ -218,18 +253,10 @@ impl shader::Primitive for Primitive {
                 queue,
                 hm.width,
                 hm.height,
-                &hm.rg,
+                hm.rg.as_slice(),
                 hm.generation,
             );
         }
-
-        pipeline.update_rect_instances(self.id, device, queue, &self.rectangles);
-        pipeline.update_circle_instances(self.id, device, queue, &self.circles);
-
-        let cam_u = self.camera.to_uniform(bounds.width, bounds.height);
-        pipeline.update_camera(self.id, device, queue, &cam_u);
-
-        pipeline.update_params(self.id, device, queue, &self.params);
     }
 
     fn render(
@@ -239,23 +266,14 @@ impl shader::Primitive for Primitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        // NEW: draw heatmap first (background layer)
-        pipeline.render_heatmap_texture(self.id, encoder, target, *clip_bounds);
-
-        // overlays
-        pipeline.render_rectangles(
+        pipeline.single_pass_render_all(
             self.id,
             encoder,
             target,
             *clip_bounds,
             self.rectangles.len() as u32,
-        );
-        pipeline.render_circles(
-            self.id,
-            encoder,
-            target,
-            *clip_bounds,
             self.circles.len() as u32,
+            self.heatmap.is_some(),
         );
     }
 }
