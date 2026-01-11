@@ -6,6 +6,7 @@ use iced::{Rectangle, wgpu};
 pub mod circle;
 pub mod rectangle;
 
+use crate::widget::chart::heatmap::scene::HeatmapColumnCpu;
 use crate::widget::chart::heatmap::scene::camera::CameraUniform;
 
 use crate::widget::chart::heatmap::scene::pipeline::circle::{
@@ -25,8 +26,8 @@ pub struct ParamsUniform {
     pub ask_rgb: [f32; 4],
     pub grid: [f32; 4],
     pub origin: [f32; 4],
-    pub heatmap_a: [f32; 4], // (x_start_group, y_start_bin, cols_per_x_bin, _)
-    pub heatmap_b: [f32; 4], // (tex_w, tex_h, inv_w, inv_h)
+    pub heatmap_a: [f32; 4], // (unused_x_start, y_start_bin, unused_cols_per_x_bin, latest_x_ring)
+    pub heatmap_b: [f32; 4], // (tex_w, tex_h, tex_w_mask, inv_qty_scale)
 }
 
 impl Default for ParamsUniform {
@@ -56,8 +57,10 @@ struct PerSceneGpu {
     params_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
-    heatmap_tex: wgpu::Texture,
-    heatmap_tex_view: wgpu::TextureView,
+    heatmap_bid_tex: wgpu::Texture,
+    heatmap_bid_view: wgpu::TextureView,
+    heatmap_ask_tex: wgpu::Texture,
+    heatmap_ask_view: wgpu::TextureView,
     heatmap_tex_bind_group: wgpu::BindGroup,
     heatmap_tex_size: (u32, u32),
     heatmap_uploaded_gen: u64,
@@ -345,17 +348,29 @@ impl Pipeline {
 
         let heatmap_tex_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("heatmap texture bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                label: Some("heatmap texture bind group layout (u32 bid+ask)"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
             });
 
         let heatmap_pipeline_layout =
@@ -490,8 +505,8 @@ impl Pipeline {
                 label: Some("camera+params bind group"),
             });
 
-            let heatmap_tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("heatmap tex (init)"),
+            let heatmap_bid_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("heatmap bid tex (init)"),
                 size: wgpu::Extent3d {
                     width: 1,
                     height: 1,
@@ -500,19 +515,43 @@ impl Pipeline {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rg32Float,
+                format: wgpu::TextureFormat::R32Uint,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let heatmap_tex_view = heatmap_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let heatmap_bid_view =
+                heatmap_bid_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let heatmap_ask_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("heatmap ask tex (init)"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let heatmap_ask_view =
+                heatmap_ask_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
             let heatmap_tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("heatmap tex bind group"),
+                label: Some("heatmap tex bind group (u32 bid+ask)"),
                 layout: &self.heatmap_tex_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&heatmap_tex_view),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&heatmap_bid_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&heatmap_ask_view),
+                    },
+                ],
             });
 
             PerSceneGpu {
@@ -528,8 +567,10 @@ impl Pipeline {
                 params_buffer,
                 camera_bind_group,
 
-                heatmap_tex,
-                heatmap_tex_view,
+                heatmap_bid_tex,
+                heatmap_bid_view,
+                heatmap_ask_tex,
+                heatmap_ask_view,
                 heatmap_tex_bind_group,
                 heatmap_tex_size: (1, 1),
                 heatmap_uploaded_gen: 0,
@@ -620,14 +661,14 @@ impl Pipeline {
         gpu.circle_uploaded_gen = generation;
     }
 
-    pub fn update_heatmap_texture(
+    pub fn update_heatmap_columns_u32(
         &mut self,
         id: u64,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         width: u32,
         height: u32,
-        rg32f: &[[f32; 2]],
+        heatmap_cols: &[HeatmapColumnCpu],
         generation: u64,
     ) {
         {
@@ -640,33 +681,176 @@ impl Pipeline {
             }
         }
 
-        debug_assert_eq!(
-            rg32f.len(),
-            (width as usize) * (height as usize),
-            "rg32f slice must be width*height"
-        );
+        let needs_resize = {
+            let gpu = self.per_scene.get(&id).unwrap();
+            gpu.heatmap_tex_size != (width, height)
+        };
+        if needs_resize {
+            self.resize_heatmap_textures_u32(id, device, width, height);
+        }
+
+        let gpu = self.per_scene.get_mut(&id).unwrap();
+
+        // One column of R32Uint => 4 bytes per row.
+        let unpadded_bpr: usize = 4;
+
+        for col in heatmap_cols {
+            let x = col.x;
+            debug_assert!(x < width);
+            debug_assert_eq!(col.bid_col.len(), height as usize);
+            debug_assert_eq!(col.ask_col.len(), height as usize);
+
+            Self::write_r32u_texture_region(
+                queue,
+                &gpu.heatmap_bid_tex,
+                x,
+                width,
+                height,
+                bytemuck::cast_slice(&col.bid_col),
+                unpadded_bpr,
+                &mut gpu.heatmap_upload_scratch,
+            );
+
+            Self::write_r32u_texture_region(
+                queue,
+                &gpu.heatmap_ask_tex,
+                x,
+                width,
+                height,
+                bytemuck::cast_slice(&col.ask_col),
+                unpadded_bpr,
+                &mut gpu.heatmap_upload_scratch,
+            );
+        }
+
+        gpu.heatmap_uploaded_gen = generation;
+    }
+
+    pub fn update_heatmap_textures_u32(
+        &mut self,
+        id: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        bid_col_u32: &[u32], // len == height
+        ask_col_u32: &[u32], // len == height
+        generation: u64,
+    ) {
+        {
+            let gpu = self.ensure_scene(id, device);
+            if generation == gpu.heatmap_uploaded_gen {
+                return;
+            }
+            if width == 0 || height == 0 {
+                return;
+            }
+        }
+
+        debug_assert_eq!(bid_col_u32.len(), (width * height) as usize);
+        debug_assert_eq!(ask_col_u32.len(), (width * height) as usize);
 
         let needs_resize = {
             let gpu = self.per_scene.get(&id).unwrap();
             gpu.heatmap_tex_size != (width, height)
         };
-
         if needs_resize {
-            self.resize_heatmap_texture(id, device, width, height);
+            self.resize_heatmap_textures_u32(id, device, width, height);
         }
 
         let gpu = self.per_scene.get_mut(&id).unwrap();
 
-        let bytes_per_pixel: usize = 8; // RG32F
-        let unpadded_bpr = (width as usize) * bytes_per_pixel;
+        // Full texture of R32Uint => 4 bytes per pixel.
+        let unpadded_bpr: usize = (width as usize) * 4;
 
-        let src_bytes: &[u8] = bytemuck::cast_slice(rg32f);
+        Self::write_r32u_texture(
+            queue,
+            &gpu.heatmap_bid_tex,
+            width,
+            height,
+            bytemuck::cast_slice(bid_col_u32),
+            unpadded_bpr,
+            &mut gpu.heatmap_upload_scratch,
+        );
 
-        // no row padding needed.
+        Self::write_r32u_texture(
+            queue,
+            &gpu.heatmap_ask_tex,
+            width,
+            height,
+            bytemuck::cast_slice(ask_col_u32),
+            unpadded_bpr,
+            &mut gpu.heatmap_upload_scratch,
+        );
+
+        gpu.heatmap_uploaded_gen = generation;
+    }
+
+    fn write_r32u_texture_region(
+        queue: &wgpu::Queue,
+        tex: &wgpu::Texture,
+        origin_x: u32,
+        _width: u32,
+        height: u32,
+        src_bytes: &[u8],
+        unpadded_bpr: usize,
+        scratch: &mut Vec<u8>,
+    ) {
+        // We are writing a 1×H region, so bytes_per_row must be 256-aligned.
+        // unpadded_bpr is 4, so we always take the padded path.
+        let padded_bpr = (unpadded_bpr + 255) & !255;
+        let needed = padded_bpr * (height as usize);
+        if scratch.len() < needed {
+            scratch.resize(needed, 0u8);
+        }
+        let staging = &mut scratch[..needed];
+
+        for y in 0..(height as usize) {
+            let src_off = y * unpadded_bpr;
+            let dst_off = y * padded_bpr;
+            staging[dst_off..dst_off + unpadded_bpr]
+                .copy_from_slice(&src_bytes[src_off..src_off + unpadded_bpr]);
+        }
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: origin_x,
+                    y: 0,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            staging,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bpr as u32),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    fn write_r32u_texture(
+        queue: &wgpu::Queue,
+        tex: &wgpu::Texture,
+        width: u32,
+        height: u32,
+        src_bytes: &[u8],
+        unpadded_bpr: usize,
+        scratch: &mut Vec<u8>,
+    ) {
+        // If bytes_per_row is 256-aligned, write directly.
         if unpadded_bpr.is_multiple_of(256) {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &gpu.heatmap_tex,
+                    texture: tex,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
@@ -683,19 +867,16 @@ impl Pipeline {
                     depth_or_array_layers: 1,
                 },
             );
-
-            gpu.heatmap_uploaded_gen = generation;
             return;
         }
 
-        // pad rows to 256-byte alignment.
+        // Otherwise pad rows to 256 bytes.
         let padded_bpr = (unpadded_bpr + 255) & !255;
-
         let needed = padded_bpr * (height as usize);
-        if gpu.heatmap_upload_scratch.len() < needed {
-            gpu.heatmap_upload_scratch.resize(needed, 0u8);
+        if scratch.len() < needed {
+            scratch.resize(needed, 0u8);
         }
-        let staging = &mut gpu.heatmap_upload_scratch[..needed];
+        let staging = &mut scratch[..needed];
 
         for y in 0..(height as usize) {
             let src_off = y * unpadded_bpr;
@@ -706,7 +887,7 @@ impl Pipeline {
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &gpu.heatmap_tex,
+                texture: tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -723,8 +904,70 @@ impl Pipeline {
                 depth_or_array_layers: 1,
             },
         );
+    }
 
-        gpu.heatmap_uploaded_gen = generation;
+    fn resize_heatmap_textures_u32(
+        &mut self,
+        id: u64,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) {
+        let gpu = self.per_scene.get_mut(&id).unwrap();
+        let layout = &self.heatmap_tex_bind_group_layout;
+
+        gpu.heatmap_bid_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("heatmap bid tex"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.heatmap_bid_view = gpu
+            .heatmap_bid_tex
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        gpu.heatmap_ask_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("heatmap ask tex"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.heatmap_ask_view = gpu
+            .heatmap_ask_tex
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        gpu.heatmap_tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("heatmap tex bind group (resized u32 bid+ask)"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&gpu.heatmap_bid_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&gpu.heatmap_ask_view),
+                },
+            ],
+        });
+
+        gpu.heatmap_tex_size = (width, height);
     }
 
     pub fn update_camera(
@@ -749,38 +992,6 @@ impl Pipeline {
 
         gpu.last_camera = *camera;
         gpu.has_last_camera = true;
-    }
-
-    fn resize_heatmap_texture(&mut self, id: u64, device: &wgpu::Device, width: u32, height: u32) {
-        let layout = &self.heatmap_tex_bind_group_layout;
-        let gpu = self.per_scene.get_mut(&id).unwrap();
-
-        gpu.heatmap_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("heatmap tex"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rg32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        gpu.heatmap_tex_view = gpu
-            .heatmap_tex
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        gpu.heatmap_tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("heatmap tex bind group (resized)"),
-            layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&gpu.heatmap_tex_view),
-            }],
-        });
-        gpu.heatmap_tex_size = (width, height);
     }
 
     #[allow(dead_code)]

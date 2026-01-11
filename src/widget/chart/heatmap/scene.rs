@@ -17,10 +17,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug)]
-pub struct HeatmapTextureCpu {
+pub struct HeatmapColumnCpu {
     pub width: u32,
     pub height: u32,
-    pub rg: Arc<Vec<[f32; 2]>>, // RG32F texels: [bid, ask]
+    pub x: u32, // ring x index to update
+    pub bid_col: Arc<Vec<u32>>,
+    pub ask_col: Arc<Vec<u32>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HeatmapTextureCpuFull {
+    pub width: u32,
+    pub height: u32,
+    pub bid: Arc<Vec<u32>>,
+    pub ask: Arc<Vec<u32>>,
     pub generation: u64,
 }
 
@@ -41,7 +51,11 @@ pub struct Scene {
 
     pub camera: camera::Camera,
     pub params: ParamsUniform,
-    pub heatmap: Option<HeatmapTextureCpu>,
+
+    pub heatmap_update: Option<HeatmapColumnCpu>,
+    pub heatmap_cols: Arc<[HeatmapColumnCpu]>,
+    pub heatmap_cols_gen: u64,
+    pub heatmap_full: Option<HeatmapTextureCpuFull>,
 }
 
 impl Scene {
@@ -54,12 +68,11 @@ impl Scene {
             circles_gen: 1,
             camera: camera::Camera::default(),
             params: ParamsUniform::default(),
-            heatmap: None,
+            heatmap_update: None,
+            heatmap_cols: Arc::from(Vec::<HeatmapColumnCpu>::new()),
+            heatmap_cols_gen: 1,
+            heatmap_full: None,
         }
-    }
-
-    pub fn set_params(&mut self, params: ParamsUniform) {
-        self.params = params;
     }
 
     pub fn set_rectangles(&mut self, rectangles: Vec<RectInstance>) {
@@ -72,8 +85,17 @@ impl Scene {
         self.circles_gen = self.circles_gen.wrapping_add(1);
     }
 
-    pub fn set_heatmap(&mut self, heatmap: Option<HeatmapTextureCpu>) {
-        self.heatmap = heatmap;
+    pub fn set_heatmap_update(&mut self, hm: Option<HeatmapColumnCpu>) {
+        self.heatmap_update = hm;
+    }
+
+    pub fn set_heatmap_full(&mut self, hm: Option<HeatmapTextureCpuFull>) {
+        self.heatmap_full = hm;
+    }
+
+    pub fn set_heatmap_cols(&mut self, cols: Vec<HeatmapColumnCpu>, generation: u64) {
+        self.heatmap_cols = Arc::from(cols);
+        self.heatmap_cols_gen = generation;
     }
 }
 
@@ -155,7 +177,9 @@ impl shader::Program<Message> for Scene {
             self.circles_gen,
             self.camera,
             self.params,
-            self.heatmap.clone(),
+            self.heatmap_cols.clone(),
+            self.heatmap_cols_gen,
+            self.heatmap_full.clone(),
         )
     }
 
@@ -188,7 +212,9 @@ pub struct Primitive {
 
     camera: camera::Camera,
     params: ParamsUniform,
-    heatmap: Option<HeatmapTextureCpu>,
+    heatmap_cols: Arc<[HeatmapColumnCpu]>,
+    heatmap_cols_gen: u64,
+    heatmap_full: Option<HeatmapTextureCpuFull>,
 }
 
 impl Primitive {
@@ -200,7 +226,9 @@ impl Primitive {
         circles_gen: u64,
         camera: camera::Camera,
         params: ParamsUniform,
-        heatmap: Option<HeatmapTextureCpu>,
+        heatmap_cols: Arc<[HeatmapColumnCpu]>,
+        heatmap_cols_gen: u64,
+        heatmap_full: Option<HeatmapTextureCpuFull>,
     ) -> Self {
         Self {
             id,
@@ -210,7 +238,9 @@ impl Primitive {
             circles_gen,
             camera,
             params,
-            heatmap,
+            heatmap_cols,
+            heatmap_cols_gen,
+            heatmap_full,
         }
     }
 }
@@ -246,15 +276,27 @@ impl shader::Primitive for Primitive {
             self.circles_gen,
         );
 
-        if let Some(hm) = &self.heatmap {
-            pipeline.update_heatmap_texture(
+        if let Some(hm) = &self.heatmap_full {
+            pipeline.update_heatmap_textures_u32(
                 self.id,
                 device,
                 queue,
                 hm.width,
                 hm.height,
-                hm.rg.as_slice(),
+                hm.bid.as_slice(),
+                hm.ask.as_slice(),
                 hm.generation,
+            );
+        } else if !self.heatmap_cols.is_empty() {
+            // batch column upload
+            pipeline.update_heatmap_columns_u32(
+                self.id,
+                device,
+                queue,
+                self.heatmap_cols[0].width,
+                self.heatmap_cols[0].height,
+                self.heatmap_cols.as_ref(),
+                self.heatmap_cols_gen,
             );
         }
     }
@@ -273,7 +315,7 @@ impl shader::Primitive for Primitive {
             *clip_bounds,
             self.rectangles.len() as u32,
             self.circles.len() as u32,
-            self.heatmap.is_some(),
+            true, // draw heatmap if pipeline has textures bound; keep always on
         );
     }
 }

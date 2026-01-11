@@ -260,6 +260,26 @@ impl HistoricalDepth {
             })
     }
 
+    pub fn max_qty_in_range_raw(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: Price,
+        lowest: Price,
+    ) -> f32 {
+        let mut max_qty = 0.0f32;
+
+        for (_price, runs) in self.iter_time_filtered(earliest, latest, highest, lowest) {
+            for run in runs.iter() {
+                if run.until_time >= earliest && run.start_time <= latest {
+                    max_qty = max_qty.max(run.qty());
+                }
+            }
+        }
+
+        max_qty
+    }
+
     pub fn cleanup_old_price_levels(&mut self, oldest_time: u64) {
         self.price_levels.iter_mut().for_each(|(_, runs)| {
             runs.retain(|run| run.until_time >= oldest_time);
@@ -629,60 +649,5 @@ impl std::fmt::Display for ProfileKind {
             ProfileKind::FixedWindow(_) => write!(f, "Fixed window"),
             ProfileKind::VisibleRange => write!(f, "Visible range"),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HeatmapPalette {
-    pub bid_rgb: [f32; 3],
-    pub ask_rgb: [f32; 3],
-    pub buy_rgb: [f32; 3],
-    pub sell_rgb: [f32; 3],
-    pub secondary_rgb: [f32; 3],
-}
-
-impl HeatmapPalette {
-    pub fn from_theme(theme: &iced_core::Theme) -> Self {
-        let palette = theme.extended_palette();
-
-        let bid = palette.success.strong.color;
-        let bid_linear = Self::srgb_to_linear([bid.r, bid.g, bid.b]);
-
-        let ask = palette.danger.strong.color;
-        let ask_linear = Self::srgb_to_linear([ask.r, ask.g, ask.b]);
-
-        let buy = palette.success.weak.color;
-        let buy_linear = Self::srgb_to_linear([buy.r, buy.g, buy.b]);
-        let sell = palette.danger.weak.color;
-        let sell_linear = Self::srgb_to_linear([sell.r, sell.g, sell.b]);
-
-        let secondary = palette.secondary.base.color;
-        let secondary_linear = Self::srgb_to_linear([secondary.r, secondary.g, secondary.b]);
-
-        Self {
-            bid_rgb: bid_linear,
-            ask_rgb: ask_linear,
-            buy_rgb: buy_linear,
-            sell_rgb: sell_linear,
-            secondary_rgb: secondary_linear,
-        }
-    }
-
-    #[inline]
-    fn srgb_to_linear_channel(u: f32) -> f32 {
-        if u <= 0.04045 {
-            u / 12.92
-        } else {
-            ((u + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    #[inline]
-    fn srgb_to_linear(rgb: [f32; 3]) -> [f32; 3] {
-        [
-            Self::srgb_to_linear_channel(rgb[0]),
-            Self::srgb_to_linear_channel(rgb[1]),
-            Self::srgb_to_linear_channel(rgb[2]),
-        ]
     }
 }

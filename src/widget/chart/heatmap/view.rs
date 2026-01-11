@@ -39,10 +39,6 @@ pub struct ViewWindow {
     pub latest_vis: u64,
     pub latest_bucket: i64,
 
-    // NEW: strict visible time window (no extra +/- buckets; use for normalization)
-    pub earliest_strict: u64,
-    pub latest_vis_strict: u64,
-
     // Derived price window
     pub lowest: Price,
     pub highest: Price,
@@ -108,13 +104,6 @@ impl ViewWindow {
         let earliest = t_min_i.clamp(0, latest_t) as u64;
         let latest_vis = t_max_i.clamp(0, latest_t) as u64;
 
-        // strict time window (no padding)
-        let t_min_strict_i = latest_t + (bucket_min_strict as i128) * aggr_i;
-        let t_max_strict_i = latest_t + (bucket_max_strict as i128) * aggr_i;
-
-        let earliest_strict = t_min_strict_i.clamp(0, latest_t) as u64;
-        let latest_vis_strict = t_max_strict_i.clamp(0, latest_t) as u64;
-
         if earliest >= latest_vis {
             return None;
         }
@@ -153,8 +142,6 @@ impl ViewWindow {
             earliest,
             latest_vis,
             latest_bucket,
-            earliest_strict,
-            latest_vis_strict,
             lowest,
             highest,
             row_h,

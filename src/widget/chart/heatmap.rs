@@ -1,24 +1,21 @@
-mod grid;
-mod lod;
-mod raster;
+mod depth_grid;
 mod scale;
 mod scene;
 mod view;
 
 use crate::chart::Action;
 use crate::style::{self};
-use crate::widget::chart::heatmap::grid::{Abs, Bucket, Rel, YBin};
+use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
 use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
 use crate::widget::chart::heatmap::scene::Scene;
-use crate::widget::chart::heatmap::scene::pipeline::ParamsUniform;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use crate::widget::chart::heatmap::view::{ViewConfig, ViewInputs, ViewWindow};
 
 use data::aggr::time::{DataPoint, TimeSeries};
 use data::chart::Basis;
-use data::chart::heatmap::{HeatmapDataPoint, HeatmapPalette, HistoricalDepth};
+use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
 use exchange::depth::Depth;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
@@ -26,6 +23,10 @@ use iced::time::Instant;
 use iced::widget::{Canvas, Space, column, container, mouse_area, row, rule, shader};
 use iced::{Element, Fill, Length, padding};
 use std::sync::Arc;
+
+const DEPTH_GRID_HORIZON_MS: u64 = 9 * 60 * 1000; // ~9 minutes
+const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
+const DEPTH_QTY_SCALE: f32 = 1.0; // dollars-per-u32 step
 
 const TEXT_SIZE: f32 = 12.0;
 
@@ -41,10 +42,6 @@ const MAX_STEPS_PER_Y_BIN: i64 = 2048;
 const TRADE_R_MIN_PX: f32 = 2.0;
 const TRADE_R_MAX_PX: f32 = 25.0;
 const TRADE_ALPHA: f32 = 0.8;
-
-// Depth (rect alpha normalization)
-const DEPTH_ALPHA_MIN: f32 = 0.01;
-const DEPTH_ALPHA_MAX: f32 = 0.99;
 
 // Latest profile overlay (x > 0)
 const PROFILE_COL_WIDTH_PX: f32 = 180.0;
@@ -64,11 +61,6 @@ const MAX_ROW_H_WORLD: f32 = 10.;
 
 const MIN_COL_W_WORLD: f32 = 0.01;
 const MAX_COL_W_WORLD: f32 = 10.;
-
-// Heatmap X-LOD
-const HEATMAP_BIN_ENABLE_COL_PX: f32 = 1.10; // start binning only when a column is ~1px
-const HEATMAP_BIN_DISABLE_COL_PX: f32 = 1.40; // stop binning when column grows beyond this
-const HEATMAP_BIN_TARGET_PX: f32 = 2.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -101,7 +93,10 @@ struct RealDataState {
     last_update_exchange_ms: Option<u64>,
     last_update_instant: Option<Instant>,
     last_estimated_exchange_now_ms: Option<u64>,
+    depth_grid: depth_grid::DepthGridRing,
 }
+
+const DEPTH_GRID_GRACE_MS: u64 = 500;
 
 impl RealDataState {
     pub fn new(
@@ -111,6 +106,10 @@ impl RealDataState {
         heatmap: HistoricalDepth,
         trades: TimeSeries<HeatmapDataPoint>,
     ) -> Self {
+        let mut depth_grid =
+            depth_grid::DepthGridRing::new(DEPTH_GRID_HORIZON_MS, DEPTH_GRID_TEX_H);
+        depth_grid.set_grace_ms(DEPTH_GRID_GRACE_MS);
+
         Self {
             basis,
             step,
@@ -119,6 +118,7 @@ impl RealDataState {
             heatmap,
             latest_time: 0,
             base_price: Price::from_units(0),
+            depth_grid,
             last_update_exchange_ms: None,
             last_update_instant: None,
             last_estimated_exchange_now_ms: None,
@@ -142,7 +142,13 @@ pub struct HeatmapShader {
     needs_rebuild: bool,
     x_axis_cache: iced::widget::canvas::Cache,
     heatmap_tex_gen: u64,
-    heatmap_x_lod: lod::HeatmapXLod,
+
+    // Cache for depth normalization denom (max qty) to avoid per-frame scans.
+    // Key is bucketized time range + bucketized y-range.
+    last_norm_key: Option<(i64, i64, i64, i64)>, // (start_bucket, end_bucket_excl, y0_bin, y1_bin)
+    last_norm_value: f32,
+    last_norm_gen: u64,
+    data_gen: u64,
 }
 
 impl HeatmapShader {
@@ -168,7 +174,11 @@ impl HeatmapShader {
             needs_rebuild: false,
             x_axis_cache: iced::widget::canvas::Cache::new(),
             heatmap_tex_gen: 1,
-            heatmap_x_lod: lod::HeatmapXLod::default(),
+
+            last_norm_key: None,
+            last_norm_value: 1.0,
+            last_norm_gen: 0,
+            data_gen: 1,
         }
     }
 
@@ -291,6 +301,45 @@ impl HeatmapShader {
         .into()
     }
 
+    /// Updates `scene.params.depth[0]` (max depth normalization denom) using a cache.
+    /// Recomputes only when the bucketized view window changes or new data arrives.
+    fn update_depth_norm_denom_cached(&mut self, w: &ViewWindow, latest_incl: u64) {
+        let aggr = w.aggr_time.max(1);
+
+        let start_bucket: i64 = (w.earliest / aggr) as i64;
+        let end_bucket_excl: i64 = (latest_incl / aggr) as i64;
+
+        // Bucketize y-range in absolute y-bins to avoid tiny price/rounding changes thrashing the cache.
+        let step_units = self.data.step.units.max(1);
+        let y_div = w.steps_per_y_bin.max(1);
+
+        let mut y0_bin: i64 = (w.lowest.units / step_units).div_euclid(y_div);
+        let mut y1_bin: i64 = (w.highest.units / step_units).div_euclid(y_div);
+        if y0_bin > y1_bin {
+            std::mem::swap(&mut y0_bin, &mut y1_bin);
+        }
+
+        let key = (start_bucket, end_bucket_excl, y0_bin, y1_bin);
+
+        if self.last_norm_key == Some(key) && self.last_norm_gen == self.data_gen {
+            self.scene.params.depth[0] = self.last_norm_value.max(1e-6);
+            return;
+        }
+
+        let max_qty =
+            self.data
+                .heatmap
+                .max_qty_in_range_raw(w.earliest, latest_incl, w.highest, w.lowest);
+
+        self.last_norm_key = Some(key);
+        self.last_norm_value = max_qty;
+        self.last_norm_gen = self.data_gen;
+
+        self.scene.params.depth[0] = max_qty.max(1e-6);
+    }
+
+    /// called periodically on every frame, monitor refresh rates
+    /// to update time-based rendering and animate/scroll
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<Action> {
         let now_i = now.unwrap_or_else(Instant::now);
         self.last_tick = Some(now_i);
@@ -336,25 +385,30 @@ impl HeatmapShader {
             }
 
             if let Some(w) = self.compute_view_window(vw_px, vh_px) {
-                let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
-
                 let render_bucket: i64 = (render_latest_time / aggr_time) as i64;
 
+                if self.scroll_ref_bucket == 0 {
+                    self.scroll_ref_bucket = render_bucket;
+                }
+
                 let delta_buckets: i64 = render_bucket - self.scroll_ref_bucket;
-                let now_bucket_rel_f: f32 = (delta_buckets as f32) + self.x_phase_bucket;
+                self.scene.params.origin[0] = (delta_buckets as f32) + self.x_phase_bucket;
 
-                let col_px = self.column_world * w.sx;
-                self.heatmap_x_lod
-                    .update_from_col_px(col_px, self.heatmap_x_lod_cfg());
+                let latest_bucket_data: i64 = (self.data.latest_time / aggr_time) as i64;
+                let latest_rel: i64 = latest_bucket_data - self.scroll_ref_bucket;
+                self.scene.params.heatmap_a[0] = latest_rel as f32;
 
-                self.scene.params.origin = [
-                    now_bucket_rel_f,
-                    volume_min_w_world,
-                    VOLUME_BUCKET_GAP_FRAC,
-                    0.0,
-                ];
-                self.scene.params.grid =
-                    [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0];
+                let latest_incl = w.latest_vis.saturating_add(w.aggr_time);
+
+                // Cached: avoids per-frame scans when nothing changed materially.
+                self.update_depth_norm_denom_cached(&w, latest_incl);
+
+                // Keep heatmap Y mapping in sync with current base_price/anchor every frame.
+                let tex_h = self.scene.params.heatmap_b[1] as u32;
+                if tex_h > 0 {
+                    let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+                    self.update_heatmap_y_start_bin(tex_h, steps_per_y_bin);
+                }
             }
 
             self.x_axis_cache.clear();
@@ -366,6 +420,8 @@ impl HeatmapShader {
         None
     }
 
+    /// only data insertion point, called from outside when new data arrives
+    /// could be 1s, 500ms or 100ms, on par with aggregation interval but with additional network latency
     pub fn insert_datapoint(
         &mut self,
         trades_buffer: &[Trade],
@@ -420,12 +476,104 @@ impl HeatmapShader {
             }
         }
 
+        state.depth_grid.ensure_layout(aggr_time);
+
         state.heatmap.insert_latest_depth(depth, rounded_t);
 
         if rounded_t >= state.latest_time {
-            let mid = depth.mid_price().unwrap_or(state.base_price);
-            state.base_price = mid.round_to_step(state.step);
+            if let Some(mid) = depth.mid_price() {
+                state.base_price = mid.round_to_step(state.step);
+            }
             state.latest_time = rounded_t;
+        }
+
+        state.depth_grid.ensure_layout(aggr_time);
+
+        let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+
+        state.depth_grid.ingest_snapshot(
+            depth,
+            rounded_t,
+            state.step,
+            DEPTH_QTY_SCALE,
+            state.base_price,
+            steps_per_y_bin,
+        );
+
+        // New data => cached normalization denom is stale even if the view window didn't change.
+        self.data_gen = self.data_gen.wrapping_add(1);
+        self.last_norm_key = None;
+
+        let tex_w = state.depth_grid.tex_w();
+        let tex_h = state.depth_grid.tex_h();
+
+        if let Some(p) = &self.palette {
+            self.scene.params.bid_rgb = [p.bid_rgb[0], p.bid_rgb[1], p.bid_rgb[2], 0.0];
+            self.scene.params.ask_rgb = [p.ask_rgb[0], p.ask_rgb[1], p.ask_rgb[2], 0.0];
+        }
+
+        if tex_w > 0 && tex_h > 0 {
+            let bucket = (rounded_t / aggr_time) as i64;
+
+            if self.scroll_ref_bucket == 0 {
+                self.scroll_ref_bucket = bucket;
+            }
+
+            // uniforms
+            let latest_rel: i64 = bucket - self.scroll_ref_bucket;
+            self.scene.params.heatmap_a[0] = latest_rel as f32;
+
+            let latest_x_ring: u32 = (bucket.rem_euclid(tex_w as i64)) as u32;
+            self.scene.params.heatmap_a[3] = latest_x_ring as f32;
+
+            self.scene.params.heatmap_b = [
+                tex_w as f32,
+                tex_h as f32,
+                (tex_w - 1) as f32,
+                1.0 / DEPTH_QTY_SCALE,
+            ];
+
+            self.update_heatmap_y_start_bin(tex_h, steps_per_y_bin);
+
+            {
+                let state = &mut self.data;
+                // upload decision comes from DepthGridRing
+                if state.depth_grid.take_full_dirty() {
+                    self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
+
+                    self.scene
+                        .set_heatmap_full(Some(scene::HeatmapTextureCpuFull {
+                            width: tex_w,
+                            height: tex_h,
+                            bid: Arc::new(state.depth_grid.bid.clone()),
+                            ask: Arc::new(state.depth_grid.ask.clone()),
+                            generation: self.heatmap_tex_gen,
+                        }));
+
+                    self.scene
+                        .set_heatmap_cols(Vec::new(), self.heatmap_tex_gen);
+                    self.scene.set_heatmap_update(None);
+                } else {
+                    let xs = state.depth_grid.drain_dirty_columns();
+                    if !xs.is_empty() {
+                        let mut cols: Vec<scene::HeatmapColumnCpu> = Vec::with_capacity(xs.len());
+                        for x in xs {
+                            cols.push(scene::HeatmapColumnCpu {
+                                width: tex_w,
+                                height: tex_h,
+                                x,
+                                bid_col: Arc::new(state.depth_grid.extract_bid_column(x)),
+                                ask_col: Arc::new(state.depth_grid.extract_ask_column(x)),
+                            });
+                        }
+
+                        self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
+                        self.scene.set_heatmap_cols(cols, self.heatmap_tex_gen);
+                        self.scene.set_heatmap_full(None);
+                        self.scene.set_heatmap_update(None);
+                    }
+                }
+            }
         }
 
         self.needs_rebuild = true;
@@ -459,6 +607,117 @@ impl HeatmapShader {
         ViewWindow::compute(cfg, &self.scene.camera, [vw_px, vh_px], input)
     }
 
+    fn rebuild_instances(&mut self) {
+        let Some([vw_px, vh_px]) = self.viewport else {
+            return;
+        };
+
+        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
+            self.clear_scene();
+            return;
+        };
+        let aggr_time: u64 = match self.data.basis {
+            Basis::Time(interval) => interval.into(),
+            Basis::Tick(_) => return,
+        };
+
+        let prev_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+        let new_steps_per_y_bin: i64 = w.steps_per_y_bin.max(1);
+
+        self.scene.params.grid = [
+            self.column_world,
+            self.row_h,
+            new_steps_per_y_bin as f32,
+            0.0,
+        ];
+
+        if new_steps_per_y_bin != prev_steps_per_y_bin {
+            self.data.depth_grid.ensure_layout(aggr_time);
+
+            let latest_time = self.render_latest_time.max(self.data.latest_time);
+            let oldest_time = latest_time.saturating_sub(DEPTH_GRID_HORIZON_MS);
+
+            let tex_h_i64 = self.data.depth_grid.tex_h().max(1) as i64;
+            let half_bins = tex_h_i64 / 2;
+
+            let step_units = self.data.step.units.max(1);
+            let steps_per = new_steps_per_y_bin.max(1);
+
+            let half_steps = half_bins.saturating_mul(steps_per);
+            let delta_units = half_steps.saturating_mul(step_units);
+
+            let base_u = self.data.base_price.units;
+            let rebuild_highest = Price::from_units(base_u.saturating_add(delta_units));
+            let rebuild_lowest = Price::from_units(base_u.saturating_sub(delta_units));
+
+            self.data.depth_grid.rebuild_from_historical(
+                &self.data.heatmap,
+                oldest_time,
+                latest_time,
+                self.data.base_price,
+                self.data.step,
+                new_steps_per_y_bin,
+                DEPTH_QTY_SCALE,
+                rebuild_highest,
+                rebuild_lowest,
+            );
+
+            // Rebuild changes underlying data layout/content => invalidate denom cache.
+            self.data_gen = self.data_gen.wrapping_add(1);
+            self.last_norm_key = None;
+
+            let tex_w = self.data.depth_grid.tex_w();
+            let tex_h = self.data.depth_grid.tex_h();
+
+            if tex_w > 0 && tex_h > 0 {
+                let latest_bucket: i64 = (latest_time / aggr_time) as i64;
+
+                let latest_rel: i64 = latest_bucket - self.scroll_ref_bucket;
+                self.scene.params.heatmap_a[0] = latest_rel as f32;
+
+                let latest_x_ring: u32 = (latest_bucket.rem_euclid(tex_w as i64)) as u32;
+                self.scene.params.heatmap_a[3] = latest_x_ring as f32;
+
+                self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
+
+                self.scene
+                    .set_heatmap_full(Some(scene::HeatmapTextureCpuFull {
+                        width: tex_w,
+                        height: tex_h,
+                        bid: Arc::new(self.data.depth_grid.bid.clone()),
+                        ask: Arc::new(self.data.depth_grid.ask.clone()),
+                        generation: self.heatmap_tex_gen,
+                    }));
+                self.scene.set_heatmap_update(None);
+
+                self.scene.params.heatmap_b = [
+                    tex_w as f32,
+                    tex_h as f32,
+                    (tex_w - 1) as f32,
+                    1.0 / DEPTH_QTY_SCALE,
+                ];
+
+                self.update_heatmap_y_start_bin(tex_h, new_steps_per_y_bin);
+            }
+        } else {
+            self.scene.set_heatmap_update(None);
+        }
+
+        let max_trade_qty = self.max_trade_qty(&w);
+        let circles = if max_trade_qty > 0.0 {
+            self.build_circles(&w, max_trade_qty)
+        } else {
+            vec![]
+        };
+
+        let mut rects: Vec<RectInstance> = Vec::new();
+        self.push_latest_profile_rects(&w, &mut rects);
+        self.push_volume_strip_rects(&w, &mut rects);
+
+        self.scene.set_rectangles(rects);
+        self.scene.set_circles(circles);
+    }
+
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {
         let palette = HeatmapPalette::from_theme(theme);
         self.palette = Some(palette);
@@ -467,12 +726,7 @@ impl HeatmapShader {
     fn clear_scene(&mut self) {
         self.scene.set_rectangles(Vec::new());
         self.scene.set_circles(Vec::new());
-        self.scene.set_heatmap(None);
-    }
-
-    #[inline]
-    fn y_bin_for_steps(dy_steps: i64, steps_per_y_bin: i64) -> i64 {
-        dy_steps.div_euclid(steps_per_y_bin.max(1))
+        self.scene.set_heatmap_update(None);
     }
 
     #[inline]
@@ -493,7 +747,6 @@ impl HeatmapShader {
         let mut out: Vec<CircleInstance> = Vec::new();
 
         for (bucket_time, dp) in self.data.trades.datapoints.range(w.earliest..=w.latest_vis) {
-            // bucket_time is already rounded to aggr, so x_frac will be 0 unless you use per-trade timestamps
             let bucket = (*bucket_time / aggr) as i64;
 
             for tr in dp.grouped_trades.iter() {
@@ -504,7 +757,6 @@ impl HeatmapShader {
 
                 let y_world: f32 = self.y_world_for_trade_price(tr.price, w);
 
-                // radius in px (keep your existing scaling logic)
                 let q = tr.qty.max(0.0);
                 let t = if max_trade_qty > 0.0 {
                     (q / max_trade_qty).clamp(0.0, 1.0)
@@ -515,16 +767,16 @@ impl HeatmapShader {
 
                 let rgba = if tr.is_sell {
                     [
-                        palette.ask_rgb[0],
-                        palette.ask_rgb[1],
-                        palette.ask_rgb[2],
+                        palette.sell_rgb[0],
+                        palette.sell_rgb[1],
+                        palette.sell_rgb[2],
                         TRADE_ALPHA,
                     ]
                 } else {
                     [
-                        palette.bid_rgb[0],
-                        palette.bid_rgb[1],
-                        palette.bid_rgb[2],
+                        palette.buy_rgb[0],
+                        palette.buy_rgb[1],
+                        palette.buy_rgb[2],
                         TRADE_ALPHA,
                     ]
                 };
@@ -785,215 +1037,6 @@ impl HeatmapShader {
         }
     }
 
-    fn build_depth_texture(&mut self, w: &ViewWindow) -> Option<scene::HeatmapTextureCpu> {
-        let Some(palette) = &self.palette else {
-            return None;
-        };
-        let state = &self.data;
-
-        let latest_for_depth = w.latest_vis.saturating_add(w.aggr_time);
-
-        let render_bucket_end_excl_ms: u64 = (w.latest_bucket as i128 + 1)
-            .saturating_mul(w.aggr_time as i128)
-            .max(0) as u64;
-
-        let combined = crate::widget::chart::heatmap::lod::binned_depth_rect_contribs_abs_ybin(
-            &state.heatmap,
-            w.earliest,
-            latest_for_depth,
-            render_bucket_end_excl_ms,
-            w.highest,
-            w.lowest,
-            state.step,
-            w.steps_per_y_bin,
-            w.aggr_time,
-            state.latest_time,
-            w.latest_bucket,
-        );
-
-        if combined.is_empty() {
-            let origin = self.scene.params.origin;
-            self.scene.set_params(ParamsUniform {
-                depth: [1.0, DEPTH_ALPHA_MIN, DEPTH_ALPHA_MAX, 0.0],
-                bid_rgb: [
-                    palette.bid_rgb[0],
-                    palette.bid_rgb[1],
-                    palette.bid_rgb[2],
-                    0.0,
-                ],
-                ask_rgb: [
-                    palette.ask_rgb[0],
-                    palette.ask_rgb[1],
-                    palette.ask_rgb[2],
-                    0.0,
-                ],
-                grid: [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0],
-                origin,
-                heatmap_a: [0.0, 0.0, 1.0, 0.0],
-                heatmap_b: [0.0, 0.0, 0.0, 0.0],
-            });
-            return None;
-        }
-
-        let col_px = self.column_world * w.sx;
-        self.heatmap_x_lod
-            .update_from_col_px(col_px, self.heatmap_x_lod_cfg());
-        let cols_per_x_bin = self.heatmap_x_lod.cols_per_x_bin().max(1);
-
-        let ref_bucket = Bucket::<Abs>::abs(self.scroll_ref_bucket);
-
-        let step_units = state.step.units.max(1);
-        let base_steps = state.base_price.units / step_units;
-        let base_abs_y_bin = YBin::<Abs>::abs(base_steps.div_euclid(w.steps_per_y_bin.max(1)));
-
-        let min_steps = (w.lowest.units - state.base_price.units) / state.step.units;
-        let max_steps = (w.highest.units - state.base_price.units) / state.step.units;
-        let y_start_bin = YBin::<Rel>::rel(Self::y_bin_for_steps(min_steps, w.steps_per_y_bin));
-        let y_end_bin_excl =
-            YBin::<Rel>::rel(Self::y_bin_for_steps(max_steps, w.steps_per_y_bin) + 1);
-
-        let mut spec = crate::widget::chart::heatmap::raster::spec_from_view(
-            w,
-            ref_bucket,
-            cols_per_x_bin,
-            base_abs_y_bin,
-        )?;
-        spec.set_y_range(y_start_bin, y_end_bin_excl);
-
-        let width = spec.width();
-        let height = spec.height();
-        if width == 0 || height == 0 {
-            return None;
-        }
-
-        let mut rg = vec![[0.0f32, 0.0f32]; (width as usize) * (height as usize)];
-
-        // Build texture values over padded domain
-        for (key, qty) in combined.into_iter() {
-            let mut dummy_max = 0.0f32;
-            spec.accumulate_max(key, qty, ref_bucket, &mut rg, &mut dummy_max);
-        }
-
-        // Normalize using *strict visible* x-range (no +/- bucket padding)
-        let start_bucket_strict = (w.earliest_strict / w.aggr_time) as i64;
-        let end_bucket_strict_excl = ((w.latest_vis_strict / w.aggr_time) as i64) + 1;
-
-        let start_rel = Bucket::<Abs>::abs(start_bucket_strict).to_rel(ref_bucket);
-        let end_rel_excl = Bucket::<Abs>::abs(end_bucket_strict_excl).to_rel(ref_bucket);
-
-        let cols = spec.cols_per_x_bin();
-        let g0_vis = start_rel.0.div_euclid(cols).max(spec.x_group_start());
-        let g1_vis = {
-            let e = end_rel_excl.0;
-            let q = e.div_euclid(cols);
-            let r = e.rem_euclid(cols);
-            let div_ceil = if r == 0 { q } else { q + 1 };
-            div_ceil.min(spec.x_group_end_excl())
-        };
-
-        let mut max_depth_visible = 0.0f32;
-        if g1_vis > g0_vis {
-            let x0 = (g0_vis - spec.x_group_start()) as usize;
-            let x1 = (g1_vis - spec.x_group_start()) as usize;
-            let w_tex = width as usize;
-
-            for y in 0..(height as usize) {
-                let row = &rg[(y * w_tex)..(y * w_tex + w_tex)];
-                for px in &row[x0..x1] {
-                    max_depth_visible = max_depth_visible.max(px[0]).max(px[1]);
-                }
-            }
-        } else {
-            // Fallback: if strict range collapses for any reason, use whole texture max
-            for px in &rg {
-                max_depth_visible = max_depth_visible.max(px[0]).max(px[1]);
-            }
-        }
-
-        let denom_depth = max_depth_visible.max(1e-12);
-        let origin = self.scene.params.origin;
-        let samp = spec.sampling_params();
-
-        self.scene.set_params(ParamsUniform {
-            depth: [denom_depth, DEPTH_ALPHA_MIN, DEPTH_ALPHA_MAX, 0.0],
-            bid_rgb: [
-                palette.bid_rgb[0],
-                palette.bid_rgb[1],
-                palette.bid_rgb[2],
-                0.0,
-            ],
-            ask_rgb: [
-                palette.ask_rgb[0],
-                palette.ask_rgb[1],
-                palette.ask_rgb[2],
-                0.0,
-            ],
-            grid: [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0],
-            origin,
-            heatmap_a: samp.heatmap_a,
-            heatmap_b: samp.heatmap_b,
-        });
-
-        self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
-
-        Some(scene::HeatmapTextureCpu {
-            width,
-            height,
-            rg: Arc::new(rg),
-            generation: self.heatmap_tex_gen,
-        })
-    }
-
-    fn rebuild_instances(&mut self) {
-        let Some([vw_px, vh_px]) = self.viewport else {
-            return;
-        };
-
-        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
-            self.clear_scene();
-            return;
-        };
-
-        let old_ref = self.scroll_ref_bucket;
-        self.scroll_ref_bucket = w.latest_bucket;
-
-        if self.scroll_ref_bucket != old_ref {
-            self.x_axis_cache.clear();
-        }
-
-        let render_bucket: i64 = if self.render_latest_time > 0 && w.aggr_time > 0 {
-            (self.render_latest_time / w.aggr_time) as i64
-        } else {
-            w.latest_bucket
-        };
-
-        let delta_buckets: i64 = render_bucket - self.scroll_ref_bucket;
-        self.scene.params.origin[0] = (delta_buckets as f32) + self.x_phase_bucket;
-
-        self.scene.params.grid = [self.column_world, self.row_h, w.steps_per_y_bin as f32, 0.0];
-
-        let volume_min_w_world: f32 = VOLUME_MIN_BAR_W_PX / w.sx;
-        self.scene.params.origin[1] = volume_min_w_world;
-        self.scene.params.origin[2] = VOLUME_BUCKET_GAP_FRAC;
-
-        let heatmap = self.build_depth_texture(&w);
-        self.scene.set_heatmap(heatmap);
-
-        let max_trade_qty = self.max_trade_qty(&w);
-        let circles = if max_trade_qty > 0.0 {
-            self.build_circles(&w, max_trade_qty)
-        } else {
-            vec![]
-        };
-
-        let mut rects: Vec<RectInstance> = Vec::new();
-        self.push_latest_profile_rects(&w, &mut rects);
-        self.push_volume_strip_rects(&w, &mut rects);
-
-        self.scene.set_rectangles(rects);
-        self.scene.set_circles(circles);
-    }
-
     fn max_trade_qty(&self, w: &ViewWindow) -> f32 {
         let mut max_qty = 0.0f32;
 
@@ -1011,6 +1054,23 @@ impl HeatmapShader {
 
     pub fn tick_size(&self) -> f32 {
         self.data.step.to_f32_lossy()
+    }
+
+    fn update_heatmap_y_start_bin(&mut self, tex_h: u32, steps_per_y_bin: i64) {
+        let Some(anchor) = self.data.depth_grid.y_anchor() else {
+            self.scene.params.heatmap_a[1] = -((tex_h as i32) / 2) as f32;
+            return;
+        };
+
+        let step_units = self.data.step.units.max(1);
+        let steps_per_y_bin = steps_per_y_bin.max(1);
+
+        // delta_bins = (base - anchor) in y-bins
+        let delta_steps: i64 = (self.data.base_price.units - anchor.units) / step_units;
+        let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
+
+        let half_h = (tex_h as i32) / 2;
+        self.scene.params.heatmap_a[1] = -(half_h as f32) - (delta_bins as f32);
     }
 
     fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32) {
@@ -1065,15 +1125,5 @@ impl HeatmapShader {
             );
 
         self.column_world = new_col_w;
-    }
-
-    #[inline]
-    fn heatmap_x_lod_cfg(&self) -> lod::HeatmapXLodConfig {
-        lod::HeatmapXLodConfig {
-            enable_col_px: HEATMAP_BIN_ENABLE_COL_PX,
-            disable_col_px: HEATMAP_BIN_DISABLE_COL_PX,
-            target_px: HEATMAP_BIN_TARGET_PX,
-            max_cols_per_x_bin: MAX_COLS_PER_X_BIN,
-        }
     }
 }

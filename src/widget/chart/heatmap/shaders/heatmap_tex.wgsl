@@ -20,23 +20,23 @@ struct Params {
     ask_rgb: vec4<f32>,
     grid: vec4<f32>,
     origin: vec4<f32>,
+    // heatmap_a: (unused, y_start_bin, unused, latest_x_ring)
     heatmap_a: vec4<f32>,
+    // heatmap_b: (tex_w, tex_h, tex_w_mask, inv_qty_scale)
     heatmap_b: vec4<f32>,
 };
 @group(0) @binding(1)
 var<uniform> params: Params;
 
 @group(1) @binding(0)
-var heatmap_tex: texture_2d<f32>;
+var heatmap_bid: texture_2d<u32>;
+@group(1) @binding(1)
+var heatmap_ask: texture_2d<u32>;
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-
-    // local_pos is in [-0.5, 0.5]. Expand to clip [-1, 1].
     out.pos = vec4<f32>(input.local_pos * 2.0, 0.0, 1.0);
-
-    // Map [-0.5,0.5] -> [0,1]
     out.uv = input.local_pos + vec2<f32>(0.5, 0.5);
     return out;
 }
@@ -46,7 +46,6 @@ fn screen_to_world(screen_xy: vec2<f32>) -> vec2<f32> {
     let center = camera.a.zw;
     let viewport = camera.b.xy;
 
-    // screen_xy is in pixels with origin at top-left, y down.
     let view_px = screen_xy - 0.5 * viewport;
 
     return vec2<f32>(
@@ -59,65 +58,60 @@ fn screen_to_world(screen_xy: vec2<f32>) -> vec2<f32> {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let viewport = camera.b.xy;
 
-    // Stable pixel-center coords
     let px = input.uv * viewport;
     let screen_xy = floor(px) + vec2<f32>(0.5, 0.5);
-
     let world = screen_to_world(screen_xy);
 
-    // Heatmap is only defined for history (x <= 0). Reserve x>0 for the latest profile overlay.
+    // Reserve x>0 for latest-profile overlay
     if (world.x > 0.0) {
         return vec4<f32>(0.0);
     }
 
-    let sx = max(camera.a.x, 1e-6);
-    let sy = max(camera.a.y, 1e-6);
-    let center = camera.a.zw;
-
-    let col_w = params.grid.x;
+    let col_w = max(params.grid.x, 1e-12);
     let row_h = params.grid.y;
     let steps_per = max(params.grid.z, 1.0);
     let bin_h = row_h * steps_per;
 
-    let now_bucket_rel_f = params.origin.x;
-
-    let x_start_group = params.heatmap_a.x;
-    let y_start_bin = params.heatmap_a.y;
-    let cols_per_x_bin = max(params.heatmap_a.z, 1.0);
-
-    let tex_w = params.heatmap_b.x;
-    let tex_h = params.heatmap_b.y;
-
-    if (tex_w < 1.0 || tex_h < 1.0) {
+    let tex_w_u = u32(params.heatmap_b.x);
+    let tex_h_u = u32(params.heatmap_b.y);
+    if (tex_w_u < 1u || tex_h_u < 1u) {
         return vec4<f32>(0.0);
     }
 
-    let y_bin_rel_f = floor((-world.y) / max(bin_h, 1e-12));
-    let y_idx_f = y_bin_rel_f - y_start_bin;
-
-    let yi = i32(y_idx_f);
-    if (yi < 0 || f32(yi) >= tex_h) {
+    // Y (bins)
+    let y_bin_rel = i32(floor((-world.y) / max(bin_h, 1e-12)));
+    let y_start_bin = i32(params.heatmap_a.y);
+    let yi = y_bin_rel - y_start_bin;
+    if (yi < 0 || u32(yi) >= tex_h_u) {
         return vec4<f32>(0.0);
     }
 
-    let bin_px_x = max(col_w * sx * cols_per_x_bin, 1e-6);
+    // X (ring):
+    // params.origin.x is (render_bucket - scroll_ref_bucket) + phase
+    // params.heatmap_a.x is (latest_data_bucket - scroll_ref_bucket)
+    // params.heatmap_a.w is latest_x_ring
+    let latest_bucket_rel = i32(params.heatmap_a.x);
+    let render_rel = i32(floor(params.origin.x + (world.x / col_w)));
 
-    let x_bin_rel_at_g0 = (x_start_group * cols_per_x_bin);
-    let world_x_at_g0 = (x_bin_rel_at_g0 - now_bucket_rel_f) * col_w;
+    // Convert render-relative bucket to latest-relative bucket offset
+    var bucket_rel_from_latest = render_rel - latest_bucket_rel;
 
-    let x_anchor_px = ((world_x_at_g0 - center.x) * sx) + (0.5 * viewport.x);
+    // Smooth scrolling "future": clamp anything newer than latest to latest
+    bucket_rel_from_latest = min(bucket_rel_from_latest, 0);
 
-    let gx = (screen_xy.x - x_anchor_px) / bin_px_x;
-
-    let xi = i32(floor(gx));
-    if (xi < 0 || f32(xi) >= tex_w) {
+    // Cull older than ring horizon to avoid wrap artifacts
+    let oldest = -i32(tex_w_u) + 1;
+    if (bucket_rel_from_latest < oldest) {
         return vec4<f32>(0.0);
     }
 
-    let s = textureLoad(heatmap_tex, vec2<i32>(xi, yi), 0);
+    let latest_x_ring = i32(u32(params.heatmap_a.w));
+    let tex_w_mask = i32(u32(params.heatmap_b.z));
+    let xi = (latest_x_ring + bucket_rel_from_latest) & tex_w_mask;
 
-    let bid_qty = max(s.x, 0.0);
-    let ask_qty = max(s.y, 0.0);
+    let inv_qty_scale = params.heatmap_b.w;
+    let bid_qty = f32(textureLoad(heatmap_bid, vec2<i32>(xi, yi), 0).x) * inv_qty_scale;
+    let ask_qty = f32(textureLoad(heatmap_ask, vec2<i32>(xi, yi), 0).x) * inv_qty_scale;
 
     let max_depth = max(params.depth.x, 1e-12);
     let alpha_min = params.depth.y;
@@ -126,9 +120,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let bid_t = clamp(bid_qty / max_depth, 0.0, 1.0);
     let ask_t = clamp(ask_qty / max_depth, 0.0, 1.0);
 
-    let bid_a = select(0.0, clamp(bid_t, alpha_min, alpha_max), bid_qty > 0.0);
-    let ask_a = select(0.0, clamp(ask_t, alpha_min, alpha_max), ask_qty > 0.0);
+    // Map t∈[0,1] -> alpha∈[alpha_min, alpha_max], but keep qty==0 fully transparent
+    let bid_a = select(0.0, alpha_min + bid_t * (alpha_max - alpha_min), bid_qty > 0.0);
+    let ask_a = select(0.0, alpha_min + ask_t * (alpha_max - alpha_min), ask_qty > 0.0);
 
+    // premultiplied blend
     var c = params.ask_rgb.xyz * ask_a;
     var a = ask_a;
 
