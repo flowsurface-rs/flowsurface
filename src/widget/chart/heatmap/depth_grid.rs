@@ -10,8 +10,9 @@ const Y_BLOCK_H: u32 = 16;
 
 #[derive(Debug, Clone)]
 pub struct GridRing {
-    /// How much time to keep in the ring (ms).
-    horizon_ms: u64,
+    /// How many aggregated buckets to keep in the ring.
+    /// NOTE: texture width is still rounded up to a power-of-two for fast wrap.
+    horizon_buckets: u32,
 
     /// tolerate short gaps/out-of-order updates (ms).
     grace_ms: u64,
@@ -40,25 +41,31 @@ pub struct GridRing {
 }
 
 impl GridRing {
-    pub fn new(horizon_ms: u64, tex_h: u32) -> Self {
+    pub fn new(horizon_buckets: u32, tex_h: u32) -> Self {
         Self {
-            horizon_ms,
+            horizon_buckets: horizon_buckets.max(1),
             grace_ms: 0, // default off; set from caller
             tex_w: 0,
-            tex_h: tex_h.max(1),
+            tex_h,
+
             aggr_time_ms: 0,
             last_bucket: None,
+
             y_anchor: None,
+
             bid: Vec::new(),
             ask: Vec::new(),
+
             col_max_bid: Vec::new(),
             col_max_ask: Vec::new(),
+
             steps_per_y_bin: 1,
+
+            full_dirty: false,
+            dirty_cols: Vec::new(),
+
             block_max_bid: Vec::new(),
             block_max_ask: Vec::new(),
-
-            full_dirty: true,
-            dirty_cols: Vec::new(),
         }
     }
 
@@ -256,8 +263,8 @@ impl GridRing {
     pub fn ensure_layout(&mut self, aggr_time_ms: u64) {
         let aggr_time_ms = aggr_time_ms.max(1);
 
-        let buckets_needed = div_ceil_u64(self.horizon_ms.max(aggr_time_ms), aggr_time_ms);
-        let tex_w = next_pow2_u32(buckets_needed.clamp(1, u32::MAX as u64) as u32);
+        let buckets_needed = self.horizon_buckets.max(1);
+        let tex_w = next_pow2_u32(buckets_needed);
 
         let needs_realloc = self.aggr_time_ms != aggr_time_ms || self.tex_w != tex_w;
         if !needs_realloc {
@@ -670,14 +677,6 @@ impl GridRing {
 
         -(half_h as f32) - (delta_bins as f32)
     }
-}
-
-#[inline]
-fn div_ceil_u64(a: u64, b: u64) -> u64 {
-    let b = b.max(1);
-    let q = a / b;
-    let r = a % b;
-    if r == 0 { q } else { q + 1 }
 }
 
 #[inline]

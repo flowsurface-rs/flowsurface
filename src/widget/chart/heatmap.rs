@@ -23,7 +23,7 @@ use iced::time::Instant;
 use iced::widget::{Canvas, Space, column, container, mouse_area, row, rule, shader};
 use iced::{Element, Fill, Length, padding};
 
-const DEPTH_GRID_HORIZON_MS: u64 = 9 * 60 * 1000; // ~9 minutes
+const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
 const DEPTH_QTY_SCALE: f32 = 1.0; // dollars-per-u32 step
 
@@ -116,7 +116,8 @@ impl RealDataState {
         heatmap: HistoricalDepth,
         trades: TimeSeries<HeatmapDataPoint>,
     ) -> Self {
-        let mut depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_MS, DEPTH_GRID_TEX_H);
+        let mut depth_grid =
+            depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
         depth_grid.set_grace_ms(DEPTH_GRID_GRACE_MS);
 
         Self {
@@ -204,6 +205,9 @@ impl HeatmapShader {
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
 
+                // Keep overlays aligned immediately (axes update on message; overlays should too).
+                self.try_rebuild_overlays();
+
                 self.rebuild_policy = view::RebuildPolicy::Debounced {
                     last_input: Instant::now(),
                 };
@@ -217,6 +221,7 @@ impl HeatmapShader {
                     .camera
                     .zoom_at_cursor(factor, cursor.x, cursor.y, vw, vh);
 
+                self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomRowHeightAt {
@@ -226,6 +231,8 @@ impl HeatmapShader {
             } => {
                 self.zoom_row_h_at(factor, cursor_y, viewport_h);
                 self.sync_grid_xy();
+
+                self.try_rebuild_overlays();
 
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
@@ -237,6 +244,7 @@ impl HeatmapShader {
                 self.zoom_column_world_at(factor, cursor_x, viewport_w);
                 self.sync_grid_xy();
 
+                self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
         }
@@ -447,7 +455,6 @@ impl HeatmapShader {
         }
 
         state.depth_grid.ensure_layout(aggr_time);
-
         state.heatmap.insert_latest_depth(depth, rounded_t);
 
         if rounded_t >= state.latest_time {
@@ -509,6 +516,10 @@ impl HeatmapShader {
             self.scene.apply_heatmap_upload_plan(plan);
         }
 
+        if (self.data_gen & 0x3F) == 0 {
+            self.cleanup_old_data(aggr_time);
+        }
+
         self.rebuild_policy = view::RebuildPolicy::Immediate;
     }
 
@@ -558,6 +569,16 @@ impl HeatmapShader {
         self.scene.set_circles(circles);
     }
 
+    fn try_rebuild_overlays(&mut self) {
+        let Some([vw_px, vh_px]) = self.viewport else {
+            return;
+        };
+        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
+            return;
+        };
+        self.rebuild_overlays(&w);
+    }
+
     fn rebuild_instances(&mut self) {
         let Some([vw_px, vh_px]) = self.viewport else {
             return;
@@ -587,7 +608,8 @@ impl HeatmapShader {
             self.data.depth_grid.ensure_layout(aggr_time);
 
             let latest_time = self.render_latest_time.max(self.data.latest_time);
-            let oldest_time = latest_time.saturating_sub(DEPTH_GRID_HORIZON_MS);
+            let oldest_time =
+                latest_time.saturating_sub(u64::from(DEPTH_GRID_HORIZON_BUCKETS) * aggr_time);
 
             let tex_h_i64 = self.data.depth_grid.tex_h().max(1) as i64;
             let half_bins = tex_h_i64 / 2;
@@ -650,6 +672,34 @@ impl HeatmapShader {
 
         // Always rebuild overlays when we do a full rebuild.
         self.rebuild_overlays(&w);
+    }
+
+    fn cleanup_old_data(&mut self, aggr_time: u64) {
+        let aggr_time = aggr_time.max(1);
+
+        // Keep CPU history aligned with what the ring can represent
+        let keep_buckets: u64 = (self.data.depth_grid.tex_w().max(1)) as u64;
+
+        let latest_time = self.data.latest_time;
+        if latest_time == 0 {
+            return;
+        }
+
+        let keep_ms = keep_buckets.saturating_mul(aggr_time);
+        let cutoff = latest_time.saturating_sub(keep_ms);
+        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
+
+        // Prune trades (TimeSeries datapoints are bucket timestamps)
+        let keep = self.data.trades.datapoints.split_off(&cutoff_rounded);
+        self.data.trades.datapoints = keep;
+
+        // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
+        // otherwise prune by cutoff directly
+        if let Some(oldest_time) = self.data.trades.datapoints.keys().next().copied() {
+            self.data.heatmap.cleanup_old_price_levels(oldest_time);
+        } else {
+            self.data.heatmap.cleanup_old_price_levels(cutoff_rounded);
+        }
     }
 
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {
