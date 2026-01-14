@@ -16,6 +16,16 @@ use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Debug)]
+pub enum HeatmapUploadPlan {
+    Full(HeatmapTextureCpuFull),
+    Cols {
+        cols: Vec<HeatmapColumnCpu>,
+        generation: u64,
+    },
+    None,
+}
+
 #[derive(Clone, Debug)]
 pub struct HeatmapColumnCpu {
     pub width: u32,
@@ -96,6 +106,26 @@ impl Scene {
     pub fn set_heatmap_cols(&mut self, cols: Vec<HeatmapColumnCpu>, generation: u64) {
         self.heatmap_cols = Arc::from(cols);
         self.heatmap_cols_gen = generation;
+    }
+
+    pub fn apply_heatmap_upload_plan(&mut self, plan: HeatmapUploadPlan) {
+        match plan {
+            HeatmapUploadPlan::Full(full) => {
+                let generation = full.generation;
+
+                self.set_heatmap_full(Some(full));
+                self.set_heatmap_cols(Vec::new(), generation);
+                self.set_heatmap_update(None);
+            }
+            HeatmapUploadPlan::Cols { cols, generation } => {
+                self.set_heatmap_cols(cols, generation);
+                self.set_heatmap_full(None);
+                self.set_heatmap_update(None);
+            }
+            HeatmapUploadPlan::None => {
+                // no-op: keep existing GPU texture
+            }
+        }
     }
 }
 

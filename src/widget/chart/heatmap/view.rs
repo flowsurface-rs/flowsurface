@@ -1,6 +1,89 @@
+use crate::widget::chart::heatmap::scene::camera::Camera;
 use exchange::util::{Price, PriceStep};
 
-use crate::widget::chart::heatmap::scene::camera::Camera;
+use iced::time::Instant;
+
+#[derive(Debug, Clone, Copy)]
+pub enum RebuildPolicy {
+    /// Full rebuild should run immediately (rare: resize/layout).
+    Immediate,
+    /// Full rebuild should run once interaction settles.
+    Debounced { last_input: Instant },
+    /// No pending rebuild requested.
+    Idle,
+}
+
+impl RebuildPolicy {
+    pub fn mark_input(self, now: Instant) -> Self {
+        RebuildPolicy::Debounced { last_input: now }
+    }
+
+    pub fn should_rebuild(self, now: Instant, debounce_ms: u64) -> bool {
+        match self {
+            RebuildPolicy::Immediate => true,
+            RebuildPolicy::Idle => false,
+            RebuildPolicy::Debounced { last_input } => {
+                (now.saturating_duration_since(last_input).as_millis() as u64) >= debounce_ms
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ExchangeClock {
+    Uninit,
+    Anchored {
+        anchor_exchange_ms: u64,
+        anchor_instant: Instant,
+        monotonic_estimate_ms: u64,
+    },
+}
+
+impl ExchangeClock {
+    pub fn anchor_with_update(self, depth_update_t: u64) -> Self {
+        let now = Instant::now();
+
+        // Keep monotonic across updates + local prediction.
+        let predicted = match self {
+            ExchangeClock::Anchored {
+                anchor_exchange_ms,
+                anchor_instant,
+                monotonic_estimate_ms,
+            } => {
+                let elapsed_ms = now.saturating_duration_since(anchor_instant).as_millis() as u64;
+                let p = anchor_exchange_ms.saturating_add(elapsed_ms);
+                p.max(monotonic_estimate_ms)
+            }
+            ExchangeClock::Uninit => 0,
+        };
+
+        let monotonic = depth_update_t.max(predicted);
+
+        ExchangeClock::Anchored {
+            anchor_exchange_ms: monotonic,
+            anchor_instant: now,
+            monotonic_estimate_ms: monotonic,
+        }
+    }
+
+    pub fn estimate_now_ms(self, now: Instant) -> Option<u64> {
+        match self {
+            ExchangeClock::Uninit => None,
+            ExchangeClock::Anchored {
+                anchor_exchange_ms,
+                anchor_instant,
+                monotonic_estimate_ms,
+            } => {
+                let elapsed_ms = now.saturating_duration_since(anchor_instant).as_millis() as u64;
+                Some(
+                    anchor_exchange_ms
+                        .saturating_add(elapsed_ms)
+                        .max(monotonic_estimate_ms),
+                )
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ViewConfig {

@@ -62,6 +62,12 @@ const MAX_ROW_H_WORLD: f32 = 10.;
 const MIN_COL_W_WORLD: f32 = 0.01;
 const MAX_COL_W_WORLD: f32 = 10.;
 
+// Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction.
+const REBUILD_DEBOUNCE_MS: u64 = 250;
+
+// Throttle depth denom recompute while interacting (keeps zoom smooth).
+const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     BoundsChanged([f32; 2]),
@@ -90,9 +96,7 @@ struct RealDataState {
     heatmap: HistoricalDepth,
     latest_time: u64,
     base_price: Price,
-    last_update_exchange_ms: Option<u64>,
-    last_update_instant: Option<Instant>,
-    last_estimated_exchange_now_ms: Option<u64>,
+    clock: view::ExchangeClock,
     depth_grid: depth_grid::DepthGridRing,
 }
 
@@ -119,9 +123,7 @@ impl RealDataState {
             latest_time: 0,
             base_price: Price::from_units(0),
             depth_grid,
-            last_update_exchange_ms: None,
-            last_update_instant: None,
-            last_estimated_exchange_now_ms: None,
+            clock: view::ExchangeClock::Uninit,
         }
     }
 }
@@ -139,7 +141,6 @@ pub struct HeatmapShader {
     scroll_ref_bucket: i64,
     x_phase_bucket: f32,
     render_latest_time: u64,
-    needs_rebuild: bool,
     x_axis_cache: iced::widget::canvas::Cache,
     heatmap_tex_gen: u64,
 
@@ -149,6 +150,17 @@ pub struct HeatmapShader {
     last_norm_value: f32,
     last_norm_gen: u64,
     data_gen: u64,
+
+    // --- interaction debounce state ---
+
+    // --- reusable buffers to avoid per-frame allocations ---
+    volume_acc: Vec<(f32, f32)>,
+    volume_touched: Vec<usize>,
+
+    // --- throttle state ---
+    last_norm_recompute: Option<Instant>,
+
+    rebuild_policy: view::RebuildPolicy,
 }
 
 impl HeatmapShader {
@@ -171,14 +183,16 @@ impl HeatmapShader {
             scroll_ref_bucket: 0,
             x_phase_bucket: 0.0,
             render_latest_time: 0,
-            needs_rebuild: false,
             x_axis_cache: iced::widget::canvas::Cache::new(),
             heatmap_tex_gen: 1,
-
             last_norm_key: None,
             last_norm_value: 1.0,
             last_norm_gen: 0,
             data_gen: 1,
+            volume_acc: Vec::new(),
+            volume_touched: Vec::new(),
+            last_norm_recompute: None,
+            rebuild_policy: view::RebuildPolicy::Idle,
         }
     }
 
@@ -186,6 +200,8 @@ impl HeatmapShader {
         match message {
             Message::BoundsChanged(viewport) => {
                 self.viewport = Some(viewport);
+
+                self.rebuild_policy = view::RebuildPolicy::Immediate;
                 self.rebuild_instances();
             }
             Message::PanDeltaPx(delta_px) => {
@@ -195,7 +211,9 @@ impl HeatmapShader {
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
 
-                self.rebuild_instances();
+                self.rebuild_policy = view::RebuildPolicy::Debounced {
+                    last_input: Instant::now(),
+                };
             }
             Message::ZoomAt { factor, cursor } => {
                 let Some([vw, vh]) = self.viewport else {
@@ -206,7 +224,7 @@ impl HeatmapShader {
                     .camera
                     .zoom_at_cursor(factor, cursor.x, cursor.y, vw, vh);
 
-                self.rebuild_instances();
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomRowHeightAt {
                 factor,
@@ -214,7 +232,9 @@ impl HeatmapShader {
                 viewport_h,
             } => {
                 self.zoom_row_h_at(factor, cursor_y, viewport_h);
-                self.rebuild_instances();
+                self.sync_grid_xy();
+
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomColumnWorldAt {
                 factor,
@@ -222,7 +242,9 @@ impl HeatmapShader {
                 viewport_w,
             } => {
                 self.zoom_column_world_at(factor, cursor_x, viewport_w);
-                self.rebuild_instances();
+                self.sync_grid_xy();
+
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
         }
     }
@@ -301,6 +323,33 @@ impl HeatmapShader {
         .into()
     }
 
+    fn update_depth_norm_denom_cached_throttled(
+        &mut self,
+        w: &ViewWindow,
+        latest_incl: u64,
+        now: Instant,
+    ) {
+        let should_rebuild = self.rebuild_policy.should_rebuild(now, REBUILD_DEBOUNCE_MS);
+
+        if let Some(last) = self.last_norm_recompute
+            && !should_rebuild
+        {
+            let dt_ms = now
+                .saturating_duration_since(last)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+
+            if dt_ms < NORM_RECOMPUTE_THROTTLE_MS {
+                // Keep previous denom; avoids heavy scans during wheel spam.
+                self.scene.params.depth[0] = self.last_norm_value.max(1e-6);
+                return;
+            }
+        }
+
+        self.last_norm_recompute = Some(now);
+        self.update_depth_norm_denom_cached(w, latest_incl);
+    }
+
     /// Updates `scene.params.depth[0]` (max depth normalization denom) using a cache.
     /// Recomputes only when the bucketized view window changes or new data arrives.
     fn update_depth_norm_denom_cached(&mut self, w: &ViewWindow, latest_incl: u64) {
@@ -359,19 +408,7 @@ impl HeatmapShader {
             return None;
         }
 
-        if let (Some(anchor_ms), Some(anchor_i)) = (
-            self.data.last_update_exchange_ms,
-            self.data.last_update_instant,
-        ) {
-            let elapsed_ms = now_i.saturating_duration_since(anchor_i).as_millis() as u64;
-
-            let mut exchange_now_ms = anchor_ms.saturating_add(elapsed_ms);
-
-            if let Some(prev_est) = self.data.last_estimated_exchange_now_ms {
-                exchange_now_ms = exchange_now_ms.max(prev_est);
-            }
-            self.data.last_estimated_exchange_now_ms = Some(exchange_now_ms);
-
+        if let Some(exchange_now_ms) = self.data.clock.estimate_now_ms(now_i) {
             let render_latest_time = (exchange_now_ms / aggr_time) * aggr_time;
             let phase_ms = exchange_now_ms.saturating_sub(render_latest_time);
             let phase = (phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
@@ -379,12 +416,8 @@ impl HeatmapShader {
             self.render_latest_time = render_latest_time;
             self.x_phase_bucket = phase;
 
-            if self.needs_rebuild {
-                self.needs_rebuild = false;
-                self.rebuild_instances();
-            }
-
             if let Some(w) = self.compute_view_window(vw_px, vh_px) {
+                // Keep time-origin uniforms up to date regardless of interaction
                 let render_bucket: i64 = (render_latest_time / aggr_time) as i64;
 
                 if self.scroll_ref_bucket == 0 {
@@ -398,12 +431,28 @@ impl HeatmapShader {
                 let latest_rel: i64 = latest_bucket_data - self.scroll_ref_bucket;
                 self.scene.params.heatmap_a[0] = latest_rel as f32;
 
+                match self.rebuild_policy {
+                    view::RebuildPolicy::Immediate => {
+                        self.rebuild_instances();
+                        self.rebuild_policy = view::RebuildPolicy::Idle;
+                    }
+                    view::RebuildPolicy::Debounced { last_input } => {
+                        self.rebuild_overlays(&w);
+
+                        if now_i.saturating_duration_since(last_input).as_millis() as u64
+                            >= REBUILD_DEBOUNCE_MS
+                        {
+                            self.rebuild_instances();
+                            self.rebuild_policy = view::RebuildPolicy::Idle;
+                        }
+                    }
+                    view::RebuildPolicy::Idle => {}
+                }
+
+                // Keep denom + y_start updated (but throttle denom scans while interacting).
                 let latest_incl = w.latest_vis.saturating_add(w.aggr_time);
+                self.update_depth_norm_denom_cached_throttled(&w, latest_incl, now_i);
 
-                // Cached: avoids per-frame scans when nothing changed materially.
-                self.update_depth_norm_denom_cached(&w, latest_incl);
-
-                // Keep heatmap Y mapping in sync with current base_price/anchor every frame.
                 let tex_h = self.scene.params.heatmap_b[1] as u32;
                 if tex_h > 0 {
                     let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
@@ -435,29 +484,7 @@ impl HeatmapShader {
             Basis::Tick(_) => unimplemented!(),
         };
 
-        let now_i = Instant::now();
-
-        let predicted_now_ms: Option<u64> =
-            match (state.last_update_exchange_ms, state.last_update_instant) {
-                (Some(ms), Some(inst)) => {
-                    let elapsed = now_i.saturating_duration_since(inst).as_millis() as u64;
-                    Some(ms.saturating_add(elapsed))
-                }
-                _ => None,
-            };
-
-        let mut monotonic_now_ms = depth_update_t;
-        if let Some(p) = predicted_now_ms {
-            monotonic_now_ms = monotonic_now_ms.max(p);
-        }
-        if let Some(prev_est) = state.last_estimated_exchange_now_ms {
-            monotonic_now_ms = monotonic_now_ms.max(prev_est);
-        }
-
-        state.last_update_exchange_ms = Some(monotonic_now_ms);
-        state.last_update_instant = Some(now_i);
-        state.last_estimated_exchange_now_ms = Some(monotonic_now_ms);
-
+        state.clock = state.clock.anchor_with_update(depth_update_t);
         let rounded_t = (depth_update_t / aggr_time) * aggr_time;
 
         {
@@ -500,7 +527,6 @@ impl HeatmapShader {
             steps_per_y_bin,
         );
 
-        // New data => cached normalization denom is stale even if the view window didn't change.
         self.data_gen = self.data_gen.wrapping_add(1);
         self.last_norm_key = None;
 
@@ -535,48 +561,11 @@ impl HeatmapShader {
 
             self.update_heatmap_y_start_bin(tex_h, steps_per_y_bin);
 
-            {
-                let state = &mut self.data;
-                // upload decision comes from DepthGridRing
-                if state.depth_grid.take_full_dirty() {
-                    self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
-
-                    self.scene
-                        .set_heatmap_full(Some(scene::HeatmapTextureCpuFull {
-                            width: tex_w,
-                            height: tex_h,
-                            bid: Arc::new(state.depth_grid.bid.clone()),
-                            ask: Arc::new(state.depth_grid.ask.clone()),
-                            generation: self.heatmap_tex_gen,
-                        }));
-
-                    self.scene
-                        .set_heatmap_cols(Vec::new(), self.heatmap_tex_gen);
-                    self.scene.set_heatmap_update(None);
-                } else {
-                    let xs = state.depth_grid.drain_dirty_columns();
-                    if !xs.is_empty() {
-                        let mut cols: Vec<scene::HeatmapColumnCpu> = Vec::with_capacity(xs.len());
-                        for x in xs {
-                            cols.push(scene::HeatmapColumnCpu {
-                                width: tex_w,
-                                height: tex_h,
-                                x,
-                                bid_col: Arc::new(state.depth_grid.extract_bid_column(x)),
-                                ask_col: Arc::new(state.depth_grid.extract_ask_column(x)),
-                            });
-                        }
-
-                        self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
-                        self.scene.set_heatmap_cols(cols, self.heatmap_tex_gen);
-                        self.scene.set_heatmap_full(None);
-                        self.scene.set_heatmap_update(None);
-                    }
-                }
-            }
+            let plan = self.build_heatmap_upload_plan(tex_w, tex_h);
+            self.scene.apply_heatmap_upload_plan(plan);
         }
 
-        self.needs_rebuild = true;
+        self.rebuild_policy = view::RebuildPolicy::Immediate;
     }
 
     fn compute_view_window(&self, vw_px: f32, vh_px: f32) -> Option<ViewWindow> {
@@ -607,6 +596,24 @@ impl HeatmapShader {
         ViewWindow::compute(cfg, &self.scene.camera, [vw_px, vh_px], input)
     }
 
+    /// Rebuild only CPU overlay instances (profile/volume/trades). This is intended to be
+    /// cheap enough to run during interaction, unlike `rebuild_from_historical`.
+    fn rebuild_overlays(&mut self, w: &ViewWindow) {
+        let max_trade_qty = self.max_trade_qty(w);
+        let circles = if max_trade_qty > 0.0 {
+            self.build_circles(w, max_trade_qty)
+        } else {
+            vec![]
+        };
+
+        let mut rects: Vec<RectInstance> = Vec::new();
+        self.push_latest_profile_rects(w, &mut rects);
+        self.push_volume_strip_rects(w, &mut rects);
+
+        self.scene.set_rectangles(rects);
+        self.scene.set_circles(circles);
+    }
+
     fn rebuild_instances(&mut self) {
         let Some([vw_px, vh_px]) = self.viewport else {
             return;
@@ -616,6 +623,7 @@ impl HeatmapShader {
             self.clear_scene();
             return;
         };
+
         let aggr_time: u64 = match self.data.basis {
             Basis::Time(interval) => interval.into(),
             Basis::Tick(_) => return,
@@ -631,6 +639,7 @@ impl HeatmapShader {
             0.0,
         ];
 
+        // Only this block is "heavy". Keep it debounced via `invalidate()`.
         if new_steps_per_y_bin != prev_steps_per_y_bin {
             self.data.depth_grid.ensure_layout(aggr_time);
 
@@ -662,7 +671,6 @@ impl HeatmapShader {
                 rebuild_lowest,
             );
 
-            // Rebuild changes underlying data layout/content => invalidate denom cache.
             self.data_gen = self.data_gen.wrapping_add(1);
             self.last_norm_key = None;
 
@@ -703,19 +711,8 @@ impl HeatmapShader {
             self.scene.set_heatmap_update(None);
         }
 
-        let max_trade_qty = self.max_trade_qty(&w);
-        let circles = if max_trade_qty > 0.0 {
-            self.build_circles(&w, max_trade_qty)
-        } else {
-            vec![]
-        };
-
-        let mut rects: Vec<RectInstance> = Vec::new();
-        self.push_latest_profile_rects(&w, &mut rects);
-        self.push_volume_strip_rects(&w, &mut rects);
-
-        self.scene.set_rectangles(rects);
-        self.scene.set_circles(circles);
+        // Always rebuild overlays when we do a full rebuild.
+        self.rebuild_overlays(&w);
     }
 
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {
@@ -911,7 +908,7 @@ impl HeatmapShader {
         }
     }
 
-    fn push_volume_strip_rects(&self, w: &ViewWindow, rects: &mut Vec<RectInstance>) {
+    fn push_volume_strip_rects(&mut self, w: &ViewWindow, rects: &mut Vec<RectInstance>) {
         if w.strip_h_world <= 0.0 {
             return;
         }
@@ -930,35 +927,61 @@ impl HeatmapShader {
             cols_per_x_bin = (VOLUME_MIN_BAR_W_PX / px_per_drawn_col).ceil() as i64;
             cols_per_x_bin = cols_per_x_bin.clamp(1, MAX_COLS_PER_X_BIN);
         }
+        let cols_per_x_bin = cols_per_x_bin.max(1);
 
         let start_bucket_vis = (w.earliest / w.aggr_time) as i64;
         let end_bucket_vis = (w.latest_vis / w.aggr_time) as i64;
 
-        let min_x_bin = start_bucket_vis.div_euclid(cols_per_x_bin.max(1));
-        let max_x_bin = end_bucket_vis.div_euclid(cols_per_x_bin.max(1));
-
+        let min_x_bin = start_bucket_vis.div_euclid(cols_per_x_bin);
+        let max_x_bin = end_bucket_vis.div_euclid(cols_per_x_bin);
         if max_x_bin < min_x_bin {
             return;
         }
 
         let bins_len = (max_x_bin - min_x_bin + 1) as usize;
 
-        let mut acc: Vec<(f32, f32)> = vec![(0.0, 0.0); bins_len];
+        // Reuse buffers: O(bins_len) zeroing, but avoid allocs + avoid iterating bins with no data.
+        self.volume_acc.resize(bins_len, (0.0, 0.0));
+        self.volume_acc.iter_mut().for_each(|e| *e = (0.0, 0.0));
+        self.volume_touched.clear();
 
         for (time, dp) in state.trades.datapoints.range(w.earliest..=w.latest_vis) {
             let bucket = (*time / w.aggr_time) as i64;
-            let x_bin = bucket.div_euclid(cols_per_x_bin.max(1));
-            let idx = (x_bin - min_x_bin) as usize;
+            let x_bin = bucket.div_euclid(cols_per_x_bin);
+            let idx_i64 = x_bin - min_x_bin;
+            if idx_i64 < 0 {
+                continue;
+            }
+            let idx = idx_i64 as usize;
+            if idx >= bins_len {
+                continue;
+            }
 
             let (buy, sell) = dp.buy_sell;
-            let e = &mut acc[idx];
+            if buy == 0.0 && sell == 0.0 {
+                continue;
+            }
+
+            let e = &mut self.volume_acc[idx];
+            let was_zero = e.0 == 0.0 && e.1 == 0.0;
             e.0 += buy;
             e.1 += sell;
+            if was_zero {
+                self.volume_touched.push(idx);
+            }
         }
 
+        if self.volume_touched.is_empty() {
+            return;
+        }
+
+        self.volume_touched.sort_unstable();
+        self.volume_touched.dedup();
+
         let mut max_total_vol: f32 = 0.0;
-        for (buy, sell) in acc.iter() {
-            max_total_vol = max_total_vol.max(*buy + *sell);
+        for &idx in &self.volume_touched {
+            let (buy, sell) = self.volume_acc[idx];
+            max_total_vol = max_total_vol.max(buy + sell);
         }
         if max_total_vol <= 0.0 {
             return;
@@ -966,18 +989,17 @@ impl HeatmapShader {
         let denom = max_total_vol.max(1e-12);
 
         let min_h_world: f32 = VOLUME_MIN_BAR_PX / w.sy;
-
         let ref_bucket = self.scroll_ref_bucket;
-
         let eps = 1e-12f32;
 
-        for (i, (buy, sell)) in acc.into_iter().enumerate() {
+        for &idx in &self.volume_touched {
+            let (buy, sell) = self.volume_acc[idx];
             let total = buy + sell;
             if total <= 0.0 {
                 continue;
             }
 
-            let x_bin = min_x_bin + i as i64;
+            let x_bin = min_x_bin + idx as i64;
 
             let start_bucket = x_bin * cols_per_x_bin;
             let mut end_bucket_excl = start_bucket + cols_per_x_bin;
@@ -994,6 +1016,7 @@ impl HeatmapShader {
             let x0_rel = (start_bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
             let x1_rel =
                 (end_bucket_excl - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+
             let (base_rgb, is_tie) = if buy > sell + eps {
                 (palette.buy_rgb, false)
             } else if sell > buy + eps {
@@ -1071,6 +1094,51 @@ impl HeatmapShader {
 
         let half_h = (tex_h as i32) / 2;
         self.scene.params.heatmap_a[1] = -(half_h as f32) - (delta_bins as f32);
+    }
+
+    fn build_heatmap_upload_plan(&mut self, tex_w: u32, tex_h: u32) -> scene::HeatmapUploadPlan {
+        let state = &mut self.data;
+
+        if state.depth_grid.take_full_dirty() {
+            self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
+
+            return scene::HeatmapUploadPlan::Full(scene::HeatmapTextureCpuFull {
+                width: tex_w,
+                height: tex_h,
+                bid: Arc::new(state.depth_grid.bid.clone()),
+                ask: Arc::new(state.depth_grid.ask.clone()),
+                generation: self.heatmap_tex_gen,
+            });
+        }
+
+        let xs = state.depth_grid.drain_dirty_columns();
+        if xs.is_empty() {
+            return scene::HeatmapUploadPlan::None;
+        }
+
+        let mut cols: Vec<scene::HeatmapColumnCpu> = Vec::with_capacity(xs.len());
+        for x in xs {
+            cols.push(scene::HeatmapColumnCpu {
+                width: tex_w,
+                height: tex_h,
+                x,
+                bid_col: Arc::new(state.depth_grid.extract_bid_column(x)),
+                ask_col: Arc::new(state.depth_grid.extract_ask_column(x)),
+            });
+        }
+
+        self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
+        scene::HeatmapUploadPlan::Cols {
+            cols,
+            generation: self.heatmap_tex_gen,
+        }
+    }
+
+    #[inline]
+    fn sync_grid_xy(&mut self) {
+        // Keep shader mapping in sync during interaction without doing any heavy rebuild work.
+        self.scene.params.grid[0] = self.column_world;
+        self.scene.params.grid[1] = self.row_h;
     }
 
     fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32) {
