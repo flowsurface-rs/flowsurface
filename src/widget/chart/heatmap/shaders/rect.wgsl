@@ -56,14 +56,16 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
     let volume_min_w_world = params.origin.y;
     let volume_gap_frac = params.origin.z;
+    let volume_x_shift_bucket = params.origin.w;
 
     let x_from_bins = input.x_from_bins != 0u;
 
     if !x_from_bins {
         world_pos = input.position + input.local_pos * input.size;
     } else {
-        let start = f32(input.x0_bin);
-        let end_excl = f32(input.x1_bin_excl);
+        let start = f32(input.x0_bin) + volume_x_shift_bucket;
+        let end_excl = f32(input.x1_bin_excl) + volume_x_shift_bucket;
+
         let end = min(end_excl, now_bucket_rel_f);
 
         let x0 = -((now_bucket_rel_f) - start) * col_w;

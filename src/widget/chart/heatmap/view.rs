@@ -121,7 +121,6 @@ pub struct ViewWindow {
     pub aggr_time: u64,
     pub earliest: u64,
     pub latest_vis: u64,
-    pub latest_bucket: i64,
 
     // Derived price window
     pub lowest: Price,
@@ -200,8 +199,6 @@ impl ViewWindow {
         let lowest = input.base_price.add_steps(min_steps, input.step);
         let highest = input.base_price.add_steps(max_steps, input.step);
 
-        let latest_bucket: i64 = (latest_time_for_view / input.aggr_time) as i64;
-
         // overlays (profile width depends on how much x>0 is visible)
         let full_right_edge = camera.right_edge(vw_px);
 
@@ -225,7 +222,6 @@ impl ViewWindow {
             aggr_time: input.aggr_time,
             earliest,
             latest_vis,
-            latest_bucket,
             lowest,
             highest,
             row_h,

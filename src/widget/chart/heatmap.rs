@@ -53,7 +53,11 @@ const VOLUME_BUCKET_GAP_FRAC: f32 = 0.10;
 const VOLUME_MIN_BAR_PX: f32 = 1.0; // min bar height in px
 const VOLUME_MIN_BAR_W_PX: f32 = 2.0; // min bar width in px (for x-binning)
 const MAX_COLS_PER_X_BIN: i64 = 4096;
-const VOLUME_TOTAL_ALPHA: f32 = 1.0;
+
+const VOLUME_TOTAL_ALPHA: f32 = 0.65;
+const VOLUME_DELTA_ALPHA: f32 = 1.0;
+
+const VOLUME_DELTA_TINT_TO_WHITE: f32 = 0.12;
 
 const MIN_ROW_H_WORLD: f32 = 0.01;
 const MAX_ROW_H_WORLD: f32 = 10.;
@@ -66,6 +70,9 @@ const REBUILD_DEBOUNCE_MS: u64 = 250;
 
 // Throttle depth denom recompute while interacting (keeps zoom smooth).
 const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
+
+// Shift volume-strip rects left by half a bucket to align with circle centers.
+const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -96,7 +103,7 @@ struct RealDataState {
     latest_time: u64,
     base_price: Price,
     clock: view::ExchangeClock,
-    depth_grid: depth_grid::DepthGridRing,
+    depth_grid: depth_grid::GridRing,
 }
 
 const DEPTH_GRID_GRACE_MS: u64 = 500;
@@ -109,8 +116,7 @@ impl RealDataState {
         heatmap: HistoricalDepth,
         trades: TimeSeries<HeatmapDataPoint>,
     ) -> Self {
-        let mut depth_grid =
-            depth_grid::DepthGridRing::new(DEPTH_GRID_HORIZON_MS, DEPTH_GRID_TEX_H);
+        let mut depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_MS, DEPTH_GRID_TEX_H);
         depth_grid.set_grace_ms(DEPTH_GRID_GRACE_MS);
 
         Self {
@@ -156,18 +162,19 @@ pub struct HeatmapShader {
 impl HeatmapShader {
     pub fn new(basis: Basis, tick_size: f32, ticker_info: TickerInfo) -> Self {
         let step = PriceStep::from_f32(tick_size);
+        let data = Self::make_real_data_state(basis, step, ticker_info);
 
-        let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
-        let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
+        let mut scene = Scene::new();
+        scene.params.origin[3] = VOLUME_X_SHIFT_BUCKET;
 
         Self {
             last_tick: None,
-            scene: Scene::new(),
+            scene,
             viewport: None,
             row_h: DEFAULT_ROW_H_WORLD,
             column_world: DEFAULT_COL_W_WORLD,
             palette: None,
-            data: RealDataState::new(basis, step, ticker_info, heatmap, trades),
+            data,
             profile_bid_acc: Vec::new(),
             profile_ask_acc: Vec::new(),
             scroll_ref_bucket: 0,
@@ -847,7 +854,17 @@ impl HeatmapShader {
 
         let state = &self.data;
 
-        // X downsampling: ensure each rendered bar is at least ~N pixels wide.
+        let latest_vis_for_strip: u64 = if self.render_latest_time > 0 {
+            w.latest_vis.min(self.render_latest_time.saturating_sub(1))
+        } else {
+            w.latest_vis
+        };
+        if latest_vis_for_strip < w.earliest {
+            return;
+        }
+        let latest_bucket_vis: i64 = (latest_vis_for_strip / w.aggr_time) as i64;
+
+        // X downsampling
         let px_per_col = self.column_world * w.sx;
         let px_per_drawn_col = px_per_col * (1.0 - VOLUME_BUCKET_GAP_FRAC);
         let mut cols_per_x_bin: i64 = 1;
@@ -858,7 +875,7 @@ impl HeatmapShader {
         let cols_per_x_bin = cols_per_x_bin.max(1);
 
         let start_bucket_vis = (w.earliest / w.aggr_time) as i64;
-        let end_bucket_vis = (w.latest_vis / w.aggr_time) as i64;
+        let end_bucket_vis = latest_bucket_vis;
 
         let min_x_bin = start_bucket_vis.div_euclid(cols_per_x_bin);
         let max_x_bin = end_bucket_vis.div_euclid(cols_per_x_bin);
@@ -868,12 +885,16 @@ impl HeatmapShader {
 
         let bins_len = (max_x_bin - min_x_bin + 1) as usize;
 
-        // Reuse buffers: O(bins_len) zeroing, but avoid allocs + avoid iterating bins with no data.
         self.volume_acc.resize(bins_len, (0.0, 0.0));
         self.volume_acc.iter_mut().for_each(|e| *e = (0.0, 0.0));
         self.volume_touched.clear();
 
-        for (time, dp) in state.trades.datapoints.range(w.earliest..=w.latest_vis) {
+        // Accumulate only up to `latest_vis_for_strip` (completed buckets only)
+        for (time, dp) in state
+            .trades
+            .datapoints
+            .range(w.earliest..=latest_vis_for_strip)
+        {
             let bucket = (*time / w.aggr_time) as i64;
             let x_bin = bucket.div_euclid(cols_per_x_bin);
             let idx_i64 = x_bin - min_x_bin;
@@ -931,14 +952,11 @@ impl HeatmapShader {
 
             let start_bucket = x_bin * cols_per_x_bin;
             let mut end_bucket_excl = start_bucket + cols_per_x_bin;
-            end_bucket_excl = end_bucket_excl.min(w.latest_bucket + 1);
 
+            // Clamp to the last completed bucket (+1 for exclusivity)
+            end_bucket_excl = end_bucket_excl.min(latest_bucket_vis + 1);
             if end_bucket_excl <= start_bucket {
                 continue;
-            }
-
-            if start_bucket <= w.latest_bucket && end_bucket_excl == w.latest_bucket + 1 {
-                end_bucket_excl = i64::MAX;
             }
 
             let x0_rel = (start_bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
@@ -968,21 +986,31 @@ impl HeatmapShader {
             if !is_tie {
                 let diff = (buy - sell).abs();
                 if diff > eps {
-                    let mut overlay_h = (diff / denom) * w.strip_h_world;
+                    let mut overlay_h = ((diff / denom) * w.strip_h_world).max(min_h_world);
                     overlay_h = overlay_h.min(total_h);
 
-                    if overlay_h > 0.0 {
-                        let overlay_center_y = w.strip_bottom_y - 0.5 * overlay_h;
+                    let t = VOLUME_DELTA_TINT_TO_WHITE;
+                    let overlay_rgb = [
+                        base_rgb[0] + (1.0 - base_rgb[0]) * t,
+                        base_rgb[1] + (1.0 - base_rgb[1]) * t,
+                        base_rgb[2] + (1.0 - base_rgb[2]) * t,
+                    ];
 
-                        rects.push(RectInstance {
-                            position: [0.0, overlay_center_y],
-                            size: [0.0, overlay_h],
-                            color: [base_rgb[0], base_rgb[1], base_rgb[2], VOLUME_TOTAL_ALPHA],
-                            x0_bin: x0_rel,
-                            x1_bin_excl: x1_rel,
-                            x_from_bins: 1,
-                        });
-                    }
+                    let overlay_center_y = w.strip_bottom_y - 0.5 * overlay_h;
+
+                    rects.push(RectInstance {
+                        position: [0.0, overlay_center_y],
+                        size: [0.0, overlay_h],
+                        color: [
+                            overlay_rgb[0],
+                            overlay_rgb[1],
+                            overlay_rgb[2],
+                            VOLUME_DELTA_ALPHA,
+                        ],
+                        x0_bin: x0_rel,
+                        x1_bin_excl: x1_rel,
+                        x_from_bins: 1,
+                    });
                 }
             }
         }
@@ -1066,5 +1094,66 @@ impl HeatmapShader {
             );
 
         self.column_world = new_col_w;
+    }
+
+    fn make_real_data_state(
+        basis: Basis,
+        step: PriceStep,
+        ticker_info: TickerInfo,
+    ) -> RealDataState {
+        let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
+        let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
+        RealDataState::new(basis, step, ticker_info, heatmap, trades)
+    }
+
+    fn apply_data_state(&mut self, basis: Basis, step: PriceStep, ticker_info: TickerInfo) {
+        self.data = Self::make_real_data_state(basis, step, ticker_info);
+        self.scene.params.origin[3] = VOLUME_X_SHIFT_BUCKET;
+
+        self.profile_bid_acc.clear();
+        self.profile_ask_acc.clear();
+        self.volume_acc.clear();
+        self.volume_touched.clear();
+
+        self.scroll_ref_bucket = 0;
+        self.x_phase_bucket = 0.0;
+        self.render_latest_time = 0;
+
+        self.data_gen = self.data_gen.wrapping_add(1);
+        self.depth_norm.invalidate();
+        self.x_axis_cache.clear();
+
+        self.clear_scene();
+        self.rebuild_policy = view::RebuildPolicy::Immediate;
+
+        if self.viewport.is_some() {
+            self.rebuild_instances();
+        }
+    }
+
+    pub fn set_tick_size(&mut self, tick_size: f32) {
+        if !tick_size.is_finite() || tick_size <= 0.0 {
+            return;
+        }
+
+        let basis = self.data.basis;
+        let ticker_info = self.data.ticker_info;
+
+        let step = PriceStep::from_f32(tick_size);
+
+        self.apply_data_state(basis, step, ticker_info);
+    }
+
+    pub fn set_basis(&mut self, basis: Basis) {
+        if basis == self.data.basis {
+            return;
+        }
+
+        let tick_size = self.data.step.to_f32_lossy();
+        let ticker_info = self.data.ticker_info;
+
+        let step = PriceStep::from_f32(tick_size);
+
+        self.apply_data_state(basis, step, ticker_info);
     }
 }

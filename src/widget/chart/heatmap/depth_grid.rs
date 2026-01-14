@@ -9,7 +9,7 @@ use crate::widget::chart::heatmap::scene;
 const Y_BLOCK_H: u32 = 16;
 
 #[derive(Debug, Clone)]
-pub struct DepthGridRing {
+pub struct GridRing {
     /// How much time to keep in the ring (ms).
     horizon_ms: u64,
 
@@ -39,7 +39,7 @@ pub struct DepthGridRing {
     block_max_ask: Vec<u32>,
 }
 
-impl DepthGridRing {
+impl GridRing {
     pub fn new(horizon_ms: u64, tex_h: u32) -> Self {
         Self {
             horizon_ms,

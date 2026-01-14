@@ -1111,6 +1111,9 @@ impl State {
                                         Content::Ladder(Some(p)) => {
                                             p.set_tick_size(tm.multiply_with_min_tick_size(ticker));
                                         }
+                                        Content::ShaderHeatmap { chart: Some(c), .. } => {
+                                            c.set_tick_size(tm.multiply_with_min_tick_size(ticker));
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1143,6 +1146,35 @@ impl State {
 
                                 match &mut self.content {
                                     Content::Heatmap { chart: Some(c), .. } => {
+                                        c.set_basis(new_basis);
+
+                                        if let Some(stream_type) =
+                                            self.streams.ready_iter_mut().and_then(|mut it| {
+                                                it.find(|s| {
+                                                    matches!(s, StreamKind::DepthAndTrades { .. })
+                                                })
+                                            })
+                                            && let StreamKind::DepthAndTrades {
+                                                push_freq,
+                                                ticker_info,
+                                                ..
+                                            } = stream_type
+                                            && ticker_info.exchange().is_custom_push_freq()
+                                        {
+                                            match new_basis {
+                                                Basis::Time(tf) => {
+                                                    *push_freq = exchange::PushFrequency::Custom(tf)
+                                                }
+                                                Basis::Tick(_) => {
+                                                    *push_freq =
+                                                        exchange::PushFrequency::ServerDefault
+                                                }
+                                            }
+                                        }
+
+                                        effect = Some(Effect::RefreshStreams);
+                                    }
+                                    Content::ShaderHeatmap { chart: Some(c), .. } => {
                                         c.set_basis(new_basis);
 
                                         if let Some(stream_type) =

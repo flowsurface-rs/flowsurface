@@ -43,7 +43,7 @@ impl DataPoint for HeatmapDataPoint {
 
         match self
             .grouped_trades
-            .binary_search_by(|probe| probe.compare_with(trade.price, trade.is_sell))
+            .binary_search_by(|probe| probe.compare_with(grouped_price, trade.is_sell))
         {
             Ok(index) => self.grouped_trades[index].qty += trade.qty,
             Err(index) => {
