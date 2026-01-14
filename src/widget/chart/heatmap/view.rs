@@ -1,4 +1,5 @@
 use crate::widget::chart::heatmap::scene::camera::Camera;
+use data::chart::heatmap::HistoricalDepth;
 use exchange::util::{Price, PriceStep};
 
 use iced::time::Instant;
@@ -18,6 +19,7 @@ impl RebuildPolicy {
         RebuildPolicy::Debounced { last_input: now }
     }
 
+    #[allow(dead_code)]
     pub fn should_rebuild(self, now: Instant, debounce_ms: u64) -> bool {
         match self {
             RebuildPolicy::Immediate => true,
@@ -43,7 +45,6 @@ impl ExchangeClock {
     pub fn anchor_with_update(self, depth_update_t: u64) -> Self {
         let now = Instant::now();
 
-        // Keep monotonic across updates + local prediction.
         let predicted = match self {
             ExchangeClock::Anchored {
                 anchor_exchange_ms,
@@ -236,5 +237,101 @@ impl ViewWindow {
             steps_per_y_bin,
             y_bin_h_world,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NormKey {
+    pub start_bucket: i64,
+    pub end_bucket_excl: i64,
+    pub y0_bin: i64,
+    pub y1_bin: i64,
+}
+
+#[derive(Debug)]
+pub struct DepthNormCache {
+    key: Option<NormKey>,
+    value: f32,
+    generation: u64,
+    last_recompute: Option<Instant>,
+}
+
+impl DepthNormCache {
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            value: 1.0,
+            generation: 0,
+            last_recompute: None,
+        }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.key = None;
+    }
+
+    pub fn compute_throttled(
+        &mut self,
+        hist: &HistoricalDepth,
+        w: &ViewWindow,
+        latest_incl: u64,
+        step: PriceStep,
+        data_gen: u64,
+        now: Instant,
+        is_interacting: bool,
+        throttle_ms: u64,
+    ) -> f32 {
+        if is_interacting && let Some(last) = self.last_recompute {
+            let dt_ms = now.saturating_duration_since(last).as_millis() as u64;
+            if dt_ms < throttle_ms {
+                return self.value.max(1e-6);
+            }
+        }
+
+        self.last_recompute = Some(now);
+        self.compute(hist, w, latest_incl, step, data_gen)
+    }
+
+    pub fn compute(
+        &mut self,
+        hist: &HistoricalDepth,
+        w: &ViewWindow,
+        latest_incl: u64,
+        step: PriceStep,
+        data_gen: u64,
+    ) -> f32 {
+        let aggr = w.aggr_time.max(1);
+        let start_bucket = (w.earliest / aggr) as i64;
+        let end_bucket_excl = (latest_incl / aggr) as i64;
+
+        let step_units = step.units.max(1);
+        let y_div = w.steps_per_y_bin.max(1);
+
+        let mut y0_bin = (w.lowest.units / step_units).div_euclid(y_div);
+        let mut y1_bin = (w.highest.units / step_units).div_euclid(y_div);
+        if y0_bin > y1_bin {
+            std::mem::swap(&mut y0_bin, &mut y1_bin);
+        }
+
+        let key = NormKey {
+            start_bucket,
+            end_bucket_excl,
+            y0_bin,
+            y1_bin,
+        };
+
+        if self.key == Some(key) && self.generation == data_gen {
+            return self.value.max(1e-6);
+        }
+
+        let max_qty = hist
+            .max_qty_in_range_raw(w.earliest, latest_incl, w.highest, w.lowest)
+            .max(1e-6);
+
+        self.key = Some(key);
+        self.value = max_qty;
+        self.generation = data_gen;
+
+        max_qty
     }
 }

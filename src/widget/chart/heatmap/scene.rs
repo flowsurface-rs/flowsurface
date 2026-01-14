@@ -19,10 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug)]
 pub enum HeatmapUploadPlan {
     Full(HeatmapTextureCpuFull),
-    Cols {
-        cols: Vec<HeatmapColumnCpu>,
-        generation: u64,
-    },
+    Cols(Vec<HeatmapColumnCpu>),
     None,
 }
 
@@ -62,6 +59,8 @@ pub struct Scene {
     pub camera: camera::Camera,
     pub params: ParamsUniform,
 
+    pub heatmap_tex_gen: u64,
+
     pub heatmap_update: Option<HeatmapColumnCpu>,
     pub heatmap_cols: Arc<[HeatmapColumnCpu]>,
     pub heatmap_cols_gen: u64,
@@ -78,6 +77,7 @@ impl Scene {
             circles_gen: 1,
             camera: camera::Camera::default(),
             params: ParamsUniform::default(),
+            heatmap_tex_gen: 1,
             heatmap_update: None,
             heatmap_cols: Arc::from(Vec::<HeatmapColumnCpu>::new()),
             heatmap_cols_gen: 1,
@@ -108,22 +108,31 @@ impl Scene {
         self.heatmap_cols_gen = generation;
     }
 
+    #[inline]
+    fn bump_heatmap_gen(&mut self) -> u64 {
+        self.heatmap_tex_gen = self.heatmap_tex_gen.wrapping_add(1);
+        self.heatmap_tex_gen
+    }
+
     pub fn apply_heatmap_upload_plan(&mut self, plan: HeatmapUploadPlan) {
         match plan {
-            HeatmapUploadPlan::Full(full) => {
-                let generation = full.generation;
+            HeatmapUploadPlan::Full(mut full) => {
+                let generation = self.bump_heatmap_gen();
+                full.generation = generation;
 
                 self.set_heatmap_full(Some(full));
                 self.set_heatmap_cols(Vec::new(), generation);
                 self.set_heatmap_update(None);
             }
-            HeatmapUploadPlan::Cols { cols, generation } => {
+            HeatmapUploadPlan::Cols(cols) => {
+                let generation = self.bump_heatmap_gen();
+
                 self.set_heatmap_cols(cols, generation);
                 self.set_heatmap_full(None);
                 self.set_heatmap_update(None);
             }
             HeatmapUploadPlan::None => {
-                // no-op: keep existing GPU texture
+                // no-op
             }
         }
     }
@@ -345,7 +354,7 @@ impl shader::Primitive for Primitive {
             *clip_bounds,
             self.rectangles.len() as u32,
             self.circles.len() as u32,
-            true, // draw heatmap if pipeline has textures bound; keep always on
+            true,
         );
     }
 }

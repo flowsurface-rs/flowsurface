@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use data::chart::heatmap::HistoricalDepth;
 use exchange::depth::Depth;
 use exchange::util::{Price, PriceStep};
+
+use crate::widget::chart::heatmap::scene;
 
 const Y_BLOCK_H: u32 = 16;
 
@@ -120,11 +124,6 @@ impl DepthGridRing {
     #[inline]
     pub fn tex_h(&self) -> u32 {
         self.tex_h
-    }
-
-    #[inline]
-    pub fn y_anchor(&self) -> Option<Price> {
-        self.y_anchor
     }
 
     #[inline]
@@ -378,7 +377,6 @@ impl DepthGridRing {
     /// Update the ring for a new snapshot at `rounded_t_ms` (must already be bucket-rounded).
     ///
     /// - Uses max-reduction per (bucket, y) to match the `accumulate_max` behavior.
-    /// - Uses fixed-point qty encoding (1e-4 resolution).
     pub fn ingest_snapshot(
         &mut self,
         depth: &Depth,
@@ -449,7 +447,6 @@ impl DepthGridRing {
 
         self.advance_and_fill_columns(bucket);
 
-        // snapshot column is authoritative
         self.clear_column(x);
         self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
         self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
@@ -584,7 +581,7 @@ impl DepthGridRing {
         let grace_b = self.grace_buckets();
 
         if grace_b > 0 && jump <= grace_b {
-            // Fill only the *missing* buckets (prev+1 .. new_bucket-1) by copying forward.
+            // Fill only the *missing* buckets (prev+1 .. new_bucket-1) by copying forward
             let mut from_x = (prev.rem_euclid(w)) as u32;
 
             let end_excl = new_bucket; // IMPORTANT: exclude new_bucket itself
@@ -594,7 +591,7 @@ impl DepthGridRing {
                 from_x = to_x;
             }
         } else {
-            // Clear only the *missing* buckets (prev+1 .. new_bucket-1).
+            // Clear only the *missing* buckets (prev+1 .. new_bucket-1)
             let mut b = prev + 1;
             while b < new_bucket {
                 let x = (b.rem_euclid(w)) as u32;
@@ -604,6 +601,74 @@ impl DepthGridRing {
         }
 
         self.last_bucket = Some(new_bucket);
+    }
+
+    /// Build a renderer upload plan from the ring's dirty flags.
+    pub fn build_scene_upload_plan(&mut self) -> scene::HeatmapUploadPlan {
+        if self.tex_w == 0 || self.tex_h == 0 {
+            return scene::HeatmapUploadPlan::None;
+        }
+
+        if self.take_full_dirty() {
+            return scene::HeatmapUploadPlan::Full(scene::HeatmapTextureCpuFull {
+                width: self.tex_w,
+                height: self.tex_h,
+                bid: Arc::new(self.bid.clone()),
+                ask: Arc::new(self.ask.clone()),
+                generation: 0, // filled by Scene::apply_heatmap_upload_plan
+            });
+        }
+
+        let xs = self.drain_dirty_columns();
+        if xs.is_empty() {
+            return scene::HeatmapUploadPlan::None;
+        }
+
+        let mut cols: Vec<scene::HeatmapColumnCpu> = Vec::with_capacity(xs.len());
+        for x in xs {
+            cols.push(scene::HeatmapColumnCpu {
+                width: self.tex_w,
+                height: self.tex_h,
+                x,
+                bid_col: Arc::new(self.extract_bid_column(x)),
+                ask_col: Arc::new(self.extract_ask_column(x)),
+            });
+        }
+
+        scene::HeatmapUploadPlan::Cols(cols)
+    }
+
+    /// Map an absolute bucket index to the ring texture x coordinate.
+    /// Returns 0 if the ring is not laid out yet.
+    #[inline]
+    pub fn ring_x_for_bucket(&self, bucket: i64) -> u32 {
+        if self.tex_w == 0 {
+            return 0;
+        }
+        (bucket.rem_euclid(self.tex_w as i64)) as u32
+    }
+
+    /// Value for the shader uniform `heatmap_a[1]` (y_start_bin).
+    ///
+    /// This is the y-bin offset that aligns the texture's internal `y_anchor`
+    /// with the current `base_price`.
+    #[inline]
+    pub fn heatmap_y_start_bin(&self, base_price: Price, step: PriceStep) -> f32 {
+        let tex_h = self.tex_h.max(1);
+        let half_h = (tex_h as i32) / 2;
+
+        let Some(anchor) = self.y_anchor else {
+            return -(half_h as f32);
+        };
+
+        let step_units = step.units.max(1);
+        let steps_per_y_bin = self.steps_per_y_bin.max(1);
+
+        // delta_bins = (base - anchor) in y-bins
+        let delta_steps: i64 = (base_price.units - anchor.units) / step_units;
+        let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
+
+        -(half_h as f32) - (delta_bins as f32)
     }
 }
 
