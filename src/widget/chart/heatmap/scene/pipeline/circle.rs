@@ -1,7 +1,6 @@
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CircleInstance {
-    // y stays world (you already compute it from price/bins)
     pub y_world: f32,
 
     // time in bucket space relative to scroll_ref_bucket

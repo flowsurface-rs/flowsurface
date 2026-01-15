@@ -251,6 +251,10 @@ impl HeatmapShader {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        if self.data.trades.datapoints.is_empty() {
+            return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
+        }
+
         let aggr_time = match self.data.basis {
             Basis::Time(interval) => Some(u64::from(interval)),
             Basis::Tick(_) => None,
@@ -290,6 +294,7 @@ impl HeatmapShader {
                 row_h: self.row_h,
                 cam_offset_y: self.scene.camera.offset[1],
                 cam_sy: self.scene.camera.scale[1].max(MIN_CAMERA_SCALE),
+                label_precision: self.data.ticker_info.min_ticksize,
             })
             .width(Fill)
             .height(Fill);
