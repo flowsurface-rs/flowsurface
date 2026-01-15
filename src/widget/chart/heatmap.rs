@@ -1,10 +1,11 @@
 mod depth_grid;
+mod overlay;
 mod scale;
 mod scene;
 mod view;
+mod widget;
 
 use crate::chart::Action;
-use crate::style::{self};
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
 use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
@@ -12,6 +13,7 @@ use crate::widget::chart::heatmap::scene::Scene;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use crate::widget::chart::heatmap::view::{ViewConfig, ViewInputs, ViewWindow};
+use crate::widget::chart::heatmap::widget::HeatmapShaderWidget;
 
 use data::aggr::time::{DataPoint, TimeSeries};
 use data::chart::Basis;
@@ -19,15 +21,12 @@ use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
 use exchange::depth::Depth;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
-use iced::time::Instant;
-use iced::widget::{Canvas, Space, column, container, mouse_area, row, rule, shader};
-use iced::{Element, Fill, Length, padding};
+
+use std::time::Instant;
 
 const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
 const DEPTH_QTY_SCALE: f32 = 1.0; // dollars-per-u32 step
-
-const TEXT_SIZE: f32 = 12.0;
 
 const DEFAULT_ROW_H_WORLD: f32 = 0.05;
 const DEFAULT_COL_W_WORLD: f32 = 0.05;
@@ -250,7 +249,7 @@ impl HeatmapShader {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self) -> iced::Element<'_, Message> {
         if self.data.trades.datapoints.is_empty() {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
@@ -259,13 +258,12 @@ impl HeatmapShader {
             Basis::Time(interval) => Some(u64::from(interval)),
             Basis::Tick(_) => None,
         };
-
         let render_latest_bucket: i64 = match aggr_time {
             Some(aggr) if aggr > 0 => (self.render_latest_time / aggr) as i64,
             _ => self.scroll_ref_bucket,
         };
 
-        let x_axis_label = Canvas::new(AxisXLabelCanvas {
+        let x_axis = AxisXLabelCanvas {
             cache: &self.x_axis_cache,
             latest_bucket: render_latest_bucket,
             aggr_time,
@@ -274,59 +272,19 @@ impl HeatmapShader {
             cam_sx: self.scene.camera.scale[0].max(MIN_CAMERA_SCALE),
             cam_right_pad_frac: self.scene.camera.right_pad_frac,
             x_phase_bucket: self.x_phase_bucket,
-        })
-        .width(Fill)
-        .height(iced::Length::Fixed(28.));
-
-        let y_labels_width: Length = {
-            let precision = self.data.ticker_info.min_ticksize;
-
-            let value = self.data.base_price.to_string(precision);
-            let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
-
-            Length::Fixed(width.ceil())
+        };
+        let y_axis = AxisYLabelCanvas {
+            base_price: self.data.base_price,
+            step: self.data.step,
+            row_h: self.row_h,
+            cam_offset_y: self.scene.camera.offset[1],
+            cam_sy: self.scene.camera.scale[1].max(MIN_CAMERA_SCALE),
+            label_precision: self.data.ticker_info.min_ticksize,
         };
 
-        let content: Element<_> = {
-            let y_axis_label = Canvas::new(AxisYLabelCanvas {
-                base_price: self.data.base_price,
-                step: self.data.step,
-                row_h: self.row_h,
-                cam_offset_y: self.scene.camera.offset[1],
-                cam_sy: self.scene.camera.scale[1].max(MIN_CAMERA_SCALE),
-                label_precision: self.data.ticker_info.min_ticksize,
-            })
-            .width(Fill)
-            .height(Fill);
+        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay::OverlayCanvas);
 
-            row![
-                shader(&self.scene)
-                    .width(Fill)
-                    .height(Fill)
-                    .width(Length::FillPortion(10))
-                    .height(Length::FillPortion(120)),
-                rule::vertical(1).style(style::split_ruler),
-                container(mouse_area(y_axis_label))
-                    .width(y_labels_width)
-                    .height(Length::FillPortion(120))
-            ]
-            .into()
-        };
-
-        column![
-            content,
-            rule::horizontal(1).style(style::split_ruler),
-            row![
-                container(mouse_area(x_axis_label))
-                    .width(Length::FillPortion(10))
-                    .height(Length::Fixed(26.0)),
-                Space::new()
-                    .width(y_labels_width)
-                    .height(Length::Fixed(26.0))
-            ]
-        ]
-        .padding(padding::left(1).right(1).bottom(1))
-        .into()
+        iced::widget::container(chart).padding(1).into()
     }
 
     /// called periodically on every frame, monitor refresh rates

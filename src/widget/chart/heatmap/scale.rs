@@ -5,7 +5,7 @@ pub use super::Message;
 
 #[derive(Debug, Default)]
 pub struct AxisInteraction {
-    kind: AxisInteractionKind,
+    pub kind: AxisInteractionKind,
 }
 
 #[derive(Debug, Default)]

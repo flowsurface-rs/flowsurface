@@ -63,6 +63,7 @@ exchange = { version = "0.1.0", path = "exchange", package = "flowsurface-exchan
 data = { version = "0.1.0", path = "data", package = "flowsurface-data" }
 bytemuck = "1.24.0"
 rand = "0.9.2"
+iced_wgpu = "0.14.0"
 
 [features]
 debug = ["iced/hot"]

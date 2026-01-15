@@ -1142,6 +1142,7 @@ dependencies = [
  "iced",
  "iced_core",
  "iced_futures",
+ "iced_wgpu",
  "log",
  "num-traits",
  "palette",
