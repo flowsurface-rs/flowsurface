@@ -102,22 +102,22 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
                 // Volume strip denom label:
                 // HUD-anchored to the overlay bounds (top-right of the whole overlay).
-                if let Some(qty) = self.volume_strip_max_qty {
-                    if strip_h_px >= 16.0 {
-                        let tx = bounds.width - OVERLAY_LABEL_PAD_PX;
-                        let ty = strip_top_y + OVERLAY_LABEL_PAD_PX;
+                if let Some(qty) = self.volume_strip_max_qty
+                    && strip_h_px >= 16.0
+                {
+                    let tx = bounds.width - OVERLAY_LABEL_PAD_PX;
+                    let ty = strip_top_y + OVERLAY_LABEL_PAD_PX;
 
-                        frame.fill_text(canvas::Text {
-                            content: abbr_large_numbers(qty),
-                            position: Point::new(tx, ty),
-                            size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
-                            color: palette.background.base.text.scale_alpha(0.85),
-                            font: style::AZERET_MONO,
-                            align_x: Alignment::End.into(),
-                            align_y: Alignment::Start.into(),
-                            ..canvas::Text::default()
-                        });
-                    }
+                    frame.fill_text(canvas::Text {
+                        content: abbr_large_numbers(qty),
+                        position: Point::new(tx, ty),
+                        size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                        color: palette.background.base.text.scale_alpha(0.85),
+                        font: style::AZERET_MONO,
+                        align_x: Alignment::End.into(),
+                        align_y: Alignment::Start.into(),
+                        ..canvas::Text::default()
+                    });
                 }
 
                 // Profile denom label:

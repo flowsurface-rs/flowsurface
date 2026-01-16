@@ -18,7 +18,7 @@ const DEFAULT_X_AXIS_HEIGHT: f32 = 24.0; // px
 pub struct HeatmapShaderWidget<'a> {
     scene: &'a Scene,
     x_axis: AxisXLabelCanvas<'a>,
-    y_axis: AxisYLabelCanvas,
+    y_axis: AxisYLabelCanvas<'a>,
     overlay: OverlayCanvas<'a>,
     y_axis_gutter_px: f32,
     x_axis_height_px: f32,
@@ -28,7 +28,7 @@ impl<'a> HeatmapShaderWidget<'a> {
     pub fn new(
         scene: &'a Scene,
         x_axis: AxisXLabelCanvas<'a>,
-        y_axis: AxisYLabelCanvas,
+        y_axis: AxisYLabelCanvas<'a>,
         overlay: OverlayCanvas<'a>,
     ) -> Self {
         Self {
@@ -57,7 +57,7 @@ struct State {
     scene_state: <Scene as shader::Program<Message>>::State,
 
     x_axis_state: <AxisXLabelCanvas<'static> as canvas::Program<Message>>::State,
-    y_axis_state: <AxisYLabelCanvas as canvas::Program<Message>>::State,
+    y_axis_state: <AxisYLabelCanvas<'static> as canvas::Program<Message>>::State,
     overlay_state: <OverlayCanvas<'static> as canvas::Program<Message>>::State,
 
     // `Message::BoundsChanged` publishes when plot bounds change,

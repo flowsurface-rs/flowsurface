@@ -147,6 +147,8 @@ pub struct HeatmapShader {
     scroll_ref_bucket: i64,
     x_phase_bucket: f32,
     render_latest_time: u64,
+
+    y_axis_cache: iced::widget::canvas::Cache,
     x_axis_cache: iced::widget::canvas::Cache,
     overlay_cache: iced::widget::canvas::Cache,
     scale_labels_cache: iced::widget::canvas::Cache,
@@ -186,6 +188,7 @@ impl HeatmapShader {
             scroll_ref_bucket: 0,
             x_phase_bucket: 0.0,
             render_latest_time: 0,
+            y_axis_cache: iced::widget::canvas::Cache::new(),
             x_axis_cache: iced::widget::canvas::Cache::new(),
             overlay_cache: iced::widget::canvas::Cache::new(),
             scale_labels_cache: iced::widget::canvas::Cache::new(),
@@ -284,6 +287,7 @@ impl HeatmapShader {
             x_phase_bucket: self.x_phase_bucket,
         };
         let y_axis = AxisYLabelCanvas {
+            cache: &self.y_axis_cache,
             base_price: self.data.base_price,
             step: self.data.step,
             row_h: self.row_h,
@@ -407,6 +411,7 @@ impl HeatmapShader {
             }
 
             self.x_axis_cache.clear();
+            self.y_axis_cache.clear();
         }
 
         if self.palette.is_none() {

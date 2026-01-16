@@ -321,11 +321,11 @@ impl State {
                         .unwrap_or(Basis::default_heatmap_time(Some(derived_plan.ticker_info)));
 
                     let content = Content::ShaderHeatmap {
-                        chart: Some(HeatmapShader::new(
+                        chart: Some(Box::new(HeatmapShader::new(
                             basis,
                             derived_plan.tick_size,
                             base_ticker,
-                        )),
+                        ))),
                     };
 
                     let streams = vec![depth_stream(&derived_plan)];
@@ -1703,7 +1703,7 @@ pub enum Content {
         studies: Vec<data::chart::heatmap::HeatmapStudy>,
     },
     ShaderHeatmap {
-        chart: Option<HeatmapShader>,
+        chart: Option<Box<HeatmapShader>>,
     },
     Kline {
         chart: Option<KlineChart>,

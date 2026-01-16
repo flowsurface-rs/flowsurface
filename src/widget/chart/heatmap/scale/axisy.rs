@@ -5,7 +5,8 @@ use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
 /// Rough vertical spacing (in screen pixels) between Y-axis labels.
 const LABEL_TARGET_PX: f64 = 48.0;
 
-pub struct AxisYLabelCanvas {
+pub struct AxisYLabelCanvas<'a> {
+    pub cache: &'a iced::widget::canvas::Cache,
     pub base_price: Price,
     pub step: PriceStep,
     pub row_h: f32,
@@ -16,7 +17,7 @@ pub struct AxisYLabelCanvas {
     pub label_precision: MinTicksize,
 }
 
-impl canvas::Program<Message> for AxisYLabelCanvas {
+impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
     type State = AxisInteraction;
 
     fn update(
@@ -78,71 +79,71 @@ impl canvas::Program<Message> for AxisYLabelCanvas {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-
         if !self.row_h.is_finite()
             || self.row_h <= 0.0
             || !self.cam_sy.is_finite()
             || self.cam_sy <= 0.0
         {
-            return vec![frame.into_geometry()];
+            return vec![];
         }
 
-        let vh = bounds.height as f64;
+        let tick_labels = self.cache.draw(renderer, bounds.size(), |frame| {
+            let vh = bounds.height as f64;
 
-        let cam_offset_y = self.cam_offset_y as f64;
-        let cam_sy = self.cam_sy as f64;
-        let row_h = self.row_h as f64;
+            let cam_offset_y = self.cam_offset_y as f64;
+            let cam_sy = self.cam_sy as f64;
+            let row_h = self.row_h as f64;
 
-        let y_world_top = cam_offset_y + (0.0 - 0.5 * vh) / cam_sy;
-        let y_world_bottom = cam_offset_y + (vh - 0.5 * vh) / cam_sy;
+            let y_world_top = cam_offset_y + (0.0 - 0.5 * vh) / cam_sy;
+            let y_world_bottom = cam_offset_y + (vh - 0.5 * vh) / cam_sy;
 
-        let min_steps = (-(y_world_bottom) / row_h).floor() as i64;
-        let max_steps = (-(y_world_top) / row_h).ceil() as i64;
+            let min_steps = (-(y_world_bottom) / row_h).floor() as i64;
+            let max_steps = (-(y_world_top) / row_h).ceil() as i64;
 
-        let px_per_step = (row_h * cam_sy).max(1e-9);
+            let px_per_step = (row_h * cam_sy).max(1e-9);
 
-        let rough_every_steps = (LABEL_TARGET_PX / px_per_step).ceil() as i64;
-        let every_steps = super::nice_step_i64(rough_every_steps.max(1));
+            let rough_every_steps = (LABEL_TARGET_PX / px_per_step).ceil() as i64;
+            let every_steps = super::nice_step_i64(rough_every_steps.max(1));
 
-        let text_color = theme.palette().text;
-        let font_size = 12.0f32;
+            let text_color = theme.palette().text;
+            let font_size = 12.0f32;
 
-        let x = bounds.width / 2.0;
+            let x = bounds.width / 2.0;
 
-        let mut s = min_steps.div_euclid(every_steps) * every_steps;
-        if s < min_steps {
-            s += every_steps;
-        }
-
-        while s <= max_steps {
-            let y_world = -((s as f64 + 0.5) * row_h);
-            let y_px = (y_world - cam_offset_y) * cam_sy + 0.5 * vh;
-            let y_px = y_px as f32;
-
-            if (0.0..=bounds.height).contains(&y_px) {
-                let price = self.base_price.add_steps(s, self.step);
-                let label = price.to_string(self.label_precision);
-
-                frame.fill_text(canvas::Text {
-                    content: label,
-                    position: iced::Point::new(x, y_px),
-                    color: text_color,
-                    size: font_size.into(),
-                    font: crate::style::AZERET_MONO,
-                    align_x: iced::Alignment::Center.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    ..Default::default()
-                });
+            let mut s = min_steps.div_euclid(every_steps) * every_steps;
+            if s < min_steps {
+                s += every_steps;
             }
 
-            s = s.saturating_add(every_steps);
-            if every_steps <= 0 {
-                break;
-            }
-        }
+            while s <= max_steps {
+                let y_world = -((s as f64 + 0.5) * row_h);
+                let y_px = (y_world - cam_offset_y) * cam_sy + 0.5 * vh;
+                let y_px = y_px as f32;
 
-        vec![frame.into_geometry()]
+                if (0.0..=bounds.height).contains(&y_px) {
+                    let price = self.base_price.add_steps(s, self.step);
+                    let label = price.to_string(self.label_precision);
+
+                    frame.fill_text(canvas::Text {
+                        content: label,
+                        position: iced::Point::new(x, y_px),
+                        color: text_color,
+                        size: font_size.into(),
+                        font: crate::style::AZERET_MONO,
+                        align_x: iced::Alignment::Center.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        ..Default::default()
+                    });
+                }
+
+                s = s.saturating_add(every_steps);
+                if every_steps <= 0 {
+                    break;
+                }
+            }
+        });
+
+        vec![tick_labels]
     }
 
     fn mouse_interaction(
