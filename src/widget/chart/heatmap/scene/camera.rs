@@ -44,6 +44,24 @@ impl Camera {
         [center_x, center_y]
     }
 
+    /// Convert world coords to screen pixel coords (origin top-left of viewport).
+    pub fn world_to_screen(
+        &self,
+        world_x: f32,
+        world_y: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> [f32; 2] {
+        let sx = self.scale[0].max(1e-6);
+        let sy = self.scale[1].max(1e-6);
+        let [cx, cy] = self.center(viewport_w);
+
+        let screen_x = (world_x - cx) * sx + viewport_w * 0.5;
+        let screen_y = (world_y - cy) * sy + viewport_h * 0.5;
+
+        [screen_x, screen_y]
+    }
+
     pub fn zoom_at_cursor(
         &mut self,
         factor: f32,

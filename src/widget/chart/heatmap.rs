@@ -7,6 +7,7 @@ mod widget;
 
 use crate::chart::Action;
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
+use crate::widget::chart::heatmap::overlay::OverlayCanvas;
 use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
 use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
 use crate::widget::chart::heatmap::scene::Scene;
@@ -147,6 +148,8 @@ pub struct HeatmapShader {
     x_phase_bucket: f32,
     render_latest_time: u64,
     x_axis_cache: iced::widget::canvas::Cache,
+    overlay_cache: iced::widget::canvas::Cache,
+    scale_labels_cache: iced::widget::canvas::Cache,
 
     // Cache for depth normalization denom (max qty) to avoid per-frame scans.
     depth_norm: view::DepthNormCache,
@@ -157,6 +160,9 @@ pub struct HeatmapShader {
     volume_touched: Vec<usize>,
 
     rebuild_policy: view::RebuildPolicy,
+    // overlay scale maxima (denoms actually used to scale the overlays)
+    profile_scale_max_qty: Option<f32>,
+    volume_strip_scale_max_qty: Option<f32>,
 }
 
 impl HeatmapShader {
@@ -181,11 +187,15 @@ impl HeatmapShader {
             x_phase_bucket: 0.0,
             render_latest_time: 0,
             x_axis_cache: iced::widget::canvas::Cache::new(),
+            overlay_cache: iced::widget::canvas::Cache::new(),
+            scale_labels_cache: iced::widget::canvas::Cache::new(),
             depth_norm: view::DepthNormCache::new(),
             data_gen: 1,
             volume_acc: Vec::new(),
             volume_touched: Vec::new(),
             rebuild_policy: view::RebuildPolicy::Idle,
+            profile_scale_max_qty: None,
+            volume_strip_scale_max_qty: None,
         }
     }
 
@@ -282,7 +292,29 @@ impl HeatmapShader {
             label_precision: self.data.ticker_info.min_ticksize,
         };
 
-        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay::OverlayCanvas);
+        let overlay = OverlayCanvas {
+            scene: &self.scene,
+            depth_grid: &self.data.depth_grid,
+            base_price: self.data.base_price,
+            step: self.data.step,
+            scroll_ref_bucket: self.scroll_ref_bucket,
+            qty_scale_inv: 1.0 / DEPTH_QTY_SCALE,
+            col_w_world: self.column_world,
+            row_h_world: self.row_h,
+            min_camera_scale: MIN_CAMERA_SCALE,
+            tooltip_cache: &self.overlay_cache,
+            scale_labels_cache: &self.scale_labels_cache,
+
+            profile_col_width_px: PROFILE_COL_WIDTH_PX,
+            strip_height_frac: STRIP_HEIGHT_FRAC,
+
+            // denom used to scale the strip bars
+            volume_strip_max_qty: self.volume_strip_scale_max_qty,
+            // denom used to scale profile bars
+            profile_max_qty: self.profile_scale_max_qty,
+        };
+
+        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
 
         iced::widget::container(chart).padding(1).into()
     }
@@ -380,10 +412,14 @@ impl HeatmapShader {
         if self.palette.is_none() {
             return Some(Action::RequestPalette);
         }
+
+        self.overlay_cache.clear();
+        self.scale_labels_cache.clear();
+
         None
     }
 
-    /// only data insertion point, called from outside when new data arrives
+    /// only data insertion point, called when new data arrives
     /// could be 1s, 500ms or 100ms, on par with aggregation interval but with additional network latency
     pub fn insert_datapoint(
         &mut self,
@@ -817,6 +853,8 @@ impl HeatmapShader {
             return;
         }
 
+        self.profile_scale_max_qty = Some(max_latest_qty);
+
         let min_bar_w_world: f32 = PROFILE_MIN_BAR_PX / w.sx; // ~N px
 
         for i in 0..len {
@@ -948,6 +986,8 @@ impl HeatmapShader {
         if max_total_vol <= 0.0 {
             return;
         }
+        self.volume_strip_scale_max_qty = Some(max_total_vol);
+
         let denom = max_total_vol.max(1e-12);
 
         let min_h_world: f32 = VOLUME_MIN_BAR_PX / w.sy;
@@ -1135,6 +1175,9 @@ impl HeatmapShader {
         self.data_gen = self.data_gen.wrapping_add(1);
         self.depth_norm.invalidate();
         self.x_axis_cache.clear();
+
+        self.profile_scale_max_qty = None;
+        self.volume_strip_scale_max_qty = None;
 
         self.clear_scene();
         self.rebuild_policy = view::RebuildPolicy::Immediate;

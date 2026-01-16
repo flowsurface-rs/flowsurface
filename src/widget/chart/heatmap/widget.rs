@@ -19,7 +19,7 @@ pub struct HeatmapShaderWidget<'a> {
     scene: &'a Scene,
     x_axis: AxisXLabelCanvas<'a>,
     y_axis: AxisYLabelCanvas,
-    overlay: OverlayCanvas,
+    overlay: OverlayCanvas<'a>,
     y_axis_gutter_px: f32,
     x_axis_height_px: f32,
 }
@@ -29,7 +29,7 @@ impl<'a> HeatmapShaderWidget<'a> {
         scene: &'a Scene,
         x_axis: AxisXLabelCanvas<'a>,
         y_axis: AxisYLabelCanvas,
-        overlay: OverlayCanvas,
+        overlay: OverlayCanvas<'a>,
     ) -> Self {
         Self {
             scene,
@@ -58,7 +58,7 @@ struct State {
 
     x_axis_state: <AxisXLabelCanvas<'static> as canvas::Program<Message>>::State,
     y_axis_state: <AxisYLabelCanvas as canvas::Program<Message>>::State,
-    overlay_state: <OverlayCanvas as canvas::Program<Message>>::State,
+    overlay_state: <OverlayCanvas<'static> as canvas::Program<Message>>::State,
 
     // `Message::BoundsChanged` publishes when plot bounds change,
     // so `HeatmapShader` keeps working even if the current event is over an axis.
@@ -217,6 +217,13 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                 State::apply_action(shell, a);
             }
 
+            if let Some(a) =
+                self.overlay
+                    .update(&mut state.overlay_state, event, plot_bounds, cursor)
+            {
+                State::apply_action(shell, a);
+            }
+
             return;
         }
 
@@ -232,12 +239,20 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                     .update(&mut state.y_axis_state, event, y_axis_bounds, cursor)
         {
             State::apply_action(shell, a);
-        } else if (over_plot || plot_dragging)
-            && let Some(a) = self
+        } else if over_plot || plot_dragging {
+            if let Some(a) = self
                 .scene
                 .update(&mut state.scene_state, event, plot_bounds, cursor)
-        {
-            State::apply_action(shell, a);
+            {
+                State::apply_action(shell, a);
+            }
+
+            if let Some(a) =
+                self.overlay
+                    .update(&mut state.overlay_state, event, plot_bounds, cursor)
+            {
+                State::apply_action(shell, a);
+            }
         }
     }
 
@@ -275,13 +290,18 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
             use iced_wgpu::graphics::geometry::Renderer as _;
 
             // 2) Overlay canvas on top of shader (same bounds)
-            renderer.with_translation(Vector::new(plot_bounds.x, plot_bounds.y), |renderer| {
-                for layer in
-                    self.overlay
-                        .draw(&state.overlay_state, renderer, theme, plot_bounds, cursor)
-                {
-                    renderer.draw_geometry(layer);
-                }
+            renderer.with_layer(plot_bounds, |renderer| {
+                renderer.with_translation(Vector::new(plot_bounds.x, plot_bounds.y), |renderer| {
+                    for layer in self.overlay.draw(
+                        &state.overlay_state,
+                        renderer,
+                        theme,
+                        plot_bounds,
+                        cursor,
+                    ) {
+                        renderer.draw_geometry(layer);
+                    }
+                });
             });
 
             // 3) Axes canvases
