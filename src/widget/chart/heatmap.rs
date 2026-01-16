@@ -74,6 +74,17 @@ const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
 // Shift volume-strip rects left by half a bucket to align with circle centers.
 const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
 
+const DEPTH_GRID_GRACE_MS: u64 = 500;
+
+#[derive(Debug, Clone, Copy)]
+enum FollowMode {
+    Live,
+    Paused {
+        render_latest_time: u64,
+        x_phase_bucket: f32,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     BoundsChanged([f32; 2]),
@@ -105,8 +116,6 @@ struct RealDataState {
     clock: view::ExchangeClock,
     depth_grid: depth_grid::GridRing,
 }
-
-const DEPTH_GRID_GRACE_MS: u64 = 500;
 
 impl RealDataState {
     pub fn new(
@@ -165,6 +174,11 @@ pub struct HeatmapShader {
     // overlay scale maxima (denoms actually used to scale the overlays)
     profile_scale_max_qty: Option<f32>,
     volume_strip_scale_max_qty: Option<f32>,
+    follow: FollowMode,
+    pending_mid_price: Option<Price>,
+
+    // Force a full rebuild_from_historical even when y-binning didn't change (used on resume).
+    force_rebuild_from_historical: bool,
 }
 
 impl HeatmapShader {
@@ -199,6 +213,9 @@ impl HeatmapShader {
             rebuild_policy: view::RebuildPolicy::Idle,
             profile_scale_max_qty: None,
             volume_strip_scale_max_qty: None,
+            follow: FollowMode::Live,
+            pending_mid_price: None,
+            force_rebuild_from_historical: false,
         }
     }
 
@@ -244,8 +261,14 @@ impl HeatmapShader {
                 self.zoom_row_h_at(factor, cursor_y, viewport_h);
                 self.sync_grid_xy();
 
+                // Rebuild overlays quickly.
                 self.try_rebuild_overlays();
 
+                // If y-binning changed, do a full rebuild right away to keep heatmap + overlays aligned.
+                // (especially noticeable in paused mode)
+                self.force_rebuild_if_ybin_changed();
+
+                // If we didn't rebuild immediately, keep the usual debounce behavior.
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomColumnWorldAt {
@@ -345,16 +368,35 @@ impl HeatmapShader {
         }
 
         if let Some(exchange_now_ms) = self.data.clock.estimate_now_ms(now_i) {
-            let render_latest_time = (exchange_now_ms / aggr_time) * aggr_time;
-            let phase_ms = exchange_now_ms.saturating_sub(render_latest_time);
-            let phase = (phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
+            // Bucket boundary can jitter due to clock estimation => make render time monotonic in Live mode.
+            let bucketed = (exchange_now_ms / aggr_time) * aggr_time;
+
+            let live_render_latest_time = match self.follow {
+                FollowMode::Live => self.render_latest_time.max(bucketed),
+                FollowMode::Paused {
+                    render_latest_time, ..
+                } => render_latest_time,
+            };
+
+            let live_phase_ms = exchange_now_ms.saturating_sub(live_render_latest_time);
+            let live_phase = (live_phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
+
+            self.auto_update_follow_mode(vw_px, vh_px, live_render_latest_time, live_phase);
+
+            let (render_latest_time, x_phase_bucket) = match self.follow {
+                FollowMode::Live => (live_render_latest_time, live_phase),
+                FollowMode::Paused {
+                    render_latest_time,
+                    x_phase_bucket,
+                } => (render_latest_time, x_phase_bucket),
+            };
 
             self.render_latest_time = render_latest_time;
-            self.x_phase_bucket = phase;
+            self.x_phase_bucket = x_phase_bucket;
 
             if let Some(w) = self.compute_view_window(vw_px, vh_px) {
-                // Keep time-origin uniforms up to date regardless of interaction
-                let render_bucket: i64 = (render_latest_time / aggr_time) as i64;
+                let render_latest_time_eff = self.effective_render_latest_time();
+                let render_bucket: i64 = (render_latest_time_eff / aggr_time) as i64;
 
                 if self.scroll_ref_bucket == 0 {
                     self.scroll_ref_bucket = render_bucket;
@@ -363,8 +405,14 @@ impl HeatmapShader {
                 let delta_buckets: i64 = render_bucket - self.scroll_ref_bucket;
                 self.scene.params.origin[0] = (delta_buckets as f32) + self.x_phase_bucket;
 
-                let latest_bucket_data: i64 = (self.data.latest_time / aggr_time) as i64;
-                let latest_rel: i64 = latest_bucket_data - self.scroll_ref_bucket;
+                let latest_time_for_heatmap = if self.is_paused() {
+                    render_latest_time_eff
+                } else {
+                    self.data.latest_time
+                };
+
+                let latest_bucket_for_scene: i64 = (latest_time_for_heatmap / aggr_time) as i64;
+                let latest_rel: i64 = latest_bucket_for_scene - self.scroll_ref_bucket;
                 self.scene.params.heatmap_a[0] = latest_rel as f32;
 
                 match self.rebuild_policy {
@@ -385,7 +433,6 @@ impl HeatmapShader {
                     view::RebuildPolicy::Idle => {}
                 }
 
-                // Keep denom + y_start updated (but throttle denom scans while interacting).
                 let latest_incl = w.latest_vis.saturating_add(w.aggr_time);
 
                 let is_interacting =
@@ -403,7 +450,6 @@ impl HeatmapShader {
                 );
                 self.scene.params.depth[0] = denom;
 
-                // Keep y_start_bin aligned to ring anchor/base_price.
                 self.scene.params.heatmap_a[1] = self
                     .data
                     .depth_grid
@@ -432,6 +478,7 @@ impl HeatmapShader {
         depth_update_t: u64,
         depth: &Depth,
     ) {
+        let paused = matches!(self.follow, FollowMode::Paused { .. });
         let state = &mut self.data;
 
         let aggr_time: u64 = match state.basis {
@@ -463,68 +510,77 @@ impl HeatmapShader {
 
         if rounded_t >= state.latest_time {
             if let Some(mid) = depth.mid_price() {
-                state.base_price = mid.round_to_step(state.step);
+                let mid_rounded = mid.round_to_step(state.step);
+                if paused {
+                    self.pending_mid_price = Some(mid_rounded);
+                } else {
+                    state.base_price = mid_rounded;
+                }
             }
             state.latest_time = rounded_t;
         }
 
-        state.depth_grid.ensure_layout(aggr_time);
+        // While paused, avoid updating the GPU ring + uniforms per-tick; we'll catch up via
+        // rebuild_from_historical on resume.
+        if !paused {
+            let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
 
-        let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+            state.depth_grid.ingest_snapshot(
+                depth,
+                rounded_t,
+                state.step,
+                DEPTH_QTY_SCALE,
+                state.base_price,
+                steps_per_y_bin,
+            );
 
-        state.depth_grid.ingest_snapshot(
-            depth,
-            rounded_t,
-            state.step,
-            DEPTH_QTY_SCALE,
-            state.base_price,
-            steps_per_y_bin,
-        );
+            let tex_w = state.depth_grid.tex_w();
+            let tex_h = state.depth_grid.tex_h();
+
+            if let Some(p) = &self.palette {
+                self.scene.params.bid_rgb = [p.bid_rgb[0], p.bid_rgb[1], p.bid_rgb[2], 0.0];
+                self.scene.params.ask_rgb = [p.ask_rgb[0], p.ask_rgb[1], p.ask_rgb[2], 0.0];
+            }
+
+            if tex_w > 0 && tex_h > 0 {
+                let bucket = (rounded_t / aggr_time) as i64;
+
+                if self.scroll_ref_bucket == 0 {
+                    self.scroll_ref_bucket = bucket;
+                }
+
+                let latest_rel: i64 = bucket - self.scroll_ref_bucket;
+                self.scene.params.heatmap_a[0] = latest_rel as f32;
+                let latest_x_ring: u32 = state.depth_grid.ring_x_for_bucket(bucket);
+                self.scene.params.heatmap_a[3] = latest_x_ring as f32;
+
+                self.scene.params.heatmap_b = [
+                    tex_w as f32,
+                    tex_h as f32,
+                    (tex_w - 1) as f32,
+                    1.0 / DEPTH_QTY_SCALE,
+                ];
+
+                self.scene.params.heatmap_a[1] = state
+                    .depth_grid
+                    .heatmap_y_start_bin(state.base_price, state.step);
+
+                let plan = state.depth_grid.build_scene_upload_plan();
+                self.scene.apply_heatmap_upload_plan(plan);
+            }
+        }
 
         self.data_gen = self.data_gen.wrapping_add(1);
         self.depth_norm.invalidate();
-
-        let tex_w = state.depth_grid.tex_w();
-        let tex_h = state.depth_grid.tex_h();
-
-        if let Some(p) = &self.palette {
-            self.scene.params.bid_rgb = [p.bid_rgb[0], p.bid_rgb[1], p.bid_rgb[2], 0.0];
-            self.scene.params.ask_rgb = [p.ask_rgb[0], p.ask_rgb[1], p.ask_rgb[2], 0.0];
-        }
-
-        if tex_w > 0 && tex_h > 0 {
-            let bucket = (rounded_t / aggr_time) as i64;
-
-            if self.scroll_ref_bucket == 0 {
-                self.scroll_ref_bucket = bucket;
-            }
-
-            // uniforms
-            let latest_rel: i64 = bucket - self.scroll_ref_bucket;
-            self.scene.params.heatmap_a[0] = latest_rel as f32;
-            let latest_x_ring: u32 = state.depth_grid.ring_x_for_bucket(bucket);
-            self.scene.params.heatmap_a[3] = latest_x_ring as f32;
-
-            self.scene.params.heatmap_b = [
-                tex_w as f32,
-                tex_h as f32,
-                (tex_w - 1) as f32,
-                1.0 / DEPTH_QTY_SCALE,
-            ];
-
-            self.scene.params.heatmap_a[1] = state
-                .depth_grid
-                .heatmap_y_start_bin(state.base_price, state.step);
-
-            let plan = state.depth_grid.build_scene_upload_plan();
-            self.scene.apply_heatmap_upload_plan(plan);
-        }
 
         if (self.data_gen & 0x3F) == 0 {
             self.cleanup_old_data(aggr_time);
         }
 
-        self.rebuild_policy = view::RebuildPolicy::Immediate;
+        // If paused, don't force immediate rebuilds every tick; resume will trigger a full rebuild.
+        if !paused {
+            self.rebuild_policy = view::RebuildPolicy::Immediate;
+        }
     }
 
     fn compute_view_window(&self, vw_px: f32, vh_px: f32) -> Option<ViewWindow> {
@@ -542,10 +598,17 @@ impl HeatmapShader {
             min_row_h_world: MIN_ROW_H_WORLD,
         };
 
+        let latest_render = self.effective_render_latest_time();
+        let latest_data_for_view = if self.is_paused() && latest_render > 0 {
+            latest_render
+        } else {
+            self.data.latest_time
+        };
+
         let input = ViewInputs {
             aggr_time,
-            latest_time_data: self.data.latest_time,
-            latest_time_render: self.render_latest_time,
+            latest_time_data: latest_data_for_view,
+            latest_time_render: latest_render,
             base_price: self.data.base_price,
             step: self.data.step,
             row_h_world: self.row_h,
@@ -608,10 +671,20 @@ impl HeatmapShader {
             0.0,
         ];
 
-        if new_steps_per_y_bin != prev_steps_per_y_bin {
+        let need_full_rebuild =
+            new_steps_per_y_bin != prev_steps_per_y_bin || self.force_rebuild_from_historical;
+
+        if need_full_rebuild {
+            self.force_rebuild_from_historical = false;
+
             self.data.depth_grid.ensure_layout(aggr_time);
 
-            let latest_time = self.render_latest_time.max(self.data.latest_time);
+            let latest_time = if self.is_paused() {
+                self.effective_render_latest_time().max(1)
+            } else {
+                self.data.latest_time.max(1)
+            };
+
             let oldest_time =
                 latest_time.saturating_sub(u64::from(DEPTH_GRID_HORIZON_BUCKETS) * aggr_time);
 
@@ -674,7 +747,6 @@ impl HeatmapShader {
             self.scene.set_heatmap_update(None);
         }
 
-        // Always rebuild overlays when we do a full rebuild.
         self.rebuild_overlays(&w);
     }
 
@@ -1094,6 +1166,39 @@ impl HeatmapShader {
     }
 
     #[inline]
+    fn is_paused(&self) -> bool {
+        matches!(self.follow, FollowMode::Paused { .. })
+    }
+
+    /// Render time used for view/overlay computations.
+    /// While paused, clamp to the latest bucket we actually have data for to avoid "future" drift.
+    #[inline]
+    fn effective_render_latest_time(&self) -> u64 {
+        if self.is_paused() && self.render_latest_time > 0 && self.data.latest_time > 0 {
+            self.render_latest_time.min(self.data.latest_time)
+        } else {
+            self.render_latest_time
+        }
+    }
+
+    /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture
+    /// immediately, otherwise overlays will be computed with a different binning than the shader/texture.
+    fn force_rebuild_if_ybin_changed(&mut self) {
+        let Some([vw_px, vh_px]) = self.viewport else {
+            return;
+        };
+        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
+            return;
+        };
+
+        let cur_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+        if w.steps_per_y_bin != cur_steps_per_y_bin {
+            self.rebuild_policy = view::RebuildPolicy::Immediate;
+            self.rebuild_instances();
+        }
+    }
+
+    #[inline]
     fn sync_grid_xy(&mut self) {
         // Keep shader mapping in sync during interaction without doing any heavy rebuild work.
         self.scene.params.grid[0] = self.column_world;
@@ -1152,6 +1257,55 @@ impl HeatmapShader {
             );
 
         self.column_world = new_col_w;
+    }
+
+    /// Is the *profile start boundary* (world x=0) visible on screen?
+    /// Uses the camera's full world->screen mapping (includes right_pad_frac).
+    #[inline]
+    fn profile_start_visible_x0(&self, vw_px: f32, vh_px: f32) -> bool {
+        if !vw_px.is_finite() || vw_px <= 1.0 || !vh_px.is_finite() || vh_px <= 1.0 {
+            return true;
+        }
+
+        // y doesn't matter for x visibility; pick camera center y.
+        let y = self.scene.camera.offset[1];
+        let [sx, _sy] = self.scene.camera.world_to_screen(0.0, y, vw_px, vh_px);
+
+        sx.is_finite() && (0.0..=vw_px).contains(&sx)
+    }
+
+    /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.
+    fn auto_update_follow_mode(
+        &mut self,
+        vw_px: f32,
+        vh_px: f32,
+        live_render_latest_time: u64,
+        live_x_phase_bucket: f32,
+    ) {
+        let x0_visible = self.profile_start_visible_x0(vw_px, vh_px);
+
+        match self.follow {
+            FollowMode::Live => {
+                if !x0_visible {
+                    self.follow = FollowMode::Paused {
+                        render_latest_time: live_render_latest_time,
+                        x_phase_bucket: live_x_phase_bucket,
+                    };
+                }
+            }
+            FollowMode::Paused { .. } => {
+                if x0_visible {
+                    self.follow = FollowMode::Live;
+
+                    if let Some(p) = self.pending_mid_price.take() {
+                        self.data.base_price = p;
+                    }
+
+                    self.force_rebuild_from_historical = true;
+                    self.rebuild_policy = view::RebuildPolicy::Immediate;
+                }
+            }
+        }
     }
 
     fn make_real_data_state(
