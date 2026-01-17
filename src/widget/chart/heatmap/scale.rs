@@ -4,12 +4,7 @@ pub mod axisy;
 pub use super::Message;
 
 #[derive(Debug, Default)]
-pub struct AxisInteraction {
-    pub kind: AxisInteractionKind,
-}
-
-#[derive(Debug, Default)]
-pub enum AxisInteractionKind {
+pub enum AxisInteraction {
     #[default]
     None,
     Panning {

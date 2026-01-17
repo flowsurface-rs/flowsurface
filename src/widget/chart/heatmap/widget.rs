@@ -1,5 +1,5 @@
 use crate::widget::chart::heatmap::overlay::OverlayCanvas;
-use crate::widget::chart::heatmap::scale::AxisInteractionKind;
+use crate::widget::chart::heatmap::scale::AxisInteraction;
 use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
 use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
 use crate::widget::chart::heatmap::scene::{InteractionKind, Scene};
@@ -178,15 +178,15 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         if plot_size != state.last_plot_size && plot_bounds.width > 0.0 && plot_bounds.height > 0.0
         {
             state.last_plot_size = plot_size;
-            shell.publish(Message::BoundsChanged(plot_size));
+            shell.publish(Message::BoundsChanged(plot_bounds));
         }
 
         let over_x = cursor.position_over(x_axis_bounds).is_some();
         let over_y = cursor.position_over(y_axis_bounds).is_some();
         let over_plot = cursor.position_over(plot_bounds).is_some();
 
-        let x_dragging = matches!(state.x_axis_state.kind, AxisInteractionKind::Panning { .. });
-        let y_dragging = matches!(state.y_axis_state.kind, AxisInteractionKind::Panning { .. });
+        let x_dragging = matches!(state.x_axis_state, AxisInteraction::Panning { .. });
+        let y_dragging = matches!(state.y_axis_state, AxisInteraction::Panning { .. });
         let plot_dragging = matches!(state.scene_state.kind, InteractionKind::Panning { .. });
 
         // If user releases outside the original bounds, we still want to reset panning state
@@ -382,8 +382,8 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         let over_x = cursor.position_over(x_axis_bounds).is_some();
         let over_y = cursor.position_over(y_axis_bounds).is_some();
 
-        let x_dragging = matches!(state.x_axis_state.kind, AxisInteractionKind::Panning { .. });
-        let y_dragging = matches!(state.y_axis_state.kind, AxisInteractionKind::Panning { .. });
+        let x_dragging = matches!(state.x_axis_state, AxisInteraction::Panning { .. });
+        let y_dragging = matches!(state.y_axis_state, AxisInteraction::Panning { .. });
 
         if over_x || x_dragging {
             self.x_axis

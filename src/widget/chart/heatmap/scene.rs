@@ -155,10 +155,9 @@ impl shader::Program<Message> for Scene {
         bounds: Rectangle,
         cursor: iced_core::mouse::Cursor,
     ) -> Option<shader::Action<Message>> {
-        let current = [bounds.width, bounds.height];
-        if interaction.last_bounds != current {
-            interaction.last_bounds = current;
-            return Some(shader::Action::publish(Message::BoundsChanged(current)));
+        if interaction.last_bounds != bounds {
+            interaction.last_bounds = bounds;
+            return Some(shader::Action::publish(Message::BoundsChanged(bounds)));
         }
 
         match event {
@@ -373,7 +372,7 @@ impl shader::Pipeline for Pipeline {
 
 #[derive(Debug, Default)]
 pub struct Interaction {
-    pub last_bounds: [f32; 2],
+    pub last_bounds: Rectangle,
     pub kind: InteractionKind,
 }
 

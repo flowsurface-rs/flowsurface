@@ -1,4 +1,4 @@
-use super::{AxisInteraction, AxisInteractionKind, Message};
+use super::{AxisInteraction, Message};
 use chrono::TimeZone;
 use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
 
@@ -29,6 +29,7 @@ fn pick_time_format(visible_span_ms: i128) -> &'static str {
 
 pub struct AxisXLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
+    pub plot_bounds: Option<Rectangle>,
     pub latest_bucket: i64,
     pub aggr_time: Option<u64>,
     pub column_world: f32,
@@ -51,15 +52,15 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
-                state.kind = AxisInteractionKind::Panning { last_position: p };
+                *state = AxisInteraction::Panning { last_position: p };
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                state.kind = AxisInteractionKind::None;
+                *state = AxisInteraction::None;
                 None
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if let AxisInteractionKind::Panning { last_position } = &mut state.kind
+                if let AxisInteraction::Panning { last_position } = state
                     && cursor.position_over(bounds).is_some()
                 {
                     let delta_px = *position - *last_position;
@@ -182,12 +183,33 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let every = super::nice_step_i64(rough_every.max(1));
 
             let text_color = theme.palette().text;
-
+            let palette = theme.extended_palette();
             let center_x = right_edge_world - (vw_f * 0.5) / cam_sx_f;
             let world_to_screen_x =
                 |world_x: f64| -> f32 { ((world_x - center_x) * cam_sx_f + vw_f * 0.5) as f32 };
 
             let y = (0.5 * vh_f) as f32;
+
+            let cursor_label_padding = 6.0f32;
+            let cursor_label = self
+                .plot_bounds
+                .and_then(|pb| _cursor.position_in(pb))
+                .map(|p| {
+                    let world_x_cursor = center_x + ((p.x as f64) - vw_f * 0.5) / cam_sx_f;
+
+                    let u_at_cursor = ((world_x_cursor / col_f) + phase).round() as i64;
+                    let b_at_cursor = latest_bucket.saturating_add(u_at_cursor);
+                    let world_x_for_bucket = ((u_at_cursor as f64) - phase) * col_f;
+                    let x_px = world_to_screen_x(world_x_for_bucket);
+                    let t_ms = (b_at_cursor as i128) * (aggr_time as i128);
+                    let label = unix_ms_to_local_string(t_ms, "%H:%M:%S%.3f");
+
+                    let label_len = label.chars().count() as f32;
+                    let label_w = label_len * (font_size * 0.62) + 2.0 * cursor_label_padding;
+                    let label_h = font_size + 2.0 * cursor_label_padding;
+
+                    (x_px, label, label_w, label_h)
+                });
 
             let mut b = (b_min.div_euclid(every)) * every;
             if b < b_min {
@@ -200,12 +222,28 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 let world_x = ((rel as f64) - phase) * col_f;
                 let x_px = world_to_screen_x(world_x);
 
-                // Keep this check (perf), but now b_min/b_max is also padded so we won't pop early.
                 if x_px >= -draw_margin_px && x_px <= (vw + draw_margin_px) {
                     let t_ms = (b as i128) * (aggr_time as i128);
                     let label = unix_ms_to_local_string(t_ms, fmt);
 
                     if !label.is_empty() {
+                        let tick_label_len = label.chars().count() as f32;
+                        let tick_label_w = tick_label_len * approx_char_w_px;
+                        let tick_half = 0.5 * tick_label_w;
+
+                        if let Some((cx, _, cw, _ch)) = cursor_label {
+                            let cursor_half = 0.5 * cw;
+                            if (x_px + tick_half + 2.0) >= (cx - cursor_half)
+                                && (x_px - tick_half - 2.0) <= (cx + cursor_half)
+                            {
+                                b = b.saturating_add(every);
+                                if every <= 0 {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+
                         frame.fill_text(canvas::Text {
                             content: label,
                             position: iced::Point::new(x_px, y),
@@ -224,6 +262,33 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     break;
                 }
             }
+
+            if let Some((x_px, label, label_w, label_h)) = cursor_label
+                && x_px >= -draw_margin_px
+                && x_px <= (vw + draw_margin_px)
+                && !label.is_empty()
+            {
+                let mut bg = palette.secondary.base.color;
+                bg = iced::Color { a: 1.0, ..bg };
+                frame.fill_rectangle(
+                    iced::Point::new(x_px - 0.5 * label_w, y - 0.5 * label_h),
+                    iced::Size {
+                        width: label_w,
+                        height: label_h,
+                    },
+                    bg,
+                );
+                frame.fill_text(canvas::Text {
+                    content: label,
+                    position: iced::Point::new(x_px, y),
+                    color: palette.secondary.base.text,
+                    size: font_size.into(),
+                    font: crate::style::AZERET_MONO,
+                    align_x: iced::Alignment::Center.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    ..Default::default()
+                });
+            }
         });
 
         vec![labels]
@@ -231,14 +296,14 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
     fn mouse_interaction(
         &self,
-        state: &Self::State,
+        interaction: &Self::State,
         bounds: Rectangle,
         cursor: iced_core::mouse::Cursor,
     ) -> iced_core::mouse::Interaction {
         if cursor.position_over(bounds).is_some() {
-            match state.kind {
-                AxisInteractionKind::Panning { .. } => iced_core::mouse::Interaction::Grabbing,
-                _ => iced_core::mouse::Interaction::default(),
+            match interaction {
+                AxisInteraction::Panning { .. } => iced_core::mouse::Interaction::Grabbing,
+                _ => iced_core::mouse::Interaction::ResizingHorizontally,
             }
         } else {
             iced_core::mouse::Interaction::default()

@@ -87,7 +87,7 @@ enum FollowMode {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    BoundsChanged([f32; 2]),
+    BoundsChanged(iced::Rectangle),
     PanDeltaPx(iced::Vector),
     ZoomAt {
         factor: f32,
@@ -146,7 +146,7 @@ impl RealDataState {
 pub struct HeatmapShader {
     pub last_tick: Option<Instant>,
     scene: Scene,
-    viewport: Option<[f32; 2]>,
+    viewport: Option<iced::Rectangle>,
     row_h: f32,
     column_world: f32,
     palette: Option<HeatmapPalette>,
@@ -221,8 +221,8 @@ impl HeatmapShader {
 
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::BoundsChanged(viewport) => {
-                self.viewport = Some(viewport);
+            Message::BoundsChanged(bounds) => {
+                self.viewport = Some(bounds);
 
                 self.rebuild_policy = view::RebuildPolicy::Immediate;
                 self.rebuild_instances();
@@ -234,7 +234,6 @@ impl HeatmapShader {
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
 
-                // Keep overlays aligned immediately (axes update on message; overlays should too).
                 self.try_rebuild_overlays();
 
                 self.rebuild_policy = view::RebuildPolicy::Debounced {
@@ -242,13 +241,17 @@ impl HeatmapShader {
                 };
             }
             Message::ZoomAt { factor, cursor } => {
-                let Some([vw, vh]) = self.viewport else {
+                let Some(size) = self.viewport_size_px() else {
                     return;
                 };
 
-                self.scene
-                    .camera
-                    .zoom_at_cursor(factor, cursor.x, cursor.y, vw, vh);
+                self.scene.camera.zoom_at_cursor(
+                    factor,
+                    cursor.x,
+                    cursor.y,
+                    size.width,
+                    size.height,
+                );
 
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -261,14 +264,9 @@ impl HeatmapShader {
                 self.zoom_row_h_at(factor, cursor_y, viewport_h);
                 self.sync_grid_xy();
 
-                // Rebuild overlays quickly.
                 self.try_rebuild_overlays();
-
-                // If y-binning changed, do a full rebuild right away to keep heatmap + overlays aligned.
-                // (especially noticeable in paused mode)
                 self.force_rebuild_if_ybin_changed();
 
-                // If we didn't rebuild immediately, keep the usual debounce behavior.
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomColumnWorldAt {
@@ -301,6 +299,7 @@ impl HeatmapShader {
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.x_axis_cache,
+            plot_bounds: self.viewport,
             latest_bucket: render_latest_bucket,
             aggr_time,
             column_world: self.column_world,
@@ -311,6 +310,7 @@ impl HeatmapShader {
         };
         let y_axis = AxisYLabelCanvas {
             cache: &self.y_axis_cache,
+            plot_bounds: self.viewport,
             base_price: self.data.base_price,
             step: self.data.step,
             row_h: self.row_h,
@@ -352,7 +352,7 @@ impl HeatmapShader {
         let now_i = now.unwrap_or_else(Instant::now);
         self.last_tick = Some(now_i);
 
-        let Some([vw_px, vh_px]) = self.viewport else {
+        let Some(size) = self.viewport_size_px() else {
             if self.palette.is_none() {
                 return Some(Action::RequestPalette);
             }
@@ -381,7 +381,12 @@ impl HeatmapShader {
             let live_phase_ms = exchange_now_ms.saturating_sub(live_render_latest_time);
             let live_phase = (live_phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
 
-            self.auto_update_follow_mode(vw_px, vh_px, live_render_latest_time, live_phase);
+            self.auto_update_follow_mode(
+                size.width,
+                size.height,
+                live_render_latest_time,
+                live_phase,
+            );
 
             let (render_latest_time, x_phase_bucket) = match self.follow {
                 FollowMode::Live => (live_render_latest_time, live_phase),
@@ -394,7 +399,7 @@ impl HeatmapShader {
             self.render_latest_time = render_latest_time;
             self.x_phase_bucket = x_phase_bucket;
 
-            if let Some(w) = self.compute_view_window(vw_px, vh_px) {
+            if let Some(w) = self.compute_view_window(size.width, size.height) {
                 let render_latest_time_eff = self.effective_render_latest_time();
                 let render_bucket: i64 = (render_latest_time_eff / aggr_time) as i64;
 
@@ -637,21 +642,25 @@ impl HeatmapShader {
     }
 
     fn try_rebuild_overlays(&mut self) {
-        let Some([vw_px, vh_px]) = self.viewport else {
+        let Some(size) = self.viewport_size_px() else {
             return;
         };
-        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
+        let Some(w) = self.compute_view_window(size.width, size.height) else {
             return;
         };
         self.rebuild_overlays(&w);
     }
 
+    fn viewport_size_px(&self) -> Option<iced::Size<f32>> {
+        self.viewport.map(|r| r.size())
+    }
+
     fn rebuild_instances(&mut self) {
-        let Some([vw_px, vh_px]) = self.viewport else {
+        let Some(size) = self.viewport_size_px() else {
             return;
         };
 
-        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
+        let Some(w) = self.compute_view_window(size.width, size.height) else {
             self.clear_scene();
             return;
         };
@@ -1184,10 +1193,10 @@ impl HeatmapShader {
     /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture
     /// immediately, otherwise overlays will be computed with a different binning than the shader/texture.
     fn force_rebuild_if_ybin_changed(&mut self) {
-        let Some([vw_px, vh_px]) = self.viewport else {
+        let Some(size) = self.viewport_size_px() else {
             return;
         };
-        let Some(w) = self.compute_view_window(vw_px, vh_px) else {
+        let Some(w) = self.compute_view_window(size.width, size.height) else {
             return;
         };
 
