@@ -610,6 +610,13 @@ impl GridRing {
         self.last_bucket = Some(new_bucket);
     }
 
+    /// Force the next `build_scene_upload_plan()` to produce a full texture upload.
+    /// Useful when GPU resources were recreated (e.g. window hidden/re-shown).
+    #[inline]
+    pub fn force_full_upload(&mut self) {
+        self.mark_full_dirty();
+    }
+
     /// Build a renderer upload plan from the ring's dirty flags.
     pub fn build_scene_upload_plan(&mut self) -> scene::HeatmapUploadPlan {
         if self.tex_w == 0 || self.tex_h == 0 {

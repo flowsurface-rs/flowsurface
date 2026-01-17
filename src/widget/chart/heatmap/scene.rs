@@ -229,18 +229,12 @@ impl shader::Program<Message> for Scene {
 
     fn mouse_interaction(
         &self,
-        interaction: &Interaction,
-        bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        _interaction: &Interaction,
+        _bounds: Rectangle,
+        _cursor: iced_core::mouse::Cursor,
     ) -> iced_core::mouse::Interaction {
-        if cursor.position_over(bounds).is_some() {
-            match interaction.kind {
-                InteractionKind::Panning { .. } => iced_core::mouse::Interaction::Grabbing,
-                _ => iced_core::mouse::Interaction::default(),
-            }
-        } else {
-            iced_core::mouse::Interaction::default()
-        }
+        // NOTE: this gets overridden by the overlay widget in heatmap/widget.rs
+        iced_core::mouse::Interaction::default()
     }
 }
 

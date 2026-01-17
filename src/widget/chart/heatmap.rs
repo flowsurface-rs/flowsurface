@@ -23,7 +23,7 @@ use exchange::depth::Depth;
 use exchange::util::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
@@ -65,16 +65,19 @@ const MAX_ROW_H_WORLD: f32 = 10.;
 const MIN_COL_W_WORLD: f32 = 0.01;
 const MAX_COL_W_WORLD: f32 = 10.;
 
-// Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction.
+// Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction
 const REBUILD_DEBOUNCE_MS: u64 = 250;
 
-// Throttle depth denom recompute while interacting (keeps zoom smooth).
+// Throttle depth denom recompute while interacting (keeps zoom smooth)
 const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
 
-// Shift volume-strip rects left by half a bucket to align with circle centers.
+// Shift volume-strip rects left by half a bucket to align with circle centers
 const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
 
 const DEPTH_GRID_GRACE_MS: u64 = 500;
+
+// If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
+const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
 #[derive(Debug, Clone, Copy)]
 enum FollowMode {
@@ -103,6 +106,7 @@ pub enum Message {
         cursor_x: f32,
         viewport_w: f32,
     },
+    PauseBtnClicked,
 }
 
 struct RealDataState {
@@ -179,6 +183,9 @@ pub struct HeatmapShader {
 
     // Force a full rebuild_from_historical even when y-binning didn't change (used on resume).
     force_rebuild_from_historical: bool,
+
+    // Force a full CPU->GPU heatmap upload (without rebuilding from historical).
+    needs_heatmap_full_upload: bool,
 }
 
 impl HeatmapShader {
@@ -216,6 +223,7 @@ impl HeatmapShader {
             follow: FollowMode::Live,
             pending_mid_price: None,
             force_rebuild_from_historical: false,
+            needs_heatmap_full_upload: true,
         }
     }
 
@@ -280,6 +288,32 @@ impl HeatmapShader {
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
+            Message::PauseBtnClicked => {
+                match self.follow {
+                    FollowMode::Live => {
+                        unreachable!("PauseBtnClicked should only be possible when paused")
+                    }
+                    FollowMode::Paused { .. } => {
+                        self.follow = FollowMode::Live;
+
+                        // On resume, if we have a pending mid-price update, apply it now.
+                        if let Some(mid_price) = self.pending_mid_price.take() {
+                            self.data.base_price = mid_price;
+                        }
+
+                        if let Some(size) = self.viewport_size_px() {
+                            self.scene.camera = Default::default();
+                            self.scene.camera.reset_offset_x(size.width);
+                            self.scene.camera.offset[1] = 0.0;
+                        }
+
+                        // Force a full rebuild from historical to catch up.
+                        self.force_rebuild_from_historical = true;
+                    }
+                }
+
+                self.rebuild_policy = view::RebuildPolicy::Immediate;
+            }
         }
     }
 
@@ -339,6 +373,7 @@ impl HeatmapShader {
             volume_strip_max_qty: self.volume_strip_scale_max_qty,
             // denom used to scale profile bars
             profile_max_qty: self.profile_scale_max_qty,
+            is_paused: self.is_paused(),
         };
 
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
@@ -483,6 +518,13 @@ impl HeatmapShader {
         depth_update_t: u64,
         depth: &Depth,
     ) {
+        // If rendering stalled (window hidden / OS hitch), resync heatmap texture on next data tick.
+        if let Some(last) = self.last_tick
+            && last.elapsed() >= Duration::from_millis(HEATMAP_RESYNC_AFTER_STALL_MS)
+        {
+            self.needs_heatmap_full_upload = true;
+        }
+
         let paused = matches!(self.follow, FollowMode::Paused { .. });
         let state = &mut self.data;
 
@@ -572,6 +614,8 @@ impl HeatmapShader {
 
                 let plan = state.depth_grid.build_scene_upload_plan();
                 self.scene.apply_heatmap_upload_plan(plan);
+
+                self.try_upload_heatmap();
             }
         }
 
@@ -639,6 +683,29 @@ impl HeatmapShader {
 
         self.scene.set_rectangles(rects);
         self.scene.set_circles(circles);
+    }
+
+    /// Upload heatmap texture updates to the GPU.
+    /// If `needs_heatmap_full_upload` is set, forces a full upload from the *current ring state*.
+    fn try_upload_heatmap(&mut self) {
+        let tex_w = self.data.depth_grid.tex_w();
+        let tex_h = self.data.depth_grid.tex_h();
+        if tex_w == 0 || tex_h == 0 {
+            return;
+        }
+
+        if self.needs_heatmap_full_upload {
+            self.data.depth_grid.force_full_upload();
+        }
+
+        let plan = self.data.depth_grid.build_scene_upload_plan();
+
+        // Clear the flag only once we actually schedule a full upload.
+        if matches!(plan, scene::HeatmapUploadPlan::Full(_)) {
+            self.needs_heatmap_full_upload = false;
+        }
+
+        self.scene.apply_heatmap_upload_plan(plan);
     }
 
     fn try_rebuild_overlays(&mut self) {
@@ -751,9 +818,15 @@ impl HeatmapShader {
 
                 let plan = self.data.depth_grid.build_scene_upload_plan();
                 self.scene.apply_heatmap_upload_plan(plan);
+
+                self.try_upload_heatmap();
             }
         } else {
             self.scene.set_heatmap_update(None);
+
+            if self.needs_heatmap_full_upload {
+                self.try_upload_heatmap();
+            }
         }
 
         self.rebuild_overlays(&w);
@@ -796,6 +869,8 @@ impl HeatmapShader {
         self.scene.set_rectangles(Vec::new());
         self.scene.set_circles(Vec::new());
         self.scene.set_heatmap_update(None);
+        // If we cleared GPU-side state, make sure we reupload the ring when we can render again.
+        self.needs_heatmap_full_upload = true;
     }
 
     #[inline]
@@ -1349,6 +1424,8 @@ impl HeatmapShader {
 
         self.clear_scene();
         self.rebuild_policy = view::RebuildPolicy::Immediate;
+
+        self.needs_heatmap_full_upload = true;
 
         if self.viewport.is_some() {
             self.rebuild_instances();

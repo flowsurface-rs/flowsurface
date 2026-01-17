@@ -24,6 +24,13 @@ pub struct CameraUniform {
 }
 
 impl Camera {
+    /// Reset offset.x to starting state.
+    /// Note: right padding is applied in `center()` via `right_edge()`,
+    /// so offset.x should represent the live boundary at world x = 0
+    pub fn reset_offset_x(&mut self, _viewport_w: f32) {
+        self.offset[0] = 0.0;
+    }
+
     #[inline]
     fn right_pad_world(&self, viewport_w: f32) -> f32 {
         let sx = self.scale[0].max(1e-6);

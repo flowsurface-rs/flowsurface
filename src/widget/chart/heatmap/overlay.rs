@@ -1,4 +1,5 @@
 use data::util::abbr_large_numbers;
+use iced::Vector;
 use iced::widget::canvas::Path;
 use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
 
@@ -51,6 +52,7 @@ pub struct OverlayCanvas<'a> {
     pub volume_strip_max_qty: Option<f32>,
     /// Max qty used to scale the latest profile bars (display units).
     pub profile_max_qty: Option<f32>,
+    pub is_paused: bool,
 }
 
 impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
@@ -65,11 +67,15 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
     ) -> Option<canvas::Action<Message>> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let cursor_in_abs = cursor.position_over(bounds)?;
+                if let Some(cursor_in_abs) = cursor.position_over(bounds) {
+                    if self.is_paused && self.pause_icon_rect(bounds).contains(cursor_in_abs) {
+                        return Some(canvas::Action::publish(Message::PauseBtnClicked));
+                    }
 
-                *interaction = Interaction::Panning {
-                    last_position: cursor_in_abs,
-                };
+                    *interaction = Interaction::Panning {
+                        last_position: cursor_in_abs,
+                    };
+                }
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -96,6 +102,49 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             .scale_labels_cache
             .draw(renderer, bounds.size(), |frame| {
                 let palette = theme.extended_palette();
+
+                if self.is_paused
+                // pause indicator (top-right corner)
+                {
+                    let bar_width = 0.008 * bounds.height;
+                    let bar_height = 0.032 * bounds.height;
+                    let padding = bounds.area().sqrt() * 0.02;
+
+                    let region = Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: bounds.width,
+                        height: bounds.height,
+                    };
+
+                    let total_icon_width = bar_width * 3.0;
+
+                    let pause_bar = Rectangle {
+                        x: (region.x + region.width) - total_icon_width - padding,
+                        y: region.y + padding,
+                        width: bar_width,
+                        height: bar_height,
+                    };
+
+                    let hovered = cursor
+                        .position_over(bounds)
+                        .map(|p| self.pause_icon_rect(bounds).contains(p))
+                        .unwrap_or(false);
+
+                    let alpha = if hovered { 0.65 } else { 0.4 };
+
+                    frame.fill_rectangle(
+                        pause_bar.position(),
+                        pause_bar.size(),
+                        palette.background.base.text.scale_alpha(alpha),
+                    );
+
+                    frame.fill_rectangle(
+                        pause_bar.position() + Vector::new(pause_bar.width * 2.0, 0.0),
+                        pause_bar.size(),
+                        palette.background.base.text.scale_alpha(alpha),
+                    );
+                }
 
                 let strip_h_px = (bounds.height * self.strip_height_frac).clamp(0.0, bounds.height);
                 let strip_top_y = (bounds.height - strip_h_px).clamp(0.0, bounds.height);
@@ -197,7 +246,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             if !x_bin_rel_f.is_finite() {
                 return;
             }
-            let x_bin_rel = x_bin_rel_f.floor(); // bucket index
+            let x_bin_rel = x_bin_rel_f.round();
             let snapped_world_x = (x_bin_rel - origin0) * self.col_w_world;
 
             // --- Y snap: nearest y-bin center (matches texture binning)
@@ -216,7 +265,6 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
             let crosshair_stroke = style::dashed_line(theme);
 
-            // Pixel-align a bit (optional, helps crispness)
             let x = (snap_px_x.round() + 0.5).clamp(0.0, bounds.width);
             let y = (snap_px_y.round() + 0.5).clamp(0.0, bounds.height);
 
@@ -241,7 +289,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
             let base_bucket_abs: i64 = self
                 .scroll_ref_bucket
-                .saturating_add(x_bin_rel_f.floor() as i64);
+                .saturating_add(x_bin_rel_f.round() as i64);
 
             // --- Y: world -> rel_y_bin (base cell)
             let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
@@ -253,7 +301,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
             // Tooltip grid offsets (match old impl shape: 3 rows × 4 cols)
             let row_offsets: [i64; 3] = [1, 0, -1];
-            let col_offsets: [i64; 4] = [-1, 0, 1, 2];
+            let col_offsets: [i64; 4] = [-2, -1, 0, 1];
 
             // Quick visibility test: if all cells are empty, draw nothing.
             let mut any_nonzero = false;
@@ -384,10 +432,30 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         bounds: iced::Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if let Some(_pos) = cursor.position_over(bounds) {
+        if let Some(pos) = cursor.position_over(bounds) {
+            if self.is_paused && self.pause_icon_rect(bounds).contains(pos) {
+                return mouse::Interaction::Pointer;
+            }
             mouse::Interaction::Crosshair
         } else {
             mouse::Interaction::default()
+        }
+    }
+}
+
+impl<'a> OverlayCanvas<'a> {
+    /// Compute the pause icon hit rectangle in local (canvas) coordinates.
+    fn pause_icon_rect(&self, bounds: Rectangle) -> Rectangle {
+        let bar_width = 0.008 * bounds.height;
+        let bar_height = 0.032 * bounds.height;
+        let padding = bounds.area().sqrt() * 0.02;
+        let total_icon_width = bar_width * 3.0;
+
+        Rectangle {
+            x: (bounds.x + bounds.width) - total_icon_width - padding,
+            y: bounds.y + padding,
+            width: total_icon_width,
+            height: bar_height,
         }
     }
 }

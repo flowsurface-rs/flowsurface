@@ -392,8 +392,8 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
             self.y_axis
                 .mouse_interaction(&state.y_axis_state, y_axis_bounds, cursor)
         } else {
-            self.scene
-                .mouse_interaction(&state.scene_state, plot_bounds, cursor)
+            self.overlay
+                .mouse_interaction(&state.overlay_state, plot_bounds, cursor)
         }
     }
 }
