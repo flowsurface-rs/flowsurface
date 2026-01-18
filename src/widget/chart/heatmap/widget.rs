@@ -1,8 +1,8 @@
-use crate::widget::chart::heatmap::overlay::OverlayCanvas;
-use crate::widget::chart::heatmap::scale::AxisInteraction;
-use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
-use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
 use crate::widget::chart::heatmap::scene::{InteractionKind, Scene};
+use crate::widget::chart::heatmap::ui::AxisInteraction;
+use crate::widget::chart::heatmap::ui::axisx::AxisXLabelCanvas;
+use crate::widget::chart::heatmap::ui::axisy::AxisYLabelCanvas;
+use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 
 use super::Message;
 use iced::advanced::widget::tree::{self, Tree};

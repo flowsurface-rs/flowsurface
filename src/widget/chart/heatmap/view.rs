@@ -5,6 +5,122 @@ use exchange::util::{Price, PriceStep};
 use iced::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
+pub enum Anchor {
+    Live {
+        scroll_ref_bucket: i64,
+        render_latest_time: u64,
+        x_phase_bucket: f32,
+        /// One-shot directive to be consumed by the next rebuild.
+        resume: ResumeAction,
+    },
+    Paused {
+        scroll_ref_bucket: i64,
+        render_latest_time: u64,
+        x_phase_bucket: f32,
+        pending_mid_price: Option<Price>,
+        /// Applied when transitioning to Live (then consumed in Live).
+        resume: ResumeAction,
+    },
+}
+
+impl Default for Anchor {
+    fn default() -> Self {
+        Anchor::Live {
+            scroll_ref_bucket: 0,
+            render_latest_time: 0,
+            x_phase_bucket: 0.0,
+            resume: ResumeAction::None,
+        }
+    }
+}
+
+impl Anchor {
+    pub fn is_paused(&self) -> bool {
+        matches!(self, Anchor::Paused { .. })
+    }
+
+    #[inline]
+    pub fn scroll_ref_bucket(&self) -> i64 {
+        match self {
+            Anchor::Live {
+                scroll_ref_bucket, ..
+            } => *scroll_ref_bucket,
+            Anchor::Paused {
+                scroll_ref_bucket, ..
+            } => *scroll_ref_bucket,
+        }
+    }
+
+    #[inline]
+    pub fn set_scroll_ref_bucket_if_zero(&mut self, v: i64) {
+        let slot = match self {
+            Anchor::Live {
+                scroll_ref_bucket, ..
+            } => scroll_ref_bucket,
+            Anchor::Paused {
+                scroll_ref_bucket, ..
+            } => scroll_ref_bucket,
+        };
+        if *slot == 0 {
+            *slot = v;
+        }
+    }
+
+    #[inline]
+    pub fn render_latest_time(&self) -> u64 {
+        match self {
+            Anchor::Live {
+                render_latest_time, ..
+            } => *render_latest_time,
+            Anchor::Paused {
+                render_latest_time, ..
+            } => *render_latest_time,
+        }
+    }
+
+    #[inline]
+    pub fn x_phase_bucket(&self) -> f32 {
+        match self {
+            Anchor::Live { x_phase_bucket, .. } => *x_phase_bucket,
+            Anchor::Paused { x_phase_bucket, .. } => *x_phase_bucket,
+        }
+    }
+
+    /// Update monotonic render time + phase while Live.
+    #[inline]
+    pub fn update_live_timing(&mut self, bucketed_time: u64, phase_bucket: f32) {
+        if let Anchor::Live {
+            render_latest_time,
+            x_phase_bucket,
+            ..
+        } = self
+        {
+            *render_latest_time = (*render_latest_time).max(bucketed_time);
+            *x_phase_bucket = phase_bucket;
+        }
+    }
+
+    /// Consume the one-shot resume directive (Live only; Paused is not consumed).
+    #[inline]
+    pub fn take_live_resume(&mut self) -> ResumeAction {
+        match self {
+            Anchor::Live { resume, .. } => {
+                let r = *resume;
+                *resume = ResumeAction::None;
+                r
+            }
+            Anchor::Paused { .. } => ResumeAction::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ResumeAction {
+    None,
+    FullRebuildFromHistorical,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum RebuildPolicy {
     /// Full rebuild should run immediately (rare: resize/layout).
     Immediate,

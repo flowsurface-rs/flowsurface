@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod depth_grid;
 pub mod pipeline;
 
 use super::Message;

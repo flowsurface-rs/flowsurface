@@ -1,18 +1,17 @@
-mod depth_grid;
-mod overlay;
-mod scale;
+mod instance;
 mod scene;
+mod ui;
 mod view;
 mod widget;
 
 use crate::chart::Action;
-use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
-use crate::widget::chart::heatmap::overlay::OverlayCanvas;
-use crate::widget::chart::heatmap::scale::axisx::AxisXLabelCanvas;
-use crate::widget::chart::heatmap::scale::axisy::AxisYLabelCanvas;
-use crate::widget::chart::heatmap::scene::Scene;
-use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
-use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
+use crate::widget::chart::heatmap::instance::InstanceBuilder;
+use crate::widget::chart::heatmap::scene::depth_grid::HeatmapPalette;
+use crate::widget::chart::heatmap::scene::{Scene, depth_grid};
+use crate::widget::chart::heatmap::ui::CanvasCaches;
+use crate::widget::chart::heatmap::ui::axisx::AxisXLabelCanvas;
+use crate::widget::chart::heatmap::ui::axisy::AxisYLabelCanvas;
+use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 use crate::widget::chart::heatmap::view::{ViewConfig, ViewInputs, ViewWindow};
 use crate::widget::chart::heatmap::widget::HeatmapShaderWidget;
 
@@ -37,27 +36,11 @@ const MIN_CAMERA_SCALE: f32 = 1e-4;
 const DEPTH_MIN_ROW_PX: f32 = 2.0;
 const MAX_STEPS_PER_Y_BIN: i64 = 2048;
 
-// Trades (circles)
-const TRADE_R_MIN_PX: f32 = 2.0;
-const TRADE_R_MAX_PX: f32 = 25.0;
-const TRADE_ALPHA: f32 = 0.8;
-
 // Latest profile overlay (x > 0)
 const PROFILE_COL_WIDTH_PX: f32 = 180.0;
-const PROFILE_MIN_BAR_PX: f32 = 1.0;
-const PROFILE_ALPHA: f32 = 0.8;
 
 // Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
-const VOLUME_BUCKET_GAP_FRAC: f32 = 0.10;
-const VOLUME_MIN_BAR_PX: f32 = 1.0; // min bar height in px
-const VOLUME_MIN_BAR_W_PX: f32 = 2.0; // min bar width in px (for x-binning)
-const MAX_COLS_PER_X_BIN: i64 = 4096;
-
-const VOLUME_TOTAL_ALPHA: f32 = 0.65;
-const VOLUME_DELTA_ALPHA: f32 = 1.0;
-
-const VOLUME_DELTA_TINT_TO_WHITE: f32 = 0.12;
 
 const MIN_ROW_H_WORLD: f32 = 0.01;
 const MAX_ROW_H_WORLD: f32 = 10.;
@@ -78,15 +61,6 @@ const DEPTH_GRID_GRACE_MS: u64 = 500;
 
 // If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
 const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
-
-#[derive(Debug, Clone, Copy)]
-enum FollowMode {
-    Live,
-    Paused {
-        render_latest_time: u64,
-        x_phase_bucket: f32,
-    },
-}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -109,7 +83,7 @@ pub enum Message {
     PauseBtnClicked,
 }
 
-struct RealDataState {
+struct DataState {
     basis: Basis,
     step: PriceStep,
     ticker_info: TickerInfo,
@@ -121,14 +95,11 @@ struct RealDataState {
     depth_grid: depth_grid::GridRing,
 }
 
-impl RealDataState {
-    pub fn new(
-        basis: Basis,
-        step: PriceStep,
-        ticker_info: TickerInfo,
-        heatmap: HistoricalDepth,
-        trades: TimeSeries<HeatmapDataPoint>,
-    ) -> Self {
+impl DataState {
+    pub fn new(basis: Basis, step: PriceStep, ticker_info: TickerInfo) -> Self {
+        let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
+        let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
+
         let mut depth_grid =
             depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
         depth_grid.set_grace_ms(DEPTH_GRID_GRACE_MS);
@@ -154,35 +125,16 @@ pub struct HeatmapShader {
     row_h: f32,
     column_world: f32,
     palette: Option<HeatmapPalette>,
-    data: RealDataState,
-    profile_bid_acc: Vec<f32>,
-    profile_ask_acc: Vec<f32>,
-    scroll_ref_bucket: i64,
-    x_phase_bucket: f32,
-    render_latest_time: u64,
-
-    y_axis_cache: iced::widget::canvas::Cache,
-    x_axis_cache: iced::widget::canvas::Cache,
-    overlay_cache: iced::widget::canvas::Cache,
-    scale_labels_cache: iced::widget::canvas::Cache,
+    data: DataState,
+    instances: InstanceBuilder,
+    canvas_caches: CanvasCaches,
 
     // Cache for depth normalization denom (max qty) to avoid per-frame scans.
     depth_norm: view::DepthNormCache,
     data_gen: u64,
 
-    // reusable buffers to avoid per-frame allocations
-    volume_acc: Vec<(f32, f32)>,
-    volume_touched: Vec<usize>,
-
+    anchor: view::Anchor,
     rebuild_policy: view::RebuildPolicy,
-    // overlay scale maxima (denoms actually used to scale the overlays)
-    profile_scale_max_qty: Option<f32>,
-    volume_strip_scale_max_qty: Option<f32>,
-    follow: FollowMode,
-    pending_mid_price: Option<Price>,
-
-    // Force a full rebuild_from_historical even when y-binning didn't change (used on resume).
-    force_rebuild_from_historical: bool,
 
     // Force a full CPU->GPU heatmap upload (without rebuilding from historical).
     needs_heatmap_full_upload: bool,
@@ -191,7 +143,7 @@ pub struct HeatmapShader {
 impl HeatmapShader {
     pub fn new(basis: Basis, tick_size: f32, ticker_info: TickerInfo) -> Self {
         let step = PriceStep::from_f32(tick_size);
-        let data = Self::make_real_data_state(basis, step, ticker_info);
+        let data = DataState::new(basis, step, ticker_info);
 
         let mut scene = Scene::new();
         scene.params.origin[3] = VOLUME_X_SHIFT_BUCKET;
@@ -204,25 +156,13 @@ impl HeatmapShader {
             column_world: DEFAULT_COL_W_WORLD,
             palette: None,
             data,
-            profile_bid_acc: Vec::new(),
-            profile_ask_acc: Vec::new(),
-            scroll_ref_bucket: 0,
-            x_phase_bucket: 0.0,
-            render_latest_time: 0,
-            y_axis_cache: iced::widget::canvas::Cache::new(),
-            x_axis_cache: iced::widget::canvas::Cache::new(),
-            overlay_cache: iced::widget::canvas::Cache::new(),
-            scale_labels_cache: iced::widget::canvas::Cache::new(),
+            instances: InstanceBuilder::new(),
+            canvas_caches: CanvasCaches::new(),
             depth_norm: view::DepthNormCache::new(),
             data_gen: 1,
-            volume_acc: Vec::new(),
-            volume_touched: Vec::new(),
+
             rebuild_policy: view::RebuildPolicy::Idle,
-            profile_scale_max_qty: None,
-            volume_strip_scale_max_qty: None,
-            follow: FollowMode::Live,
-            pending_mid_price: None,
-            force_rebuild_from_historical: false,
+            anchor: view::Anchor::default(),
             needs_heatmap_full_upload: true,
         }
     }
@@ -289,15 +229,26 @@ impl HeatmapShader {
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::PauseBtnClicked => {
-                match self.follow {
-                    FollowMode::Live => {
+                match self.anchor {
+                    view::Anchor::Live { .. } => {
                         unreachable!("PauseBtnClicked should only be possible when paused")
                     }
-                    FollowMode::Paused { .. } => {
-                        self.follow = FollowMode::Live;
+                    view::Anchor::Paused {
+                        pending_mid_price,
+                        scroll_ref_bucket,
+                        render_latest_time,
+                        x_phase_bucket,
+                        resume,
+                    } => {
+                        self.anchor = view::Anchor::Live {
+                            scroll_ref_bucket,
+                            render_latest_time,
+                            x_phase_bucket,
+                            resume,
+                        };
 
                         // On resume, if we have a pending mid-price update, apply it now.
-                        if let Some(mid_price) = self.pending_mid_price.take() {
+                        if let Some(mid_price) = pending_mid_price {
                             self.data.base_price = mid_price;
                         }
 
@@ -307,8 +258,10 @@ impl HeatmapShader {
                             self.scene.camera.offset[1] = 0.0;
                         }
 
-                        // Force a full rebuild from historical to catch up.
-                        self.force_rebuild_from_historical = true;
+                        // Ensure we catch up once we’re live again.
+                        if let view::Anchor::Live { resume, .. } = &mut self.anchor {
+                            *resume = view::ResumeAction::FullRebuildFromHistorical;
+                        }
                     }
                 }
 
@@ -322,28 +275,31 @@ impl HeatmapShader {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
 
+        let render_latest_time = self.anchor.render_latest_time();
+        let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
+
         let aggr_time = match self.data.basis {
             Basis::Time(interval) => Some(u64::from(interval)),
             Basis::Tick(_) => None,
         };
-        let render_latest_bucket: i64 = match aggr_time {
-            Some(aggr) if aggr > 0 => (self.render_latest_time / aggr) as i64,
-            _ => self.scroll_ref_bucket,
+        let latest_bucket: i64 = match aggr_time {
+            Some(aggr) if aggr > 0 => (render_latest_time / aggr) as i64,
+            _ => scroll_ref_bucket,
         };
 
         let x_axis = AxisXLabelCanvas {
-            cache: &self.x_axis_cache,
+            cache: &self.canvas_caches.x_axis,
             plot_bounds: self.viewport,
-            latest_bucket: render_latest_bucket,
+            latest_bucket,
             aggr_time,
             column_world: self.column_world,
             cam_offset_x: self.scene.camera.offset[0],
             cam_sx: self.scene.camera.scale[0].max(MIN_CAMERA_SCALE),
             cam_right_pad_frac: self.scene.camera.right_pad_frac,
-            x_phase_bucket: self.x_phase_bucket,
+            x_phase_bucket: self.anchor.x_phase_bucket(),
         };
         let y_axis = AxisYLabelCanvas {
-            cache: &self.y_axis_cache,
+            cache: &self.canvas_caches.y_axis,
             plot_bounds: self.viewport,
             base_price: self.data.base_price,
             step: self.data.step,
@@ -358,22 +314,20 @@ impl HeatmapShader {
             depth_grid: &self.data.depth_grid,
             base_price: self.data.base_price,
             step: self.data.step,
-            scroll_ref_bucket: self.scroll_ref_bucket,
+            scroll_ref_bucket,
             qty_scale_inv: 1.0 / DEPTH_QTY_SCALE,
             col_w_world: self.column_world,
             row_h_world: self.row_h,
             min_camera_scale: MIN_CAMERA_SCALE,
-            tooltip_cache: &self.overlay_cache,
-            scale_labels_cache: &self.scale_labels_cache,
+            tooltip_cache: &self.canvas_caches.overlay,
+            scale_labels_cache: &self.canvas_caches.scale_labels,
 
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
             strip_height_frac: STRIP_HEIGHT_FRAC,
 
-            // denom used to scale the strip bars
-            volume_strip_max_qty: self.volume_strip_scale_max_qty,
-            // denom used to scale profile bars
-            profile_max_qty: self.profile_scale_max_qty,
-            is_paused: self.is_paused(),
+            is_paused: self.anchor.is_paused(),
+            volume_strip_max_qty: self.instances.profile_scale_max_qty,
+            profile_max_qty: self.instances.volume_strip_scale_max_qty,
         };
 
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
@@ -401,14 +355,15 @@ impl HeatmapShader {
         if aggr_time == 0 {
             return None;
         }
-
         if let Some(exchange_now_ms) = self.data.clock.estimate_now_ms(now_i) {
             // Bucket boundary can jitter due to clock estimation => make render time monotonic in Live mode.
             let bucketed = (exchange_now_ms / aggr_time) * aggr_time;
 
-            let live_render_latest_time = match self.follow {
-                FollowMode::Live => self.render_latest_time.max(bucketed),
-                FollowMode::Paused {
+            let live_render_latest_time = match self.anchor {
+                view::Anchor::Live {
+                    render_latest_time, ..
+                } => render_latest_time.max(bucketed),
+                view::Anchor::Paused {
                     render_latest_time, ..
                 } => render_latest_time,
             };
@@ -416,43 +371,29 @@ impl HeatmapShader {
             let live_phase_ms = exchange_now_ms.saturating_sub(live_render_latest_time);
             let live_phase = (live_phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
 
-            self.auto_update_follow_mode(
-                size.width,
-                size.height,
-                live_render_latest_time,
-                live_phase,
-            );
+            // Keep Live timing updated in the anchor (Paused remains frozen).
+            self.anchor.update_live_timing(bucketed, live_phase);
 
-            let (render_latest_time, x_phase_bucket) = match self.follow {
-                FollowMode::Live => (live_render_latest_time, live_phase),
-                FollowMode::Paused {
-                    render_latest_time,
-                    x_phase_bucket,
-                } => (render_latest_time, x_phase_bucket),
-            };
-
-            self.render_latest_time = render_latest_time;
-            self.x_phase_bucket = x_phase_bucket;
+            self.auto_update_anchor(size.width, size.height, live_render_latest_time, live_phase);
 
             if let Some(w) = self.compute_view_window(size.width, size.height) {
                 let render_latest_time_eff = self.effective_render_latest_time();
                 let render_bucket: i64 = (render_latest_time_eff / aggr_time) as i64;
 
-                if self.scroll_ref_bucket == 0 {
-                    self.scroll_ref_bucket = render_bucket;
-                }
+                self.anchor.set_scroll_ref_bucket_if_zero(render_bucket);
+                let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
 
-                let delta_buckets: i64 = render_bucket - self.scroll_ref_bucket;
-                self.scene.params.origin[0] = (delta_buckets as f32) + self.x_phase_bucket;
+                let delta_buckets: i64 = render_bucket - scroll_ref_bucket;
+                self.scene.params.origin[0] = (delta_buckets as f32) + self.anchor.x_phase_bucket();
 
-                let latest_time_for_heatmap = if self.is_paused() {
+                let latest_time_for_heatmap = if self.anchor.is_paused() {
                     render_latest_time_eff
                 } else {
                     self.data.latest_time
                 };
 
                 let latest_bucket_for_scene: i64 = (latest_time_for_heatmap / aggr_time) as i64;
-                let latest_rel: i64 = latest_bucket_for_scene - self.scroll_ref_bucket;
+                let latest_rel: i64 = latest_bucket_for_scene - scroll_ref_bucket;
                 self.scene.params.heatmap_a[0] = latest_rel as f32;
 
                 match self.rebuild_policy {
@@ -496,16 +437,14 @@ impl HeatmapShader {
                     .heatmap_y_start_bin(self.data.base_price, self.data.step);
             }
 
-            self.x_axis_cache.clear();
-            self.y_axis_cache.clear();
+            self.canvas_caches.clear_axes();
         }
 
         if self.palette.is_none() {
             return Some(Action::RequestPalette);
         }
 
-        self.overlay_cache.clear();
-        self.scale_labels_cache.clear();
+        self.canvas_caches.clear_overlays();
 
         None
     }
@@ -525,7 +464,7 @@ impl HeatmapShader {
             self.needs_heatmap_full_upload = true;
         }
 
-        let paused = matches!(self.follow, FollowMode::Paused { .. });
+        let paused = matches!(self.anchor, view::Anchor::Paused { .. });
         let state = &mut self.data;
 
         let aggr_time: u64 = match state.basis {
@@ -558,12 +497,18 @@ impl HeatmapShader {
         if rounded_t >= state.latest_time {
             if let Some(mid) = depth.mid_price() {
                 let mid_rounded = mid.round_to_step(state.step);
-                if paused {
-                    self.pending_mid_price = Some(mid_rounded);
+
+                if let view::Anchor::Paused {
+                    ref mut pending_mid_price,
+                    ..
+                } = self.anchor
+                {
+                    *pending_mid_price = Some(mid_rounded);
                 } else {
                     state.base_price = mid_rounded;
                 }
             }
+
             state.latest_time = rounded_t;
         }
 
@@ -592,11 +537,10 @@ impl HeatmapShader {
             if tex_w > 0 && tex_h > 0 {
                 let bucket = (rounded_t / aggr_time) as i64;
 
-                if self.scroll_ref_bucket == 0 {
-                    self.scroll_ref_bucket = bucket;
-                }
+                self.anchor.set_scroll_ref_bucket_if_zero(bucket);
+                let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
 
-                let latest_rel: i64 = bucket - self.scroll_ref_bucket;
+                let latest_rel: i64 = bucket - scroll_ref_bucket;
                 self.scene.params.heatmap_a[0] = latest_rel as f32;
                 let latest_x_ring: u32 = state.depth_grid.ring_x_for_bucket(bucket);
                 self.scene.params.heatmap_a[3] = latest_x_ring as f32;
@@ -648,7 +592,7 @@ impl HeatmapShader {
         };
 
         let latest_render = self.effective_render_latest_time();
-        let latest_data_for_view = if self.is_paused() && latest_render > 0 {
+        let latest_data_for_view = if self.anchor.is_paused() && latest_render > 0 {
             latest_render
         } else {
             self.data.latest_time
@@ -670,16 +614,20 @@ impl HeatmapShader {
     /// Rebuild only CPU overlay instances (profile/volume/trades). This is intended to be
     /// cheap enough to run during interaction, unlike `rebuild_from_historical`.
     fn rebuild_overlays(&mut self, w: &ViewWindow) {
-        let max_trade_qty = self.max_trade_qty(w);
-        let circles = if max_trade_qty > 0.0 {
-            self.build_circles(w, max_trade_qty)
-        } else {
-            vec![]
+        let Some(palette) = &self.palette else {
+            return;
         };
 
-        let mut rects: Vec<RectInstance> = Vec::new();
-        self.push_latest_profile_rects(w, &mut rects);
-        self.push_volume_strip_rects(w, &mut rects);
+        let (circles, rects) = self.instances.build_instances(
+            w,
+            &self.data.trades,
+            &self.data.heatmap,
+            self.data.base_price,
+            self.data.step,
+            self.data.latest_time,
+            self.anchor.scroll_ref_bucket(),
+            palette,
+        );
 
         self.scene.set_rectangles(rects);
         self.scene.set_circles(circles);
@@ -747,15 +695,16 @@ impl HeatmapShader {
             0.0,
         ];
 
-        let need_full_rebuild =
-            new_steps_per_y_bin != prev_steps_per_y_bin || self.force_rebuild_from_historical;
+        // Consume resume directive (if any).
+        let resume = self.anchor.take_live_resume();
+        let force_full_rebuild = matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
+
+        let need_full_rebuild = new_steps_per_y_bin != prev_steps_per_y_bin || force_full_rebuild;
 
         if need_full_rebuild {
-            self.force_rebuild_from_historical = false;
-
             self.data.depth_grid.ensure_layout(aggr_time);
 
-            let latest_time = if self.is_paused() {
+            let latest_time = if self.anchor.is_paused() {
                 self.effective_render_latest_time().max(1)
             } else {
                 self.data.latest_time.max(1)
@@ -798,7 +747,8 @@ impl HeatmapShader {
             if tex_w > 0 && tex_h > 0 {
                 let latest_bucket: i64 = (latest_time / aggr_time) as i64;
 
-                let latest_rel: i64 = latest_bucket - self.scroll_ref_bucket;
+                let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
+                let latest_rel: i64 = latest_bucket - scroll_ref_bucket;
                 self.scene.params.heatmap_a[0] = latest_rel as f32;
 
                 let latest_x_ring: u32 = self.data.depth_grid.ring_x_for_bucket(latest_bucket);
@@ -873,395 +823,19 @@ impl HeatmapShader {
         self.needs_heatmap_full_upload = true;
     }
 
-    #[inline]
-    fn y_center_for_bin(y_bin: i64, w: &ViewWindow) -> f32 {
-        let center_steps = (y_bin as f32 + 0.5) * (w.steps_per_y_bin as f32);
-        -(center_steps * w.row_h)
-    }
-
-    fn build_circles(&self, w: &ViewWindow, max_trade_qty: f32) -> Vec<CircleInstance> {
-        let Some(palette) = &self.palette else {
-            return vec![];
-        };
-
-        let aggr = w.aggr_time.max(1); // ms per bucket (u64)
-        let ref_bucket = self.scroll_ref_bucket;
-
-        let mut out: Vec<CircleInstance> = Vec::new();
-
-        for (bucket_time, dp) in self.data.trades.datapoints.range(w.earliest..=w.latest_vis) {
-            let bucket = (*bucket_time / aggr) as i64;
-
-            for tr in dp.grouped_trades.iter() {
-                let x_frac: f32 = 0.0;
-
-                let x_bin_rel: i32 =
-                    (bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-
-                let y_world: f32 = self.y_world_for_trade_price(tr.price, w);
-
-                let q = tr.qty.max(0.0);
-                let t = if max_trade_qty > 0.0 {
-                    (q / max_trade_qty).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let radius_px = TRADE_R_MIN_PX + t * (TRADE_R_MAX_PX - TRADE_R_MIN_PX);
-
-                let rgba = if tr.is_sell {
-                    [
-                        palette.sell_rgb[0],
-                        palette.sell_rgb[1],
-                        palette.sell_rgb[2],
-                        TRADE_ALPHA,
-                    ]
-                } else {
-                    [
-                        palette.buy_rgb[0],
-                        palette.buy_rgb[1],
-                        palette.buy_rgb[2],
-                        TRADE_ALPHA,
-                    ]
-                };
-
-                out.push(CircleInstance {
-                    y_world,
-                    x_bin_rel,
-                    x_frac,
-                    radius_px,
-                    _pad: 0.0,
-                    color: rgba,
-                });
-            }
-        }
-
-        out
-    }
-
-    fn y_world_for_trade_price(&self, price: Price, w: &ViewWindow) -> f32 {
-        let step_units = self.data.step.units.max(1);
-        let y_div = w.steps_per_y_bin.max(1);
-
-        let base_steps = self.data.base_price.units / step_units;
-        let base_abs_y_bin = base_steps.div_euclid(y_div);
-
-        let abs_steps = price.units / step_units;
-        let abs_y_bin = abs_steps.div_euclid(y_div);
-
-        let rel_y_bin = abs_y_bin - base_abs_y_bin;
-        Self::y_center_for_bin(rel_y_bin, w)
-    }
-
-    fn push_latest_profile_rects(&mut self, w: &ViewWindow, rects: &mut Vec<RectInstance>) {
-        let Some(palette) = &self.palette else {
-            return;
-        };
-
-        if w.profile_max_w_world <= 0.0 {
-            return;
-        }
-
-        let state = &self.data;
-
-        let step_units = state.step.units.max(1);
-        let y_div = w.steps_per_y_bin.max(1);
-
-        let base_steps = state.base_price.units / step_units;
-        let base_abs_y_bin = base_steps.div_euclid(y_div);
-
-        let lowest_abs_steps = w.lowest.units / step_units;
-        let highest_abs_steps = w.highest.units / step_units;
-
-        let min_abs_y_bin = lowest_abs_steps.div_euclid(y_div);
-        let max_abs_y_bin = highest_abs_steps.div_euclid(y_div);
-
-        if max_abs_y_bin < min_abs_y_bin {
-            return;
-        }
-
-        let len = (max_abs_y_bin - min_abs_y_bin + 1) as usize;
-
-        self.profile_bid_acc.resize(len, 0.0);
-        self.profile_ask_acc.resize(len, 0.0);
-        self.profile_bid_acc[..].fill(0.0);
-        self.profile_ask_acc[..].fill(0.0);
-
-        let mut max_latest_qty: f32 = 0.0;
-
-        for (price, run) in state
-            .heatmap
-            .latest_order_runs(w.highest, w.lowest, state.latest_time)
-        {
-            if *price < w.lowest || *price > w.highest {
-                continue;
-            }
-
-            let abs_steps = price.units / step_units;
-            let abs_y_bin = abs_steps.div_euclid(y_div);
-            let idx = (abs_y_bin - min_abs_y_bin) as usize;
-
-            let v = if run.is_bid {
-                &mut self.profile_bid_acc[idx]
-            } else {
-                &mut self.profile_ask_acc[idx]
-            };
-
-            *v += run.qty();
-            max_latest_qty = max_latest_qty.max(*v);
-        }
-
-        if max_latest_qty <= 0.0 {
-            return;
-        }
-
-        self.profile_scale_max_qty = Some(max_latest_qty);
-
-        let min_bar_w_world: f32 = PROFILE_MIN_BAR_PX / w.sx; // ~N px
-
-        for i in 0..len {
-            let abs_y_bin = min_abs_y_bin + i as i64;
-            let rel_y_bin = abs_y_bin - base_abs_y_bin;
-            let y = Self::y_center_for_bin(rel_y_bin, w);
-
-            for (is_bid, qty_sum) in [
-                (true, self.profile_bid_acc[i]),
-                (false, self.profile_ask_acc[i]),
-            ] {
-                if qty_sum <= 0.0 {
-                    continue;
-                }
-
-                let t = (qty_sum / max_latest_qty).clamp(0.0, 1.0);
-                let w_world = (t * w.profile_max_w_world).max(min_bar_w_world);
-
-                // left edge at x=0, growing into x>0
-                let center_x = 0.5 * w_world;
-
-                let rgb = if is_bid {
-                    palette.bid_rgb
-                } else {
-                    palette.ask_rgb
-                };
-
-                rects.push(RectInstance {
-                    position: [center_x, y],
-                    size: [w_world, w.y_bin_h_world],
-                    color: [rgb[0], rgb[1], rgb[2], PROFILE_ALPHA],
-                    x0_bin: 0,
-                    x1_bin_excl: 0,
-                    x_from_bins: 0,
-                });
-            }
-        }
-    }
-
-    fn push_volume_strip_rects(&mut self, w: &ViewWindow, rects: &mut Vec<RectInstance>) {
-        if w.strip_h_world <= 0.0 {
-            return;
-        }
-
-        let Some(palette) = &self.palette else {
-            return;
-        };
-
-        let state = &self.data;
-
-        let latest_vis_for_strip: u64 = if self.render_latest_time > 0 {
-            w.latest_vis.min(self.render_latest_time.saturating_sub(1))
-        } else {
-            w.latest_vis
-        };
-        if latest_vis_for_strip < w.earliest {
-            return;
-        }
-        let latest_bucket_vis: i64 = (latest_vis_for_strip / w.aggr_time) as i64;
-
-        // X downsampling
-        let px_per_col = self.column_world * w.sx;
-        let px_per_drawn_col = px_per_col * (1.0 - VOLUME_BUCKET_GAP_FRAC);
-        let mut cols_per_x_bin: i64 = 1;
-        if px_per_drawn_col.is_finite() && px_per_drawn_col > 0.0 {
-            cols_per_x_bin = (VOLUME_MIN_BAR_W_PX / px_per_drawn_col).ceil() as i64;
-            cols_per_x_bin = cols_per_x_bin.clamp(1, MAX_COLS_PER_X_BIN);
-        }
-        let cols_per_x_bin = cols_per_x_bin.max(1);
-
-        let start_bucket_vis = (w.earliest / w.aggr_time) as i64;
-        let end_bucket_vis = latest_bucket_vis;
-
-        let min_x_bin = start_bucket_vis.div_euclid(cols_per_x_bin);
-        let max_x_bin = end_bucket_vis.div_euclid(cols_per_x_bin);
-        if max_x_bin < min_x_bin {
-            return;
-        }
-
-        let bins_len = (max_x_bin - min_x_bin + 1) as usize;
-
-        self.volume_acc.resize(bins_len, (0.0, 0.0));
-        self.volume_acc.iter_mut().for_each(|e| *e = (0.0, 0.0));
-        self.volume_touched.clear();
-
-        // Accumulate only up to `latest_vis_for_strip` (completed buckets only)
-        for (time, dp) in state
-            .trades
-            .datapoints
-            .range(w.earliest..=latest_vis_for_strip)
-        {
-            let bucket = (*time / w.aggr_time) as i64;
-            let x_bin = bucket.div_euclid(cols_per_x_bin);
-            let idx_i64 = x_bin - min_x_bin;
-            if idx_i64 < 0 {
-                continue;
-            }
-            let idx = idx_i64 as usize;
-            if idx >= bins_len {
-                continue;
-            }
-
-            let (buy, sell) = dp.buy_sell;
-            if buy == 0.0 && sell == 0.0 {
-                continue;
-            }
-
-            let e = &mut self.volume_acc[idx];
-            let was_zero = e.0 == 0.0 && e.1 == 0.0;
-            e.0 += buy;
-            e.1 += sell;
-            if was_zero {
-                self.volume_touched.push(idx);
-            }
-        }
-
-        if self.volume_touched.is_empty() {
-            return;
-        }
-
-        self.volume_touched.sort_unstable();
-        self.volume_touched.dedup();
-
-        let mut max_total_vol: f32 = 0.0;
-        for &idx in &self.volume_touched {
-            let (buy, sell) = self.volume_acc[idx];
-            max_total_vol = max_total_vol.max(buy + sell);
-        }
-        if max_total_vol <= 0.0 {
-            return;
-        }
-        self.volume_strip_scale_max_qty = Some(max_total_vol);
-
-        let denom = max_total_vol.max(1e-12);
-
-        let min_h_world: f32 = VOLUME_MIN_BAR_PX / w.sy;
-        let ref_bucket = self.scroll_ref_bucket;
-        let eps = 1e-12f32;
-
-        for &idx in &self.volume_touched {
-            let (buy, sell) = self.volume_acc[idx];
-            let total = buy + sell;
-            if total <= 0.0 {
-                continue;
-            }
-
-            let x_bin = min_x_bin + idx as i64;
-
-            let start_bucket = x_bin * cols_per_x_bin;
-            let mut end_bucket_excl = start_bucket + cols_per_x_bin;
-
-            // Clamp to the last completed bucket (+1 for exclusivity)
-            end_bucket_excl = end_bucket_excl.min(latest_bucket_vis + 1);
-            if end_bucket_excl <= start_bucket {
-                continue;
-            }
-
-            let x0_rel = (start_bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-            let x1_rel =
-                (end_bucket_excl - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-
-            let (base_rgb, is_tie) = if buy > sell + eps {
-                (palette.buy_rgb, false)
-            } else if sell > buy + eps {
-                (palette.sell_rgb, false)
-            } else {
-                (palette.secondary_rgb, true)
-            };
-
-            let total_h = ((total / denom) * w.strip_h_world).max(min_h_world);
-            let total_center_y = w.strip_bottom_y - 0.5 * total_h;
-
-            rects.push(RectInstance {
-                position: [0.0, total_center_y],
-                size: [0.0, total_h],
-                color: [base_rgb[0], base_rgb[1], base_rgb[2], VOLUME_TOTAL_ALPHA],
-                x0_bin: x0_rel,
-                x1_bin_excl: x1_rel,
-                x_from_bins: 1,
-            });
-
-            if !is_tie {
-                let diff = (buy - sell).abs();
-                if diff > eps {
-                    let mut overlay_h = ((diff / denom) * w.strip_h_world).max(min_h_world);
-                    overlay_h = overlay_h.min(total_h);
-
-                    let t = VOLUME_DELTA_TINT_TO_WHITE;
-                    let overlay_rgb = [
-                        base_rgb[0] + (1.0 - base_rgb[0]) * t,
-                        base_rgb[1] + (1.0 - base_rgb[1]) * t,
-                        base_rgb[2] + (1.0 - base_rgb[2]) * t,
-                    ];
-
-                    let overlay_center_y = w.strip_bottom_y - 0.5 * overlay_h;
-
-                    rects.push(RectInstance {
-                        position: [0.0, overlay_center_y],
-                        size: [0.0, overlay_h],
-                        color: [
-                            overlay_rgb[0],
-                            overlay_rgb[1],
-                            overlay_rgb[2],
-                            VOLUME_DELTA_ALPHA,
-                        ],
-                        x0_bin: x0_rel,
-                        x1_bin_excl: x1_rel,
-                        x_from_bins: 1,
-                    });
-                }
-            }
-        }
-    }
-
-    fn max_trade_qty(&self, w: &ViewWindow) -> f32 {
-        let mut max_qty = 0.0f32;
-
-        for (_time, dp) in self.data.trades.datapoints.range(w.earliest..=w.latest_vis) {
-            for tr in dp.grouped_trades.iter() {
-                if tr.price < w.lowest || tr.price > w.highest {
-                    continue;
-                }
-                max_qty = max_qty.max(tr.qty);
-            }
-        }
-
-        max_qty
-    }
-
     pub fn tick_size(&self) -> f32 {
         self.data.step.to_f32_lossy()
-    }
-
-    #[inline]
-    fn is_paused(&self) -> bool {
-        matches!(self.follow, FollowMode::Paused { .. })
     }
 
     /// Render time used for view/overlay computations.
     /// While paused, clamp to the latest bucket we actually have data for to avoid "future" drift.
     #[inline]
     fn effective_render_latest_time(&self) -> u64 {
-        if self.is_paused() && self.render_latest_time > 0 && self.data.latest_time > 0 {
-            self.render_latest_time.min(self.data.latest_time)
+        let render_latest_time = self.anchor.render_latest_time();
+        if self.anchor.is_paused() && render_latest_time > 0 && self.data.latest_time > 0 {
+            render_latest_time.min(self.data.latest_time)
         } else {
-            self.render_latest_time
+            render_latest_time
         }
     }
 
@@ -1351,7 +925,6 @@ impl HeatmapShader {
             return true;
         }
 
-        // y doesn't matter for x visibility; pick camera center y.
         let y = self.scene.camera.offset[1];
         let [sx, _sy] = self.scene.camera.world_to_screen(0.0, y, vw_px, vh_px);
 
@@ -1359,7 +932,7 @@ impl HeatmapShader {
     }
 
     /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.
-    fn auto_update_follow_mode(
+    fn auto_update_anchor(
         &mut self,
         vw_px: f32,
         vh_px: f32,
@@ -1368,59 +941,63 @@ impl HeatmapShader {
     ) {
         let x0_visible = self.profile_start_visible_x0(vw_px, vh_px);
 
-        match self.follow {
-            FollowMode::Live => {
+        match self.anchor {
+            view::Anchor::Live {
+                scroll_ref_bucket,
+                render_latest_time,
+                x_phase_bucket,
+                ..
+            } => {
                 if !x0_visible {
-                    self.follow = FollowMode::Paused {
-                        render_latest_time: live_render_latest_time,
-                        x_phase_bucket: live_x_phase_bucket,
+                    self.anchor = view::Anchor::Paused {
+                        render_latest_time: live_render_latest_time.max(render_latest_time),
+                        x_phase_bucket: live_x_phase_bucket.max(x_phase_bucket),
+                        pending_mid_price: None,
+                        scroll_ref_bucket,
+                        resume: view::ResumeAction::FullRebuildFromHistorical,
                     };
                 }
             }
-            FollowMode::Paused { .. } => {
+            view::Anchor::Paused {
+                pending_mid_price,
+                scroll_ref_bucket,
+                render_latest_time,
+                x_phase_bucket,
+                resume,
+            } => {
                 if x0_visible {
-                    self.follow = FollowMode::Live;
+                    self.anchor = view::Anchor::Live {
+                        scroll_ref_bucket,
+                        render_latest_time,
+                        x_phase_bucket,
+                        resume,
+                    };
 
-                    if let Some(p) = self.pending_mid_price.take() {
+                    if let Some(p) = pending_mid_price {
                         self.data.base_price = p;
                     }
 
-                    self.force_rebuild_from_historical = true;
                     self.rebuild_policy = view::RebuildPolicy::Immediate;
                 }
             }
         }
     }
 
-    fn make_real_data_state(
-        basis: Basis,
-        step: PriceStep,
-        ticker_info: TickerInfo,
-    ) -> RealDataState {
-        let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
-        let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
-        RealDataState::new(basis, step, ticker_info, heatmap, trades)
-    }
-
     fn apply_data_state(&mut self, basis: Basis, step: PriceStep, ticker_info: TickerInfo) {
-        self.data = Self::make_real_data_state(basis, step, ticker_info);
+        self.data = DataState::new(basis, step, ticker_info);
         self.scene.params.origin[3] = VOLUME_X_SHIFT_BUCKET;
 
-        self.profile_bid_acc.clear();
-        self.profile_ask_acc.clear();
-        self.volume_acc.clear();
-        self.volume_touched.clear();
-
-        self.scroll_ref_bucket = 0;
-        self.x_phase_bucket = 0.0;
-        self.render_latest_time = 0;
+        self.anchor = view::Anchor::Live {
+            scroll_ref_bucket: 0,
+            render_latest_time: 0,
+            x_phase_bucket: 0.0,
+            resume: view::ResumeAction::None,
+        };
 
         self.data_gen = self.data_gen.wrapping_add(1);
         self.depth_norm.invalidate();
-        self.x_axis_cache.clear();
 
-        self.profile_scale_max_qty = None;
-        self.volume_strip_scale_max_qty = None;
+        self.instances.clear();
 
         self.clear_scene();
         self.rebuild_policy = view::RebuildPolicy::Immediate;

@@ -416,6 +416,28 @@ impl TimeSeries<HeatmapDataPoint> {
 
         (max_trade_qty, max_aggr_volume)
     }
+
+    pub fn max_trade_qty_in_range(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: Price,
+        lowest: Price,
+    ) -> f32 {
+        let mut max_trade_qty = 0.0f32;
+
+        self.datapoints
+            .range(earliest..=latest)
+            .for_each(|(_, dp)| {
+                dp.grouped_trades.iter().for_each(|trade| {
+                    if trade.price >= lowest && trade.price <= highest {
+                        max_trade_qty = max_trade_qty.max(trade.qty);
+                    }
+                });
+            });
+
+        max_trade_qty
+    }
 }
 
 impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, (f32, f32)> {
