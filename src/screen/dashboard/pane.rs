@@ -1112,7 +1112,11 @@ impl State {
                                             p.set_tick_size(tm.multiply_with_min_tick_size(ticker));
                                         }
                                         Content::ShaderHeatmap { chart: Some(c), .. } => {
-                                            c.set_tick_size(tm.multiply_with_min_tick_size(ticker));
+                                            *c = Box::new(HeatmapShader::new(
+                                                c.basis,
+                                                tm.multiply_with_min_tick_size(ticker),
+                                                c.ticker_info,
+                                            ));
                                         }
                                         _ => {}
                                     }
@@ -1175,7 +1179,11 @@ impl State {
                                         effect = Some(Effect::RefreshStreams);
                                     }
                                     Content::ShaderHeatmap { chart: Some(c), .. } => {
-                                        c.set_basis(new_basis);
+                                        *c = Box::new(HeatmapShader::new(
+                                            c.basis,
+                                            c.tick_size(),
+                                            c.ticker_info,
+                                        ));
 
                                         if let Some(stream_type) =
                                             self.streams.ready_iter_mut().and_then(|mut it| {

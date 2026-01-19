@@ -31,16 +31,6 @@ impl InstanceBuilder {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.volume_acc.clear();
-        self.volume_touched.clear();
-        self.profile_bid_acc.clear();
-        self.profile_ask_acc.clear();
-
-        self.profile_scale_max_qty = None;
-        self.volume_strip_scale_max_qty = None;
-    }
-
     pub fn build_instances(
         &mut self,
         w: &ViewWindow,

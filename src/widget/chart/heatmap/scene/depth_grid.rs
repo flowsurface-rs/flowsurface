@@ -7,6 +7,7 @@ use exchange::util::{Price, PriceStep};
 use crate::widget::chart::heatmap::scene;
 
 const Y_BLOCK_H: u32 = 16;
+const DEPTH_GRID_GRACE_MS: u64 = 500;
 
 #[derive(Debug, Clone)]
 pub struct GridRing {
@@ -15,7 +16,7 @@ pub struct GridRing {
     horizon_buckets: u32,
 
     /// tolerate short gaps/out-of-order updates (ms).
-    grace_ms: u64,
+    pub grace_ms: u64,
 
     tex_w: u32,
     tex_h: u32,
@@ -44,7 +45,7 @@ impl GridRing {
     pub fn new(horizon_buckets: u32, tex_h: u32) -> Self {
         Self {
             horizon_buckets: horizon_buckets.max(1),
-            grace_ms: 0, // default off; set from caller
+            grace_ms: DEPTH_GRID_GRACE_MS,
             tex_w: 0,
             tex_h,
 
@@ -131,11 +132,6 @@ impl GridRing {
     #[inline]
     pub fn tex_h(&self) -> u32 {
         self.tex_h
-    }
-
-    #[inline]
-    pub fn set_grace_ms(&mut self, grace_ms: u64) {
-        self.grace_ms = grace_ms;
     }
 
     #[inline]
