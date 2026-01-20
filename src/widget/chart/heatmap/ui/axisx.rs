@@ -85,7 +85,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
                 let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
-                Some(canvas::Action::publish(Message::ZoomColumnWorldAt {
+                Some(canvas::Action::publish(Message::ScrolledAxisX {
                     factor,
                     cursor_x: p.x,
                     viewport_w: bounds.width,

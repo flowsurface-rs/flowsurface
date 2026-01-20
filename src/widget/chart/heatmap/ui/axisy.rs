@@ -96,7 +96,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
                 let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
-                Some(canvas::Action::publish(Message::ZoomRowHeightAt {
+                Some(canvas::Action::publish(Message::ScrolledAxisY {
                     factor,
                     cursor_y: p.y,
                     viewport_h: bounds.height,

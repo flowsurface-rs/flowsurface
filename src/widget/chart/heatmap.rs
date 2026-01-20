@@ -26,7 +26,6 @@ use std::time::{Duration, Instant};
 
 const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
-const DEPTH_QTY_SCALE: f32 = 1.0; // dollars-per-u32 step
 
 const DEFAULT_ROW_H_WORLD: f32 = 0.05;
 const DEFAULT_COL_W_WORLD: f32 = 0.05;
@@ -68,12 +67,12 @@ pub enum Message {
         factor: f32,
         cursor: iced::Point,
     },
-    ZoomRowHeightAt {
+    ScrolledAxisY {
         factor: f32,
         cursor_y: f32,
         viewport_h: f32,
     },
-    ZoomColumnWorldAt {
+    ScrolledAxisX {
         factor: f32,
         cursor_x: f32,
         viewport_w: f32,
@@ -99,6 +98,7 @@ pub struct HeatmapShader {
     latest_time: u64,
     base_price: Price,
     clock: view::ExchangeClock,
+    qty_scale: f32,
 
     depth_grid: depth_grid::GridRing,
     // Cache for depth normalization denom (max qty) to avoid per-frame scans.
@@ -124,6 +124,15 @@ impl HeatmapShader {
 
         let depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
 
+        let qty_scale: f32 = match exchange::volume_size_unit() {
+            exchange::SizeUnit::Base => {
+                let min_qty_f: f32 = ticker_info.min_qty.into();
+                assert!(min_qty_f > 0.0, "ticker_info.min_qty must be > 0");
+                1.0 / min_qty_f
+            }
+            exchange::SizeUnit::Quote => 1.0,
+        };
+
         Self {
             last_tick: None,
             scene,
@@ -131,6 +140,7 @@ impl HeatmapShader {
             row_h: DEFAULT_ROW_H_WORLD,
             column_world: DEFAULT_COL_W_WORLD,
             palette: None,
+            qty_scale,
             heatmap,
             basis,
             step,
@@ -156,7 +166,7 @@ impl HeatmapShader {
                 self.viewport = Some(bounds);
 
                 self.rebuild_policy = view::RebuildPolicy::Immediate;
-                self.rebuild_instances();
+                self.rebuild_all();
             }
             Message::PanDeltaPx(delta_px) => {
                 let dx_world = delta_px.x / self.scene.camera.scale[0];
@@ -187,7 +197,7 @@ impl HeatmapShader {
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
-            Message::ZoomRowHeightAt {
+            Message::ScrolledAxisY {
                 factor,
                 cursor_y,
                 viewport_h,
@@ -200,7 +210,7 @@ impl HeatmapShader {
 
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
-            Message::ZoomColumnWorldAt {
+            Message::ScrolledAxisX {
                 factor,
                 cursor_x,
                 viewport_w,
@@ -298,7 +308,7 @@ impl HeatmapShader {
             base_price: self.base_price,
             step: self.step,
             scroll_ref_bucket,
-            qty_scale_inv: 1.0 / DEPTH_QTY_SCALE,
+            qty_scale_inv: 1.0 / self.qty_scale,
             col_w_world: self.column_world,
             row_h_world: self.row_h,
             min_camera_scale: MIN_CAMERA_SCALE,
@@ -381,7 +391,7 @@ impl HeatmapShader {
 
                 match self.rebuild_policy {
                     view::RebuildPolicy::Immediate => {
-                        self.rebuild_instances();
+                        self.rebuild_all();
                         self.rebuild_policy = view::RebuildPolicy::Idle;
                     }
                     view::RebuildPolicy::Debounced { last_input } => {
@@ -390,7 +400,7 @@ impl HeatmapShader {
                         if now_i.saturating_duration_since(last_input).as_millis() as u64
                             >= REBUILD_DEBOUNCE_MS
                         {
-                            self.rebuild_instances();
+                            self.rebuild_all();
                             self.rebuild_policy = view::RebuildPolicy::Idle;
                         }
                     }
@@ -501,7 +511,7 @@ impl HeatmapShader {
                 depth,
                 rounded_t,
                 self.step,
-                DEPTH_QTY_SCALE,
+                self.qty_scale,
                 self.base_price,
                 steps_per_y_bin,
             );
@@ -530,7 +540,7 @@ impl HeatmapShader {
                     tex_w as f32,
                     tex_h as f32,
                     (tex_w - 1) as f32,
-                    1.0 / DEPTH_QTY_SCALE,
+                    1.0 / self.qty_scale,
                 ];
 
                 self.scene.params.heatmap_a[1] = self
@@ -651,7 +661,7 @@ impl HeatmapShader {
         self.viewport.map(|r| r.size())
     }
 
-    fn rebuild_instances(&mut self) {
+    fn rebuild_all(&mut self) {
         let Some(size) = self.viewport_size_px() else {
             return;
         };
@@ -714,7 +724,7 @@ impl HeatmapShader {
                 self.base_price,
                 self.step,
                 new_steps_per_y_bin,
-                DEPTH_QTY_SCALE,
+                self.qty_scale,
                 rebuild_highest,
                 rebuild_lowest,
             );
@@ -739,7 +749,7 @@ impl HeatmapShader {
                     tex_w as f32,
                     tex_h as f32,
                     (tex_w - 1) as f32,
-                    1.0 / DEPTH_QTY_SCALE,
+                    1.0 / self.qty_scale,
                 ];
 
                 self.scene.params.heatmap_a[1] = self
@@ -820,8 +830,12 @@ impl HeatmapShader {
     }
 
     /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture
-    /// immediately, otherwise overlays will be computed with a different binning than the shader/texture.
     fn force_rebuild_if_ybin_changed(&mut self) {
+        // Don't force immediate rebuild if we're already debouncing
+        if matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. }) {
+            return;
+        }
+
         let Some(size) = self.viewport_size_px() else {
             return;
         };
@@ -832,7 +846,7 @@ impl HeatmapShader {
         let cur_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
         if w.steps_per_y_bin != cur_steps_per_y_bin {
             self.rebuild_policy = view::RebuildPolicy::Immediate;
-            self.rebuild_instances();
+            self.rebuild_all();
         }
     }
 
