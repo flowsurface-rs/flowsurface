@@ -4,15 +4,24 @@ pub mod overlay;
 
 pub use super::Message;
 
+#[derive(Debug, Clone, Copy)]
+pub enum AxisZoomAnchor1D {
+    /// Keep a specific world coordinate (along the active axis) fixed at a given screen position.
+    World { world: f32, screen: f32 },
+
+    /// Zoom anchored to the captured cursor position (along the active axis).
+    Cursor { screen: f32 },
+}
+
 #[derive(Debug, Default)]
 pub enum AxisInteraction {
     #[default]
     None,
     Panning {
         last_position: iced::Point,
+        zoom_anchor: Option<AxisZoomAnchor1D>,
     },
 }
-
 pub struct CanvasCaches {
     pub y_axis: iced::widget::canvas::Cache,
     pub x_axis: iced::widget::canvas::Cache,

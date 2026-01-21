@@ -77,6 +77,11 @@ pub enum Message {
         cursor_x: f32,
         viewport_w: f32,
     },
+    DragZoomAxisXKeepAnchor {
+        factor: f32,
+        anchor_screen_x: f32,
+        viewport_w: f32,
+    },
     PauseBtnClicked,
 }
 
@@ -167,6 +172,17 @@ impl HeatmapShader {
 
                 self.rebuild_policy = view::RebuildPolicy::Immediate;
                 self.rebuild_all();
+            }
+            Message::DragZoomAxisXKeepAnchor {
+                factor,
+                anchor_screen_x,
+                viewport_w,
+            } => {
+                self.zoom_column_world_keep_anchor(factor, 0.0, anchor_screen_x, viewport_w);
+                self.sync_grid_xy();
+
+                self.try_rebuild_overlays();
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::PanDeltaPx(delta_px) => {
                 let dx_world = delta_px.x / self.scene.camera.scale[0];
@@ -290,6 +306,9 @@ impl HeatmapShader {
             cam_sx: self.scene.camera.scale[0].max(MIN_CAMERA_SCALE),
             cam_right_pad_frac: self.scene.camera.right_pad_frac,
             x_phase_bucket: self.anchor.x_phase_bucket(),
+            is_x0_visible: self
+                .viewport
+                .map(|vb| self.profile_start_visible_x0(vb.width, vb.height)),
         };
         let y_axis = AxisYLabelCanvas {
             cache: &self.canvas_caches.y_axis,
@@ -909,6 +928,32 @@ impl HeatmapShader {
             );
 
         self.column_world = new_col_w;
+    }
+
+    fn zoom_column_world_keep_anchor(
+        &mut self,
+        factor: f32,
+        anchor_world_x: f32,
+        anchor_screen_x: f32,
+        vw_px: f32,
+    ) {
+        if !factor.is_finite()
+            || !anchor_world_x.is_finite()
+            || !anchor_screen_x.is_finite()
+            || !vw_px.is_finite()
+            || vw_px <= 1.0
+        {
+            return;
+        }
+
+        // 1) Zoom the logical bucket->world scale
+        self.column_world = (self.column_world * factor).clamp(MIN_COL_W_WORLD, MAX_COL_W_WORLD);
+
+        // 2) Pan so (anchor_world_x) stays under (anchor_screen_x)
+        let sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
+        let pad = self.scene.camera.right_pad_frac;
+
+        self.scene.camera.offset[0] = anchor_world_x - (anchor_screen_x - vw_px * (1.0 - pad)) / sx;
     }
 
     /// Is the *profile start boundary* (world x=0) visible on screen?

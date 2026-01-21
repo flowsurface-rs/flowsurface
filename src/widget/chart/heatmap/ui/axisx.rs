@@ -1,9 +1,12 @@
+use crate::widget::chart::heatmap::ui::AxisZoomAnchor1D;
+
 use super::{AxisInteraction, Message};
 use chrono::TimeZone;
 use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
 
+const DRAG_ZOOM_SENS: f32 = 0.005;
+
 fn unix_ms_to_local_string(ts_ms: i128, fmt: &str) -> String {
-    // Safe conversion: clamp to i64 range for chrono.
     let ts_ms_i64 = ts_ms.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
 
     let utc = match chrono::Utc.timestamp_millis_opt(ts_ms_i64).single() {
@@ -37,6 +40,7 @@ pub struct AxisXLabelCanvas<'a> {
     pub cam_sx: f32,
     pub cam_right_pad_frac: f32,
     pub x_phase_bucket: f32,
+    pub is_x0_visible: Option<bool>,
 }
 
 impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
@@ -44,7 +48,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
     fn update(
         &self,
-        state: &mut Self::State,
+        interaction: &mut AxisInteraction,
         event: &iced::Event,
         bounds: Rectangle,
         cursor: iced_core::mouse::Cursor,
@@ -52,32 +56,74 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
-                *state = AxisInteraction::Panning { last_position: p };
+
+                let use_world_anchor = self.is_x0_visible == Some(true);
+
+                let zoom_anchor = if use_world_anchor {
+                    let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
+
+                    let sx = self.cam_sx.max(1e-6);
+                    let pad = self.cam_right_pad_frac;
+
+                    let x0_screen = vw * (1.0 - pad) - self.cam_offset_x * sx;
+
+                    Some(AxisZoomAnchor1D::World {
+                        world: 0.0,
+                        screen: x0_screen,
+                    })
+                } else {
+                    Some(AxisZoomAnchor1D::Cursor { screen: p.x })
+                };
+
+                *interaction = AxisInteraction::Panning {
+                    last_position: p,
+                    zoom_anchor,
+                };
+
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                *state = AxisInteraction::None;
+                *interaction = AxisInteraction::None;
                 None
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if let AxisInteraction::Panning { last_position } = state
+                if let AxisInteraction::Panning {
+                    last_position,
+                    zoom_anchor,
+                } = interaction
                     && cursor.position_over(bounds).is_some()
                 {
                     let delta_px = *position - *last_position;
                     *last_position = *position;
 
-                    // Only horizontal pan from X axis.
-                    Some(canvas::Action::publish(Message::PanDeltaPx(iced::Vector {
-                        x: delta_px.x,
-                        y: 0.0,
-                    })))
+                    let scroll_amount = -delta_px.x * DRAG_ZOOM_SENS;
+                    let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
+
+                    match *zoom_anchor {
+                        Some(AxisZoomAnchor1D::World { screen, .. }) => {
+                            let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
+
+                            Some(canvas::Action::publish(Message::DragZoomAxisXKeepAnchor {
+                                factor,
+                                anchor_screen_x: screen,
+                                viewport_w: vw,
+                            }))
+                        }
+                        Some(AxisZoomAnchor1D::Cursor { screen }) => {
+                            Some(canvas::Action::publish(Message::ScrolledAxisX {
+                                factor,
+                                cursor_x: screen,
+                                viewport_w: bounds.width,
+                            }))
+                        }
+                        None => None,
+                    }
                 } else {
                     None
                 }
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                // Zoom column width around cursor X.
-                let p = cursor.position_in(bounds)?;
+                let cursor_rel_pos = cursor.position_in(bounds)?;
                 let scroll_amount = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
                     mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
@@ -87,7 +133,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
                 Some(canvas::Action::publish(Message::ScrolledAxisX {
                     factor,
-                    cursor_x: p.x,
+                    cursor_x: cursor_rel_pos.x,
                     viewport_w: bounds.width,
                 }))
             }

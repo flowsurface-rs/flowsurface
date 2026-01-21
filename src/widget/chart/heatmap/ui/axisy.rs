@@ -4,6 +4,7 @@ use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
 
 /// Rough vertical spacing (in screen pixels) between Y-axis labels.
 const LABEL_TARGET_PX: f64 = 48.0;
+const DRAG_ZOOM_SENS: f32 = 0.005;
 
 pub struct AxisYLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
@@ -65,7 +66,10 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
-                *interaction = AxisInteraction::Panning { last_position: p };
+                *interaction = AxisInteraction::Panning {
+                    last_position: p,
+                    zoom_anchor: None,
+                };
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -73,16 +77,19 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                 None
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if let AxisInteraction::Panning { last_position } = interaction
+                if let AxisInteraction::Panning { last_position, .. } = interaction
                     && cursor.position_over(bounds).is_some()
                 {
                     let delta_px = *position - *last_position;
                     *last_position = *position;
 
-                    Some(canvas::Action::publish(Message::PanDeltaPx(iced::Vector {
-                        x: 0.0,
-                        y: delta_px.y,
-                    })))
+                    let factor = (-delta_px.y * DRAG_ZOOM_SENS).exp().clamp(0.01, 100.0);
+
+                    Some(canvas::Action::publish(Message::ScrolledAxisY {
+                        factor,
+                        cursor_y: bounds.height * 0.5, // anchor at viewport center
+                        viewport_h: bounds.height,
+                    }))
                 } else {
                     None
                 }
