@@ -59,6 +59,9 @@ const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
 // If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
 const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
+// Margin before forcing a full recenter rebuild (fraction of tex_h)
+const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     BoundsChanged(iced::Rectangle),
@@ -499,6 +502,7 @@ impl HeatmapShader {
         }
 
         let paused = matches!(self.anchor, view::Anchor::Paused { .. });
+        let is_interacting = matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. });
 
         let aggr_time: u64 = match self.basis {
             Basis::Time(interval) => interval.into(),
@@ -549,12 +553,19 @@ impl HeatmapShader {
         if !paused {
             let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
 
+            // During interaction, keep the current anchor to avoid churn.
+            let recenter_target = if is_interacting {
+                self.depth_grid.y_anchor_price().unwrap_or(self.base_price)
+            } else {
+                self.camera_center_price()
+            };
+
             self.depth_grid.ingest_snapshot(
                 depth,
                 rounded_t,
                 self.step,
                 self.qty_scale,
-                self.base_price,
+                recenter_target,
                 steps_per_y_bin,
             );
 
@@ -732,7 +743,11 @@ impl HeatmapShader {
         let resume = self.anchor.take_live_resume();
         let force_full_rebuild = matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
 
-        let need_full_rebuild = new_steps_per_y_bin != prev_steps_per_y_bin || force_full_rebuild;
+        let recenter_target = self.camera_center_price();
+        let force_recenter = self.should_recenter_depth_grid(recenter_target);
+
+        let need_full_rebuild =
+            new_steps_per_y_bin != prev_steps_per_y_bin || force_full_rebuild || force_recenter;
 
         if need_full_rebuild {
             self.depth_grid.ensure_layout(aggr_time);
@@ -755,15 +770,15 @@ impl HeatmapShader {
             let half_steps = half_bins.saturating_mul(steps_per);
             let delta_units = half_steps.saturating_mul(step_units);
 
-            let base_u = self.base_price.units;
-            let rebuild_highest = Price::from_units(base_u.saturating_add(delta_units));
-            let rebuild_lowest = Price::from_units(base_u.saturating_sub(delta_units));
+            let anchor_u = recenter_target.units;
+            let rebuild_highest = Price::from_units(anchor_u.saturating_add(delta_units));
+            let rebuild_lowest = Price::from_units(anchor_u.saturating_sub(delta_units));
 
             self.depth_grid.rebuild_from_historical(
                 &self.heatmap,
                 oldest_time,
                 latest_time,
-                self.base_price,
+                recenter_target,
                 self.step,
                 new_steps_per_y_bin,
                 self.qty_scale,
@@ -977,6 +992,42 @@ impl HeatmapShader {
         let pad = self.scene.camera.right_pad_frac;
 
         self.scene.camera.offset[0] = anchor_world_x - (anchor_screen_x - vw_px * (1.0 - pad)) / sx;
+    }
+
+    /// Price at the camera's Y-center (world y = camera.offset[1])
+    fn camera_center_price(&self) -> Price {
+        let row_h = self.row_h.max(MIN_ROW_H_WORLD);
+        let y = self.scene.camera.offset[1];
+
+        if !row_h.is_finite() || row_h <= 0.0 || !y.is_finite() {
+            return self.base_price;
+        }
+
+        let steps_f = (-(y) / row_h).round();
+        let steps_i = steps_f as i64;
+        self.base_price.add_steps(steps_i, self.step)
+    }
+
+    /// Decide if we should force a full rebuild to recenter the heatmap ring
+    fn should_recenter_depth_grid(&self, target: Price) -> bool {
+        let tex_h = self.depth_grid.tex_h() as i64;
+        if tex_h <= 0 {
+            return false;
+        }
+
+        let Some(anchor) = self.depth_grid.y_anchor_price() else {
+            return true;
+        };
+
+        let step_units = self.step.units.max(1);
+        let steps_per_y_bin = self.depth_grid.steps_per_y_bin();
+
+        let delta_steps = (target.units - anchor.units) / step_units;
+        let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
+
+        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
+
+        delta_bins > margin_bins
     }
 
     /// Is the *profile start boundary* (world x=0) visible on screen?
