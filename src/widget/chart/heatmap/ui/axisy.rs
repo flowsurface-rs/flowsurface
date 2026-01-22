@@ -1,6 +1,7 @@
 use super::{AxisInteraction, Message};
 use exchange::util::{MinTicksize, Price, PriceStep};
-use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
+use iced::{Rectangle, Renderer, Theme, widget::canvas};
+use iced_core::mouse;
 
 /// Rough vertical spacing (in screen pixels) between Y-axis labels.
 const LABEL_TARGET_PX: f64 = 48.0;
@@ -54,32 +55,48 @@ fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
 }
 
 impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
-    type State = AxisInteraction;
+    type State = super::AxisState;
 
     fn update(
         &self,
-        interaction: &mut Self::State,
+        state: &mut Self::State,
         event: &iced::Event,
         bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
-                *interaction = AxisInteraction::Panning {
+
+                // Double-click detection needs global cursor position + previous click state.
+                if let Some(global_pos) = cursor.position() {
+                    let new_click =
+                        mouse::Click::new(global_pos, mouse::Button::Left, state.previous_click);
+
+                    let is_double = new_click.kind() == mouse::click::Kind::Double;
+
+                    state.previous_click = Some(new_click);
+
+                    if is_double {
+                        state.interaction = AxisInteraction::None;
+                        return Some(canvas::Action::publish(Message::AxisYDoubleClicked));
+                    }
+                } else {
+                    state.previous_click = None;
+                }
+
+                state.interaction = AxisInteraction::Panning {
                     last_position: p,
                     zoom_anchor: None,
                 };
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                *interaction = AxisInteraction::None;
+                state.interaction = AxisInteraction::None;
                 None
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if let AxisInteraction::Panning { last_position, .. } = interaction
-                    && cursor.position_over(bounds).is_some()
-                {
+                if let AxisInteraction::Panning { last_position, .. } = &mut state.interaction {
                     let delta_px = *position - *last_position;
                     *last_position = *position;
 
@@ -292,17 +309,17 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
     fn mouse_interaction(
         &self,
-        interaction: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
-    ) -> iced_core::mouse::Interaction {
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
         if cursor.position_over(bounds).is_some() {
-            match interaction {
-                AxisInteraction::Panning { .. } => iced_core::mouse::Interaction::Grabbing,
-                _ => iced_core::mouse::Interaction::ResizingVertically,
+            match state.interaction {
+                AxisInteraction::Panning { .. } => mouse::Interaction::Grabbing,
+                _ => mouse::Interaction::ResizingVertically,
             }
         } else {
-            iced_core::mouse::Interaction::default()
+            mouse::Interaction::default()
         }
     }
 }

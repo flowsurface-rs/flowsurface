@@ -28,7 +28,7 @@ const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
 
 const DEFAULT_ROW_H_WORLD: f32 = 0.05;
-const DEFAULT_COL_W_WORLD: f32 = 0.05;
+const DEFAULT_COL_W_WORLD: f32 = 0.02;
 
 const MIN_CAMERA_SCALE: f32 = 1e-4;
 
@@ -72,6 +72,8 @@ pub enum Message {
         cursor_y: f32,
         viewport_h: f32,
     },
+    AxisYDoubleClicked,
+    AxisXDoubleClicked,
     ScrolledAxisX {
         factor: f32,
         cursor_x: f32,
@@ -225,6 +227,27 @@ impl HeatmapShader {
                 self.force_rebuild_if_ybin_changed();
 
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+            }
+            Message::AxisYDoubleClicked => {
+                self.scene.camera.offset[1] = 0.0;
+
+                self.sync_grid_xy();
+
+                self.try_rebuild_overlays();
+                self.force_rebuild_if_ybin_changed();
+
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+            }
+            Message::AxisXDoubleClicked => {
+                if let Some(size) = self.viewport_size_px() {
+                    self.scene.camera.reset_offset_x(size.width);
+                    self.column_world = DEFAULT_COL_W_WORLD;
+
+                    self.sync_grid_xy();
+
+                    self.try_rebuild_overlays();
+                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                }
             }
             Message::ScrolledAxisX {
                 factor,

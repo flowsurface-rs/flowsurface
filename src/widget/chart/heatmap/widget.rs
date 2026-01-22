@@ -57,7 +57,7 @@ struct State {
     scene_state: <Scene as shader::Program<Message>>::State,
 
     x_axis_state: <AxisXLabelCanvas<'static> as canvas::Program<Message>>::State,
-    y_axis_state: <AxisYLabelCanvas<'static> as canvas::Program<Message>>::State,
+    pub y_axis_state: <AxisYLabelCanvas<'static> as canvas::Program<Message>>::State,
     overlay_state: <OverlayCanvas<'static> as canvas::Program<Message>>::State,
 
     // `Message::BoundsChanged` publishes when plot bounds change,
@@ -185,8 +185,14 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         let over_y = cursor.position_over(y_axis_bounds).is_some();
         let over_plot = cursor.position_over(plot_bounds).is_some();
 
-        let x_dragging = matches!(state.x_axis_state, AxisInteraction::Panning { .. });
-        let y_dragging = matches!(state.y_axis_state, AxisInteraction::Panning { .. });
+        let x_dragging = matches!(
+            state.x_axis_state.interaction,
+            AxisInteraction::Panning { .. }
+        );
+        let y_dragging = matches!(
+            state.y_axis_state.interaction,
+            AxisInteraction::Panning { .. }
+        );
         let plot_dragging = matches!(state.scene_state.kind, InteractionKind::Panning { .. });
 
         // If user releases outside the original bounds, we still want to reset panning state
@@ -382,8 +388,14 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         let over_x = cursor.position_over(x_axis_bounds).is_some();
         let over_y = cursor.position_over(y_axis_bounds).is_some();
 
-        let x_dragging = matches!(state.x_axis_state, AxisInteraction::Panning { .. });
-        let y_dragging = matches!(state.y_axis_state, AxisInteraction::Panning { .. });
+        let x_dragging = matches!(
+            state.x_axis_state.interaction,
+            AxisInteraction::Panning { .. }
+        );
+        let y_dragging = matches!(
+            state.y_axis_state.interaction,
+            AxisInteraction::Panning { .. }
+        );
 
         if over_x || x_dragging {
             self.x_axis

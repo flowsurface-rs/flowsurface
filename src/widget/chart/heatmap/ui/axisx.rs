@@ -1,8 +1,9 @@
-use crate::widget::chart::heatmap::ui::AxisZoomAnchor1D;
-
 use super::{AxisInteraction, Message};
+use crate::widget::chart::heatmap::ui::AxisZoomAnchor;
+
 use chrono::TimeZone;
-use iced::{Rectangle, Renderer, Theme, mouse, widget::canvas};
+use iced::{Rectangle, Renderer, Theme, widget::canvas};
+use iced_core::mouse;
 
 const DRAG_ZOOM_SENS: f32 = 0.005;
 
@@ -44,18 +45,34 @@ pub struct AxisXLabelCanvas<'a> {
 }
 
 impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
-    type State = AxisInteraction;
+    type State = super::AxisState;
 
     fn update(
         &self,
-        interaction: &mut AxisInteraction,
+        state: &mut Self::State,
         event: &iced::Event,
         bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
+
+                // Double-click detection uses global cursor position + previous click.
+                if let Some(global_pos) = cursor.position() {
+                    let new_click =
+                        mouse::Click::new(global_pos, mouse::Button::Left, state.previous_click);
+                    let is_double = new_click.kind() == iced_core::mouse::click::Kind::Double;
+
+                    state.previous_click = Some(new_click);
+
+                    if is_double {
+                        state.interaction = AxisInteraction::None;
+                        return Some(canvas::Action::publish(Message::AxisXDoubleClicked));
+                    }
+                } else {
+                    state.previous_click = None;
+                }
 
                 let use_world_anchor = self.is_x0_visible == Some(true);
 
@@ -67,15 +84,15 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
                     let x0_screen = vw * (1.0 - pad) - self.cam_offset_x * sx;
 
-                    Some(AxisZoomAnchor1D::World {
+                    Some(AxisZoomAnchor::World {
                         world: 0.0,
                         screen: x0_screen,
                     })
                 } else {
-                    Some(AxisZoomAnchor1D::Cursor { screen: p.x })
+                    Some(AxisZoomAnchor::Cursor { screen: p.x })
                 };
 
-                *interaction = AxisInteraction::Panning {
+                state.interaction = AxisInteraction::Panning {
                     last_position: p,
                     zoom_anchor,
                 };
@@ -83,15 +100,14 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                *interaction = AxisInteraction::None;
+                state.interaction = AxisInteraction::None;
                 None
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 if let AxisInteraction::Panning {
                     last_position,
                     zoom_anchor,
-                } = interaction
-                    && cursor.position_over(bounds).is_some()
+                } = &mut state.interaction
                 {
                     let delta_px = *position - *last_position;
                     *last_position = *position;
@@ -100,7 +116,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
                     match *zoom_anchor {
-                        Some(AxisZoomAnchor1D::World { screen, .. }) => {
+                        Some(AxisZoomAnchor::World { screen, .. }) => {
                             let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
 
                             Some(canvas::Action::publish(Message::DragZoomAxisXKeepAnchor {
@@ -109,7 +125,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                                 viewport_w: vw,
                             }))
                         }
-                        Some(AxisZoomAnchor1D::Cursor { screen }) => {
+                        Some(AxisZoomAnchor::Cursor { screen }) => {
                             Some(canvas::Action::publish(Message::ScrolledAxisX {
                                 factor,
                                 cursor_x: screen,
@@ -342,12 +358,12 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
     fn mouse_interaction(
         &self,
-        interaction: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
         cursor: iced_core::mouse::Cursor,
     ) -> iced_core::mouse::Interaction {
         if cursor.position_over(bounds).is_some() {
-            match interaction {
+            match state.interaction {
                 AxisInteraction::Panning { .. } => iced_core::mouse::Interaction::Grabbing,
                 _ => iced_core::mouse::Interaction::ResizingHorizontally,
             }

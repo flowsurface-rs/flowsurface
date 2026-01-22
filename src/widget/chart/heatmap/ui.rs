@@ -5,23 +5,38 @@ pub mod overlay;
 pub use super::Message;
 
 #[derive(Debug, Clone, Copy)]
-pub enum AxisZoomAnchor1D {
+pub enum AxisZoomAnchor {
     /// Keep a specific world coordinate (along the active axis) fixed at a given screen position.
     World { world: f32, screen: f32 },
-
     /// Zoom anchored to the captured cursor position (along the active axis).
     Cursor { screen: f32 },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum AxisInteraction {
     #[default]
     None,
     Panning {
         last_position: iced::Point,
-        zoom_anchor: Option<AxisZoomAnchor1D>,
+        zoom_anchor: Option<AxisZoomAnchor>,
     },
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct AxisState {
+    pub interaction: AxisInteraction,
+    pub previous_click: Option<iced_core::mouse::Click>,
+}
+
+impl Default for AxisState {
+    fn default() -> Self {
+        Self {
+            interaction: AxisInteraction::None,
+            previous_click: None,
+        }
+    }
+}
+
 pub struct CanvasCaches {
     pub y_axis: iced::widget::canvas::Cache,
     pub x_axis: iced::widget::canvas::Cache,
