@@ -52,6 +52,9 @@ pub struct OverlayCanvas<'a> {
     pub volume_strip_max_qty: Option<f32>,
     /// Max qty used to scale the latest profile bars (display units).
     pub profile_max_qty: Option<f32>,
+    /// Max qty used to scale the trade profile bars (display units, total=buy+sell).
+    pub trade_profile_max_qty: Option<f32>,
+
     pub is_paused: bool,
 }
 
@@ -197,6 +200,48 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         // Only draw if visible.
                         if (0.0..=vw_px).contains(&profile_end_px_x) {
                             let tx = (profile_end_px_x - OVERLAY_LABEL_PAD_PX).clamp(0.0, vw_px);
+                            let ty = OVERLAY_LABEL_PAD_PX;
+
+                            frame.fill_text(canvas::Text {
+                                content: abbr_large_numbers(qty),
+                                position: Point::new(tx, ty),
+                                size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                                color: palette.background.base.text.scale_alpha(0.85),
+                                font: style::AZERET_MONO,
+                                align_x: Alignment::End.into(),
+                                align_y: Alignment::Start.into(),
+                                ..canvas::Text::default()
+                            });
+                        }
+                    }
+                }
+
+                // Trade-profile denom label:
+                // anchored to the *world-space end* of the trade-profile zone.
+                if let Some(qty) = self.trade_profile_max_qty {
+                    let vw_px = bounds.width;
+                    let vh_px = bounds.height;
+
+                    let left_edge_world = self.scene.params.fade[0];
+                    let trade_profile_max_w_world = self.scene.params.fade[1];
+
+                    if left_edge_world.is_finite()
+                        && trade_profile_max_w_world.is_finite()
+                        && trade_profile_max_w_world > 0.0
+                    {
+                        let trade_profile_end_world_x = left_edge_world + trade_profile_max_w_world;
+
+                        let y_world = self.scene.camera.offset[1];
+
+                        let [end_px_x, _] = self.scene.camera.world_to_screen(
+                            trade_profile_end_world_x,
+                            y_world,
+                            vw_px,
+                            vh_px,
+                        );
+
+                        if end_px_x.is_finite() && (0.0..=vw_px).contains(&end_px_x) {
+                            let tx = (end_px_x - OVERLAY_LABEL_PAD_PX).clamp(0.0, vw_px);
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {

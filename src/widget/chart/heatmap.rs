@@ -369,6 +369,7 @@ impl HeatmapShader {
             is_paused: self.anchor.is_paused(),
             volume_strip_max_qty: self.instances.volume_strip_scale_max_qty,
             profile_max_qty: self.instances.profile_scale_max_qty,
+            trade_profile_max_qty: self.instances.trade_profile_scale_max_qty,
         };
 
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);

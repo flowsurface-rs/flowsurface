@@ -19,6 +19,7 @@ pub struct InstanceBuilder {
     // Scale denominators (for external getters)
     pub profile_scale_max_qty: Option<f32>,
     pub volume_strip_scale_max_qty: Option<f32>,
+    pub trade_profile_scale_max_qty: Option<f32>,
 }
 
 impl InstanceBuilder {
@@ -32,6 +33,7 @@ impl InstanceBuilder {
             trade_profile_ask_acc: Vec::new(),
             profile_scale_max_qty: None,
             volume_strip_scale_max_qty: None,
+            trade_profile_scale_max_qty: None,
         }
     }
 
@@ -46,6 +48,11 @@ impl InstanceBuilder {
         scroll_ref_bucket: i64,
         palette: &HeatmapPalette,
     ) -> (Vec<CircleInstance>, Vec<RectInstance>) {
+        // Reset denoms each rebuild to avoid stale overlay labels
+        self.profile_scale_max_qty = None;
+        self.volume_strip_scale_max_qty = None;
+        self.trade_profile_scale_max_qty = None;
+
         let circles = self.build_circles(w, trades, base_price, step, scroll_ref_bucket, palette);
         let mut rects = Vec::new();
 
@@ -126,6 +133,8 @@ impl InstanceBuilder {
         if max_total <= 0.0 {
             return;
         }
+
+        self.trade_profile_scale_max_qty = Some(max_total);
 
         let min_w_world = MIN_BAR_PX / w.sx;
 

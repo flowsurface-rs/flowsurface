@@ -1180,7 +1180,7 @@ impl State {
                                     }
                                     Content::ShaderHeatmap { chart: Some(c), .. } => {
                                         *c = Box::new(HeatmapShader::new(
-                                            c.basis,
+                                            new_basis,
                                             c.tick_size(),
                                             c.ticker_info,
                                         ));
