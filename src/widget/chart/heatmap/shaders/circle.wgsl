@@ -9,8 +9,11 @@ struct Params {
     depth: vec4<f32>,
     bid_rgb: vec4<f32>,
     ask_rgb: vec4<f32>,
-    grid: vec4<f32>,   // (col_w, row_h, steps_per_y_bin, _)
-    origin: vec4<f32>, // (now_bucket_rel_f, _, _, _)
+    grid: vec4<f32>,
+    origin: vec4<f32>,
+    heatmap_a: vec4<f32>,
+    heatmap_b: vec4<f32>,
+    fade: vec4<f32>, // (x_left, width, alpha_min, alpha_max)
 };
 @group(0) @binding(1)
 var<uniform> params: Params;
@@ -28,7 +31,16 @@ struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world_x: f32,
 };
+
+fn fade_factor(world_x: f32) -> f32 {
+    let x0 = params.fade.x;
+    let w = max(params.fade.y, 1e-6);
+    let t = clamp((world_x - x0) / w, 0.0, 1.0);
+    let s = smoothstep(0.0, 1.0, t);
+    return params.fade.z + s * (params.fade.w - params.fade.z);
+}
 
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
@@ -60,6 +72,7 @@ fn vs_main(input: VsIn) -> VsOut {
     );
     out.local = input.corner;
     out.color = input.color;
+    out.world_x = world_pos.x;
     return out;
 }
 
@@ -75,5 +88,6 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    return vec4<f32>(input.color.rgb * a, input.color.a * a);
+    let fade = fade_factor(input.world_x);
+    return vec4<f32>(input.color.rgb * a * fade, input.color.a * a * fade);
 }

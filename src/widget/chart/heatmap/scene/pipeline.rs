@@ -26,8 +26,9 @@ pub struct ParamsUniform {
     pub ask_rgb: [f32; 4],
     pub grid: [f32; 4],
     pub origin: [f32; 4],
-    pub heatmap_a: [f32; 4], // (unused_x_start, y_start_bin, unused_cols_per_x_bin, latest_x_ring)
-    pub heatmap_b: [f32; 4], // (tex_w, tex_h, tex_w_mask, inv_qty_scale)
+    pub heatmap_a: [f32; 4],
+    pub heatmap_b: [f32; 4],
+    pub fade: [f32; 4], // (x_left_world, width_world, alpha_min, alpha_max)
 }
 
 impl Default for ParamsUniform {
@@ -40,6 +41,7 @@ impl Default for ParamsUniform {
             origin: [0.0, 0.0, 0.0, 0.0],
             heatmap_a: [0.0, 0.0, 1.0, 0.0],
             heatmap_b: [0.0, 0.0, 0.0, 0.0],
+            fade: [0.0, 0.0, 1.0, 1.0],
         }
     }
 }
@@ -232,6 +234,12 @@ impl Pipeline {
                             wgpu::VertexAttribute {
                                 offset: 40,
                                 shader_location: 6,
+                                format: wgpu::VertexFormat::Uint32,
+                            },
+                            // @location(7) fade_mode: u32
+                            wgpu::VertexAttribute {
+                                offset: 44,
+                                shader_location: 7,
                                 format: wgpu::VertexFormat::Uint32,
                             },
                         ],
@@ -994,7 +1002,6 @@ impl Pipeline {
         gpu.has_last_camera = true;
     }
 
-    #[allow(dead_code)]
     pub fn render_heatmap_texture(
         &self,
         id: u64,
@@ -1043,7 +1050,6 @@ impl Pipeline {
         pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
     }
 
-    #[allow(dead_code)]
     pub fn render_rectangles(
         &self,
         id: u64,
@@ -1090,7 +1096,6 @@ impl Pipeline {
         pass.draw_indexed(0..self.rect_num_indices, 0, 0..num_instances);
     }
 
-    #[allow(dead_code)]
     pub fn render_circles(
         &self,
         id: u64,
@@ -1144,7 +1149,6 @@ impl Pipeline {
         pass.draw_indexed(0..self.circle_num_indices, 0, 0..num_instances);
     }
 
-    #[allow(dead_code)]
     pub fn single_pass_render_all(
         &self,
         id: u64,

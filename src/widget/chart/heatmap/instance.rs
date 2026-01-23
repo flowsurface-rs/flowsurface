@@ -1,6 +1,6 @@
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
-use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
+use crate::widget::chart::heatmap::scene::pipeline::rectangle::{MIN_BAR_PX, RectInstance};
 use crate::widget::chart::heatmap::view::ViewWindow;
 
 use data::aggr::time::TimeSeries;
@@ -13,6 +13,8 @@ pub struct InstanceBuilder {
     volume_touched: Vec<usize>,
     profile_bid_acc: Vec<f32>,
     profile_ask_acc: Vec<f32>,
+    trade_profile_bid_acc: Vec<f32>,
+    trade_profile_ask_acc: Vec<f32>,
 
     // Scale denominators (for external getters)
     pub profile_scale_max_qty: Option<f32>,
@@ -26,6 +28,8 @@ impl InstanceBuilder {
             volume_touched: Vec::new(),
             profile_bid_acc: Vec::new(),
             profile_ask_acc: Vec::new(),
+            trade_profile_bid_acc: Vec::new(),
+            trade_profile_ask_acc: Vec::new(),
             profile_scale_max_qty: None,
             volume_strip_scale_max_qty: None,
         }
@@ -54,9 +58,117 @@ impl InstanceBuilder {
             palette,
             &mut rects,
         );
+
+        self.build_trade_profile_rects(w, trades, base_price, step, palette, &mut rects);
+
         self.build_volume_strip_rects(w, trades, scroll_ref_bucket, palette, &mut rects);
 
         (circles, rects)
+    }
+
+    fn build_trade_profile_rects(
+        &mut self,
+        w: &ViewWindow,
+        trades: &TimeSeries<HeatmapDataPoint>,
+        base_price: Price,
+        step: PriceStep,
+        palette: &HeatmapPalette,
+        rects: &mut Vec<RectInstance>,
+    ) {
+        if w.trade_profile_max_w_world <= 0.0 {
+            return;
+        }
+
+        let step_units = step.units.max(1);
+        let y_div = w.steps_per_y_bin.max(1);
+        let base_steps = base_price.units / step_units;
+        let base_abs_y_bin = base_steps.div_euclid(y_div);
+
+        let lowest_abs_steps = w.lowest.units / step_units;
+        let highest_abs_steps = w.highest.units / step_units;
+        let min_abs_y_bin = lowest_abs_steps.div_euclid(y_div);
+        let max_abs_y_bin = highest_abs_steps.div_euclid(y_div);
+
+        if max_abs_y_bin < min_abs_y_bin {
+            return;
+        }
+
+        let len = (max_abs_y_bin - min_abs_y_bin + 1) as usize;
+
+        self.trade_profile_bid_acc.resize(len, 0.0);
+        self.trade_profile_ask_acc.resize(len, 0.0);
+        self.trade_profile_bid_acc[..].fill(0.0);
+        self.trade_profile_ask_acc[..].fill(0.0);
+
+        let mut max_total = 0.0f32;
+
+        for (_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
+            for t in dp.grouped_trades.iter() {
+                let abs_steps = t.price.units / step_units;
+                let abs_y_bin = abs_steps.div_euclid(y_div);
+                let idx = abs_y_bin - min_abs_y_bin;
+                if idx < 0 || idx >= len as i64 {
+                    continue;
+                }
+
+                let i = idx as usize;
+                if t.is_sell {
+                    self.trade_profile_ask_acc[i] += t.qty;
+                } else {
+                    self.trade_profile_bid_acc[i] += t.qty;
+                }
+
+                let total = self.trade_profile_bid_acc[i] + self.trade_profile_ask_acc[i];
+                max_total = max_total.max(total);
+            }
+        }
+
+        if max_total <= 0.0 {
+            return;
+        }
+
+        let min_w_world = MIN_BAR_PX / w.sx;
+
+        for i in 0..len {
+            let abs_y_bin = min_abs_y_bin + i as i64;
+            let rel_y_bin = abs_y_bin - base_abs_y_bin;
+            let y_world = RectInstance::y_center_for_bin(rel_y_bin, w);
+
+            let buy_qty = self.trade_profile_bid_acc[i];
+            let sell_qty = self.trade_profile_ask_acc[i];
+            let total = buy_qty + sell_qty;
+
+            if total <= 0.0 {
+                continue;
+            }
+
+            let total_w = ((total / max_total) * w.trade_profile_max_w_world).max(min_w_world);
+            let buy_w = total_w * (buy_qty / total);
+            let sell_w = total_w * (sell_qty / total);
+
+            let mut x = w.left_edge_world;
+
+            if sell_qty > 0.0 && sell_w > 0.0 {
+                rects.push(RectInstance::trade_profile_split_bar(
+                    y_world,
+                    sell_w,
+                    x,
+                    w,
+                    palette.sell_rgb,
+                ));
+                x += sell_w;
+            }
+
+            if buy_qty > 0.0 && buy_w > 0.0 {
+                rects.push(RectInstance::trade_profile_split_bar(
+                    y_world,
+                    buy_w,
+                    x,
+                    w,
+                    palette.buy_rgb,
+                ));
+            }
+        }
     }
 
     fn build_circles(

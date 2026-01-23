@@ -62,6 +62,9 @@ const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 // Margin before forcing a full recenter rebuild (fraction of tex_h)
 const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
 
+// Trades profile (x < 0)
+const TRADE_PROFILE_WIDTH_FRAC: f32 = 0.10;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     BoundsChanged(iced::Rectangle),
@@ -364,8 +367,8 @@ impl HeatmapShader {
             strip_height_frac: STRIP_HEIGHT_FRAC,
 
             is_paused: self.anchor.is_paused(),
-            volume_strip_max_qty: self.instances.profile_scale_max_qty,
-            profile_max_qty: self.instances.volume_strip_scale_max_qty,
+            volume_strip_max_qty: self.instances.volume_strip_scale_max_qty,
+            profile_max_qty: self.instances.profile_scale_max_qty,
         };
 
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
@@ -415,6 +418,8 @@ impl HeatmapShader {
             self.auto_update_anchor(size.width, size.height, live_render_latest_time, live_phase);
 
             if let Some(w) = self.compute_view_window(size.width, size.height) {
+                self.sync_fade_params(&w);
+
                 let render_latest_time_eff = self.effective_render_latest_time();
                 let render_bucket: i64 = (render_latest_time_eff / aggr_time) as i64;
 
@@ -630,6 +635,7 @@ impl HeatmapShader {
             min_camera_scale: MIN_CAMERA_SCALE,
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
             strip_height_frac: STRIP_HEIGHT_FRAC,
+            trade_profile_width_frac: TRADE_PROFILE_WIDTH_FRAC,
             depth_min_row_px: DEPTH_MIN_ROW_PX,
             max_steps_per_y_bin: MAX_STEPS_PER_Y_BIN,
             min_row_h_world: MIN_ROW_H_WORLD,
@@ -707,6 +713,7 @@ impl HeatmapShader {
         let Some(w) = self.compute_view_window(size.width, size.height) else {
             return;
         };
+        self.sync_fade_params(&w);
         self.rebuild_overlays(&w);
     }
 
@@ -723,6 +730,7 @@ impl HeatmapShader {
             self.clear_scene();
             return;
         };
+        self.sync_fade_params(&w);
 
         let aggr_time: u64 = match self.basis {
             Basis::Time(interval) => interval.into(),
@@ -992,6 +1000,15 @@ impl HeatmapShader {
         let pad = self.scene.camera.right_pad_frac;
 
         self.scene.camera.offset[0] = anchor_world_x - (anchor_screen_x - vw_px * (1.0 - pad)) / sx;
+    }
+
+    #[inline]
+    fn sync_fade_params(&mut self, w: &ViewWindow) {
+        // fade only in the left trade-profile zone
+        self.scene.params.fade[0] = w.left_edge_world;
+        self.scene.params.fade[1] = w.trade_profile_max_w_world;
+        self.scene.params.fade[2] = 0.15; // min alpha
+        self.scene.params.fade[3] = 1.0; // max alpha
     }
 
     /// Price at the camera's Y-center (world y = camera.offset[1])

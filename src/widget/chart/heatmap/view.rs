@@ -209,6 +209,7 @@ pub struct ViewConfig {
     // Overlays
     pub profile_col_width_px: f32,
     pub strip_height_frac: f32,
+    pub trade_profile_width_frac: f32,
 
     // Y downsampling
     pub depth_min_row_px: f32,
@@ -251,6 +252,10 @@ pub struct ViewWindow {
     pub profile_max_w_world: f32,
     pub strip_h_world: f32,
     pub strip_bottom_y: f32,
+    pub trade_profile_max_w_world: f32,
+
+    // World x bounds
+    pub left_edge_world: f32,
 
     // Y downsampling
     pub steps_per_y_bin: i64,
@@ -325,6 +330,9 @@ impl ViewWindow {
         let strip_h_world: f32 = (vh_px * cfg.strip_height_frac) / sy;
         let strip_bottom_y: f32 = y_max;
 
+        let visible_w_world = vw_px / sx;
+        let trade_profile_max_w_world = visible_w_world * cfg.trade_profile_width_frac;
+
         // y-downsampling
         let px_per_step = row_h * sy;
         let mut steps_per_y_bin: i64 = 1;
@@ -346,6 +354,8 @@ impl ViewWindow {
             profile_max_w_world,
             strip_h_world,
             strip_bottom_y,
+            trade_profile_max_w_world,
+            left_edge_world: x_min,
             steps_per_y_bin,
             y_bin_h_world,
         })
