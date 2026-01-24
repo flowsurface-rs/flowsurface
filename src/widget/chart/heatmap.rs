@@ -669,7 +669,7 @@ impl HeatmapShader {
             return;
         };
 
-        let (circles, rects) = self.instances.build_instances(
+        let built = self.instances.build_instances(
             w,
             &self.trades,
             &self.heatmap,
@@ -680,8 +680,12 @@ impl HeatmapShader {
             palette,
         );
 
-        self.scene.set_rectangles(rects);
-        self.scene.set_circles(circles);
+        let draw_list = built.draw_list();
+
+        self.scene.set_circles(built.circles);
+        self.scene.set_rectangles(built.rects);
+
+        self.scene.set_draw_list(draw_list);
     }
 
     /// Upload heatmap texture updates to the GPU.
@@ -872,10 +876,15 @@ impl HeatmapShader {
     }
 
     fn clear_scene(&mut self) {
-        self.scene.set_rectangles(Vec::new());
-        self.scene.set_circles(Vec::new());
+        self.scene.set_rectangles(vec![]);
+        self.scene.set_circles(vec![]);
+
+        self.scene.set_draw_list(vec![scene::DrawItem::new(
+            scene::DrawLayer::HEATMAP,
+            scene::DrawOp::Heatmap,
+        )]);
+
         self.scene.set_heatmap_update(None);
-        // If we cleared GPU-side state, make sure we reupload the ring when we can render again.
         self.needs_heatmap_full_upload = true;
     }
 

@@ -1,11 +1,82 @@
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::{MIN_BAR_PX, RectInstance};
+use crate::widget::chart::heatmap::scene::{DrawItem, DrawLayer, DrawOp};
 use crate::widget::chart::heatmap::view::ViewWindow;
 
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
 use exchange::util::{Price, PriceStep};
+
+#[derive(Debug, Clone)]
+pub struct OverlayBuild {
+    pub circles: Vec<CircleInstance>,
+    pub rects: Vec<RectInstance>,
+
+    // Ranges into `rects` for typed layering.
+    pub rect_profile_latest: std::ops::Range<u32>,
+    pub rect_volume: std::ops::Range<u32>,
+    pub rect_trade_profile: std::ops::Range<u32>,
+}
+
+impl OverlayBuild {
+    #[inline]
+    fn count(r: &std::ops::Range<u32>) -> u32 {
+        r.end.saturating_sub(r.start)
+    }
+
+    pub fn draw_list(&self) -> Vec<DrawItem> {
+        let mut out = Vec::new();
+
+        // Background
+        out.push(DrawItem::new(DrawLayer::HEATMAP, DrawOp::Heatmap));
+
+        // Behind circles
+        if Self::count(&self.rect_profile_latest) > 0 {
+            out.push(DrawItem::new(
+                DrawLayer::PROFILE_LATEST,
+                DrawOp::Rects {
+                    start: self.rect_profile_latest.start,
+                    count: Self::count(&self.rect_profile_latest),
+                },
+            ));
+        }
+
+        // Circles
+        if !self.circles.is_empty() {
+            out.push(DrawItem::new(
+                DrawLayer::CIRCLES,
+                DrawOp::Circles {
+                    start: 0,
+                    count: self.circles.len() as u32,
+                },
+            ));
+        }
+
+        // Foreground overlays
+        if Self::count(&self.rect_volume) > 0 {
+            out.push(DrawItem::new(
+                DrawLayer::VOLUME,
+                DrawOp::Rects {
+                    start: self.rect_volume.start,
+                    count: Self::count(&self.rect_volume),
+                },
+            ));
+        }
+
+        if Self::count(&self.rect_trade_profile) > 0 {
+            out.push(DrawItem::new(
+                DrawLayer::TRADE_PROFILE,
+                DrawOp::Rects {
+                    start: self.rect_trade_profile.start,
+                    count: Self::count(&self.rect_trade_profile),
+                },
+            ));
+        }
+
+        out
+    }
+}
 
 pub struct InstanceBuilder {
     // Reusable buffers
@@ -36,7 +107,6 @@ impl InstanceBuilder {
             trade_profile_scale_max_qty: None,
         }
     }
-
     pub fn build_instances(
         &mut self,
         w: &ViewWindow,
@@ -47,15 +117,17 @@ impl InstanceBuilder {
         latest_time: u64,
         scroll_ref_bucket: i64,
         palette: &HeatmapPalette,
-    ) -> (Vec<CircleInstance>, Vec<RectInstance>) {
+    ) -> OverlayBuild {
         // Reset denoms each rebuild to avoid stale overlay labels
         self.profile_scale_max_qty = None;
         self.volume_strip_scale_max_qty = None;
         self.trade_profile_scale_max_qty = None;
 
         let circles = self.build_circles(w, trades, base_price, step, scroll_ref_bucket, palette);
-        let mut rects = Vec::new();
 
+        let mut rects: Vec<RectInstance> = Vec::new();
+
+        let prof_start = rects.len() as u32;
         self.build_profile_rects(
             w,
             heatmap,
@@ -65,12 +137,23 @@ impl InstanceBuilder {
             palette,
             &mut rects,
         );
+        let prof_end = rects.len() as u32;
 
-        self.build_trade_profile_rects(w, trades, base_price, step, palette, &mut rects);
-
+        let vol_start = rects.len() as u32;
         self.build_volume_strip_rects(w, trades, scroll_ref_bucket, palette, &mut rects);
+        let vol_end = rects.len() as u32;
 
-        (circles, rects)
+        let tp_start = rects.len() as u32;
+        self.build_trade_profile_rects(w, trades, base_price, step, palette, &mut rects);
+        let tp_end = rects.len() as u32;
+
+        OverlayBuild {
+            circles,
+            rects,
+            rect_profile_latest: prof_start..prof_end,
+            rect_volume: vol_start..vol_end,
+            rect_trade_profile: tp_start..tp_end,
+        }
     }
 
     fn build_trade_profile_rects(

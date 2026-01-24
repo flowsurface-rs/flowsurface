@@ -1149,15 +1149,15 @@ impl Pipeline {
         pass.draw_indexed(0..self.circle_num_indices, 0, 0..num_instances);
     }
 
-    pub fn single_pass_render_all(
+    pub fn single_pass_render_ordered(
         &self,
         id: u64,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         viewport: Rectangle<u32>,
-        rect_instances: u32,
-        circle_instances: u32,
-        draw_heatmap: bool,
+        rect_total_instances: u32,
+        circle_total_instances: u32,
+        draw_list: &[super::DrawItem],
     ) {
         let Some(gpu) = self.per_scene.get(&id) else {
             return;
@@ -1192,34 +1192,60 @@ impl Pipeline {
         // Bind group 0 is shared by all pipelines.
         pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
 
-        if draw_heatmap {
-            pass.set_pipeline(&self.heatmap_pipeline);
-            pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
-            pass.set_index_buffer(
-                self.heatmap_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint16,
-            );
-            pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
-        }
+        let rect_stride = std::mem::size_of::<RectInstance>() as u64;
+        let circle_stride = std::mem::size_of::<CircleInstance>() as u64;
 
-        if rect_instances > 0 {
-            pass.set_pipeline(&self.rect_pipeline);
-            pass.set_vertex_buffer(0, self.rect_vertex_buffer.slice(..));
-            pass.set_vertex_buffer(1, gpu.rect_instance_buffer.slice(..));
-            pass.set_index_buffer(self.rect_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..self.rect_num_indices, 0, 0..rect_instances);
-        }
+        for item in draw_list {
+            match item.op {
+                super::DrawOp::Heatmap => {
+                    pass.set_pipeline(&self.heatmap_pipeline);
+                    pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
+                    pass.set_index_buffer(
+                        self.heatmap_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
+                    pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
+                }
+                super::DrawOp::Rects { start, count } => {
+                    let start = start.min(rect_total_instances);
+                    let count = count.min(rect_total_instances.saturating_sub(start));
+                    if count == 0 {
+                        continue;
+                    }
 
-        if circle_instances > 0 {
-            pass.set_pipeline(&self.circle_pipeline);
-            pass.set_vertex_buffer(0, self.circle_vertex_buffer.slice(..));
-            pass.set_vertex_buffer(1, gpu.circle_instance_buffer.slice(..));
-            pass.set_index_buffer(
-                self.circle_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint16,
-            );
-            pass.draw_indexed(0..self.circle_num_indices, 0, 0..circle_instances);
+                    let a = (start as u64) * rect_stride;
+                    let b = a + (count as u64) * rect_stride;
+
+                    pass.set_pipeline(&self.rect_pipeline);
+                    pass.set_vertex_buffer(0, self.rect_vertex_buffer.slice(..));
+                    pass.set_vertex_buffer(1, gpu.rect_instance_buffer.slice(a..b));
+                    pass.set_index_buffer(
+                        self.rect_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
+                    pass.draw_indexed(0..self.rect_num_indices, 0, 0..count);
+                }
+                super::DrawOp::Circles { start, count } => {
+                    let start = start.min(circle_total_instances);
+                    let count = count.min(circle_total_instances.saturating_sub(start));
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let a = (start as u64) * circle_stride;
+                    let b = a + (count as u64) * circle_stride;
+
+                    pass.set_pipeline(&self.circle_pipeline);
+                    pass.set_vertex_buffer(0, self.circle_vertex_buffer.slice(..));
+                    pass.set_vertex_buffer(1, gpu.circle_instance_buffer.slice(a..b));
+                    pass.set_index_buffer(
+                        self.circle_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
+                    pass.draw_indexed(0..self.circle_num_indices, 0, 0..count);
+                }
+            }
         }
     }
 }

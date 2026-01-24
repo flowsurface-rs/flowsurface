@@ -17,6 +17,37 @@ use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DrawLayer(pub i16);
+
+impl DrawLayer {
+    pub const HEATMAP: Self = Self(0);
+    pub const PROFILE_LATEST: Self = Self(10);
+    pub const CIRCLES: Self = Self(20);
+    pub const VOLUME: Self = Self(30);
+    pub const TRADE_PROFILE: Self = Self(40);
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum DrawOp {
+    Heatmap,
+    Rects { start: u32, count: u32 },
+    Circles { start: u32, count: u32 },
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DrawItem {
+    pub layer: DrawLayer,
+    pub op: DrawOp,
+}
+
+impl DrawItem {
+    #[inline]
+    pub fn new(layer: DrawLayer, op: DrawOp) -> Self {
+        Self { layer, op }
+    }
+}
+
 #[derive(Debug)]
 pub enum HeatmapUploadPlan {
     Full(HeatmapTextureCpuFull),
@@ -63,6 +94,8 @@ pub struct Scene {
     pub circles: Arc<[CircleInstance]>,
     pub circles_gen: u64,
 
+    pub draw_list: Arc<[DrawItem]>,
+
     pub camera: camera::Camera,
     pub params: ParamsUniform,
 
@@ -82,6 +115,7 @@ impl Scene {
             rectangles_gen: 1,
             circles: Arc::from(Vec::<CircleInstance>::new()),
             circles_gen: 1,
+            draw_list: Arc::from(Vec::<DrawItem>::new()),
             camera: camera::Camera::default(),
             params: ParamsUniform::default(),
             heatmap_tex_gen: 1,
@@ -100,6 +134,12 @@ impl Scene {
     pub fn set_circles(&mut self, circles: Vec<CircleInstance>) {
         self.circles = Arc::from(circles);
         self.circles_gen = self.circles_gen.wrapping_add(1);
+    }
+
+    /// Typed layering API: the draw order is *only* defined by `draw_list`.
+    pub fn set_draw_list(&mut self, mut draw_list: Vec<DrawItem>) {
+        draw_list.sort_by_key(|d| d.layer);
+        self.draw_list = Arc::from(draw_list);
     }
 
     pub fn set_heatmap_update(&mut self, hm: Option<HeatmapColumnCpu>) {
@@ -220,6 +260,7 @@ impl shader::Program<Message> for Scene {
             self.rectangles_gen,
             self.circles.clone(),
             self.circles_gen,
+            self.draw_list.clone(),
             self.camera,
             self.params,
             self.heatmap_cols.clone(),
@@ -249,6 +290,8 @@ pub struct Primitive {
     circles: Arc<[CircleInstance]>,
     circles_gen: u64,
 
+    draw_list: Arc<[DrawItem]>,
+
     camera: camera::Camera,
     params: ParamsUniform,
     heatmap_cols: Arc<[HeatmapColumnCpu]>,
@@ -263,6 +306,7 @@ impl Primitive {
         rectangles_gen: u64,
         circles: Arc<[CircleInstance]>,
         circles_gen: u64,
+        draw_list: Arc<[DrawItem]>,
         camera: camera::Camera,
         params: ParamsUniform,
         heatmap_cols: Arc<[HeatmapColumnCpu]>,
@@ -275,6 +319,7 @@ impl Primitive {
             rectangles_gen,
             circles,
             circles_gen,
+            draw_list,
             camera,
             params,
             heatmap_cols,
@@ -347,14 +392,14 @@ impl shader::Primitive for Primitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        pipeline.single_pass_render_all(
+        pipeline.single_pass_render_ordered(
             self.id,
             encoder,
             target,
             *clip_bounds,
             self.rectangles.len() as u32,
             self.circles.len() as u32,
-            true,
+            self.draw_list.as_ref(),
         );
     }
 }
