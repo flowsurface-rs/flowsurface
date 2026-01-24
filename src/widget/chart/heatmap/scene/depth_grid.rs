@@ -200,7 +200,7 @@ impl GridRing {
             hist.iter_time_filtered(oldest_time, latest_time + aggr, highest, lowest)
         {
             // Map price -> y bin (view-relative around base_price).
-            let dy_steps: i64 = (price.units - base_price.units) / step_units;
+            let dy_steps: i64 = (price.units - base_price.units).div_euclid(step_units);
             let dy_bins: i64 = dy_steps.div_euclid(self.steps_per_y_bin);
 
             let y_i64 = half_h + dy_bins;
@@ -343,7 +343,7 @@ impl GridRing {
                 return;
             }
 
-            let dy_steps: i64 = (rounded_price.units - anchor.units) / step_units;
+            let dy_steps: i64 = (rounded_price.units - anchor.units).div_euclid(step_units);
             let dy_bins: i64 = dy_steps.div_euclid(steps_per_y_bin);
 
             let y_i64 = half_h + dy_bins;
@@ -422,7 +422,7 @@ impl GridRing {
         match self.y_anchor {
             None => self.y_anchor = Some(recenter_target),
             Some(anchor) => {
-                let delta_steps = (recenter_target.units - anchor.units) / step_units;
+                let delta_steps = (recenter_target.units - anchor.units).div_euclid(step_units);
                 let delta_bins = delta_steps.div_euclid(self.steps_per_y_bin.max(1));
 
                 if delta_bins.unsigned_abs() as i64 > recenter_threshold_bins.max(1) {
@@ -687,7 +687,7 @@ impl GridRing {
         let steps_per_y_bin = self.steps_per_y_bin.max(1);
 
         // delta_bins = (base - anchor) in y-bins
-        let delta_steps: i64 = (base_price.units - anchor.units) / step_units;
+        let delta_steps: i64 = (base_price.units - anchor.units).div_euclid(step_units);
         let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
 
         -(half_h as f32) - (delta_bins as f32)

@@ -360,6 +360,29 @@ impl ViewWindow {
             y_bin_h_world,
         })
     }
+
+    /// Shader-consistent mapping: price -> y-bin (using Euclidean division, matching `floor`).
+    #[inline]
+    pub fn y_bin_for_price(&self, price: Price, base_price: Price, step: PriceStep) -> i64 {
+        let step_units = step.units.max(1);
+        let steps_per = self.steps_per_y_bin.max(1);
+
+        let dy_steps: i64 = (price.units - base_price.units).div_euclid(step_units);
+        dy_steps.div_euclid(steps_per)
+    }
+
+    /// Shader-consistent y-center for a y-bin (center of the bin).
+    #[inline]
+    pub fn y_center_for_bin(&self, y_bin: i64) -> f32 {
+        -((y_bin as f32 + 0.5) * self.y_bin_h_world)
+    }
+
+    /// Convenience: price -> y-center in world coordinates (bin-centered).
+    #[inline]
+    pub fn y_center_for_price(&self, price: Price, base_price: Price, step: PriceStep) -> f32 {
+        let yb = self.y_bin_for_price(price, base_price, step);
+        self.y_center_for_bin(yb)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

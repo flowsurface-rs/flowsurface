@@ -169,21 +169,13 @@ impl InstanceBuilder {
             return;
         }
 
-        let step_units = step.units.max(1);
-        let y_div = w.steps_per_y_bin.max(1);
-        let base_steps = base_price.units / step_units;
-        let base_abs_y_bin = base_steps.div_euclid(y_div);
-
-        let lowest_abs_steps = w.lowest.units / step_units;
-        let highest_abs_steps = w.highest.units / step_units;
-        let min_abs_y_bin = lowest_abs_steps.div_euclid(y_div);
-        let max_abs_y_bin = highest_abs_steps.div_euclid(y_div);
-
-        if max_abs_y_bin < min_abs_y_bin {
+        let min_rel_y_bin = w.y_bin_for_price(w.lowest, base_price, step);
+        let max_rel_y_bin = w.y_bin_for_price(w.highest, base_price, step);
+        if max_rel_y_bin < min_rel_y_bin {
             return;
         }
 
-        let len = (max_abs_y_bin - min_abs_y_bin + 1) as usize;
+        let len = (max_rel_y_bin - min_rel_y_bin + 1) as usize;
 
         self.trade_profile_bid_acc.resize(len, 0.0);
         self.trade_profile_ask_acc.resize(len, 0.0);
@@ -194,9 +186,8 @@ impl InstanceBuilder {
 
         for (_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
             for t in dp.grouped_trades.iter() {
-                let abs_steps = t.price.units / step_units;
-                let abs_y_bin = abs_steps.div_euclid(y_div);
-                let idx = abs_y_bin - min_abs_y_bin;
+                let rel_y_bin = w.y_bin_for_price(t.price, base_price, step);
+                let idx = rel_y_bin - min_rel_y_bin;
                 if idx < 0 || idx >= len as i64 {
                     continue;
                 }
@@ -222,9 +213,8 @@ impl InstanceBuilder {
         let min_w_world = MIN_BAR_PX / w.sx;
 
         for i in 0..len {
-            let abs_y_bin = min_abs_y_bin + i as i64;
-            let rel_y_bin = abs_y_bin - base_abs_y_bin;
-            let y_world = RectInstance::y_center_for_bin(rel_y_bin, w);
+            let rel_y_bin = min_rel_y_bin + i as i64;
+            let y_world = w.y_center_for_bin(rel_y_bin);
 
             let buy_qty = self.trade_profile_bid_acc[i];
             let sell_qty = self.trade_profile_ask_acc[i];
@@ -307,23 +297,14 @@ impl InstanceBuilder {
             return;
         }
 
-        let step_units = step.units.max(1);
-        let y_div = w.steps_per_y_bin.max(1);
-        let base_steps = base_price.units / step_units;
-        let base_abs_y_bin = base_steps.div_euclid(y_div);
-
-        let lowest_abs_steps = w.lowest.units / step_units;
-        let highest_abs_steps = w.highest.units / step_units;
-        let min_abs_y_bin = lowest_abs_steps.div_euclid(y_div);
-        let max_abs_y_bin = highest_abs_steps.div_euclid(y_div);
-
-        if max_abs_y_bin < min_abs_y_bin {
+        let min_rel_y_bin = w.y_bin_for_price(w.lowest, base_price, step);
+        let max_rel_y_bin = w.y_bin_for_price(w.highest, base_price, step);
+        if max_rel_y_bin < min_rel_y_bin {
             return;
         }
 
-        let len = (max_abs_y_bin - min_abs_y_bin + 1) as usize;
+        let len = (max_rel_y_bin - min_rel_y_bin + 1) as usize;
 
-        // Accumulate quantities into bins
         self.profile_bid_acc.resize(len, 0.0);
         self.profile_ask_acc.resize(len, 0.0);
         self.profile_bid_acc[..].fill(0.0);
@@ -336,14 +317,17 @@ impl InstanceBuilder {
                 continue;
             }
 
-            let abs_steps = price.units / step_units;
-            let abs_y_bin = abs_steps.div_euclid(y_div);
-            let idx = (abs_y_bin - min_abs_y_bin) as usize;
+            let rel_y_bin = w.y_bin_for_price(*price, base_price, step);
+            let idx = rel_y_bin - min_rel_y_bin;
+            if idx < 0 || idx >= len as i64 {
+                continue;
+            }
 
+            let i = idx as usize;
             let v = if run.is_bid {
-                &mut self.profile_bid_acc[idx]
+                &mut self.profile_bid_acc[i]
             } else {
-                &mut self.profile_ask_acc[idx]
+                &mut self.profile_ask_acc[i]
             };
 
             *v += run.qty();
@@ -356,11 +340,9 @@ impl InstanceBuilder {
 
         self.profile_scale_max_qty = Some(max_qty);
 
-        // Build rectangle instances
         for i in 0..len {
-            let abs_y_bin = min_abs_y_bin + i as i64;
-            let rel_y_bin = abs_y_bin - base_abs_y_bin;
-            let y = RectInstance::y_center_for_bin(rel_y_bin, w);
+            let rel_y_bin = min_rel_y_bin + i as i64;
+            let y = w.y_center_for_bin(rel_y_bin);
 
             for (is_bid, qty) in [
                 (true, self.profile_bid_acc[i]),

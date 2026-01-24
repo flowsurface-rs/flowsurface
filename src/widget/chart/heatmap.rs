@@ -219,6 +219,8 @@ impl HeatmapShader {
                 );
 
                 self.try_rebuild_overlays();
+                self.force_rebuild_if_ybin_changed();
+
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ScrolledAxisY {
@@ -232,6 +234,17 @@ impl HeatmapShader {
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
 
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+            }
+            Message::ScrolledAxisX {
+                factor,
+                cursor_x,
+                viewport_w,
+            } => {
+                self.zoom_column_world_at(factor, cursor_x, viewport_w);
+                self.sync_grid_xy();
+
+                self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::AxisYDoubleClicked => {
@@ -254,17 +267,6 @@ impl HeatmapShader {
                     self.try_rebuild_overlays();
                     self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
                 }
-            }
-            Message::ScrolledAxisX {
-                factor,
-                cursor_x,
-                viewport_w,
-            } => {
-                self.zoom_column_world_at(factor, cursor_x, viewport_w);
-                self.sync_grid_xy();
-
-                self.try_rebuild_overlays();
-                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::PauseBtnClicked => {
                 match self.anchor {
@@ -669,8 +671,18 @@ impl HeatmapShader {
             return;
         };
 
+        // If we are interacting (debounced), keep overlays on the *same* y-binning
+        let mut w_eff = w.clone();
+        if matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. }) {
+            let heatmap_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+            if w_eff.steps_per_y_bin != heatmap_steps_per_y_bin {
+                w_eff.steps_per_y_bin = heatmap_steps_per_y_bin;
+                w_eff.y_bin_h_world = w_eff.row_h * (heatmap_steps_per_y_bin as f32);
+            }
+        }
+
         let built = self.instances.build_instances(
-            w,
+            &w_eff,
             &self.trades,
             &self.heatmap,
             self.base_price,
@@ -684,7 +696,6 @@ impl HeatmapShader {
 
         self.scene.set_circles(built.circles);
         self.scene.set_rectangles(built.rects);
-
         self.scene.set_draw_list(draw_list);
     }
 
@@ -904,9 +915,9 @@ impl HeatmapShader {
         }
     }
 
-    /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture
+    /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture.
+    /// `override_debounce=true` forces correctness even while interacting.
     fn force_rebuild_if_ybin_changed(&mut self) {
-        // Don't force immediate rebuild if we're already debouncing
         if matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. }) {
             return;
         }

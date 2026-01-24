@@ -255,7 +255,6 @@ impl RectInstance {
 
     #[inline]
     pub fn y_center_for_bin(y_bin: i64, w: &ViewWindow) -> f32 {
-        let center_steps = (y_bin as f32 + 0.5) * (w.steps_per_y_bin as f32);
-        -(center_steps * w.row_h)
+        -((y_bin as f32 + 0.5) * w.y_bin_h_world)
     }
 }
