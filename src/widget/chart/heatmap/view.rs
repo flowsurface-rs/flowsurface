@@ -118,6 +118,18 @@ impl Anchor {
             Anchor::Paused { .. } => ResumeAction::None,
         }
     }
+
+    /// Render time used for view/overlay computations.
+    /// While paused, clamp to the latest bucket we actually have data for to avoid "future" drift.
+    #[inline]
+    pub fn effective_render_latest_time(&self, latest_time: u64) -> u64 {
+        let render_latest_time = self.render_latest_time();
+        if self.is_paused() && render_latest_time > 0 && latest_time > 0 {
+            render_latest_time.min(latest_time)
+        } else {
+            render_latest_time
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -210,8 +222,6 @@ impl ExchangeClock {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ViewConfig {
-    pub min_camera_scale: f32,
-
     // Overlays
     pub profile_col_width_px: f32,
     pub strip_height_frac: f32,
@@ -280,8 +290,7 @@ impl ViewWindow {
             return None;
         }
 
-        let sx = camera.scale[0].max(cfg.min_camera_scale);
-        let sy = camera.scale[1].max(cfg.min_camera_scale);
+        let [sx, sy] = camera.scale();
 
         // world x-range visible (plus margins)
         let x_max = camera.right_edge(vw_px);

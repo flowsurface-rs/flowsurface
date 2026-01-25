@@ -178,7 +178,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let vw_px = bounds.width;
                     let vh_px = bounds.height;
 
-                    let sx = self.scene.camera.scale[0].max(1e-6);
+                    let [sx, _sy] = self.scene.camera.scale();
 
                     let visible_space_right_of_zero_world =
                         (self.scene.camera.right_edge(vw_px) - 0.0).max(0.0);

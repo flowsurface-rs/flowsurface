@@ -183,6 +183,20 @@ impl Scene {
             }
         }
     }
+
+    /// Is the *profile start boundary* (world x=0) visible on screen?
+    /// Uses the camera's full world->screen mapping (includes right_pad_frac).
+    #[inline]
+    pub fn profile_start_visible_x0(&self, vw_px: f32, vh_px: f32) -> bool {
+        if !vw_px.is_finite() || vw_px <= 1.0 || !vh_px.is_finite() || vh_px <= 1.0 {
+            return true;
+        }
+
+        let y = self.camera.offset[1];
+        let [sx, _sy] = self.camera.world_to_screen(0.0, y, vw_px, vh_px);
+
+        sx.is_finite() && (0.0..=vw_px).contains(&sx)
+    }
 }
 
 impl shader::Program<Message> for Scene {
