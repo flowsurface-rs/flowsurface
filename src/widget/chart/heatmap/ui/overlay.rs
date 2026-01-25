@@ -43,8 +43,6 @@ pub struct OverlayCanvas<'a> {
 
     pub cell_world: Cell,
 
-    pub min_camera_scale: f32,
-
     pub profile_col_width_px: f32,
     pub strip_height_frac: f32,
 

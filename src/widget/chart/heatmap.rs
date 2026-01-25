@@ -6,7 +6,7 @@ mod widget;
 
 use crate::chart::Action;
 use crate::widget::chart::heatmap::instance::InstanceBuilder;
-use crate::widget::chart::heatmap::scene::camera::MIN_CAMERA_SCALE;
+use crate::widget::chart::heatmap::scene::camera::MIN_ROW_H_WORLD;
 use crate::widget::chart::heatmap::scene::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::{Scene, depth_grid};
 use crate::widget::chart::heatmap::ui::CanvasCaches;
@@ -26,13 +26,10 @@ use exchange::{TickerInfo, Trade};
 use std::time::{Duration, Instant};
 
 const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
-const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
+const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
 
 const DEFAULT_ROW_H_WORLD: f32 = 0.05;
 const DEFAULT_COL_W_WORLD: f32 = 0.02;
-
-const MIN_COL_PX: f32 = 1.0;
-const MIN_ROW_PX: f32 = 1.0;
 
 const DEPTH_MIN_ROW_PX: f32 = 2.0;
 const MAX_STEPS_PER_Y_BIN: i64 = 2048;
@@ -42,12 +39,6 @@ const PROFILE_COL_WIDTH_PX: f32 = 180.0;
 
 // Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
-
-const MIN_ROW_H_WORLD: f32 = 0.01;
-const MAX_ROW_H_WORLD: f32 = 10.;
-
-const MIN_COL_W_WORLD: f32 = 0.01;
-const MAX_COL_W_WORLD: f32 = 10.;
 
 // Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction
 const REBUILD_DEBOUNCE_MS: u64 = 250;
@@ -229,14 +220,6 @@ impl HeatmapShader {
                     size.height,
                 );
 
-                self.scene.camera.enforce_min_cell_px_at_cursor(
-                    cursor.x,
-                    cursor.y,
-                    size.width,
-                    size.height,
-                    &mut self.cell,
-                );
-
                 self.sync_grid_xy();
 
                 self.try_rebuild_overlays();
@@ -390,7 +373,6 @@ impl HeatmapShader {
             scroll_ref_bucket,
             qty_scale_inv: 1.0 / self.qty_scale,
             cell_world: self.cell,
-            min_camera_scale: MIN_CAMERA_SCALE,
             tooltip_cache: &self.canvas_caches.overlay,
             scale_labels_cache: &self.canvas_caches.scale_labels,
 
@@ -670,7 +652,6 @@ impl HeatmapShader {
             trade_profile_width_frac: TRADE_PROFILE_WIDTH_FRAC,
             depth_min_row_px: DEPTH_MIN_ROW_PX,
             max_steps_per_y_bin: MAX_STEPS_PER_Y_BIN,
-            min_row_h_world: MIN_ROW_H_WORLD,
         };
 
         let latest_render = self.anchor.effective_render_latest_time(self.latest_time);

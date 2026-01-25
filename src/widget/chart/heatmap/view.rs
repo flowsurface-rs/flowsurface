@@ -1,4 +1,4 @@
-use crate::widget::chart::heatmap::scene::camera::Camera;
+use crate::widget::chart::heatmap::scene::camera::{Camera, MIN_ROW_H_WORLD};
 use data::chart::heatmap::HistoricalDepth;
 use exchange::util::{Price, PriceStep};
 
@@ -230,9 +230,6 @@ pub struct ViewConfig {
     // Y downsampling
     pub depth_min_row_px: f32,
     pub max_steps_per_y_bin: i64,
-
-    // Row clamp
-    pub min_row_h_world: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -328,7 +325,7 @@ impl ViewWindow {
             return None;
         }
 
-        let row_h = input.cell.height_world.max(cfg.min_row_h_world);
+        let row_h = input.cell.height_world.max(MIN_ROW_H_WORLD);
 
         let min_steps = (-(y_max) / row_h).floor() as i64;
         let max_steps = (-(y_min) / row_h).ceil() as i64;

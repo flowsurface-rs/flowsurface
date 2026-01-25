@@ -1,10 +1,23 @@
-use crate::widget::chart::heatmap::{
-    MAX_COL_W_WORLD, MAX_ROW_H_WORLD, MIN_COL_PX, MIN_COL_W_WORLD, MIN_ROW_H_WORLD, MIN_ROW_PX,
-    view::Cell,
-};
+use crate::widget::chart::heatmap::view::Cell;
 
-pub const MIN_CAMERA_SCALE: f32 = 1e-3;
-pub const MAX_CAMERA_SCALE: f32 = 1e3;
+const MIN_CAMERA_SCALE: f32 = 1e1;
+const MAX_CAMERA_SCALE: f32 = 1e3;
+
+const MIN_COL_W_WORLD: f32 = 0.01;
+const MAX_COL_W_WORLD: f32 = 1.;
+
+pub const MIN_ROW_H_WORLD: f32 = 0.01;
+const MAX_ROW_H_WORLD: f32 = 4.;
+
+const MIN_COL_PX: f32 = 1.0;
+const MIN_ROW_PX: f32 = 1.0;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CameraUniform {
+    pub a: [f32; 4], // (scale.x, scale.y, center.x, center.y)
+    pub b: [f32; 4], // (viewport_w, viewport_h, 0, 0)
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -19,16 +32,9 @@ impl Default for Camera {
         Self {
             scale: [100.0, 100.0],
             offset: [0.0, 0.0],
-            right_pad_frac: 0.10, // 20% of screen for the x>0 depth profile
+            right_pad_frac: 0.10, // right padding used for current orderbook
         }
     }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CameraUniform {
-    pub a: [f32; 4], // (scale.x, scale.y, center.x, center.y)
-    pub b: [f32; 4], // (viewport_w, viewport_h, 0, 0)
 }
 
 impl Camera {
@@ -51,7 +57,7 @@ impl Camera {
         self.clamped_scale()
     }
 
-    /// Set the camera scale (values are clamped to [MIN_CAMERA_SCALE, MAX_CAM
+    /// Set the camera scale, clamped to allowable bounds.
     #[inline]
     pub fn set_scale(&mut self, scale: [f32; 2]) {
         self.scale = [
@@ -130,6 +136,7 @@ impl Camera {
 
         let new_sx = (self.scale[0] * factor).clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
         let new_sy = (self.scale[1] * factor).clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
+
         self.set_scale([new_sx, new_sy]);
 
         let view_x_px = cursor_x - viewport_w * 0.5;
@@ -143,7 +150,7 @@ impl Camera {
     }
 
     #[inline]
-    pub fn world_x_at_screen_x_padded_right(
+    fn world_x_at_screen_x_padded_right(
         &self,
         screen_x: f32,
         viewport_w: f32,
@@ -154,7 +161,7 @@ impl Camera {
     }
 
     #[inline]
-    pub fn min_dim_world_for_min_px(&self, scale: f32, min_px: f32, min_world: f32) -> f32 {
+    fn min_dim_world_for_min_px(&self, scale: f32, min_px: f32, min_world: f32) -> f32 {
         let s = scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
         if !s.is_finite() || s <= 0.0 || !min_px.is_finite() || min_px <= 0.0 {
             return min_world;
@@ -246,33 +253,9 @@ impl Camera {
         );
     }
 
-    pub fn enforce_min_cell_px_at_cursor(
-        &mut self,
-        cursor_x: f32,
-        cursor_y: f32,
-        vw_px: f32,
-        vh_px: f32,
-        cell: &mut Cell,
-    ) {
-        let sx = self.scale[0].max(MIN_CAMERA_SCALE);
-        let sy = self.scale[1].max(MIN_CAMERA_SCALE);
-
-        let min_h = self.min_dim_world_for_min_px(sy, MIN_ROW_PX, MIN_ROW_H_WORLD);
-        if cell.height_world.is_finite() && cell.height_world > 0.0 && cell.height_world < min_h {
-            let f = (min_h / cell.height_world).clamp(0.01, 100.0);
-            self.zoom_row_h_at(f, cursor_y, vh_px, cell);
-        }
-
-        let min_w = self.min_dim_world_for_min_px(sx, MIN_COL_PX, MIN_COL_W_WORLD);
-        if cell.width_world.is_finite() && cell.width_world > 0.0 && cell.width_world < min_w {
-            let f = (min_w / cell.width_world).clamp(0.01, 100.0);
-            self.zoom_column_world_at(f, cursor_x, vw_px, cell);
-        }
-    }
-
     /// Set camera.offset[0] so that `world_x` stays under `screen_x` using the padded-right mapping.
     #[inline]
-    pub fn set_offset_x_for_world_x_at_screen_x_padded_right(
+    fn set_offset_x_for_world_x_at_screen_x_padded_right(
         &mut self,
         world_x: f32,
         screen_x: f32,
@@ -320,19 +303,14 @@ impl Camera {
     /// World Y at a screen Y, where screen origin is top-left of viewport and Y grows downward.
     /// This uses the *centered* anchor (matches current row-height zoom math).
     #[inline]
-    pub fn world_y_at_screen_y_centered(
-        &self,
-        screen_y: f32,
-        viewport_h: f32,
-        min_scale: f32,
-    ) -> f32 {
+    fn world_y_at_screen_y_centered(&self, screen_y: f32, viewport_h: f32, min_scale: f32) -> f32 {
         let sy = self.scale_y_with_min(min_scale);
         self.offset[1] + (screen_y - 0.5 * viewport_h) / sy
     }
 
     /// Set camera.offset[1] so that `world_y` stays under `screen_y` (centered anchor).
     #[inline]
-    pub fn set_offset_y_for_world_y_at_screen_y_centered(
+    fn set_offset_y_for_world_y_at_screen_y_centered(
         &mut self,
         world_y: f32,
         screen_y: f32,
@@ -341,31 +319,5 @@ impl Camera {
     ) {
         let sy = self.scale_y_with_min(min_scale);
         self.offset[1] = world_y - (screen_y - 0.5 * viewport_h) / sy;
-    }
-
-    /// World X at a screen X using the *right-anchored* mapping where screen_x == viewport_w maps to x=0.
-    /// This matches your existing column-width zoom math.
-    #[inline]
-    pub fn world_x_at_screen_x_right_anchored(
-        &self,
-        screen_x: f32,
-        viewport_w: f32,
-        min_scale: f32,
-    ) -> f32 {
-        let sx = self.scale_x_with_min(min_scale);
-        self.offset[0] + (screen_x - viewport_w) / sx
-    }
-
-    /// Set camera.offset[0] so that `world_x` stays under `screen_x` (right-anchored mapping).
-    #[inline]
-    pub fn set_offset_x_for_world_x_at_screen_x_right_anchored(
-        &mut self,
-        world_x: f32,
-        screen_x: f32,
-        viewport_w: f32,
-        min_scale: f32,
-    ) {
-        let sx = self.scale_x_with_min(min_scale);
-        self.offset[0] = world_x - (screen_x - viewport_w) / sx;
     }
 }
