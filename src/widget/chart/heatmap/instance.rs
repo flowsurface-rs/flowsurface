@@ -210,7 +210,7 @@ impl InstanceBuilder {
 
         self.trade_profile_scale_max_qty = Some(max_total);
 
-        let min_w_world = MIN_BAR_PX / w.sx;
+        let min_w_world = MIN_BAR_PX / w.cam_scale;
 
         for i in 0..len {
             let rel_y_bin = min_rel_y_bin + i as i64;
@@ -375,7 +375,7 @@ impl InstanceBuilder {
         }
 
         // Compute X binning
-        let px_per_col = w.sx;
+        let px_per_col = w.cam_scale;
         let px_per_drawn_col = px_per_col * (1.0 - BUCKET_GAP_FRAC);
         let mut cols_per_x_bin = 1i64;
         if px_per_drawn_col.is_finite() && px_per_drawn_col > 0.0 {

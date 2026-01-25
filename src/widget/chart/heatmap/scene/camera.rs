@@ -1,28 +1,22 @@
-use crate::widget::chart::heatmap::view::Cell;
+use crate::widget::chart::heatmap::view::{
+    Cell, MAX_COL_W_WORLD, MAX_ROW_H_WORLD, MIN_COL_PX, MIN_COL_W_WORLD, MIN_ROW_H_WORLD,
+    MIN_ROW_PX,
+};
 
 const MIN_CAMERA_SCALE: f32 = 1e1;
 const MAX_CAMERA_SCALE: f32 = 1e3;
 
-const MIN_COL_W_WORLD: f32 = 0.01;
-const MAX_COL_W_WORLD: f32 = 1.;
-
-pub const MIN_ROW_H_WORLD: f32 = 0.01;
-const MAX_ROW_H_WORLD: f32 = 4.;
-
-const MIN_COL_PX: f32 = 1.0;
-const MIN_ROW_PX: f32 = 1.0;
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub a: [f32; 4], // (scale.x, scale.y, center.x, center.y)
-    pub b: [f32; 4], // (viewport_w, viewport_h, 0, 0)
+    pub a: [f32; 4], // (scale, center.x, center.y, pad)
+    pub b: [f32; 4], // (viewport_w, viewport_h, pad, pad)
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Camera {
-    scale: [f32; 2],         // pixels per world unit
+    scale: f32,              // pixels per world unit
     pub offset: [f32; 2],    // world coord of "live" point (x=0 at latest bucket end)
     pub right_pad_frac: f32, // fraction of viewport width reserved for x>0
 }
@@ -30,7 +24,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            scale: [100.0, 100.0],
+            scale: 100.0,
             offset: [0.0, 0.0],
             right_pad_frac: 0.10, // right padding used for current orderbook
         }
@@ -47,23 +41,20 @@ impl Camera {
 
     #[inline]
     fn right_pad_world(&self, viewport_w: f32) -> f32 {
-        let sx = self.scale_x_with_min(MIN_CAMERA_SCALE);
-        (viewport_w * self.right_pad_frac) / sx
+        let s = self.scale_with_min(MIN_CAMERA_SCALE);
+        (viewport_w * self.right_pad_frac) / s
     }
 
     /// Return the camera scale clamped to allowable bounds.
     #[inline]
-    pub fn scale(&self) -> [f32; 2] {
+    pub fn scale(&self) -> f32 {
         self.clamped_scale()
     }
 
     /// Set the camera scale, clamped to allowable bounds.
     #[inline]
-    pub fn set_scale(&mut self, scale: [f32; 2]) {
-        self.scale = [
-            scale[0].clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE),
-            scale[1].clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE),
-        ];
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
     }
 
     /// Clamp the stored scale in-place.
@@ -74,21 +65,24 @@ impl Camera {
 
     /// Internal: return clamped scale but don't mutate.
     #[inline]
-    fn clamped_scale(&self) -> [f32; 2] {
-        [
-            self.scale[0].clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE),
-            self.scale[1].clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE),
-        ]
+    fn clamped_scale(&self) -> f32 {
+        self.scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE)
+    }
+
+    #[inline]
+    fn scale_with_min(&self, min_scale: f32) -> f32 {
+        self.scale
+            .clamp(min_scale.max(MIN_CAMERA_SCALE), MAX_CAMERA_SCALE)
     }
 
     #[inline]
     fn scale_x_with_min(&self, min_scale: f32) -> f32 {
-        self.scale[0].clamp(min_scale.max(MIN_CAMERA_SCALE), MAX_CAMERA_SCALE)
+        self.scale_with_min(min_scale)
     }
 
     #[inline]
     fn scale_y_with_min(&self, min_scale: f32) -> f32 {
-        self.scale[1].clamp(min_scale.max(MIN_CAMERA_SCALE), MAX_CAMERA_SCALE)
+        self.scale_with_min(min_scale)
     }
 
     #[inline]
@@ -98,9 +92,9 @@ impl Camera {
 
     #[inline]
     fn center(&self, viewport_w: f32) -> [f32; 2] {
-        let sx = self.scale_x_with_min(MIN_CAMERA_SCALE);
+        let s = self.scale_with_min(MIN_CAMERA_SCALE);
         let right_edge = self.right_edge(viewport_w);
-        let center_x = right_edge - (viewport_w * 0.5) / sx;
+        let center_x = right_edge - (viewport_w * 0.5) / s;
         let center_y = self.offset[1];
         [center_x, center_y]
     }
@@ -113,11 +107,11 @@ impl Camera {
         viewport_w: f32,
         viewport_h: f32,
     ) -> [f32; 2] {
-        let [sx, sy] = self.clamped_scale();
+        let s = self.clamped_scale();
         let [cx, cy] = self.center(viewport_w);
 
-        let screen_x = (world_x - cx) * sx + viewport_w * 0.5;
-        let screen_y = (world_y - cy) * sy + viewport_h * 0.5;
+        let screen_x = (world_x - cx) * s + viewport_w * 0.5;
+        let screen_y = (world_y - cy) * s + viewport_h * 0.5;
 
         [screen_x, screen_y]
     }
@@ -134,19 +128,18 @@ impl Camera {
 
         let [wx, wy] = self.screen_to_world(cursor_x, cursor_y, viewport_w, viewport_h);
 
-        let new_sx = (self.scale[0] * factor).clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
-        let new_sy = (self.scale[1] * factor).clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
+        let new_s = (self.scale * factor).clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
 
-        self.set_scale([new_sx, new_sy]);
+        self.set_scale(new_s);
 
         let view_x_px = cursor_x - viewport_w * 0.5;
         let view_y_px = cursor_y - viewport_h * 0.5;
 
         let pad_world = self.right_pad_world(viewport_w);
-        let right_edge = wx + (viewport_w * 0.5) / new_sx - view_x_px / new_sx;
+        let right_edge = wx + (viewport_w * 0.5) / new_s - view_x_px / new_s;
 
         self.offset[0] = right_edge - pad_world;
-        self.offset[1] = wy - view_y_px / new_sy;
+        self.offset[1] = wy - view_y_px / new_s;
     }
 
     #[inline]
@@ -156,8 +149,8 @@ impl Camera {
         viewport_w: f32,
         min_scale: f32,
     ) -> f32 {
-        let sx = self.scale_x_with_min(min_scale);
-        self.offset[0] + self.right_pad_world(viewport_w) + (screen_x - viewport_w) / sx
+        let s = self.scale_x_with_min(min_scale);
+        self.offset[0] + self.right_pad_world(viewport_w) + (screen_x - viewport_w) / s
     }
 
     #[inline]
@@ -178,8 +171,8 @@ impl Camera {
 
         let row_units_at_cursor = world_y_before / cell.height_world.max(MIN_ROW_H_WORLD);
 
-        let sy = self.scale_y_with_min(MIN_CAMERA_SCALE);
-        let min_h = self.min_dim_world_for_min_px(sy, MIN_ROW_PX, MIN_ROW_H_WORLD);
+        let s = self.scale_y_with_min(MIN_CAMERA_SCALE);
+        let min_h = self.min_dim_world_for_min_px(s, MIN_ROW_PX, MIN_ROW_H_WORLD);
         cell.height_world = (cell.height_world * factor).clamp(min_h, MAX_ROW_H_WORLD);
 
         let world_y_after = row_units_at_cursor * cell.height_world;
@@ -208,8 +201,8 @@ impl Camera {
 
         let col_units_at_cursor = world_x_before / cell.width_world.max(MIN_COL_W_WORLD);
 
-        let sx = self.scale_x_with_min(MIN_CAMERA_SCALE);
-        let min_w = self.min_dim_world_for_min_px(sx, MIN_COL_PX, MIN_COL_W_WORLD);
+        let s = self.scale_x_with_min(MIN_CAMERA_SCALE);
+        let min_w = self.min_dim_world_for_min_px(s, MIN_COL_PX, MIN_COL_W_WORLD);
 
         cell.width_world = (cell.width_world * factor).clamp(min_w, MAX_COL_W_WORLD);
 
@@ -240,8 +233,8 @@ impl Camera {
             return;
         }
 
-        let sx = self.scale_x_with_min(MIN_CAMERA_SCALE);
-        let min_w = self.min_dim_world_for_min_px(sx, MIN_COL_PX, MIN_COL_W_WORLD);
+        let s = self.scale_x_with_min(MIN_CAMERA_SCALE);
+        let min_w = self.min_dim_world_for_min_px(s, MIN_COL_PX, MIN_COL_W_WORLD);
 
         cell.width_world = (cell.width_world * factor).clamp(min_w, MAX_COL_W_WORLD);
 
@@ -262,9 +255,9 @@ impl Camera {
         viewport_w: f32,
         min_scale: f32,
     ) {
-        let sx = self.scale_x_with_min(min_scale);
+        let s = self.scale_x_with_min(min_scale);
         let pad_world = self.right_pad_world(viewport_w);
-        self.offset[0] = world_x - pad_world - (screen_x - viewport_w) / sx;
+        self.offset[0] = world_x - pad_world - (screen_x - viewport_w) / s;
     }
 
     /// Convert a screen pixel (origin top-left of the shader bounds) to world coords.
@@ -275,14 +268,14 @@ impl Camera {
         viewport_w: f32,
         viewport_h: f32,
     ) -> [f32; 2] {
-        let [sx, sy] = self.clamped_scale();
+        let s = self.clamped_scale();
         let [cx, cy] = self.center(viewport_w);
 
         let view_x_px = screen_x - viewport_w * 0.5;
         let view_y_px = screen_y - viewport_h * 0.5;
 
-        let world_x = cx + view_x_px / sx;
-        let world_y = cy + view_y_px / sy;
+        let world_x = cx + view_x_px / s;
+        let world_y = cy + view_y_px / s;
 
         [world_x, world_y]
     }
@@ -291,11 +284,11 @@ impl Camera {
         let vw = viewport_w.round().max(1.0);
         let vh = viewport_h.round().max(1.0);
 
-        let [sx, sy] = self.clamped_scale();
+        let s = self.clamped_scale();
         let [center_x, center_y] = self.center(vw);
 
         CameraUniform {
-            a: [sx, sy, center_x, center_y],
+            a: [s, s, center_x, center_y],
             b: [vw, vh, 0.0, 0.0],
         }
     }
@@ -304,8 +297,8 @@ impl Camera {
     /// This uses the *centered* anchor (matches current row-height zoom math).
     #[inline]
     fn world_y_at_screen_y_centered(&self, screen_y: f32, viewport_h: f32, min_scale: f32) -> f32 {
-        let sy = self.scale_y_with_min(min_scale);
-        self.offset[1] + (screen_y - 0.5 * viewport_h) / sy
+        let s = self.scale_y_with_min(min_scale);
+        self.offset[1] + (screen_y - 0.5 * viewport_h) / s
     }
 
     /// Set camera.offset[1] so that `world_y` stays under `screen_y` (centered anchor).
@@ -317,7 +310,7 @@ impl Camera {
         viewport_h: f32,
         min_scale: f32,
     ) {
-        let sy = self.scale_y_with_min(min_scale);
-        self.offset[1] = world_y - (screen_y - 0.5 * viewport_h) / sy;
+        let s = self.scale_y_with_min(min_scale);
+        self.offset[1] = world_y - (screen_y - 0.5 * viewport_h) / s;
     }
 }

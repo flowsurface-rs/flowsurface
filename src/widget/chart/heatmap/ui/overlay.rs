@@ -176,11 +176,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let vw_px = bounds.width;
                     let vh_px = bounds.height;
 
-                    let [sx, _sy] = self.scene.camera.scale();
+                    let cam_scale = self.scene.camera.scale();
 
                     let visible_space_right_of_zero_world =
                         (self.scene.camera.right_edge(vw_px) - 0.0).max(0.0);
-                    let desired_profile_w_world = (self.profile_col_width_px.max(0.0)) / sx;
+                    let desired_profile_w_world = (self.profile_col_width_px.max(0.0)) / cam_scale;
                     let profile_max_w_world =
                         desired_profile_w_world.min(visible_space_right_of_zero_world);
 

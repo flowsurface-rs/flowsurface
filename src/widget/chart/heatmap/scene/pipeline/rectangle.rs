@@ -36,7 +36,7 @@ impl RectInstance {
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
-        let min_bar_w_world = MIN_BAR_PX / w.sx;
+        let min_bar_w_world = MIN_BAR_PX / w.cam_scale;
         let t = (qty / max_qty).clamp(0.0, 1.0);
         let w_world = (t * w.profile_max_w_world).max(min_bar_w_world);
         let center_x = 0.5 * w_world;
@@ -72,7 +72,7 @@ impl RectInstance {
         const EPS: f32 = 1e-12;
 
         let denom = max_qty.max(1e-12);
-        let min_h_world = MIN_BAR_PX / w.sy;
+        let min_h_world = MIN_BAR_PX / w.cam_scale;
 
         let (base_rgb, _is_tie) = if buy_qty > sell_qty + EPS {
             (palette.buy_rgb, false)
@@ -113,7 +113,7 @@ impl RectInstance {
         const MIN_BAR_PX: f32 = 1.0;
 
         let denom = max_qty.max(1e-12);
-        let min_h_world = MIN_BAR_PX / w.sy;
+        let min_h_world = MIN_BAR_PX / w.cam_scale;
 
         let mut overlay_h = ((diff_qty / denom) * w.strip_h_world).max(min_h_world);
         overlay_h = overlay_h.min(total_h);
@@ -178,7 +178,7 @@ impl RectInstance {
         const EPS: f32 = 1e-12;
 
         let denom = max_qty.max(1e-12);
-        let min_w_world = MIN_BAR_PX / w.sx;
+        let min_w_world = MIN_BAR_PX / w.cam_scale;
 
         let base_rgb = if buy_qty > sell_qty + EPS {
             palette.buy_rgb
@@ -223,7 +223,7 @@ impl RectInstance {
         const MIN_BAR_PX: f32 = 1.0;
 
         let denom = max_qty.max(1e-12);
-        let min_w_world = MIN_BAR_PX / w.sx;
+        let min_w_world = MIN_BAR_PX / w.cam_scale;
 
         let mut overlay_w = ((diff_qty / denom) * w.trade_profile_max_w_world).max(min_w_world);
         overlay_w = overlay_w.min(total_w);

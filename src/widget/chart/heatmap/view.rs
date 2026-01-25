@@ -1,4 +1,4 @@
-use crate::widget::chart::heatmap::scene::camera::{Camera, MIN_ROW_H_WORLD};
+use crate::widget::chart::heatmap::scene::camera::Camera;
 use data::chart::heatmap::HistoricalDepth;
 use exchange::util::{Price, PriceStep};
 
@@ -9,6 +9,15 @@ pub struct Cell {
     pub width_world: f32,
     pub height_world: f32,
 }
+
+pub const MIN_COL_W_WORLD: f32 = 0.01;
+pub const MAX_COL_W_WORLD: f32 = 1.;
+
+pub const MIN_ROW_H_WORLD: f32 = 0.01;
+pub const MAX_ROW_H_WORLD: f32 = 4.;
+
+pub const MIN_COL_PX: f32 = 1.0;
+pub const MIN_ROW_PX: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Anchor {
@@ -228,7 +237,6 @@ pub struct ViewConfig {
     pub trade_profile_width_frac: f32,
 
     // Y downsampling
-    pub depth_min_row_px: f32,
     pub max_steps_per_y_bin: i64,
 }
 
@@ -257,8 +265,7 @@ pub struct ViewWindow {
     pub row_h: f32,
 
     // Camera scale (world->px)
-    pub sx: f32,
-    pub sy: f32,
+    pub cam_scale: f32,
 
     // Overlays
     pub profile_max_w_world: f32,
@@ -287,11 +294,11 @@ impl ViewWindow {
             return None;
         }
 
-        let [sx, sy] = camera.scale();
+        let cam_scale = camera.scale();
 
         // world x-range visible (plus margins)
         let x_max = camera.right_edge(vw_px);
-        let x_min = x_max - (vw_px / sx);
+        let x_min = x_max - (vw_px / cam_scale);
 
         let col_w_world = input.cell.width_world.max(1e-12);
 
@@ -305,7 +312,7 @@ impl ViewWindow {
 
         // world y-range visible
         let y_center = camera.offset[1];
-        let half_h_world = (vh_px / sy) * 0.5;
+        let half_h_world = (vh_px / cam_scale) * 0.5;
         let y_min = y_center - half_h_world;
         let y_max = y_center + half_h_world;
 
@@ -337,20 +344,20 @@ impl ViewWindow {
         let full_right_edge = camera.right_edge(vw_px);
 
         let visible_space_right_of_zero_world = (full_right_edge - 0.0).max(0.0);
-        let desired_profile_w_world = (cfg.profile_col_width_px / sx).max(0.0);
+        let desired_profile_w_world = (cfg.profile_col_width_px / cam_scale).max(0.0);
         let profile_max_w_world = desired_profile_w_world.min(visible_space_right_of_zero_world);
 
-        let strip_h_world: f32 = (vh_px * cfg.strip_height_frac) / sy;
+        let strip_h_world: f32 = (vh_px * cfg.strip_height_frac) / cam_scale;
         let strip_bottom_y: f32 = y_max;
 
-        let visible_w_world = vw_px / sx;
+        let visible_w_world = vw_px / cam_scale;
         let trade_profile_max_w_world = visible_w_world * cfg.trade_profile_width_frac;
 
         // y-downsampling
-        let px_per_step = row_h * sy;
+        let px_per_step = row_h * cam_scale;
         let mut steps_per_y_bin: i64 = 1;
         if px_per_step.is_finite() && px_per_step > 0.0 {
-            steps_per_y_bin = (cfg.depth_min_row_px / px_per_step).ceil() as i64;
+            steps_per_y_bin = (MIN_ROW_PX / px_per_step).ceil() as i64;
             steps_per_y_bin = steps_per_y_bin.clamp(1, cfg.max_steps_per_y_bin.max(1));
         }
         let y_bin_h_world = row_h * steps_per_y_bin as f32;
@@ -362,8 +369,7 @@ impl ViewWindow {
             lowest,
             highest,
             row_h,
-            sx,
-            sy,
+            cam_scale,
             profile_max_w_world,
             strip_h_world,
             strip_bottom_y,

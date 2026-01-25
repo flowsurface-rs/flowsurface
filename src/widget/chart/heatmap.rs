@@ -6,7 +6,6 @@ mod widget;
 
 use crate::chart::Action;
 use crate::widget::chart::heatmap::instance::InstanceBuilder;
-use crate::widget::chart::heatmap::scene::camera::MIN_ROW_H_WORLD;
 use crate::widget::chart::heatmap::scene::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::{Scene, depth_grid};
 use crate::widget::chart::heatmap::ui::CanvasCaches;
@@ -28,10 +27,9 @@ use std::time::{Duration, Instant};
 const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
 
-const DEFAULT_ROW_H_WORLD: f32 = 0.05;
+const DEFAULT_ROW_H_WORLD: f32 = 0.04;
 const DEFAULT_COL_W_WORLD: f32 = 0.02;
 
-const DEPTH_MIN_ROW_PX: f32 = 2.0;
 const MAX_STEPS_PER_Y_BIN: i64 = 2048;
 
 // Latest profile overlay (x > 0)
@@ -193,10 +191,10 @@ impl HeatmapShader {
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::PanDeltaPx(delta_px) => {
-                let [sx, sy] = self.scene.camera.scale();
+                let cam_scale = self.scene.camera.scale();
 
-                let dx_world = delta_px.x / sx;
-                let dy_world = delta_px.y / sy;
+                let dx_world = delta_px.x / cam_scale;
+                let dy_world = delta_px.y / cam_scale;
 
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
@@ -338,7 +336,7 @@ impl HeatmapShader {
             _ => scroll_ref_bucket,
         };
 
-        let [cam_sx, cam_sy] = self.scene.camera.scale();
+        let cam_scale = self.scene.camera.scale();
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
@@ -347,7 +345,7 @@ impl HeatmapShader {
             aggr_time,
             column_world: self.cell.width_world,
             cam_offset_x: self.scene.camera.offset[0],
-            cam_sx,
+            cam_sx: cam_scale,
             cam_right_pad_frac: self.scene.camera.right_pad_frac,
             x_phase_bucket: self.anchor.x_phase_bucket(),
             is_x0_visible: self
@@ -361,7 +359,7 @@ impl HeatmapShader {
             step: self.step,
             row_h: self.cell.height_world,
             cam_offset_y: self.scene.camera.offset[1],
-            cam_sy,
+            cam_sy: cam_scale,
             label_precision: self.ticker_info.min_ticksize,
         };
 
@@ -650,7 +648,6 @@ impl HeatmapShader {
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
             strip_height_frac: STRIP_HEIGHT_FRAC,
             trade_profile_width_frac: TRADE_PROFILE_WIDTH_FRAC,
-            depth_min_row_px: DEPTH_MIN_ROW_PX,
             max_steps_per_y_bin: MAX_STEPS_PER_Y_BIN,
         };
 
@@ -946,7 +943,7 @@ impl HeatmapShader {
 
     /// Price at the camera's Y-center (world y = camera.offset[1])
     fn camera_center_price(&self) -> Price {
-        let row_h = self.cell.height_world.max(MIN_ROW_H_WORLD);
+        let row_h = self.cell.height_world.max(view::MIN_ROW_H_WORLD);
         let y = self.scene.camera.offset[1];
 
         if !row_h.is_finite() || row_h <= 0.0 || !y.is_finite() {
