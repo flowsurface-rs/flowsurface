@@ -95,6 +95,31 @@ impl Camera {
         self.offset[1] = wy - view_y_px / new_sy;
     }
 
+    #[inline]
+    pub fn world_x_at_screen_x_padded_right(
+        &self,
+        screen_x: f32,
+        viewport_w: f32,
+        min_scale: f32,
+    ) -> f32 {
+        let sx = self.scale[0].max(min_scale);
+        self.offset[0] + self.right_pad_world(viewport_w) + (screen_x - viewport_w) / sx
+    }
+
+    /// Set camera.offset[0] so that `world_x` stays under `screen_x` using the padded-right mapping.
+    #[inline]
+    pub fn set_offset_x_for_world_x_at_screen_x_padded_right(
+        &mut self,
+        world_x: f32,
+        screen_x: f32,
+        viewport_w: f32,
+        min_scale: f32,
+    ) {
+        let sx = self.scale[0].max(min_scale);
+        let pad_world = self.right_pad_world(viewport_w);
+        self.offset[0] = world_x - pad_world - (screen_x - viewport_w) / sx;
+    }
+
     /// Convert a screen pixel (origin top-left of the shader bounds) to world coords.
     pub fn screen_to_world(
         &self,

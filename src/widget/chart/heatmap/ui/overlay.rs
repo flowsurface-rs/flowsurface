@@ -9,6 +9,7 @@ use crate::style;
 use crate::widget::chart::heatmap::Message;
 use crate::widget::chart::heatmap::depth_grid::GridRing;
 use crate::widget::chart::heatmap::scene::Scene;
+use crate::widget::chart::heatmap::view::Cell;
 
 const TOOLTIP_WIDTH: f32 = 198.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
@@ -40,8 +41,7 @@ pub struct OverlayCanvas<'a> {
 
     pub qty_scale_inv: f32,
 
-    pub col_w_world: f32,
-    pub row_h_world: f32,
+    pub cell_world: Cell,
 
     pub min_camera_scale: f32,
 
@@ -264,6 +264,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         };
 
         let tooltip = self.tooltip_cache.draw(renderer, bounds.size(), |frame| {
+            let cell_width = self.cell_world.width_world;
+            let cell_height = self.cell_world.height_world;
+
             let tex_w = self.depth_grid.tex_w() as i64;
             let tex_h = self.depth_grid.tex_h() as i64;
 
@@ -272,7 +275,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             }
 
             let origin0 = self.scene.params.origin[0];
-            if !origin0.is_finite() || self.col_w_world <= 0.0 || self.row_h_world <= 0.0 {
+            if !origin0.is_finite() || cell_width <= 0.0 || cell_height <= 0.0 {
                 return;
             }
 
@@ -287,19 +290,19 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     .screen_to_world(local_x, local_y, bounds.width, bounds.height);
 
             // --- X snap: nearest bucket START (column start / left edge)
-            let x_bin_rel_f = (world_x / self.col_w_world) + origin0;
+            let x_bin_rel_f = (world_x / cell_width) + origin0;
             if !x_bin_rel_f.is_finite() {
                 return;
             }
             let x_bin_rel = x_bin_rel_f.round();
-            let snapped_world_x = (x_bin_rel - origin0) * self.col_w_world;
+            let snapped_world_x = (x_bin_rel - origin0) * cell_width;
 
             // --- Y snap: nearest y-bin center (matches texture binning)
             let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
-            let steps_at_y: i64 = ((-world_y) / self.row_h_world).floor() as i64;
+            let steps_at_y: i64 = ((-world_y) / cell_height).floor() as i64;
             let base_rel_y_bin: i64 = steps_at_y.div_euclid(steps_per_y_bin.max(1));
             let snapped_world_y =
-                -((base_rel_y_bin as f32 + 0.5) * (steps_per_y_bin as f32) * self.row_h_world);
+                -((base_rel_y_bin as f32 + 0.5) * (steps_per_y_bin as f32) * cell_height);
 
             let [snap_px_x, snap_px_y] = self.scene.camera.world_to_screen(
                 snapped_world_x,
@@ -327,7 +330,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             }
 
             // --- X: world -> bucket_abs (base cell)
-            let x_bin_rel_f = (world_x / self.col_w_world) + origin0;
+            let x_bin_rel_f = (world_x / cell_width) + origin0;
             if !x_bin_rel_f.is_finite() {
                 return;
             }
@@ -338,7 +341,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
             // --- Y: world -> rel_y_bin (base cell)
             let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
-            let steps_at_y: i64 = ((-world_y) / self.row_h_world).floor() as i64;
+            let steps_at_y: i64 = ((-world_y) / cell_height).floor() as i64;
             let base_rel_y_bin: i64 = steps_at_y.div_euclid(steps_per_y_bin.max(1));
 
             // shader-provided y_start_bin

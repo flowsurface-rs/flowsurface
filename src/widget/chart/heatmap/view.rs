@@ -5,6 +5,12 @@ use exchange::util::{Price, PriceStep};
 use iced::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
+pub struct Cell {
+    pub width_world: f32,
+    pub height_world: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Anchor {
     Live {
         scroll_ref_bucket: i64,
@@ -228,8 +234,7 @@ pub struct ViewInputs {
     pub base_price: Price,
     pub step: PriceStep,
 
-    pub row_h_world: f32,
-    pub col_w_world: f32,
+    pub cell: Cell,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -282,9 +287,11 @@ impl ViewWindow {
         let x_max = camera.right_edge(vw_px);
         let x_min = x_max - (vw_px / sx);
 
+        let col_w_world = input.cell.width_world.max(1e-12);
+
         // Strict buckets (what is actually visible)
-        let bucket_min_strict = (x_min / input.col_w_world).floor() as i64;
-        let bucket_max_strict = (x_max / input.col_w_world).ceil() as i64;
+        let bucket_min_strict = (x_min / col_w_world).floor() as i64;
+        let bucket_max_strict = (x_max / col_w_world).ceil() as i64;
 
         // Padded buckets (used for building content without edge artifacts)
         let bucket_min = bucket_min_strict.saturating_sub(2);
@@ -312,7 +319,7 @@ impl ViewWindow {
             return None;
         }
 
-        let row_h = input.row_h_world.max(cfg.min_row_h_world);
+        let row_h = input.cell.height_world.max(cfg.min_row_h_world);
 
         let min_steps = (-(y_max) / row_h).floor() as i64;
         let max_steps = (-(y_min) / row_h).ceil() as i64;

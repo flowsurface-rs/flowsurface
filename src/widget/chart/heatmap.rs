@@ -30,6 +30,9 @@ const DEPTH_GRID_TEX_H: u32 = 2048; // 2048 steps around anchor
 const DEFAULT_ROW_H_WORLD: f32 = 0.05;
 const DEFAULT_COL_W_WORLD: f32 = 0.02;
 
+const MIN_COL_PX: f32 = 1.0;
+const MIN_ROW_PX: f32 = 1.0;
+
 const MIN_CAMERA_SCALE: f32 = 1e-4;
 
 const DEPTH_MIN_ROW_PX: f32 = 2.0;
@@ -97,8 +100,7 @@ pub struct HeatmapShader {
     pub last_tick: Option<Instant>,
     scene: Scene,
     viewport: Option<iced::Rectangle>,
-    row_h: f32,
-    column_world: f32,
+    cell: view::Cell,
     palette: Option<HeatmapPalette>,
     instances: InstanceBuilder,
     canvas_caches: CanvasCaches,
@@ -150,8 +152,10 @@ impl HeatmapShader {
             last_tick: None,
             scene,
             viewport: None,
-            row_h: DEFAULT_ROW_H_WORLD,
-            column_world: DEFAULT_COL_W_WORLD,
+            cell: view::Cell {
+                width_world: DEFAULT_COL_W_WORLD,
+                height_world: DEFAULT_ROW_H_WORLD,
+            },
             palette: None,
             qty_scale,
             heatmap,
@@ -210,6 +214,10 @@ impl HeatmapShader {
                     return;
                 };
 
+                // 1) Primary zoom: camera scale
+                let old_sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
+                let old_sy = self.scene.camera.scale[1].max(MIN_CAMERA_SCALE);
+
                 self.scene.camera.zoom_at_cursor(
                     factor,
                     cursor.x,
@@ -217,6 +225,28 @@ impl HeatmapShader {
                     size.width,
                     size.height,
                 );
+
+                let new_sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
+                let new_sy = self.scene.camera.scale[1].max(MIN_CAMERA_SCALE);
+
+                // 2) If the camera hit its clamp, apply remaining zoom to col/row (axis-scroll-like)
+                let used_fx = if old_sx > 0.0 { new_sx / old_sx } else { 1.0 };
+                let used_fy = if old_sy > 0.0 { new_sy / old_sy } else { 1.0 };
+
+                let residual_x = (factor / used_fx).clamp(0.01, 100.0);
+                let residual_y = (factor / used_fy).clamp(0.01, 100.0);
+
+                if (residual_x - 1.0).abs() > 1e-6 {
+                    self.zoom_column_world_at(residual_x, cursor.x, size.width);
+                }
+                if (residual_y - 1.0).abs() > 1e-6 {
+                    self.zoom_row_h_at(residual_y, cursor.y, size.height);
+                }
+
+                // 3) Always enforce >= 1px cell sizes after any zoom (prevents shimmer-prone subpixel cells)
+                self.enforce_min_cell_px_at_cursor(cursor.x, cursor.y, size.width, size.height);
+
+                self.sync_grid_xy();
 
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
@@ -260,7 +290,7 @@ impl HeatmapShader {
             Message::AxisXDoubleClicked => {
                 if let Some(size) = self.viewport_size_px() {
                     self.scene.camera.reset_offset_x(size.width);
-                    self.column_world = DEFAULT_COL_W_WORLD;
+                    self.cell.width_world = DEFAULT_COL_W_WORLD;
 
                     self.sync_grid_xy();
 
@@ -332,7 +362,7 @@ impl HeatmapShader {
             plot_bounds: self.viewport,
             latest_bucket,
             aggr_time,
-            column_world: self.column_world,
+            column_world: self.cell.width_world,
             cam_offset_x: self.scene.camera.offset[0],
             cam_sx: self.scene.camera.scale[0].max(MIN_CAMERA_SCALE),
             cam_right_pad_frac: self.scene.camera.right_pad_frac,
@@ -346,7 +376,7 @@ impl HeatmapShader {
             plot_bounds: self.viewport,
             base_price: self.base_price,
             step: self.step,
-            row_h: self.row_h,
+            row_h: self.cell.height_world,
             cam_offset_y: self.scene.camera.offset[1],
             cam_sy: self.scene.camera.scale[1].max(MIN_CAMERA_SCALE),
             label_precision: self.ticker_info.min_ticksize,
@@ -359,8 +389,7 @@ impl HeatmapShader {
             step: self.step,
             scroll_ref_bucket,
             qty_scale_inv: 1.0 / self.qty_scale,
-            col_w_world: self.column_world,
-            row_h_world: self.row_h,
+            cell_world: self.cell,
             min_camera_scale: MIN_CAMERA_SCALE,
             tooltip_cache: &self.canvas_caches.overlay,
             scale_labels_cache: &self.canvas_caches.scale_labels,
@@ -430,7 +459,9 @@ impl HeatmapShader {
                 let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
 
                 let delta_buckets: i64 = render_bucket - scroll_ref_bucket;
-                self.scene.params.origin[0] = (delta_buckets as f32) + self.anchor.x_phase_bucket();
+                self.scene
+                    .params
+                    .set_origin_x((delta_buckets as f32) + self.anchor.x_phase_bucket());
 
                 let latest_time_for_heatmap = if self.anchor.is_paused() {
                     render_latest_time_eff
@@ -440,7 +471,7 @@ impl HeatmapShader {
 
                 let latest_bucket_for_scene: i64 = (latest_time_for_heatmap / aggr_time) as i64;
                 let latest_rel: i64 = latest_bucket_for_scene - scroll_ref_bucket;
-                self.scene.params.heatmap_a[0] = latest_rel as f32;
+                self.scene.params.set_heatmap_latest_rel_bucket(latest_rel);
 
                 match self.rebuild_policy {
                     view::RebuildPolicy::Immediate => {
@@ -475,11 +506,12 @@ impl HeatmapShader {
                     is_interacting,
                     NORM_RECOMPUTE_THROTTLE_MS,
                 );
-                self.scene.params.depth[0] = denom;
+                self.scene.params.set_depth_denom(denom);
 
-                self.scene.params.heatmap_a[1] = self
-                    .depth_grid
-                    .heatmap_y_start_bin(self.base_price, self.step);
+                self.scene.params.set_heatmap_y_start_bin(
+                    self.depth_grid
+                        .heatmap_y_start_bin(self.base_price, self.step),
+                );
             }
 
             self.canvas_caches.clear_axes();
@@ -581,8 +613,7 @@ impl HeatmapShader {
             let tex_h = self.depth_grid.tex_h();
 
             if let Some(p) = &self.palette {
-                self.scene.params.bid_rgb = [p.bid_rgb[0], p.bid_rgb[1], p.bid_rgb[2], 0.0];
-                self.scene.params.ask_rgb = [p.ask_rgb[0], p.ask_rgb[1], p.ask_rgb[2], 0.0];
+                self.scene.params.set_palette_rgb(p.bid_rgb, p.ask_rgb);
             }
 
             if tex_w > 0 && tex_h > 0 {
@@ -592,21 +623,19 @@ impl HeatmapShader {
                 let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
 
                 let latest_rel: i64 = bucket - scroll_ref_bucket;
-                self.scene.params.heatmap_a[0] = latest_rel as f32;
+                self.scene.params.set_heatmap_latest_rel_bucket(latest_rel);
 
                 let latest_x_ring: u32 = self.depth_grid.ring_x_for_bucket(bucket);
-                self.scene.params.heatmap_a[3] = latest_x_ring as f32;
+                self.scene.params.set_heatmap_latest_x_ring(latest_x_ring);
 
-                self.scene.params.heatmap_b = [
-                    tex_w as f32,
-                    tex_h as f32,
-                    (tex_w - 1) as f32,
-                    1.0 / self.qty_scale,
-                ];
+                self.scene
+                    .params
+                    .set_heatmap_tex_info(tex_w, tex_h, 1.0 / self.qty_scale);
 
-                self.scene.params.heatmap_a[1] = self
-                    .depth_grid
-                    .heatmap_y_start_bin(self.base_price, self.step);
+                self.scene.params.set_heatmap_y_start_bin(
+                    self.depth_grid
+                        .heatmap_y_start_bin(self.base_price, self.step),
+                );
 
                 let plan = self.depth_grid.build_scene_upload_plan();
                 self.scene.apply_heatmap_upload_plan(plan);
@@ -657,8 +686,7 @@ impl HeatmapShader {
             latest_time_render: latest_render,
             base_price: self.base_price,
             step: self.step,
-            row_h_world: self.row_h,
-            col_w_world: self.column_world,
+            cell: self.cell,
         };
 
         ViewWindow::compute(cfg, &self.scene.camera, [vw_px, vh_px], input)
@@ -672,17 +700,18 @@ impl HeatmapShader {
         };
 
         // If we are interacting (debounced), keep overlays on the *same* y-binning
-        let mut w_eff = w.clone();
+        let mut effective_window = *w;
         if matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. }) {
             let heatmap_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
-            if w_eff.steps_per_y_bin != heatmap_steps_per_y_bin {
-                w_eff.steps_per_y_bin = heatmap_steps_per_y_bin;
-                w_eff.y_bin_h_world = w_eff.row_h * (heatmap_steps_per_y_bin as f32);
+            if effective_window.steps_per_y_bin != heatmap_steps_per_y_bin {
+                effective_window.steps_per_y_bin = heatmap_steps_per_y_bin;
+                effective_window.y_bin_h_world =
+                    effective_window.row_h * (heatmap_steps_per_y_bin as f32);
             }
         }
 
         let built = self.instances.build_instances(
-            &w_eff,
+            &effective_window,
             &self.trades,
             &self.heatmap,
             self.base_price,
@@ -753,15 +782,12 @@ impl HeatmapShader {
             Basis::Tick(_) => return,
         };
 
-        let prev_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+        let prev_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         let new_steps_per_y_bin: i64 = w.steps_per_y_bin.max(1);
 
-        self.scene.params.grid = [
-            self.column_world,
-            self.row_h,
-            new_steps_per_y_bin as f32,
-            0.0,
-        ];
+        self.scene.params.set_cell_world(self.cell);
+        self.scene.params.set_steps_per_y_bin(new_steps_per_y_bin);
+        self.scene.params.set_grid_w(0.0);
 
         // Consume resume directive (if any).
         let resume = self.anchor.take_live_resume();
@@ -821,21 +847,19 @@ impl HeatmapShader {
 
                 let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
                 let latest_rel: i64 = latest_bucket - scroll_ref_bucket;
-                self.scene.params.heatmap_a[0] = latest_rel as f32;
+                self.scene.params.set_heatmap_latest_rel_bucket(latest_rel);
 
                 let latest_x_ring: u32 = self.depth_grid.ring_x_for_bucket(latest_bucket);
-                self.scene.params.heatmap_a[3] = latest_x_ring as f32;
+                self.scene.params.set_heatmap_latest_x_ring(latest_x_ring);
 
-                self.scene.params.heatmap_b = [
-                    tex_w as f32,
-                    tex_h as f32,
-                    (tex_w - 1) as f32,
-                    1.0 / self.qty_scale,
-                ];
+                self.scene
+                    .params
+                    .set_heatmap_tex_info(tex_w, tex_h, 1.0 / self.qty_scale);
 
-                self.scene.params.heatmap_a[1] = self
-                    .depth_grid
-                    .heatmap_y_start_bin(self.base_price, self.step);
+                self.scene.params.set_heatmap_y_start_bin(
+                    self.depth_grid
+                        .heatmap_y_start_bin(self.base_price, self.step),
+                );
 
                 let plan = self.depth_grid.build_scene_upload_plan();
                 self.scene.apply_heatmap_upload_plan(plan);
@@ -937,10 +961,12 @@ impl HeatmapShader {
     }
 
     #[inline]
-    fn sync_grid_xy(&mut self) {
-        // Keep shader mapping in sync during interaction without doing any heavy rebuild work.
-        self.scene.params.grid[0] = self.column_world;
-        self.scene.params.grid[1] = self.row_h;
+    fn min_dim_world_for_min_px(scale: f32, min_px: f32, min_world: f32) -> f32 {
+        let s = scale.max(MIN_CAMERA_SCALE);
+        if !s.is_finite() || s <= 0.0 || !min_px.is_finite() || min_px <= 0.0 {
+            return min_world;
+        }
+        (min_px / s).max(min_world)
     }
 
     fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32) {
@@ -953,10 +979,14 @@ impl HeatmapShader {
                 .camera
                 .world_y_at_screen_y_centered(cursor_y, vh_px, MIN_CAMERA_SCALE);
 
-        let row_units_at_cursor = world_y_before / self.row_h.max(MIN_ROW_H_WORLD);
-        let new_row_h = (self.row_h * factor).clamp(MIN_ROW_H_WORLD, MAX_ROW_H_WORLD);
+        let row_units_at_cursor = world_y_before / self.cell.height_world.max(MIN_ROW_H_WORLD);
 
-        let world_y_after = row_units_at_cursor * new_row_h;
+        let sy = self.scene.camera.scale[1].max(MIN_CAMERA_SCALE);
+        let min_h = Self::min_dim_world_for_min_px(sy, MIN_ROW_PX, MIN_ROW_H_WORLD);
+
+        self.cell.height_world = (self.cell.height_world * factor).clamp(min_h, MAX_ROW_H_WORLD);
+
+        let world_y_after = row_units_at_cursor * self.cell.height_world;
 
         self.scene
             .camera
@@ -966,8 +996,6 @@ impl HeatmapShader {
                 vh_px,
                 MIN_CAMERA_SCALE,
             );
-
-        self.row_h = new_row_h;
     }
 
     fn zoom_column_world_at(&mut self, factor: f32, cursor_x: f32, vw_px: f32) {
@@ -978,23 +1006,25 @@ impl HeatmapShader {
         let world_x_before =
             self.scene
                 .camera
-                .world_x_at_screen_x_right_anchored(cursor_x, vw_px, MIN_CAMERA_SCALE);
+                .world_x_at_screen_x_padded_right(cursor_x, vw_px, MIN_CAMERA_SCALE);
 
-        let col_units_at_cursor = world_x_before / self.column_world.max(MIN_COL_W_WORLD);
-        let new_col_w = (self.column_world * factor).clamp(MIN_COL_W_WORLD, MAX_COL_W_WORLD);
+        let col_units_at_cursor = world_x_before / self.cell.width_world.max(MIN_COL_W_WORLD);
 
-        let world_x_after = col_units_at_cursor * new_col_w;
+        let sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
+        let min_w = Self::min_dim_world_for_min_px(sx, MIN_COL_PX, MIN_COL_W_WORLD);
+
+        self.cell.width_world = (self.cell.width_world * factor).clamp(min_w, MAX_COL_W_WORLD);
+
+        let world_x_after = col_units_at_cursor * self.cell.width_world;
 
         self.scene
             .camera
-            .set_offset_x_for_world_x_at_screen_x_right_anchored(
+            .set_offset_x_for_world_x_at_screen_x_padded_right(
                 world_x_after,
                 cursor_x,
                 vw_px,
                 MIN_CAMERA_SCALE,
             );
-
-        self.column_world = new_col_w;
     }
 
     fn zoom_column_world_keep_anchor(
@@ -1013,28 +1043,67 @@ impl HeatmapShader {
             return;
         }
 
-        // 1) Zoom the logical bucket->world scale
-        self.column_world = (self.column_world * factor).clamp(MIN_COL_W_WORLD, MAX_COL_W_WORLD);
-
-        // 2) Pan so (anchor_world_x) stays under (anchor_screen_x)
         let sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
-        let pad = self.scene.camera.right_pad_frac;
+        let min_w = Self::min_dim_world_for_min_px(sx, MIN_COL_PX, MIN_COL_W_WORLD);
 
-        self.scene.camera.offset[0] = anchor_world_x - (anchor_screen_x - vw_px * (1.0 - pad)) / sx;
+        self.cell.width_world = (self.cell.width_world * factor).clamp(min_w, MAX_COL_W_WORLD);
+
+        self.scene
+            .camera
+            .set_offset_x_for_world_x_at_screen_x_padded_right(
+                anchor_world_x,
+                anchor_screen_x,
+                vw_px,
+                MIN_CAMERA_SCALE,
+            );
+    }
+
+    #[inline]
+    fn enforce_min_cell_px_at_cursor(
+        &mut self,
+        cursor_x: f32,
+        cursor_y: f32,
+        vw_px: f32,
+        vh_px: f32,
+    ) {
+        let sx = self.scene.camera.scale[0].max(MIN_CAMERA_SCALE);
+        let sy = self.scene.camera.scale[1].max(MIN_CAMERA_SCALE);
+
+        let min_h = Self::min_dim_world_for_min_px(sy, MIN_ROW_PX, MIN_ROW_H_WORLD);
+        if self.cell.height_world.is_finite()
+            && self.cell.height_world > 0.0
+            && self.cell.height_world < min_h
+        {
+            let f = (min_h / self.cell.height_world).clamp(0.01, 100.0);
+            self.zoom_row_h_at(f, cursor_y, vh_px);
+        }
+
+        let min_w = Self::min_dim_world_for_min_px(sx, MIN_COL_PX, MIN_COL_W_WORLD);
+        if self.cell.width_world.is_finite()
+            && self.cell.width_world > 0.0
+            && self.cell.width_world < min_w
+        {
+            let f = (min_w / self.cell.width_world).clamp(0.01, 100.0);
+            self.zoom_column_world_at(f, cursor_x, vw_px);
+        }
+    }
+
+    #[inline]
+    fn sync_grid_xy(&mut self) {
+        self.scene.params.set_cell_world(self.cell);
     }
 
     #[inline]
     fn sync_fade_params(&mut self, w: &ViewWindow) {
         // fade only in the left trade-profile zone
-        self.scene.params.fade[0] = w.left_edge_world;
-        self.scene.params.fade[1] = w.trade_profile_max_w_world;
-        self.scene.params.fade[2] = 0.15; // min alpha
-        self.scene.params.fade[3] = 1.0; // max alpha
+        self.scene
+            .params
+            .set_trade_fade(w.left_edge_world, w.trade_profile_max_w_world, 0.15, 1.0);
     }
 
     /// Price at the camera's Y-center (world y = camera.offset[1])
     fn camera_center_price(&self) -> Price {
-        let row_h = self.row_h.max(MIN_ROW_H_WORLD);
+        let row_h = self.cell.height_world.max(MIN_ROW_H_WORLD);
         let y = self.scene.camera.offset[1];
 
         if !row_h.is_finite() || row_h <= 0.0 || !y.is_finite() {

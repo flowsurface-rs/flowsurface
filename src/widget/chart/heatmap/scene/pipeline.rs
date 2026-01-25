@@ -15,6 +15,7 @@ use crate::widget::chart::heatmap::scene::pipeline::circle::{
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::{
     RECT_INDICES, RECT_VERTICES, RectInstance,
 };
+use crate::widget::chart::heatmap::view;
 
 use rustc_hash::FxHashMap;
 
@@ -43,6 +44,113 @@ impl Default for ParamsUniform {
             heatmap_b: [0.0, 0.0, 0.0, 0.0],
             fade: [0.0, 0.0, 1.0, 1.0],
         }
+    }
+}
+
+impl ParamsUniform {
+    // ---- Cell / grid --------------------------------------------------------
+
+    /// grid.xy = cell width/height in world units.
+    #[inline]
+    pub fn set_cell_world(&mut self, cell: view::Cell) {
+        self.grid[0] = cell.width_world;
+        self.grid[1] = cell.height_world;
+    }
+
+    #[inline]
+    pub fn cell_world(&self) -> view::Cell {
+        view::Cell {
+            width_world: self.grid[0],
+            height_world: self.grid[1],
+        }
+    }
+
+    /// grid.z = steps per y-bin (>= 1).
+    #[inline]
+    pub fn set_steps_per_y_bin(&mut self, steps_per_y_bin: i64) {
+        self.grid[2] = (steps_per_y_bin.max(1)) as f32;
+    }
+
+    #[inline]
+    pub fn steps_per_y_bin(&self) -> i64 {
+        self.grid[2].round().max(1.0) as i64
+    }
+
+    #[inline]
+    pub fn set_grid_w(&mut self, w: f32) {
+        self.grid[3] = w;
+    }
+
+    // ---- Origin / scrolling -------------------------------------------------
+
+    /// origin.x = x-origin (bucket offset + phase).
+    #[inline]
+    pub fn set_origin_x(&mut self, x: f32) {
+        self.origin[0] = x;
+    }
+
+    /// origin.w = volume strip x-shift in buckets (currently used as a constant).
+    #[inline]
+    pub fn set_volume_x_shift_bucket(&mut self, shift_bucket: f32) {
+        self.origin[3] = shift_bucket;
+    }
+
+    // ---- Heatmap uniforms ---------------------------------------------------
+
+    /// heatmap_a.x = latest bucket index relative to scroll_ref_bucket.
+    #[inline]
+    pub fn set_heatmap_latest_rel_bucket(&mut self, latest_rel_bucket: i64) {
+        self.heatmap_a[0] = latest_rel_bucket as f32;
+    }
+
+    /// heatmap_a.y = y-start bin (depth-grid dependent mapping).
+    #[inline]
+    pub fn set_heatmap_y_start_bin(&mut self, y_start_bin: f32) {
+        self.heatmap_a[1] = y_start_bin;
+    }
+
+    /// heatmap_a.w = latest x-ring index.
+    #[inline]
+    pub fn set_heatmap_latest_x_ring(&mut self, x_ring: u32) {
+        self.heatmap_a[3] = x_ring as f32;
+    }
+
+    /// heatmap_b = (tex_w, tex_h, tex_w_minus_1, qty_scale_inv)
+    #[inline]
+    pub fn set_heatmap_tex_info(&mut self, tex_w: u32, tex_h: u32, qty_scale_inv: f32) {
+        self.heatmap_b = [
+            tex_w as f32,
+            tex_h as f32,
+            (tex_w.saturating_sub(1)) as f32,
+            qty_scale_inv,
+        ];
+    }
+
+    // ---- Palette / depth denom ---------------------------------------------
+
+    #[inline]
+    pub fn set_palette_rgb(&mut self, bid_rgb: [f32; 3], ask_rgb: [f32; 3]) {
+        self.bid_rgb = [bid_rgb[0], bid_rgb[1], bid_rgb[2], 0.0];
+        self.ask_rgb = [ask_rgb[0], ask_rgb[1], ask_rgb[2], 0.0];
+    }
+
+    #[inline]
+    pub fn set_depth_denom(&mut self, denom: f32) {
+        self.depth[0] = denom;
+    }
+
+    // ---- Fade ---------------------------------------------------------------
+
+    /// fade = (x_left_world, width_world, alpha_min, alpha_max)
+    #[inline]
+    pub fn set_trade_fade(
+        &mut self,
+        x_left_world: f32,
+        width_world: f32,
+        alpha_min: f32,
+        alpha_max: f32,
+    ) {
+        self.fade = [x_left_world, width_world, alpha_min, alpha_max];
     }
 }
 
