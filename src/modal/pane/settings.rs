@@ -14,7 +14,7 @@ use data::chart::{
 };
 use data::layout::pane::VisualConfig;
 use data::panel::ladder;
-use data::panel::timeandsales::{StackedBar, StackedBarRatio};
+use data::panel::timeandsales::{StackedBar, StackedBarRatio, TimeFormat};
 use data::util::format_with_commas;
 
 use iced::widget::{checkbox, space};
@@ -428,9 +428,29 @@ pub fn timesales_cfg_view<'a>(
             .into()
     };
 
+    let time_format_column = {
+        let time_format_picker = pick_list(
+            TimeFormat::ALL,
+            Some(cfg.time_format),
+            move |new_format| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::TimeAndSales(timeandsales::Config {
+                        time_format: new_format,
+                        ..cfg
+                    }),
+                    false,
+                )
+            },
+        );
+
+        column![text("Time format").size(14), time_format_picker].spacing(8)
+    };
+
     let content = split_column![
         trade_size_column,
         history_column,
+        time_format_column,
         stacked_bar,
         row![space::horizontal(), sync_all_button(pane, VisualConfig::TimeAndSales(cfg))],
         ; spacing = 12, align_x = Alignment::Start

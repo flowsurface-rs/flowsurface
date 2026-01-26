@@ -1373,8 +1373,40 @@ impl State {
     where
         F: FnOnce() -> Element<'a, Message>,
     {
+        // Create watermark layer showing panel type
+        let watermark: Element<'a, Message> = {
+            let label = match self.content.kind() {
+                ContentKind::HeatmapChart => "Heatmap",
+                ContentKind::CandlestickChart => "Candlestick",
+                ContentKind::FootprintChart => "Footprint",
+                ContentKind::ComparisonChart => "Comparison",
+                ContentKind::TimeAndSales => "Time & Sales",
+                ContentKind::Ladder => "DOM/Ladder",
+                ContentKind::Starter => "",
+            };
+            
+            if label.is_empty() {
+                iced::widget::Space::new().into()
+            } else {
+                center(
+                    text(label)
+                        .size(42)
+                        .color(iced::Color { a: 0.06, ..iced::Color::WHITE })
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            }
+        };
+
+        // Stack watermark behind base, then add toast manager
+        let base_with_watermark: Element<'a, Message> = iced::widget::stack![watermark, base]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+
         let base =
-            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
+            widget::toast::Manager::new(base_with_watermark, &self.notifications, Alignment::End, move |msg| {
                 Message::PaneEvent(pane, Event::DeleteNotification(msg))
             })
             .into();
@@ -1519,9 +1551,14 @@ impl State {
         self.content.last_tick()
     }
 
-    pub fn tick(&mut self, now: Instant) -> Option<Action> {
+    pub fn tick(&mut self, now: Instant, timezone: UserTimezone) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
+
+        // Update timezone for TimeAndSales panel
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            panel.set_timezone(timezone);
+        }
 
         if let Some(streams) = self.streams.waiting_to_resolve()
             && !streams.is_empty()

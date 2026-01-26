@@ -7,6 +7,70 @@ use crate::util::ok_or_default;
 
 const TRADE_RETENTION_MS: u64 = 120_000;
 
+/// Time display format for trades in the Time & Sales panel
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TimeFormat {
+    /// mm:ss.fff (e.g., 45:23.123)
+    #[default]
+    MinSecMs,
+    /// hh:mm:ss (e.g., 14:45:23)
+    HourMinSec,
+    /// hh:mm:ss.fff (e.g., 14:45:23.123)
+    HourMinSecMs,
+}
+
+impl TimeFormat {
+    pub const ALL: [TimeFormat; 3] = [
+        TimeFormat::MinSecMs,
+        TimeFormat::HourMinSec,
+        TimeFormat::HourMinSecMs,
+    ];
+
+    /// Returns the chrono format string for this time format
+    pub fn format_str(&self) -> &'static str {
+        match self {
+            TimeFormat::MinSecMs => "%M:%S%.3f",
+            TimeFormat::HourMinSec => "%H:%M:%S",
+            TimeFormat::HourMinSecMs => "%H:%M:%S%.3f",
+        }
+    }
+
+    /// Formats a timestamp in milliseconds according to the time format and timezone
+    pub fn format_timestamp(&self, ts_ms: u64, timezone: crate::UserTimezone) -> String {
+        use chrono::DateTime;
+
+        let Some(datetime) = DateTime::from_timestamp(
+            ts_ms as i64 / 1000,
+            (ts_ms % 1000) as u32 * 1_000_000,
+        ) else {
+            return String::new();
+        };
+
+        let format_str = self.format_str();
+
+        match timezone {
+            crate::UserTimezone::Local => datetime
+                .with_timezone(&chrono::Local)
+                .format(format_str)
+                .to_string(),
+            crate::UserTimezone::Utc => datetime
+                .with_timezone(&chrono::Utc)
+                .format(format_str)
+                .to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for TimeFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TimeFormat::MinSecMs => write!(f, "mm:ss.fff"),
+            TimeFormat::HourMinSec => write!(f, "hh:mm:ss"),
+            TimeFormat::HourMinSecMs => write!(f, "hh:mm:ss.fff"),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub trade_size_filter: f32,
@@ -14,6 +78,8 @@ pub struct Config {
     pub trade_retention: Duration,
     #[serde(deserialize_with = "ok_or_default", default)]
     pub stacked_bar: Option<StackedBar>,
+    #[serde(deserialize_with = "ok_or_default", default)]
+    pub time_format: TimeFormat,
 }
 
 impl Default for Config {
@@ -22,6 +88,7 @@ impl Default for Config {
             trade_size_filter: 0.0,
             trade_retention: Duration::from_millis(TRADE_RETENTION_MS),
             stacked_bar: StackedBar::Compact(StackedBarRatio::default()).into(),
+            time_format: TimeFormat::default(),
         }
     }
 }
