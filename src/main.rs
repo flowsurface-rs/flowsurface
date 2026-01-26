@@ -195,10 +195,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
+                let timezone = self.timezone;
 
                 return self
                     .active_dashboard_mut()
-                    .tick(now, main_window_id)
+                    .tick(now, timezone, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,

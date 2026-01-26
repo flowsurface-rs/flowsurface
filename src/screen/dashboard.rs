@@ -1002,12 +1002,12 @@ impl Dashboard {
             });
     }
 
-    pub fn tick(&mut self, now: Instant, main_window: window::Id) -> Task<Message> {
+    pub fn tick(&mut self, now: Instant, timezone: UserTimezone, main_window: window::Id) -> Task<Message> {
         let mut tasks = vec![];
         let layout_id = self.layout_id;
 
         self.iter_all_panes_mut(main_window)
-            .for_each(|(_window_id, _pane, state)| match state.tick(now) {
+            .for_each(|(_window_id, _pane, state)| match state.tick(now, timezone) {
                 Some(pane::Action::Chart(action)) => match action {
                     chart::Action::ErrorOccurred(err) => {
                         state.status = pane::Status::Ready;

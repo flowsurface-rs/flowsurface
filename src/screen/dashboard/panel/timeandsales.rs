@@ -4,6 +4,7 @@ use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
 use exchange::{TickerInfo, Trade, volume_size_unit};
+use data::UserTimezone;
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -80,6 +81,7 @@ pub struct TimeAndSales {
     cache: canvas::Cache,
     last_tick: Instant,
     scroll_offset: f32,
+    timezone: UserTimezone,
 }
 
 impl TimeAndSales {
@@ -95,6 +97,14 @@ impl TimeAndSales {
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
             scroll_offset: 0.0,
+            timezone: UserTimezone::default(),
+        }
+    }
+
+    pub fn set_timezone(&mut self, timezone: UserTimezone) {
+        if self.timezone != timezone {
+            self.timezone = timezone;
+            self.cache.clear();
         }
     }
 
@@ -118,7 +128,7 @@ impl TimeAndSales {
                 (trade_time_ms % 1000) as u32 * 1_000_000,
             ) {
                 let trade_display = TradeDisplay {
-                    time_str: trade_time.format("%M:%S.%3f").to_string(),
+                    time_str: trade_time.format(self.config.time_format.format_str()).to_string(),
                     price: trade.price,
                     qty: trade.qty,
                     is_sell: trade.is_sell,
@@ -520,7 +530,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 );
 
                 let trade_time = create_text(
-                    trade.time_str.clone(),
+                    self.config.time_format.format_timestamp(entry.ts_ms, self.timezone),
                     Point {
                         x: row_width * 0.1,
                         y: y_position,

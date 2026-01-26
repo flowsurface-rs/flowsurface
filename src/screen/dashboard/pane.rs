@@ -1519,9 +1519,14 @@ impl State {
         self.content.last_tick()
     }
 
-    pub fn tick(&mut self, now: Instant) -> Option<Action> {
+    pub fn tick(&mut self, now: Instant, timezone: UserTimezone) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
+
+        // Update timezone for TimeAndSales panel
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            panel.set_timezone(timezone);
+        }
 
         if let Some(streams) = self.streams.waiting_to_resolve()
             && !streams.is_empty()
