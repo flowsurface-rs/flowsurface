@@ -9,6 +9,9 @@ use crate::widget::chart::heatmap::scene;
 const Y_BLOCK_H: u32 = 16;
 const DEPTH_GRID_GRACE_MS: u64 = 500;
 
+// Margin before forcing a full recenter rebuild (fraction of tex_h)
+const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
+
 #[derive(Debug, Clone)]
 pub struct GridRing {
     /// How many aggregated buckets to keep in the ring.
@@ -691,6 +694,43 @@ impl GridRing {
         let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
 
         -(half_h as f32) - (delta_bins as f32)
+    }
+
+    pub fn upload_to_scene(&mut self, force_full: bool) -> Option<super::HeatmapUploadPlan> {
+        let tex_w = self.tex_w();
+        let tex_h = self.tex_h();
+        if tex_w == 0 || tex_h == 0 {
+            return None;
+        }
+
+        if force_full {
+            self.force_full_upload();
+        }
+
+        Some(self.build_scene_upload_plan())
+    }
+
+    /// Determines if the grid should be recentered based on distance from current anchor.
+    /// Returns true if the target price has drifted beyond the acceptable margin.
+    pub fn should_recenter(&self, target: Price, step: PriceStep) -> bool {
+        let tex_h = self.tex_h() as i64;
+        if tex_h <= 0 {
+            return false;
+        }
+
+        let Some(anchor) = self.y_anchor_price() else {
+            return true; // No anchor set, should recenter
+        };
+
+        let step_units = step.units.max(1);
+        let steps_per_y_bin = self.steps_per_y_bin();
+
+        let delta_steps = (target.units - anchor.units) / step_units;
+        let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
+
+        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
+
+        delta_bins > margin_bins
     }
 }
 

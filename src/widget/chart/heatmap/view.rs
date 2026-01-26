@@ -139,6 +139,61 @@ impl Anchor {
             render_latest_time
         }
     }
+
+    /// Updates anchor state based on x=0 visibility.
+    /// Returns (state_changed, pending_price_to_apply)
+    pub fn update_auto_follow(
+        &mut self,
+        x0_visible: bool,
+        live_render_latest_time: u64,
+        live_x_phase_bucket: f32,
+    ) -> (bool, Option<Price>) {
+        match self {
+            Anchor::Live {
+                scroll_ref_bucket,
+                render_latest_time,
+                x_phase_bucket,
+                ..
+            } => {
+                if !x0_visible {
+                    // Transition to Paused
+                    *self = Anchor::Paused {
+                        render_latest_time: live_render_latest_time.max(*render_latest_time),
+                        x_phase_bucket: live_x_phase_bucket.max(*x_phase_bucket),
+                        pending_mid_price: None,
+                        scroll_ref_bucket: *scroll_ref_bucket,
+                        resume: ResumeAction::FullRebuildFromHistorical,
+                    };
+                    (true, None)
+                } else {
+                    (false, None)
+                }
+            }
+            Anchor::Paused {
+                pending_mid_price,
+                scroll_ref_bucket,
+                render_latest_time,
+                x_phase_bucket,
+                resume,
+            } => {
+                if x0_visible {
+                    let price_to_apply = *pending_mid_price;
+
+                    // Transition to Live
+                    *self = Anchor::Live {
+                        scroll_ref_bucket: *scroll_ref_bucket,
+                        render_latest_time: *render_latest_time,
+                        x_phase_bucket: *x_phase_bucket,
+                        resume: *resume,
+                    };
+
+                    (true, price_to_apply)
+                } else {
+                    (false, None)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

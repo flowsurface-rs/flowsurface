@@ -474,7 +474,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
+        interaction: &Interaction,
         bounds: iced::Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
@@ -482,7 +482,12 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             if self.is_paused && self.pause_icon_rect(bounds).contains(pos) {
                 return mouse::Interaction::Pointer;
             }
-            mouse::Interaction::Crosshair
+
+            if let Interaction::Panning { .. } = interaction {
+                mouse::Interaction::Grabbing
+            } else {
+                mouse::Interaction::Crosshair
+            }
         } else {
             mouse::Interaction::default()
         }

@@ -50,9 +50,6 @@ const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
 // If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
 const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
-// Margin before forcing a full recenter rebuild (fraction of tex_h)
-const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
-
 // Trades profile (x < 0)
 const TRADE_PROFILE_WIDTH_FRAC: f32 = 0.10;
 
@@ -171,7 +168,7 @@ impl HeatmapShader {
                 self.viewport = Some(bounds);
 
                 self.rebuild_policy = view::RebuildPolicy::Immediate;
-                self.rebuild_all();
+                self.rebuild_all(None);
             }
             Message::DragZoomAxisXKeepAnchor {
                 factor,
@@ -456,7 +453,7 @@ impl HeatmapShader {
 
                 match self.rebuild_policy {
                     view::RebuildPolicy::Immediate => {
-                        self.rebuild_all();
+                        self.rebuild_all(Some(w));
                         self.rebuild_policy = view::RebuildPolicy::Idle;
                     }
                     view::RebuildPolicy::Debounced { last_input } => {
@@ -465,7 +462,7 @@ impl HeatmapShader {
                         if now_i.saturating_duration_since(last_input).as_millis() as u64
                             >= REBUILD_DEBOUNCE_MS
                         {
-                            self.rebuild_all();
+                            self.rebuild_all(Some(w));
                             self.rebuild_policy = view::RebuildPolicy::Idle;
                         }
                     }
@@ -709,24 +706,18 @@ impl HeatmapShader {
     /// Upload heatmap texture updates to the GPU.
     /// If `needs_heatmap_full_upload` is set, forces a full upload from the *current ring state*.
     fn try_upload_heatmap(&mut self) {
-        let tex_w = self.depth_grid.tex_w();
-        let tex_h = self.depth_grid.tex_h();
-        if tex_w == 0 || tex_h == 0 {
-            return;
+        let plan = self
+            .depth_grid
+            .upload_to_scene(self.needs_heatmap_full_upload);
+
+        if let Some(plan) = plan {
+            // Clear the flag only once we actually schedule a full upload
+            if matches!(plan, scene::HeatmapUploadPlan::Full(_)) {
+                self.needs_heatmap_full_upload = false;
+            }
+
+            self.scene.apply_heatmap_upload_plan(plan);
         }
-
-        if self.needs_heatmap_full_upload {
-            self.depth_grid.force_full_upload();
-        }
-
-        let plan = self.depth_grid.build_scene_upload_plan();
-
-        // Clear the flag only once we actually schedule a full upload.
-        if matches!(plan, scene::HeatmapUploadPlan::Full(_)) {
-            self.needs_heatmap_full_upload = false;
-        }
-
-        self.scene.apply_heatmap_upload_plan(plan);
     }
 
     fn try_rebuild_overlays(&mut self) {
@@ -744,15 +735,15 @@ impl HeatmapShader {
         self.viewport.map(|r| r.size())
     }
 
-    fn rebuild_all(&mut self) {
-        let Some(size) = self.viewport_size_px() else {
-            return;
-        };
-
-        let Some(w) = self.compute_view_window(size.width, size.height) else {
+    fn rebuild_all(&mut self, window: Option<ViewWindow>) {
+        let Some(w) = window.or_else(|| {
+            let size = self.viewport_size_px()?;
+            self.compute_view_window(size.width, size.height)
+        }) else {
             self.clear_scene();
             return;
         };
+
         self.sync_fade_params(&w);
 
         let aggr_time: u64 = match self.basis {
@@ -772,7 +763,7 @@ impl HeatmapShader {
         let force_full_rebuild = matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
 
         let recenter_target = self.camera_center_price();
-        let force_recenter = self.should_recenter_depth_grid(recenter_target);
+        let force_recenter = self.depth_grid.should_recenter(recenter_target, self.step);
 
         let need_full_rebuild =
             new_steps_per_y_bin != prev_steps_per_y_bin || force_full_rebuild || force_recenter;
@@ -908,7 +899,6 @@ impl HeatmapShader {
     }
 
     /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture.
-    /// `override_debounce=true` forces correctness even while interacting.
     fn force_rebuild_if_ybin_changed(&mut self) {
         if matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. }) {
             return;
@@ -924,7 +914,7 @@ impl HeatmapShader {
         let cur_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
         if w.steps_per_y_bin != cur_steps_per_y_bin {
             self.rebuild_policy = view::RebuildPolicy::Immediate;
-            self.rebuild_all();
+            self.rebuild_all(Some(w));
         }
     }
 
@@ -955,28 +945,6 @@ impl HeatmapShader {
         self.base_price.add_steps(steps_i, self.step)
     }
 
-    /// Decide if we should force a full rebuild to recenter the heatmap ring
-    fn should_recenter_depth_grid(&self, target: Price) -> bool {
-        let tex_h = self.depth_grid.tex_h() as i64;
-        if tex_h <= 0 {
-            return false;
-        }
-
-        let Some(anchor) = self.depth_grid.y_anchor_price() else {
-            return true;
-        };
-
-        let step_units = self.step.units.max(1);
-        let steps_per_y_bin = self.depth_grid.steps_per_y_bin();
-
-        let delta_steps = (target.units - anchor.units) / step_units;
-        let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
-
-        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
-
-        delta_bins > margin_bins
-    }
-
     /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.
     fn auto_update_anchor(
         &mut self,
@@ -987,45 +955,18 @@ impl HeatmapShader {
     ) {
         let x0_visible = self.scene.profile_start_visible_x0(vw_px, vh_px);
 
-        match self.anchor {
-            view::Anchor::Live {
-                scroll_ref_bucket,
-                render_latest_time,
-                x_phase_bucket,
-                ..
-            } => {
-                if !x0_visible {
-                    self.anchor = view::Anchor::Paused {
-                        render_latest_time: live_render_latest_time.max(render_latest_time),
-                        x_phase_bucket: live_x_phase_bucket.max(x_phase_bucket),
-                        pending_mid_price: None,
-                        scroll_ref_bucket,
-                        resume: view::ResumeAction::FullRebuildFromHistorical,
-                    };
-                }
-            }
-            view::Anchor::Paused {
-                pending_mid_price,
-                scroll_ref_bucket,
-                render_latest_time,
-                x_phase_bucket,
-                resume,
-            } => {
-                if x0_visible {
-                    self.anchor = view::Anchor::Live {
-                        scroll_ref_bucket,
-                        render_latest_time,
-                        x_phase_bucket,
-                        resume,
-                    };
+        let (state_changed, pending_price) = self.anchor.update_auto_follow(
+            x0_visible,
+            live_render_latest_time,
+            live_x_phase_bucket,
+        );
 
-                    if let Some(p) = pending_mid_price {
-                        self.base_price = p;
-                    }
+        if let Some(price) = pending_price {
+            self.base_price = price;
+        }
 
-                    self.rebuild_policy = view::RebuildPolicy::Immediate;
-                }
-            }
+        if state_changed {
+            self.rebuild_policy = view::RebuildPolicy::Immediate;
         }
     }
 }
