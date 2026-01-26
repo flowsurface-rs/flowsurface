@@ -140,6 +140,28 @@ impl Anchor {
         }
     }
 
+    /// Handles manual resume from pause. Returns pending_price to apply and whether camera should reset.
+    pub fn resume_from_pause(self) -> Result<(Anchor, Option<Price>), ()> {
+        match self {
+            Anchor::Live { .. } => Err(()), // Can't resume when already live
+            Anchor::Paused {
+                pending_mid_price,
+                scroll_ref_bucket,
+                render_latest_time,
+                x_phase_bucket,
+                ..
+            } => {
+                let new_anchor = Anchor::Live {
+                    scroll_ref_bucket,
+                    render_latest_time,
+                    x_phase_bucket,
+                    resume: ResumeAction::FullRebuildFromHistorical,
+                };
+                Ok((new_anchor, pending_mid_price))
+            }
+        }
+    }
+
     /// Updates anchor state based on x=0 visibility.
     /// Returns (state_changed, pending_price_to_apply)
     pub fn update_auto_follow(

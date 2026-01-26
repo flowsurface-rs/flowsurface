@@ -182,7 +182,6 @@ impl HeatmapShader {
                     viewport_w,
                     &mut self.cell,
                 );
-                self.sync_grid_xy();
 
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -197,7 +196,6 @@ impl HeatmapShader {
                 self.scene.camera.offset[1] -= dy_world;
 
                 self.try_rebuild_overlays();
-
                 self.rebuild_policy = view::RebuildPolicy::Debounced {
                     last_input: Instant::now(),
                 };
@@ -215,8 +213,6 @@ impl HeatmapShader {
                     size.height,
                 );
 
-                self.sync_grid_xy();
-
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
 
@@ -230,7 +226,6 @@ impl HeatmapShader {
                 self.scene
                     .camera
                     .zoom_row_h_at(factor, cursor_y, viewport_h, &mut self.cell);
-                self.sync_grid_xy();
 
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
@@ -248,15 +243,12 @@ impl HeatmapShader {
                     viewport_w,
                     &mut self.cell,
                 );
-                self.sync_grid_xy();
 
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::AxisYDoubleClicked => {
                 self.scene.camera.offset[1] = 0.0;
-
-                self.sync_grid_xy();
 
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
@@ -268,47 +260,27 @@ impl HeatmapShader {
                     self.scene.camera.reset_offset_x(size.width);
                     self.cell.width_world = DEFAULT_COL_W_WORLD;
 
-                    self.sync_grid_xy();
-
                     self.try_rebuild_overlays();
                     self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
                 }
             }
             Message::PauseBtnClicked => {
-                match self.anchor {
-                    view::Anchor::Live { .. } => {
-                        unreachable!("PauseBtnClicked should only be possible when paused")
-                    }
-                    view::Anchor::Paused {
-                        pending_mid_price,
-                        scroll_ref_bucket,
-                        render_latest_time,
-                        x_phase_bucket,
-                        resume,
-                    } => {
-                        self.anchor = view::Anchor::Live {
-                            scroll_ref_bucket,
-                            render_latest_time,
-                            x_phase_bucket,
-                            resume,
-                        };
+                let Ok((new_anchor, pending_price)) =
+                    std::mem::take(&mut self.anchor).resume_from_pause()
+                else {
+                    unreachable!("PauseBtnClicked should only be possible when paused");
+                };
 
-                        // On resume, if we have a pending mid-price update, apply it now.
-                        if let Some(mid_price) = pending_mid_price {
-                            self.base_price = mid_price;
-                        }
+                self.anchor = new_anchor;
 
-                        if let Some(size) = self.viewport_size_px() {
-                            self.scene.camera = Default::default();
-                            self.scene.camera.reset_offset_x(size.width);
-                            self.scene.camera.offset[1] = 0.0;
-                        }
+                if let Some(mid_price) = pending_price {
+                    self.base_price = mid_price;
+                }
 
-                        // Ensure we catch up once we’re live again.
-                        if let view::Anchor::Live { resume, .. } = &mut self.anchor {
-                            *resume = view::ResumeAction::FullRebuildFromHistorical;
-                        }
-                    }
+                if let Some(size) = self.viewport_size_px() {
+                    self.scene.camera = Default::default();
+                    self.scene.camera.reset_offset_x(size.width);
+                    self.scene.camera.offset[1] = 0.0;
                 }
 
                 self.rebuild_policy = view::RebuildPolicy::Immediate;
@@ -383,6 +355,15 @@ impl HeatmapShader {
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
 
         iced::widget::container(chart).padding(1).into()
+    }
+
+    pub fn update_theme(&mut self, theme: &iced_core::Theme) {
+        let palette = HeatmapPalette::from_theme(theme);
+        self.palette = Some(palette);
+    }
+
+    pub fn tick_size(&self) -> f32 {
+        self.step.to_f32_lossy()
     }
 
     /// called periodically on every frame, monitor refresh rates
@@ -575,7 +556,10 @@ impl HeatmapShader {
             let recenter_target = if is_interacting {
                 self.depth_grid.y_anchor_price().unwrap_or(self.base_price)
             } else {
-                self.camera_center_price()
+                let row_h = self.cell.height_world;
+                self.scene
+                    .camera
+                    .price_at_center(row_h, self.base_price, self.step)
             };
 
             self.depth_grid.ingest_snapshot(
@@ -587,39 +571,23 @@ impl HeatmapShader {
                 steps_per_y_bin,
             );
 
-            let tex_w = self.depth_grid.tex_w();
-            let tex_h = self.depth_grid.tex_h();
-
             if let Some(p) = &self.palette {
                 self.scene.params.set_palette_rgb(p.bid_rgb, p.ask_rgb);
             }
 
-            if tex_w > 0 && tex_h > 0 {
-                let bucket = (rounded_t / aggr_time) as i64;
+            self.scene.sync_heatmap_texture(
+                &self.depth_grid,
+                self.base_price,
+                self.step,
+                1.0 / self.qty_scale,
+                rounded_t,
+                aggr_time,
+                self.anchor.scroll_ref_bucket(),
+            );
 
-                self.anchor.set_scroll_ref_bucket_if_zero(bucket);
-                let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
-
-                let latest_rel: i64 = bucket - scroll_ref_bucket;
-                self.scene.params.set_heatmap_latest_rel_bucket(latest_rel);
-
-                let latest_x_ring: u32 = self.depth_grid.ring_x_for_bucket(bucket);
-                self.scene.params.set_heatmap_latest_x_ring(latest_x_ring);
-
-                self.scene
-                    .params
-                    .set_heatmap_tex_info(tex_w, tex_h, 1.0 / self.qty_scale);
-
-                self.scene.params.set_heatmap_y_start_bin(
-                    self.depth_grid
-                        .heatmap_y_start_bin(self.base_price, self.step),
-                );
-
-                let plan = self.depth_grid.build_scene_upload_plan();
-                self.scene.apply_heatmap_upload_plan(plan);
-
-                self.try_upload_heatmap();
-            }
+            let plan = self.depth_grid.build_scene_upload_plan();
+            self.scene.apply_heatmap_upload_plan(plan);
+            self.try_upload_heatmap();
         }
 
         self.data_gen = self.data_gen.wrapping_add(1);
@@ -632,6 +600,34 @@ impl HeatmapShader {
         // If paused, don't force immediate rebuilds every tick; resume will trigger a full rebuild.
         if !paused {
             self.rebuild_policy = view::RebuildPolicy::Immediate;
+        }
+    }
+
+    fn cleanup_old_data(&mut self, aggr_time: u64) {
+        let aggr_time = aggr_time.max(1);
+
+        // Keep CPU history aligned with what the ring can represent
+        let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
+
+        let latest_time = self.latest_time;
+        if latest_time == 0 {
+            return;
+        }
+
+        let keep_ms = keep_buckets.saturating_mul(aggr_time);
+        let cutoff = latest_time.saturating_sub(keep_ms);
+        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
+
+        // Prune trades (TimeSeries datapoints are bucket timestamps)
+        let keep = self.trades.datapoints.split_off(&cutoff_rounded);
+        self.trades.datapoints = keep;
+
+        // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
+        // otherwise prune by cutoff directly
+        if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
+            self.heatmap.cleanup_old_price_levels(oldest_time);
+        } else {
+            self.heatmap.cleanup_old_price_levels(cutoff_rounded);
         }
     }
 
@@ -727,12 +723,11 @@ impl HeatmapShader {
         let Some(w) = self.compute_view_window(size.width, size.height) else {
             return;
         };
-        self.sync_fade_params(&w);
-        self.rebuild_overlays(&w);
-    }
 
-    fn viewport_size_px(&self) -> Option<iced::Size<f32>> {
-        self.viewport.map(|r| r.size())
+        self.scene.params.set_cell_world(self.cell);
+        self.sync_fade_params(&w);
+
+        self.rebuild_overlays(&w);
     }
 
     fn rebuild_all(&mut self, window: Option<ViewWindow>) {
@@ -740,7 +735,8 @@ impl HeatmapShader {
             let size = self.viewport_size_px()?;
             self.compute_view_window(size.width, size.height)
         }) else {
-            self.clear_scene();
+            self.scene.clear();
+            self.needs_heatmap_full_upload = true;
             return;
         };
 
@@ -762,7 +758,12 @@ impl HeatmapShader {
         let resume = self.anchor.take_live_resume();
         let force_full_rebuild = matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
 
-        let recenter_target = self.camera_center_price();
+        let recenter_target = {
+            let row_h = self.cell.height_world;
+            self.scene
+                .camera
+                .price_at_center(row_h, self.base_price, self.step)
+        };
         let force_recenter = self.depth_grid.should_recenter(recenter_target, self.step);
 
         let need_full_rebuild =
@@ -810,33 +811,19 @@ impl HeatmapShader {
             self.data_gen = self.data_gen.wrapping_add(1);
             self.depth_norm.invalidate();
 
-            let tex_w = self.depth_grid.tex_w();
-            let tex_h = self.depth_grid.tex_h();
+            self.scene.sync_heatmap_texture(
+                &self.depth_grid,
+                self.base_price,
+                self.step,
+                1.0 / self.qty_scale,
+                latest_time,
+                aggr_time,
+                self.anchor.scroll_ref_bucket(),
+            );
 
-            if tex_w > 0 && tex_h > 0 {
-                let latest_bucket: i64 = (latest_time / aggr_time) as i64;
-
-                let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
-                let latest_rel: i64 = latest_bucket - scroll_ref_bucket;
-                self.scene.params.set_heatmap_latest_rel_bucket(latest_rel);
-
-                let latest_x_ring: u32 = self.depth_grid.ring_x_for_bucket(latest_bucket);
-                self.scene.params.set_heatmap_latest_x_ring(latest_x_ring);
-
-                self.scene
-                    .params
-                    .set_heatmap_tex_info(tex_w, tex_h, 1.0 / self.qty_scale);
-
-                self.scene.params.set_heatmap_y_start_bin(
-                    self.depth_grid
-                        .heatmap_y_start_bin(self.base_price, self.step),
-                );
-
-                let plan = self.depth_grid.build_scene_upload_plan();
-                self.scene.apply_heatmap_upload_plan(plan);
-
-                self.try_upload_heatmap();
-            }
+            let plan = self.depth_grid.build_scene_upload_plan();
+            self.scene.apply_heatmap_upload_plan(plan);
+            self.try_upload_heatmap();
         } else {
             self.scene.set_heatmap_update(None);
 
@@ -846,56 +833,6 @@ impl HeatmapShader {
         }
 
         self.rebuild_overlays(&w);
-    }
-
-    fn cleanup_old_data(&mut self, aggr_time: u64) {
-        let aggr_time = aggr_time.max(1);
-
-        // Keep CPU history aligned with what the ring can represent
-        let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
-
-        let latest_time = self.latest_time;
-        if latest_time == 0 {
-            return;
-        }
-
-        let keep_ms = keep_buckets.saturating_mul(aggr_time);
-        let cutoff = latest_time.saturating_sub(keep_ms);
-        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
-
-        // Prune trades (TimeSeries datapoints are bucket timestamps)
-        let keep = self.trades.datapoints.split_off(&cutoff_rounded);
-        self.trades.datapoints = keep;
-
-        // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
-        // otherwise prune by cutoff directly
-        if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
-            self.heatmap.cleanup_old_price_levels(oldest_time);
-        } else {
-            self.heatmap.cleanup_old_price_levels(cutoff_rounded);
-        }
-    }
-
-    pub fn update_theme(&mut self, theme: &iced_core::Theme) {
-        let palette = HeatmapPalette::from_theme(theme);
-        self.palette = Some(palette);
-    }
-
-    fn clear_scene(&mut self) {
-        self.scene.set_rectangles(vec![]);
-        self.scene.set_circles(vec![]);
-
-        self.scene.set_draw_list(vec![scene::DrawItem::new(
-            scene::DrawLayer::HEATMAP,
-            scene::DrawOp::Heatmap,
-        )]);
-
-        self.scene.set_heatmap_update(None);
-        self.needs_heatmap_full_upload = true;
-    }
-
-    pub fn tick_size(&self) -> f32 {
-        self.step.to_f32_lossy()
     }
 
     /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture.
@@ -918,9 +855,8 @@ impl HeatmapShader {
         }
     }
 
-    #[inline]
-    fn sync_grid_xy(&mut self) {
-        self.scene.params.set_cell_world(self.cell);
+    fn viewport_size_px(&self) -> Option<iced::Size<f32>> {
+        self.viewport.map(|r| r.size())
     }
 
     #[inline]
@@ -929,20 +865,6 @@ impl HeatmapShader {
         self.scene
             .params
             .set_trade_fade(w.left_edge_world, w.trade_profile_max_w_world, 0.15, 1.0);
-    }
-
-    /// Price at the camera's Y-center (world y = camera.offset[1])
-    fn camera_center_price(&self) -> Price {
-        let row_h = self.cell.height_world.max(view::MIN_ROW_H_WORLD);
-        let y = self.scene.camera.offset[1];
-
-        if !row_h.is_finite() || row_h <= 0.0 || !y.is_finite() {
-            return self.base_price;
-        }
-
-        let steps_f = (-(y) / row_h).round();
-        let steps_i = steps_f as i64;
-        self.base_price.add_steps(steps_i, self.step)
     }
 
     /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.

@@ -126,6 +126,13 @@ impl Scene {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.set_rectangles(vec![]);
+        self.set_circles(vec![]);
+        self.set_draw_list(vec![DrawItem::new(DrawLayer::HEATMAP, DrawOp::Heatmap)]);
+        self.set_heatmap_update(None);
+    }
+
     pub fn set_rectangles(&mut self, rectangles: Vec<RectInstance>) {
         self.rectangles = Arc::from(rectangles);
         self.rectangles_gen = self.rectangles_gen.wrapping_add(1);
@@ -196,6 +203,39 @@ impl Scene {
         let [sx, _sy] = self.camera.world_to_screen(0.0, y, vw_px, vh_px);
 
         sx.is_finite() && (0.0..=vw_px).contains(&sx)
+    }
+
+    /// Synchronizes heatmap texture parameters with the depth grid state
+    pub fn sync_heatmap_texture(
+        &mut self,
+        depth_grid: &depth_grid::GridRing,
+        base_price: exchange::util::Price,
+        step: exchange::util::PriceStep,
+        qty_scale_inv: f32, // 1.0 / qty_scale
+        latest_time: u64,
+        aggr_time: u64,
+        scroll_ref_bucket: i64,
+    ) {
+        let tex_w = depth_grid.tex_w();
+        let tex_h = depth_grid.tex_h();
+
+        if tex_w == 0 || tex_h == 0 {
+            return;
+        }
+
+        let latest_bucket: i64 = (latest_time / aggr_time) as i64;
+        let latest_rel: i64 = latest_bucket - scroll_ref_bucket;
+
+        self.params.set_heatmap_latest_rel_bucket(latest_rel);
+
+        let latest_x_ring: u32 = depth_grid.ring_x_for_bucket(latest_bucket);
+        self.params.set_heatmap_latest_x_ring(latest_x_ring);
+
+        self.params
+            .set_heatmap_tex_info(tex_w, tex_h, qty_scale_inv);
+
+        self.params
+            .set_heatmap_y_start_bin(depth_grid.heatmap_y_start_bin(base_price, step));
     }
 }
 

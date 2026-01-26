@@ -107,6 +107,7 @@ impl InstanceBuilder {
             trade_profile_scale_max_qty: None,
         }
     }
+
     pub fn build_instances(
         &mut self,
         w: &ViewWindow,

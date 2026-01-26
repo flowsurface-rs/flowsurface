@@ -39,6 +39,25 @@ impl Camera {
         self.offset[0] = 0.0;
     }
 
+    /// Price at the camera's Y-center (world y = camera.offset[1])
+    pub fn price_at_center(
+        &self,
+        row_height: f32,
+        base_price: exchange::util::Price,
+        step: exchange::util::PriceStep,
+    ) -> exchange::util::Price {
+        let y = self.offset[1];
+
+        if !row_height.is_finite() || row_height <= 0.0 || !y.is_finite() {
+            return base_price;
+        }
+
+        let steps_f = (-(y) / row_height).round();
+        let steps_i = steps_f as i64;
+
+        base_price.add_steps(steps_i, step)
+    }
+
     #[inline]
     fn right_pad_world(&self, viewport_w: f32) -> f32 {
         let s = self.scale_with_min(MIN_CAMERA_SCALE);
