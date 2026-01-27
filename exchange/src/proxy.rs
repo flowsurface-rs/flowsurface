@@ -132,16 +132,115 @@ impl std::fmt::Display for Proxy {
     }
 }
 
-pub fn proxy_from_env() -> Option<Proxy> {
-    let s = std::env::var("FLOWSURFACE_PROXY")
+fn proxy_url_from_env() -> Option<String> {
+    std::env::var("FLOWSURFACE_PROXY")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| std::env::var("HTTPS_PROXY").ok())
         .or_else(|| std::env::var("HTTP_PROXY").ok())
-        .filter(|s| !s.trim().is_empty())?;
+        .filter(|s| !s.trim().is_empty())
+}
 
-    let url = Url::parse(&s).ok()?;
-    Proxy::from_url(&url).ok()
+/// Enforce that proxy is provided as a full URL with scheme.
+/// Examples:
+/// - http://127.0.0.1:8080
+/// - http://user:pass@127.0.0.1:8080
+/// - socks5h://127.0.0.1:1080
+fn parse_proxy_url_strict(s: &str) -> Result<Url, AdapterError> {
+    let s = s.trim();
+
+    // Require explicit scheme to avoid the common "1080 is SOCKS but user typed http://" mismatch.
+    if !s.contains("://") {
+        return Err(AdapterError::ParseError(format!(
+            "Invalid proxy value (missing scheme): {s:?}. \
+Expected e.g. http://127.0.0.1:8080 or socks5h://127.0.0.1:1080 (port 1080 is often SOCKS5)."
+        )));
+    }
+
+    Url::parse(s).map_err(|e| AdapterError::ParseError(format!("Invalid proxy URL: {e}")))
+}
+
+pub fn apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let Some(proxy_url) = proxy_url_from_env() else {
+        return builder;
+    };
+
+    let parsed = match parse_proxy_url_strict(&proxy_url) {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("Ignoring invalid FLOWSURFACE_PROXY: {e}");
+            return builder;
+        }
+    };
+
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let proxy = match reqwest::Proxy::all(parsed.as_str()) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("Failed to configure proxy (scheme={}): {}", scheme, e);
+            return builder;
+        }
+    };
+
+    let username = (!parsed.username().is_empty()).then(|| parsed.username().to_string());
+    let password = parsed.password().map(|s| s.to_string());
+
+    let proxy = match scheme.as_str() {
+        "http" | "https" => match (username.as_deref(), password.as_deref()) {
+            (None, None) => proxy,
+            (Some(u), Some(p)) => proxy.basic_auth(u, p),
+            _ => {
+                log::warn!(
+                    "HTTP proxy auth requires both username and password (credentials ignored)"
+                );
+                proxy
+            }
+        },
+        "socks5" | "socks5h" => {
+            if matches!(
+                (username.as_deref(), password.as_deref()),
+                (Some(_), None) | (None, Some(_))
+            ) {
+                log::warn!("SOCKS5 proxy auth requires both username and password");
+            }
+            proxy
+        }
+        _ => {
+            log::warn!(
+                "Unsupported proxy scheme for REST: {} (use http(s):// or socks5(h)://)",
+                scheme
+            );
+            return builder;
+        }
+    };
+
+    log::info!(
+        "Using proxy for REST: scheme={} host={:?} port={:?}",
+        scheme,
+        parsed.host_str(),
+        parsed.port()
+    );
+    builder.proxy(proxy)
+}
+
+pub fn proxy_from_env() -> Option<Proxy> {
+    let s = proxy_url_from_env()?;
+
+    let url = match parse_proxy_url_strict(&s) {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("Ignoring invalid FLOWSURFACE_PROXY: {e}");
+            return None;
+        }
+    };
+
+    match Proxy::from_url(&url) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            log::warn!("Ignoring unsupported FLOWSURFACE_PROXY: {e}");
+            None
+        }
+    }
 }
 
 fn http_basic_proxy_auth(

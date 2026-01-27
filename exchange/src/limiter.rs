@@ -2,93 +2,13 @@ use crate::adapter::AdapterError;
 
 use reqwest::{Client, Method, Response};
 use serde_json::Value;
-use url::Url;
 
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-fn proxy_url_from_env() -> Option<String> {
-    std::env::var("FLOWSURFACE_PROXY")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("HTTPS_PROXY").ok())
-        .or_else(|| std::env::var("HTTP_PROXY").ok())
-        .filter(|s| !s.trim().is_empty())
-}
-
-fn apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(proxy_url) = proxy_url_from_env() else {
-        return builder;
-    };
-
-    let parsed = match Url::parse(&proxy_url) {
-        Ok(u) => u,
-        Err(e) => {
-            log::warn!("Invalid proxy URL {:?}: {}", proxy_url, e);
-            return builder;
-        }
-    };
-
-    // reqwest supports:
-    // - http(s) proxies (+ optional basic auth header)
-    // - socks5/socks5h proxies if feature "socks" is enabled
-    let scheme = parsed.scheme().to_ascii_lowercase();
-    let proxy = match reqwest::Proxy::all(parsed.as_str()) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("Failed to configure proxy {:?}: {}", proxy_url, e);
-            return builder;
-        }
-    };
-
-    let username = (!parsed.username().is_empty()).then(|| parsed.username().to_string());
-    let password = parsed.password().map(|s| s.to_string());
-
-    let proxy = match scheme.as_str() {
-        "http" | "https" => {
-            // HTTP proxies use Proxy-Authorization for Basic auth.
-            match (username.as_deref(), password.as_deref()) {
-                (None, None) => proxy,
-                (Some(u), Some(p)) => proxy.basic_auth(u, p),
-                _ => {
-                    log::warn!(
-                        "HTTP proxy auth requires both username and password: {}",
-                        parsed
-                    );
-                    proxy
-                }
-            }
-        }
-        "socks5" | "socks5h" => {
-            // For SOCKS, credentials (if any) are typically taken from the URL by the SOCKS connector.
-            // We'll just validate that it's not half-specified.
-            if matches!(
-                (username.as_deref(), password.as_deref()),
-                (Some(_), None) | (None, Some(_))
-            ) {
-                log::warn!(
-                    "SOCKS5 proxy auth requires both username and password: {}",
-                    parsed
-                );
-            }
-            proxy
-        }
-        _ => {
-            log::warn!(
-                "Unsupported proxy scheme for REST: {} (use http(s):// or socks5(h)://)",
-                scheme
-            );
-            return builder;
-        }
-    };
-
-    log::info!("Using proxy for REST: {}", proxy_url);
-    builder.proxy(proxy)
-}
-
 pub static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     let builder = Client::builder();
-    let builder = apply_proxy(builder);
+    let builder = super::proxy::apply_proxy(builder);
 
     builder
         .build()
