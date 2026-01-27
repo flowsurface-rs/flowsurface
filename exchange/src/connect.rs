@@ -1,4 +1,5 @@
 use crate::adapter::AdapterError;
+
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
 use http_body_util::Empty;
@@ -13,6 +14,7 @@ use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
 };
+use url::Url;
 
 #[allow(clippy::large_enum_variant)]
 pub enum State {
@@ -23,13 +25,15 @@ pub enum State {
 pub async fn connect_ws(
     domain: &str,
     url: &str,
-) -> Result<
-    fastwebsockets::FragmentCollector<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
-    AdapterError,
-> {
-    let tcp_stream = setup_tcp(domain).await?;
-    let tls_stream = upgrade_to_tls(domain, tcp_stream).await?;
+) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+    let parsed = Url::parse(url).map_err(|e| AdapterError::InvalidRequest(e.to_string()))?;
 
+    let target_port = parsed.port_or_known_default().ok_or_else(|| {
+        AdapterError::InvalidRequest("Missing port for websocket URL".to_string())
+    })?;
+
+    let tcp_stream = setup_tcp(domain, target_port).await?;
+    let tls_stream = upgrade_to_tls(domain, tcp_stream).await?;
     upgrade_to_websocket(domain, tls_stream, url).await
 }
 
@@ -45,8 +49,13 @@ where
     }
 }
 
-async fn setup_tcp(domain: &str) -> Result<TcpStream, AdapterError> {
-    let addr = format!("{domain}:443");
+async fn setup_tcp(domain: &str, target_port: u16) -> Result<TcpStream, AdapterError> {
+    if let Some(proxy) = super::proxy::proxy_from_env() {
+        log::info!("Using proxy for WS: {}", proxy);
+        return proxy.connect_tcp(domain, target_port).await;
+    }
+
+    let addr = format!("{domain}:{target_port}");
     TcpStream::connect(&addr)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))

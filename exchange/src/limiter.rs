@@ -2,10 +2,98 @@ use crate::adapter::AdapterError;
 
 use reqwest::{Client, Method, Response};
 use serde_json::Value;
+use url::Url;
+
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-pub static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
+fn proxy_url_from_env() -> Option<String> {
+    std::env::var("FLOWSURFACE_PROXY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("HTTPS_PROXY").ok())
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let Some(proxy_url) = proxy_url_from_env() else {
+        return builder;
+    };
+
+    let parsed = match Url::parse(&proxy_url) {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("Invalid proxy URL {:?}: {}", proxy_url, e);
+            return builder;
+        }
+    };
+
+    // reqwest supports:
+    // - http(s) proxies (+ optional basic auth header)
+    // - socks5/socks5h proxies if feature "socks" is enabled
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let proxy = match reqwest::Proxy::all(parsed.as_str()) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("Failed to configure proxy {:?}: {}", proxy_url, e);
+            return builder;
+        }
+    };
+
+    let username = (!parsed.username().is_empty()).then(|| parsed.username().to_string());
+    let password = parsed.password().map(|s| s.to_string());
+
+    let proxy = match scheme.as_str() {
+        "http" | "https" => {
+            // HTTP proxies use Proxy-Authorization for Basic auth.
+            match (username.as_deref(), password.as_deref()) {
+                (None, None) => proxy,
+                (Some(u), Some(p)) => proxy.basic_auth(u, p),
+                _ => {
+                    log::warn!(
+                        "HTTP proxy auth requires both username and password: {}",
+                        parsed
+                    );
+                    proxy
+                }
+            }
+        }
+        "socks5" | "socks5h" => {
+            // For SOCKS, credentials (if any) are typically taken from the URL by the SOCKS connector.
+            // We'll just validate that it's not half-specified.
+            if matches!(
+                (username.as_deref(), password.as_deref()),
+                (Some(_), None) | (None, Some(_))
+            ) {
+                log::warn!(
+                    "SOCKS5 proxy auth requires both username and password: {}",
+                    parsed
+                );
+            }
+            proxy
+        }
+        _ => {
+            log::warn!(
+                "Unsupported proxy scheme for REST: {} (use http(s):// or socks5(h)://)",
+                scheme
+            );
+            return builder;
+        }
+    };
+
+    log::info!("Using proxy for REST: {}", proxy_url);
+    builder.proxy(proxy)
+}
+
+pub static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    let builder = Client::builder();
+    let builder = apply_proxy(builder);
+
+    builder
+        .build()
+        .expect("Failed to build reqwest HTTP client")
+});
 
 pub trait RateLimiter: Send + Sync {
     /// Prepare for a request with given weight. Returns wait time if needed.
@@ -16,6 +104,84 @@ pub trait RateLimiter: Send + Sync {
 
     /// Check if response indicates rate limiting and should exit
     fn should_exit_on_response(&self, response: &Response) -> bool;
+}
+
+/// Non-limited request helper
+pub async fn http_request(
+    url: &str,
+    method: Option<Method>,
+    json_body: Option<&Value>,
+) -> Result<String, AdapterError> {
+    let method = method.unwrap_or(Method::GET);
+
+    let mut request_builder = HTTP_CLIENT.request(method, url);
+
+    if let Some(body) = json_body {
+        request_builder = request_builder.json(body);
+    }
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(AdapterError::FetchError)?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        log::error!("HTTP error {} for: {}", status, url);
+    }
+
+    response.text().await.map_err(AdapterError::FetchError)
+}
+
+/// Non-limited parse helper
+#[allow(dead_code)]
+pub async fn http_parse<V>(
+    url: &str,
+    method: Option<Method>,
+    json_body: Option<&Value>,
+) -> Result<V, AdapterError>
+where
+    V: serde::de::DeserializeOwned,
+{
+    let body = http_request(url, method, json_body).await?;
+    let trimmed = body.trim();
+
+    let body_preview = |body: &str, n: usize| {
+        let trimmed = body.trim();
+        let mut preview = trimmed.chars().take(n).collect::<String>();
+        if trimmed.len() > n {
+            preview.push('…');
+        }
+        preview
+    };
+
+    if trimmed.is_empty() {
+        let msg = format!("Empty response body | url={url}");
+        log::error!("{}", msg);
+        return Err(AdapterError::ParseError(msg));
+    }
+    if trimmed.starts_with('<') {
+        let msg = format!(
+            "Non-JSON (HTML?) response | url={} | len={} | preview={:?}",
+            url,
+            body.len(),
+            body_preview(&body, 200)
+        );
+        log::error!("{}", msg);
+        return Err(AdapterError::ParseError(msg));
+    }
+
+    serde_json::from_str(&body).map_err(|e| {
+        let msg = format!(
+            "JSON parse failed: {} | url={} | response_len={} | preview={:?}",
+            e,
+            url,
+            body.len(),
+            body_preview(&body, 200)
+        );
+        log::error!("{}", msg);
+        AdapterError::ParseError(msg)
+    })
 }
 
 pub async fn http_request_with_limiter<L: RateLimiter>(
