@@ -17,6 +17,7 @@ thiserror.workspace = true
 uuid.workspace = true
 enum-map.workspace = true
 rustc-hash.workspace = true
+url.workspace = true
 
 tokio = { version = "1.43", default-features = false, features = ["rt", "macros"] }
 reqwest = { version = "0.12.9", default-features = false, features = ["json", "brotli", "rustls-tls", "socks"] }
@@ -31,6 +32,5 @@ webpki-roots = "0.23.1"
 zip = "2.3.0"
 csv = "1.3.1"
 smallvec = "1.15.1"
-url = "2.5.8"
 tokio-socks = "0.5.2"
 base64 = "0.22.1"

@@ -1,262 +1,269 @@
 use crate::adapter::AdapterError;
 
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
-use url::Url;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use std::sync::OnceLock;
 
-use std::time::Duration;
-
-pub enum Proxy {
-    Http {
-        host: String,
-        port: u16,
-        username: Option<String>,
-        password: Option<String>,
-    },
-    Socks5 {
-        host: String,
-        port: u16,
-        username: Option<String>,
-        password: Option<String>,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum ProxyScheme {
+    Http,
+    Https,
+    Socks5,
+    Socks5h,
 }
 
-impl Proxy {
-    fn from_url(url: &Url) -> Result<Self, AdapterError> {
-        let scheme = url.scheme().to_ascii_lowercase();
-        let host = url
-            .host_str()
-            .ok_or_else(|| AdapterError::ParseError("Proxy host missing".to_string()))?
-            .to_string();
-        let port = url
-            .port_or_known_default()
-            .ok_or_else(|| AdapterError::ParseError("Proxy port missing".to_string()))?;
-
-        let username = (!url.username().is_empty()).then(|| url.username().to_string());
-        let password = url.password().map(|s| s.to_string());
-
-        match scheme.as_str() {
-            "http" | "https" => Ok(Proxy::Http {
-                host,
-                port,
-                username,
-                password,
-            }),
-            // Treat socks5h as socks5 here; tokio-socks will send the domain name to the proxy
-            "socks5" | "socks5h" => Ok(Proxy::Socks5 {
-                host,
-                port,
-                username,
-                password,
-            }),
-            _ => Err(AdapterError::ParseError(format!(
-                "Unsupported proxy scheme: {scheme} (use http://, https://, socks5://, socks5h://)"
-            ))),
+impl ProxyScheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProxyScheme::Http => "http",
+            ProxyScheme::Https => "https",
+            ProxyScheme::Socks5 => "socks5",
+            ProxyScheme::Socks5h => "socks5h",
         }
     }
 
+    pub const ALL: [ProxyScheme; 4] = [
+        ProxyScheme::Http,
+        ProxyScheme::Https,
+        ProxyScheme::Socks5,
+        ProxyScheme::Socks5h,
+    ];
+}
+
+impl std::fmt::Display for ProxyScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ProxyAuth {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Proxy {
+    pub scheme: ProxyScheme,
+    pub host: String,
+    pub port: u16,
+    pub auth: Option<ProxyAuth>,
+}
+
+impl Proxy {
     pub async fn connect_tcp(
         &self,
         target_host: &str,
         target_port: u16,
     ) -> Result<TcpStream, AdapterError> {
-        match self {
-            Proxy::Http {
-                host,
-                port,
-                username,
-                password,
-            } => {
-                let proxy_addr = format!("{host}:{port}");
+        match self.scheme {
+            ProxyScheme::Http => {
+                let proxy_addr = format!("{}:{}", self.host, self.port);
 
                 let mut stream = TcpStream::connect(&proxy_addr)
                     .await
                     .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-                let proxy_auth = http_basic_proxy_auth(username.as_deref(), password.as_deref())?;
+                let proxy_auth = match &self.auth {
+                    None => None,
+                    Some(ProxyAuth { username, password }) => {
+                        let token = BASE64.encode(format!("{username}:{password}"));
+                        Some(format!("Basic {token}"))
+                    }
+                };
+
                 http_connect_tunnel(&mut stream, target_host, target_port, proxy_auth.as_deref())
                     .await?;
 
                 Ok(stream)
             }
-            Proxy::Socks5 {
-                host,
-                port,
-                username,
-                password,
-            } => {
-                let proxy_addr = (host.as_str(), *port);
+            ProxyScheme::Https => Err(AdapterError::WebsocketError(
+                "HTTPS proxy scheme is not supported for websocket connections (would require TLS-to-proxy + CONNECT). Use http://, socks5://, or implement HTTPS-proxy tunneling."
+                    .to_string(),
+            )),
+            // Treat socks5h as socks5; tokio-socks will send the domain name to the proxy
+            ProxyScheme::Socks5 | ProxyScheme::Socks5h => {
+                let proxy_addr = (self.host.as_str(), self.port);
                 let target_addr = (target_host, target_port);
 
-                let stream = match (username.as_deref(), password.as_deref()) {
-                    (Some(u), Some(p)) => tokio_socks::tcp::Socks5Stream::connect_with_password(
-                        proxy_addr,
-                        target_addr,
-                        u,
-                        p,
-                    )
-                    .await
-                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
-                    .into_inner(),
-
-                    (None, None) => {
-                        tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
-                            .await
-                            .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
-                            .into_inner()
+                let stream = match self.auth.as_ref() {
+                    Some(ProxyAuth { username, password }) => {
+                        tokio_socks::tcp::Socks5Stream::connect_with_password(
+                            proxy_addr,
+                            target_addr,
+                            username,
+                            password,
+                        )
+                        .await
+                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
+                        .into_inner()
                     }
-
-                    _ => {
-                        return Err(AdapterError::ParseError(
-                            "SOCKS5 proxy auth requires both username and password".to_string(),
-                        ));
-                    }
+                    None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
+                        .await
+                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
+                        .into_inner(),
                 };
 
                 Ok(stream)
             }
         }
     }
+
+    pub fn try_from_str_strict(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+
+        if s.is_empty() {
+            return Err("Proxy URL is empty".to_string());
+        }
+        if !s.contains("://") {
+            return Err(format!(
+                "Invalid proxy value (missing scheme): {s:?}. Expected e.g. http://127.0.0.1:8080 or socks5h://127.0.0.1:1080."
+            ));
+        }
+
+        let url = url::Url::parse(s).map_err(|e| format!("Invalid proxy URL: {e}"))?;
+        Self::try_from_url(&url)
+    }
+
+    pub fn try_from_url(url: &url::Url) -> Result<Self, String> {
+        let scheme_str = url.scheme().to_ascii_lowercase();
+        let scheme = match scheme_str.as_str() {
+            "http" => ProxyScheme::Http,
+            "https" => ProxyScheme::Https,
+            "socks5" => ProxyScheme::Socks5,
+            "socks5h" => ProxyScheme::Socks5h,
+            _ => {
+                return Err(format!(
+                    "Unsupported proxy scheme: {scheme_str} (use http://, https://, socks5://, socks5h://)"
+                ));
+            }
+        };
+
+        let host = url
+            .host_str()
+            .ok_or_else(|| "Proxy host missing".to_string())?
+            .to_string();
+
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "Proxy port missing".to_string())?;
+
+        let username = (!url.username().is_empty()).then(|| url.username().to_string());
+        let password = url.password().map(|s| s.to_string());
+
+        let auth = match (username, password) {
+            (None, None) => None,
+            (Some(username), Some(password)) => Some(ProxyAuth { username, password }),
+            _ => return Err("Proxy auth requires both username and password".to_string()),
+        };
+
+        Ok(Self {
+            scheme,
+            host,
+            port,
+            auth,
+        })
+    }
+
+    pub fn to_url_string(&self) -> String {
+        let mut url = url::Url::parse(&format!(
+            "{}://{}:{}/",
+            self.scheme.as_str(),
+            self.host,
+            self.port
+        ))
+        .expect("Proxy::to_url_string: invalid components");
+
+        if let Some(auth) = &self.auth {
+            let _ = url.set_username(&auth.username);
+            let _ = url.set_password(Some(&auth.password));
+        }
+
+        let mut out = url.to_string();
+        if out.ends_with('/') {
+            out.pop();
+        }
+        out
+    }
+
+    pub fn to_url_string_no_auth(&self) -> String {
+        format!("{}://{}:{}", self.scheme.as_str(), self.host, self.port)
+    }
+
+    pub fn to_url_string_redacted(&self) -> String {
+        if self.auth.is_some() {
+            format!(
+                "{}://{}:***@{}:{}",
+                self.scheme.as_str(),
+                self.auth.as_ref().unwrap().username,
+                self.host,
+                self.port
+            )
+        } else {
+            self.to_url_string_no_auth()
+        }
+    }
 }
 
 impl std::fmt::Display for Proxy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Proxy::Http { host, port, .. } => write!(f, "http://{host}:{port}"),
-            Proxy::Socks5 { host, port, .. } => write!(f, "socks5://{host}:{port}"),
-        }
+        f.write_str(&self.to_url_string_redacted())
     }
 }
 
-fn proxy_url_from_env() -> Option<String> {
-    std::env::var("FLOWSURFACE_PROXY")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("HTTPS_PROXY").ok())
-        .or_else(|| std::env::var("HTTP_PROXY").ok())
-        .filter(|s| !s.trim().is_empty())
+// Single runtime source of truth (set by UI/persisted config at startup)
+static RUNTIME_PROXY_CFG: OnceLock<Option<Proxy>> = OnceLock::new();
+
+/// Set the runtime proxy config (intended to be called once, early at startup)
+pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
+    RUNTIME_PROXY_CFG
+        .set(cfg.clone())
+        .expect("Proxy runtime already initialized (set_runtime_proxy_cfg called twice)");
+
+    match cfg {
+        Some(c) => log::info!("Runtime proxy config set: {}", c.to_url_string_redacted()),
+        None => log::info!("Runtime proxy config set: direct (no proxy)"),
+    }
 }
 
-/// Enforce that proxy is provided as a full URL with scheme.
-/// Examples:
-/// - http://127.0.0.1:8080
-/// - http://user:pass@127.0.0.1:8080
-/// - socks5h://127.0.0.1:1080
-fn parse_proxy_url_strict(s: &str) -> Result<Url, AdapterError> {
-    let s = s.trim();
-
-    // Require explicit scheme to avoid the common "1080 is SOCKS but user typed http://" mismatch.
-    if !s.contains("://") {
-        return Err(AdapterError::ParseError(format!(
-            "Invalid proxy value (missing scheme): {s:?}. \
-Expected e.g. http://127.0.0.1:8080 or socks5h://127.0.0.1:1080 (port 1080 is often SOCKS5)."
-        )));
-    }
-
-    Url::parse(s).map_err(|e| AdapterError::ParseError(format!("Invalid proxy URL: {e}")))
+pub fn runtime_proxy_cfg() -> Option<Proxy> {
+    RUNTIME_PROXY_CFG
+        .get()
+        .expect("Proxy runtime not initialized. Call set_runtime_proxy_cfg(Some(..)|None) before any network use.")
+        .clone()
 }
 
 pub fn apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(proxy_url) = proxy_url_from_env() else {
+    let Some(cfg) = runtime_proxy_cfg() else {
         return builder;
     };
 
-    let parsed = match parse_proxy_url_strict(&proxy_url) {
-        Ok(u) => u,
-        Err(e) => {
-            log::warn!("Ignoring invalid FLOWSURFACE_PROXY: {e}");
-            return builder;
-        }
-    };
-
-    let scheme = parsed.scheme().to_ascii_lowercase();
-    let proxy = match reqwest::Proxy::all(parsed.as_str()) {
+    let proxy = match reqwest::Proxy::all(cfg.to_url_string_no_auth()) {
         Ok(p) => p,
         Err(e) => {
-            log::warn!("Failed to configure proxy (scheme={}): {}", scheme, e);
-            return builder;
-        }
-    };
-
-    let username = (!parsed.username().is_empty()).then(|| parsed.username().to_string());
-    let password = parsed.password().map(|s| s.to_string());
-
-    let proxy = match scheme.as_str() {
-        "http" | "https" => match (username.as_deref(), password.as_deref()) {
-            (None, None) => proxy,
-            (Some(u), Some(p)) => proxy.basic_auth(u, p),
-            _ => {
-                log::warn!(
-                    "HTTP proxy auth requires both username and password (credentials ignored)"
-                );
-                proxy
-            }
-        },
-        "socks5" | "socks5h" => {
-            if matches!(
-                (username.as_deref(), password.as_deref()),
-                (Some(_), None) | (None, Some(_))
-            ) {
-                log::warn!("SOCKS5 proxy auth requires both username and password");
-            }
-            proxy
-        }
-        _ => {
             log::warn!(
-                "Unsupported proxy scheme for REST: {} (use http(s):// or socks5(h)://)",
-                scheme
+                "Failed to configure proxy (scheme={}): {}",
+                cfg.scheme.as_str(),
+                e
             );
             return builder;
         }
     };
 
-    log::info!(
-        "Using proxy for REST: scheme={} host={:?} port={:?}",
-        scheme,
-        parsed.host_str(),
-        parsed.port()
-    );
-    builder.proxy(proxy)
-}
-
-pub fn proxy_from_env() -> Option<Proxy> {
-    let s = proxy_url_from_env()?;
-
-    let url = match parse_proxy_url_strict(&s) {
-        Ok(u) => u,
-        Err(e) => {
-            log::warn!("Ignoring invalid FLOWSURFACE_PROXY: {e}");
-            return None;
+    let proxy = match (cfg.scheme, cfg.auth.as_ref()) {
+        (ProxyScheme::Http | ProxyScheme::Https, Some(auth)) => {
+            proxy.basic_auth(&auth.username, &auth.password)
         }
+        _ => proxy,
     };
 
-    match Proxy::from_url(&url) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            log::warn!("Ignoring unsupported FLOWSURFACE_PROXY: {e}");
-            None
-        }
-    }
-}
-
-fn http_basic_proxy_auth(
-    username: Option<&str>,
-    password: Option<&str>,
-) -> Result<Option<String>, AdapterError> {
-    match (username, password) {
-        (None, None) => Ok(None),
-        (Some(u), Some(p)) => {
-            let token = BASE64.encode(format!("{u}:{p}"));
-            Ok(Some(format!("Basic {token}")))
-        }
-        _ => Err(AdapterError::ParseError(
-            "HTTP proxy auth requires both username and password".to_string(),
-        )),
-    }
+    log::info!("Using proxy for REST: {}", cfg.to_url_string_redacted());
+    builder.proxy(proxy)
 }
 
 async fn http_connect_tunnel(
@@ -312,54 +319,6 @@ async fn http_connect_tunnel(
         return Err(AdapterError::WebsocketError(format!(
             "Proxy CONNECT failed: {status}"
         )));
-    }
-
-    Ok(())
-}
-
-pub async fn proxy_smoke_test() -> Result<(), AdapterError> {
-    // Don't log credentials
-    let proxy = std::env::var("FLOWSURFACE_PROXY").ok();
-    log::info!(
-        "Proxy smoke test starting. FLOWSURFACE_PROXY set={}",
-        proxy.is_some()
-    );
-
-    // 1) REST (HTTPS)
-    let rest_url = "https://api.binance.com/api/v3/ping";
-    let rest_res = tokio::time::timeout(
-        Duration::from_secs(10),
-        crate::limiter::http_request(rest_url, None, None),
-    )
-    .await;
-
-    match rest_res {
-        Ok(Ok(_body)) => log::info!("Proxy smoke test REST OK: {}", rest_url),
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            return Err(AdapterError::InvalidRequest(format!(
-                "Proxy smoke test REST TIMEOUT (10s): {rest_url}"
-            )));
-        }
-    }
-
-    // 2) WebSocket (Binance uses :9443)
-    let ws_domain = "stream.binance.com";
-    let ws_url = "wss://stream.binance.com:9443/ws/btcusdt@trade";
-    let ws_res = tokio::time::timeout(
-        Duration::from_secs(10),
-        crate::connect::connect_ws(ws_domain, ws_url),
-    )
-    .await;
-
-    match ws_res {
-        Ok(Ok(_ws)) => log::info!("Proxy smoke test WS OK: {}", ws_url),
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            return Err(AdapterError::WebsocketError(format!(
-                "Proxy smoke test WS TIMEOUT (10s): {ws_url}"
-            )));
-        }
     }
 
     Ok(())

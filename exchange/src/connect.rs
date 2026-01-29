@@ -50,7 +50,7 @@ where
 }
 
 async fn setup_tcp(domain: &str, target_port: u16) -> Result<TcpStream, AdapterError> {
-    if let Some(proxy) = super::proxy::proxy_from_env() {
+    if let Some(proxy) = super::proxy::runtime_proxy_cfg() {
         log::info!("Using proxy for WS: {}", proxy);
         return proxy.connect_tcp(domain, target_port).await;
     }
