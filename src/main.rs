@@ -485,6 +485,18 @@ impl Flowsurface {
                             event: msg,
                         });
                     }
+                    Some(dashboard::sidebar::Action::SyncToAllPanes(ticker_info)) => {
+                        let main_window_id = self.main_window.id;
+
+                        let task = self
+                            .active_dashboard_mut()
+                            .switch_all_panes_to_ticker(main_window_id, ticker_info);
+
+                        return task.map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        });
+                    }
                     Some(dashboard::sidebar::Action::ErrorOccurred(err)) => {
                         self.notifications.push(Toast::error(err.to_string()));
                     }
