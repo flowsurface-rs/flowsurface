@@ -477,6 +477,10 @@ impl Flowsurface {
 
                 match action {
                     Some(network_manager::Action::ApplyProxy) => {
+                        if let Some(proxy) = self.network.proxy_cfg() {
+                            data::config::proxy::save_proxy_auth(&proxy);
+                        }
+
                         let main_window = self.main_window.id;
                         let dashboard = self.active_dashboard_mut();
 
@@ -1124,6 +1128,11 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
+        let proxy_cfg_persisted = self.network.proxy_cfg().map(|mut p| {
+            p.auth = None;
+            p
+        });
+
         let state = data::State::from_parts(
             layouts,
             self.theme.clone(),
@@ -1134,7 +1143,7 @@ impl Flowsurface {
             self.ui_scale_factor,
             audio_cfg,
             self.volume_size_unit,
-            self.network.proxy_cfg(),
+            proxy_cfg_persisted,
         );
 
         match serde_json::to_string(&state) {

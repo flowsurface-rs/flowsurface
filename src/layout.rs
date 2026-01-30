@@ -332,6 +332,15 @@ pub fn load_saved_state() -> SavedState {
             exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
             exchange::set_preferred_currency(state.size_in_quote_ccy);
 
+            // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
+            let mut proxy_cfg = state.proxy_cfg;
+            if let Some(proxy) = proxy_cfg.as_mut()
+                && proxy.auth.is_none()
+                && let Some(auth) = data::config::proxy::load_proxy_auth(proxy)
+            {
+                proxy.auth = Some(auth);
+            }
+
             SavedState {
                 theme: state.selected_theme,
                 custom_theme: state.custom_theme,
@@ -342,7 +351,7 @@ pub fn load_saved_state() -> SavedState {
                 scale_factor: state.scale_factor,
                 audio_cfg: state.audio_cfg,
                 volume_size_unit: state.size_in_quote_ccy,
-                proxy_cfg: state.proxy_cfg,
+                proxy_cfg,
             }
         }
         Err(e) => {
