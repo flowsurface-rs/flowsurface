@@ -238,7 +238,7 @@ pub fn runtime_proxy_cfg() -> Option<Proxy> {
         .clone()
 }
 
-pub fn apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     let Some(cfg) = runtime_proxy_cfg() else {
         return builder;
     };

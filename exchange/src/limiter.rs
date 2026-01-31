@@ -6,27 +6,16 @@ use serde_json::Value;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-pub static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     let builder = Client::builder();
-    let builder = super::proxy::apply_proxy(builder);
+    let builder = super::proxy::try_apply_proxy(builder);
 
     builder
         .build()
         .expect("Failed to build reqwest HTTP client")
 });
 
-pub trait RateLimiter: Send + Sync {
-    /// Prepare for a request with given weight. Returns wait time if needed.
-    fn prepare_request(&mut self, weight: usize) -> Option<Duration>;
-
-    /// Update the limiter with response data (e.g., rate limit headers)
-    fn update_from_response(&mut self, response: &Response, weight: usize);
-
-    /// Check if response indicates rate limiting and should exit
-    fn should_exit_on_response(&self, response: &Response) -> bool;
-}
-
-/// Non-limited request helper
+/// Non-limited requests(for simple one-off fetches like exchange info)
 pub async fn http_request(
     url: &str,
     method: Option<Method>,
@@ -53,55 +42,15 @@ pub async fn http_request(
     response.text().await.map_err(AdapterError::FetchError)
 }
 
-/// Non-limited parse helper
-#[allow(dead_code)]
-pub async fn http_parse<V>(
-    url: &str,
-    method: Option<Method>,
-    json_body: Option<&Value>,
-) -> Result<V, AdapterError>
-where
-    V: serde::de::DeserializeOwned,
-{
-    let body = http_request(url, method, json_body).await?;
-    let trimmed = body.trim();
+pub trait RateLimiter: Send + Sync {
+    /// Prepare for a request with given weight. Returns wait time if needed
+    fn prepare_request(&mut self, weight: usize) -> Option<Duration>;
 
-    let body_preview = |body: &str, n: usize| {
-        let trimmed = body.trim();
-        let mut preview = trimmed.chars().take(n).collect::<String>();
-        if trimmed.len() > n {
-            preview.push('…');
-        }
-        preview
-    };
+    /// Update the limiter with response data (e.g., rate limit headers)
+    fn update_from_response(&mut self, response: &Response, weight: usize);
 
-    if trimmed.is_empty() {
-        let msg = format!("Empty response body | url={url}");
-        log::error!("{}", msg);
-        return Err(AdapterError::ParseError(msg));
-    }
-    if trimmed.starts_with('<') {
-        let msg = format!(
-            "Non-JSON (HTML?) response | url={} | len={} | preview={:?}",
-            url,
-            body.len(),
-            body_preview(&body, 200)
-        );
-        log::error!("{}", msg);
-        return Err(AdapterError::ParseError(msg));
-    }
-
-    serde_json::from_str(&body).map_err(|e| {
-        let msg = format!(
-            "JSON parse failed: {} | url={} | response_len={} | preview={:?}",
-            e,
-            url,
-            body.len(),
-            body_preview(&body, 200)
-        );
-        log::error!("{}", msg);
-        AdapterError::ParseError(msg)
-    })
+    /// Check if response indicates rate limiting and should exit
+    fn should_exit_on_response(&self, response: &Response) -> bool;
 }
 
 pub async fn http_request_with_limiter<L: RateLimiter>(
