@@ -9,7 +9,6 @@ use hyper::{
     upgrade::Upgraded,
 };
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
@@ -32,9 +31,18 @@ pub async fn connect_ws(
         AdapterError::InvalidRequest("Missing port for websocket URL".to_string())
     })?;
 
-    let tcp_stream = setup_tcp(domain, target_port).await?;
-    let tls_stream = upgrade_to_tls(domain, tcp_stream).await?;
-    upgrade_to_websocket(domain, tls_stream, url).await
+    let stream = setup_tcp(domain, target_port).await?;
+
+    match parsed.scheme() {
+        "wss" => {
+            let tls_stream = upgrade_to_tls(domain, stream).await?;
+            upgrade_to_websocket(domain, tls_stream, &parsed).await
+        }
+        "ws" => upgrade_to_websocket(domain, stream, &parsed).await,
+        _ => Err(AdapterError::InvalidRequest(
+            "Invalid scheme for websocket URL".to_string(),
+        )),
+    }
 }
 
 struct SpawnExecutor;
@@ -49,19 +57,24 @@ where
     }
 }
 
-async fn setup_tcp(domain: &str, target_port: u16) -> Result<TcpStream, AdapterError> {
+async fn setup_tcp(
+    domain: &str,
+    target_port: u16,
+) -> Result<super::proxy::ProxyStream, AdapterError> {
     if let Some(proxy) = super::proxy::runtime_proxy_cfg() {
         log::info!("Using proxy for WS: {}", proxy);
         return proxy.connect_tcp(domain, target_port).await;
     }
 
     let addr = format!("{domain}:{target_port}");
-    TcpStream::connect(&addr)
+    let tcp = tokio::net::TcpStream::connect(&addr)
         .await
-        .map_err(|e| AdapterError::WebsocketError(e.to_string()))
+        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+    Ok(super::proxy::ProxyStream::Plain(tcp))
 }
 
-fn tls_connector() -> Result<TlsConnector, AdapterError> {
+pub fn tls_connector() -> Result<TlsConnector, AdapterError> {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
 
     root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
@@ -80,28 +93,38 @@ fn tls_connector() -> Result<TlsConnector, AdapterError> {
     Ok(TlsConnector::from(std::sync::Arc::new(config)))
 }
 
-async fn upgrade_to_tls(
+async fn upgrade_to_tls<S>(
     domain: &str,
-    tcp_stream: TcpStream,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, AdapterError> {
+    stream: S,
+) -> Result<tokio_rustls::client::TlsStream<S>, AdapterError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let domain: tokio_rustls::rustls::ServerName =
         tokio_rustls::rustls::ServerName::try_from(domain)
             .map_err(|_| AdapterError::ParseError("invalid dnsname".to_string()))?;
 
     tls_connector()?
-        .connect(domain, tcp_stream)
+        .connect(domain, stream)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))
 }
 
-async fn upgrade_to_websocket(
+async fn upgrade_to_websocket<S>(
     domain: &str,
-    tls_stream: tokio_rustls::client::TlsStream<TcpStream>,
-    url: &str,
-) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+    stream: S,
+    parsed: &Url,
+) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let path = parsed.path();
+    let query = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let path_and_query = format!("{path}{query}");
+
     let req: Request<Empty<Bytes>> = Request::builder()
         .method("GET")
-        .uri(url)
+        .uri(path_and_query)
         .header("Host", domain)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "upgrade")
@@ -113,7 +136,7 @@ async fn upgrade_to_websocket(
         .body(Empty::<Bytes>::new())
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-    let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream)
+    let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 

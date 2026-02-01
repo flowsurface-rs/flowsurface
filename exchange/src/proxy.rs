@@ -2,12 +2,67 @@ use crate::adapter::AdapterError;
 
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::TcpStream,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use std::sync::OnceLock;
+use std::{
+    pin::Pin,
+    sync::OnceLock,
+    task::{Context, Poll},
+};
+
+use tokio_rustls::{
+    TlsConnector,
+    rustls::{ClientConfig, OwnedTrustAnchor},
+};
+
+#[derive(Debug)]
+pub enum ProxyStream {
+    Plain(TcpStream),
+    TlsToProxy(tokio_rustls::client::TlsStream<TcpStream>),
+}
+
+impl AsyncRead for ProxyStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            ProxyStream::TlsToProxy(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for ProxyStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_write(cx, data),
+            ProxyStream::TlsToProxy(s) => Pin::new(s).poll_write(cx, data),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            ProxyStream::TlsToProxy(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            ProxyStream::TlsToProxy(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum ProxyScheme {
@@ -60,7 +115,7 @@ impl Proxy {
         &self,
         target_host: &str,
         target_port: u16,
-    ) -> Result<TcpStream, AdapterError> {
+    ) -> Result<ProxyStream, AdapterError> {
         match self.scheme {
             ProxyScheme::Http => {
                 let proxy_addr = format!("{}:{}", self.host, self.port);
@@ -80,12 +135,40 @@ impl Proxy {
                 http_connect_tunnel(&mut stream, target_host, target_port, proxy_auth.as_deref())
                     .await?;
 
-                Ok(stream)
+                Ok(ProxyStream::Plain(stream))
             }
-            ProxyScheme::Https => Err(AdapterError::WebsocketError(
-                "HTTPS proxy scheme is not supported for websocket connections (would require TLS-to-proxy + CONNECT). Use http://, socks5://, or implement HTTPS-proxy tunneling."
-                    .to_string(),
-            )),
+
+            ProxyScheme::Https => {
+                let proxy_addr = format!("{}:{}", self.host, self.port);
+
+                let tcp = TcpStream::connect(&proxy_addr)
+                    .await
+                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+                let server_name: tokio_rustls::rustls::ServerName =
+                    tokio_rustls::rustls::ServerName::try_from(self.host.as_str()).map_err(
+                        |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
+                    )?;
+
+                let mut tls = crate::connect::tls_connector()?
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+                let proxy_auth = match &self.auth {
+                    None => None,
+                    Some(ProxyAuth { username, password }) => {
+                        let token = BASE64.encode(format!("{username}:{password}"));
+                        Some(format!("Basic {token}"))
+                    }
+                };
+
+                http_connect_tunnel(&mut tls, target_host, target_port, proxy_auth.as_deref())
+                    .await?;
+
+                Ok(ProxyStream::TlsToProxy(tls))
+            }
+
             // Treat socks5h as socks5; tokio-socks will send the domain name to the proxy
             ProxyScheme::Socks5 | ProxyScheme::Socks5h => {
                 let proxy_addr = (self.host.as_str(), self.port);
@@ -109,7 +192,7 @@ impl Proxy {
                         .into_inner(),
                 };
 
-                Ok(stream)
+                Ok(ProxyStream::Plain(stream))
             }
         }
     }
@@ -266,12 +349,15 @@ pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilde
     builder.proxy(proxy)
 }
 
-async fn http_connect_tunnel(
-    stream: &mut TcpStream,
+async fn http_connect_tunnel<S>(
+    stream: &mut S,
     target_host: &str,
     target_port: u16,
     proxy_authorization: Option<&str>,
-) -> Result<(), AdapterError> {
+) -> Result<(), AdapterError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut req = format!(
         "CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\nProxy-Connection: keep-alive\r\n"
     );
