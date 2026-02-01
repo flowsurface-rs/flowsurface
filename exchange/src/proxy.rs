@@ -13,15 +13,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, OwnedTrustAnchor},
-};
-
 #[derive(Debug)]
 pub enum ProxyStream {
     Plain(TcpStream),
-    TlsToProxy(tokio_rustls::client::TlsStream<TcpStream>),
+    TlsToProxy(Box<tokio_rustls::client::TlsStream<TcpStream>>),
 }
 
 impl AsyncRead for ProxyStream {
@@ -137,7 +132,6 @@ impl Proxy {
 
                 Ok(ProxyStream::Plain(stream))
             }
-
             ProxyScheme::Https => {
                 let proxy_addr = format!("{}:{}", self.host, self.port);
 
@@ -150,7 +144,7 @@ impl Proxy {
                         |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
                     )?;
 
-                let mut tls = crate::connect::tls_connector()?
+                let mut tls = super::connect::TLS_CONNECTOR
                     .connect(server_name, tcp)
                     .await
                     .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
@@ -166,9 +160,8 @@ impl Proxy {
                 http_connect_tunnel(&mut tls, target_host, target_port, proxy_auth.as_deref())
                     .await?;
 
-                Ok(ProxyStream::TlsToProxy(tls))
+                Ok(ProxyStream::TlsToProxy(Box::new(tls)))
             }
-
             // Treat socks5h as socks5; tokio-socks will send the domain name to the proxy
             ProxyScheme::Socks5 | ProxyScheme::Socks5h => {
                 let proxy_addr = (self.host.as_str(), self.port);

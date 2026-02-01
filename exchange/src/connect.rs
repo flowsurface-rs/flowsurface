@@ -8,14 +8,37 @@ use hyper::{
     header::{CONNECTION, UPGRADE},
     upgrade::Upgraded,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
 };
 use url::Url;
 
-#[allow(clippy::large_enum_variant)]
+use std::sync::LazyLock;
+
+pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
+    LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
+
+fn tls_connector() -> Result<TlsConnector, AdapterError> {
+    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
+
+    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
+
+    let config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    Ok(TlsConnector::from(std::sync::Arc::new(config)))
+}
+
 pub enum State {
     Disconnected,
     Connected(FragmentCollector<TokioIo<Upgraded>>),
@@ -45,18 +68,6 @@ pub async fn connect_ws(
     }
 }
 
-struct SpawnExecutor;
-
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-    Fut: std::future::Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        tokio::task::spawn(fut);
-    }
-}
-
 async fn setup_tcp(
     domain: &str,
     target_port: u16,
@@ -74,25 +85,6 @@ async fn setup_tcp(
     Ok(super::proxy::ProxyStream::Plain(tcp))
 }
 
-pub fn tls_connector() -> Result<TlsConnector, AdapterError> {
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
-
-    let config = ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    Ok(TlsConnector::from(std::sync::Arc::new(config)))
-}
-
 async fn upgrade_to_tls<S>(
     domain: &str,
     stream: S,
@@ -104,7 +96,7 @@ where
         tokio_rustls::rustls::ServerName::try_from(domain)
             .map_err(|_| AdapterError::ParseError("invalid dnsname".to_string()))?;
 
-    tls_connector()?
+    TLS_CONNECTOR
         .connect(domain, stream)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))
@@ -118,9 +110,14 @@ async fn upgrade_to_websocket<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let path = parsed.path();
-    let query = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
-    let path_and_query = format!("{path}{query}");
+    let mut path_and_query = parsed.path().to_string();
+    if let Some(q) = parsed.query() {
+        path_and_query.push('?');
+        path_and_query.push_str(q);
+    }
+    if path_and_query.is_empty() {
+        path_and_query.push('/');
+    }
 
     let req: Request<Empty<Bytes>> = Request::builder()
         .method("GET")
@@ -136,7 +133,8 @@ where
         .body(Empty::<Bytes>::new())
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-    let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
+    let exec = TokioExecutor::new();
+    let (ws, _) = fastwebsockets::handshake::client(&exec, req, stream)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
