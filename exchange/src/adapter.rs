@@ -7,22 +7,61 @@ use crate::{
 use enum_map::{Enum, EnumMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 
 pub mod binance;
 pub mod bybit;
 pub mod hyperliquid;
 pub mod okex;
 
+/// Persisted stream resolution to avoid loop retries
+pub const RESOLVE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedStream {
     /// Streams that are persisted but needs to be resolved for use
-    Waiting(Vec<PersistStreamKind>),
+    Waiting {
+        streams: Vec<PersistStreamKind>,
+        last_attempt: Option<Instant>,
+    },
     /// Streams that are active and ready to use, but can't persist
     Ready(Vec<StreamKind>),
 }
 
 impl ResolvedStream {
+    pub fn waiting(streams: Vec<PersistStreamKind>) -> Self {
+        ResolvedStream::Waiting {
+            streams,
+            last_attempt: None,
+        }
+    }
+
+    /// Returns streams to resolve only if the retry interval has elapsed
+    pub fn due_streams_to_resolve(&mut self, now: Instant) -> Option<Vec<PersistStreamKind>> {
+        let ResolvedStream::Waiting {
+            streams,
+            last_attempt,
+        } = self
+        else {
+            return None;
+        };
+
+        if streams.is_empty() {
+            return None;
+        }
+
+        let should_retry = last_attempt
+            .map(|t| now.duration_since(t) >= RESOLVE_RETRY_INTERVAL)
+            .unwrap_or(true);
+
+        if !should_retry {
+            return None;
+        }
+
+        *last_attempt = Some(now);
+        Some(streams.clone())
+    }
+
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
         match self {
             ResolvedStream::Ready(existing) => existing.iter().any(|s| s == stream),
@@ -56,7 +95,7 @@ impl ResolvedStream {
 
     pub fn into_waiting(self) -> Vec<PersistStreamKind> {
         match self {
-            ResolvedStream::Waiting(streams) => streams,
+            ResolvedStream::Waiting { streams, .. } => streams,
             ResolvedStream::Ready(streams) => streams
                 .into_iter()
                 .map(|s| match s {
@@ -64,54 +103,20 @@ impl ResolvedStream {
                         ticker_info,
                         depth_aggr,
                         push_freq,
-                    } => {
-                        let persist_depth = PersistDepth {
-                            ticker: ticker_info.ticker,
-                            depth_aggr,
-                            push_freq,
-                        };
-                        PersistStreamKind::DepthAndTrades(persist_depth)
-                    }
+                    } => PersistStreamKind::DepthAndTrades(PersistDepth {
+                        ticker: ticker_info.ticker,
+                        depth_aggr,
+                        push_freq,
+                    }),
                     StreamKind::Kline {
                         ticker_info,
                         timeframe,
-                    } => {
-                        let persist_kline = PersistKline {
-                            ticker: ticker_info.ticker,
-                            timeframe,
-                        };
-                        PersistStreamKind::Kline(persist_kline)
-                    }
+                    } => PersistStreamKind::Kline(PersistKline {
+                        ticker: ticker_info.ticker,
+                        timeframe,
+                    }),
                 })
                 .collect(),
-        }
-    }
-
-    pub fn waiting_to_resolve(&self) -> Option<&[PersistStreamKind]> {
-        match self {
-            ResolvedStream::Waiting(streams) => Some(streams),
-            _ => None,
-        }
-    }
-
-    pub fn ready_tickers(&self) -> Option<Vec<TickerInfo>> {
-        match self {
-            ResolvedStream::Ready(streams) => {
-                Some(streams.iter().map(|s| s.ticker_info()).collect())
-            }
-            ResolvedStream::Waiting(_) => None,
-        }
-    }
-}
-
-impl IntoIterator for &ResolvedStream {
-    type Item = StreamKind;
-    type IntoIter = std::vec::IntoIter<StreamKind>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            ResolvedStream::Ready(streams) => streams.clone().into_iter(),
-            ResolvedStream::Waiting(_) => vec![].into_iter(),
         }
     }
 }

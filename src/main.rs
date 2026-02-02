@@ -299,6 +299,15 @@ impl Flowsurface {
                         Some(dashboard::Event::ResolveStreams { pane_id, streams }) => {
                             let tickers_info = self.sidebar.tickers_info();
 
+                            let has_any_ticker_info =
+                                tickers_info.values().any(|opt| opt.is_some());
+                            if !has_any_ticker_info {
+                                log::debug!(
+                                    "Deferring persisted stream resolution for pane {pane_id}: ticker metadata not loaded yet"
+                                );
+                                return Task::none();
+                            }
+
                             let resolved_streams =
                                 streams.into_iter().try_fold(vec![], |mut acc, persist| {
                                     let resolver = |t: &exchange::Ticker| {
@@ -311,8 +320,7 @@ impl Flowsurface {
                                             Ok(acc)
                                         }
                                         Err(err) => Err(format!(
-                                            "Failed to resolve persisted stream: {}",
-                                            err
+                                            "Persisted stream still not resolvable: {err}"
                                         )),
                                     }
                                 });
@@ -331,7 +339,8 @@ impl Flowsurface {
                                     }
                                 }
                                 Err(err) => {
-                                    log::warn!("{err}",);
+                                    // This is typically a transient state (e.g. partial metadata, stale symbol)
+                                    log::debug!("{err}");
                                     Task::none()
                                 }
                             }
