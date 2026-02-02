@@ -84,7 +84,7 @@ impl NetworkManager {
 
         Self {
             proxy_url,
-            effective_proxy_cfg: proxy_cfg,
+            effective_proxy_cfg: exchange::proxy::runtime_proxy_cfg(),
             error: None,
             hide_password: true,
             scheme,
@@ -148,11 +148,16 @@ impl NetworkManager {
                 self.confirming_apply = false;
 
                 match self.build_proxy_cfg_from_parts() {
-                    Ok(Some(cfg)) => {
-                        self.proxy_url = Some(cfg.to_url_string());
-                        self.error = None;
-                        return Some(Action::ApplyProxy);
-                    }
+                    Ok(Some(cfg)) => match cfg.try_to_url_string() {
+                        Ok(url) => {
+                            self.proxy_url = Some(url);
+                            self.error = None;
+                            return Some(Action::ApplyProxy);
+                        }
+                        Err(e) => {
+                            self.error = Some(e);
+                        }
+                    },
                     Ok(None) => {
                         self.proxy_url = None;
                         self.error = None;
@@ -201,6 +206,9 @@ impl NetworkManager {
         ];
 
         let proxy_settings = {
+            let saved_cfg = self.proxy_cfg();
+            let is_pending = { saved_cfg != self.effective_proxy_cfg };
+
             let applied_proxy = {
                 let effective = self
                     .effective_proxy_cfg
@@ -208,8 +216,7 @@ impl NetworkManager {
                     .map(|c| c.to_url_string_redacted())
                     .unwrap_or_else(|| "None (direct connection)".to_string());
 
-                let saved_cfg = self.proxy_cfg();
-                let pending = if saved_cfg != self.effective_proxy_cfg {
+                let pending_url = if is_pending {
                     Some(
                         saved_cfg
                             .as_ref()
@@ -228,7 +235,7 @@ impl NetworkManager {
                 ]
                 .spacing(4);
 
-                if let Some(pending) = pending {
+                if let Some(pending) = pending_url {
                     lines = lines.push(
                         row![text("Pending:").size(11), text(pending).size(12),]
                             .spacing(4)
@@ -239,13 +246,15 @@ impl NetworkManager {
                 lines
             };
 
-            let scheme = row![
-                iced::widget::space::horizontal(),
-                text("Scheme:"),
-                pick_list(ProxyScheme::ALL, Some(self.scheme), Message::SchemeChanged)
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center);
+            let scheme = {
+                row![
+                    iced::widget::space::horizontal(),
+                    text("Scheme:"),
+                    pick_list(ProxyScheme::ALL, Some(self.scheme), Message::SchemeChanged)
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center)
+            };
 
             let host = row![
                 iced::widget::space::horizontal(),
@@ -330,7 +339,7 @@ impl NetworkManager {
                     iced::widget::space::horizontal(),
                     container(
                         row![
-                            text("Changes will take effect after a restart."),
+                            text("Changes will take effect after a restart"),
                             confirm_btn(Message::Apply),
                             cancel_btn()
                         ]
@@ -341,8 +350,19 @@ impl NetworkManager {
                 ]
                 .align_y(iced::Alignment::Center)
             } else {
+                let pending_info = if is_pending {
+                    Some(tooltip(
+                        button("i").style(style::button::info),
+                        Some("Pending changes require a full restart"),
+                        iced::widget::tooltip::Position::Top,
+                    ))
+                } else {
+                    None
+                };
+
                 let mut row_buttons = row![
                     iced::widget::space::horizontal(),
+                    pending_info,
                     button("Apply").on_press(Message::RequestApply),
                 ]
                 .spacing(8);

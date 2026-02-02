@@ -106,90 +106,6 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub async fn connect_tcp(
-        &self,
-        target_host: &str,
-        target_port: u16,
-    ) -> Result<ProxyStream, AdapterError> {
-        match self.scheme {
-            ProxyScheme::Http => {
-                let proxy_addr = format!("{}:{}", self.host, self.port);
-
-                let mut stream = TcpStream::connect(&proxy_addr)
-                    .await
-                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
-
-                let proxy_auth = match &self.auth {
-                    None => None,
-                    Some(ProxyAuth { username, password }) => {
-                        let token = BASE64.encode(format!("{username}:{password}"));
-                        Some(format!("Basic {token}"))
-                    }
-                };
-
-                http_connect_tunnel(&mut stream, target_host, target_port, proxy_auth.as_deref())
-                    .await?;
-
-                Ok(ProxyStream::Plain(stream))
-            }
-            ProxyScheme::Https => {
-                let proxy_addr = format!("{}:{}", self.host, self.port);
-
-                let tcp = TcpStream::connect(&proxy_addr)
-                    .await
-                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
-
-                let server_name: tokio_rustls::rustls::ServerName =
-                    tokio_rustls::rustls::ServerName::try_from(self.host.as_str()).map_err(
-                        |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
-                    )?;
-
-                let mut tls = super::connect::TLS_CONNECTOR
-                    .connect(server_name, tcp)
-                    .await
-                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
-
-                let proxy_auth = match &self.auth {
-                    None => None,
-                    Some(ProxyAuth { username, password }) => {
-                        let token = BASE64.encode(format!("{username}:{password}"));
-                        Some(format!("Basic {token}"))
-                    }
-                };
-
-                http_connect_tunnel(&mut tls, target_host, target_port, proxy_auth.as_deref())
-                    .await?;
-
-                Ok(ProxyStream::TlsToProxy(Box::new(tls)))
-            }
-            // Treat socks5h as socks5; tokio-socks will send the domain name to the proxy
-            ProxyScheme::Socks5 | ProxyScheme::Socks5h => {
-                let proxy_addr = (self.host.as_str(), self.port);
-                let target_addr = (target_host, target_port);
-
-                let stream = match self.auth.as_ref() {
-                    Some(ProxyAuth { username, password }) => {
-                        tokio_socks::tcp::Socks5Stream::connect_with_password(
-                            proxy_addr,
-                            target_addr,
-                            username,
-                            password,
-                        )
-                        .await
-                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
-                        .into_inner()
-                    }
-                    None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
-                        .await
-                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
-                        .into_inner(),
-                };
-
-                Ok(ProxyStream::Plain(stream))
-            }
-        }
-    }
-
     pub fn try_from_str_strict(s: &str) -> Result<Self, String> {
         let s = s.trim();
 
@@ -246,29 +162,66 @@ impl Proxy {
         })
     }
 
-    pub fn to_url_string(&self) -> String {
+    fn host_with_ipv6_brackets(host: &str) -> String {
+        // If `host` looks like an IPv6 literal and is not already bracketed,
+        // add brackets to produce a valid URL authority / socket address.
+        let h = host.trim();
+        if h.contains(':') && !h.starts_with('[') && !h.ends_with(']') {
+            format!("[{h}]")
+        } else {
+            h.to_string()
+        }
+    }
+
+    fn host_for_url_authority(&self) -> String {
+        // url::Url::host_str() returns IPv6 without brackets (e.g. "2001:db8::1"),
+        // but URL authority form requires brackets: "http://[2001:db8::1]:8080".
+        Self::host_with_ipv6_brackets(&self.host)
+    }
+
+    fn host_for_socket_addr(&self) -> String {
+        // Same bracket rule for "host:port" socket strings.
+        Self::host_with_ipv6_brackets(&self.host)
+    }
+
+    pub fn try_to_url_string(&self) -> Result<String, String> {
+        let host = self.host_for_url_authority();
+
         let mut url = url::Url::parse(&format!(
             "{}://{}:{}/",
             self.scheme.as_str(),
-            self.host,
+            host,
             self.port
         ))
-        .expect("Proxy::to_url_string: invalid components");
+        .map_err(|e| format!("Invalid proxy components: {e}"))?;
 
         if let Some(auth) = &self.auth {
-            let _ = url.set_username(&auth.username);
-            let _ = url.set_password(Some(&auth.password));
+            url.set_username(&auth.username)
+                .map_err(|_| "Invalid proxy username".to_string())?;
+            url.set_password(Some(&auth.password))
+                .map_err(|_| "Invalid proxy password".to_string())?;
         }
 
         let mut out = url.to_string();
         if out.ends_with('/') {
             out.pop();
         }
-        out
+        Ok(out)
+    }
+
+    pub fn to_url_string(&self) -> String {
+        match self.try_to_url_string() {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Proxy::to_url_string fallback: {}", e);
+                self.to_url_string_no_auth()
+            }
+        }
     }
 
     pub fn to_url_string_no_auth(&self) -> String {
-        format!("{}://{}:{}", self.scheme.as_str(), self.host, self.port)
+        let host = self.host_for_url_authority();
+        format!("{}://{}:{}", self.scheme.as_str(), host, self.port)
     }
 
     pub fn to_url_string_redacted(&self) -> String {
@@ -284,6 +237,89 @@ impl Proxy {
             self.to_url_string_no_auth()
         }
     }
+
+    pub async fn connect_tcp(
+        &self,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<ProxyStream, AdapterError> {
+        match self.scheme {
+            ProxyScheme::Http => {
+                let proxy_addr = format!("{}:{}", self.host_for_socket_addr(), self.port);
+
+                let mut stream = TcpStream::connect(&proxy_addr)
+                    .await
+                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+                let proxy_auth = match &self.auth {
+                    None => None,
+                    Some(ProxyAuth { username, password }) => {
+                        let token = BASE64.encode(format!("{username}:{password}"));
+                        Some(format!("Basic {token}"))
+                    }
+                };
+
+                http_connect_tunnel(&mut stream, target_host, target_port, proxy_auth.as_deref())
+                    .await?;
+
+                Ok(ProxyStream::Plain(stream))
+            }
+            ProxyScheme::Https => {
+                let proxy_addr = format!("{}:{}", self.host_for_socket_addr(), self.port);
+
+                let tcp = TcpStream::connect(&proxy_addr)
+                    .await
+                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+                let server_name: tokio_rustls::rustls::ServerName =
+                    tokio_rustls::rustls::ServerName::try_from(self.host.as_str()).map_err(
+                        |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
+                    )?;
+
+                let mut tls = super::connect::TLS_CONNECTOR
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+                let proxy_auth = match &self.auth {
+                    None => None,
+                    Some(ProxyAuth { username, password }) => {
+                        let token = BASE64.encode(format!("{username}:{password}"));
+                        Some(format!("Basic {token}"))
+                    }
+                };
+
+                http_connect_tunnel(&mut tls, target_host, target_port, proxy_auth.as_deref())
+                    .await?;
+
+                Ok(ProxyStream::TlsToProxy(Box::new(tls)))
+            }
+            ProxyScheme::Socks5 | ProxyScheme::Socks5h => {
+                let proxy_addr = (self.host.as_str(), self.port);
+                let target_addr = (target_host, target_port);
+
+                let stream = match self.auth.as_ref() {
+                    Some(ProxyAuth { username, password }) => {
+                        tokio_socks::tcp::Socks5Stream::connect_with_password(
+                            proxy_addr,
+                            target_addr,
+                            username,
+                            password,
+                        )
+                        .await
+                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
+                        .into_inner()
+                    }
+                    None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
+                        .await
+                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
+                        .into_inner(),
+                };
+
+                Ok(ProxyStream::Plain(stream))
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for Proxy {
@@ -297,6 +333,22 @@ static RUNTIME_PROXY_CFG: OnceLock<Option<Proxy>> = OnceLock::new();
 
 /// Set the runtime proxy config (intended to be called once, early at startup)
 pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
+    if let Some(existing) = RUNTIME_PROXY_CFG.get() {
+        if existing != cfg {
+            log::warn!(
+                "Attempted to re-set runtime proxy config (ignored). existing={}, requested={}",
+                existing
+                    .as_ref()
+                    .map(|p| p.to_url_string_redacted())
+                    .unwrap_or_else(|| "direct (no proxy)".to_string()),
+                cfg.as_ref()
+                    .map(|p| p.to_url_string_redacted())
+                    .unwrap_or_else(|| "direct (no proxy)".to_string()),
+            );
+        }
+        return;
+    }
+
     RUNTIME_PROXY_CFG
         .set(cfg.clone())
         .expect("Proxy runtime already initialized (set_runtime_proxy_cfg called twice)");
@@ -307,15 +359,19 @@ pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
     }
 }
 
-pub fn runtime_proxy_cfg() -> Option<Proxy> {
+pub fn runtime_proxy_cfg_ref() -> Option<&'static Proxy> {
     RUNTIME_PROXY_CFG
         .get()
         .expect("Proxy runtime not initialized. Call set_runtime_proxy_cfg(Some(..)|None) before any network use.")
-        .clone()
+        .as_ref()
+}
+
+pub fn runtime_proxy_cfg() -> Option<Proxy> {
+    runtime_proxy_cfg_ref().cloned()
 }
 
 pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(cfg) = runtime_proxy_cfg() else {
+    let Some(cfg) = runtime_proxy_cfg_ref() else {
         return builder;
     };
 

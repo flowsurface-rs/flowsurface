@@ -340,6 +340,7 @@ pub fn load_saved_state() -> SavedState {
             {
                 proxy.auth = Some(auth);
             }
+            exchange::proxy::set_runtime_proxy_cfg(&proxy_cfg);
 
             SavedState {
                 theme: state.selected_theme,

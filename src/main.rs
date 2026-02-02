@@ -104,7 +104,6 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
-        exchange::proxy::set_runtime_proxy_cfg(&saved_state.proxy_cfg);
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();
