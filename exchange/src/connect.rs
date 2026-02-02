@@ -15,7 +15,11 @@ use tokio_rustls::{
 };
 use url::Url;
 
-use std::sync::LazyLock;
+use std::{sync::LazyLock, time::Duration};
+
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
@@ -50,6 +54,16 @@ pub async fn connect_ws(
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
     let parsed = Url::parse(url).map_err(|e| AdapterError::InvalidRequest(e.to_string()))?;
 
+    let url_host = parsed
+        .host_str()
+        .ok_or_else(|| AdapterError::InvalidRequest("Missing host in websocket URL".to_string()))?;
+
+    if !url_host.eq_ignore_ascii_case(domain) {
+        return Err(AdapterError::InvalidRequest(format!(
+            "WebSocket URL host mismatch: url_host={url_host}, domain_arg={domain}"
+        )));
+    }
+
     let target_port = parsed.port_or_known_default().ok_or_else(|| {
         AdapterError::InvalidRequest("Missing port for websocket URL".to_string())
     })?;
@@ -58,10 +72,30 @@ pub async fn connect_ws(
 
     match parsed.scheme() {
         "wss" => {
-            let tls_stream = upgrade_to_tls(domain, stream).await?;
-            upgrade_to_websocket(domain, tls_stream, &parsed).await
+            let tls_stream =
+                tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, upgrade_to_tls(domain, stream))
+                    .await
+                    .map_err(|_| {
+                        AdapterError::WebsocketError(
+                            "TLS handshake to target timed out".to_string(),
+                        )
+                    })??;
+
+            tokio::time::timeout(
+                WS_HANDSHAKE_TIMEOUT,
+                upgrade_to_websocket(domain, tls_stream, &parsed),
+            )
+            .await
+            .map_err(|_| {
+                AdapterError::WebsocketError("WebSocket handshake timed out".to_string())
+            })?
         }
-        "ws" => upgrade_to_websocket(domain, stream, &parsed).await,
+        "ws" => tokio::time::timeout(
+            WS_HANDSHAKE_TIMEOUT,
+            upgrade_to_websocket(domain, stream, &parsed),
+        )
+        .await
+        .map_err(|_| AdapterError::WebsocketError("WebSocket handshake timed out".to_string()))?,
         _ => Err(AdapterError::InvalidRequest(
             "Invalid scheme for websocket URL".to_string(),
         )),
@@ -78,8 +112,9 @@ async fn setup_tcp(
     }
 
     let addr = format!("{domain}:{target_port}");
-    let tcp = tokio::net::TcpStream::connect(&addr)
+    let tcp = tokio::time::timeout(TCP_CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&addr))
         .await
+        .map_err(|_| AdapterError::WebsocketError(format!("TCP connect timeout: {addr}")))?
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
     Ok(super::proxy::ProxyStream::Plain(tcp))

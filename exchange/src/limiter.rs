@@ -10,6 +10,10 @@ static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     let builder = Client::builder();
     let builder = super::proxy::try_apply_proxy(builder);
 
+    let builder = builder
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30));
+
     builder
         .build()
         .expect("Failed to build reqwest HTTP client")

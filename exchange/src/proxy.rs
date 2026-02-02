@@ -360,42 +360,30 @@ pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
 }
 
 pub fn runtime_proxy_cfg_ref() -> Option<&'static Proxy> {
-    RUNTIME_PROXY_CFG
-        .get()
-        .expect("Proxy runtime not initialized. Call set_runtime_proxy_cfg(Some(..)|None) before any network use.")
-        .as_ref()
+    match RUNTIME_PROXY_CFG.get() {
+        Some(cfg) => cfg.as_ref(),
+        None => {
+            log::warn!(
+                "Proxy runtime not initialized yet; defaulting to direct (no proxy)\n
+                Call set_runtime_proxy_cfg(Some(..)|None) early at startup."
+            );
+            None
+        }
+    }
 }
 
 pub fn runtime_proxy_cfg() -> Option<Proxy> {
     runtime_proxy_cfg_ref().cloned()
 }
 
-pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(cfg) = runtime_proxy_cfg_ref() else {
-        return builder;
+fn authority_host_port(host: &str, port: u16) -> String {
+    let host = host.trim();
+    let host = if host.contains(':') && !host.starts_with('[') && !host.ends_with(']') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
     };
-
-    let proxy = match reqwest::Proxy::all(cfg.to_url_string_no_auth()) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!(
-                "Failed to configure proxy (scheme={}): {}",
-                cfg.scheme.as_str(),
-                e
-            );
-            return builder;
-        }
-    };
-
-    let proxy = match (cfg.scheme, cfg.auth.as_ref()) {
-        (ProxyScheme::Http | ProxyScheme::Https, Some(auth)) => {
-            proxy.basic_auth(&auth.username, &auth.password)
-        }
-        _ => proxy,
-    };
-
-    log::info!("Using proxy for REST: {}", cfg.to_url_string_redacted());
-    builder.proxy(proxy)
+    format!("{host}:{port}")
 }
 
 async fn http_connect_tunnel<S>(
@@ -407,8 +395,10 @@ async fn http_connect_tunnel<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let authority = authority_host_port(target_host, target_port);
+
     let mut req = format!(
-        "CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\nProxy-Connection: keep-alive\r\n"
+        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: keep-alive\r\n"
     );
 
     if let Some(auth) = proxy_authorization {
@@ -457,4 +447,32 @@ where
     }
 
     Ok(())
+}
+
+pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let Some(cfg) = runtime_proxy_cfg_ref() else {
+        return builder;
+    };
+
+    let proxy = match reqwest::Proxy::all(cfg.to_url_string_no_auth()) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!(
+                "Failed to configure proxy (scheme={}): {}",
+                cfg.scheme.as_str(),
+                e
+            );
+            return builder;
+        }
+    };
+
+    let proxy = match (cfg.scheme, cfg.auth.as_ref()) {
+        (ProxyScheme::Http | ProxyScheme::Https, Some(auth)) => {
+            proxy.basic_auth(&auth.username, &auth.password)
+        }
+        _ => proxy,
+    };
+
+    log::info!("Using proxy for REST: {}", cfg.to_url_string_redacted());
+    builder.proxy(proxy)
 }
