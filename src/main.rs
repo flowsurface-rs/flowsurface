@@ -460,10 +460,9 @@ impl Flowsurface {
                                 .push(Toast::error(format!("Audio still unavailable: {err}")));
                         }
                         modal::audio::UpdateEvent::RetrySucceeded => {
-                            self.notifications
-                                .push(Toast::new(toast::Notification::Info(
-                                    "Audio output re-initialized successfully".to_string(),
-                                )));
+                            self.notifications.push(Toast::info(
+                                "Audio output re-initialized successfully".to_string(),
+                            ));
                         }
                     }
                 }
