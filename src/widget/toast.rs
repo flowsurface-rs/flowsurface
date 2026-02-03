@@ -52,6 +52,14 @@ impl Toast {
             status: Status::Warning,
         }
     }
+
+    pub fn info(body: impl Into<String>) -> Self {
+        Self {
+            title: "Info".to_string(),
+            body: body.into(),
+            status: Status::Primary,
+        }
+    }
 }
 
 pub struct Manager<'a, Message> {
