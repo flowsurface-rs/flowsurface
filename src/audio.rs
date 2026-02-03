@@ -13,12 +13,42 @@ pub const HARD_SELL_SOUND: &str = "fall-on-foam-splash.wav";
 
 const OVERLAP_THRESHOLD: Duration = Duration::from_millis(10);
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum SoundType {
     Buy = 0,
     HardBuy = 1,
     Sell = 2,
     HardSell = 3,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AudioError {
+    #[error("Failed to open audio output: {0}")]
+    OpenOutput(#[from] rodio::StreamError),
+    #[error("Failed to decode sound data: {0}")]
+    Decode(#[from] rodio::decoder::DecoderError),
+    #[error("Failed to create audio sink: {0}")]
+    CreateSink(#[from] rodio::PlayError),
+    #[error("Sound '{0}' not loaded")]
+    NotLoaded(SoundType),
+    #[error("Failed to load default sound '{path}': {source}")]
+    LoadDefaultSound {
+        path: &'static str,
+        #[source]
+        source: Box<AudioError>,
+    },
+}
+
+impl AudioError {
+    /// True when the audio output device is missing/unavailable/lost
+    pub fn is_no_device(&self) -> bool {
+        match self {
+            AudioError::OpenOutput(rodio::StreamError::NoDevice) => true,
+            AudioError::CreateSink(rodio::PlayError::NoDevice) => true,
+            AudioError::LoadDefaultSound { source, .. } => source.is_no_device(),
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for SoundType {
@@ -51,13 +81,8 @@ pub struct SoundCache {
 }
 
 impl SoundCache {
-    pub fn new(volume: Option<f32>) -> Result<Self, String> {
-        let (stream, stream_handle) = match OutputStream::try_default() {
-            Ok(result) => result,
-            Err(err) => {
-                return Err(format!("Failed to open audio output: {}", err));
-            }
-        };
+    pub fn new(volume: Option<f32>) -> Result<Self, AudioError> {
+        let (stream, stream_handle) = OutputStream::try_default()?;
 
         Ok(SoundCache {
             _stream: stream,
@@ -68,7 +93,7 @@ impl SoundCache {
         })
     }
 
-    pub fn with_default_sounds(volume: Option<f32>) -> Result<Self, String> {
+    pub fn with_default_sounds(volume: Option<f32>) -> Result<Self, AudioError> {
         let mut cache = Self::new(volume)?;
 
         let sound_types = [
@@ -86,9 +111,12 @@ impl SoundCache {
                 SoundType::HardSell => (HARD_SELL_SOUND, HARD_SELL_SOUND_DATA),
             };
 
-            if let Err(e) = cache.load_sound_from_memory(*sound_type, data) {
-                return Err(format!("Failed to load default sound '{}': {}", path, e));
-            }
+            cache
+                .load_sound_from_memory(*sound_type, data)
+                .map_err(|e| AudioError::LoadDefaultSound {
+                    path,
+                    source: Box::new(e),
+                })?;
         }
 
         Ok(cache)
@@ -98,7 +126,7 @@ impl SoundCache {
         &mut self,
         sound_type: SoundType,
         data: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<(), AudioError> {
         let index = sound_type as usize;
 
         if self.sample_buffers[index].is_some() {
@@ -106,12 +134,7 @@ impl SoundCache {
         }
 
         let cursor = std::io::Cursor::new(data.to_vec());
-        let decoder = match Decoder::new(cursor) {
-            Ok(decoder) => decoder,
-            Err(err) => {
-                return Err(format!("Failed to decode sound data: {}", err));
-            }
-        };
+        let decoder = Decoder::new(cursor)?;
 
         let sample_buffer = rodio::buffer::SamplesBuffer::new(
             decoder.channels(),
@@ -123,7 +146,7 @@ impl SoundCache {
         Ok(())
     }
 
-    pub fn play(&mut self, sound_type: SoundType) -> Result<(), String> {
+    pub fn play(&mut self, sound_type: SoundType) -> Result<(), AudioError> {
         let Some(base_volume) = self.volume else {
             return Ok(());
         };
@@ -131,7 +154,7 @@ impl SoundCache {
         let index = usize::from(sound_type);
 
         let Some(buffer) = self.sample_buffers[index].as_ref() else {
-            return Err(format!("Sound '{sound_type}' not loaded",));
+            return Err(AudioError::NotLoaded(sound_type));
         };
 
         let now = Instant::now();
@@ -155,13 +178,7 @@ impl SoundCache {
 
         let adjusted_volume = base_volume / (overlap_count as f32);
 
-        let sink = match rodio::Sink::try_new(&self.stream_handle) {
-            Ok(sink) => sink,
-            Err(err) => {
-                return Err(format!("Failed to create audio sink: {}", err));
-            }
-        };
-
+        let sink = rodio::Sink::try_new(&self.stream_handle)?;
         sink.set_volume(adjusted_volume / 100.0);
         sink.append(buffer.clone());
         sink.detach();
@@ -175,13 +192,5 @@ impl SoundCache {
             return;
         };
         self.volume = Some(level.clamp(0.0, 100.0));
-    }
-
-    pub fn get_volume(&self) -> Option<f32> {
-        self.volume
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.volume.is_none()
     }
 }

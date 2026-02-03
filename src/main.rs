@@ -118,11 +118,13 @@ impl Flowsurface {
 
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state);
 
+        let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
+
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
-            audio_stream: AudioStream::new(saved_state.audio_cfg),
+            audio_stream,
             sidebar,
             confirm_dialog: None,
             timezone: saved_state.timezone,
@@ -132,6 +134,12 @@ impl Flowsurface {
             notifications: vec![],
             network: NetworkManager::new(saved_state.proxy_cfg),
         };
+
+        if let Some(err) = audio_init_err {
+            state
+                .notifications
+                .push(Toast::error(format!("Audio disabled: {err}")));
+        }
 
         let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
             &state
@@ -184,9 +192,9 @@ impl Flowsurface {
                                 event: msg,
                             });
 
-                        if let Err(err) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
+                        if let Some(msg) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
                         {
-                            log::error!("Failed to play sound: {err}");
+                            self.notifications.push(Toast::error(msg));
                         }
 
                         return task;
@@ -455,7 +463,22 @@ impl Flowsurface {
                     None => {}
                 }
             }
-            Message::AudioStream(message) => self.audio_stream.update(message),
+            Message::AudioStream(message) => {
+                if let Some(event) = self.audio_stream.update(message) {
+                    match event {
+                        modal::audio::UpdateEvent::RetryFailed(err) => {
+                            self.notifications
+                                .push(Toast::error(format!("Audio still unavailable: {err}")));
+                        }
+                        modal::audio::UpdateEvent::RetrySucceeded => {
+                            self.notifications
+                                .push(Toast::new(toast::Notification::Info(
+                                    "Audio output re-initialized successfully".to_string(),
+                                )));
+                        }
+                    }
+                }
+            }
             Message::DataFolderRequested => {
                 if let Err(err) = data::open_data_folder() {
                     self.notifications

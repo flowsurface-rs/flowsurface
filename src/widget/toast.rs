@@ -14,6 +14,9 @@ use iced::{Border, mouse, padding, theme, window};
 use crate::style;
 
 pub const DEFAULT_TIMEOUT: u64 = 8;
+pub const MAX_TOAST_BODY_HEIGHT: f32 = 120.0;
+
+pub const MIN_VISIBLE_TOAST_HEIGHT: f32 = 40.0;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -26,13 +29,6 @@ pub enum Status {
     Warning,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Notification {
-    Error(String),
-    Info(String),
-    Warn(String),
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct Toast {
     title: String,
@@ -41,26 +37,6 @@ pub struct Toast {
 }
 
 impl Toast {
-    pub fn new(context: Notification) -> Self {
-        match context {
-            Notification::Error(body) => Self {
-                title: "Error".to_string(),
-                body,
-                status: Status::Danger,
-            },
-            Notification::Info(body) => Self {
-                title: "Info".to_string(),
-                body,
-                status: Status::Primary,
-            },
-            Notification::Warn(body) => Self {
-                title: "Warning".to_string(),
-                body,
-                status: Status::Warning,
-            },
-        }
-    }
-
     pub fn error(body: impl Into<String>) -> Self {
         Self {
             title: "Error".to_string(),
@@ -100,35 +76,38 @@ where
             .iter()
             .enumerate()
             .map(|(index, toast)| {
-                container(column![
-                    container(
-                        row![
-                            text(toast.title.as_str()),
-                            space::horizontal(),
-                            button("X")
-                                .on_press((on_close)(index))
-                                .style(move |theme, status| {
-                                    style::button::transparent(theme, status, true)
-                                })
-                                .padding(padding::right(6).left(6).top(2).bottom(2))
-                        ]
-                        .align_y(Center)
-                    )
-                    .style(match toast.status {
-                        Status::Primary => primary,
-                        Status::Secondary => secondary,
-                        Status::Success => success,
-                        Status::Danger => danger,
-                        Status::Warning => warning,
-                    })
-                    .width(Fill)
-                    .padding(4),
-                    container(text(toast.body.as_str())).width(Fill).padding(4)
-                ])
-                .style(style::chart_modal)
-                .padding(4)
-                .max_width(200)
-                .into()
+                let header = container(
+                    row![
+                        text(toast.title.as_str()),
+                        space::horizontal(),
+                        button("X")
+                            .on_press((on_close)(index))
+                            .style(move |theme, status| {
+                                style::button::transparent(theme, status, true)
+                            })
+                            .padding(padding::right(6).left(6).top(2).bottom(2))
+                    ]
+                    .align_y(Center),
+                )
+                .style(|theme| toast.status.style(theme))
+                .width(Fill)
+                .padding(4);
+
+                let body = container(
+                    text(toast.body.as_str())
+                        .wrapping(iced::widget::text::Wrapping::Word)
+                        .width(Fill),
+                )
+                .width(Fill)
+                .max_height(MAX_TOAST_BODY_HEIGHT)
+                .clip(true)
+                .padding(4);
+
+                container(column![header, body])
+                    .style(style::chart_modal)
+                    .padding(4)
+                    .max_width(200)
+                    .into()
             })
             .collect();
 
@@ -207,7 +186,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
     fn operate(
         &mut self,
-        state: &mut Tree,
+        tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn Operation,
@@ -216,12 +195,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
         self.content
             .as_widget_mut()
-            .operate(&mut state.children[0], layout, renderer, operation);
+            .operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn update(
         &mut self,
-        state: &mut Tree,
+        tree: &mut Tree,
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -231,7 +210,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         viewport: &Rectangle,
     ) {
         self.content.as_widget_mut().update(
-            &mut state.children[0],
+            &mut tree.children[0],
             event,
             layout,
             cursor,
@@ -244,7 +223,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
     fn draw(
         &self,
-        state: &Tree,
+        tree: &Tree,
         renderer: &mut Renderer,
         theme: &Theme,
         style: &renderer::Style,
@@ -253,7 +232,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         viewport: &Rectangle,
     ) {
         self.content.as_widget().draw(
-            &state.children[0],
+            &tree.children[0],
             renderer,
             theme,
             style,
@@ -265,14 +244,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
     fn mouse_interaction(
         &self,
-        state: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
         self.content.as_widget().mouse_interaction(
-            &state.children[0],
+            &tree.children[0],
             layout,
             cursor,
             viewport,
@@ -282,15 +261,15 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
 
     fn overlay<'b>(
         &'b mut self,
-        state: &'b mut Tree,
+        tree: &'b mut Tree,
         layout: Layout<'b>,
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        let instants = state.state.downcast_mut::<Vec<Option<Instant>>>();
+        let instants = tree.state.downcast_mut::<Vec<Option<Instant>>>();
 
-        let (content_state, toasts_state) = state.children.split_at_mut(1);
+        let (content_state, toasts_state) = tree.children.split_at_mut(1);
 
         let content = self.content.as_widget_mut().overlay(
             &mut content_state[0],
@@ -380,20 +359,24 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
 
         let viewport = layout.bounds();
 
-        for (((child, state), layout), instant) in self
+        for (((child, state), child_layout), instant) in self
             .toasts
             .iter_mut()
             .zip(self.state.iter_mut())
             .zip(layout.children())
             .zip(self.instants.iter_mut())
         {
+            if !toast_body_visible(child_layout.bounds(), viewport) {
+                continue;
+            }
+
             let mut local_messages = vec![];
             let mut local_shell = Shell::new(&mut local_messages);
 
             child.as_widget_mut().update(
                 state,
                 event,
-                layout,
+                child_layout,
                 cursor,
                 renderer,
                 clipboard,
@@ -419,15 +402,25 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
     ) {
         let viewport = layout.bounds();
 
-        for ((child, state), layout) in self
+        for ((child, state), child_layout) in self
             .toasts
             .iter()
             .zip(self.state.iter())
             .zip(layout.children())
         {
-            child
-                .as_widget()
-                .draw(state, renderer, theme, style, layout, cursor, &viewport);
+            if !toast_body_visible(child_layout.bounds(), viewport) {
+                continue;
+            }
+
+            child.as_widget().draw(
+                state,
+                renderer,
+                theme,
+                style,
+                child_layout,
+                cursor,
+                &viewport,
+            );
         }
     }
 
@@ -439,12 +432,18 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
     ) {
         operation.container(None, layout.bounds());
 
+        let viewport = layout.bounds();
+
         for ((child, state), child_layout) in self
             .toasts
             .iter_mut()
             .zip(self.state.iter_mut())
             .zip(layout.children())
         {
+            if !toast_body_visible(child_layout.bounds(), viewport) {
+                continue;
+            }
+
             child
                 .as_widget_mut()
                 .operate(state, child_layout, renderer, operation);
@@ -457,19 +456,27 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
         cursor: mouse::Cursor,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        let viewport = layout.bounds();
+
         self.toasts
             .iter()
             .zip(self.state.iter())
             .zip(layout.children())
-            .map(|((child, state), layout)| {
-                child
-                    .as_widget()
-                    .mouse_interaction(state, layout, cursor, &self.viewport, renderer)
-                    .max(if cursor.is_over(layout.bounds()) {
-                        mouse::Interaction::Idle
-                    } else {
-                        Default::default()
-                    })
+            .filter_map(|((child, state), child_layout)| {
+                if !toast_body_visible(child_layout.bounds(), viewport) {
+                    return None;
+                }
+
+                Some(
+                    child
+                        .as_widget()
+                        .mouse_interaction(state, child_layout, cursor, &self.viewport, renderer)
+                        .max(if cursor.is_over(child_layout.bounds()) {
+                            mouse::Interaction::Idle
+                        } else {
+                            Default::default()
+                        }),
+                )
             })
             .max()
             .unwrap_or_default()
@@ -482,6 +489,13 @@ where
 {
     fn from(manager: Manager<'a, Message>) -> Self {
         Element::new(manager)
+    }
+}
+
+fn toast_body_visible(child: Rectangle, viewport: Rectangle) -> bool {
+    match child.intersection(&viewport) {
+        Some(visible) => visible.height >= MIN_VISIBLE_TOAST_HEIGHT,
+        None => false,
     }
 }
 
@@ -498,32 +512,16 @@ fn styled(pair: theme::palette::Pair) -> container::Style {
     }
 }
 
-fn primary(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+impl Status {
+    pub fn style(&self, theme: &Theme) -> container::Style {
+        let palette = theme.extended_palette();
 
-    styled(palette.primary.weak)
-}
-
-fn secondary(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-
-    styled(palette.secondary.weak)
-}
-
-fn success(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-
-    styled(palette.success.weak)
-}
-
-fn danger(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-
-    styled(palette.danger.weak)
-}
-
-fn warning(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-
-    styled(palette.warning.weak)
+        match self {
+            Status::Primary => styled(palette.primary.weak),
+            Status::Secondary => styled(palette.secondary.weak),
+            Status::Success => styled(palette.success.weak),
+            Status::Danger => styled(palette.danger.weak),
+            Status::Warning => styled(palette.warning.weak),
+        }
+    }
 }
