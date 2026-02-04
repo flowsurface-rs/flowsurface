@@ -30,6 +30,7 @@ palette = "0.7.6"
 num-traits = "0.2.19"
 rustc-hash = "2.1.1"
 enum-map = "2.7.3"
+url = "2.5.8"
 uuid = { version = "1.11.0", features = ["v4"] }
 
 [dependencies]
@@ -56,6 +57,7 @@ palette.workspace = true
 num-traits.workspace = true
 rustc-hash.workspace = true
 enum-map.workspace = true
+url.workspace = true
 fern = "0.7.1"
 rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 

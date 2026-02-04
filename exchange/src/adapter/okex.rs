@@ -10,7 +10,6 @@ use super::{
         Exchange, Kline, MarketKind, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32, de_string_to_u64, is_symbol_supported,
-        limiter::HTTP_CLIENT,
     },
     AdapterError, Event,
 };
@@ -569,14 +568,7 @@ pub async fn fetch_ticksize(
         inst_type
     );
 
-    let response_text = HTTP_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(AdapterError::FetchError)?
-        .text()
-        .await
-        .map_err(AdapterError::FetchError)?;
+    let response_text = limiter::http_request(&url, None, None).await?;
 
     let doc: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;

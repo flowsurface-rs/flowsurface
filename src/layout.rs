@@ -30,6 +30,7 @@ pub struct SavedState {
     pub custom_theme: Option<data::Theme>,
     pub audio_cfg: data::AudioStream,
     pub volume_size_unit: exchange::SizeUnit,
+    pub proxy_cfg: Option<exchange::proxy::Proxy>,
 }
 
 impl SavedState {
@@ -58,6 +59,7 @@ impl Default for SavedState {
             custom_theme: None,
             audio_cfg: data::AudioStream::default(),
             volume_size_unit: exchange::SizeUnit::Base,
+            proxy_cfg: None,
         }
     }
 }
@@ -330,6 +332,16 @@ pub fn load_saved_state() -> SavedState {
             exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
             exchange::set_preferred_currency(state.size_in_quote_ccy);
 
+            // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
+            let mut proxy_cfg = state.proxy_cfg;
+            if let Some(proxy) = proxy_cfg.as_mut()
+                && proxy.auth.is_none()
+                && let Some(auth) = data::config::proxy::load_proxy_auth(proxy)
+            {
+                proxy.auth = Some(auth);
+            }
+            exchange::proxy::set_runtime_proxy_cfg(&proxy_cfg);
+
             SavedState {
                 theme: state.selected_theme,
                 custom_theme: state.custom_theme,
@@ -340,6 +352,7 @@ pub fn load_saved_state() -> SavedState {
                 scale_factor: state.scale_factor,
                 audio_cfg: state.audio_cfg,
                 volume_size_unit: state.size_in_quote_ccy,
+                proxy_cfg,
             }
         }
         Err(e) => {

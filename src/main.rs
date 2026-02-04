@@ -13,7 +13,11 @@ mod window;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
-use modal::{LayoutManager, ThemeEditor, audio::AudioStream};
+use modal::{
+    LayoutManager, ThemeEditor,
+    audio::AudioStream,
+    network_manager::{self, NetworkManager},
+};
 use modal::{dashboard_modal, main_dialog_modal};
 use screen::dashboard::{self, Dashboard};
 use widget::{
@@ -58,6 +62,7 @@ struct Flowsurface {
     sidebar: dashboard::Sidebar,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
+    network: NetworkManager,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
@@ -80,6 +85,7 @@ enum Message {
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(HashMap<window::Id, WindowSpec>),
+    SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
     ThemeSelected(data::Theme),
@@ -90,6 +96,7 @@ enum Message {
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
     ThemeEditor(modal::theme_editor::Message),
+    NetworkManager(modal::network_manager::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
 }
@@ -125,6 +132,7 @@ impl Flowsurface {
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: vec![],
+            network: NetworkManager::new(saved_state.proxy_cfg),
         };
 
         if let Some(err) = audio_init_err {
@@ -235,6 +243,9 @@ impl Flowsurface {
             Message::ExitRequested(windows) => {
                 self.save_state_to_disk(&windows);
                 return iced::exit();
+            }
+            Message::SaveStateRequested(windows) => {
+                self.save_state_to_disk(&windows);
             }
             Message::RestartRequested(windows) => {
                 self.save_state_to_disk(&windows);
@@ -491,6 +502,36 @@ impl Flowsurface {
                     None => {}
                 }
             }
+            Message::NetworkManager(msg) => {
+                let action = self.network.update(msg);
+
+                match action {
+                    Some(network_manager::Action::ApplyProxy) => {
+                        if let Some(proxy) = self.network.proxy_cfg() {
+                            data::config::proxy::save_proxy_auth(&proxy);
+                        }
+
+                        let main_window = self.main_window.id;
+                        let dashboard = self.active_dashboard_mut();
+
+                        let mut active_windows = dashboard
+                            .popout
+                            .keys()
+                            .copied()
+                            .collect::<Vec<window::Id>>();
+                        active_windows.push(main_window);
+
+                        return window::collect_window_specs(
+                            active_windows,
+                            Message::SaveStateRequested,
+                        );
+                    }
+                    Some(network_manager::Action::Exit) => {
+                        self.sidebar.set_menu(Some(sidebar::Menu::Settings));
+                    }
+                    None => {}
+                }
+            }
             Message::Sidebar(message) => {
                 let (task, action) = self.sidebar.update(message);
 
@@ -737,6 +778,12 @@ impl Flowsurface {
                         ))),
                     );
 
+                    let toggle_network_editor = button(text("Network")).on_press(Message::Sidebar(
+                        dashboard::sidebar::Message::ToggleSidebarMenu(Some(
+                            sidebar::Menu::Network,
+                        )),
+                    ));
+
                     let timezone_picklist = pick_list(
                         [data::UserTimezone::Utc, data::UserTimezone::Local],
                         Some(self.timezone),
@@ -860,7 +907,7 @@ impl Flowsurface {
                         column![text("Interface scale").size(14), scale_factor,].spacing(12),
                         column![
                             text("Experimental").size(14),
-                            column![trade_fetch_checkbox, toggle_theme_editor,].spacing(8),
+                            column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
                         ; spacing = 16, align_x = Alignment::Start
@@ -1054,6 +1101,21 @@ impl Flowsurface {
                     align_x,
                 )
             }
+            sidebar::Menu::Network => {
+                let (align_x, padding) = match sidebar_pos {
+                    sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
+                    sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
+                };
+
+                dashboard_modal(
+                    base,
+                    self.network.view().map(Message::NetworkManager),
+                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
+                    padding,
+                    Alignment::End,
+                    align_x,
+                )
+            }
         }
     }
 
@@ -1096,6 +1158,11 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
+        let proxy_cfg_persisted = self.network.proxy_cfg().map(|mut p| {
+            p.auth = None;
+            p
+        });
+
         let state = data::State::from_parts(
             layouts,
             self.theme.clone(),
@@ -1106,6 +1173,7 @@ impl Flowsurface {
             self.ui_scale_factor,
             audio_cfg,
             self.volume_size_unit,
+            proxy_cfg_persisted,
         );
 
         match serde_json::to_string(&state) {
