@@ -11,7 +11,11 @@ use std::{
     pin::Pin,
     sync::OnceLock,
     task::{Context, Poll},
+    time::Duration,
 };
+
+const PROXY_TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const PROXY_TUNNEL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum ProxyStream {
@@ -224,17 +228,28 @@ impl Proxy {
         format!("{}://{}:{}", self.scheme.as_str(), host, self.port)
     }
 
-    pub fn to_url_string_redacted(&self) -> String {
+    /// Safe for logs/telemetry: never includes username or password.
+    pub fn to_log_string(&self) -> String {
+        let host = self.host_for_url_authority();
         if self.auth.is_some() {
-            format!(
-                "{}://{}:***@{}:{}",
-                self.scheme.as_str(),
-                self.auth.as_ref().unwrap().username,
-                self.host,
-                self.port
-            )
+            format!("{}://***:***@{}:{}", self.scheme.as_str(), host, self.port)
         } else {
             self.to_url_string_no_auth()
+        }
+    }
+
+    /// Safe for UI display: may include username, never includes password.
+    pub fn to_ui_string(&self) -> String {
+        let host = self.host_for_url_authority();
+        match self.auth.as_ref() {
+            Some(auth) => format!(
+                "{}://{}@{}:{}",
+                self.scheme.as_str(),
+                auth.username,
+                host,
+                self.port
+            ),
+            None => self.to_url_string_no_auth(),
         }
     }
 
@@ -247,9 +262,15 @@ impl Proxy {
             ProxyScheme::Http => {
                 let proxy_addr = format!("{}:{}", self.host_for_socket_addr(), self.port);
 
-                let mut stream = TcpStream::connect(&proxy_addr)
-                    .await
-                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+                let mut stream = tokio::time::timeout(
+                    PROXY_TCP_CONNECT_TIMEOUT,
+                    TcpStream::connect(&proxy_addr),
+                )
+                .await
+                .map_err(|_| {
+                    AdapterError::WebsocketError(format!("Proxy TCP connect timeout: {proxy_addr}"))
+                })?
+                .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
                 let proxy_auth = match &self.auth {
                     None => None,
@@ -259,17 +280,32 @@ impl Proxy {
                     }
                 };
 
-                http_connect_tunnel(&mut stream, target_host, target_port, proxy_auth.as_deref())
-                    .await?;
+                tokio::time::timeout(
+                    PROXY_TUNNEL_TIMEOUT,
+                    http_connect_tunnel(
+                        &mut stream,
+                        target_host,
+                        target_port,
+                        proxy_auth.as_deref(),
+                    ),
+                )
+                .await
+                .map_err(|_| AdapterError::WebsocketError("Proxy CONNECT timeout".to_string()))??;
 
                 Ok(ProxyStream::Plain(stream))
             }
             ProxyScheme::Https => {
                 let proxy_addr = format!("{}:{}", self.host_for_socket_addr(), self.port);
 
-                let tcp = TcpStream::connect(&proxy_addr)
-                    .await
-                    .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+                let tcp = tokio::time::timeout(
+                    PROXY_TCP_CONNECT_TIMEOUT,
+                    TcpStream::connect(&proxy_addr),
+                )
+                .await
+                .map_err(|_| {
+                    AdapterError::WebsocketError(format!("Proxy TCP connect timeout: {proxy_addr}"))
+                })?
+                .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
                 let server_name: tokio_rustls::rustls::ServerName =
                     tokio_rustls::rustls::ServerName::try_from(self.host.as_str()).map_err(
@@ -289,32 +325,83 @@ impl Proxy {
                     }
                 };
 
-                http_connect_tunnel(&mut tls, target_host, target_port, proxy_auth.as_deref())
-                    .await?;
+                tokio::time::timeout(
+                    PROXY_TUNNEL_TIMEOUT,
+                    http_connect_tunnel(&mut tls, target_host, target_port, proxy_auth.as_deref()),
+                )
+                .await
+                .map_err(|_| AdapterError::WebsocketError("Proxy CONNECT timeout".to_string()))??;
 
                 Ok(ProxyStream::TlsToProxy(Box::new(tls)))
             }
-            ProxyScheme::Socks5 | ProxyScheme::Socks5h => {
+            ProxyScheme::Socks5 => {
+                let proxy_addr = (self.host.as_str(), self.port);
+
+                let addrs = tokio::net::lookup_host((target_host, target_port))
+                    .await
+                    .map_err(|e| {
+                        AdapterError::WebsocketError(format!(
+                            "DNS lookup failed for {target_host}:{target_port}: {e}"
+                        ))
+                    })?;
+
+                let mut last_err: Option<String> = None;
+
+                for addr in addrs {
+                    let attempt = tokio::time::timeout(PROXY_TCP_CONNECT_TIMEOUT, async {
+                        match self.auth.as_ref() {
+                            Some(ProxyAuth { username, password }) => {
+                                tokio_socks::tcp::Socks5Stream::connect_with_password(
+                                    proxy_addr, addr, // IP address => local DNS semantics
+                                    username, password,
+                                )
+                                .await
+                                .map(|s| s.into_inner())
+                            }
+                            None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, addr)
+                                .await
+                                .map(|s| s.into_inner()),
+                        }
+                    })
+                    .await;
+
+                    match attempt {
+                        Ok(Ok(stream)) => return Ok(ProxyStream::Plain(stream)),
+                        Ok(Err(e)) => last_err = Some(e.to_string()),
+                        Err(_) => last_err = Some("SOCKS connect timeout".to_string()),
+                    }
+                }
+
+                Err(AdapterError::WebsocketError(format!(
+                    "SOCKS5 connect failed: {}",
+                    last_err.unwrap_or_else(|| "no resolved addresses".to_string())
+                )))
+            }
+
+            ProxyScheme::Socks5h => {
                 let proxy_addr = (self.host.as_str(), self.port);
                 let target_addr = (target_host, target_port);
 
-                let stream = match self.auth.as_ref() {
-                    Some(ProxyAuth { username, password }) => {
-                        tokio_socks::tcp::Socks5Stream::connect_with_password(
-                            proxy_addr,
-                            target_addr,
-                            username,
-                            password,
-                        )
-                        .await
-                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
-                        .into_inner()
+                let stream = tokio::time::timeout(PROXY_TCP_CONNECT_TIMEOUT, async {
+                    match self.auth.as_ref() {
+                        Some(ProxyAuth { username, password }) => {
+                            tokio_socks::tcp::Socks5Stream::connect_with_password(
+                                proxy_addr,
+                                target_addr,
+                                username,
+                                password,
+                            )
+                            .await
+                            .map(|s| s.into_inner())
+                        }
+                        None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
+                            .await
+                            .map(|s| s.into_inner()),
                     }
-                    None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
-                        .await
-                        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?
-                        .into_inner(),
-                };
+                })
+                .await
+                .map_err(|_| AdapterError::WebsocketError("SOCKS connect timeout".to_string()))?
+                .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
                 Ok(ProxyStream::Plain(stream))
             }
@@ -324,7 +411,7 @@ impl Proxy {
 
 impl std::fmt::Display for Proxy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.to_url_string_redacted())
+        f.write_str(&self.to_log_string())
     }
 }
 
@@ -335,14 +422,14 @@ static RUNTIME_PROXY_CFG: OnceLock<Option<Proxy>> = OnceLock::new();
 pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
     if let Some(existing) = RUNTIME_PROXY_CFG.get() {
         if existing != cfg {
-            log::warn!(
+            log::debug!(
                 "Attempted to re-set runtime proxy config (ignored). existing={}, requested={}",
                 existing
                     .as_ref()
-                    .map(|p| p.to_url_string_redacted())
+                    .map(|p| p.to_log_string())
                     .unwrap_or_else(|| "direct (no proxy)".to_string()),
                 cfg.as_ref()
-                    .map(|p| p.to_url_string_redacted())
+                    .map(|p| p.to_log_string())
                     .unwrap_or_else(|| "direct (no proxy)".to_string()),
             );
         }
@@ -354,8 +441,8 @@ pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
         .expect("Proxy runtime already initialized (set_runtime_proxy_cfg called twice)");
 
     match cfg {
-        Some(c) => log::info!("Runtime proxy config set: {}", c.to_url_string_redacted()),
-        None => log::info!("Runtime proxy config set: direct (no proxy)"),
+        Some(c) => log::debug!("Runtime proxy config set: {}", c.to_log_string()),
+        None => log::debug!("Runtime proxy config set: direct (no proxy)"),
     }
 }
 
@@ -438,15 +525,26 @@ where
     }
 
     let hdr = String::from_utf8_lossy(&buf);
-    let status = hdr.lines().next().unwrap_or("<no status line>");
-    let ok = status.contains(" 200 ");
-    if !ok {
-        return Err(AdapterError::WebsocketError(format!(
-            "Proxy CONNECT failed: {status}"
-        )));
-    }
+    let mut lines = hdr.lines();
+    let status_line = lines.next().unwrap_or("<no status line>");
 
-    Ok(())
+    let code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok());
+
+    match code {
+        Some(200) => Ok(()),
+        Some(407) => Err(AdapterError::WebsocketError(format!(
+            "Proxy CONNECT failed: {status_line} (proxy auth required)"
+        ))),
+        Some(code) => Err(AdapterError::WebsocketError(format!(
+            "Proxy CONNECT failed: {status_line} (status={code})"
+        ))),
+        None => Err(AdapterError::WebsocketError(format!(
+            "Proxy CONNECT failed: {status_line}"
+        ))),
+    }
 }
 
 pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
@@ -454,7 +552,14 @@ pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilde
         return builder;
     };
 
-    let proxy = match reqwest::Proxy::all(cfg.to_url_string_no_auth()) {
+    let (scheme, auth) = (cfg.scheme, cfg.auth.as_ref());
+
+    let proxy_url = match (scheme, auth) {
+        (ProxyScheme::Socks5 | ProxyScheme::Socks5h, Some(_auth)) => cfg.to_url_string(),
+        _ => cfg.to_url_string_no_auth(),
+    };
+
+    let proxy = match reqwest::Proxy::all(proxy_url) {
         Ok(p) => p,
         Err(e) => {
             log::warn!(
@@ -465,14 +570,13 @@ pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilde
             return builder;
         }
     };
-
-    let proxy = match (cfg.scheme, cfg.auth.as_ref()) {
+    let proxy = match (scheme, auth) {
         (ProxyScheme::Http | ProxyScheme::Https, Some(auth)) => {
             proxy.basic_auth(&auth.username, &auth.password)
         }
         _ => proxy,
     };
 
-    log::info!("Using proxy for REST: {}", cfg.to_url_string_redacted());
+    log::debug!("Using proxy for REST: {}", cfg.to_log_string());
     builder.proxy(proxy)
 }

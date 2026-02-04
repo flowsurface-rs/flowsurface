@@ -154,10 +154,22 @@ where
         path_and_query.push('/');
     }
 
+    let host_header = match parsed.port() {
+        Some(explicit_port) => {
+            let default_port = parsed.port_or_known_default().unwrap_or(explicit_port);
+            if explicit_port != default_port {
+                format!("{domain}:{explicit_port}")
+            } else {
+                domain.to_string()
+            }
+        }
+        None => domain.to_string(),
+    };
+
     let req: Request<Empty<Bytes>> = Request::builder()
         .method("GET")
         .uri(path_and_query)
-        .header("Host", domain)
+        .header("Host", host_header)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "upgrade")
         .header(

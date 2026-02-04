@@ -213,14 +213,14 @@ impl NetworkManager {
                 let effective = self
                     .effective_proxy_cfg
                     .as_ref()
-                    .map(|c| c.to_url_string_redacted())
+                    .map(|c| c.to_ui_string())
                     .unwrap_or_else(|| "None (direct connection)".to_string());
 
                 let pending_url = if is_pending {
                     Some(
                         saved_cfg
                             .as_ref()
-                            .map(|c| c.to_url_string_redacted())
+                            .map(|c| c.to_ui_string())
                             .unwrap_or_else(|| "None (direct connection)".to_string()),
                     )
                 } else {
