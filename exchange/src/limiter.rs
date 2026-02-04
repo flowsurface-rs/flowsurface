@@ -2,13 +2,52 @@ use crate::adapter::AdapterError;
 
 use reqwest::{Client, Method, Response};
 use serde_json::Value;
+
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-pub static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    let builder = Client::builder();
+    let builder = super::proxy::try_apply_proxy(builder);
+
+    let builder = builder
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30));
+
+    builder
+        .build()
+        .expect("Failed to build reqwest HTTP client")
+});
+
+/// Non-limited requests(for simple one-off fetches like exchange info)
+pub async fn http_request(
+    url: &str,
+    method: Option<Method>,
+    json_body: Option<&Value>,
+) -> Result<String, AdapterError> {
+    let method = method.unwrap_or(Method::GET);
+
+    let mut request_builder = HTTP_CLIENT.request(method, url);
+
+    if let Some(body) = json_body {
+        request_builder = request_builder.json(body);
+    }
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(AdapterError::FetchError)?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        log::error!("HTTP error {} for: {}", status, url);
+    }
+
+    response.text().await.map_err(AdapterError::FetchError)
+}
 
 pub trait RateLimiter: Send + Sync {
-    /// Prepare for a request with given weight. Returns wait time if needed.
+    /// Prepare for a request with given weight. Returns wait time if needed
     fn prepare_request(&mut self, weight: usize) -> Option<Duration>;
 
     /// Update the limiter with response data (e.g., rate limit headers)

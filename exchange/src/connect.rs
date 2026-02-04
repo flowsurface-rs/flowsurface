@@ -1,4 +1,5 @@
 use crate::adapter::AdapterError;
+
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
 use http_body_util::Empty;
@@ -7,50 +8,21 @@ use hyper::{
     header::{CONNECTION, UPGRADE},
     upgrade::Upgraded,
 };
-use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
 };
+use url::Url;
 
-#[allow(clippy::large_enum_variant)]
-pub enum State {
-    Disconnected,
-    Connected(FragmentCollector<TokioIo<Upgraded>>),
-}
+use std::{sync::LazyLock, time::Duration};
 
-pub async fn connect_ws(
-    domain: &str,
-    url: &str,
-) -> Result<
-    fastwebsockets::FragmentCollector<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
-    AdapterError,
-> {
-    let tcp_stream = setup_tcp(domain).await?;
-    let tls_stream = upgrade_to_tls(domain, tcp_stream).await?;
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
-    upgrade_to_websocket(domain, tls_stream, url).await
-}
-
-struct SpawnExecutor;
-
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-    Fut: std::future::Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        tokio::task::spawn(fut);
-    }
-}
-
-async fn setup_tcp(domain: &str) -> Result<TcpStream, AdapterError> {
-    let addr = format!("{domain}:443");
-    TcpStream::connect(&addr)
-        .await
-        .map_err(|e| AdapterError::WebsocketError(e.to_string()))
-}
+pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
+    LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
 fn tls_connector() -> Result<TlsConnector, AdapterError> {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
@@ -71,29 +43,133 @@ fn tls_connector() -> Result<TlsConnector, AdapterError> {
     Ok(TlsConnector::from(std::sync::Arc::new(config)))
 }
 
-async fn upgrade_to_tls(
+pub enum State {
+    Disconnected,
+    Connected(FragmentCollector<TokioIo<Upgraded>>),
+}
+
+pub async fn connect_ws(
     domain: &str,
-    tcp_stream: TcpStream,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, AdapterError> {
+    url: &str,
+) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+    let parsed = Url::parse(url).map_err(|e| AdapterError::InvalidRequest(e.to_string()))?;
+
+    let url_host = parsed
+        .host_str()
+        .ok_or_else(|| AdapterError::InvalidRequest("Missing host in websocket URL".to_string()))?;
+
+    if !url_host.eq_ignore_ascii_case(domain) {
+        return Err(AdapterError::InvalidRequest(format!(
+            "WebSocket URL host mismatch: url_host={url_host}, domain_arg={domain}"
+        )));
+    }
+
+    let target_port = parsed.port_or_known_default().ok_or_else(|| {
+        AdapterError::InvalidRequest("Missing port for websocket URL".to_string())
+    })?;
+
+    let stream = setup_tcp(domain, target_port).await?;
+
+    match parsed.scheme() {
+        "wss" => {
+            let tls_stream =
+                tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, upgrade_to_tls(domain, stream))
+                    .await
+                    .map_err(|_| {
+                        AdapterError::WebsocketError(
+                            "TLS handshake to target timed out".to_string(),
+                        )
+                    })??;
+
+            tokio::time::timeout(
+                WS_HANDSHAKE_TIMEOUT,
+                upgrade_to_websocket(domain, tls_stream, &parsed),
+            )
+            .await
+            .map_err(|_| {
+                AdapterError::WebsocketError("WebSocket handshake timed out".to_string())
+            })?
+        }
+        "ws" => tokio::time::timeout(
+            WS_HANDSHAKE_TIMEOUT,
+            upgrade_to_websocket(domain, stream, &parsed),
+        )
+        .await
+        .map_err(|_| AdapterError::WebsocketError("WebSocket handshake timed out".to_string()))?,
+        _ => Err(AdapterError::InvalidRequest(
+            "Invalid scheme for websocket URL".to_string(),
+        )),
+    }
+}
+
+async fn setup_tcp(
+    domain: &str,
+    target_port: u16,
+) -> Result<super::proxy::ProxyStream, AdapterError> {
+    if let Some(proxy) = super::proxy::runtime_proxy_cfg() {
+        log::info!("Using proxy for WS: {}", proxy);
+        return proxy.connect_tcp(domain, target_port).await;
+    }
+
+    let addr = format!("{domain}:{target_port}");
+    let tcp = tokio::time::timeout(TCP_CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&addr))
+        .await
+        .map_err(|_| AdapterError::WebsocketError(format!("TCP connect timeout: {addr}")))?
+        .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+    Ok(super::proxy::ProxyStream::Plain(tcp))
+}
+
+async fn upgrade_to_tls<S>(
+    domain: &str,
+    stream: S,
+) -> Result<tokio_rustls::client::TlsStream<S>, AdapterError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let domain: tokio_rustls::rustls::ServerName =
         tokio_rustls::rustls::ServerName::try_from(domain)
             .map_err(|_| AdapterError::ParseError("invalid dnsname".to_string()))?;
 
-    tls_connector()?
-        .connect(domain, tcp_stream)
+    TLS_CONNECTOR
+        .connect(domain, stream)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))
 }
 
-async fn upgrade_to_websocket(
+async fn upgrade_to_websocket<S>(
     domain: &str,
-    tls_stream: tokio_rustls::client::TlsStream<TcpStream>,
-    url: &str,
-) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+    stream: S,
+    parsed: &Url,
+) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let mut path_and_query = parsed.path().to_string();
+    if let Some(q) = parsed.query() {
+        path_and_query.push('?');
+        path_and_query.push_str(q);
+    }
+    if path_and_query.is_empty() {
+        path_and_query.push('/');
+    }
+
+    let host_header = match parsed.port() {
+        Some(explicit_port) => {
+            let default_port = parsed.port_or_known_default().unwrap_or(explicit_port);
+            if explicit_port != default_port {
+                format!("{domain}:{explicit_port}")
+            } else {
+                domain.to_string()
+            }
+        }
+        None => domain.to_string(),
+    };
+
     let req: Request<Empty<Bytes>> = Request::builder()
         .method("GET")
-        .uri(url)
-        .header("Host", domain)
+        .uri(path_and_query)
+        .header("Host", host_header)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "upgrade")
         .header(
@@ -104,7 +180,8 @@ async fn upgrade_to_websocket(
         .body(Empty::<Bytes>::new())
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-    let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream)
+    let exec = TokioExecutor::new();
+    let (ws, _) = fastwebsockets::handshake::client(&exec, req, stream)
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 

@@ -805,15 +805,7 @@ pub async fn fetch_ticksize(
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/instruments-info?category={market}&limit=1000",);
-
-    let response_text = crate::limiter::HTTP_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(AdapterError::FetchError)?
-        .text()
-        .await
-        .map_err(AdapterError::FetchError)?;
+    let response_text = limiter::http_request(&url, None, None).await?;
 
     let exchange_info: Value =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -888,7 +880,6 @@ pub async fn fetch_ticker_prices(
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/tickers?category={market}");
-
     let parsed_response: Value =
         limiter::http_parse_with_limiter(&url, &BYBIT_LIMITER, 1, None, None).await?;
 

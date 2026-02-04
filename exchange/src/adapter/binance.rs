@@ -813,7 +813,7 @@ async fn fetch_depth(
     };
 
     let limiter = limiter_from_market_type(market_type);
-    let text = crate::limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
+    let text = limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -1028,14 +1028,7 @@ pub async fn fetch_ticksize(
         MarketKind::InversePerps => (INVERSE_PERP_DOMAIN.to_string() + "/dapi/v1/exchangeInfo", 1),
     };
 
-    let response_text = crate::limiter::HTTP_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(AdapterError::FetchError)?
-        .text()
-        .await
-        .map_err(AdapterError::FetchError)?;
+    let response_text = limiter::http_request(&url, None, None).await?;
 
     let exchange_info: serde_json::Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(format!("Failed to parse exchange info: {e}")))?;
@@ -1277,7 +1270,7 @@ pub async fn fetch_historical_oi(
     }
 
     let limiter = limiter_from_market_type(market);
-    let text = crate::limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
+    let text = limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
     let binance_oi: Vec<DeOpenInterest> = serde_json::from_str(&text).map_err(|e| {
         log::error!(
@@ -1350,7 +1343,7 @@ pub async fn fetch_intraday_trades(
     url.push_str(&format!("&startTime={from}"));
 
     let limiter = limiter_from_market_type(market_type);
-    let text = crate::limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
+    let text = limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
     let trades: Vec<Trade> = {
         let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)

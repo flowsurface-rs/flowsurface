@@ -25,6 +25,7 @@ pub struct State {
     pub audio_cfg: AudioStream,
     pub trade_fetch_enabled: bool,
     pub size_in_quote_ccy: exchange::SizeUnit,
+    pub proxy_cfg: Option<exchange::proxy::Proxy>,
 }
 
 impl State {
@@ -38,6 +39,7 @@ impl State {
         scale_factor: ScaleFactor,
         audio_cfg: AudioStream,
         volume_size_unit: exchange::SizeUnit,
+        proxy_cfg: Option<exchange::proxy::Proxy>,
     ) -> Self {
         State {
             layout_manager,
@@ -50,6 +52,7 @@ impl State {
             audio_cfg,
             trade_fetch_enabled: exchange::fetcher::is_trade_fetch_enabled(),
             size_in_quote_ccy: volume_size_unit,
+            proxy_cfg,
         }
     }
 }
