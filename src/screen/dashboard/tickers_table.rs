@@ -73,6 +73,7 @@ pub fn fetch_tickers_info() -> Task<Message> {
 
 pub enum Action {
     TickerSelected(TickerInfo, Option<ContentKind>),
+    SyncToAllPanes(TickerInfo),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
     FocusWidget(iced::widget::Id),
@@ -84,6 +85,7 @@ pub enum Message {
     ChangeSortOption(SortOptions),
     ShowSortingOptions,
     TickerSelected(Ticker, Option<ContentKind>),
+    SyncToAllPanes(Ticker),
     ExpandTickerCard(Option<Ticker>),
     FavoriteTicker(Ticker),
     Scrolled(scrollable::Viewport),
@@ -195,6 +197,18 @@ impl TickersTable {
 
                 if let Some(ticker_info) = ticker_info {
                     return Some(Action::TickerSelected(ticker_info, content));
+                } else {
+                    log::warn!(
+                        "Ticker info not found for {ticker:?} on {:?}",
+                        ticker.exchange
+                    );
+                }
+            }
+            Message::SyncToAllPanes(ticker) => {
+                let ticker_info = self.tickers_info.get(&ticker).cloned().flatten();
+
+                if let Some(ticker_info) = ticker_info {
+                    return Some(Action::SyncToAllPanes(ticker_info));
                 } else {
                     log::warn!(
                         "Ticker info not found for {ticker:?} on {:?}",
@@ -1284,8 +1298,20 @@ fn expanded_ticker_card<'a>(
             })
             .on_press(Message::FavoriteTicker(*ticker))
             .style(move |theme, status| { style::button::transparent(theme, status, false) }),
+            Space::new().width(Length::Fill).height(Length::Shrink),
+            button(
+                row![
+                    icon_text(Icon::Link, 12),
+                    text("Sync All").size(11)
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::SyncToAllPanes(*ticker))
+            .style(|theme, status| style::button::confirm(theme, status, false)),
         ]
-        .spacing(2),
+        .spacing(2)
+        .align_y(Alignment::Center),
         row![
             icon_text(exchange_icon, 12),
             text(
