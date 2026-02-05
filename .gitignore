@@ -2,3 +2,6 @@
 /target
 /.vscode
 *.log
+.agent/workflows/indicator-implementation.md
+ARCHITECTURE.md
+profile.json.gz
