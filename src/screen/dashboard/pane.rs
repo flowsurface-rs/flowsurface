@@ -125,7 +125,7 @@ impl State {
         Self {
             content,
             settings,
-            streams: ResolvedStream::Waiting(streams),
+            streams: ResolvedStream::waiting(streams),
             link_group,
             ..Default::default()
         }
@@ -429,7 +429,7 @@ impl State {
     fn has_stream(&self) -> bool {
         match &self.streams {
             ResolvedStream::Ready(streams) => !streams.is_empty(),
-            ResolvedStream::Waiting(streams) => !streams.is_empty(),
+            ResolvedStream::Waiting { streams, .. } => !streams.is_empty(),
         }
     }
 
@@ -1013,7 +1013,7 @@ impl State {
                 self.content = Content::placeholder(kind);
 
                 if !matches!(kind, ContentKind::Starter) {
-                    self.streams = ResolvedStream::Waiting(vec![]);
+                    self.streams = ResolvedStream::waiting(vec![]);
                     let modal = Modal::MiniTickersList(MiniPanel::new());
 
                     if let Some(effect) = self.show_modal_with_focus(modal) {
@@ -1648,10 +1648,8 @@ impl State {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
 
-        if let Some(streams) = self.streams.waiting_to_resolve()
-            && !streams.is_empty()
-        {
-            return Some(Action::ResolveStreams(streams.to_vec()));
+        if let Some(streams) = self.streams.due_streams_to_resolve(now) {
+            return Some(Action::ResolveStreams(streams));
         }
 
         if !self.content.initialized() {
@@ -1692,7 +1690,7 @@ impl Default for State {
             modal: None,
             content: Content::Starter,
             settings: Settings::default(),
-            streams: ResolvedStream::Waiting(vec![]),
+            streams: ResolvedStream::waiting(vec![]),
             notifications: vec![],
             status: Status::Ready,
             link_group: None,

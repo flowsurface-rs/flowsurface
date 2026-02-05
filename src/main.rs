@@ -13,7 +13,11 @@ mod window;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
-use modal::{LayoutManager, ThemeEditor, audio::AudioStream};
+use modal::{
+    LayoutManager, ThemeEditor,
+    audio::AudioStream,
+    network_manager::{self, NetworkManager},
+};
 use modal::{dashboard_modal, main_dialog_modal};
 use screen::dashboard::{self, Dashboard};
 use widget::{
@@ -58,6 +62,7 @@ struct Flowsurface {
     sidebar: dashboard::Sidebar,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
+    network: NetworkManager,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
@@ -80,6 +85,7 @@ enum Message {
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(HashMap<window::Id, WindowSpec>),
+    SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
     ThemeSelected(iced_core::Theme),
@@ -90,6 +96,7 @@ enum Message {
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
     ThemeEditor(modal::theme_editor::Message),
+    NetworkManager(modal::network_manager::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
 }
@@ -111,11 +118,13 @@ impl Flowsurface {
 
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state);
 
+        let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
+
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
-            audio_stream: AudioStream::new(saved_state.audio_cfg),
+            audio_stream,
             sidebar,
             confirm_dialog: None,
             timezone: saved_state.timezone,
@@ -123,7 +132,14 @@ impl Flowsurface {
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: vec![],
+            network: NetworkManager::new(saved_state.proxy_cfg),
         };
+
+        if let Some(err) = audio_init_err {
+            state
+                .notifications
+                .push(Toast::error(format!("Audio disabled: {err}")));
+        }
 
         let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
             &state
@@ -176,9 +192,9 @@ impl Flowsurface {
                                 event: msg,
                             });
 
-                        if let Err(err) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
+                        if let Some(msg) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
                         {
-                            log::error!("Failed to play sound: {err}");
+                            self.notifications.push(Toast::error(msg));
                         }
 
                         return task;
@@ -227,6 +243,9 @@ impl Flowsurface {
             Message::ExitRequested(windows) => {
                 self.save_state_to_disk(&windows);
                 return iced::exit();
+            }
+            Message::SaveStateRequested(windows) => {
+                self.save_state_to_disk(&windows);
             }
             Message::RestartRequested(windows) => {
                 self.save_state_to_disk(&windows);
@@ -292,6 +311,15 @@ impl Flowsurface {
                         Some(dashboard::Event::ResolveStreams { pane_id, streams }) => {
                             let tickers_info = self.sidebar.tickers_info();
 
+                            let has_any_ticker_info =
+                                tickers_info.values().any(|opt| opt.is_some());
+                            if !has_any_ticker_info {
+                                log::debug!(
+                                    "Deferring persisted stream resolution for pane {pane_id}: ticker metadata not loaded yet"
+                                );
+                                return Task::none();
+                            }
+
                             let resolved_streams =
                                 streams.into_iter().try_fold(vec![], |mut acc, persist| {
                                     let resolver = |t: &exchange::Ticker| {
@@ -304,8 +332,7 @@ impl Flowsurface {
                                             Ok(acc)
                                         }
                                         Err(err) => Err(format!(
-                                            "Failed to resolve persisted stream: {}",
-                                            err
+                                            "Persisted stream still not resolvable: {err}"
                                         )),
                                     }
                                 });
@@ -324,7 +351,8 @@ impl Flowsurface {
                                     }
                                 }
                                 Err(err) => {
-                                    log::warn!("{err}",);
+                                    // This is typically a transient state (e.g. partial metadata, stale symbol)
+                                    log::debug!("{err}");
                                     Task::none()
                                 }
                             }
@@ -448,7 +476,21 @@ impl Flowsurface {
                     None => {}
                 }
             }
-            Message::AudioStream(message) => self.audio_stream.update(message),
+            Message::AudioStream(message) => {
+                if let Some(event) = self.audio_stream.update(message) {
+                    match event {
+                        modal::audio::UpdateEvent::RetryFailed(err) => {
+                            self.notifications
+                                .push(Toast::error(format!("Audio still unavailable: {err}")));
+                        }
+                        modal::audio::UpdateEvent::RetrySucceeded => {
+                            self.notifications.push(Toast::info(
+                                "Audio output re-initialized successfully".to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
             Message::DataFolderRequested => {
                 if let Err(err) = data::open_data_folder() {
                     self.notifications
@@ -468,6 +510,36 @@ impl Flowsurface {
                         let main_window = self.main_window.id;
                         self.active_dashboard_mut()
                             .theme_updated(main_window, &theme);
+                    }
+                    None => {}
+                }
+            }
+            Message::NetworkManager(msg) => {
+                let action = self.network.update(msg);
+
+                match action {
+                    Some(network_manager::Action::ApplyProxy) => {
+                        if let Some(proxy) = self.network.proxy_cfg() {
+                            data::config::proxy::save_proxy_auth(&proxy);
+                        }
+
+                        let main_window = self.main_window.id;
+                        let dashboard = self.active_dashboard_mut();
+
+                        let mut active_windows = dashboard
+                            .popout
+                            .keys()
+                            .copied()
+                            .collect::<Vec<window::Id>>();
+                        active_windows.push(main_window);
+
+                        return window::collect_window_specs(
+                            active_windows,
+                            Message::SaveStateRequested,
+                        );
+                    }
+                    Some(network_manager::Action::Exit) => {
+                        self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     None => {}
                 }
@@ -718,6 +790,12 @@ impl Flowsurface {
                         ))),
                     );
 
+                    let toggle_network_editor = button(text("Network")).on_press(Message::Sidebar(
+                        dashboard::sidebar::Message::ToggleSidebarMenu(Some(
+                            sidebar::Menu::Network,
+                        )),
+                    ));
+
                     let timezone_picklist = pick_list(
                         [data::UserTimezone::Utc, data::UserTimezone::Local],
                         Some(self.timezone),
@@ -841,7 +919,7 @@ impl Flowsurface {
                         column![text("Interface scale").size(14), scale_factor,].spacing(12),
                         column![
                             text("Experimental").size(14),
-                            column![trade_fetch_checkbox, toggle_theme_editor,].spacing(8),
+                            column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
                         ; spacing = 16, align_x = Alignment::Start
@@ -1035,6 +1113,21 @@ impl Flowsurface {
                     align_x,
                 )
             }
+            sidebar::Menu::Network => {
+                let (align_x, padding) = match sidebar_pos {
+                    sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
+                    sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
+                };
+
+                dashboard_modal(
+                    base,
+                    self.network.view().map(Message::NetworkManager),
+                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
+                    padding,
+                    Alignment::End,
+                    align_x,
+                )
+            }
         }
     }
 
@@ -1077,6 +1170,11 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
+        let proxy_cfg_persisted = self.network.proxy_cfg().map(|mut p| {
+            p.auth = None;
+            p
+        });
+
         let state = data::State::from_parts(
             layouts,
             self.theme.clone(),
@@ -1087,6 +1185,7 @@ impl Flowsurface {
             self.ui_scale_factor,
             audio_cfg,
             self.volume_size_unit,
+            proxy_cfg_persisted,
         );
 
         match serde_json::to_string(&state) {

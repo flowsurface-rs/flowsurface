@@ -130,7 +130,8 @@ impl Sidebar {
     ) -> iced::widget::Column<'_, Message> {
         let settings_modal_button = {
             let is_active = self.is_menu_active(sidebar::Menu::Settings)
-                || self.is_menu_active(sidebar::Menu::ThemeEditor);
+                || self.is_menu_active(sidebar::Menu::ThemeEditor)
+                || self.is_menu_active(sidebar::Menu::Network);
 
             button_with_tooltip(
                 icon_text(Icon::Cog, 14)

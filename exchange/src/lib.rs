@@ -3,6 +3,7 @@ pub mod connect;
 pub mod depth;
 pub mod fetcher;
 mod limiter;
+pub mod proxy;
 pub mod util;
 
 use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
@@ -311,14 +312,8 @@ impl Ticker {
         display_symbol: Option<&str>,
     ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
-        assert!(
-            ticker.is_ascii()
-                && ticker
-                    .as_bytes()
-                    .iter()
-                    .all(|&b| b.is_ascii_graphic() && b != b':' && b != b'|'),
-            "Ticker must be printable ASCII and must not contain ':' or '|': {ticker:?}"
-        );
+        assert!(ticker.is_ascii(), "Ticker must be ASCII");
+        assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
         bytes[..ticker.len()].copy_from_slice(ticker.as_bytes());
@@ -329,14 +324,9 @@ impl Ticker {
                 display.len() <= Self::MAX_LEN as usize,
                 "Display symbol too long"
             );
-            assert!(
-                display.is_ascii()
-                    && display
-                        .as_bytes()
-                        .iter()
-                        .all(|&b| b.is_ascii_graphic() && b != b':' && b != b'|'),
-                "Display symbol must be printable ASCII and must not contain ':' or '|': {display:?}"
-            );
+            assert!(display.is_ascii(), "Display symbol must be ASCII");
+            // Display symbol cannot contain '|' as it's used as delimiter
+            assert!(!display.contains('|'), "Display symbol cannot contain '|'");
             display_bytes[..display.len()].copy_from_slice(display.as_bytes());
             true
         } else {

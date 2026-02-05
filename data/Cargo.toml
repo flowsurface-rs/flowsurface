@@ -16,9 +16,11 @@ regex.workspace = true
 palette.workspace = true
 enum-map.workspace = true
 rustc-hash.workspace = true
+url.workspace = true
 dirs-next = "2.0.0"
 open = "5.3.2"
-
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 log = { version = "0.4.22", default-features = true, features = ["std"] }
 thiserror = { version = "2.0.12", default-features = true, features = ["std"] }
+
 exchange = { version = "0.1.0", path = "../exchange", package = "flowsurface-exchange" }
