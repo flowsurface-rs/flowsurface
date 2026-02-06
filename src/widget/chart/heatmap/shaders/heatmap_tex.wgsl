@@ -75,7 +75,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let col_w = max(params.grid.x, 1e-12);
-    let row_h = params.grid.y;
+    let row_h = max(params.grid.y, 1e-12);
     let steps_per = max(params.grid.z, 1.0);
     let bin_h = row_h * steps_per;
 

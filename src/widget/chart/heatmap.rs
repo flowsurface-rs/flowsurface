@@ -366,7 +366,7 @@ impl HeatmapShader {
         self.step.to_f32_lossy()
     }
 
-    /// called periodically on every frame, monitor refresh rates
+    /// called periodically on every window frame
     /// to update time-based rendering and animate/scroll
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<Action> {
         let now_i = now.unwrap_or_else(Instant::now);
@@ -387,7 +387,6 @@ impl HeatmapShader {
             return None;
         }
         if let Some(exchange_now_ms) = self.clock.estimate_now_ms(now_i) {
-            // Bucket boundary can jitter due to clock estimation => make render time monotonic in Live mode.
             let bucketed = (exchange_now_ms / aggr_time) * aggr_time;
 
             let live_render_latest_time = match self.anchor {
@@ -509,7 +508,10 @@ impl HeatmapShader {
         };
 
         self.clock = self.clock.anchor_with_update(depth_update_t);
+
         let rounded_t = (depth_update_t / aggr_time) * aggr_time;
+        self.anchor
+            .set_scroll_ref_bucket_if_zero((rounded_t / aggr_time) as i64);
 
         {
             let entry =
