@@ -28,9 +28,7 @@ struct Params {
 var<uniform> params: Params;
 
 @group(1) @binding(0)
-var heatmap_bid: texture_2d<u32>;
-@group(1) @binding(1)
-var heatmap_ask: texture_2d<u32>;
+var heatmap_rg: texture_2d<u32>;
 
 fn fade_factor(world_x: f32) -> f32 {
     let x0 = params.fade.x;
@@ -117,9 +115,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let xi = (latest_x_ring + bucket_rel_from_latest) & tex_w_mask;
 
     let inv_qty_scale = params.heatmap_b.w;
-    let bid_qty = f32(textureLoad(heatmap_bid, vec2<i32>(xi, yi), 0).x) * inv_qty_scale;
-    let ask_qty = f32(textureLoad(heatmap_ask, vec2<i32>(xi, yi), 0).x) * inv_qty_scale;
 
+    let v = textureLoad(heatmap_rg, vec2<i32>(xi, yi), 0);
+    let bid_qty = f32(v.x) * inv_qty_scale;
+    let ask_qty = f32(v.y) * inv_qty_scale;
+    
     let max_depth = max(params.depth.x, 1e-12);
     let alpha_min = params.depth.y;
     let alpha_max = params.depth.z;

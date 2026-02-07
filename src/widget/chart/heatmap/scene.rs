@@ -237,6 +237,23 @@ impl Scene {
         self.params
             .set_heatmap_y_start_bin(depth_grid.heatmap_y_start_bin(base_price, step));
     }
+
+    /// Pulls an upload plan from the grid and applies it to the scene.
+    /// Returns `true` if a full texture upload was scheduled.
+    #[inline]
+    pub fn sync_heatmap_upload_from_grid(
+        &mut self,
+        grid: &mut depth_grid::GridRing,
+        force_full: bool,
+    ) -> bool {
+        let Some(plan) = grid.upload_to_scene(force_full) else {
+            return false;
+        };
+
+        let is_full = matches!(plan, HeatmapUploadPlan::Full(_));
+        self.apply_heatmap_upload_plan(plan);
+        is_full
+    }
 }
 
 impl shader::Program<Message> for Scene {

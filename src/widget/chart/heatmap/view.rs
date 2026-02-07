@@ -19,6 +19,9 @@ pub const MAX_ROW_H_WORLD: f32 = 4.;
 pub const MIN_COL_PX: f32 = 1.0;
 pub const MIN_ROW_PX: f32 = 1.0;
 
+// Throttle depth denom recompute while interacting (keeps zoom smooth)
+const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Anchor {
     Live {
@@ -246,6 +249,32 @@ impl RebuildPolicy {
             RebuildPolicy::Idle => false,
             RebuildPolicy::Debounced { last_input } => {
                 (now.saturating_duration_since(last_input).as_millis() as u64) >= debounce_ms
+            }
+        }
+    }
+
+    /// Decide what to rebuild for the current frame
+    ///
+    /// Returns:
+    /// - `rebuild_overlays`: run cheap overlay rebuild this frame
+    /// - `rebuild_full`: run full rebuild this frame
+    /// - `next_policy`: what the policy should become *after* the caller performs rebuild(s)
+    ///
+    /// NOTE: In `Debounced`, overlays are requested every frame,
+    /// and once the debounce expires we request both overlays and a full rebuild.
+    #[inline]
+    pub fn decide(self, now: Instant, debounce_ms: u64) -> (bool, bool, RebuildPolicy) {
+        match self {
+            RebuildPolicy::Immediate => (false, true, RebuildPolicy::Idle),
+            RebuildPolicy::Idle => (false, false, RebuildPolicy::Idle),
+            RebuildPolicy::Debounced { last_input } => {
+                let due =
+                    (now.saturating_duration_since(last_input).as_millis() as u64) >= debounce_ms;
+                if due {
+                    (true, true, RebuildPolicy::Idle)
+                } else {
+                    (true, false, RebuildPolicy::Debounced { last_input })
+                }
             }
         }
     }
@@ -520,11 +549,10 @@ impl DepthNormCache {
         data_gen: u64,
         now: Instant,
         is_interacting: bool,
-        throttle_ms: u64,
     ) -> f32 {
         if is_interacting && let Some(last) = self.last_recompute {
             let dt_ms = now.saturating_duration_since(last).as_millis() as u64;
-            if dt_ms < throttle_ms {
+            if dt_ms < NORM_RECOMPUTE_THROTTLE_MS {
                 return self.value.max(1e-6);
             }
         }
@@ -575,4 +603,37 @@ impl DepthNormCache {
 
         max_qty
     }
+}
+
+/// Round a millisecond timestamp down to the start of its aggregation bucket
+#[inline]
+pub fn round_time_to_bucket(t_ms: u64, aggr_time: u64) -> u64 {
+    let aggr_time = aggr_time.max(1);
+    (t_ms / aggr_time) * aggr_time
+}
+
+/// Computes "live" render timing from an exchange clock
+///
+/// Returns:
+/// - `bucketed`: exchange_now rounded down to bucket start
+/// - `live_render_latest_time`: monotonic render latest time while live (paused stays frozen)
+/// - `live_phase_bucket`: fractional phase within the current bucket [0, 1)
+#[inline]
+pub fn live_timing(anchor: Anchor, exchange_now_ms: u64, aggr_time: u64) -> (u64, u64, f32) {
+    let aggr_time = aggr_time.max(1);
+    let bucketed = round_time_to_bucket(exchange_now_ms, aggr_time);
+
+    let live_render_latest_time = match anchor {
+        Anchor::Live {
+            render_latest_time, ..
+        } => render_latest_time.max(bucketed),
+        Anchor::Paused {
+            render_latest_time, ..
+        } => render_latest_time,
+    };
+
+    let live_phase_ms = exchange_now_ms.saturating_sub(live_render_latest_time);
+    let live_phase_bucket = (live_phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
+
+    (bucketed, live_render_latest_time, live_phase_bucket)
 }
