@@ -142,7 +142,7 @@ impl OrderRun {
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct HistoricalDepth {
     price_levels: BTreeMap<Price, Vec<OrderRun>>,
-    aggr_time: u64,
+    pub aggr_time: u64,
     tick_size: PriceStep,
     min_order_qty: f32,
 }

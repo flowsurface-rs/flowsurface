@@ -7,10 +7,8 @@ use iced_core::mouse;
 
 const DRAG_ZOOM_SENS: f32 = 0.005;
 
-fn unix_ms_to_local_string(ts_ms: i128, fmt: &str) -> String {
-    let ts_ms_i64 = ts_ms.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-
-    let utc = match chrono::Utc.timestamp_millis_opt(ts_ms_i64).single() {
+fn unix_ms_to_local_string(ts_ms: i64, fmt: &str) -> String {
+    let utc = match chrono::Utc.timestamp_millis_opt(ts_ms).single() {
         Some(dt) => dt,
         None => return "".to_string(),
     };
@@ -18,7 +16,7 @@ fn unix_ms_to_local_string(ts_ms: i128, fmt: &str) -> String {
     utc.with_timezone(&chrono::Local).format(fmt).to_string()
 }
 
-fn pick_time_format(visible_span_ms: i128) -> &'static str {
+fn pick_time_format(visible_span_ms: i64) -> &'static str {
     // Pick shorter/longer formats based on current visible time span.
     if visible_span_ms <= 10_000 {
         "%H:%M:%S%.3f" // up to ~10s: show milliseconds
@@ -35,7 +33,7 @@ pub struct AxisXLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
     pub plot_bounds: Option<Rectangle>,
     pub latest_bucket: i64,
-    pub aggr_time: Option<u64>,
+    pub aggr_time: u64,
     pub column_world: f32,
     pub cam_offset_x: f32,
     pub cam_sx: f32,
@@ -165,11 +163,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let Some(aggr_time) = self.aggr_time else {
-            return vec![];
-        };
-
-        if aggr_time == 0
+        if self.aggr_time == 0
             || !self.column_world.is_finite()
             || self.column_world <= 0.0
             || !self.cam_sx.is_finite()
@@ -212,9 +206,14 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let b_min0: i64 = latest_bucket.saturating_add(u_min0);
             let b_max0: i64 = latest_bucket.saturating_add(u_max0);
 
-            let visible_buckets0 = (b_max0 as i128 - b_min0 as i128).max(0);
-            let visible_span_ms0 = visible_buckets0 * (aggr_time as i128);
-            let fmt = pick_time_format(visible_span_ms0);
+            let fmt = {
+                let visible_buckets0 = (b_max0 - b_min0).max(0);
+
+                let visible_span = visible_buckets0 * (self.aggr_time as i64);
+                let visible_span_ms0 = visible_span.clamp(0, i64::MAX);
+
+                pick_time_format(visible_span_ms0)
+            };
 
             // Approx label width in px for mono font; used to pad bucket-range so labels don't "pop"
             let font_size = 12.0f32;
@@ -263,7 +262,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     let b_at_cursor = latest_bucket.saturating_add(u_at_cursor);
                     let world_x_for_bucket = ((u_at_cursor as f64) - phase) * col_f;
                     let x_px = world_to_screen_x(world_x_for_bucket);
-                    let t_ms = (b_at_cursor as i128) * (aggr_time as i128);
+                    let t_ms = (b_at_cursor) * (self.aggr_time as i64);
                     let label = unix_ms_to_local_string(t_ms, "%H:%M:%S%.3f");
 
                     let label_len = label.chars().count() as f32;
@@ -285,7 +284,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 let x_px = world_to_screen_x(world_x);
 
                 if x_px >= -draw_margin_px && x_px <= (vw + draw_margin_px) {
-                    let t_ms = (b as i128) * (aggr_time as i128);
+                    let t_ms = (b) * (self.aggr_time as i64);
                     let label = unix_ms_to_local_string(t_ms, fmt);
 
                     if !label.is_empty() {

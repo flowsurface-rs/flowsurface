@@ -57,7 +57,6 @@ impl Anchor {
         matches!(self, Anchor::Paused { .. })
     }
 
-    #[inline]
     pub fn scroll_ref_bucket(&self) -> i64 {
         match self {
             Anchor::Live {
@@ -69,7 +68,6 @@ impl Anchor {
         }
     }
 
-    #[inline]
     pub fn set_scroll_ref_bucket_if_zero(&mut self, v: i64) {
         let slot = match self {
             Anchor::Live {
@@ -84,7 +82,6 @@ impl Anchor {
         }
     }
 
-    #[inline]
     pub fn render_latest_time(&self) -> u64 {
         match self {
             Anchor::Live {
@@ -96,7 +93,6 @@ impl Anchor {
         }
     }
 
-    #[inline]
     pub fn x_phase_bucket(&self) -> f32 {
         match self {
             Anchor::Live { x_phase_bucket, .. } => *x_phase_bucket,
@@ -105,7 +101,6 @@ impl Anchor {
     }
 
     /// Update monotonic render time + phase while Live.
-    #[inline]
     pub fn update_live_timing(&mut self, bucketed_time: u64, phase_bucket: f32) {
         if let Anchor::Live {
             render_latest_time,
@@ -119,7 +114,6 @@ impl Anchor {
     }
 
     /// Consume the one-shot resume directive (Live only; Paused is not consumed).
-    #[inline]
     pub fn take_live_resume(&mut self) -> ResumeAction {
         match self {
             Anchor::Live { resume, .. } => {
@@ -133,7 +127,6 @@ impl Anchor {
 
     /// Render time used for view/overlay computations.
     /// While paused, clamp to the latest bucket we actually have data for to avoid "future" drift.
-    #[inline]
     pub fn effective_render_latest_time(&self, latest_time: u64) -> u64 {
         let render_latest_time = self.render_latest_time();
         if self.is_paused() && render_latest_time > 0 && latest_time > 0 {
@@ -219,6 +212,30 @@ impl Anchor {
             }
         }
     }
+
+    /// Apply a new mid price update.
+    /// - If paused: store as pending (so resuming can snap cleanly)
+    /// - If live: immediately updates `base_price`
+    pub fn apply_mid_price(&mut self, mid_rounded: Price, base_price: &mut Price) {
+        match self {
+            Anchor::Paused {
+                pending_mid_price, ..
+            } => *pending_mid_price = Some(mid_rounded),
+            Anchor::Live { .. } => *base_price = mid_rounded,
+        }
+    }
+
+    /// Ensure scroll_ref_bucket is initialized and compute origin.x (bucket delta + phase).
+    /// Returns (scroll_ref_bucket, origin_x).
+    pub fn sync_scroll_ref_and_origin_x(&mut self, render_bucket: i64) -> (i64, f32) {
+        self.set_scroll_ref_bucket_if_zero(render_bucket);
+        let scroll_ref_bucket = self.scroll_ref_bucket();
+
+        let delta_buckets: i64 = render_bucket - scroll_ref_bucket;
+        let origin_x: f32 = (delta_buckets as f32) + self.x_phase_bucket();
+
+        (scroll_ref_bucket, origin_x)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -240,17 +257,6 @@ pub enum RebuildPolicy {
 impl RebuildPolicy {
     pub fn mark_input(self, now: Instant) -> Self {
         RebuildPolicy::Debounced { last_input: now }
-    }
-
-    #[allow(dead_code)]
-    pub fn should_rebuild(self, now: Instant, debounce_ms: u64) -> bool {
-        match self {
-            RebuildPolicy::Immediate => true,
-            RebuildPolicy::Idle => false,
-            RebuildPolicy::Debounced { last_input } => {
-                (now.saturating_duration_since(last_input).as_millis() as u64) >= debounce_ms
-            }
-        }
     }
 
     /// Decide what to rebuild for the current frame

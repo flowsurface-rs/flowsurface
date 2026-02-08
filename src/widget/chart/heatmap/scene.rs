@@ -238,9 +238,52 @@ impl Scene {
             .set_heatmap_y_start_bin(depth_grid.heatmap_y_start_bin(base_price, step));
     }
 
+    /// Sync heatmap uniforms that depend on time/x-scrolling:
+    /// - latest_rel_bucket
+    /// - latest_x_ring
+    #[inline]
+    pub fn sync_heatmap_time_uniforms(
+        &mut self,
+        depth_grid: &depth_grid::GridRing,
+        latest_time: u64,
+        aggr_time: u64,
+        scroll_ref_bucket: i64,
+    ) {
+        let tex_w = depth_grid.tex_w();
+        let tex_h = depth_grid.tex_h();
+        if tex_w == 0 || tex_h == 0 {
+            return;
+        }
+
+        let aggr_time = aggr_time.max(1);
+
+        let latest_bucket: i64 = (latest_time / aggr_time) as i64;
+        let latest_rel: i64 = latest_bucket - scroll_ref_bucket;
+        self.params.set_heatmap_latest_rel_bucket(latest_rel);
+
+        let latest_x_ring: u32 = depth_grid.ring_x_for_bucket(latest_bucket);
+        self.params.set_heatmap_latest_x_ring(latest_x_ring);
+    }
+
+    /// Sync all uniforms that depend on time/x-scrolling
+    /// - origin.x (bucket delta + phase)
+    /// - heatmap_latest_rel_bucket
+    /// - heatmap_latest_x_ring
+    #[inline]
+    pub fn sync_time_uniforms(
+        &mut self,
+        depth_grid: &depth_grid::GridRing,
+        origin_x: f32,
+        latest_time: u64,
+        aggr_time: u64,
+        scroll_ref_bucket: i64,
+    ) {
+        self.params.set_origin_x(origin_x);
+        self.sync_heatmap_time_uniforms(depth_grid, latest_time, aggr_time, scroll_ref_bucket);
+    }
+
     /// Pulls an upload plan from the grid and applies it to the scene.
     /// Returns `true` if a full texture upload was scheduled.
-    #[inline]
     pub fn sync_heatmap_upload_from_grid(
         &mut self,
         grid: &mut depth_grid::GridRing,
@@ -253,6 +296,41 @@ impl Scene {
         let is_full = matches!(plan, HeatmapUploadPlan::Full(_));
         self.apply_heatmap_upload_plan(plan);
         is_full
+    }
+
+    pub fn sync_palette(&mut self, palette: Option<&depth_grid::HeatmapPalette>) {
+        if let Some(p) = palette {
+            self.params.set_palette_rgb(p.bid_rgb, p.ask_rgb);
+        }
+    }
+
+    /// 1) sync heatmap uniforms derived from grid + timing
+    /// 2) pull/apply upload plan from grid (Full/Cols/None)
+    ///
+    /// Returns `true` if a full texture upload was scheduled.
+    #[inline]
+    pub fn sync_heatmap_from_grid(
+        &mut self,
+        grid: &mut depth_grid::GridRing,
+        base_price: exchange::util::Price,
+        step: exchange::util::PriceStep,
+        qty_scale_inv: f32,
+        latest_time: u64,
+        aggr_time: u64,
+        scroll_ref_bucket: i64,
+        force_full_upload: bool,
+    ) -> bool {
+        self.sync_heatmap_texture(
+            grid,
+            base_price,
+            step,
+            qty_scale_inv,
+            latest_time,
+            aggr_time,
+            scroll_ref_bucket,
+        );
+
+        self.sync_heatmap_upload_from_grid(grid, force_full_upload)
     }
 }
 

@@ -138,8 +138,8 @@ impl HeatmapShader {
             palette: None,
             qty_scale,
             heatmap,
-            basis,
             step,
+            basis,
             ticker_info,
             trades,
             latest_time: 0,
@@ -287,14 +287,8 @@ impl HeatmapShader {
         let render_latest_time = self.anchor.render_latest_time();
         let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
 
-        let aggr_time = match self.basis {
-            Basis::Time(interval) => Some(u64::from(interval)),
-            Basis::Tick(_) => None,
-        };
-        let latest_bucket: i64 = match aggr_time {
-            Some(aggr) if aggr > 0 => (render_latest_time / aggr) as i64,
-            _ => scroll_ref_bucket,
-        };
+        let aggr_time = self.heatmap.aggr_time.max(1);
+        let latest_bucket: i64 = (render_latest_time / aggr_time) as i64;
 
         let cam_scale = self.scene.camera.scale();
 
@@ -351,6 +345,8 @@ impl HeatmapShader {
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {
         let palette = HeatmapPalette::from_theme(theme);
         self.palette = Some(palette);
+
+        self.scene.sync_palette(self.palette.as_ref());
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -363,22 +359,14 @@ impl HeatmapShader {
         let now_i = now.unwrap_or_else(Instant::now);
         self.last_tick = Some(now_i);
 
-        let Some(size) = self.viewport_size_px() else {
-            if self.palette.is_none() {
-                return Some(Action::RequestPalette);
-            }
-            return None;
-        };
-
-        let aggr_time: u64 = match self.basis {
-            Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) => return None,
-        };
-        if aggr_time == 0 {
-            return None;
+        if self.palette.is_none() {
+            return Some(Action::RequestPalette);
         }
+        let size = self.viewport_size_px()?;
 
         if let Some(exchange_now_ms) = self.clock.estimate_now_ms(now_i) {
+            let aggr_time = self.heatmap.aggr_time.max(1);
+
             let (bucketed, live_render_latest_time, live_phase) =
                 view::live_timing(self.anchor, exchange_now_ms, aggr_time);
 
@@ -392,15 +380,11 @@ impl HeatmapShader {
             self.canvas_caches.clear_axes();
         }
 
-        if self.palette.is_none() {
-            return Some(Action::RequestPalette);
-        }
-
         self.canvas_caches.clear_overlays();
         None
     }
 
-    /// only data insertion point, called when new data arrives
+    /// the only data insertion point, called when new data arrives
     /// could be 1s, 500ms or 100ms, on par with aggregation interval but with additional network latency
     pub fn insert_datapoint(
         &mut self,
@@ -413,37 +397,23 @@ impl HeatmapShader {
         let paused = self.anchor.is_paused();
         let is_interacting = matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. });
 
-        let aggr_time: u64 = match self.basis {
-            Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) => unimplemented!(),
-        };
-
+        let aggr_time = self.heatmap.aggr_time.max(1);
         let rounded_t = view::round_time_to_bucket(depth_update_t, aggr_time);
 
         self.trades
             .ingest_trades_bucket(rounded_t, trades_buffer, self.step);
 
-        {
-            if rounded_t < self.latest_time {
-                return;
-            }
-
-            if let Some(mid) = depth.mid_price() {
-                let mid_rounded = mid.round_to_step(self.step);
-
-                if let view::Anchor::Paused {
-                    ref mut pending_mid_price,
-                    ..
-                } = self.anchor
-                {
-                    *pending_mid_price = Some(mid_rounded);
-                } else {
-                    self.base_price = mid_rounded;
-                }
-            }
-
-            self.latest_time = rounded_t;
+        if rounded_t < self.latest_time {
+            return;
         }
+
+        if let Some(mid) = depth.mid_price() {
+            let mid_rounded = mid.round_to_step(self.step);
+            self.anchor
+                .apply_mid_price(mid_rounded, &mut self.base_price);
+        }
+
+        self.latest_time = rounded_t;
 
         self.clock = self.clock.anchor_with_update(depth_update_t);
 
@@ -470,8 +440,6 @@ impl HeatmapShader {
     }
 
     fn cleanup_old_data(&mut self, aggr_time: u64) {
-        let aggr_time = aggr_time.max(1);
-
         // Keep CPU history aligned with what the ring can represent
         let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
 
@@ -498,11 +466,6 @@ impl HeatmapShader {
     }
 
     fn compute_view_window(&self, vw_px: f32, vh_px: f32) -> Option<ViewWindow> {
-        let aggr_time: u64 = match self.basis {
-            Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) => return None,
-        };
-
         let cfg = ViewConfig {
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
             strip_height_frac: STRIP_HEIGHT_FRAC,
@@ -518,7 +481,7 @@ impl HeatmapShader {
         };
 
         let input = ViewInputs {
-            aggr_time,
+            aggr_time: self.heatmap.aggr_time.max(1),
             latest_time_data: latest_data_for_view,
             latest_time_render: latest_render,
             base_price: self.base_price,
@@ -591,10 +554,7 @@ impl HeatmapShader {
 
         self.sync_fade_params(&w);
 
-        let aggr_time: u64 = match self.basis {
-            Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) => return,
-        };
+        let aggr_time: u64 = self.heatmap.aggr_time.max(1);
 
         let prev_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         let new_steps_per_y_bin: i64 = w.steps_per_y_bin.max(1);
@@ -613,10 +573,14 @@ impl HeatmapShader {
                 .camera
                 .price_at_center(row_h, self.base_price, self.step)
         };
-        let force_recenter = self.depth_grid.should_recenter(recenter_target, self.step);
 
-        let need_full_rebuild =
-            new_steps_per_y_bin != prev_steps_per_y_bin || force_full_rebuild || force_recenter;
+        let need_full_rebuild = self.depth_grid.should_full_rebuild(
+            prev_steps_per_y_bin,
+            new_steps_per_y_bin,
+            recenter_target,
+            self.step,
+            force_full_rebuild,
+        );
 
         if need_full_rebuild {
             self.depth_grid.ensure_layout(aggr_time);
@@ -629,21 +593,15 @@ impl HeatmapShader {
                 self.latest_time.max(1)
             };
 
-            let oldest_time =
-                latest_time.saturating_sub(u64::from(DEPTH_GRID_HORIZON_BUCKETS) * aggr_time);
+            let (oldest_time, latest_time) = self
+                .depth_grid
+                .horizon_time_window_ms(latest_time, aggr_time);
 
-            let tex_h_i64 = self.depth_grid.tex_h().max(1) as i64;
-            let half_bins = tex_h_i64 / 2;
-
-            let step_units = self.step.units.max(1);
-            let steps_per = new_steps_per_y_bin.max(1);
-
-            let half_steps = half_bins.saturating_mul(steps_per);
-            let delta_units = half_steps.saturating_mul(step_units);
-
-            let anchor_u = recenter_target.units;
-            let rebuild_highest = Price::from_units(anchor_u.saturating_add(delta_units));
-            let rebuild_lowest = Price::from_units(anchor_u.saturating_sub(delta_units));
+            let (rebuild_highest, rebuild_lowest) = self.depth_grid.rebuild_price_bounds(
+                recenter_target,
+                self.step,
+                new_steps_per_y_bin,
+            );
 
             self.depth_grid.rebuild_from_historical(
                 &self.heatmap,
@@ -660,20 +618,37 @@ impl HeatmapShader {
             self.data_gen = self.data_gen.wrapping_add(1);
             self.depth_norm.invalidate();
 
-            self.scene.sync_heatmap_texture(
-                &self.depth_grid,
+            self.scene.sync_heatmap_from_grid(
+                &mut self.depth_grid,
                 self.base_price,
                 self.step,
                 1.0 / self.qty_scale,
                 latest_time,
                 aggr_time,
                 self.anchor.scroll_ref_bucket(),
+                false,
             );
-
-            self.sync_heatmap_upload();
         } else {
             self.scene.set_heatmap_update(None);
-            self.sync_heatmap_upload();
+
+            let latest_time_for_scene = if self.anchor.is_paused() {
+                self.anchor
+                    .effective_render_latest_time(self.latest_time)
+                    .max(1)
+            } else {
+                self.latest_time.max(1)
+            };
+
+            self.scene.sync_heatmap_from_grid(
+                &mut self.depth_grid,
+                self.base_price,
+                self.step,
+                1.0 / self.qty_scale,
+                latest_time_for_scene,
+                aggr_time,
+                self.anchor.scroll_ref_bucket(),
+                false,
+            );
         }
 
         self.rebuild_overlays(&w);
@@ -717,10 +692,11 @@ impl HeatmapShader {
             }
         }
 
+        let aggr_time = aggr_time.max(1);
         let render_latest_time_eff = self.anchor.effective_render_latest_time(self.latest_time);
+        let render_bucket: i64 = (render_latest_time_eff / aggr_time) as i64;
 
-        let (_render_bucket, scroll_ref_bucket) =
-            self.sync_x_scrolling_from_render_time(aggr_time, render_latest_time_eff);
+        let (scroll_ref_bucket, origin_x) = self.anchor.sync_scroll_ref_and_origin_x(render_bucket);
 
         let latest_time_for_heatmap = if self.anchor.is_paused() {
             render_latest_time_eff
@@ -728,7 +704,13 @@ impl HeatmapShader {
             self.latest_time
         };
 
-        self.sync_heatmap_latest_rel_bucket(aggr_time, latest_time_for_heatmap, scroll_ref_bucket);
+        self.scene.sync_time_uniforms(
+            &self.depth_grid,
+            origin_x,
+            latest_time_for_heatmap,
+            aggr_time,
+            scroll_ref_bucket,
+        );
 
         let (do_overlays, do_full, next_policy) =
             self.rebuild_policy.decide(now_i, REBUILD_DEBOUNCE_MS);
@@ -742,10 +724,6 @@ impl HeatmapShader {
         self.rebuild_policy = next_policy;
 
         self.update_depth_norm_and_params(*w, now_i);
-        self.scene.params.set_heatmap_y_start_bin(
-            self.depth_grid
-                .heatmap_y_start_bin(self.base_price, self.step),
-        );
     }
 
     fn update_depth_norm_and_params(&mut self, w: ViewWindow, now_i: Instant) {
@@ -802,29 +780,16 @@ impl HeatmapShader {
             steps_per_y_bin,
         );
 
-        if let Some(p) = &self.palette {
-            self.scene.params.set_palette_rgb(p.bid_rgb, p.ask_rgb);
-        }
-
-        self.scene.sync_heatmap_texture(
-            &self.depth_grid,
+        self.scene.sync_heatmap_from_grid(
+            &mut self.depth_grid,
             self.base_price,
             self.step,
             1.0 / self.qty_scale,
             rounded_t,
             aggr_time,
             self.anchor.scroll_ref_bucket(),
+            false,
         );
-
-        self.sync_heatmap_upload();
-    }
-
-    /// Upload heatmap texture updates to the GPU (via Scene).
-    #[inline]
-    fn sync_heatmap_upload(&mut self) {
-        // The ring decides whether it’s Full/Cols/None
-        self.scene
-            .sync_heatmap_upload_from_grid(&mut self.depth_grid, false);
     }
 
     #[inline]
@@ -833,46 +798,6 @@ impl HeatmapShader {
         self.scene
             .params
             .set_trade_fade(w.left_edge_world, w.trade_profile_max_w_world, 0.15, 1.0);
-    }
-
-    /// Update anchor-dependent x-scrolling uniforms in a single place.
-    /// Returns (render_bucket, scroll_ref_bucket).
-    #[inline]
-    fn sync_x_scrolling_from_render_time(
-        &mut self,
-        aggr_time: u64,
-        render_latest_time_eff: u64,
-    ) -> (i64, i64) {
-        let aggr_time = aggr_time.max(1);
-
-        let render_bucket: i64 = (render_latest_time_eff / aggr_time) as i64;
-
-        self.anchor.set_scroll_ref_bucket_if_zero(render_bucket);
-        let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
-
-        let delta_buckets: i64 = render_bucket - scroll_ref_bucket;
-
-        // origin.x = (bucket delta) + fractional phase
-        self.scene
-            .params
-            .set_origin_x((delta_buckets as f32) + self.anchor.x_phase_bucket());
-
-        (render_bucket, scroll_ref_bucket)
-    }
-
-    /// Update heatmap "latest relative bucket" uniform (depends on scroll_ref).
-    #[inline]
-    fn sync_heatmap_latest_rel_bucket(
-        &mut self,
-        aggr_time: u64,
-        latest_time_for_heatmap: u64,
-        scroll_ref_bucket: i64,
-    ) {
-        let aggr_time = aggr_time.max(1);
-
-        let latest_bucket_for_scene: i64 = (latest_time_for_heatmap / aggr_time) as i64;
-        let latest_rel: i64 = latest_bucket_for_scene - scroll_ref_bucket;
-        self.scene.params.set_heatmap_latest_rel_bucket(latest_rel);
     }
 
     /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.

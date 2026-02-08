@@ -14,32 +14,22 @@ const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
 
 #[derive(Debug, Clone)]
 pub struct GridRing {
-    /// How many aggregated buckets to keep in the ring.
-    /// NOTE: texture width is still rounded up to a power-of-two for fast wrap.
+    /// How many aggregated buckets to keep in the ring
     horizon_buckets: u32,
-
-    /// tolerate short gaps/out-of-order updates (ms).
+    /// tolerate short gaps/out-of-order updates (ms)
     pub grace_ms: u64,
-
     tex_w: u32,
     tex_h: u32,
-
     aggr_time_ms: u64,
     last_bucket: Option<i64>,
-
     y_anchor: Option<Price>,
-
     pub bid: Vec<u32>,
     pub ask: Vec<u32>,
-
     pub col_max_bid: Vec<u32>,
     pub col_max_ask: Vec<u32>,
-
     steps_per_y_bin: i64,
-
     full_dirty: bool,
     dirty_cols: Vec<u32>,
-
     block_max_bid: Vec<u32>,
     block_max_ask: Vec<u32>,
 }
@@ -731,6 +721,55 @@ impl GridRing {
         let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
 
         delta_bins > margin_bins
+    }
+
+    /// True if caller should perform a full rebuild-from-historical.
+    #[inline]
+    pub fn should_full_rebuild(
+        &self,
+        prev_steps_per_y_bin: i64,
+        new_steps_per_y_bin: i64,
+        recenter_target: Price,
+        step: PriceStep,
+        force_full_rebuild: bool,
+    ) -> bool {
+        let prev = prev_steps_per_y_bin.max(1);
+        let next = new_steps_per_y_bin.max(1);
+        (prev != next) || force_full_rebuild || self.should_recenter(recenter_target, step)
+    }
+
+    /// Time window (ms) required to fill the ring horizon ending at `latest_time_ms`.
+    #[inline]
+    pub fn horizon_time_window_ms(&self, latest_time_ms: u64, aggr_time_ms: u64) -> (u64, u64) {
+        let aggr_time_ms = aggr_time_ms.max(1);
+        let horizon_ms = (self.horizon_buckets as u64).saturating_mul(aggr_time_ms);
+        let oldest = latest_time_ms.saturating_sub(horizon_ms);
+        (oldest, latest_time_ms)
+    }
+
+    /// Compute rebuild bounds (highest/lowest prices) for the current texture height.
+    ///
+    /// These bounds are centered around `anchor` and span half the texture height in bins.
+    #[inline]
+    pub fn rebuild_price_bounds(
+        &self,
+        anchor: Price,
+        step: PriceStep,
+        steps_per_y_bin: i64,
+    ) -> (Price, Price) {
+        let tex_h_i64 = (self.tex_h.max(1)) as i64;
+        let half_bins = tex_h_i64 / 2;
+
+        let step_units = step.units.max(1);
+        let steps_per = steps_per_y_bin.max(1);
+
+        let half_steps = half_bins.saturating_mul(steps_per);
+        let delta_units = half_steps.saturating_mul(step_units);
+
+        let anchor_u = anchor.units;
+        let highest = Price::from_units(anchor_u.saturating_add(delta_units));
+        let lowest = Price::from_units(anchor_u.saturating_sub(delta_units));
+        (highest, lowest)
     }
 }
 
