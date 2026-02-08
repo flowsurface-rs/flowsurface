@@ -15,7 +15,7 @@ use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 use crate::widget::chart::heatmap::view::{ViewConfig, ViewInputs, ViewWindow};
 use crate::widget::chart::heatmap::widget::HeatmapShaderWidget;
 
-use data::aggr::time::{DataPoint, TimeSeries};
+use data::aggr::time::TimeSeries;
 use data::chart::Basis;
 use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
 use exchange::depth::Depth;
@@ -104,9 +104,6 @@ pub struct HeatmapShader {
 
     anchor: view::Anchor,
     rebuild_policy: view::RebuildPolicy,
-
-    // Force a full CPU->GPU heatmap upload (without rebuilding from historical).
-    needs_heatmap_full_upload: bool,
 }
 
 impl HeatmapShader {
@@ -155,7 +152,6 @@ impl HeatmapShader {
             data_gen: 1,
             rebuild_policy: view::RebuildPolicy::Idle,
             anchor: view::Anchor::default(),
-            needs_heatmap_full_upload: true,
         }
     }
 
@@ -422,18 +418,40 @@ impl HeatmapShader {
             Basis::Tick(_) => unimplemented!(),
         };
 
-        self.clock = self.clock.anchor_with_update(depth_update_t);
-
         let rounded_t = view::round_time_to_bucket(depth_update_t, aggr_time);
+
+        self.trades
+            .ingest_trades_bucket(rounded_t, trades_buffer, self.step);
+
+        {
+            if rounded_t < self.latest_time {
+                return;
+            }
+
+            if let Some(mid) = depth.mid_price() {
+                let mid_rounded = mid.round_to_step(self.step);
+
+                if let view::Anchor::Paused {
+                    ref mut pending_mid_price,
+                    ..
+                } = self.anchor
+                {
+                    *pending_mid_price = Some(mid_rounded);
+                } else {
+                    self.base_price = mid_rounded;
+                }
+            }
+
+            self.latest_time = rounded_t;
+        }
+
+        self.clock = self.clock.anchor_with_update(depth_update_t);
 
         self.anchor
             .set_scroll_ref_bucket_if_zero((rounded_t / aggr_time) as i64);
 
-        self.ingest_trades_bucket(trades_buffer, rounded_t);
-
         self.depth_grid.ensure_layout(aggr_time);
         self.heatmap.insert_latest_depth(depth, rounded_t);
-        self.update_latest_time_and_prices(depth, rounded_t);
 
         if !paused {
             self.update_live_ring_and_scene(depth, rounded_t, aggr_time, is_interacting);
@@ -567,7 +585,7 @@ impl HeatmapShader {
             self.compute_view_window(size.width, size.height)
         }) else {
             self.scene.clear();
-            self.needs_heatmap_full_upload = true;
+            self.depth_grid.force_full_upload();
             return;
         };
 
@@ -652,13 +670,10 @@ impl HeatmapShader {
                 self.anchor.scroll_ref_bucket(),
             );
 
-            self.sync_heatmap_upload(true);
+            self.sync_heatmap_upload();
         } else {
             self.scene.set_heatmap_update(None);
-
-            if self.needs_heatmap_full_upload {
-                self.sync_heatmap_upload(true);
-            }
+            self.sync_heatmap_upload();
         }
 
         self.rebuild_overlays(&w);
@@ -755,45 +770,8 @@ impl HeatmapShader {
         if let Some(last) = self.last_tick
             && last.elapsed() >= Duration::from_millis(HEATMAP_RESYNC_AFTER_STALL_MS)
         {
-            self.needs_heatmap_full_upload = true;
+            self.depth_grid.force_full_upload();
         }
-    }
-
-    fn ingest_trades_bucket(&mut self, trades_buffer: &[Trade], rounded_t: u64) {
-        let entry = self
-            .trades
-            .datapoints
-            .entry(rounded_t)
-            .or_insert_with(|| HeatmapDataPoint {
-                grouped_trades: Box::new([]),
-                buy_sell: (0.0, 0.0),
-            });
-
-        for trade in trades_buffer {
-            entry.add_trade(trade, self.step);
-        }
-    }
-
-    fn update_latest_time_and_prices(&mut self, depth: &Depth, rounded_t: u64) {
-        if rounded_t < self.latest_time {
-            return;
-        }
-
-        if let Some(mid) = depth.mid_price() {
-            let mid_rounded = mid.round_to_step(self.step);
-
-            if let view::Anchor::Paused {
-                ref mut pending_mid_price,
-                ..
-            } = self.anchor
-            {
-                *pending_mid_price = Some(mid_rounded);
-            } else {
-                self.base_price = mid_rounded;
-            }
-        }
-
-        self.latest_time = rounded_t;
     }
 
     fn update_live_ring_and_scene(
@@ -838,19 +816,15 @@ impl HeatmapShader {
             self.anchor.scroll_ref_bucket(),
         );
 
-        self.sync_heatmap_upload(self.needs_heatmap_full_upload);
+        self.sync_heatmap_upload();
     }
 
     /// Upload heatmap texture updates to the GPU (via Scene).
     #[inline]
-    fn sync_heatmap_upload(&mut self, force_full: bool) {
-        let did_full = self
-            .scene
-            .sync_heatmap_upload_from_grid(&mut self.depth_grid, force_full);
-
-        if did_full {
-            self.needs_heatmap_full_upload = false;
-        }
+    fn sync_heatmap_upload(&mut self) {
+        // The ring decides whether it’s Full/Cols/None
+        self.scene
+            .sync_heatmap_upload_from_grid(&mut self.depth_grid, false);
     }
 
     #[inline]

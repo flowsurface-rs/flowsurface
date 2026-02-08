@@ -32,6 +32,7 @@ impl Default for Config {
     }
 }
 
+#[derive(Default)]
 pub struct HeatmapDataPoint {
     pub grouped_trades: Box<[GroupedTrade]>,
     pub buy_sell: (f32, f32),

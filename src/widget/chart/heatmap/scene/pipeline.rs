@@ -48,8 +48,6 @@ impl Default for ParamsUniform {
 }
 
 impl ParamsUniform {
-    // ---- Cell / grid --------------------------------------------------------
-
     /// grid.xy = cell width/height in world units.
     #[inline]
     pub fn set_cell_world(&mut self, cell: view::Cell) {
