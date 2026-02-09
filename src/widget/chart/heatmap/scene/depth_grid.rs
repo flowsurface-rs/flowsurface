@@ -4,8 +4,6 @@ use data::chart::heatmap::HistoricalDepth;
 use exchange::depth::Depth;
 use exchange::util::{Price, PriceStep};
 
-use crate::widget::chart::heatmap::scene;
-
 const Y_BLOCK_H: u32 = 16;
 const DEPTH_GRID_GRACE_MS: u64 = 500;
 
@@ -618,39 +616,40 @@ impl GridRing {
         self.mark_full_dirty();
     }
 
-    /// Build a renderer upload plan from the ring's dirty flags.
-    pub fn build_scene_upload_plan(&mut self) -> scene::HeatmapUploadPlan {
+    /// Build a renderer upload from the ring's dirty flags.
+    fn build_scene_upload(&mut self) -> Option<super::HeatmapUpload> {
         if self.tex_w == 0 || self.tex_h == 0 {
-            return scene::HeatmapUploadPlan::None;
+            return None;
         }
 
         if self.take_full_dirty() {
-            return scene::HeatmapUploadPlan::Full(scene::HeatmapTextureCpuFull {
+            return Some(super::HeatmapUpload::Full {
                 width: self.tex_w,
                 height: self.tex_h,
-                bid: Arc::new(self.bid.clone()),
-                ask: Arc::new(self.ask.clone()),
-                generation: 0, // filled by Scene::apply_heatmap_upload_plan
+                bid: Arc::from(self.bid.clone()),
+                ask: Arc::from(self.ask.clone()),
             });
         }
 
         let xs = self.drain_dirty_columns();
         if xs.is_empty() {
-            return scene::HeatmapUploadPlan::None;
+            return None;
         }
 
-        let mut cols: Vec<scene::HeatmapColumnCpu> = Vec::with_capacity(xs.len());
+        let mut cols: Vec<super::HeatmapColumnCpu> = Vec::with_capacity(xs.len());
         for x in xs {
-            cols.push(scene::HeatmapColumnCpu {
-                width: self.tex_w,
-                height: self.tex_h,
+            cols.push(super::HeatmapColumnCpu {
                 x,
-                bid_col: Arc::new(self.extract_bid_column(x)),
-                ask_col: Arc::new(self.extract_ask_column(x)),
+                bid_col: Arc::from(self.extract_bid_column(x)),
+                ask_col: Arc::from(self.extract_ask_column(x)),
             });
         }
 
-        scene::HeatmapUploadPlan::Cols(cols)
+        Some(super::HeatmapUpload::Cols {
+            width: self.tex_w,
+            height: self.tex_h,
+            cols: Arc::from(cols),
+        })
     }
 
     /// Map an absolute bucket index to the ring texture x coordinate.
@@ -686,7 +685,7 @@ impl GridRing {
         -(half_h as f32) - (delta_bins as f32)
     }
 
-    pub fn upload_to_scene(&mut self, force_full: bool) -> Option<super::HeatmapUploadPlan> {
+    pub fn upload_to_scene(&mut self, force_full: bool) -> Option<super::HeatmapUpload> {
         let tex_w = self.tex_w();
         let tex_h = self.tex_h();
         if tex_w == 0 || tex_h == 0 {
@@ -697,7 +696,7 @@ impl GridRing {
             self.force_full_upload();
         }
 
-        Some(self.build_scene_upload_plan())
+        self.build_scene_upload()
     }
 
     /// Determines if the grid should be recentered based on distance from current anchor.

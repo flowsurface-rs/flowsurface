@@ -1,22 +1,48 @@
+pub mod circle;
+pub mod rectangle;
+
+use super::HeatmapColumnCpu;
+use super::camera::CameraUniform;
+use super::uniform::ParamsUniform;
+use circle::{CIRCLE_INDICES, CIRCLE_VERTICES, CircleInstance};
+use rectangle::{RECT_INDICES, RECT_VERTICES, RectInstance};
+
 use iced::wgpu::PipelineCompilationOptions;
 use iced::wgpu::util::DeviceExt;
 use iced::{Rectangle, wgpu};
 
-pub mod circle;
-pub mod rectangle;
-
-use crate::widget::chart::heatmap::scene::HeatmapColumnCpu;
-use crate::widget::chart::heatmap::scene::camera::CameraUniform;
-
-use crate::widget::chart::heatmap::scene::pipeline::circle::{
-    CIRCLE_INDICES, CIRCLE_VERTICES, CircleInstance,
-};
-use crate::widget::chart::heatmap::scene::pipeline::rectangle::{
-    RECT_INDICES, RECT_VERTICES, RectInstance,
-};
-use crate::widget::chart::heatmap::scene::uniform::ParamsUniform;
-
 use rustc_hash::FxHashMap;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DrawLayer(pub i16);
+
+impl DrawLayer {
+    pub const HEATMAP: Self = Self(0);
+    pub const PROFILE_LATEST: Self = Self(10);
+    pub const CIRCLES: Self = Self(20);
+    pub const VOLUME: Self = Self(30);
+    pub const TRADE_PROFILE: Self = Self(40);
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum DrawOp {
+    Heatmap,
+    Rects { start: u32, count: u32 },
+    Circles { start: u32, count: u32 },
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DrawItem {
+    pub layer: DrawLayer,
+    pub op: DrawOp,
+}
+
+impl DrawItem {
+    #[inline]
+    pub fn new(layer: DrawLayer, op: DrawOp) -> Self {
+        Self { layer, op }
+    }
+}
 
 struct PerSceneGpu {
     rect_instance_buffer: wgpu::Buffer,
@@ -642,8 +668,8 @@ impl Pipeline {
                 &gpu.heatmap_tex,
                 x,
                 height,
-                &col.bid_col,
-                &col.ask_col,
+                col.bid_col.as_ref(),
+                col.ask_col.as_ref(),
                 &mut gpu.heatmap_upload_scratch,
             );
         }
@@ -871,154 +897,7 @@ impl Pipeline {
         gpu.has_last_camera = true;
     }
 
-    pub fn render_heatmap_texture(
-        &self,
-        id: u64,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        viewport: Rectangle<u32>,
-    ) {
-        let Some(gpu) = self.per_scene.get(&id) else {
-            return;
-        };
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("heatmap texture pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_viewport(
-            viewport.x as f32,
-            viewport.y as f32,
-            viewport.width as f32,
-            viewport.height as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
-
-        pass.set_pipeline(&self.heatmap_pipeline);
-        pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
-        pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
-        pass.set_index_buffer(
-            self.heatmap_index_buffer.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
-    }
-
-    pub fn render_rectangles(
-        &self,
-        id: u64,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        viewport: Rectangle<u32>,
-        num_instances: u32,
-    ) {
-        let Some(gpu) = self.per_scene.get(&id) else {
-            return;
-        };
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("rect render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_viewport(
-            viewport.x as f32,
-            viewport.y as f32,
-            viewport.width as f32,
-            viewport.height as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
-
-        pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
-        pass.set_pipeline(&self.rect_pipeline);
-        pass.set_vertex_buffer(0, self.rect_vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, gpu.rect_instance_buffer.slice(..));
-        pass.set_index_buffer(self.rect_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..self.rect_num_indices, 0, 0..num_instances);
-    }
-
-    pub fn render_circles(
-        &self,
-        id: u64,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        viewport: Rectangle<u32>,
-        num_instances: u32,
-    ) {
-        if num_instances == 0 {
-            return;
-        }
-
-        let Some(gpu) = self.per_scene.get(&id) else {
-            return;
-        };
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("circle render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_viewport(
-            viewport.x as f32,
-            viewport.y as f32,
-            viewport.width as f32,
-            viewport.height as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
-
-        pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
-        pass.set_pipeline(&self.circle_pipeline);
-        pass.set_vertex_buffer(0, self.circle_vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, gpu.circle_instance_buffer.slice(..));
-        pass.set_index_buffer(
-            self.circle_index_buffer.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        pass.draw_indexed(0..self.circle_num_indices, 0, 0..num_instances);
-    }
-
-    pub fn single_pass_render_ordered(
+    pub fn begin_render_pass_ordered(
         &self,
         id: u64,
         encoder: &mut wgpu::CommandEncoder,
@@ -1026,7 +905,7 @@ impl Pipeline {
         viewport: Rectangle<u32>,
         rect_total_instances: u32,
         circle_total_instances: u32,
-        draw_list: &[super::DrawItem],
+        draw_list: &[DrawItem],
     ) {
         let Some(gpu) = self.per_scene.get(&id) else {
             return;
@@ -1066,7 +945,7 @@ impl Pipeline {
 
         for item in draw_list {
             match item.op {
-                super::DrawOp::Heatmap => {
+                DrawOp::Heatmap => {
                     pass.set_pipeline(&self.heatmap_pipeline);
                     pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
                     pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
@@ -1076,7 +955,7 @@ impl Pipeline {
                     );
                     pass.draw_indexed(0..self.heatmap_num_indices, 0, 0..1);
                 }
-                super::DrawOp::Rects { start, count } => {
+                DrawOp::Rects { start, count } => {
                     let start = start.min(rect_total_instances);
                     let count = count.min(rect_total_instances.saturating_sub(start));
                     if count == 0 {
@@ -1095,7 +974,7 @@ impl Pipeline {
                     );
                     pass.draw_indexed(0..self.rect_num_indices, 0, 0..count);
                 }
-                super::DrawOp::Circles { start, count } => {
+                DrawOp::Circles { start, count } => {
                     let start = start.min(circle_total_instances);
                     let count = count.min(circle_total_instances.saturating_sub(start));
                     if count == 0 {

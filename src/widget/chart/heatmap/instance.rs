@@ -1,7 +1,7 @@
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::{MIN_BAR_PX, RectInstance};
-use crate::widget::chart::heatmap::scene::{DrawItem, DrawLayer, DrawOp};
+use crate::widget::chart::heatmap::scene::pipeline::{DrawItem, DrawLayer, DrawOp};
 use crate::widget::chart::heatmap::view::ViewWindow;
 
 use data::aggr::time::TimeSeries;

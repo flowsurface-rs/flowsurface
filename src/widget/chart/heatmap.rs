@@ -634,8 +634,6 @@ impl HeatmapShader {
                 false,
             );
         } else {
-            self.scene.set_heatmap_update(None);
-
             let latest_time_for_scene = if self.anchor.is_paused() {
                 self.anchor
                     .effective_render_latest_time(self.latest_time)
