@@ -192,6 +192,8 @@ impl HeatmapShader {
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomAt { factor, cursor } => {
+                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+
                 let Some(size) = self.viewport_size_px() else {
                     return;
                 };
@@ -206,8 +208,6 @@ impl HeatmapShader {
 
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
-
-                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ScrolledAxisY {
                 factor,
@@ -434,7 +434,7 @@ impl HeatmapShader {
             self.cleanup_old_data(aggr_time);
         }
 
-        if !paused {
+        if !paused && !is_interacting {
             self.rebuild_policy = view::RebuildPolicy::Immediate;
         }
     }

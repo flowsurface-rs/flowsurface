@@ -17,6 +17,10 @@ use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+const PX_PER_NOTCH: f32 = 120.0;
+const ZOOM_BASE_PER_NOTCH: f32 = 1.08;
+const MAX_ABS_NOTCHES_PER_EVENT: f32 = 6.0;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DrawLayer(pub i16);
 
@@ -369,12 +373,13 @@ impl shader::Program<Message> for Scene {
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let cursor_in_relative = cursor.position_in(bounds)?;
 
-                let scroll_amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
-                };
+                let notches: f32 = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => *y,
+                    mouse::ScrollDelta::Pixels { y, .. } => *y / PX_PER_NOTCH,
+                }
+                .clamp(-MAX_ABS_NOTCHES_PER_EVENT, MAX_ABS_NOTCHES_PER_EVENT);
 
-                let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
+                let factor = ZOOM_BASE_PER_NOTCH.powf(notches).clamp(0.01, 100.0);
 
                 Some(shader::Action::publish(Message::ZoomAt {
                     factor,
