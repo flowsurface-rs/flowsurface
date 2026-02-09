@@ -29,19 +29,10 @@ struct Params {
     ask_rgb: vec4<f32>,
     grid: vec4<f32>,
     origin: vec4<f32>,
-    heatmap_a: vec4<f32>,
-    heatmap_b: vec4<f32>,
+    heatmap_map: vec4<f32>,
+    heatmap_tex: vec4<f32>,
     fade: vec4<f32>, // (x_left, width, alpha_min, alpha_max)
 };
-
-
-fn fade_factor(world_x: f32) -> f32 {
-    let x0 = params.fade.x;
-    let w = max(params.fade.y, 1e-6);
-    let t = clamp((world_x - x0) / w, 0.0, 1.0);
-    let s = smoothstep(0.0, 1.0, t);
-    return params.fade.z + s * (params.fade.w - params.fade.z);
-}
 
 @group(0) @binding(1)
 var<uniform> params: Params;
@@ -106,4 +97,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let fade = select(fade_factor(input.world_x), 1.0, input.fade_mode != 0u);
     return vec4<f32>(input.color.rgb * fade, input.color.a * fade);
+}
+
+fn fade_factor(world_x: f32) -> f32 {
+    let x0 = params.fade.x;
+    let w = max(params.fade.y, 1e-6);
+    let t = clamp((world_x - x0) / w, 0.0, 1.0);
+
+    var s = smoothstep(0.0, 1.0, t);
+    s = s * s;
+
+    return params.fade.z + s * (params.fade.w - params.fade.z);
 }

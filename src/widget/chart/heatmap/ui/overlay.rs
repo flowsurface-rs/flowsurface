@@ -220,8 +220,8 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let vw_px = bounds.width;
                     let vh_px = bounds.height;
 
-                    let left_edge_world = self.scene.params.fade[0];
-                    let trade_profile_max_w_world = self.scene.params.fade[1];
+                    let left_edge_world = self.scene.params.fade_start();
+                    let trade_profile_max_w_world = self.scene.params.fade_width();
 
                     if left_edge_world.is_finite()
                         && trade_profile_max_w_world.is_finite()
@@ -272,7 +272,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 return;
             }
 
-            let origin0 = self.scene.params.origin[0];
+            let origin0 = self.scene.params.origin_x();
             if !origin0.is_finite() || cell_width <= 0.0 || cell_height <= 0.0 {
                 return;
             }
@@ -296,7 +296,8 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             let snapped_world_x = (x_bin_rel - origin0) * cell_width;
 
             // --- Y snap: nearest y-bin center (matches texture binning)
-            let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+            let steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
+
             let steps_at_y: i64 = ((-world_y) / cell_height).floor() as i64;
             let base_rel_y_bin: i64 = steps_at_y.div_euclid(steps_per_y_bin.max(1));
             let snapped_world_y =
@@ -338,12 +339,12 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 .saturating_add(x_bin_rel_f.round() as i64);
 
             // --- Y: world -> rel_y_bin (base cell)
-            let steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+            let steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
             let steps_at_y: i64 = ((-world_y) / cell_height).floor() as i64;
             let base_rel_y_bin: i64 = steps_at_y.div_euclid(steps_per_y_bin.max(1));
 
             // shader-provided y_start_bin
-            let y_start_bin: i64 = self.scene.params.heatmap_a[1].round() as i64;
+            let y_start_bin: i64 = self.scene.params.heatmap_start_bin();
 
             // Tooltip grid offsets (match old impl shape: 3 rows × 4 cols)
             let row_offsets: [i64; 3] = [1, 0, -1];

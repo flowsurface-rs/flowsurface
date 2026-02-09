@@ -41,9 +41,6 @@ const STRIP_HEIGHT_FRAC: f32 = 0.10;
 // Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction
 const REBUILD_DEBOUNCE_MS: u64 = 250;
 
-// Shift volume-strip rects left by half a bucket to align with circle centers
-const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
-
 // If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
 const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
@@ -113,9 +110,6 @@ impl HeatmapShader {
         let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
 
-        let mut scene = Scene::new();
-        scene.params.origin[3] = VOLUME_X_SHIFT_BUCKET;
-
         let depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
 
         let qty_scale: f32 = match exchange::volume_size_unit() {
@@ -129,7 +123,7 @@ impl HeatmapShader {
 
         Self {
             last_tick: None,
-            scene,
+            scene: Scene::new(),
             viewport: None,
             cell: view::Cell {
                 width_world: DEFAULT_COL_W_WORLD,
@@ -198,8 +192,19 @@ impl HeatmapShader {
                     return;
                 };
 
+                // Enforce ">= 1px per row/col" even for uniform camera zoom.
+                let cur_s = self.scene.camera.scale();
+
+                let min_s_y = view::MIN_ROW_PX / self.cell.height_world.max(view::MIN_ROW_H_WORLD);
+                let min_s_x = view::MIN_COL_PX / self.cell.width_world.max(view::MIN_COL_W_WORLD);
+                let min_s = min_s_y.max(min_s_x);
+
+                let desired_s = cur_s * factor;
+                let clamped_s = desired_s.max(min_s);
+                let effective_factor = if cur_s > 0.0 { clamped_s / cur_s } else { 1.0 };
+
                 self.scene.camera.zoom_at_cursor(
-                    factor,
+                    effective_factor,
                     cursor.x,
                     cursor.y,
                     size.width,
@@ -502,7 +507,8 @@ impl HeatmapShader {
         // If we are interacting (debounced), keep overlays on the *same* y-binning
         let mut effective_window = *w;
         if matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. }) {
-            let heatmap_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+            let heatmap_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
+
             if effective_window.steps_per_y_bin != heatmap_steps_per_y_bin {
                 effective_window.steps_per_y_bin = heatmap_steps_per_y_bin;
                 effective_window.y_bin_h_world =
@@ -561,7 +567,6 @@ impl HeatmapShader {
 
         self.scene.params.set_cell_world(self.cell);
         self.scene.params.set_steps_per_y_bin(new_steps_per_y_bin);
-        self.scene.params.set_grid_w(0.0);
 
         // Consume resume directive (if any).
         let resume = self.anchor.take_live_resume();
@@ -667,7 +672,7 @@ impl HeatmapShader {
             return;
         };
 
-        let cur_steps_per_y_bin: i64 = self.scene.params.grid[2].round().max(1.0) as i64;
+        let cur_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         if w.steps_per_y_bin != cur_steps_per_y_bin {
             self.rebuild_policy = view::RebuildPolicy::Immediate;
             self.rebuild_all(Some(w));
@@ -794,10 +799,13 @@ impl HeatmapShader {
 
     #[inline]
     fn sync_fade_params(&mut self, w: &ViewWindow) {
+        let fade_start = w.trade_profile_max_w_world * 1.5;
+        let fade_end = w.left_edge_world;
+
         // fade only in the left trade-profile zone
         self.scene
             .params
-            .set_trade_fade(w.left_edge_world, w.trade_profile_max_w_world, 0.15, 1.0);
+            .set_trade_fade(fade_end, fade_start, 0.15, 1.0);
     }
 
     /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.

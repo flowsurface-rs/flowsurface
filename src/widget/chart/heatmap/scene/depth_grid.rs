@@ -663,7 +663,7 @@ impl GridRing {
         (bucket.rem_euclid(self.tex_w as i64)) as u32
     }
 
-    /// Value for the shader uniform `heatmap_a[1]` (y_start_bin).
+    /// Value for the shader uniform `heatmap_map[1]` (y_start_bin).
     ///
     /// This is the y-bin offset that aligns the texture's internal `y_anchor`
     /// with the current `base_price`.

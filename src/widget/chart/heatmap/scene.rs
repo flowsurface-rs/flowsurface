@@ -1,6 +1,7 @@
 pub mod camera;
 pub mod depth_grid;
 pub mod pipeline;
+mod uniform;
 
 use super::Message;
 use iced::wgpu;
@@ -10,9 +11,9 @@ use iced::Rectangle;
 use iced::mouse;
 use iced::widget::shader::{self, Viewport};
 
-use crate::widget::chart::heatmap::scene::pipeline::ParamsUniform;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
+use crate::widget::chart::heatmap::scene::uniform::ParamsUniform;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

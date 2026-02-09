@@ -20,8 +20,8 @@ struct Params {
     ask_rgb: vec4<f32>,
     grid: vec4<f32>,
     origin: vec4<f32>,
-    heatmap_a: vec4<f32>,
-    heatmap_b: vec4<f32>,
+    heatmap_map: vec4<f32>,
+    heatmap_tex: vec4<f32>,
     fade: vec4<f32>, // (x_left, width, alpha_min, alpha_max)
 };
 @group(0) @binding(1)
@@ -29,14 +29,6 @@ var<uniform> params: Params;
 
 @group(1) @binding(0)
 var heatmap_rg: texture_2d<u32>;
-
-fn fade_factor(world_x: f32) -> f32 {
-    let x0 = params.fade.x;
-    let w = max(params.fade.y, 1e-6);
-    let t = clamp((world_x - x0) / w, 0.0, 1.0);
-    let s = smoothstep(0.0, 1.0, t);
-    return params.fade.z + s * (params.fade.w - params.fade.z);
-}
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
@@ -77,15 +69,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let steps_per = max(params.grid.z, 1.0);
     let bin_h = row_h * steps_per;
 
-    let tex_w_u = u32(params.heatmap_b.x);
-    let tex_h_u = u32(params.heatmap_b.y);
+    let tex_w_u = u32(params.heatmap_tex.x);
+    let tex_h_u = u32(params.heatmap_tex.y);
     if (tex_w_u < 1u || tex_h_u < 1u) {
         return vec4<f32>(0.0);
     }
 
     // Y (bins)
     let y_bin_rel = i32(floor((-world.y) / max(bin_h, 1e-12)));
-    let y_start_bin = i32(params.heatmap_a.y);
+    let y_start_bin = i32(params.heatmap_map.y);
     let yi = y_bin_rel - y_start_bin;
     if (yi < 0 || u32(yi) >= tex_h_u) {
         return vec4<f32>(0.0);
@@ -93,9 +85,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // X (ring):
     // params.origin.x is (render_bucket - scroll_ref_bucket) + phase
-    // params.heatmap_a.x is (latest_data_bucket - scroll_ref_bucket)
-    // params.heatmap_a.w is latest_x_ring
-    let latest_bucket_rel = i32(params.heatmap_a.x);
+    // params.heatmap_map.x is (latest_data_bucket - scroll_ref_bucket)
+    // params.heatmap_map.w is latest_x_ring
+    let latest_bucket_rel = i32(params.heatmap_map.x);
     let render_rel = i32(floor(params.origin.x + (world.x / col_w)));
 
     // Convert render-relative bucket to latest-relative bucket offset
@@ -110,11 +102,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    let latest_x_ring = i32(u32(params.heatmap_a.w));
-    let tex_w_mask = i32(u32(params.heatmap_b.z));
+    let latest_x_ring = i32(u32(params.heatmap_map.w));
+    let tex_w_mask = i32(u32(params.heatmap_tex.z));
     let xi = (latest_x_ring + bucket_rel_from_latest) & tex_w_mask;
 
-    let inv_qty_scale = params.heatmap_b.w;
+    let inv_qty_scale = params.heatmap_tex.w;
 
     let v = textureLoad(heatmap_rg, vec2<i32>(xi, yi), 0);
     let bid_qty = f32(v.x) * inv_qty_scale;
@@ -140,4 +132,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let fade = fade_factor(world.x);
     return vec4<f32>(c * fade, a * fade);
+}
+
+fn fade_factor(world_x: f32) -> f32 {
+    let x0 = params.fade.x;
+    let w = max(params.fade.y, 1e-6);
+    let t = clamp((world_x - x0) / w, 0.0, 1.0);
+
+    var s = smoothstep(0.0, 1.0, t);
+    s = s * s;
+
+    return params.fade.z + s * (params.fade.w - params.fade.z);
 }

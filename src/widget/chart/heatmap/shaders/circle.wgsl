@@ -11,8 +11,8 @@ struct Params {
     ask_rgb: vec4<f32>,
     grid: vec4<f32>,
     origin: vec4<f32>,
-    heatmap_a: vec4<f32>,
-    heatmap_b: vec4<f32>,
+    heatmap_map: vec4<f32>,
+    heatmap_tex: vec4<f32>,
     fade: vec4<f32>, // (x_left, width, alpha_min, alpha_max)
 };
 @group(0) @binding(1)
@@ -33,14 +33,6 @@ struct VsOut {
     @location(1) color: vec4<f32>,
     @location(2) world_x: f32,
 };
-
-fn fade_factor(world_x: f32) -> f32 {
-    let x0 = params.fade.x;
-    let w = max(params.fade.y, 1e-6);
-    let t = clamp((world_x - x0) / w, 0.0, 1.0);
-    let s = smoothstep(0.0, 1.0, t);
-    return params.fade.z + s * (params.fade.w - params.fade.z);
-}
 
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
@@ -90,4 +82,16 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 
     let fade = fade_factor(input.world_x);
     return vec4<f32>(input.color.rgb * a * fade, input.color.a * a * fade);
+}
+
+fn fade_factor(world_x: f32) -> f32 {
+    let x0 = params.fade.x;
+    let w = max(params.fade.y, 1e-6);
+    let t = clamp((world_x - x0) / w, 0.0, 1.0);
+
+    // More aggressive than plain smoothstep: stays near alpha_min longer.
+    var s = smoothstep(0.0, 1.0, t);
+    s = s * s;
+
+    return params.fade.z + s * (params.fade.w - params.fade.z);
 }
