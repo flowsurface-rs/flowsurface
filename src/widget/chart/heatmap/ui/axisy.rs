@@ -10,7 +10,7 @@ const DRAG_ZOOM_SENS: f32 = 0.005;
 pub struct AxisYLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
     pub plot_bounds: Option<Rectangle>,
-    pub base_price: Price,
+    pub base_price: Option<Price>,
     pub step: PriceStep,
     pub row_h: f32,
     pub cam_offset_y: f32,
@@ -146,6 +146,10 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             return vec![];
         }
 
+        let Some(base_price) = self.base_price else {
+            return vec![];
+        };
+
         let palette = theme.extended_palette();
 
         let tick_labels = self.cache.draw(renderer, bounds.size(), |frame| {
@@ -186,8 +190,10 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         let step_at_cursor = (-(y_world_cursor) / row_h - 0.5).round() as i64;
                         let y_world_for_step = -((step_at_cursor as f64 + 0.5) * row_h);
                         let y_px = world_to_px(y_world_for_step, cam_offset_y, cam_sy, vh);
-                        let price_at_cursor = self.base_price.add_steps(step_at_cursor, self.step);
+
+                        let price_at_cursor = base_price.add_steps(step_at_cursor, self.step);
                         let label_at_cursor = price_at_cursor.to_string(self.label_precision);
+
                         LabelKind::Cursor {
                             y_px,
                             label: label_at_cursor,
@@ -198,8 +204,10 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let base_step: i64 = 0;
             let y_world_base = -((base_step as f64 + 0.5) * row_h);
             let y_px_base = world_to_px(y_world_base, cam_offset_y, cam_sy, vh);
-            let price_base = self.base_price.add_steps(base_step, self.step);
+
+            let price_base = base_price.add_steps(base_step, self.step);
             let label_base = price_base.to_string(self.label_precision);
+
             let base_label = LabelKind::Base {
                 y_px: y_px_base,
                 label: label_base,
@@ -213,11 +221,13 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             while s <= max_steps {
                 let y_world = -((s as f64 + 0.5) * row_h);
                 let y_px = world_to_px(y_world, cam_offset_y, cam_sy, vh);
+
                 if (0.0..=bounds.height).contains(&y_px) {
-                    let price = self.base_price.add_steps(s, self.step);
+                    let price = base_price.add_steps(s, self.step);
                     let label = price.to_string(self.label_precision);
                     labels.push(LabelKind::Tick { y_px, label });
                 }
+
                 s = s.saturating_add(every_steps);
                 if every_steps <= 0 {
                     break;
@@ -241,6 +251,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                 if ranges_overlap(tick_clip, base_clip_range) {
                     continue;
                 }
+
                 if let LabelKind::Tick { y_px, label } = label {
                     frame.fill_text(canvas::Text {
                         content: label.clone(),
@@ -263,11 +274,13 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             if base_y_in_view && !overlaps_cursor {
                 let mut bg = palette.secondary.strong.color;
                 bg = iced::Color { a: 1.0, ..bg };
+
                 frame.fill_rectangle(
                     iced::Point::new(0.0, y_px_base - 0.5 * size_cursor_label.height),
                     size_cursor_label,
                     bg,
                 );
+
                 if let LabelKind::Base { label, .. } = &base_label {
                     frame.fill_text(canvas::Text {
                         content: label.clone(),
@@ -286,11 +299,13 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             if let Some(LabelKind::Cursor { y_px, label }) = cursor_label_snapped {
                 let mut bg = palette.secondary.base.color;
                 bg = iced::Color { a: 1.0, ..bg };
+
                 frame.fill_rectangle(
                     iced::Point::new(0.0, y_px - 0.5 * size_cursor_label.height),
                     size_cursor_label,
                     bg,
                 );
+
                 frame.fill_text(canvas::Text {
                     content: label,
                     position: iced::Point::new(x, y_px),

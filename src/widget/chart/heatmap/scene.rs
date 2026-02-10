@@ -132,7 +132,9 @@ impl Scene {
     /// Is the *profile start boundary* (world x=0) visible on screen?
     /// Uses the camera's full world->screen mapping (includes right_pad_frac).
     #[inline]
-    pub fn profile_start_visible_x0(&self, vw_px: f32, vh_px: f32) -> bool {
+    pub fn profile_start_visible_x0(&self, viewport_size: iced::Size) -> bool {
+        let [vw_px, vh_px] = viewport_size.into();
+
         if !vw_px.is_finite() || vw_px <= 1.0 || !vh_px.is_finite() || vh_px <= 1.0 {
             return true;
         }
@@ -263,12 +265,14 @@ impl Scene {
         grid: &mut depth_grid::GridRing,
         base_price: exchange::util::Price,
         step: exchange::util::PriceStep,
-        qty_scale_inv: f32,
+        qty_scale: f32,
         latest_time: u64,
         aggr_time: u64,
         scroll_ref_bucket: i64,
         force_full_upload: bool,
     ) -> bool {
+        let qty_scale_inv = 1.0 / qty_scale;
+
         self.sync_heatmap_texture(
             grid,
             base_price,
@@ -335,11 +339,6 @@ impl shader::Program<Message> for Scene {
         bounds: Rectangle,
         cursor: iced_core::mouse::Cursor,
     ) -> Option<shader::Action<Message>> {
-        if interaction.last_bounds != bounds {
-            interaction.last_bounds = bounds;
-            return Some(shader::Action::publish(Message::BoundsChanged(bounds)));
-        }
-
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let cursor_in_abs = cursor.position_over(bounds)?;

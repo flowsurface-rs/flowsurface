@@ -1,15 +1,14 @@
-use data::util::abbr_large_numbers;
-use iced::Vector;
-use iced::widget::canvas::Path;
-use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
-
-use exchange::util::{Price, PriceStep};
-
 use crate::style;
 use crate::widget::chart::heatmap::Message;
 use crate::widget::chart::heatmap::depth_grid::GridRing;
 use crate::widget::chart::heatmap::scene::Scene;
-use crate::widget::chart::heatmap::scene::cell::Cell;
+
+use data::util::abbr_large_numbers;
+use exchange::util::{Price, PriceStep};
+
+use iced::Vector;
+use iced::widget::canvas::Path;
+use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
 
 const TOOLTIP_WIDTH: f32 = 198.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
@@ -17,6 +16,10 @@ const TOOLTIP_PADDING: f32 = 12.0;
 
 const OVERLAY_LABEL_PAD_PX: f32 = 6.0;
 const OVERLAY_LABEL_TEXT_SIZE: f32 = 11.0;
+
+const PAUSE_ICON_BAR_WIDTH_FRAC: f32 = 0.008;
+const PAUSE_ICON_BAR_HEIGHT_FRAC: f32 = 0.032;
+const PAUSE_ICON_PADDING_FRAC: f32 = 0.02;
 
 #[derive(Debug, Default)]
 pub enum Interaction {
@@ -33,15 +36,10 @@ pub struct OverlayCanvas<'a> {
 
     pub scene: &'a Scene,
     pub depth_grid: &'a GridRing,
-
-    pub base_price: Price,
+    pub base_price: Option<Price>,
     pub step: PriceStep,
-
     pub scroll_ref_bucket: i64,
-
-    pub qty_scale_inv: f32,
-
-    pub cell_world: Cell,
+    pub qty_scale: f32,
 
     pub profile_col_width_px: f32,
     pub strip_height_frac: f32,
@@ -107,9 +105,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 if self.is_paused
                 // pause indicator (top-right corner)
                 {
-                    let bar_width = 0.008 * bounds.height;
-                    let bar_height = 0.032 * bounds.height;
-                    let padding = bounds.area().sqrt() * 0.02;
+                    let bar_width = PAUSE_ICON_BAR_WIDTH_FRAC * bounds.height;
+                    let bar_height = PAUSE_ICON_BAR_HEIGHT_FRAC * bounds.height;
+                    let padding = bounds.area().sqrt() * PAUSE_ICON_PADDING_FRAC;
 
                     let region = Rectangle {
                         x: 0.0,
@@ -262,8 +260,8 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         };
 
         let tooltip = self.tooltip_cache.draw(renderer, bounds.size(), |frame| {
-            let cell_width = self.cell_world.width_world();
-            let cell_height = self.cell_world.height_world();
+            let cell_width = self.scene.cell.width_world();
+            let cell_height = self.scene.cell.height_world();
 
             let tex_w = self.depth_grid.tex_w() as i64;
             let tex_h = self.depth_grid.tex_h() as i64;
@@ -445,7 +443,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         (false, ask_u32)
                     };
 
-                    let qty = (qty_u32 as f32) * self.qty_scale_inv;
+                    let qty: f32 = (qty_u32 as f32) / self.qty_scale;
 
                     let color = if is_bid {
                         palette.success.strong.color

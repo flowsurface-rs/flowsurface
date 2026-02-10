@@ -129,7 +129,7 @@ impl InstanceBuilder {
         let mut rects: Vec<RectInstance> = Vec::new();
 
         let prof_start = rects.len() as u32;
-        self.build_profile_rects(
+        self.build_depth_profile_rects(
             w,
             heatmap,
             base_price,
@@ -145,7 +145,7 @@ impl InstanceBuilder {
         let vol_end = rects.len() as u32;
 
         let tp_start = rects.len() as u32;
-        self.build_trade_profile_rects(w, trades, base_price, step, palette, &mut rects);
+        self.build_volume_profile_rects(w, trades, base_price, step, palette, &mut rects);
         let tp_end = rects.len() as u32;
 
         OverlayBuild {
@@ -157,7 +157,7 @@ impl InstanceBuilder {
         }
     }
 
-    fn build_trade_profile_rects(
+    fn build_volume_profile_rects(
         &mut self,
         w: &ViewWindow,
         trades: &TimeSeries<HeatmapDataPoint>,
@@ -166,7 +166,7 @@ impl InstanceBuilder {
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
-        if w.trade_profile_max_w_world <= 0.0 {
+        if w.volume_profile_max_width <= 0.0 {
             return;
         }
 
@@ -225,14 +225,14 @@ impl InstanceBuilder {
                 continue;
             }
 
-            let total_w = ((total / max_total) * w.trade_profile_max_w_world).max(min_w_world);
+            let total_w = ((total / max_total) * w.volume_profile_max_width).max(min_w_world);
             let buy_w = total_w * (buy_qty / total);
             let sell_w = total_w * (sell_qty / total);
 
             let mut x = w.left_edge_world;
 
             if sell_qty > 0.0 && sell_w > 0.0 {
-                rects.push(RectInstance::trade_profile_split_bar(
+                rects.push(RectInstance::volume_profile_split_bar(
                     y_world,
                     sell_w,
                     x,
@@ -243,7 +243,7 @@ impl InstanceBuilder {
             }
 
             if buy_qty > 0.0 && buy_w > 0.0 {
-                rects.push(RectInstance::trade_profile_split_bar(
+                rects.push(RectInstance::volume_profile_split_bar(
                     y_world,
                     buy_w,
                     x,
@@ -284,7 +284,7 @@ impl InstanceBuilder {
         out
     }
 
-    fn build_profile_rects(
+    fn build_depth_profile_rects(
         &mut self,
         w: &ViewWindow,
         heatmap: &HistoricalDepth,
@@ -294,7 +294,7 @@ impl InstanceBuilder {
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
-        if w.profile_max_w_world <= 0.0 {
+        if w.depth_profile_max_width <= 0.0 {
             return;
         }
 
@@ -350,7 +350,7 @@ impl InstanceBuilder {
                 (false, self.profile_ask_acc[i]),
             ] {
                 if qty > 0.0 {
-                    rects.push(RectInstance::profile_bar(
+                    rects.push(RectInstance::depth_profile_bar(
                         y, qty, max_qty, is_bid, w, palette,
                     ));
                 }
@@ -371,7 +371,7 @@ impl InstanceBuilder {
         const MAX_COLS_PER_X_BIN: i64 = 4096;
         const EPS: f32 = 1e-12;
 
-        if w.strip_h_world <= 0.0 {
+        if w.volume_area_max_height <= 0.0 {
             return;
         }
 

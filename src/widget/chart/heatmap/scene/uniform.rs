@@ -1,7 +1,12 @@
+use crate::widget::chart::heatmap::view::ViewWindow;
 use bytemuck::{Pod, Zeroable};
 
 // Shift volume-strip rects left by half a bucket to align with circle centers
 const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
+
+const PROFILE_FADE_START_MULT: f32 = 1.5;
+const PROFILE_FADE_ALPHA_MIN: f32 = 0.15;
+const PROFILE_FADE_ALPHA_MAX: f32 = 1.0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -92,14 +97,14 @@ impl ParamsUniform {
         self.depth[0] = denom;
     }
 
-    pub fn set_trade_fade(
-        &mut self,
-        x_left_world: f32,
-        width_world: f32,
-        alpha_min: f32,
-        alpha_max: f32,
-    ) {
-        self.fade = [x_left_world, width_world, alpha_min, alpha_max];
+    pub fn set_trade_fade(&mut self, view_window: &ViewWindow) {
+        let fade_start = view_window.volume_profile_max_width * PROFILE_FADE_START_MULT;
+        let fade_end = view_window.left_edge_world;
+
+        let alpha_min = PROFILE_FADE_ALPHA_MIN;
+        let alpha_max = PROFILE_FADE_ALPHA_MAX;
+
+        self.fade = [fade_end, fade_start, alpha_min, alpha_max];
     }
 
     pub fn fade_start(&self) -> f32 {

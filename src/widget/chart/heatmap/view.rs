@@ -204,12 +204,12 @@ impl Anchor {
     /// Apply a new mid price update.
     /// - If paused: store as pending (so resuming can snap cleanly)
     /// - If live: immediately updates `base_price`
-    pub fn apply_mid_price(&mut self, mid_rounded: Price, base_price: &mut Price) {
+    pub fn apply_mid_price(&mut self, mid_rounded: Price, base_price: &mut Option<Price>) {
         match self {
             Anchor::Paused {
                 pending_mid_price, ..
             } => *pending_mid_price = Some(mid_rounded),
-            Anchor::Live { .. } => *base_price = mid_rounded,
+            Anchor::Live { .. } => *base_price = Some(mid_rounded),
         }
     }
 
@@ -333,8 +333,8 @@ impl ExchangeClock {
 pub struct ViewConfig {
     // Overlays
     pub profile_col_width_px: f32,
-    pub strip_height_frac: f32,
-    pub trade_profile_width_frac: f32,
+    pub volume_area_height_pct: f32,
+    pub volume_profile_width_pct: f32,
 
     // Y downsampling
     pub max_steps_per_y_bin: i64,
@@ -368,10 +368,10 @@ pub struct ViewWindow {
     pub cam_scale: f32,
 
     // Overlays
-    pub profile_max_w_world: f32,
-    pub strip_h_world: f32,
-    pub strip_bottom_y: f32,
-    pub trade_profile_max_w_world: f32,
+    pub volume_profile_max_width: f32,
+    pub depth_profile_max_width: f32,
+    pub volume_area_max_height: f32,
+    pub volume_area_bottom_y: f32,
 
     // World x bounds
     pub left_edge_world: f32,
@@ -385,10 +385,10 @@ impl ViewWindow {
     pub fn compute(
         cfg: ViewConfig,
         camera: &Camera,
-        viewport_px: [f32; 2],
+        viewport_px: iced::Size,
         input: ViewInputs,
     ) -> Option<Self> {
-        let [vw_px, vh_px] = viewport_px;
+        let [vw_px, vh_px] = viewport_px.into();
 
         if input.aggr_time == 0 || input.latest_time_data == 0 {
             return None;
@@ -441,17 +441,15 @@ impl ViewWindow {
         let highest = input.base_price.add_steps(max_steps, input.step);
 
         // overlays (profile width depends on how much x>0 is visible)
-        let full_right_edge = camera.right_edge(vw_px);
+        let visible_space_right_of_zero_world = (x_max - 0.0).max(0.0);
+        let depth_profile_max_width =
+            (cfg.profile_col_width_px / cam_scale).clamp(0.0, visible_space_right_of_zero_world);
 
-        let visible_space_right_of_zero_world = (full_right_edge - 0.0).max(0.0);
-        let desired_profile_w_world = (cfg.profile_col_width_px / cam_scale).max(0.0);
-        let profile_max_w_world = desired_profile_w_world.min(visible_space_right_of_zero_world);
-
-        let strip_h_world: f32 = (vh_px * cfg.strip_height_frac) / cam_scale;
+        let strip_h_world: f32 = (vh_px * cfg.volume_area_height_pct) / cam_scale;
         let strip_bottom_y: f32 = y_max;
 
         let visible_w_world = vw_px / cam_scale;
-        let trade_profile_max_w_world = visible_w_world * cfg.trade_profile_width_frac;
+        let volume_profile_max_width = visible_w_world * cfg.volume_profile_width_pct;
 
         // y-downsampling
         let px_per_step = row_h * cam_scale;
@@ -470,10 +468,10 @@ impl ViewWindow {
             highest,
             row_h,
             cam_scale,
-            profile_max_w_world,
-            strip_h_world,
-            strip_bottom_y,
-            trade_profile_max_w_world,
+            volume_profile_max_width,
+            depth_profile_max_width,
+            volume_area_max_height: strip_h_world,
+            volume_area_bottom_y: strip_bottom_y,
             left_edge_world: x_min,
             steps_per_y_bin,
             y_bin_h_world,
@@ -481,7 +479,6 @@ impl ViewWindow {
     }
 
     /// Shader-consistent mapping: price -> y-bin (using Euclidean division, matching `floor`).
-    #[inline]
     pub fn y_bin_for_price(&self, price: Price, base_price: Price, step: PriceStep) -> i64 {
         let step_units = step.units.max(1);
         let steps_per = self.steps_per_y_bin.max(1);
@@ -491,13 +488,11 @@ impl ViewWindow {
     }
 
     /// Shader-consistent y-center for a y-bin (center of the bin).
-    #[inline]
     pub fn y_center_for_bin(&self, y_bin: i64) -> f32 {
         -((y_bin as f32 + 0.5) * self.y_bin_h_world)
     }
 
     /// Convenience: price -> y-center in world coordinates (bin-centered).
-    #[inline]
     pub fn y_center_for_price(&self, price: Price, base_price: Price, step: PriceStep) -> f32 {
         let yb = self.y_bin_for_price(price, base_price, step);
         self.y_center_for_bin(yb)
@@ -555,7 +550,7 @@ impl DepthNormCache {
         self.compute(hist, w, latest_incl, step, data_gen)
     }
 
-    pub fn compute(
+    fn compute(
         &mut self,
         hist: &HistoricalDepth,
         w: &ViewWindow,
@@ -600,7 +595,6 @@ impl DepthNormCache {
 }
 
 /// Round a millisecond timestamp down to the start of its aggregation bucket
-#[inline]
 pub fn round_time_to_bucket(t_ms: u64, aggr_time: u64) -> u64 {
     let aggr_time = aggr_time.max(1);
     (t_ms / aggr_time) * aggr_time
@@ -612,7 +606,6 @@ pub fn round_time_to_bucket(t_ms: u64, aggr_time: u64) -> u64 {
 /// - `bucketed`: exchange_now rounded down to bucket start
 /// - `live_render_latest_time`: monotonic render latest time while live (paused stays frozen)
 /// - `live_phase_bucket`: fractional phase within the current bucket [0, 1)
-#[inline]
 pub fn live_timing(anchor: Anchor, exchange_now_ms: u64, aggr_time: u64) -> (u64, u64, f32) {
     let aggr_time = aggr_time.max(1);
     let bucketed = round_time_to_bucket(exchange_now_ms, aggr_time);
