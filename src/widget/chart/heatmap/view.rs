@@ -1,23 +1,11 @@
-use crate::widget::chart::heatmap::scene::camera::Camera;
+use crate::widget::chart::heatmap::scene::{
+    camera::Camera,
+    cell::{Cell, MIN_ROW_PX},
+};
 use data::chart::heatmap::HistoricalDepth;
 use exchange::util::{Price, PriceStep};
 
 use iced::time::Instant;
-
-#[derive(Debug, Clone, Copy)]
-pub struct Cell {
-    pub width_world: f32,
-    pub height_world: f32,
-}
-
-pub const MIN_COL_W_WORLD: f32 = 0.01;
-pub const MAX_COL_W_WORLD: f32 = 1.;
-
-pub const MIN_ROW_H_WORLD: f32 = 0.01;
-pub const MAX_ROW_H_WORLD: f32 = 4.;
-
-pub const MIN_COL_PX: f32 = 1.0;
-pub const MIN_ROW_PX: f32 = 1.0;
 
 // Throttle depth denom recompute while interacting (keeps zoom smooth)
 const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
@@ -412,7 +400,7 @@ impl ViewWindow {
         let x_max = camera.right_edge(vw_px);
         let x_min = x_max - (vw_px / cam_scale);
 
-        let col_w_world = input.cell.width_world.max(1e-12);
+        let col_w_world = input.cell.width_world();
 
         // Strict buckets (what is actually visible)
         let bucket_min_strict = (x_min / col_w_world).floor() as i64;
@@ -444,7 +432,7 @@ impl ViewWindow {
             return None;
         }
 
-        let row_h = input.cell.height_world.max(MIN_ROW_H_WORLD);
+        let row_h = input.cell.height_world();
 
         let min_steps = (-(y_max) / row_h).floor() as i64;
         let max_steps = (-(y_min) / row_h).ceil() as i64;

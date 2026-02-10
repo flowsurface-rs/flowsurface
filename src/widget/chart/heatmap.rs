@@ -27,9 +27,6 @@ use std::time::{Duration, Instant};
 const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
 const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
 
-const DEFAULT_ROW_H_WORLD: f32 = 0.04;
-const DEFAULT_COL_W_WORLD: f32 = 0.02;
-
 const MAX_STEPS_PER_Y_BIN: i64 = 2048;
 
 // Latest profile overlay (x > 0)
@@ -79,7 +76,6 @@ pub struct HeatmapShader {
     pub last_tick: Option<Instant>,
     scene: Scene,
     viewport: Option<iced::Rectangle>,
-    cell: view::Cell,
     palette: Option<HeatmapPalette>,
     instances: InstanceBuilder,
     canvas_caches: CanvasCaches,
@@ -125,10 +121,6 @@ impl HeatmapShader {
             last_tick: None,
             scene: Scene::new(),
             viewport: None,
-            cell: view::Cell {
-                width_world: DEFAULT_COL_W_WORLD,
-                height_world: DEFAULT_ROW_H_WORLD,
-            },
             palette: None,
             qty_scale,
             heatmap,
@@ -162,13 +154,8 @@ impl HeatmapShader {
                 anchor_screen_x,
                 viewport_w,
             } => {
-                self.scene.camera.zoom_column_world_keep_anchor(
-                    factor,
-                    0.0,
-                    anchor_screen_x,
-                    viewport_w,
-                    &mut self.cell,
-                );
+                self.scene
+                    .zoom_column_world_keep_anchor(factor, 0.0, anchor_screen_x, viewport_w);
 
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -192,19 +179,18 @@ impl HeatmapShader {
                     return;
                 };
 
-                // Enforce ">= 1px per row/col" even for uniform camera zoom.
-                let cur_s = self.scene.camera.scale();
+                let current_scale = self.scene.camera.scale();
+                let desired_scale = current_scale * factor;
 
-                let min_s_y = view::MIN_ROW_PX / self.cell.height_world.max(view::MIN_ROW_H_WORLD);
-                let min_s_x = view::MIN_COL_PX / self.cell.width_world.max(view::MIN_COL_W_WORLD);
-                let min_s = min_s_y.max(min_s_x);
+                let Some((min_scale, max_scale)) = self.scene.cell.camera_scale_bounds_for_pixels()
+                else {
+                    return;
+                };
 
-                let desired_s = cur_s * factor;
-                let clamped_s = desired_s.max(min_s);
-                let effective_factor = if cur_s > 0.0 { clamped_s / cur_s } else { 1.0 };
+                let target_scale = desired_scale.clamp(min_scale, max_scale);
 
-                self.scene.camera.zoom_at_cursor(
-                    effective_factor,
+                self.scene.camera.zoom_at_cursor_to_scale(
+                    target_scale,
                     cursor.x,
                     cursor.y,
                     size.width,
@@ -219,9 +205,7 @@ impl HeatmapShader {
                 cursor_y,
                 viewport_h,
             } => {
-                self.scene
-                    .camera
-                    .zoom_row_h_at(factor, cursor_y, viewport_h, &mut self.cell);
+                self.scene.zoom_row_h_at(factor, cursor_y, viewport_h);
 
                 self.try_rebuild_overlays();
                 self.force_rebuild_if_ybin_changed();
@@ -233,12 +217,8 @@ impl HeatmapShader {
                 cursor_x,
                 viewport_w,
             } => {
-                self.scene.camera.zoom_column_world_at(
-                    factor,
-                    cursor_x,
-                    viewport_w,
-                    &mut self.cell,
-                );
+                self.scene
+                    .zoom_column_world_at(factor, cursor_x, viewport_w);
 
                 self.try_rebuild_overlays();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -254,7 +234,7 @@ impl HeatmapShader {
             Message::AxisXDoubleClicked => {
                 if let Some(size) = self.viewport_size_px() {
                     self.scene.camera.reset_offset_x(size.width);
-                    self.cell.width_world = DEFAULT_COL_W_WORLD;
+                    self.scene.cell.set_default_width();
 
                     self.try_rebuild_overlays();
                     self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -302,7 +282,7 @@ impl HeatmapShader {
             plot_bounds: self.viewport,
             latest_bucket,
             aggr_time,
-            column_world: self.cell.width_world,
+            column_world: self.scene.cell.width_world(),
             cam_offset_x: self.scene.camera.offset[0],
             cam_sx: cam_scale,
             cam_right_pad_frac: self.scene.camera.right_pad_frac,
@@ -316,7 +296,7 @@ impl HeatmapShader {
             plot_bounds: self.viewport,
             base_price: self.base_price,
             step: self.step,
-            row_h: self.cell.height_world,
+            row_h: self.scene.cell.height_world(),
             cam_offset_y: self.scene.camera.offset[1],
             cam_sy: cam_scale,
             label_precision: self.ticker_info.min_ticksize,
@@ -329,7 +309,7 @@ impl HeatmapShader {
             step: self.step,
             scroll_ref_bucket,
             qty_scale_inv: 1.0 / self.qty_scale,
-            cell_world: self.cell,
+            cell_world: self.scene.cell,
             tooltip_cache: &self.canvas_caches.overlay,
             scale_labels_cache: &self.canvas_caches.scale_labels,
 
@@ -491,7 +471,7 @@ impl HeatmapShader {
             latest_time_render: latest_render,
             base_price: self.base_price,
             step: self.step,
-            cell: self.cell,
+            cell: self.scene.cell,
         };
 
         ViewWindow::compute(cfg, &self.scene.camera, [vw_px, vh_px], input)
@@ -542,9 +522,7 @@ impl HeatmapShader {
             return;
         };
 
-        self.scene.params.set_cell_world(self.cell);
         self.sync_fade_params(&w);
-
         self.rebuild_overlays(&w);
     }
 
@@ -565,19 +543,13 @@ impl HeatmapShader {
         let prev_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         let new_steps_per_y_bin: i64 = w.steps_per_y_bin.max(1);
 
-        self.scene.params.set_cell_world(self.cell);
         self.scene.params.set_steps_per_y_bin(new_steps_per_y_bin);
 
         // Consume resume directive (if any).
         let resume = self.anchor.take_live_resume();
         let force_full_rebuild = matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
 
-        let recenter_target = {
-            let row_h = self.cell.height_world;
-            self.scene
-                .camera
-                .price_at_center(row_h, self.base_price, self.step)
-        };
+        let recenter_target = self.scene.price_at_center(self.base_price, self.step);
 
         let need_full_rebuild = self.depth_grid.should_full_rebuild(
             prev_steps_per_y_bin,
@@ -684,11 +656,7 @@ impl HeatmapShader {
     fn invalidate_with_view_window(&mut self, now_i: Instant, aggr_time: u64, w: &ViewWindow) {
         self.sync_fade_params(w);
         {
-            let row_h = self.cell.height_world;
-            let recenter_target =
-                self.scene
-                    .camera
-                    .price_at_center(row_h, self.base_price, self.step);
+            let recenter_target = self.scene.price_at_center(self.base_price, self.step);
 
             if self.depth_grid.should_recenter(recenter_target, self.step) {
                 self.rebuild_policy = view::RebuildPolicy::Immediate;
@@ -768,10 +736,7 @@ impl HeatmapShader {
         let recenter_target = if is_interacting {
             self.depth_grid.y_anchor_price().unwrap_or(self.base_price)
         } else {
-            let row_h = self.cell.height_world;
-            self.scene
-                .camera
-                .price_at_center(row_h, self.base_price, self.step)
+            self.scene.price_at_center(self.base_price, self.step)
         };
 
         self.depth_grid.ingest_snapshot(

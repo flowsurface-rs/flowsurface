@@ -1,14 +1,16 @@
 pub mod camera;
+pub mod cell;
 pub mod depth_grid;
 pub mod pipeline;
 mod uniform;
 
 use super::Message;
-use super::scene::uniform::ParamsUniform;
+use cell::Cell;
 use pipeline::Pipeline;
 use pipeline::circle::CircleInstance;
 use pipeline::rectangle::RectInstance;
 use pipeline::{DrawItem, DrawLayer, DrawOp};
+use uniform::ParamsUniform;
 
 use iced::Rectangle;
 use iced::mouse;
@@ -67,10 +69,17 @@ pub struct Scene {
 
     pub heatmap_tex_gen: u64,
     heatmap_upload: Option<(u64, HeatmapUpload)>,
+
+    pub cell: cell::Cell,
 }
 
 impl Scene {
     pub fn new() -> Self {
+        let cell = Cell::default();
+
+        let mut params = ParamsUniform::default();
+        params.set_cell_world(cell.width_world(), cell.height_world());
+
         Self {
             id: next_scene_id(),
             rectangles: Arc::from(Vec::<RectInstance>::new()),
@@ -79,9 +88,10 @@ impl Scene {
             circles_gen: 1,
             draw_list: Arc::from(Vec::<DrawItem>::new()),
             camera: camera::Camera::default(),
-            params: ParamsUniform::default(),
+            params,
             heatmap_tex_gen: 1,
             heatmap_upload: None,
+            cell,
         }
     }
 
@@ -131,6 +141,17 @@ impl Scene {
         let [sx, _sy] = self.camera.world_to_screen(0.0, y, vw_px, vh_px);
 
         sx.is_finite() && (0.0..=vw_px).contains(&sx)
+    }
+
+    pub fn set_default_column_width(&mut self) {
+        self.cell.set_default_width();
+        self.sync_cell_world_uniform();
+    }
+
+    #[inline]
+    fn sync_cell_world_uniform(&mut self) {
+        self.params
+            .set_cell_world(self.cell.width_world(), self.cell.height_world());
     }
 
     /// Synchronizes heatmap texture parameters with the depth grid state
@@ -259,6 +280,47 @@ impl Scene {
         );
 
         self.sync_heatmap_upload_from_grid(grid, force_full_upload)
+    }
+
+    pub fn zoom_column_world_keep_anchor(
+        &mut self,
+        factor: f32,
+        anchor_world_x: f32,
+        anchor_screen_x: f32,
+        vw_px: f32,
+    ) {
+        self.camera.zoom_column_world_keep_anchor(
+            factor,
+            anchor_world_x,
+            anchor_screen_x,
+            vw_px,
+            &mut self.cell,
+        );
+
+        self.sync_cell_world_uniform();
+    }
+
+    pub fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32) {
+        self.camera
+            .zoom_row_h_at(factor, cursor_y, vh_px, &mut self.cell);
+
+        self.sync_cell_world_uniform();
+    }
+
+    pub fn zoom_column_world_at(&mut self, factor: f32, cursor_x: f32, vw_px: f32) {
+        self.camera
+            .zoom_column_world_at(factor, cursor_x, vw_px, &mut self.cell);
+
+        self.sync_cell_world_uniform();
+    }
+
+    pub fn price_at_center(
+        &self,
+        base_price: exchange::util::Price,
+        step: exchange::util::PriceStep,
+    ) -> exchange::util::Price {
+        self.camera
+            .price_at_center(self.cell.height_world(), base_price, step)
     }
 }
 

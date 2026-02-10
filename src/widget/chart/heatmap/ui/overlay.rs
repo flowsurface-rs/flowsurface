@@ -9,7 +9,7 @@ use crate::style;
 use crate::widget::chart::heatmap::Message;
 use crate::widget::chart::heatmap::depth_grid::GridRing;
 use crate::widget::chart::heatmap::scene::Scene;
-use crate::widget::chart::heatmap::view::Cell;
+use crate::widget::chart::heatmap::scene::cell::Cell;
 
 const TOOLTIP_WIDTH: f32 = 198.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
@@ -262,8 +262,8 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         };
 
         let tooltip = self.tooltip_cache.draw(renderer, bounds.size(), |frame| {
-            let cell_width = self.cell_world.width_world;
-            let cell_height = self.cell_world.height_world;
+            let cell_width = self.cell_world.width_world();
+            let cell_height = self.cell_world.height_world();
 
             let tex_w = self.depth_grid.tex_w() as i64;
             let tex_h = self.depth_grid.tex_h() as i64;

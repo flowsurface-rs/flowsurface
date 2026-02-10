@@ -1,7 +1,4 @@
-use crate::widget::chart::heatmap::view::{
-    Cell, MAX_COL_W_WORLD, MAX_ROW_H_WORLD, MIN_COL_PX, MIN_COL_W_WORLD, MIN_ROW_H_WORLD,
-    MIN_ROW_PX,
-};
+use crate::widget::chart::heatmap::scene::cell::{Cell, MIN_COL_W_WORLD, MIN_ROW_H_WORLD};
 
 const MIN_CAMERA_SCALE: f32 = 1e1;
 const MAX_CAMERA_SCALE: f32 = 1e3;
@@ -172,29 +169,18 @@ impl Camera {
         self.offset[0] + self.right_pad_world(viewport_w) + (screen_x - viewport_w) / s
     }
 
-    #[inline]
-    fn min_dim_world_for_min_px(&self, scale: f32, min_px: f32, min_world: f32) -> f32 {
-        let s = scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
-        if !s.is_finite() || s <= 0.0 || !min_px.is_finite() || min_px <= 0.0 {
-            return min_world;
-        }
-        (min_px / s).max(min_world)
-    }
-
     pub fn zoom_row_h_at(&mut self, factor: f32, cursor_y: f32, vh_px: f32, cell: &mut Cell) {
         if !factor.is_finite() || vh_px <= 1.0 {
             return;
         }
 
         let world_y_before = self.world_y_at_screen_y_centered(cursor_y, vh_px, MIN_CAMERA_SCALE);
-
-        let row_units_at_cursor = world_y_before / cell.height_world.max(MIN_ROW_H_WORLD);
+        let row_units_at_cursor = world_y_before / cell.height_world().max(MIN_ROW_H_WORLD);
 
         let s = self.scale_y_with_min(MIN_CAMERA_SCALE);
-        let min_h = self.min_dim_world_for_min_px(s, MIN_ROW_PX, MIN_ROW_H_WORLD);
-        cell.height_world = (cell.height_world * factor).clamp(min_h, MAX_ROW_H_WORLD);
+        cell.zoom_height_world_clamped(factor, s);
 
-        let world_y_after = row_units_at_cursor * cell.height_world;
+        let world_y_after = row_units_at_cursor * cell.height_world();
 
         self.set_offset_y_for_world_y_at_screen_y_centered(
             world_y_after,
@@ -218,14 +204,12 @@ impl Camera {
         let world_x_before =
             self.world_x_at_screen_x_padded_right(cursor_x, vw_px, MIN_CAMERA_SCALE);
 
-        let col_units_at_cursor = world_x_before / cell.width_world.max(MIN_COL_W_WORLD);
+        let col_units_at_cursor = world_x_before / cell.width_world().max(MIN_COL_W_WORLD);
 
         let s = self.scale_x_with_min(MIN_CAMERA_SCALE);
-        let min_w = self.min_dim_world_for_min_px(s, MIN_COL_PX, MIN_COL_W_WORLD);
+        cell.zoom_width_world_clamped(factor, s);
 
-        cell.width_world = (cell.width_world * factor).clamp(min_w, MAX_COL_W_WORLD);
-
-        let world_x_after = col_units_at_cursor * cell.width_world;
+        let world_x_after = col_units_at_cursor * cell.width_world();
 
         self.set_offset_x_for_world_x_at_screen_x_padded_right(
             world_x_after,
@@ -253,9 +237,7 @@ impl Camera {
         }
 
         let s = self.scale_x_with_min(MIN_CAMERA_SCALE);
-        let min_w = self.min_dim_world_for_min_px(s, MIN_COL_PX, MIN_COL_W_WORLD);
-
-        cell.width_world = (cell.width_world * factor).clamp(min_w, MAX_COL_W_WORLD);
+        cell.zoom_width_world_clamped(factor, s);
 
         self.set_offset_x_for_world_x_at_screen_x_padded_right(
             anchor_world_x,
@@ -331,5 +313,29 @@ impl Camera {
     ) {
         let s = self.scale_y_with_min(min_scale);
         self.offset[1] = world_y - (screen_y - 0.5 * viewport_h) / s;
+    }
+
+    pub fn zoom_at_cursor_to_scale(
+        &mut self,
+        target_scale: f32,
+        cursor_x: f32,
+        cursor_y: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) {
+        let target_scale = target_scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
+
+        let [wx, wy] = self.screen_to_world(cursor_x, cursor_y, viewport_w, viewport_h);
+
+        self.set_scale(target_scale);
+
+        let view_x_px = cursor_x - viewport_w * 0.5;
+        let view_y_px = cursor_y - viewport_h * 0.5;
+
+        let pad_world = self.right_pad_world(viewport_w);
+        let right_edge = wx + (viewport_w * 0.5) / target_scale - view_x_px / target_scale;
+
+        self.offset[0] = right_edge - pad_world;
+        self.offset[1] = wy - view_y_px / target_scale;
     }
 }

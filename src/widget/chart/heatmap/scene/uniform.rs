@@ -1,7 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::widget::chart::heatmap::view;
-
 // Shift volume-strip rects left by half a bucket to align with circle centers
 const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
 
@@ -42,9 +40,9 @@ impl Default for ParamsUniform {
 }
 
 impl ParamsUniform {
-    pub fn set_cell_world(&mut self, cell: view::Cell) {
-        self.grid[0] = cell.width_world;
-        self.grid[1] = cell.height_world;
+    pub fn set_cell_world(&mut self, width: f32, height: f32) {
+        self.grid[0] = width;
+        self.grid[1] = height;
     }
 
     pub fn set_steps_per_y_bin(&mut self, steps_per_y_bin: i64) {
