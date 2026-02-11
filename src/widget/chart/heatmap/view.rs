@@ -234,40 +234,127 @@ pub enum ResumeAction {
 
 #[derive(Debug, Clone, Copy)]
 pub enum RebuildPolicy {
-    /// Full rebuild should run immediately (rare: resize/layout).
-    Immediate,
-    /// Full rebuild should run once interaction settles.
-    Debounced { last_input: Instant },
+    /// Full rebuild should run immediately
+    Immediate { force_rebuild_from_historical: bool },
+    /// Full rebuild should run once interaction settles
+    Debounced {
+        last_input: Instant,
+        force_rebuild_from_historical: bool,
+    },
     /// No pending rebuild requested.
     Idle,
 }
 
+impl Default for RebuildPolicy {
+    fn default() -> Self {
+        RebuildPolicy::Idle
+    }
+}
+
 impl RebuildPolicy {
-    pub fn mark_input(self, now: Instant) -> Self {
-        RebuildPolicy::Debounced { last_input: now }
+    #[inline]
+    pub fn immediate() -> Self {
+        RebuildPolicy::Immediate {
+            force_rebuild_from_historical: false,
+        }
     }
 
-    /// Decide what to rebuild for the current frame
-    ///
-    /// Returns:
-    /// - `rebuild_overlays`: run cheap overlay rebuild this frame
-    /// - `rebuild_full`: run full rebuild this frame
-    /// - `next_policy`: what the policy should become *after* the caller performs rebuild(s)
-    ///
-    /// NOTE: In `Debounced`, overlays are requested every frame,
-    /// and once the debounce expires we request both overlays and a full rebuild.
+    /// Promote current policy to Immediate while preserving any pending "force from historical".
+    #[inline]
+    pub fn promote_to_immediate(self) -> Self {
+        match self {
+            RebuildPolicy::Idle => RebuildPolicy::immediate(),
+            RebuildPolicy::Immediate {
+                force_rebuild_from_historical,
+            } => RebuildPolicy::Immediate {
+                force_rebuild_from_historical,
+            },
+            RebuildPolicy::Debounced {
+                force_rebuild_from_historical,
+                ..
+            } => RebuildPolicy::Immediate {
+                force_rebuild_from_historical,
+            },
+        }
+    }
+
+    /// Request that the next full rebuild is done by rebuilding from historical (one-shot).
+    /// If currently Idle, this also schedules an Immediate rebuild.
+    #[inline]
+    pub fn request_rebuild_from_historical(self) -> Self {
+        match self {
+            RebuildPolicy::Idle => RebuildPolicy::Immediate {
+                force_rebuild_from_historical: true,
+            },
+            RebuildPolicy::Immediate { .. } => RebuildPolicy::Immediate {
+                force_rebuild_from_historical: true,
+            },
+            RebuildPolicy::Debounced { last_input, .. } => RebuildPolicy::Debounced {
+                last_input,
+                force_rebuild_from_historical: true,
+            },
+        }
+    }
+
+    /// Consume the one-shot directive (used by `rebuild_all()`).
+    #[inline]
+    pub fn take_force_rebuild_from_historical(&mut self) -> bool {
+        match self {
+            RebuildPolicy::Immediate {
+                force_rebuild_from_historical,
+            } => std::mem::replace(force_rebuild_from_historical, false),
+            RebuildPolicy::Debounced {
+                force_rebuild_from_historical,
+                ..
+            } => std::mem::replace(force_rebuild_from_historical, false),
+            RebuildPolicy::Idle => false,
+        }
+    }
+
+    pub fn mark_input(self, now: Instant) -> Self {
+        match self {
+            RebuildPolicy::Immediate {
+                force_rebuild_from_historical,
+            } => RebuildPolicy::Debounced {
+                last_input: now,
+                force_rebuild_from_historical,
+            },
+            RebuildPolicy::Debounced {
+                force_rebuild_from_historical,
+                ..
+            } => RebuildPolicy::Debounced {
+                last_input: now,
+                force_rebuild_from_historical,
+            },
+            RebuildPolicy::Idle => RebuildPolicy::Debounced {
+                last_input: now,
+                force_rebuild_from_historical: false,
+            },
+        }
+    }
+
     #[inline]
     pub fn decide(self, now: Instant, debounce_ms: u64) -> (bool, bool, RebuildPolicy) {
         match self {
-            RebuildPolicy::Immediate => (false, true, RebuildPolicy::Idle),
+            RebuildPolicy::Immediate { .. } => (false, true, RebuildPolicy::Idle),
             RebuildPolicy::Idle => (false, false, RebuildPolicy::Idle),
-            RebuildPolicy::Debounced { last_input } => {
+            RebuildPolicy::Debounced {
+                last_input,
+                force_rebuild_from_historical,
+            } => {
                 let due =
                     (now.saturating_duration_since(last_input).as_millis() as u64) >= debounce_ms;
                 if due {
                     (true, true, RebuildPolicy::Idle)
                 } else {
-                    (true, false, RebuildPolicy::Debounced { last_input })
+                    (
+                        true,
+                        false,
+                        RebuildPolicy::Debounced {
+                            last_input,
+                            force_rebuild_from_historical,
+                        },
+                    )
                 }
             }
         }

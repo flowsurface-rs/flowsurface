@@ -144,7 +144,7 @@ impl HeatmapShader {
             Message::BoundsChanged(bounds) => {
                 self.viewport = Some(bounds);
 
-                self.rebuild_policy = view::RebuildPolicy::Immediate;
+                self.rebuild_policy = view::RebuildPolicy::immediate();
                 self.rebuild_all(None);
             }
             Message::DragZoomAxisXKeepAnchor {
@@ -257,7 +257,7 @@ impl HeatmapShader {
                     self.scene.camera.offset[1] = 0.0;
                 }
 
-                self.rebuild_policy = view::RebuildPolicy::Immediate;
+                self.rebuild_policy = view::RebuildPolicy::immediate();
             }
         }
     }
@@ -411,7 +411,7 @@ impl HeatmapShader {
         }
 
         if !paused && !is_interacting {
-            self.rebuild_policy = view::RebuildPolicy::Immediate;
+            self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
         }
     }
 
@@ -546,9 +546,12 @@ impl HeatmapShader {
 
         self.scene.params.set_steps_per_y_bin(new_steps_per_y_bin);
 
-        // Consume resume directive (if any).
+        // Consume one-shot rebuild directives.
+        let force_from_policy = self.rebuild_policy.take_force_rebuild_from_historical();
         let resume = self.anchor.take_live_resume();
-        let force_full_rebuild = matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
+
+        let force_full_rebuild =
+            force_from_policy || matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
 
         let recenter_target = self.scene.price_at_center(base_price, self.step);
 
@@ -641,7 +644,7 @@ impl HeatmapShader {
 
         let cur_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         if w.steps_per_y_bin != cur_steps_per_y_bin {
-            self.rebuild_policy = view::RebuildPolicy::Immediate;
+            self.rebuild_policy = view::RebuildPolicy::immediate();
             self.rebuild_all(Some(w));
         }
     }
@@ -661,7 +664,12 @@ impl HeatmapShader {
             let recenter_target = self.scene.price_at_center(base_price, self.step);
 
             if self.depth_grid.should_recenter(recenter_target, self.step) {
-                self.rebuild_policy = view::RebuildPolicy::Immediate;
+                // Recenter implies a y-mapping change: force rebuild-from-historical so older cols
+                // get repopulated under the new anchor
+                self.rebuild_policy = self
+                    .rebuild_policy
+                    .request_rebuild_from_historical()
+                    .promote_to_immediate();
             }
         }
 
@@ -737,12 +745,19 @@ impl HeatmapShader {
 
         let steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
 
-        // During interaction, keep the current anchor to avoid churn.
         let recenter_target = if is_interacting {
             self.depth_grid.y_anchor_price().unwrap_or(base_price)
         } else {
             self.scene.price_at_center(base_price, self.step)
         };
+
+        // If live ingest is about to recenter, schedule a forced rebuild-from-historical
+        if self.depth_grid.should_recenter(recenter_target, self.step) {
+            self.rebuild_policy = self
+                .rebuild_policy
+                .request_rebuild_from_historical()
+                .promote_to_immediate();
+        }
 
         self.depth_grid.ingest_snapshot(
             depth,
@@ -785,7 +800,7 @@ impl HeatmapShader {
         }
 
         if state_changed {
-            self.rebuild_policy = view::RebuildPolicy::Immediate;
+            self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
         }
     }
 }
