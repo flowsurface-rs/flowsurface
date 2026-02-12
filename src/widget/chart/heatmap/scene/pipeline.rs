@@ -13,7 +13,23 @@ use iced::{Rectangle, wgpu};
 
 use rustc_hash::FxHashMap;
 
-pub mod bind {
+const RECT_SHADER_SRC: &str = concat!(
+    include_str!("../shaders/common.wgsl"),
+    "\n",
+    include_str!("../shaders/rect.wgsl"),
+);
+const CIRCLE_SHADER_SRC: &str = concat!(
+    include_str!("../shaders/common.wgsl"),
+    "\n",
+    include_str!("../shaders/circle.wgsl"),
+);
+const HEATMAP_SHADER_SRC: &str = concat!(
+    include_str!("../shaders/common.wgsl"),
+    "\n",
+    include_str!("../shaders/heatmap_tex.wgsl"),
+);
+
+mod bind {
     pub const CAMERA_GROUP: u32 = 0;
     pub const CAMERA_BINDING: u32 = 0;
     pub const PARAMS_BINDING: u32 = 1;
@@ -22,15 +38,15 @@ pub mod bind {
     pub const HEATMAP_TEX_BINDING: u32 = 0;
 }
 
-pub const CAMERA_UNIFORM_BYTES: usize = 2 * 16; // 2 vec4<f32>
-pub const PARAMS_UNIFORM_BYTES: usize = 8 * 16; // 8 vec4<f32>
+const CAMERA_UNIFORM_BYTES: usize = 2 * 16; // 2 vec4<f32>
+const PARAMS_UNIFORM_BYTES: usize = 8 * 16; // 8 vec4<f32>
 
-// Compile-time guarantees(fail build immediately on mismatch)
+// Compile-time guarantees (fail build immediately on mismatch)
 const _: [(); CAMERA_UNIFORM_BYTES] = [(); std::mem::size_of::<CameraUniform>()];
 const _: [(); PARAMS_UNIFORM_BYTES] = [(); std::mem::size_of::<ParamsUniform>()];
 
 #[inline]
-pub fn validate_host_layouts() {
+fn validate_host_layouts() {
     debug_assert_eq!(std::mem::size_of::<CameraUniform>(), CAMERA_UNIFORM_BYTES);
     debug_assert_eq!(std::mem::size_of::<ParamsUniform>(), PARAMS_UNIFORM_BYTES);
 }
@@ -143,21 +159,16 @@ impl Pipeline {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let rect_shader_src = wgsl_with_common(include_str!("../shaders/rect.wgsl"));
         let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            source: wgpu::ShaderSource::Wgsl(rect_shader_src.into()),
+            source: wgpu::ShaderSource::Wgsl(RECT_SHADER_SRC.into()),
             label: Some("rect shader"),
         });
-
-        let circle_shader_src = wgsl_with_common(include_str!("../shaders/circle.wgsl"));
         let circle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            source: wgpu::ShaderSource::Wgsl(circle_shader_src.into()),
+            source: wgpu::ShaderSource::Wgsl(CIRCLE_SHADER_SRC.into()),
             label: Some("circle shader"),
         });
-
-        let heatmap_shader_src = wgsl_with_common(include_str!("../shaders/heatmap_tex.wgsl"));
         let heatmap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            source: wgpu::ShaderSource::Wgsl(heatmap_shader_src.into()),
+            source: wgpu::ShaderSource::Wgsl(HEATMAP_SHADER_SRC.into()),
             label: Some("heatmap texture shader"),
         });
 
@@ -1020,14 +1031,4 @@ impl Pipeline {
             }
         }
     }
-}
-
-#[inline]
-fn wgsl_with_common(body: &str) -> String {
-    let common = include_str!("../shaders/common.wgsl");
-    let mut src = String::with_capacity(common.len() + 1 + body.len());
-    src.push_str(common);
-    src.push('\n');
-    src.push_str(body);
-    src
 }

@@ -263,22 +263,31 @@ impl InstanceBuilder {
         ref_bucket: i64,
         palette: &HeatmapPalette,
     ) -> Vec<CircleInstance> {
-        let max_qty = self.max_trade_qty(w, trades);
-        if max_qty <= 0.0 {
+        let mut visible = vec![];
+        let mut max_qty = 0.0f32;
+
+        for (bucket_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
+            let bucket = (*bucket_time / w.aggr_time) as i64;
+
+            for trade in dp.grouped_trades.iter() {
+                if trade.price < w.lowest || trade.price > w.highest {
+                    continue;
+                }
+
+                max_qty = max_qty.max(trade.qty);
+                visible.push((bucket, trade));
+            }
+        }
+
+        if max_qty <= 0.0 || visible.is_empty() {
             return vec![];
         }
 
-        let aggr = w.aggr_time.max(1);
-        let mut out = Vec::new();
-
-        for (bucket_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
-            let bucket = (*bucket_time / aggr) as i64;
-
-            for tr in dp.grouped_trades.iter() {
-                out.push(CircleInstance::from_trade(
-                    tr, bucket, ref_bucket, base_price, step, w, palette, max_qty,
-                ));
-            }
+        let mut out = Vec::with_capacity(visible.len());
+        for (bucket, trade) in visible {
+            out.push(CircleInstance::from_trade(
+                trade, bucket, ref_bucket, base_price, step, w, palette, max_qty,
+            ));
         }
 
         out
@@ -476,15 +485,5 @@ impl InstanceBuilder {
                 ));
             }
         }
-    }
-
-    fn max_trade_qty(&self, w: &ViewWindow, trades: &TimeSeries<HeatmapDataPoint>) -> f32 {
-        let lowest = w.lowest;
-        let highest = w.highest;
-
-        let earliest = w.earliest;
-        let latest_vis = w.latest_vis;
-
-        trades.max_trade_qty_in_range(earliest, latest_vis, highest, lowest)
     }
 }

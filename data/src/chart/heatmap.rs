@@ -261,26 +261,6 @@ impl HistoricalDepth {
             })
     }
 
-    pub fn max_qty_in_range_raw(
-        &self,
-        earliest: u64,
-        latest: u64,
-        highest: Price,
-        lowest: Price,
-    ) -> f32 {
-        let mut max_qty = 0.0f32;
-
-        for (_price, runs) in self.iter_time_filtered(earliest, latest, highest, lowest) {
-            for run in runs.iter() {
-                if run.until_time >= earliest && run.start_time <= latest {
-                    max_qty = max_qty.max(run.qty());
-                }
-            }
-        }
-
-        max_qty
-    }
-
     pub fn cleanup_old_price_levels(&mut self, oldest_time: u64) {
         self.price_levels.iter_mut().for_each(|(_, runs)| {
             runs.retain(|run| run.until_time >= oldest_time);
@@ -459,6 +439,27 @@ impl HistoricalDepth {
         grid_quantities
     }
 
+    pub fn max_qty_in_range_raw(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: Price,
+        lowest: Price,
+    ) -> f32 {
+        let mut max_qty = 0.0f32;
+
+        for (_price, runs) in self.price_levels.range(lowest..=highest) {
+            for run in runs.iter() {
+                if run.until_time < earliest || run.start_time > latest {
+                    continue;
+                }
+                max_qty = max_qty.max(run.qty());
+            }
+        }
+
+        max_qty
+    }
+
     pub fn max_depth_qty_in_range(
         &self,
         earliest: u64,
@@ -469,31 +470,22 @@ impl HistoricalDepth {
         order_size_filter: f32,
     ) -> f32 {
         let mut max_depth_qty = 0.0f32;
-
         let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
 
-        self.iter_time_filtered(earliest, latest, highest, lowest)
-            .for_each(|(price, runs)| {
-                runs.iter()
-                    .filter_map(|run| {
-                        let visible_run = run.with_range(earliest, latest)?;
+        for (price, runs) in self.price_levels.range(lowest..=highest) {
+            for run in runs.iter() {
+                if run.until_time < earliest || run.start_time > latest {
+                    continue;
+                }
 
-                        let order_size = market_type.qty_in_quote_value(
-                            visible_run.qty(),
-                            *price,
-                            size_in_quote_ccy,
-                        );
+                let order_size =
+                    market_type.qty_in_quote_value(run.qty(), *price, size_in_quote_ccy);
 
-                        if order_size > order_size_filter {
-                            Some(visible_run)
-                        } else {
-                            None
-                        }
-                    })
-                    .for_each(|run| {
-                        max_depth_qty = max_depth_qty.max(run.qty());
-                    });
-            });
+                if order_size > order_size_filter {
+                    max_depth_qty = max_depth_qty.max(run.qty());
+                }
+            }
+        }
 
         max_depth_qty
     }
