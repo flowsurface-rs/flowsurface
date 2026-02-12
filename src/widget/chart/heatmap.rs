@@ -404,7 +404,6 @@ impl HeatmapShader {
         }
 
         self.data_gen = self.data_gen.wrapping_add(1);
-        self.depth_norm.invalidate();
 
         if (self.data_gen & 0x3F) == 0 {
             self.cleanup_old_data(aggr_time);
@@ -595,7 +594,6 @@ impl HeatmapShader {
             );
 
             self.data_gen = self.data_gen.wrapping_add(1);
-            self.depth_norm.invalidate();
 
             self.scene.sync_heatmap_from_grid(
                 &mut self.depth_grid,
@@ -711,12 +709,18 @@ impl HeatmapShader {
         let latest_incl = w.latest_vis.saturating_add(w.aggr_time);
         let is_interacting = matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. });
 
+        let norm_gen = if is_interacting || self.anchor.is_paused() {
+            self.data_gen
+        } else {
+            latest_incl / w.aggr_time.max(1)
+        };
+
         let denom = self.depth_norm.compute_throttled(
             &self.depth_history,
             &w,
             latest_incl,
             self.step,
-            self.data_gen,
+            norm_gen,
             now_i,
             is_interacting,
         );

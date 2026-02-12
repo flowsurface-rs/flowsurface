@@ -582,11 +582,11 @@ impl ViewWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NormKey {
-    pub start_bucket: i64,
-    pub end_bucket_excl: i64,
-    pub y0_bin: i64,
-    pub y1_bin: i64,
+struct NormKey {
+    start_bucket: i64,
+    end_bucket_excl: i64,
+    y0_bin: i64,
+    y1_bin: i64,
 }
 
 #[derive(Debug)]
@@ -607,8 +607,26 @@ impl DepthNormCache {
         }
     }
 
-    pub fn invalidate(&mut self) {
-        self.key = None;
+    fn make_key(&self, w: &ViewWindow, latest_incl: u64, step: PriceStep) -> NormKey {
+        let aggr = w.aggr_time.max(1);
+        let start_bucket = (w.earliest / aggr) as i64;
+        let end_bucket_excl = latest_incl.div_ceil(aggr) as i64;
+
+        let step_units = step.units.max(1);
+        let y_div = w.steps_per_y_bin.max(1);
+
+        let mut y0_bin = (w.lowest.units / step_units).div_euclid(y_div);
+        let mut y1_bin = (w.highest.units / step_units).div_euclid(y_div);
+        if y0_bin > y1_bin {
+            std::mem::swap(&mut y0_bin, &mut y1_bin);
+        }
+
+        NormKey {
+            start_bucket,
+            end_bucket_excl,
+            y0_bin,
+            y1_bin,
+        }
     }
 
     pub fn compute_throttled(
@@ -621,45 +639,36 @@ impl DepthNormCache {
         now: Instant,
         is_interacting: bool,
     ) -> f32 {
-        if is_interacting && let Some(last) = self.last_recompute {
-            let dt_ms = now.saturating_duration_since(last).as_millis() as u64;
-            if dt_ms < NORM_RECOMPUTE_THROTTLE_MS {
-                return self.value.max(1e-6);
-            }
+        let key = self.make_key(w, latest_incl, step);
+        let key_changed = self.key != Some(key);
+
+        let throttle_ms = if is_interacting {
+            NORM_RECOMPUTE_THROTTLE_MS
+        } else {
+            w.aggr_time.max(1)
+        };
+
+        let dt_ms = self
+            .last_recompute
+            .map(|last| now.saturating_duration_since(last).as_millis() as u64)
+            .unwrap_or(u64::MAX);
+
+        if !key_changed && dt_ms < throttle_ms {
+            return self.value.max(1e-6);
         }
 
         self.last_recompute = Some(now);
-        self.compute(hist, w, latest_incl, step, data_gen)
+        self.compute_with_key(hist, w, latest_incl, key, data_gen)
     }
 
-    fn compute(
+    fn compute_with_key(
         &mut self,
         hist: &HistoricalDepth,
         w: &ViewWindow,
         latest_incl: u64,
-        step: PriceStep,
+        key: NormKey,
         data_gen: u64,
     ) -> f32 {
-        let aggr = w.aggr_time.max(1);
-        let start_bucket = (w.earliest / aggr) as i64;
-        let end_bucket_excl = (latest_incl / aggr) as i64;
-
-        let step_units = step.units.max(1);
-        let y_div = w.steps_per_y_bin.max(1);
-
-        let mut y0_bin = (w.lowest.units / step_units).div_euclid(y_div);
-        let mut y1_bin = (w.highest.units / step_units).div_euclid(y_div);
-        if y0_bin > y1_bin {
-            std::mem::swap(&mut y0_bin, &mut y1_bin);
-        }
-
-        let key = NormKey {
-            start_bucket,
-            end_bucket_excl,
-            y0_bin,
-            y1_bin,
-        };
-
         if self.key == Some(key) && self.generation == data_gen {
             return self.value.max(1e-6);
         }
