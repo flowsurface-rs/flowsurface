@@ -48,6 +48,14 @@ fn world_to_clip(world_pos: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
 }
 
+fn snap_ndc_x_to_pixel_edge(ndc_x: f32) -> f32 {
+    // Convert NDC [-1,1] -> screen pixels [0, viewport_x], snap to integer pixel edge, convert back.
+    let viewport_x = max(camera.b.x, 1.0);
+    let screen_x = (ndc_x * 0.5 + 0.5) * viewport_x;
+    let snapped_x = round(screen_x);
+    return ((snapped_x / viewport_x) - 0.5) * 2.0;
+}
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var world_pos: vec2<f32>;
@@ -76,7 +84,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         let right = max(x0, x1);
 
         let bin_w = max(right - left, 0.0);
-        let bar_w = max(bin_w * (1.0 - volume_gap_frac), volume_min_w_world);
+        let bar_w0 = max(bin_w * (1.0 - volume_gap_frac), volume_min_w_world);
+
+        // quantize width to whole pixels in screen space to avoid 1px<->2px flutter.
+        let sx = max(camera.a.x, 1e-6);
+        let bar_w_px = max(round(bar_w0 * sx), 1.0);
+        let bar_w = bar_w_px / sx;
 
         let center_x = 0.5 * (left + right);
         let center_y = input.position.y;
@@ -87,6 +100,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
     var out: VertexOutput;
     out.pos = world_to_clip(world_pos);
+
+    if (x_from_bins) {
+        out.pos.x = snap_ndc_x_to_pixel_edge(out.pos.x);
+    }
+
     out.color = input.color;
     out.world_x = world_pos.x;
     out.fade_mode = input.fade_mode;
