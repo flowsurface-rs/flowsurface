@@ -13,6 +13,28 @@ use iced::{Rectangle, wgpu};
 
 use rustc_hash::FxHashMap;
 
+pub mod bind {
+    pub const CAMERA_GROUP: u32 = 0;
+    pub const CAMERA_BINDING: u32 = 0;
+    pub const PARAMS_BINDING: u32 = 1;
+
+    pub const HEATMAP_GROUP: u32 = 1;
+    pub const HEATMAP_TEX_BINDING: u32 = 0;
+}
+
+pub const CAMERA_UNIFORM_BYTES: usize = 2 * 16; // 2 vec4<f32>
+pub const PARAMS_UNIFORM_BYTES: usize = 8 * 16; // 8 vec4<f32>
+
+// Compile-time guarantees(fail build immediately on mismatch)
+const _: [(); CAMERA_UNIFORM_BYTES] = [(); std::mem::size_of::<CameraUniform>()];
+const _: [(); PARAMS_UNIFORM_BYTES] = [(); std::mem::size_of::<ParamsUniform>()];
+
+#[inline]
+pub fn validate_host_layouts() {
+    debug_assert_eq!(std::mem::size_of::<CameraUniform>(), CAMERA_UNIFORM_BYTES);
+    debug_assert_eq!(std::mem::size_of::<ParamsUniform>(), PARAMS_UNIFORM_BYTES);
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DrawLayer(pub i16);
 
@@ -96,6 +118,8 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        validate_host_layouts();
+
         // -- buffers
         let rect_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("rect vertex buffer"),
@@ -119,14 +143,22 @@ impl Pipeline {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // -- shaders
+        let rect_shader_src = wgsl_with_common(include_str!("../shaders/rect.wgsl"));
         let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            source: wgpu::ShaderSource::Wgsl(rect_shader_src.into()),
             label: Some("rect shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/rect.wgsl").into()),
         });
+
+        let circle_shader_src = wgsl_with_common(include_str!("../shaders/circle.wgsl"));
         let circle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            source: wgpu::ShaderSource::Wgsl(circle_shader_src.into()),
             label: Some("circle shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/circle.wgsl").into()),
+        });
+
+        let heatmap_shader_src = wgsl_with_common(include_str!("../shaders/heatmap_tex.wgsl"));
+        let heatmap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            source: wgpu::ShaderSource::Wgsl(heatmap_shader_src.into()),
+            label: Some("heatmap texture shader"),
         });
 
         // -- bind groups
@@ -134,9 +166,8 @@ impl Pipeline {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("camera+params bind group layout"),
                 entries: &[
-                    // binding(0): camera
                     wgpu::BindGroupLayoutEntry {
-                        binding: 0,
+                        binding: bind::CAMERA_BINDING,
                         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -150,9 +181,8 @@ impl Pipeline {
                         },
                         count: None,
                     },
-                    // binding(1): params
                     wgpu::BindGroupLayoutEntry {
-                        binding: 1,
+                        binding: bind::PARAMS_BINDING,
                         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -333,11 +363,6 @@ impl Pipeline {
             cache: None,
         });
 
-        let heatmap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("heatmap texture shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/heatmap_tex.wgsl").into()),
-        });
-
         let heatmap_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("heatmap quad vertex buffer"),
             contents: bytemuck::cast_slice(RECT_VERTICES),
@@ -354,7 +379,7 @@ impl Pipeline {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("heatmap texture bind group layout (u32 bid+ask packed RG)"),
                 entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
+                    binding: bind::HEATMAP_TEX_BINDING,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -486,11 +511,11 @@ impl Pipeline {
                 layout: &self.camera_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
-                        binding: 0,
+                        binding: bind::CAMERA_BINDING,
                         resource: camera_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 1,
+                        binding: bind::PARAMS_BINDING,
                         resource: params_buffer.as_entire_binding(),
                     },
                 ],
@@ -517,7 +542,7 @@ impl Pipeline {
                 label: Some("heatmap tex bind group (u32 bid+ask packed RG)"),
                 layout: &self.heatmap_tex_bind_group_layout,
                 entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
+                    binding: bind::HEATMAP_TEX_BINDING,
                     resource: wgpu::BindingResource::TextureView(&heatmap_view),
                 }],
             });
@@ -865,7 +890,7 @@ impl Pipeline {
             label: Some("heatmap tex bind group (resized u32 bid+ask packed RG)"),
             layout,
             entries: &[wgpu::BindGroupEntry {
-                binding: 0,
+                binding: bind::HEATMAP_TEX_BINDING,
                 resource: wgpu::BindingResource::TextureView(&gpu.heatmap_view),
             }],
         });
@@ -937,8 +962,7 @@ impl Pipeline {
         );
         pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
 
-        // Bind group 0 is shared by all pipelines.
-        pass.set_bind_group(0, &gpu.camera_bind_group, &[]);
+        pass.set_bind_group(bind::CAMERA_GROUP, &gpu.camera_bind_group, &[]);
 
         let rect_stride = std::mem::size_of::<RectInstance>() as u64;
         let circle_stride = std::mem::size_of::<CircleInstance>() as u64;
@@ -947,7 +971,7 @@ impl Pipeline {
             match item.op {
                 DrawOp::Heatmap => {
                     pass.set_pipeline(&self.heatmap_pipeline);
-                    pass.set_bind_group(1, &gpu.heatmap_tex_bind_group, &[]);
+                    pass.set_bind_group(bind::HEATMAP_GROUP, &gpu.heatmap_tex_bind_group, &[]);
                     pass.set_vertex_buffer(0, self.heatmap_vertex_buffer.slice(..));
                     pass.set_index_buffer(
                         self.heatmap_index_buffer.slice(..),
@@ -996,4 +1020,14 @@ impl Pipeline {
             }
         }
     }
+}
+
+#[inline]
+fn wgsl_with_common(body: &str) -> String {
+    let common = include_str!("../shaders/common.wgsl");
+    let mut src = String::with_capacity(common.len() + 1 + body.len());
+    src.push_str(common);
+    src.push('\n');
+    src.push_str(body);
+    src
 }

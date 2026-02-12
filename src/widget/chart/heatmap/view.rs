@@ -232,7 +232,7 @@ pub enum ResumeAction {
     FullRebuildFromHistorical,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub enum RebuildPolicy {
     /// Full rebuild should run immediately
     Immediate { force_rebuild_from_historical: bool },
@@ -242,13 +242,8 @@ pub enum RebuildPolicy {
         force_rebuild_from_historical: bool,
     },
     /// No pending rebuild requested.
+    #[default]
     Idle,
-}
-
-impl Default for RebuildPolicy {
-    fn default() -> Self {
-        RebuildPolicy::Idle
-    }
 }
 
 impl RebuildPolicy {

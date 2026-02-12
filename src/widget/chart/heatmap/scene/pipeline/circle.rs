@@ -18,7 +18,7 @@ pub struct CircleInstance {
 }
 
 impl CircleInstance {
-    const R_MIN_PX: f32 = 2.0;
+    const R_MIN_PX: f32 = 1.5;
     const R_MAX_PX: f32 = 25.0;
     const ALPHA: f32 = 0.8;
 
