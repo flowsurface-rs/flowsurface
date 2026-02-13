@@ -714,7 +714,7 @@ impl GridRing {
         let step_units = step.units.max(1);
         let steps_per_y_bin = self.steps_per_y_bin();
 
-        let delta_steps = (target.units - anchor.units) / step_units;
+        let delta_steps = (target.units - anchor.units).div_euclid(step_units);
         let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
 
         let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;

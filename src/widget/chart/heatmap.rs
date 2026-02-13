@@ -144,7 +144,7 @@ impl HeatmapShader {
             Message::BoundsChanged(bounds) => {
                 self.viewport = Some(bounds);
 
-                self.rebuild_policy = view::RebuildPolicy::immediate();
+                self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
                 self.rebuild_all(None);
             }
             Message::DragZoomAxisXKeepAnchor {
@@ -155,7 +155,7 @@ impl HeatmapShader {
                 self.scene
                     .zoom_column_world_keep_anchor(factor, 0.0, anchor_screen_x, viewport_w);
 
-                self.try_rebuild_overlays();
+                self.try_rebuild_instances();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::PanDeltaPx(delta_px) => {
@@ -167,7 +167,7 @@ impl HeatmapShader {
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
 
-                self.try_rebuild_overlays();
+                self.try_rebuild_instances();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::ZoomAt { factor, cursor } => {
@@ -195,7 +195,7 @@ impl HeatmapShader {
                     size.height,
                 );
 
-                self.try_rebuild_overlays();
+                self.try_rebuild_instances();
                 self.force_rebuild_if_ybin_changed();
             }
             Message::ScrolledAxisY {
@@ -205,7 +205,7 @@ impl HeatmapShader {
             } => {
                 self.scene.zoom_row_h_at(factor, cursor_y, viewport_h);
 
-                self.try_rebuild_overlays();
+                self.try_rebuild_instances();
                 self.force_rebuild_if_ybin_changed();
 
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -218,13 +218,13 @@ impl HeatmapShader {
                 self.scene
                     .zoom_column_world_at(factor, cursor_x, viewport_w);
 
-                self.try_rebuild_overlays();
+                self.try_rebuild_instances();
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
             }
             Message::AxisYDoubleClicked => {
                 self.scene.camera.offset[1] = 0.0;
 
-                self.try_rebuild_overlays();
+                self.try_rebuild_instances();
                 self.force_rebuild_if_ybin_changed();
 
                 self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -234,7 +234,7 @@ impl HeatmapShader {
                     self.scene.camera.reset_offset_x(size.width);
                     self.scene.cell.set_default_width();
 
-                    self.try_rebuild_overlays();
+                    self.try_rebuild_instances();
                     self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
                 }
             }
@@ -257,7 +257,7 @@ impl HeatmapShader {
                     self.scene.camera.offset[1] = 0.0;
                 }
 
-                self.rebuild_policy = view::RebuildPolicy::immediate();
+                self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
             }
         }
     }
@@ -473,7 +473,7 @@ impl HeatmapShader {
 
     /// Rebuild only CPU overlay instances (profile/volume/trades). This is intended to be
     /// cheap enough to run during interaction, unlike `rebuild_from_historical`.
-    fn rebuild_overlays(&mut self, w: &ViewWindow) {
+    fn rebuild_instances(&mut self, w: &ViewWindow) {
         let Some(palette) = &self.palette else {
             return;
         };
@@ -481,6 +481,10 @@ impl HeatmapShader {
             (Some(price), Some(time)) => (price, time),
             _ => return,
         };
+
+        // Keep trade-profile fade params synchronized with the same window used for
+        // instance building so overlay labels anchor to current geometry immediately.
+        self.scene.params.set_trade_fade(w);
 
         // If we are interacting (debounced), keep overlays on the *same* y-binning
         let mut effective_window = *w;
@@ -512,7 +516,7 @@ impl HeatmapShader {
         self.scene.set_draw_list(draw_list);
     }
 
-    fn try_rebuild_overlays(&mut self) {
+    fn try_rebuild_instances(&mut self) {
         let Some(size) = self.viewport_size_px() else {
             return;
         };
@@ -520,7 +524,7 @@ impl HeatmapShader {
             return;
         };
 
-        self.rebuild_overlays(&w);
+        self.rebuild_instances(&w);
     }
 
     fn rebuild_all(&mut self, window: Option<ViewWindow>) {
@@ -624,7 +628,7 @@ impl HeatmapShader {
             );
         }
 
-        self.rebuild_overlays(&w);
+        self.rebuild_instances(&w);
     }
 
     /// If the y-binning (steps_per_y_bin) would change, we must rebuild the heatmap texture.
@@ -642,7 +646,7 @@ impl HeatmapShader {
 
         let cur_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         if w.steps_per_y_bin != cur_steps_per_y_bin {
-            self.rebuild_policy = view::RebuildPolicy::immediate();
+            self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
             self.rebuild_all(Some(w));
         }
     }
@@ -695,7 +699,7 @@ impl HeatmapShader {
             self.rebuild_policy.decide(now_i, REBUILD_DEBOUNCE_MS);
 
         if do_overlays {
-            self.rebuild_overlays(w);
+            self.rebuild_instances(w);
         }
         if do_full {
             self.rebuild_all(Some(*w));

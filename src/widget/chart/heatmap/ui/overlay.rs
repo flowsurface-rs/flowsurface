@@ -17,6 +17,13 @@ const TOOLTIP_PADDING: f32 = 12.0;
 const OVERLAY_LABEL_PAD_PX: f32 = 6.0;
 const OVERLAY_LABEL_TEXT_SIZE: f32 = 11.0;
 
+const TOOLTIP_ROW_OFFSETS: [i64; 3] = [1, 0, -1];
+const TOOLTIP_COL_OFFSETS: [i64; 4] = [-2, -1, 0, 1];
+
+const HIGHLIGHT_CROSSHAIR_GAP_PX: f32 = 1.0;
+const HIGHLIGHT_BORDER_WIDTH_PX: f32 = 1.0;
+const HIGHLIGHT_BORDER_ALPHA: f32 = 0.95;
+
 const PAUSE_ICON_BAR_WIDTH_FRAC: f32 = 0.008;
 const PAUSE_ICON_BAR_HEIGHT_FRAC: f32 = 0.032;
 const PAUSE_ICON_PADDING_FRAC: f32 = 0.02;
@@ -28,6 +35,54 @@ pub enum Interaction {
     Panning {
         last_position: iced::Point,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TooltipLayout {
+    rect: Rectangle,
+    cell_w: f32,
+    cell_h: f32,
+}
+
+impl TooltipLayout {
+    fn from_cursor(bounds: Rectangle, local_x: f32, local_y: f32) -> Self {
+        let should_draw_below = local_y < TOOLTIP_HEIGHT + TOOLTIP_PADDING;
+        let should_draw_left = local_x > bounds.width - (TOOLTIP_WIDTH + TOOLTIP_PADDING);
+
+        let x = if should_draw_left {
+            local_x - TOOLTIP_WIDTH - TOOLTIP_PADDING
+        } else {
+            local_x + TOOLTIP_PADDING
+        };
+
+        let y = if should_draw_below {
+            local_y + TOOLTIP_PADDING
+        } else {
+            local_y - TOOLTIP_HEIGHT - TOOLTIP_PADDING
+        };
+
+        let rect = Rectangle {
+            x: x.max(0.0),
+            y: y.max(0.0),
+            width: TOOLTIP_WIDTH,
+            height: TOOLTIP_HEIGHT,
+        };
+
+        let cell_w = TOOLTIP_WIDTH / (TOOLTIP_COL_OFFSETS.len() as f32);
+        let cell_h = TOOLTIP_HEIGHT / (TOOLTIP_ROW_OFFSETS.len() as f32);
+
+        Self {
+            rect,
+            cell_w,
+            cell_h,
+        }
+    }
+
+    fn cell_center(&self, row_idx: usize, col_idx: usize) -> Point {
+        let x = self.rect.x + ((col_idx as f32) * self.cell_w) + self.cell_w / 2.0;
+        let y = self.rect.y + ((row_idx as f32) * self.cell_h) + self.cell_h / 2.0;
+        Point::new(x, y)
+    }
 }
 
 pub struct OverlayCanvas<'a> {
@@ -275,29 +330,25 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 return;
             }
 
-            // Cursor position in *plot-local* px coordinates.
             let local_x = pos.x - bounds.x;
             let local_y = pos.y - bounds.y;
 
-            // Screen(px) -> world coords (match shader conventions, incl right_pad_frac).
             let [world_x, world_y] =
                 self.scene
                     .camera
                     .screen_to_world(local_x, local_y, bounds.width, bounds.height);
 
-            // --- X snap: nearest bucket START (column start / left edge)
             let x_bin_rel_f = (world_x / cell_width) + origin0;
             if !x_bin_rel_f.is_finite() {
                 return;
             }
+
             let x_bin_rel = x_bin_rel_f.round();
             let snapped_world_x = (x_bin_rel - origin0) * cell_width;
 
-            // --- Y snap: nearest y-bin center (matches texture binning)
-            let steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
-
-            let steps_at_y: i64 = ((-world_y) / cell_height).floor() as i64;
-            let base_rel_y_bin: i64 = steps_at_y.div_euclid(steps_per_y_bin.max(1));
+            let steps_per_y_bin = self.scene.params.steps_per_y_bin();
+            let steps_at_y = ((-world_y) / cell_height).floor() as i64;
+            let base_rel_y_bin = steps_at_y.div_euclid(steps_per_y_bin.max(1));
             let snapped_world_y =
                 -((base_rel_y_bin as f32 + 0.5) * (steps_per_y_bin as f32) * cell_height);
 
@@ -308,117 +359,62 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 bounds.height,
             );
 
-            let crosshair_stroke = style::dashed_line(theme);
-
             let x = (snap_px_x.round() + 0.5).clamp(0.0, bounds.width);
             let y = (snap_px_y.round() + 0.5).clamp(0.0, bounds.height);
 
-            frame.stroke(
-                &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),
-                crosshair_stroke,
-            );
-            frame.stroke(
-                &Path::line(Point::new(0.0, y), Point::new(bounds.width, y)),
-                crosshair_stroke,
-            );
-
             if let Interaction::Panning { .. } = interaction {
+                self.draw_full_crosshair(frame, theme, bounds, x, y);
                 return;
             }
 
-            // --- X: world -> bucket_abs (base cell)
-            let x_bin_rel_f = (world_x / cell_width) + origin0;
-            if !x_bin_rel_f.is_finite() {
-                return;
-            }
-
-            let base_bucket_abs: i64 = self
+            let base_bucket_abs = self
                 .scroll_ref_bucket
                 .saturating_add(x_bin_rel_f.round() as i64);
 
-            // --- Y: world -> rel_y_bin (base cell)
-            let steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
-            let steps_at_y: i64 = ((-world_y) / cell_height).floor() as i64;
-            let base_rel_y_bin: i64 = steps_at_y.div_euclid(steps_per_y_bin.max(1));
+            let y_start_bin = self.scene.params.heatmap_start_bin();
 
-            // shader-provided y_start_bin
-            let y_start_bin: i64 = self.scene.params.heatmap_start_bin();
-
-            // Tooltip grid offsets (match old impl shape: 3 rows × 4 cols)
-            let row_offsets: [i64; 3] = [1, 0, -1];
-            let col_offsets: [i64; 4] = [-2, -1, 0, 1];
-
-            // Quick visibility test: if all cells are empty, draw nothing.
-            let mut any_nonzero = false;
-            'scan: for &dy in &row_offsets {
-                let rel_y_bin = base_rel_y_bin.saturating_add(dy);
-                let y_tex = rel_y_bin.saturating_sub(y_start_bin);
-                if y_tex < 0 || y_tex >= tex_h {
-                    continue;
-                }
-
-                for &dx in &col_offsets {
-                    let bucket = base_bucket_abs.saturating_add(dx);
-                    let x_ring = self.depth_grid.ring_x_for_bucket(bucket) as i64;
-                    if x_ring < 0 || x_ring >= tex_w {
-                        continue;
-                    }
-
-                    let idx = (y_tex as usize) * (tex_w as usize) + (x_ring as usize);
-                    if idx >= self.depth_grid.bid.len() || idx >= self.depth_grid.ask.len() {
-                        continue;
-                    }
-
-                    if self.depth_grid.bid[idx] != 0 || self.depth_grid.ask[idx] != 0 {
-                        any_nonzero = true;
-                        break 'scan;
-                    }
-                }
-            }
+            let any_nonzero = self.tooltip_neighborhood_has_data(
+                tex_w,
+                tex_h,
+                base_rel_y_bin,
+                base_bucket_abs,
+                y_start_bin,
+            );
 
             if !any_nonzero {
+                self.draw_full_crosshair(frame, theme, bounds, x, y);
                 return;
             }
 
-            let should_draw_below = local_y < TOOLTIP_HEIGHT + TOOLTIP_PADDING;
-            let should_draw_left = local_x > bounds.width - (TOOLTIP_WIDTH + TOOLTIP_PADDING);
-
-            let overlay_top_left_x = if should_draw_left {
-                local_x - TOOLTIP_WIDTH - TOOLTIP_PADDING
+            if let Some(neighborhood_rect) = self.tooltip_neighborhood_rect_px(
+                bounds,
+                origin0,
+                cell_width,
+                cell_height,
+                steps_per_y_bin,
+                base_rel_y_bin,
+                base_bucket_abs,
+            ) {
+                self.draw_crosshair_around_rect(frame, theme, bounds, x, y, neighborhood_rect);
+                self.draw_neighborhood_outline(frame, theme, neighborhood_rect);
             } else {
-                local_x + TOOLTIP_PADDING
-            };
-
-            let overlay_top_left_y = if should_draw_below {
-                local_y + TOOLTIP_PADDING
-            } else {
-                local_y - TOOLTIP_HEIGHT - TOOLTIP_PADDING
-            };
+                self.draw_full_crosshair(frame, theme, bounds, x, y);
+            }
 
             let palette = theme.extended_palette();
-
             let bg = palette.background.weakest.color.scale_alpha(0.90);
+            let layout = TooltipLayout::from_cursor(bounds, local_x, local_y);
 
-            let rect = iced::Rectangle {
-                x: overlay_top_left_x.max(0.0),
-                y: overlay_top_left_y.max(0.0),
-                width: TOOLTIP_WIDTH,
-                height: TOOLTIP_HEIGHT,
-            };
+            frame.fill_rectangle(layout.rect.position(), layout.rect.size(), bg);
 
-            frame.fill_rectangle(rect.position(), rect.size(), bg);
-
-            let cell_w = TOOLTIP_WIDTH / 4.0;
-            let cell_h = TOOLTIP_HEIGHT / 3.0;
-
-            for (row_idx, &dy) in row_offsets.iter().enumerate() {
+            for (row_idx, &dy) in TOOLTIP_ROW_OFFSETS.iter().enumerate() {
                 let rel_y_bin = base_rel_y_bin.saturating_add(dy);
                 let y_tex = rel_y_bin.saturating_sub(y_start_bin);
                 if y_tex < 0 || y_tex >= tex_h {
                     continue;
                 }
 
-                for (col_idx, &dx) in col_offsets.iter().enumerate() {
+                for (col_idx, &dx) in TOOLTIP_COL_OFFSETS.iter().enumerate() {
                     let bucket = base_bucket_abs.saturating_add(dx);
                     let x_ring = self.depth_grid.ring_x_for_bucket(bucket) as i64;
                     if x_ring < 0 || x_ring >= tex_w {
@@ -451,12 +447,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         palette.danger.strong.color
                     };
 
-                    let text_pos_x = rect.x + (col_idx as f32 * cell_w) + cell_w / 2.0;
-                    let text_pos_y = rect.y + (row_idx as f32 * cell_h) + cell_h / 2.0;
-
                     frame.fill_text(canvas::Text {
                         content: abbr_large_numbers(qty),
-                        position: Point::new(text_pos_x, text_pos_y),
+                        position: layout.cell_center(row_idx, col_idx),
                         size: iced::Pixels(11.0),
                         color: color.scale_alpha(0.95),
                         align_x: Alignment::Center.into(),
@@ -507,5 +500,214 @@ impl<'a> OverlayCanvas<'a> {
             width: total_icon_width,
             height: bar_height,
         }
+    }
+
+    fn draw_full_crosshair(
+        &self,
+        frame: &mut canvas::Frame,
+        theme: &Theme,
+        bounds: Rectangle,
+        x: f32,
+        y: f32,
+    ) {
+        frame.stroke(
+            &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),
+            style::dashed_line(theme),
+        );
+        frame.stroke(
+            &Path::line(Point::new(0.0, y), Point::new(bounds.width, y)),
+            style::dashed_line(theme),
+        );
+    }
+
+    fn draw_crosshair_around_rect(
+        &self,
+        frame: &mut canvas::Frame,
+        theme: &Theme,
+        bounds: Rectangle,
+        x: f32,
+        y: f32,
+        rect: Rectangle,
+    ) {
+        let cut_left = (rect.x - HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.width);
+        let cut_right = (rect.x + rect.width + HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.width);
+        let cut_top = (rect.y - HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.height);
+        let cut_bottom =
+            (rect.y + rect.height + HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.height);
+
+        if (cut_left..=cut_right).contains(&x) {
+            if cut_top > 0.0 {
+                frame.stroke(
+                    &Path::line(Point::new(x, 0.0), Point::new(x, cut_top)),
+                    style::dashed_line(theme),
+                );
+            }
+            if cut_bottom < bounds.height {
+                frame.stroke(
+                    &Path::line(Point::new(x, cut_bottom), Point::new(x, bounds.height)),
+                    style::dashed_line(theme),
+                );
+            }
+        } else {
+            frame.stroke(
+                &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),
+                style::dashed_line(theme),
+            );
+        }
+
+        if (cut_top..=cut_bottom).contains(&y) {
+            if cut_left > 0.0 {
+                frame.stroke(
+                    &Path::line(Point::new(0.0, y), Point::new(cut_left, y)),
+                    style::dashed_line(theme),
+                );
+            }
+            if cut_right < bounds.width {
+                frame.stroke(
+                    &Path::line(Point::new(cut_right, y), Point::new(bounds.width, y)),
+                    style::dashed_line(theme),
+                );
+            }
+        } else {
+            frame.stroke(
+                &Path::line(Point::new(0.0, y), Point::new(bounds.width, y)),
+                style::dashed_line(theme),
+            );
+        }
+    }
+
+    fn draw_neighborhood_outline(&self, frame: &mut canvas::Frame, theme: &Theme, rect: Rectangle) {
+        let mut rect_w = rect.width.max(0.0);
+        let mut rect_h = rect.height.max(0.0);
+
+        if rect_w < 1.0 || rect_h < 1.0 {
+            return;
+        }
+
+        let palette = theme.extended_palette();
+
+        let stroke = canvas::Stroke {
+            style: canvas::Style::Solid(
+                palette
+                    .secondary
+                    .strong
+                    .color
+                    .scale_alpha(HIGHLIGHT_BORDER_ALPHA),
+            ),
+            width: HIGHLIGHT_BORDER_WIDTH_PX,
+            ..canvas::Stroke::default()
+        };
+
+        let x = rect.x.round() + 0.5;
+        let y = rect.y.round() + 0.5;
+        rect_w = (rect_w.round() - 1.0).max(0.0);
+        rect_h = (rect_h.round() - 1.0).max(0.0);
+
+        frame.stroke(
+            &Path::rectangle(Point::new(x, y), iced::Size::new(rect_w, rect_h)),
+            stroke,
+        );
+    }
+
+    fn tooltip_neighborhood_has_data(
+        &self,
+        tex_w: i64,
+        tex_h: i64,
+        base_rel_y_bin: i64,
+        base_bucket_abs: i64,
+        y_start_bin: i64,
+    ) -> bool {
+        for &dy in &TOOLTIP_ROW_OFFSETS {
+            let rel_y_bin = base_rel_y_bin.saturating_add(dy);
+            let y_tex = rel_y_bin.saturating_sub(y_start_bin);
+            if y_tex < 0 || y_tex >= tex_h {
+                continue;
+            }
+
+            for &dx in &TOOLTIP_COL_OFFSETS {
+                let bucket = base_bucket_abs.saturating_add(dx);
+                let x_ring = self.depth_grid.ring_x_for_bucket(bucket) as i64;
+                if x_ring < 0 || x_ring >= tex_w {
+                    continue;
+                }
+
+                let idx = (y_tex as usize) * (tex_w as usize) + (x_ring as usize);
+                if idx >= self.depth_grid.bid.len() || idx >= self.depth_grid.ask.len() {
+                    continue;
+                }
+
+                if self.depth_grid.bid[idx] != 0 || self.depth_grid.ask[idx] != 0 {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn tooltip_neighborhood_rect_px(
+        &self,
+        bounds: Rectangle,
+        origin0: f32,
+        cell_width: f32,
+        cell_height: f32,
+        steps_per_y_bin: i64,
+        base_rel_y_bin: i64,
+        base_bucket_abs: i64,
+    ) -> Option<Rectangle> {
+        let min_col = TOOLTIP_COL_OFFSETS.iter().copied().min()?;
+        let max_col = TOOLTIP_COL_OFFSETS.iter().copied().max()?;
+        let min_row = TOOLTIP_ROW_OFFSETS.iter().copied().min()?;
+        let max_row = TOOLTIP_ROW_OFFSETS.iter().copied().max()?;
+
+        let left_bucket = base_bucket_abs.saturating_add(min_col);
+        let right_bucket_excl = base_bucket_abs.saturating_add(max_col.saturating_add(1));
+
+        let left_world_x = (((left_bucket - self.scroll_ref_bucket) as f32) - origin0) * cell_width;
+        let right_world_x =
+            (((right_bucket_excl - self.scroll_ref_bucket) as f32) - origin0) * cell_width;
+
+        let min_rel_y_bin = base_rel_y_bin.saturating_add(min_row);
+        let max_rel_y_bin = base_rel_y_bin.saturating_add(max_row);
+        let y_bin_h_world = (steps_per_y_bin.max(1) as f32) * cell_height;
+
+        let top_world_y = -((max_rel_y_bin as f32 + 1.0) * y_bin_h_world);
+        let bottom_world_y = -((min_rel_y_bin as f32) * y_bin_h_world);
+
+        let [x0_px, y0_px] = self.scene.camera.world_to_screen(
+            left_world_x,
+            top_world_y,
+            bounds.width,
+            bounds.height,
+        );
+        let [x1_px, y1_px] = self.scene.camera.world_to_screen(
+            right_world_x,
+            bottom_world_y,
+            bounds.width,
+            bounds.height,
+        );
+
+        if !x0_px.is_finite() || !y0_px.is_finite() || !x1_px.is_finite() || !y1_px.is_finite() {
+            return None;
+        }
+
+        let left_px = x0_px.min(x1_px).clamp(0.0, bounds.width);
+        let right_px = x0_px.max(x1_px).clamp(0.0, bounds.width);
+        let top_px = y0_px.min(y1_px).clamp(0.0, bounds.height);
+        let bottom_px = y0_px.max(y1_px).clamp(0.0, bounds.height);
+
+        let rect_w = (right_px - left_px).max(0.0);
+        let rect_h = (bottom_px - top_px).max(0.0);
+
+        if rect_w < 1.0 || rect_h < 1.0 {
+            return None;
+        }
+
+        Some(Rectangle {
+            x: left_px,
+            y: top_px,
+            width: rect_w,
+            height: rect_h,
+        })
     }
 }
