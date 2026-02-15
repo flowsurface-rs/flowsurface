@@ -1216,7 +1216,7 @@ mod tests {
     use super::*;
 
     fn smallest_positive_gap(mut prices: Vec<f32>) -> Option<f32> {
-        prices.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        prices.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
         let mut best: Option<f32> = None;
         for w in prices.windows(2) {
             if w[0] != w[1] {
