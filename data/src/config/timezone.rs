@@ -51,19 +51,23 @@ impl UserTimezone {
     /// Formats a `DateTime` with detailed format for crosshair display
     pub fn format_crosshair_timestamp(&self, timestamp_millis: i64, interval: u64) -> String {
         if let Some(datetime) = DateTime::from_timestamp_millis(timestamp_millis) {
-            if interval < 10000 {
-                return datetime.format("%M:%S.%3f").to_string();
-            }
-
             match self {
-                UserTimezone::Local => datetime
-                    .with_timezone(&chrono::Local)
-                    .format("%a %b %-d %H:%M")
-                    .to_string(),
-                UserTimezone::Utc => datetime
-                    .with_timezone(&chrono::Utc)
-                    .format("%a %b %-d %H:%M")
-                    .to_string(),
+                UserTimezone::Local => {
+                    let time_with_zone = datetime.with_timezone(&chrono::Local);
+                    if interval < 10000 {
+                        time_with_zone.format("%M:%S.%3f").to_string()
+                    } else {
+                        time_with_zone.format("%a %b %-d %H:%M").to_string()
+                    }
+                }
+                UserTimezone::Utc => {
+                    let time_with_zone = datetime.with_timezone(&chrono::Utc);
+                    if interval < 10000 {
+                        time_with_zone.format("%M:%S.%3f").to_string()
+                    } else {
+                        time_with_zone.format("%a %b %-d %H:%M").to_string()
+                    }
+                }
             }
         } else {
             String::new()
