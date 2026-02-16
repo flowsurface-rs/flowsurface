@@ -258,6 +258,16 @@ impl HeatmapShader {
                 }
 
                 self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
+
+                // Resume path must rebuild from historical immediately to backfill pause-gap
+                // buckets that were intentionally not ingested into the live ring while paused.
+                if self.viewport.is_some()
+                    && self.base_price.is_some()
+                    && self.latest_time.is_some()
+                {
+                    self.rebuild_all(None);
+                    self.rebuild_policy = view::RebuildPolicy::Idle;
+                }
             }
         }
     }
@@ -687,9 +697,12 @@ impl HeatmapShader {
             latest_time
         };
 
-        self.scene.sync_time_uniforms(
+        self.scene.params.set_origin_x(origin_x);
+        self.scene.sync_heatmap_texture(
             &self.depth_grid,
-            origin_x,
+            base_price,
+            self.step,
+            1.0 / self.qty_scale,
             latest_time_for_heatmap,
             aggr_time,
             scroll_ref_bucket,

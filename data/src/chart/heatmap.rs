@@ -165,49 +165,61 @@ impl HistoricalDepth {
         self.process_side(&depth.asks, time, false);
     }
 
+    fn qty_quantum(min_order_qty: f32) -> f32 {
+        min_order_qty.max(FRACTIONAL_THRESHOLD)
+    }
+
+    fn qty_to_lots(qty: f32, quantum: f32) -> i64 {
+        ((qty as f64 / quantum as f64).round()) as i64
+    }
+
+    fn lots_to_qty(lots: i64, quantum: f32) -> f32 {
+        (lots as f64 * quantum as f64) as f32
+    }
+
     fn process_side(&mut self, side: &BTreeMap<Price, f32>, time: u64, is_bid: bool) {
         let mut current_price = None;
-        let mut current_qty = 0.0;
+        let mut current_qty = 0.0f64;
 
         let step = self.tick_size;
 
         for (price, qty) in side {
             let rounded_price = price.round_to_side_step(is_bid, step);
             if Some(rounded_price) == current_price {
-                current_qty += qty;
+                current_qty += *qty as f64;
             } else {
                 if let Some(price) = current_price {
-                    self.update_price_level(time, price, current_qty, is_bid);
+                    self.update_price_level(time, price, current_qty as f32, is_bid);
                 }
                 current_price = Some(rounded_price);
-                current_qty = *qty;
+                current_qty = *qty as f64;
             }
         }
 
         if let Some(price) = current_price {
-            self.update_price_level(time, price, current_qty, is_bid);
+            self.update_price_level(time, price, current_qty as f32, is_bid);
         }
     }
 
     fn update_price_level(&mut self, time: u64, price: Price, qty: f32, is_bid: bool) {
-        let price_level = self.price_levels.entry(price).or_default();
         let aggr_time = self.aggr_time;
+        let quantum = Self::qty_quantum(self.min_order_qty);
+
+        let qty_lots = Self::qty_to_lots(qty, quantum);
+        let qty_q = Self::lots_to_qty(qty_lots, quantum);
+
+        let price_level = self.price_levels.entry(price).or_default();
 
         match price_level.last_mut() {
             Some(last_run) if last_run.is_bid == is_bid => {
                 if time > last_run.until_time + GRACE_PERIOD_MS {
-                    price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
+                    price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
                     return;
                 }
 
-                let last_qty = last_run.qty;
-                let qty_diff_pct = if last_qty > 0.0 {
-                    (qty - last_qty).abs() / last_qty
-                } else {
-                    f32::INFINITY
-                };
+                let last_lots = Self::qty_to_lots(last_run.qty, quantum);
 
-                if qty_diff_pct <= self.min_order_qty || last_run.qty == qty {
+                if qty_lots == last_lots {
                     let new_until = time + aggr_time;
                     if new_until > last_run.until_time {
                         last_run.until_time = new_until;
@@ -216,17 +228,17 @@ impl HistoricalDepth {
                     if last_run.until_time > time {
                         last_run.until_time = time;
                     }
-                    price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
+                    price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
                 }
             }
             Some(last_run) => {
                 if last_run.until_time > time {
                     last_run.until_time = time;
                 }
-                price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
+                price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
             }
             None => {
-                price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
+                price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
             }
         }
     }

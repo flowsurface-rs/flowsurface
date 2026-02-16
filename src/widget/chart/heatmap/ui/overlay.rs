@@ -314,6 +314,10 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             return vec![scale_labels];
         };
 
+        if self.is_paused && self.pause_icon_rect(bounds).contains(pos) {
+            return vec![scale_labels];
+        }
+
         let tooltip = self.tooltip_cache.draw(renderer, bounds.size(), |frame| {
             let cell_width = self.scene.cell.width_world();
             let cell_height = self.scene.cell.height_world();
