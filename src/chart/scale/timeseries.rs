@@ -371,14 +371,17 @@ fn sub_daily_labels_gen(
             let x_position = calc_x_pos(current_time, x_min, x_max, axis_bounds.width);
 
             if is_drawable(x_position, axis_bounds.width) {
-                let label_text = timezone.format_timestamp((current_time / 1000) as i64, timeframe);
-                all_labels.push(AxisLabel::new_x(
-                    x_position as f32,
-                    label_text,
-                    axis_bounds,
-                    false,
-                    palette,
-                ));
+                let label_content = timezone.format_timestamp(current_time as i64, timeframe);
+
+                if let Some(content) = label_content {
+                    all_labels.push(AxisLabel::new_x(
+                        x_position as f32,
+                        content,
+                        axis_bounds,
+                        false,
+                        palette,
+                    ));
+                }
             }
         }
         let prev_current_time = current_time;
