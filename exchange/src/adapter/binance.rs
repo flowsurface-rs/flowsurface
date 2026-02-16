@@ -1,14 +1,15 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, SizeUnit, StreamKind,
-        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
+        TickerInfo, TickerStats, Timeframe, Trade,
         adapter::StreamTicksize,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, RateLimiter},
-        str_f32_parse, volume_size_unit,
+        str_f32_parse,
+        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -285,7 +286,7 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
 async fn try_resync(
     exchange: Exchange,
     ticker_info: TickerInfo,
-    contract_size: Option<f32>,
+    qty_norm: QtyNormalization,
     orderbook: &mut LocalDepthCache,
     state: &mut State,
     output: &mut mpsc::Sender<Event>,
@@ -297,13 +298,17 @@ async fn try_resync(
     *already_fetching = true;
 
     tokio::spawn(async move {
-        let result = fetch_depth(&ticker, contract_size).await;
+        let result = fetch_depth(&ticker).await;
         let _ = tx.send(result);
     });
 
     match rx.await {
         Ok(Ok(depth)) => {
-            orderbook.update(DepthUpdate::Snapshot(depth), ticker_info.min_ticksize);
+            orderbook.update_with_qty_norm(
+                DepthUpdate::Snapshot(depth),
+                ticker_info.min_ticksize,
+                Some(qty_norm),
+            );
         }
         Ok(Err(e)) => {
             let _ = output
@@ -346,8 +351,7 @@ pub fn connect_market_stream(
         let mut already_fetching: bool = false;
         let mut prev_id: u64 = 0;
 
-        let contract_size = get_contract_size(&ticker, market);
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let qty_norm = QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
 
         loop {
             match &mut state {
@@ -363,13 +367,16 @@ pub fn connect_market_stream(
                         let (tx, rx) = tokio::sync::oneshot::channel();
 
                         tokio::spawn(async move {
-                            let result = fetch_depth(&ticker, contract_size).await;
+                            let result = fetch_depth(&ticker).await;
                             let _ = tx.send(result);
                         });
                         match rx.await {
                             Ok(Ok(depth)) => {
-                                orderbook
-                                    .update(DepthUpdate::Snapshot(depth), ticker_info.min_ticksize);
+                                orderbook.update_with_qty_norm(
+                                    DepthUpdate::Snapshot(depth),
+                                    ticker_info.min_ticksize,
+                                    Some(qty_norm),
+                                );
                                 prev_id = 0;
 
                                 state = State::Connected(websocket);
@@ -413,20 +420,13 @@ pub fn connect_market_stream(
                                         StreamData::Trade(de_trade) => {
                                             let price = Price::from_f32(de_trade.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = contract_size.map_or(
-                                                if size_in_quote_ccy {
-                                                    (de_trade.qty * de_trade.price).round()
-                                                } else {
-                                                    de_trade.qty
-                                                },
-                                                |size| de_trade.qty * size,
-                                            );
 
                                             let trade = Trade {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell,
                                                 price,
-                                                qty,
+                                                qty: qty_norm
+                                                    .normalize_qty(de_trade.qty, de_trade.price),
                                             };
 
                                             trades_buffer.push(trade);
@@ -458,7 +458,7 @@ pub fn connect_market_stream(
                                                         try_resync(
                                                             exchange,
                                                             ticker_info,
-                                                            contract_size,
+                                                            qty_norm,
                                                             &mut orderbook,
                                                             &mut state,
                                                             &mut output,
@@ -470,12 +470,12 @@ pub fn connect_market_stream(
                                                     if (prev_id == 0)
                                                         || (prev_id == de_depth.prev_final_id)
                                                     {
-                                                        orderbook.update(
+                                                        orderbook.update_with_qty_norm(
                                                             DepthUpdate::Diff(new_depth_cache(
                                                                 &depth_type,
-                                                                contract_size,
                                                             )),
                                                             ticker_info.min_ticksize,
+                                                            Some(qty_norm),
                                                         );
 
                                                         let _ = output
@@ -522,7 +522,7 @@ pub fn connect_market_stream(
                                                         try_resync(
                                                             exchange,
                                                             ticker_info,
-                                                            contract_size,
+                                                            qty_norm,
                                                             &mut orderbook,
                                                             &mut state,
                                                             &mut output,
@@ -534,12 +534,12 @@ pub fn connect_market_stream(
                                                     if (prev_id == 0)
                                                         || (prev_id == de_depth.first_id - 1)
                                                     {
-                                                        orderbook.update(
+                                                        orderbook.update_with_qty_norm(
                                                             DepthUpdate::Diff(new_depth_cache(
                                                                 &depth_type,
-                                                                contract_size,
                                                             )),
                                                             ticker_info.min_ticksize,
+                                                            Some(qty_norm),
                                                         );
 
                                                         let _ = output
@@ -743,13 +743,11 @@ fn get_contract_size(ticker: &Ticker, market_type: MarketKind) -> Option<f32> {
     }
 }
 
-fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> DepthPayload {
+fn new_depth_cache(depth: &SonicDepth) -> DepthPayload {
     let (time, final_id, bids, asks) = match depth {
         SonicDepth::Spot(de) => (de.time, de.final_id, &de.bids, &de.asks),
         SonicDepth::Perp(de) => (de.time, de.final_id, &de.bids, &de.asks),
     };
-
-    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
     DepthPayload {
         last_update_id: final_id,
@@ -758,23 +756,20 @@ fn new_depth_cache(depth: &SonicDepth, contract_size: Option<f32>) -> DepthPaylo
             .iter()
             .map(|x| DeOrder {
                 price: x.price,
-                qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
+                qty: x.qty,
             })
             .collect(),
         asks: asks
             .iter()
             .map(|x| DeOrder {
                 price: x.price,
-                qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
+                qty: x.qty,
             })
             .collect(),
     }
 }
 
-async fn fetch_depth(
-    ticker: &Ticker,
-    contract_size: Option<f32>,
-) -> Result<DepthPayload, AdapterError> {
+async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, AdapterError> {
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let base_url = match market_type {
@@ -815,8 +810,6 @@ async fn fetch_depth(
     let limiter = limiter_from_market_type(market_type);
     let text = limiter::http_request_with_limiter(&url, limiter, weight, None, None).await?;
 
-    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-
     match market_type {
         MarketKind::Spot => {
             let fetched_depth: FetchedSpotDepth =
@@ -830,7 +823,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
+                        qty: x.qty,
                     })
                     .collect(),
                 asks: fetched_depth
@@ -838,7 +831,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
+                        qty: x.qty,
                     })
                     .collect(),
             };
@@ -857,7 +850,7 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
+                        qty: x.qty,
                     })
                     .collect(),
                 asks: fetched_depth
@@ -865,25 +858,12 @@ async fn fetch_depth(
                     .iter()
                     .map(|x| DeOrder {
                         price: x.price,
-                        qty: calc_qty(x.qty, x.price, contract_size, size_in_quote_ccy),
+                        qty: x.qty,
                     })
                     .collect(),
             };
 
             Ok(depth)
-        }
-    }
-}
-
-fn calc_qty(qty: f32, price: f32, contract_size: Option<f32>, size_in_quote_ccy: bool) -> f32 {
-    match contract_size {
-        Some(size) => qty * size,
-        None => {
-            if size_in_quote_ccy {
-                (qty * price).round()
-            } else {
-                qty
-            }
         }
     }
 }
@@ -1348,8 +1328,7 @@ pub async fn fetch_intraday_trades(
     let trades: Vec<Trade> = {
         let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)
             .map_err(|e| AdapterError::ParseError(format!("Failed to parse trades: {e}")))?;
-
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let qty_norm = QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
 
         de_trades
             .into_iter()
@@ -1357,11 +1336,7 @@ pub async fn fetch_intraday_trades(
                 time: de_trade.time,
                 is_sell: de_trade.is_sell,
                 price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
-                qty: if size_in_quote_ccy {
-                    (de_trade.qty * de_trade.price).round()
-                } else {
-                    de_trade.qty
-                },
+                qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
             })
             .collect()
     };
@@ -1430,7 +1405,8 @@ pub async fn get_hist_trades(
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| AdapterError::ParseError(format!("Failed to unzip file: {e}")))?;
 
-            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let qty_norm =
+                QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
 
             let mut trades = Vec::new();
             for i in 0..archive.len() {
@@ -1451,13 +1427,7 @@ pub async fn get_hist_trades(
                         let price =
                             Price::from_f32(price_f32).round_to_min_tick(ticker_info.min_ticksize);
 
-                        let mut qty = str_f32_parse(&record[2]);
-
-                        qty = if size_in_quote_ccy {
-                            (qty * price_f32).round()
-                        } else {
-                            qty
-                        };
+                        let qty = qty_norm.normalize_qty(str_f32_parse(&record[2]), price_f32);
 
                         Some(Trade {
                             time,

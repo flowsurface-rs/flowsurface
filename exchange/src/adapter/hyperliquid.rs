@@ -1,12 +1,12 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, Price, PushFrequency, SizeUnit, StreamKind, TickMultiplier,
-        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
+        TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        volume_size_unit,
+        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -795,7 +795,7 @@ pub fn connect_market_stream(
         let mut local_depth_cache = LocalDepthCache::default();
         let mut trades_buffer = Vec::new();
 
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let qty_norm = QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
@@ -911,17 +911,13 @@ pub fn connect_market_stream(
                                             for hl_trade in trades {
                                                 let price = Price::from_f32(hl_trade.px)
                                                     .round_to_min_tick(ticker_info.min_ticksize);
-                                                let qty = if size_in_quote_ccy {
-                                                    (hl_trade.sz * hl_trade.px).round()
-                                                } else {
-                                                    hl_trade.sz
-                                                };
 
                                                 let trade = Trade {
                                                     time: hl_trade.time,
                                                     is_sell: hl_trade.side == "A", // A for Ask/Sell, B for Bid/Buy
                                                     price,
-                                                    qty,
+                                                    qty: qty_norm
+                                                        .normalize_qty(hl_trade.sz, hl_trade.px),
                                                 };
                                                 trades_buffer.push(trade);
                                             }
@@ -931,22 +927,14 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|level| DeOrder {
                                                     price: level.px,
-                                                    qty: if size_in_quote_ccy {
-                                                        (level.sz * level.px).round()
-                                                    } else {
-                                                        level.sz
-                                                    },
+                                                    qty: level.sz,
                                                 })
                                                 .collect();
                                             let asks = depth.levels[1]
                                                 .iter()
                                                 .map(|level| DeOrder {
                                                     price: level.px,
-                                                    qty: if size_in_quote_ccy {
-                                                        (level.sz * level.px).round()
-                                                    } else {
-                                                        level.sz
-                                                    },
+                                                    qty: level.sz,
                                                 })
                                                 .collect();
 
@@ -956,9 +944,10 @@ pub fn connect_market_stream(
                                                 bids,
                                                 asks,
                                             };
-                                            local_depth_cache.update(
+                                            local_depth_cache.update_with_qty_norm(
                                                 DepthUpdate::Snapshot(depth_payload),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
 
                                             let stream_kind = StreamKind::DepthAndTrades {
@@ -1178,28 +1167,18 @@ async fn fetch_orderbook(
     let depth: HyperliquidDepth = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-
     let bids = depth.levels[0]
         .iter()
         .map(|level| DeOrder {
             price: level.px,
-            qty: if size_in_quote_ccy {
-                (level.sz * level.px).round()
-            } else {
-                level.sz
-            },
+            qty: level.sz,
         })
         .collect();
     let asks = depth.levels[1]
         .iter()
         .map(|level| DeOrder {
             price: level.px,
-            qty: if size_in_quote_ccy {
-                (level.sz * level.px).round()
-            } else {
-                level.sz
-            },
+            qty: level.sz,
         })
         .collect();
 

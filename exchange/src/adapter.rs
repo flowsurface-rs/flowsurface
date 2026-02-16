@@ -170,7 +170,12 @@ impl MarketKind {
         MarketKind::InversePerps,
     ];
 
-    pub fn qty_in_quote_value(&self, qty: f32, price: Price, size_in_quote_ccy: bool) -> f32 {
+    pub fn qty_in_quote_value<T>(&self, qty: T, price: Price, size_in_quote_ccy: bool) -> f32
+    where
+        T: Into<f32>,
+    {
+        let qty = qty.into();
+
         match self {
             MarketKind::InversePerps => qty,
             _ => {

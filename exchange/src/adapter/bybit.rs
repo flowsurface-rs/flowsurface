@@ -1,14 +1,14 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, SizeUnit, StreamKind,
-        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
+        TickerInfo, TickerStats, Timeframe, Trade,
         adapter::StreamTicksize,
         connect::{State, connect_ws},
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, http_request_with_limiter},
-        volume_size_unit,
+        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -316,8 +316,10 @@ pub fn connect_market_stream(
         let mut trades_buffer: Vec<Trade> = Vec::new();
         let mut orderbook = LocalDepthCache::default();
 
-        let size_in_quote_ccy =
-            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps;
+        let qty_norm = QtyNormalization::new(
+            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps,
+            ticker_info,
+        );
 
         loop {
             match &mut state {
@@ -357,17 +359,13 @@ pub fn connect_market_stream(
                                         for de_trade in &de_trade_vec {
                                             let price = Price::from_f32(de_trade.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = if size_in_quote_ccy {
-                                                (de_trade.qty * de_trade.price).round()
-                                            } else {
-                                                de_trade.qty
-                                            };
 
                                             let trade = Trade {
                                                 time: de_trade.time,
                                                 is_sell: de_trade.is_sell == "Sell",
                                                 price,
-                                                qty,
+                                                qty: qty_norm
+                                                    .normalize_qty(de_trade.qty, de_trade.price),
                                             };
 
                                             trades_buffer.push(trade);
@@ -382,11 +380,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: if size_in_quote_ccy {
-                                                        (x.qty * x.price).round()
-                                                    } else {
-                                                        x.qty
-                                                    },
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                             asks: de_depth
@@ -394,25 +388,23 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: if size_in_quote_ccy {
-                                                        (x.qty * x.price).round()
-                                                    } else {
-                                                        x.qty
-                                                    },
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                         };
 
                                         if (data_type == "snapshot") || (depth.last_update_id == 1)
                                         {
-                                            orderbook.update(
+                                            orderbook.update_with_qty_norm(
                                                 DepthUpdate::Snapshot(depth),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
                                         } else if data_type == "delta" {
-                                            orderbook.update(
+                                            orderbook.update_with_qty_norm(
                                                 DepthUpdate::Diff(depth),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
 
                                             let _ = output

@@ -6,44 +6,16 @@ mod limiter;
 pub mod proxy;
 pub mod util;
 
-use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
+use util::price::Price;
+pub use util::qty::SizeUnit;
+use util::{ContractSize, MinQtySize, MinTicksize, Qty};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::{fmt, hash::Hash};
-
-/// Unit for displaying volume/quantity size values.
-///
-/// - `Base`: Display in base asset units (e.g., BTC for BTCUSDT)
-/// - `Quote`: Display in quote currency value (e.g., USD/USDT equivalent)
-///
-/// Note: Only applies to linear perpetuals and spot markets.
-/// Inverse perpetuals always display in USD regardless of this setting.
-#[repr(u8)]
-#[derive(Default, Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub enum SizeUnit {
-    Base = 0,
-    #[default]
-    Quote = 1,
-}
-
-static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Base as u8);
-
-pub fn set_preferred_currency(v: SizeUnit) {
-    SIZE_CALC_UNIT.store(v as u8, Ordering::Relaxed);
-}
-
-pub fn volume_size_unit() -> SizeUnit {
-    match SIZE_CALC_UNIT.load(Ordering::Relaxed) {
-        0 => SizeUnit::Base,
-        1 => SizeUnit::Quote,
-        _ => SizeUnit::Base,
-    }
-}
 
 /// Desired frequency for orderbook depth updates.
 ///
@@ -580,7 +552,8 @@ pub struct Trade {
     #[serde(deserialize_with = "bool_from_int")]
     pub is_sell: bool,
     pub price: Price,
-    pub qty: f32,
+    #[serde(deserialize_with = "de_qty_from_number")]
+    pub qty: Qty,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -660,6 +633,26 @@ where
 {
     let s: String = serde::Deserialize::deserialize(deserializer)?;
     s.parse::<u64>().map_err(serde::de::Error::custom)
+}
+
+fn de_qty_from_number<'de, D>(deserializer: D) -> Result<Qty, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+
+    let qty = match value {
+        Value::String(s) => s.parse::<f32>().map_err(serde::de::Error::custom)?,
+        Value::Number(n) => n
+            .as_f64()
+            .map(|v| v as f32)
+            .ok_or_else(|| serde::de::Error::custom("expected numeric qty"))?,
+        _ => {
+            return Err(serde::de::Error::custom("expected qty as string or number"));
+        }
+    };
+
+    Ok(Qty::from_f32(qty))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

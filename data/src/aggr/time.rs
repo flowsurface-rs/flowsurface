@@ -402,12 +402,13 @@ impl TimeSeries<HeatmapDataPoint> {
                 let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
 
                 dp.grouped_trades.iter().for_each(|trade| {
-                    max_trade_qty = max_trade_qty.max(trade.qty);
+                    let trade_qty = f32::from(trade.qty);
+                    max_trade_qty = max_trade_qty.max(trade_qty);
 
                     if trade.is_sell {
-                        sell_volume += trade.qty;
+                        sell_volume += trade_qty;
                     } else {
-                        buy_volume += trade.qty;
+                        buy_volume += trade_qty;
                     }
                 });
 

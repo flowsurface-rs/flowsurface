@@ -1,6 +1,6 @@
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
-use exchange::util::{Price, PriceStep};
+use exchange::util::price::{Price, PriceStep};
 use exchange::{Kline, Trade};
 
 use std::collections::BTreeMap;
@@ -24,8 +24,16 @@ impl TickAccumulation {
             low: trade.price,
             close: trade.price,
             volume: (
-                if trade.is_sell { 0.0 } else { trade.qty },
-                if trade.is_sell { trade.qty } else { 0.0 },
+                if trade.is_sell {
+                    0.0
+                } else {
+                    trade.qty.to_f32_lossy()
+                },
+                if trade.is_sell {
+                    trade.qty.to_f32_lossy()
+                } else {
+                    0.0
+                },
             ),
         };
 
@@ -43,9 +51,9 @@ impl TickAccumulation {
         self.kline.close = trade.price;
 
         if trade.is_sell {
-            self.kline.volume.1 += trade.qty;
+            self.kline.volume.1 += trade.qty.to_f32_lossy();
         } else {
-            self.kline.volume.0 += trade.qty;
+            self.kline.volume.0 += trade.qty.to_f32_lossy();
         }
 
         self.add_trade(trade, step);

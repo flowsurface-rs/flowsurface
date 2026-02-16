@@ -1,20 +1,20 @@
 use crate::{
-    OpenInterest, Price, PushFrequency, SizeUnit,
+    OpenInterest, Price, PushFrequency,
     adapter::{StreamKind, StreamTicksize},
     limiter::{self, RateLimiter},
-    volume_size_unit,
 };
 
 use super::{
     super::{
         Exchange, Kline, MarketKind, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
-        de_string_to_f32, de_string_to_u64, is_symbol_supported,
+        de_string_to_f32, de_string_to_u64,
+        depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
+        is_symbol_supported,
+        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
-
-use super::super::depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache};
 
 use fastwebsockets::{Frame, OpCode};
 use iced_futures::{
@@ -207,7 +207,7 @@ pub fn connect_market_stream(
 
         let ticker = ticker_info.ticker;
 
-        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
+        let (symbol_str, _market_type) = ticker.to_full_symbol_and_type();
         let exchange = ticker.exchange;
 
         let subscribe_message = serde_json::json!({
@@ -222,7 +222,7 @@ pub fn connect_market_stream(
         let mut orderbook = LocalDepthCache::default();
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let contract_size = ticker_info.contract_size.map(f32::from);
+        let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
 
         loop {
             match &mut state {
@@ -238,13 +238,8 @@ pub fn connect_market_stream(
                                         for de_trade in &de_trade_vec {
                                             let price = Price::from_f32(de_trade.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = calc_qty(
-                                                de_trade.qty,
-                                                de_trade.price,
-                                                size_in_quote_ccy,
-                                                contract_size,
-                                                market_type,
-                                            );
+                                            let qty = qty_norm
+                                                .normalize_qty(de_trade.qty, de_trade.price);
 
                                             let trade = Trade {
                                                 time: de_trade.time,
@@ -265,13 +260,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: calc_qty(
-                                                        x.qty,
-                                                        x.price,
-                                                        size_in_quote_ccy,
-                                                        contract_size,
-                                                        market_type,
-                                                    ),
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                             asks: de_depth
@@ -279,27 +268,23 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: calc_qty(
-                                                        x.qty,
-                                                        x.price,
-                                                        size_in_quote_ccy,
-                                                        contract_size,
-                                                        market_type,
-                                                    ),
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                         };
 
                                         if (data_type == "snapshot") || (depth.last_update_id == 1)
                                         {
-                                            orderbook.update(
+                                            orderbook.update_with_qty_norm(
                                                 DepthUpdate::Snapshot(depth),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
                                         } else if data_type == "delta" {
-                                            orderbook.update(
+                                            orderbook.update_with_qty_norm(
                                                 DepthUpdate::Diff(depth),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
 
                                             let _ = output

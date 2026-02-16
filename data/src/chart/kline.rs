@@ -1,6 +1,7 @@
 use exchange::{
     Kline, Trade,
-    util::{Price, PriceStep},
+    util::price::{Price, PriceStep},
+    util::qty::Qty,
 };
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -92,8 +93,8 @@ impl DataPoint for KlineDataPoint {
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupedTrades {
-    pub buy_qty: f32,
-    pub sell_qty: f32,
+    pub buy_qty: Qty,
+    pub sell_qty: Qty,
     pub first_time: u64,
     pub last_time: u64,
     pub buy_count: usize,
@@ -103,8 +104,16 @@ pub struct GroupedTrades {
 impl GroupedTrades {
     fn new(trade: &Trade) -> Self {
         Self {
-            buy_qty: if trade.is_sell { 0.0 } else { trade.qty },
-            sell_qty: if trade.is_sell { trade.qty } else { 0.0 },
+            buy_qty: if trade.is_sell {
+                Qty::default()
+            } else {
+                trade.qty
+            },
+            sell_qty: if trade.is_sell {
+                trade.qty
+            } else {
+                Qty::default()
+            },
             first_time: trade.time,
             last_time: trade.time,
             buy_count: if trade.is_sell { 0 } else { 1 },
@@ -123,11 +132,11 @@ impl GroupedTrades {
         self.last_time = trade.time;
     }
 
-    pub fn total_qty(&self) -> f32 {
+    pub fn total_qty(&self) -> Qty {
         self.buy_qty + self.sell_qty
     }
 
-    pub fn delta_qty(&self) -> f32 {
+    pub fn delta_qty(&self) -> Qty {
         self.buy_qty - self.sell_qty
     }
 }
@@ -185,7 +194,7 @@ impl KlineTrades {
         let mut max_qty: f32 = 0.0;
         for (price, group) in &self.trades {
             if *price >= lowest && *price <= highest {
-                max_qty = max_qty.max(f(group.buy_qty, group.sell_qty));
+                max_qty = max_qty.max(f(f32::from(group.buy_qty), f32::from(group.sell_qty)));
             }
         }
         max_qty
@@ -200,7 +209,7 @@ impl KlineTrades {
         let mut poc_price = Price::from_f32(0.0);
 
         for (price, group) in &self.trades {
-            let total_volume = group.total_qty();
+            let total_volume = f32::from(group.total_qty());
             if total_volume > max_volume {
                 max_volume = total_volume;
                 poc_price = *price;
