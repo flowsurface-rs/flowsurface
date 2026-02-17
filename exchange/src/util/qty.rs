@@ -71,6 +71,32 @@ impl Qty {
         Self { units }
     }
 
+    /// Absolute quantity, panics on `i64::MIN`.
+    pub fn abs(self) -> Self {
+        Self {
+            units: self.units.checked_abs().expect("Qty abs overflowed"),
+        }
+    }
+
+    /// Absolute difference between two quantities.
+    pub fn abs_diff(self, other: Self) -> Self {
+        if self.units >= other.units {
+            self - other
+        } else {
+            other - self
+        }
+    }
+
+    /// Guards scale/denominator values against zero-ish inputs.
+    pub fn scale_or_one(v: f32) -> f32 {
+        if v <= f32::EPSILON { 1.0 } else { v }
+    }
+
+    /// Converts to f32 and applies `scale_or_one`.
+    pub fn to_scale_or_one(self) -> f32 {
+        Self::scale_or_one(self.to_f32_lossy())
+    }
+
     fn min_qty_units(min_qty: MinQtySize) -> i64 {
         let exp = Self::QTY_SCALE + (min_qty.power as i32);
         assert!(exp >= 0, "QTY_SCALE must be >= -min_qty.power");

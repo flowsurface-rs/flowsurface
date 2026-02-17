@@ -4,7 +4,7 @@ use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
-use exchange::util::{Price, PriceStep};
+use exchange::util::{Price, PriceStep, Qty};
 use exchange::{Kline, Timeframe, Trade};
 
 pub trait DataPoint {
@@ -364,8 +364,8 @@ impl TimeSeries<KlineDataPoint> {
         latest: u64,
         highest: Price,
         lowest: Price,
-    ) -> f32 {
-        let mut max_cluster_qty: f32 = 0.0;
+    ) -> Qty {
+        let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints
             .range(earliest..=latest)

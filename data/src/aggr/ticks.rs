@@ -1,5 +1,6 @@
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
+use exchange::util::Qty;
 use exchange::util::price::{Price, PriceStep};
 use exchange::{Kline, Trade};
 
@@ -63,17 +64,9 @@ impl TickAccumulation {
         self.footprint.add_trade_to_nearest_bin(trade, step);
     }
 
-    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
-        match cluster_kind {
-            ClusterKind::BidAsk => self.footprint.max_qty_by(highest, lowest, f32::max),
-            ClusterKind::DeltaProfile => self
-                .footprint
-                .max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs()),
-            ClusterKind::VolumeProfile => {
-                self.footprint
-                    .max_qty_by(highest, lowest, |buy, sell| buy + sell)
-            }
-        }
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> Qty {
+        self.footprint
+            .max_cluster_qty(cluster_kind, highest, lowest)
     }
 
     pub fn is_full(&self, interval: aggr::TickCount) -> bool {
@@ -254,8 +247,8 @@ impl TickAggr {
         latest: usize,
         highest: Price,
         lowest: Price,
-    ) -> f32 {
-        let mut max_cluster_qty: f32 = 0.0;
+    ) -> Qty {
+        let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints
             .iter()

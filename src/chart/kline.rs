@@ -6,19 +6,16 @@ use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
-use data::chart::Autoscale;
-use data::chart::kline::ClusterScaling;
-use data::chart::{
-    KlineChartKind, ViewConfig,
-    indicator::{Indicator, KlineIndicator},
-    kline::{ClusterKind, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl},
+use data::chart::indicator::{Indicator, KlineIndicator};
+use data::chart::kline::{
+    ClusterKind, ClusterScaling, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl,
 };
+use data::chart::{Autoscale, KlineChartKind, ViewConfig};
+
 use data::util::{abbr_large_numbers, count_decimals};
-use exchange::util::{Price, PriceStep};
-use exchange::{
-    Kline, OpenInterest as OIData, TickerInfo, Trade,
-    fetcher::{FetchRange, RequestHandler},
-};
+use exchange::fetcher::{FetchRange, RequestHandler};
+use exchange::util::{Price, PriceStep, Qty};
+use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -683,28 +680,31 @@ impl KlineChart {
         cluster_kind: ClusterKind,
     ) -> f32 {
         let rounded_highest = highest.round_to_side_step(false, step).add_steps(1, step);
-
         let rounded_lowest = lowest.round_to_side_step(true, step).add_steps(-1, step);
 
         match &self.data_source {
-            PlotData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
-                cluster_kind,
-                earliest,
-                latest,
-                rounded_highest,
-                rounded_lowest,
-            ),
-            PlotData::TickBased(tick_aggr) => {
-                let earliest = earliest as usize;
-                let latest = latest as usize;
-
-                tick_aggr.max_qty_idx_range(
+            PlotData::TimeBased(timeseries) => timeseries
+                .max_qty_ts_range(
                     cluster_kind,
                     earliest,
                     latest,
                     rounded_highest,
                     rounded_lowest,
                 )
+                .into(),
+            PlotData::TickBased(tick_aggr) => {
+                let earliest = earliest as usize;
+                let latest = latest as usize;
+
+                tick_aggr
+                    .max_qty_idx_range(
+                        cluster_kind,
+                        earliest,
+                        latest,
+                        rounded_highest,
+                        rounded_lowest,
+                    )
+                    .into()
             }
         }
     }
@@ -1313,28 +1313,30 @@ fn effective_cluster_qty(
         ClusterKind::BidAsk => footprint
             .trades
             .values()
-            .map(|group| f32::from(group.buy_qty).max(f32::from(group.sell_qty)))
-            .fold(0.0_f32, f32::max),
+            .map(|group| group.buy_qty.max(group.sell_qty))
+            .max()
+            .unwrap_or_default(),
         ClusterKind::DeltaProfile => footprint
             .trades
             .values()
-            .map(|group| (f32::from(group.buy_qty) - f32::from(group.sell_qty)).abs())
-            .fold(0.0_f32, f32::max),
+            .map(|group| group.buy_qty.abs_diff(group.sell_qty))
+            .max()
+            .unwrap_or_default(),
         ClusterKind::VolumeProfile => footprint
             .trades
             .values()
-            .map(|group| f32::from(group.buy_qty) + f32::from(group.sell_qty))
-            .fold(0.0_f32, f32::max),
+            .map(|group| group.buy_qty + group.sell_qty)
+            .max()
+            .unwrap_or_default(),
     };
-
-    let safe = |v: f32| if v <= f32::EPSILON { 1.0 } else { v };
+    let individual_max_f32 = f32::from(individual_max);
 
     match scaling {
-        ClusterScaling::VisibleRange => safe(visible_max),
-        ClusterScaling::Datapoint => safe(individual_max),
+        ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max),
+        ClusterScaling::Datapoint => individual_max.to_scale_or_one(),
         ClusterScaling::Hybrid { weight } => {
             let w = weight.clamp(0.0, 1.0);
-            safe(visible_max * w + individual_max * (1.0 - w))
+            Qty::scale_or_one(visible_max * w + individual_max_f32 * (1.0 - w))
         }
     }
 }
