@@ -228,14 +228,14 @@ type TickerMetadata = (
     HashMap<Ticker, TickerStats>,
 );
 
-pub async fn fetch_ticksize(
+pub async fn fetch_ticker_metadata(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let (ticker_info_map, _) = fetch_metadata(market).await?;
     Ok(ticker_info_map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let (_, ticker_stats_map) = fetch_metadata(market).await?;

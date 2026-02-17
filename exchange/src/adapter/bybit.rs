@@ -793,7 +793,7 @@ pub async fn fetch_klines(
     klines
 }
 
-pub async fn fetch_ticksize(
+pub async fn fetch_ticker_metadata(
     market_type: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let exchange = exchange_from_market_type(market_type);
@@ -868,7 +868,7 @@ pub async fn fetch_ticksize(
     Ok(ticker_info_map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market_type: MarketKind,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let exchange = exchange_from_market_type(market_type);

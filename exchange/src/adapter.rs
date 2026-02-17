@@ -642,28 +642,28 @@ impl<I> StreamConfig<I> {
     }
 }
 
-pub async fn fetch_ticker_info(
+pub async fn fetch_ticker_metadata(
     exchange: Exchange,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let market_type = exchange.market_type();
 
     match exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
-            binance::fetch_ticksize(market_type).await
+            binance::fetch_ticker_metadata(market_type).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
-            bybit::fetch_ticksize(market_type).await
+            bybit::fetch_ticker_metadata(market_type).await
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
-            hyperliquid::fetch_ticksize(market_type).await
+            hyperliquid::fetch_ticker_metadata(market_type).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            okex::fetch_ticksize(market_type).await
+            okex::fetch_ticker_metadata(market_type).await
         }
     }
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     exchange: Exchange,
     contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
@@ -671,16 +671,16 @@ pub async fn fetch_ticker_prices(
 
     match exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
-            binance::fetch_ticker_prices(market_type, contract_sizes).await
+            binance::fetch_ticker_stats(market_type, contract_sizes).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
-            bybit::fetch_ticker_prices(market_type).await
+            bybit::fetch_ticker_stats(market_type).await
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
-            hyperliquid::fetch_ticker_prices(market_type).await
+            hyperliquid::fetch_ticker_stats(market_type).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            okex::fetch_ticker_prices(market_type).await
+            okex::fetch_ticker_stats(market_type).await
         }
     }
 }

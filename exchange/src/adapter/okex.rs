@@ -509,7 +509,7 @@ fn timeframe_to_okx_bar(tf: Timeframe) -> Option<&'static str> {
     })
 }
 
-pub async fn fetch_ticksize(
+pub async fn fetch_ticker_metadata(
     market_type: MarketKind,
 ) -> Result<std::collections::HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let inst_type = okx_inst_type(market_type);
@@ -584,7 +584,7 @@ pub async fn fetch_ticksize(
     Ok(map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market_type: MarketKind,
 ) -> Result<std::collections::HashMap<Ticker, TickerStats>, AdapterError> {
     let inst_type = okx_inst_type(market_type);

@@ -979,7 +979,7 @@ pub async fn fetch_klines(
     Ok(klines)
 }
 
-pub async fn fetch_ticksize(
+pub async fn fetch_ticker_metadata(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let (url, _weight) = match market {
@@ -1067,7 +1067,7 @@ pub async fn fetch_ticksize(
     Ok(ticker_info_map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market: MarketKind,
     contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
