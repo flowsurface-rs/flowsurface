@@ -1,6 +1,6 @@
 use crate::{
     MinTicksize, Price,
-    util::qty::{Qty, QtyNormalization},
+    unit::qty::{Qty, QtyNormalization},
 };
 
 use serde::Deserializer;

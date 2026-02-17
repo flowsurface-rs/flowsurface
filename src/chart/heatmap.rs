@@ -21,8 +21,8 @@ use data::{
 use exchange::{
     SizeUnit, TickerInfo, Trade,
     depth::Depth,
-    util::qty::volume_size_unit,
-    util::{Price, PriceStep},
+    unit::qty::volume_size_unit,
+    unit::{Price, PriceStep},
 };
 
 use iced::widget::canvas::{self, Event, Geometry, Path};

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use exchange::util::Price;
+use exchange::unit::Price;
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;

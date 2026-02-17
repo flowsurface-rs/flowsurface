@@ -4,7 +4,7 @@ use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
-use exchange::util::{Price, PriceStep, Qty};
+use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, Timeframe, Trade, Volume};
 
 pub trait DataPoint {

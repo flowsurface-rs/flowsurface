@@ -11,7 +11,7 @@ use super::{
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
-        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };

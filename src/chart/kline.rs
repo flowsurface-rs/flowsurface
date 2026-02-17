@@ -14,7 +14,7 @@ use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
 use data::util::{abbr_large_numbers, count_decimals};
 use exchange::fetcher::{FetchRange, RequestHandler};
-use exchange::util::{Price, PriceStep, Qty};
+use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
 use iced::task::Handle;

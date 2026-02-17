@@ -6,7 +6,7 @@ use super::{
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };

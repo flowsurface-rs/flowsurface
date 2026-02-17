@@ -2,8 +2,8 @@ use crate::chart::kline::KlineTrades;
 use crate::util::ok_or_default;
 use exchange::{
     Trade,
-    util::price::{Price, PriceStep},
-    util::qty::Qty,
+    unit::price::{Price, PriceStep},
+    unit::qty::Qty,
 };
 
 use serde::{Deserialize, Serialize};

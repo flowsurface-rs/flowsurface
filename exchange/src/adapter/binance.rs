@@ -9,7 +9,7 @@ use super::{
         is_symbol_supported,
         limiter::{self, RateLimiter},
         str_f32_parse,
-        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };

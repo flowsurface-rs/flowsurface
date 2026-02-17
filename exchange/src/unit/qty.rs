@@ -140,39 +140,8 @@ impl Qty {
         }
     }
 
-    pub fn from_lots(lots: i64, min_qty: MinQtySize) -> Self {
-        let unit = Self::min_qty_units(min_qty);
-        Self {
-            units: lots.checked_mul(unit).expect("Qty::from_lots overflowed"),
-        }
-    }
-
     pub const fn is_zero(self) -> bool {
         self.units == 0
-    }
-
-    pub const fn is_positive(self) -> bool {
-        self.units > 0
-    }
-
-    pub const fn is_negative(self) -> bool {
-        self.units < 0
-    }
-
-    pub fn checked_add(self, rhs: Self) -> Option<Self> {
-        self.units.checked_add(rhs.units).map(Self::from_units)
-    }
-
-    pub fn checked_sub(self, rhs: Self) -> Option<Self> {
-        self.units.checked_sub(rhs.units).map(Self::from_units)
-    }
-
-    pub fn saturating_add(self, rhs: Self) -> Self {
-        Self::from_units(self.units.saturating_add(rhs.units))
-    }
-
-    pub fn saturating_sub(self, rhs: Self) -> Self {
-        Self::from_units(self.units.saturating_sub(rhs.units))
     }
 }
 

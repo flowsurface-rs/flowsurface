@@ -1,7 +1,7 @@
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
-use exchange::util::Qty;
-use exchange::util::price::{Price, PriceStep};
+use exchange::unit::Qty;
+use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;

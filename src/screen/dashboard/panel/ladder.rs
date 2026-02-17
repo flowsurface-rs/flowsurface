@@ -2,8 +2,8 @@ use super::Message;
 use crate::style;
 use data::panel::ladder::{ChaseTracker, Config, GroupedDepth, Side, TradeStore};
 use exchange::Trade;
-use exchange::util::qty::Qty;
-use exchange::util::{Price, PriceStep};
+use exchange::unit::qty::Qty;
+use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};
 
 use iced::widget::canvas::{self, Path, Stroke, Text};

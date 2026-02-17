@@ -1,8 +1,8 @@
 use super::Basis;
 use super::aggr::time::DataPoint;
-use exchange::util::MinQtySize;
-use exchange::util::price::{Price, PriceStep};
-use exchange::util::qty::{Qty, SizeUnit, volume_size_unit};
+use exchange::unit::MinQtySize;
+use exchange::unit::price::{Price, PriceStep};
+use exchange::unit::qty::{Qty, SizeUnit, volume_size_unit};
 use exchange::{adapter::MarketKind, depth::Depth};
 
 use rustc_hash::{FxBuildHasher, FxHashMap};

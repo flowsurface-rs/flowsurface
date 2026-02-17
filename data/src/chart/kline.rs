@@ -1,8 +1,8 @@
 use crate::aggr::time::DataPoint;
 use exchange::{
     Kline, Trade,
-    util::price::{Price, PriceStep},
-    util::qty::Qty,
+    unit::price::{Price, PriceStep},
+    unit::qty::Qty,
 };
 
 use rustc_hash::FxHashMap;

@@ -8,7 +8,7 @@ use super::{
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, http_request_with_limiter},
-        util::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };

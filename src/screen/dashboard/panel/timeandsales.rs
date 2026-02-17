@@ -3,7 +3,7 @@ use crate::style;
 use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
-use exchange::{SizeUnit, TickerInfo, Trade, util::qty::volume_size_unit};
+use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};

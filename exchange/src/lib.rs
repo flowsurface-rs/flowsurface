@@ -4,13 +4,13 @@ pub mod depth;
 pub mod fetcher;
 mod limiter;
 pub mod proxy;
-pub mod util;
+pub mod unit;
 
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
-use util::price::Price;
-pub use util::qty::SizeUnit;
-use util::{ContractSize, MinQtySize, MinTicksize, Qty};
+use unit::price::Price;
+pub use unit::qty::SizeUnit;
+use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
