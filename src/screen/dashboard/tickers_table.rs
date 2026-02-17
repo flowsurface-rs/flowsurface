@@ -218,13 +218,19 @@ impl TickersTable {
                     return Some(Action::FocusWidget("full_ticker_search_box".into()));
                 }
             }
-            Message::FetchForTickerStats(exchange) => {
-                let task = if let Some(exchange) = exchange {
+            Message::FetchForTickerStats(for_specific_exchange) => {
+                let task = if let Some(exchange) = for_specific_exchange {
                     self.pending_stats_batches = 1;
-                    Task::perform(fetch_ticker_prices(exchange), move |result| match result {
-                        Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
-                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
-                    })
+                    let contract_sizes = self.contract_sizes_for_ticker_prices(exchange);
+                    Task::perform(
+                        fetch_ticker_prices(exchange, contract_sizes),
+                        move |result| match result {
+                            Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
+                            Err(err) => {
+                                Message::ErrorOccurred(InternalError::Fetch(err.to_string()))
+                            }
+                        },
+                    )
                 } else {
                     let exchanges: FxHashSet<Exchange> =
                         self.tickers_info.keys().map(|t| t.exchange).collect();
@@ -234,15 +240,18 @@ impl TickersTable {
                     let fetch_tasks = exchanges
                         .into_iter()
                         .map(|exchange| {
-                            Task::perform(fetch_ticker_prices(exchange), move |result| match result
-                            {
-                                Ok(ticker_rows) => {
-                                    Message::UpdateTickerStats(exchange, ticker_rows)
-                                }
-                                Err(err) => {
-                                    Message::ErrorOccurred(InternalError::Fetch(err.to_string()))
-                                }
-                            })
+                            let contract_sizes = self.contract_sizes_for_ticker_prices(exchange);
+                            Task::perform(
+                                fetch_ticker_prices(exchange, contract_sizes),
+                                move |result| match result {
+                                    Ok(ticker_rows) => {
+                                        Message::UpdateTickerStats(exchange, ticker_rows)
+                                    }
+                                    Err(err) => Message::ErrorOccurred(InternalError::Fetch(
+                                        err.to_string(),
+                                    )),
+                                },
+                            )
                         })
                         .collect::<Vec<Task<Message>>>();
 
@@ -264,11 +273,14 @@ impl TickersTable {
             Message::UpdateTickersInfo(exchange, info) => {
                 self.update_ticker_info(exchange, info);
 
-                let task =
-                    Task::perform(fetch_ticker_prices(exchange), move |result| match result {
+                let contract_sizes = self.contract_sizes_for_ticker_prices(exchange);
+                let task = Task::perform(
+                    fetch_ticker_prices(exchange, contract_sizes),
+                    move |result| match result {
                         Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
                         Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
-                    });
+                    },
+                );
 
                 return Some(Action::Fetch(task));
             }
@@ -573,6 +585,28 @@ impl TickersTable {
     ) {
         for (ticker, ticker_info) in info.into_iter() {
             self.tickers_info.insert(ticker, ticker_info);
+        }
+    }
+
+    fn contract_sizes_for_ticker_prices(&self, exchange: Exchange) -> Option<HashMap<Ticker, f32>> {
+        if matches!(exchange, Exchange::BinanceInverse) {
+            let contract_sizes = self
+                .tickers_info
+                .iter()
+                .filter_map(|(ticker, info)| {
+                    if ticker.exchange != exchange {
+                        return None;
+                    }
+
+                    let info = info.as_ref()?;
+                    let contract_size = info.contract_size?;
+                    Some((*ticker, contract_size.as_f32()))
+                })
+                .collect();
+
+            Some(contract_sizes)
+        } else {
+            None
         }
     }
 

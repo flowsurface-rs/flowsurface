@@ -737,19 +737,6 @@ pub fn connect_kline_stream(
     })
 }
 
-fn get_contract_size(ticker: &Ticker, market_type: MarketKind) -> Option<f32> {
-    match market_type {
-        MarketKind::Spot | MarketKind::LinearPerps => None,
-        MarketKind::InversePerps => {
-            if ticker.to_full_symbol_and_type().0 == "BTCUSD_PERP" {
-                Some(100.0)
-            } else {
-                Some(10.0)
-            }
-        }
-    }
-}
-
 fn new_depth_cache(depth: &SonicDepth) -> DepthPayload {
     let (time, final_id, bids, asks) = match depth {
         SonicDepth::Spot(de) => (de.time, de.final_id, &de.bids, &de.asks),
@@ -1082,6 +1069,7 @@ pub async fn fetch_ticksize(
 
 pub async fn fetch_ticker_prices(
     market: MarketKind,
+    contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let (url, weight) = match market {
         MarketKind::Spot => (SPOT_DOMAIN.to_string() + "/api/v3/ticker/24hr", 80),
@@ -1105,6 +1093,8 @@ pub async fn fetch_ticker_prices(
         if !is_symbol_supported(symbol, exchange, false) {
             continue;
         }
+
+        let ticker = Ticker::new(symbol, exchange);
 
         let last_price = item["lastPrice"]
             .as_str()
@@ -1145,13 +1135,21 @@ pub async fn fetch_ticker_prices(
             daily_volume: match market {
                 MarketKind::Spot | MarketKind::LinearPerps => volume,
                 MarketKind::InversePerps => {
-                    let contract_size = if symbol == "BTCUSD_PERP" { 100.0 } else { 10.0 };
+                    let contract_size = contract_sizes
+                        .as_ref()
+                        .and_then(|sizes| sizes.get(&ticker))
+                        .copied()
+                        .unwrap_or_else(|| {
+                            log::warn!("Missing contract size for {}, using raw volume", ticker);
+                            1.0
+                        });
+
                     volume * contract_size
                 }
             },
         };
 
-        ticker_price_map.insert(Ticker::new(symbol, exchange), ticker_stats);
+        ticker_price_map.insert(ticker, ticker_stats);
     }
 
     Ok(ticker_price_map)
@@ -1172,11 +1170,11 @@ const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 ///
 /// Will panic if the `period` is not one of the supported timeframes for open interest
 pub async fn fetch_historical_oi(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
-    let (ticker_str, market) = ticker.to_full_symbol_and_type();
+    let (ticker_str, market) = ticker_info.ticker.to_full_symbol_and_type();
     let period_str = period.to_string();
 
     let (base_url, pair_str, weight) = match market {
@@ -1255,13 +1253,13 @@ pub async fn fetch_historical_oi(
         AdapterError::ParseError(format!("Failed to parse open interest: {e}"))
     })?;
 
-    let contract_size = get_contract_size(&ticker, market);
+    let contract_size = ticker_info.contract_size;
 
     let open_interest = binance_oi
         .iter()
         .map(|x| OpenInterest {
             time: x.time,
-            value: contract_size.map_or(x.sum, |size| x.sum * size),
+            value: contract_size.map_or(x.sum, |size| x.sum * size.as_f32()),
         })
         .collect::<Vec<OpenInterest>>();
 

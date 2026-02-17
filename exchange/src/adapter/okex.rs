@@ -756,11 +756,11 @@ pub async fn fetch_klines(
 const TRADING_STATS_DOMAIN: &str = "https://www.okx.com/api/v5/rubik/stat";
 
 pub async fn fetch_historical_oi(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
-    let (ticker_str, _market) = ticker.to_full_symbol_and_type();
+    let (ticker_str, _market) = ticker_info.ticker.to_full_symbol_and_type();
 
     let bar = timeframe_to_okx_bar(period)
         .ok_or_else(|| AdapterError::InvalidRequest(format!("Unsupported timeframe: {period}")))?;

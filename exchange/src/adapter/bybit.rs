@@ -611,11 +611,15 @@ struct DeOpenInterest {
 ///
 /// Will panic if the `period` is not one of the supported timeframes for open interest
 pub async fn fetch_historical_oi(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
-    let ticker_str = ticker.to_full_symbol_and_type().0.to_uppercase();
+    let ticker_str = ticker_info
+        .ticker
+        .to_full_symbol_and_type()
+        .0
+        .to_uppercase();
     let period_str = match period {
         Timeframe::M5 => "5min",
         Timeframe::M15 => "15min",

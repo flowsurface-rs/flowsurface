@@ -665,12 +665,13 @@ pub async fn fetch_ticker_info(
 
 pub async fn fetch_ticker_prices(
     exchange: Exchange,
+    contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let market_type = exchange.market_type();
 
     match exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
-            binance::fetch_ticker_prices(market_type).await
+            binance::fetch_ticker_prices(market_type, contract_sizes).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
             bybit::fetch_ticker_prices(market_type).await
@@ -706,19 +707,19 @@ pub async fn fetch_klines(
 }
 
 pub async fn fetch_open_interest(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
-    match ticker.exchange {
+    match ticker_info.ticker.exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse => {
-            binance::fetch_historical_oi(ticker, range, timeframe).await
+            binance::fetch_historical_oi(ticker_info, range, timeframe).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse => {
-            bybit::fetch_historical_oi(ticker, range, timeframe).await
+            bybit::fetch_historical_oi(ticker_info, range, timeframe).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse => {
-            okex::fetch_historical_oi(ticker, range, timeframe).await
+            okex::fetch_historical_oi(ticker_info, range, timeframe).await
         }
         _ => Err(AdapterError::InvalidRequest("Invalid exchange".to_string())),
     }
