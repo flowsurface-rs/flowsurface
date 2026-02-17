@@ -45,6 +45,11 @@ pub struct Qty {
 impl Qty {
     /// number of decimal places of the atomic unit
     pub const QTY_SCALE: i32 = 8;
+    pub const ZERO: Self = Self { units: 0 };
+
+    pub const fn zero() -> Self {
+        Self::ZERO
+    }
 
     /// Lossy: convert qty to f32, may lose precision beyond `QTY_SCALE`
     pub fn to_f32_lossy(self) -> f32 {
@@ -67,7 +72,7 @@ impl Qty {
         self.to_f32_lossy()
     }
 
-    pub fn from_units(units: i64) -> Self {
+    pub const fn from_units(units: i64) -> Self {
         Self { units }
     }
 
@@ -142,8 +147,32 @@ impl Qty {
         }
     }
 
-    pub fn is_zero(self) -> bool {
+    pub const fn is_zero(self) -> bool {
         self.units == 0
+    }
+
+    pub const fn is_positive(self) -> bool {
+        self.units > 0
+    }
+
+    pub const fn is_negative(self) -> bool {
+        self.units < 0
+    }
+
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.units.checked_add(rhs.units).map(Self::from_units)
+    }
+
+    pub fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.units.checked_sub(rhs.units).map(Self::from_units)
+    }
+
+    pub fn saturating_add(self, rhs: Self) -> Self {
+        Self::from_units(self.units.saturating_add(rhs.units))
+    }
+
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self::from_units(self.units.saturating_sub(rhs.units))
     }
 }
 

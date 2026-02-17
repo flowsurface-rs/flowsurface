@@ -2,7 +2,7 @@ use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
 use exchange::util::Qty;
 use exchange::util::price::{Price, PriceStep};
-use exchange::{Kline, Trade};
+use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;
 
@@ -24,18 +24,7 @@ impl TickAccumulation {
             high: trade.price,
             low: trade.price,
             close: trade.price,
-            volume: (
-                if trade.is_sell {
-                    0.0
-                } else {
-                    trade.qty.to_f32_lossy()
-                },
-                if trade.is_sell {
-                    trade.qty.to_f32_lossy()
-                } else {
-                    0.0
-                },
-            ),
+            volume: Volume::empty_buy_sell().add_trade_qty(trade.is_sell, trade.qty),
         };
 
         Self {
@@ -51,11 +40,7 @@ impl TickAccumulation {
         self.kline.low = self.kline.low.min(trade.price);
         self.kline.close = trade.price;
 
-        if trade.is_sell {
-            self.kline.volume.1 += trade.qty.to_f32_lossy();
-        } else {
-            self.kline.volume.0 += trade.qty.to_f32_lossy();
-        }
+        self.kline.volume = self.kline.volume.add_trade_qty(trade.is_sell, trade.qty);
 
         self.add_trade(trade, step);
     }
@@ -124,7 +109,7 @@ impl TickAggr {
             .map(|dp| (dp, self.datapoints.len() - 1))
     }
 
-    pub fn volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
+    pub fn volume_data(&self) -> BTreeMap<u64, exchange::Volume> {
         self.into()
     }
 
@@ -264,14 +249,14 @@ impl TickAggr {
     }
 }
 
-impl From<&TickAggr> for BTreeMap<u64, (f32, f32)> {
+impl From<&TickAggr> for BTreeMap<u64, exchange::Volume> {
     /// Converts datapoints into a map of timestamps and volume data
     fn from(tick_aggr: &TickAggr) -> Self {
         tick_aggr
             .datapoints
             .iter()
             .enumerate()
-            .map(|(idx, dp)| (idx as u64, (dp.kline.volume.0, dp.kline.volume.1)))
+            .map(|(idx, dp)| (idx as u64, dp.kline.volume))
             .collect()
     }
 }

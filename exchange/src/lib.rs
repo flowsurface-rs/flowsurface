@@ -563,7 +563,7 @@ pub struct Kline {
     pub high: Price,
     pub low: Price,
     pub close: Price,
-    pub volume: (f32, f32),
+    pub volume: Volume,
 }
 
 impl Kline {
@@ -573,16 +573,81 @@ impl Kline {
         high: f32,
         low: f32,
         close: f32,
-        volume: (f32, f32),
+        volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
         Self {
             time,
-            open: Price::from_f32(open).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            high: Price::from_f32(high).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            low: Price::from_f32(low).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            close: Price::from_f32(close).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            open: Price::from_f32(open).round_to_min_tick(min_ticksize),
+            high: Price::from_f32(high).round_to_min_tick(min_ticksize),
+            low: Price::from_f32(low).round_to_min_tick(min_ticksize),
+            close: Price::from_f32(close).round_to_min_tick(min_ticksize),
             volume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Volume {
+    TotalOnly(Qty),
+    BuySell(Qty, Qty),
+}
+
+impl Volume {
+    pub fn total(&self) -> Qty {
+        match self {
+            Volume::TotalOnly(qty) => *qty,
+            Volume::BuySell(buy, sell) => *buy + *sell,
+        }
+    }
+
+    pub fn buy_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(buy, _) => Some(*buy),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn sell_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(_, sell) => Some(*sell),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_sell(&self) -> Option<(Qty, Qty)> {
+        match self {
+            Volume::BuySell(buy, sell) => Some((*buy, *sell)),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_qty_or_zero(&self) -> Qty {
+        self.buy_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub fn sell_qty_or_zero(&self) -> Qty {
+        self.sell_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub const fn empty_total() -> Self {
+        Volume::TotalOnly(Qty::ZERO)
+    }
+
+    pub const fn empty_buy_sell() -> Self {
+        Volume::BuySell(Qty::ZERO, Qty::ZERO)
+    }
+
+    pub fn add_trade_qty(self, is_sell: bool, qty: Qty) -> Self {
+        match self {
+            Volume::BuySell(buy, sell) => {
+                if is_sell {
+                    Volume::BuySell(buy, sell + qty)
+                } else {
+                    Volume::BuySell(buy + qty, sell)
+                }
+            }
+            Volume::TotalOnly(total) => Volume::TotalOnly(total + qty),
         }
     }
 }

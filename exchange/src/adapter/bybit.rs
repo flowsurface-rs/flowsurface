@@ -1,7 +1,7 @@
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
-        TickerInfo, TickerStats, Timeframe, Trade,
+        TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::StreamTicksize,
         connect::{State, connect_ws},
         de_string_to_f32, de_string_to_u64,
@@ -467,8 +467,16 @@ pub fn connect_kline_stream(
 
         let ticker_info_map = streams
             .iter()
-            .map(|(ticker_info, _)| (ticker_info.ticker, *ticker_info))
-            .collect::<HashMap<Ticker, TickerInfo>>();
+            .map(|(ticker_info, _)| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::new(size_in_quote_ccy, *ticker_info),
+                    ),
+                )
+            })
+            .collect::<HashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
         loop {
             match &mut state {
@@ -504,16 +512,15 @@ pub fn connect_kline_stream(
                                 feed_de(&msg.payload[..], None, market_type)
                             {
                                 for de_kline in &de_kline_vec {
-                                    let volume = if size_in_quote_ccy {
-                                        (de_kline.volume * de_kline.close).round()
-                                    } else {
-                                        de_kline.volume
-                                    };
-
                                     if let Some(timeframe) = string_to_timeframe(&de_kline.interval)
                                     {
-                                        if let Some(info) = ticker_info_map.get(&ticker) {
-                                            let ticker_info = *info;
+                                        if let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(&ticker)
+                                        {
+                                            let ticker_info = *ticker_info;
+
+                                            let volume = qty_norm
+                                                .normalize_qty(de_kline.volume, de_kline.close);
 
                                             let kline = Kline::new(
                                                 de_kline.time,
@@ -521,7 +528,7 @@ pub fn connect_kline_stream(
                                                 de_kline.high,
                                                 de_kline.low,
                                                 de_kline.close,
-                                                (-1.0, volume),
+                                                Volume::TotalOnly(volume),
                                                 ticker_info.min_ticksize,
                                             );
 
@@ -748,6 +755,7 @@ pub async fn fetch_klines(
 
     let size_in_quote_ccy =
         volume_size_unit() == SizeUnit::Quote && *market_type != MarketKind::InversePerps;
+    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
 
     let klines: Result<Vec<Kline>, AdapterError> = response
         .result
@@ -761,12 +769,8 @@ pub async fn fetch_klines(
             let low = parse_kline_field::<f32>(kline[3].as_str())?;
             let close = parse_kline_field::<f32>(kline[4].as_str())?;
 
-            let mut volume = parse_kline_field::<f32>(kline[5].as_str())?;
-            volume = if size_in_quote_ccy {
-                (volume * close).round()
-            } else {
-                volume
-            };
+            let volume = parse_kline_field::<f32>(kline[5].as_str())?;
+            let volume = qty_norm.normalize_qty(volume, close);
 
             let kline = Kline::new(
                 time,
@@ -774,7 +778,7 @@ pub async fn fetch_klines(
                 high,
                 low,
                 close,
-                (-1.0, volume),
+                Volume::TotalOnly(volume),
                 ticker_info.min_ticksize,
             );
 

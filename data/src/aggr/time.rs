@@ -5,7 +5,7 @@ use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
 use exchange::util::{Price, PriceStep, Qty};
-use exchange::{Kline, Timeframe, Trade};
+use exchange::{Kline, Timeframe, Trade, Volume};
 
 pub trait DataPoint {
     fn add_trade(&mut self, trade: &Trade, step: PriceStep);
@@ -71,9 +71,9 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, (f32, f32)>
+    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, exchange::Volume>
     where
-        BTreeMap<u64, (f32, f32)>: From<&'a TimeSeries<D>>,
+        BTreeMap<u64, exchange::Volume>: From<&'a TimeSeries<D>>,
     {
         self.into()
     }
@@ -223,7 +223,7 @@ impl TimeSeries<KlineDataPoint> {
                         high: trade.price,
                         low: trade.price,
                         close: trade.price,
-                        volume: (0.0, 0.0),
+                        volume: Volume::empty_buy_sell(),
                     },
                     footprint: KlineTrades::new(),
                 });
@@ -419,13 +419,13 @@ impl TimeSeries<HeatmapDataPoint> {
     }
 }
 
-impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, (f32, f32)> {
+impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, exchange::Volume> {
     /// Converts datapoints into a map of timestamps and volume data
     fn from(timeseries: &TimeSeries<KlineDataPoint>) -> Self {
         timeseries
             .datapoints
             .iter()
-            .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
+            .map(|(time, dp)| (*time, dp.kline.volume))
             .collect()
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    OpenInterest, Price, PushFrequency,
+    OpenInterest, Price, PushFrequency, Volume,
     adapter::{StreamKind, StreamTicksize},
     limiter::{self, RateLimiter},
 };
@@ -333,7 +333,7 @@ pub fn connect_market_stream(
 
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
-    market_type: MarketKind,
+    _market_type: MarketKind,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
@@ -390,8 +390,8 @@ pub fn connect_kline_stream(
                                         Some(t) => *t,
                                         None => continue,
                                     };
-
-                                let contract_size = ticker_info.contract_size.map(f32::from);
+                                let qty_norm =
+                                    QtyNormalization::new(size_in_quote_ccy, ticker_info);
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
@@ -433,15 +433,9 @@ pub fn connect_kline_stream(
                                             };
 
                                         let volume_in_display = if let Some(vq) = volume {
-                                            calc_qty(
-                                                vq,
-                                                close,
-                                                size_in_quote_ccy,
-                                                contract_size,
-                                                market_type,
-                                            )
+                                            qty_norm.normalize_qty(vq, close)
                                         } else {
-                                            0.0
+                                            qty_norm.normalize_qty(0.0, close)
                                         };
 
                                         let kline = Kline::new(
@@ -450,7 +444,7 @@ pub fn connect_kline_stream(
                                             high,
                                             low,
                                             close,
-                                            (-1.0, volume_in_display),
+                                            Volume::TotalOnly(volume_in_display),
                                             ticker_info.min_ticksize,
                                         );
                                         let _ = output
@@ -490,35 +484,6 @@ pub fn connect_kline_stream(
             }
         }
     })
-}
-
-fn calc_qty(
-    qty: f32,
-    price: f32,
-    size_in_quote_ccy: bool,
-    contract_size: Option<f32>,
-    market: MarketKind,
-) -> f32 {
-    let is_inverse = matches!(market, MarketKind::InversePerps);
-
-    match contract_size {
-        Some(cs) => {
-            if is_inverse {
-                if size_in_quote_ccy { qty * cs } else { qty }
-            } else if size_in_quote_ccy {
-                qty * cs * price
-            } else {
-                qty * cs
-            }
-        }
-        None => {
-            if size_in_quote_ccy {
-                qty * price
-            } else {
-                qty
-            }
-        }
-    }
 }
 
 fn okx_inst_type(m: MarketKind) -> &'static str {
@@ -702,8 +667,7 @@ pub async fn fetch_klines(
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
-    let (symbol_str, market) = ticker.to_full_symbol_and_type();
-    let contract_size = ticker_info.contract_size.map(f32::from);
+    let (symbol_str, _market) = ticker.to_full_symbol_and_type();
 
     let bar = timeframe_to_okx_bar(timeframe).ok_or_else(|| {
         AdapterError::InvalidRequest(format!("Unsupported timeframe: {timeframe}"))
@@ -732,6 +696,7 @@ pub async fn fetch_klines(
         .ok_or_else(|| AdapterError::ParseError("Kline result is not an array".to_string()))?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
 
     let mut klines: Vec<Kline> = Vec::with_capacity(list.len());
 
@@ -766,9 +731,9 @@ pub async fn fetch_klines(
             _ => continue,
         };
         let volume_in_display = if let Some(vq) = volume {
-            calc_qty(vq, close, size_in_quote_ccy, contract_size, market)
+            qty_norm.normalize_qty(vq, close)
         } else {
-            0.0
+            qty_norm.normalize_qty(0.0, close)
         };
 
         let kline = Kline::new(
@@ -777,7 +742,7 @@ pub async fn fetch_klines(
             high,
             low,
             close,
-            (-1.0, volume_in_display),
+            Volume::TotalOnly(volume_in_display),
             ticker_info.min_ticksize,
         );
 

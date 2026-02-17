@@ -1,7 +1,7 @@
 use super::{
     super::{
         Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
-        TickerInfo, TickerStats, Timeframe, Trade,
+        TickerInfo, TickerStats, Timeframe, Trade, Volume,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -715,15 +715,12 @@ pub async fn fetch_klines(
     .await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
 
     let mut klines = vec![];
     for kline_data in klines_data {
         if let Ok(hl_kline) = serde_json::from_value::<HyperliquidKline>(kline_data) {
-            let volume = if size_in_quote_ccy {
-                (hl_kline.volume * hl_kline.close).round()
-            } else {
-                hl_kline.volume
-            };
+            let volume = qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
 
             let kline = Kline::new(
                 hl_kline.time,
@@ -731,7 +728,7 @@ pub async fn fetch_klines(
                 hl_kline.high,
                 hl_kline.low,
                 hl_kline.close,
-                (-1.0, volume),
+                Volume::TotalOnly(volume),
                 ticker_info.min_ticksize,
             );
             klines.push(kline);
@@ -1073,11 +1070,10 @@ pub fn connect_kline_stream(
                                             && tf.to_string() == hl_kline.interval.as_str()
                                     })
                             {
-                                let volume = if size_in_quote_ccy {
-                                    (hl_kline.volume * hl_kline.close).round()
-                                } else {
-                                    hl_kline.volume
-                                };
+                                let qty_norm =
+                                    QtyNormalization::new(size_in_quote_ccy, *ticker_info);
+                                let volume =
+                                    qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
 
                                 let kline = Kline::new(
                                     hl_kline.time,
@@ -1085,7 +1081,7 @@ pub fn connect_kline_stream(
                                     hl_kline.high,
                                     hl_kline.low,
                                     hl_kline.close,
-                                    (-1.0, volume),
+                                    Volume::TotalOnly(volume),
                                     ticker_info.min_ticksize,
                                 );
 

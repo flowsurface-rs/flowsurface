@@ -1,7 +1,7 @@
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
-        TickerInfo, TickerStats, Timeframe, Trade,
+        TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::StreamTicksize,
         connect::{State, connect_ws},
         de_string_to_f32,
@@ -609,12 +609,20 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
         let exchange = exchange_from_market_type(market);
 
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+
         let ticker_info_map = streams
             .iter()
-            .map(|(ticker_info, _)| (ticker_info.ticker, *ticker_info))
-            .collect::<HashMap<Ticker, TickerInfo>>();
-
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            .map(|(ticker_info, _)| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::new(size_in_quote_ccy, *ticker_info),
+                    ),
+                )
+            })
+            .collect::<HashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
         loop {
             match &mut state {
@@ -658,26 +666,25 @@ pub fn connect_kline_stream(
                                 let (buy_volume, sell_volume) = {
                                     let buy_volume = de_kline.taker_buy_base_asset_volume;
                                     let sell_volume = de_kline.volume - buy_volume;
-
-                                    if let Some(c_size) = get_contract_size(&ticker, market) {
-                                        (buy_volume * c_size, sell_volume * c_size)
-                                    } else if size_in_quote_ccy {
-                                        (
-                                            (buy_volume * de_kline.close).round(),
-                                            (sell_volume * de_kline.close).round(),
-                                        )
-                                    } else {
-                                        (buy_volume, sell_volume)
-                                    }
+                                    (buy_volume, sell_volume)
                                 };
 
                                 if let Some((_, tf)) = streams
                                     .iter()
                                     .find(|(_, tf)| tf.to_string() == de_kline.interval)
                                 {
-                                    if let Some(info) = ticker_info_map.get(&ticker) {
-                                        let ticker_info = *info;
+                                    if let Some((ticker_info, qty_norm)) =
+                                        ticker_info_map.get(&ticker)
+                                    {
+                                        let ticker_info = *ticker_info;
                                         let timeframe = *tf;
+
+                                        let buy_volume =
+                                            qty_norm.normalize_qty(buy_volume, de_kline.close);
+                                        let sell_volume =
+                                            qty_norm.normalize_qty(sell_volume, de_kline.close);
+
+                                        let volume = Volume::BuySell(buy_volume, sell_volume);
 
                                         let kline = Kline::new(
                                             de_kline.time,
@@ -685,8 +692,8 @@ pub fn connect_kline_stream(
                                             de_kline.high,
                                             de_kline.low,
                                             de_kline.close,
-                                            (buy_volume, sell_volume),
-                                            info.min_ticksize,
+                                            volume,
+                                            ticker_info.min_ticksize,
                                         );
 
                                         let _ = output
@@ -868,9 +875,8 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, AdapterError> {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
-struct FetchedKlines(
+struct FetchedKline(
     u64,
     #[serde(deserialize_with = "de_string_to_f32")] f32,
     #[serde(deserialize_with = "de_string_to_f32")] f32,
@@ -884,21 +890,6 @@ struct FetchedKlines(
     String,
     String,
 );
-
-impl From<FetchedKlines> for Kline {
-    fn from(fetched: FetchedKlines) -> Self {
-        let sell_volume = fetched.5 - fetched.9;
-
-        Self {
-            time: fetched.0,
-            open: Price::from_f32(fetched.1),
-            high: Price::from_f32(fetched.2),
-            low: Price::from_f32(fetched.3),
-            close: Price::from_f32(fetched.4),
-            volume: (fetched.9, sell_volume),
-        }
-    }
-}
 
 pub async fn fetch_klines(
     ticker_info: TickerInfo,
@@ -955,44 +946,46 @@ pub async fn fetch_klines(
 
     let limiter = limiter_from_market_type(market_type);
 
-    let fetched_klines: Vec<FetchedKlines> =
+    let fetched_klines: Vec<FetchedKline> =
         limiter::http_parse_with_limiter(&url, limiter, weight, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
+    let min_ticksize = ticker_info.min_ticksize;
 
     let klines: Vec<_> = fetched_klines
         .into_iter()
-        .map(|k| Kline {
-            time: k.0,
-            open: Price::from_f32(k.1).round_to_min_tick(ticker_info.min_ticksize),
-            high: Price::from_f32(k.2).round_to_min_tick(ticker_info.min_ticksize),
-            low: Price::from_f32(k.3).round_to_min_tick(ticker_info.min_ticksize),
-            close: Price::from_f32(k.4).round_to_min_tick(ticker_info.min_ticksize),
-            volume: match market_type {
-                MarketKind::Spot | MarketKind::LinearPerps => {
-                    let sell_volume = if size_in_quote_ccy {
-                        ((k.5 - k.9) * k.4).round()
-                    } else {
-                        k.5 - k.9
-                    };
-                    let buy_volume = if size_in_quote_ccy {
-                        (k.9 * k.4).round()
-                    } else {
-                        k.9
-                    };
-                    (buy_volume, sell_volume)
-                }
-                MarketKind::InversePerps => {
-                    let contract_size = if symbol_str == "BTCUSD_PERP" {
-                        100.0
-                    } else {
-                        10.0
-                    };
+        .map(|k| {
+            let FetchedKline(
+                time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                _close_time,
+                _quote_asset_volume,
+                _number_of_trades,
+                taker_buy_base_asset_volume,
+                _taker_buy_quote_asset_volume,
+                _ignore,
+            ) = k;
 
-                    let sell_volume = k.5 - k.9;
-                    (k.9 * contract_size, sell_volume * contract_size)
-                }
-            },
+            let buy_volume = taker_buy_base_asset_volume;
+            let sell_volume = volume - buy_volume;
+
+            let buy_volume = qty_norm.normalize_qty(buy_volume, close);
+            let sell_volume = qty_norm.normalize_qty(sell_volume, close);
+
+            Kline::new(
+                time,
+                open,
+                high,
+                low,
+                close,
+                Volume::BuySell(buy_volume, sell_volume),
+                min_ticksize,
+            )
         })
         .collect();
 
