@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use data::chart::heatmap::HistoricalDepth;
 use exchange::depth::Depth;
-use exchange::util::{Price, PriceStep};
+use exchange::unit::{Price, PriceStep, Qty};
 
 const Y_BLOCK_H: u32 = 16;
 const DEPTH_GRID_GRACE_MS: u64 = 500;
@@ -297,7 +297,7 @@ impl GridRing {
 
     fn scatter_side(
         &mut self,
-        side: &std::collections::BTreeMap<Price, f32>,
+        side: &std::collections::BTreeMap<Price, Qty>,
         x: u32,
         anchor: Price,
         step: PriceStep,
@@ -326,10 +326,10 @@ impl GridRing {
 
         // Merge consecutive levels that round to the same side-step price (like HistoricalDepth).
         let mut current_price: Option<Price> = None;
-        let mut current_qty: f32 = 0.0;
+        let mut current_qty: Qty = Qty::ZERO;
 
-        let mut flush = |rounded_price: Price, qty_sum: f32| {
-            let q = qty_sum.max(0.0);
+        let mut flush = |rounded_price: Price, qty_sum: Qty| {
+            let q = qty_sum.to_f32_lossy();
             if q <= 0.0 || !q.is_finite() {
                 return;
             }

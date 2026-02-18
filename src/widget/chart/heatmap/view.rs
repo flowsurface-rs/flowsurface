@@ -3,7 +3,7 @@ use crate::widget::chart::heatmap::scene::{
     cell::{Cell, MIN_ROW_PX},
 };
 use data::chart::heatmap::HistoricalDepth;
-use exchange::util::{Price, PriceStep};
+use exchange::unit::{Price, PriceStep};
 
 use iced::time::Instant;
 

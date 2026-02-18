@@ -40,9 +40,9 @@ impl Camera {
     pub fn price_at_center(
         &self,
         row_height: f32,
-        base_price: exchange::util::Price,
-        step: exchange::util::PriceStep,
-    ) -> exchange::util::Price {
+        base_price: exchange::unit::Price,
+        step: exchange::unit::PriceStep,
+    ) -> exchange::unit::Price {
         let y = self.offset[1];
 
         if !row_height.is_finite() || row_height <= 0.0 || !y.is_finite() {

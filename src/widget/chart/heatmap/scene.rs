@@ -6,6 +6,7 @@ mod uniform;
 
 use super::Message;
 use cell::Cell;
+use exchange::unit::{Price, PriceStep};
 use pipeline::Pipeline;
 use pipeline::circle::CircleInstance;
 use pipeline::rectangle::RectInstance;
@@ -160,8 +161,8 @@ impl Scene {
     pub fn sync_heatmap_texture(
         &mut self,
         depth_grid: &depth_grid::GridRing,
-        base_price: exchange::util::Price,
-        step: exchange::util::PriceStep,
+        base_price: Price,
+        step: PriceStep,
         qty_scale_inv: f32, // 1.0 / qty_scale
         latest_time: u64,
         aggr_time: u64,
@@ -263,8 +264,8 @@ impl Scene {
     pub fn sync_heatmap_from_grid(
         &mut self,
         grid: &mut depth_grid::GridRing,
-        base_price: exchange::util::Price,
-        step: exchange::util::PriceStep,
+        base_price: Price,
+        step: PriceStep,
         qty_scale: f32,
         latest_time: u64,
         aggr_time: u64,
@@ -318,11 +319,7 @@ impl Scene {
         self.sync_cell_world_uniform();
     }
 
-    pub fn price_at_center(
-        &self,
-        base_price: exchange::util::Price,
-        step: exchange::util::PriceStep,
-    ) -> exchange::util::Price {
+    pub fn price_at_center(&self, base_price: Price, step: PriceStep) -> Price {
         self.camera
             .price_at_center(self.cell.height_world(), base_price, step)
     }

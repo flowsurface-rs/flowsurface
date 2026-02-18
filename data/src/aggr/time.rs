@@ -4,8 +4,8 @@ use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
-use exchange::util::{Price, PriceStep};
-use exchange::{Kline, Timeframe, Trade};
+use exchange::unit::{Price, PriceStep, Qty};
+use exchange::{Kline, Timeframe, Trade, Volume};
 
 pub trait DataPoint {
     fn add_trade(&mut self, trade: &Trade, step: PriceStep);
@@ -71,9 +71,9 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, (f32, f32)>
+    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, exchange::Volume>
     where
-        BTreeMap<u64, (f32, f32)>: From<&'a TimeSeries<D>>,
+        BTreeMap<u64, exchange::Volume>: From<&'a TimeSeries<D>>,
     {
         self.into()
     }
@@ -235,7 +235,7 @@ impl TimeSeries<KlineDataPoint> {
                         high: trade.price,
                         low: trade.price,
                         close: trade.price,
-                        volume: (0.0, 0.0),
+                        volume: Volume::empty_buy_sell(),
                     },
                     footprint: KlineTrades::new(),
                 });
@@ -376,8 +376,8 @@ impl TimeSeries<KlineDataPoint> {
         latest: u64,
         highest: Price,
         lowest: Price,
-    ) -> f32 {
-        let mut max_cluster_qty: f32 = 0.0;
+    ) -> Qty {
+        let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints
             .range(earliest..=latest)
@@ -414,12 +414,13 @@ impl TimeSeries<HeatmapDataPoint> {
                 let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
 
                 dp.grouped_trades.iter().for_each(|trade| {
-                    max_trade_qty = max_trade_qty.max(trade.qty);
+                    let trade_qty = f32::from(trade.qty);
+                    max_trade_qty = max_trade_qty.max(trade_qty);
 
                     if trade.is_sell {
-                        sell_volume += trade.qty;
+                        sell_volume += trade_qty;
                     } else {
-                        buy_volume += trade.qty;
+                        buy_volume += trade_qty;
                     }
                 });
 
@@ -435,8 +436,8 @@ impl TimeSeries<HeatmapDataPoint> {
         latest: u64,
         highest: Price,
         lowest: Price,
-    ) -> f32 {
-        let mut max_trade_qty = 0.0f32;
+    ) -> Qty {
+        let mut max_trade_qty = Qty::default();
 
         self.datapoints
             .range(earliest..=latest)
@@ -452,13 +453,13 @@ impl TimeSeries<HeatmapDataPoint> {
     }
 }
 
-impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, (f32, f32)> {
+impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, exchange::Volume> {
     /// Converts datapoints into a map of timestamps and volume data
     fn from(timeseries: &TimeSeries<KlineDataPoint>) -> Self {
         timeseries
             .datapoints
             .iter()
-            .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
+            .map(|(time, dp)| (*time, dp.kline.volume))
             .collect()
     }
 }

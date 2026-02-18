@@ -1,12 +1,12 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, Price, PushFrequency, SizeUnit, StreamKind, TickMultiplier,
-        Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
+        TickerInfo, TickerStats, Timeframe, Trade, Volume,
         connect::{State, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        volume_size_unit,
+        unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -103,6 +103,12 @@ impl RateLimiter for HyperliquidLimiter {
 
     fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
         response.status() == 429
+    }
+}
+
+fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
+    match market {
+        MarketKind::Spot | MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Base,
     }
 }
 
@@ -228,14 +234,14 @@ type TickerMetadata = (
     HashMap<Ticker, TickerStats>,
 );
 
-pub async fn fetch_ticksize(
+pub async fn fetch_ticker_metadata(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let (ticker_info_map, _) = fetch_metadata(market).await?;
     Ok(ticker_info_map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market: MarketKind,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let (_, ticker_stats_map) = fetch_metadata(market).await?;
@@ -715,15 +721,16 @@ pub async fn fetch_klines(
     .await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(ticker_info.market_type()),
+    );
 
     let mut klines = vec![];
     for kline_data in klines_data {
         if let Ok(hl_kline) = serde_json::from_value::<HyperliquidKline>(kline_data) {
-            let volume = if size_in_quote_ccy {
-                (hl_kline.volume * hl_kline.close).round()
-            } else {
-                hl_kline.volume
-            };
+            let volume = qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
 
             let kline = Kline::new(
                 hl_kline.time,
@@ -731,7 +738,7 @@ pub async fn fetch_klines(
                 hl_kline.high,
                 hl_kline.low,
                 hl_kline.close,
-                (-1.0, volume),
+                Volume::TotalOnly(volume),
                 ticker_info.min_ticksize,
             );
             klines.push(kline);
@@ -795,15 +802,14 @@ pub fn connect_market_stream(
         let mut local_depth_cache = LocalDepthCache::default();
         let mut trades_buffer = Vec::new();
 
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
+            ticker_info,
+            raw_qty_unit_from_market_type(ticker_info.market_type()),
+        );
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
-
-        log::debug!(
-            "Connecting market stream for ticker symbol: '{}'",
-            symbol_str
-        );
 
         loop {
             match &mut state {
@@ -820,12 +826,6 @@ pub fn connect_market_stream(
                         continue;
                     }
                     let price = price.unwrap();
-
-                    log::debug!(
-                        "Connecting to Hyperliquid market stream with price {} and multiplier {}",
-                        price,
-                        user_multiplier
-                    );
 
                     let depth_cfg = config_from_multiplier(price, user_multiplier);
 
@@ -845,12 +845,6 @@ pub fn connect_market_stream(
                                 depth_subscription["subscription"]["mantissa"] = json!(m);
                             }
 
-                            log::debug!(
-                                "Hyperliquid WS Depth Subscription: {}",
-                                serde_json::to_string_pretty(&depth_subscription)
-                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
-                            );
-
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
                                     depth_subscription.to_string().as_bytes(),
@@ -869,12 +863,6 @@ pub fn connect_market_stream(
                                     "coin": symbol_str
                                 }
                             });
-
-                            log::debug!(
-                                "Hyperliquid WS Trades Subscription: {}",
-                                serde_json::to_string_pretty(&trades_subscribe_msg)
-                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
-                            );
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -911,17 +899,13 @@ pub fn connect_market_stream(
                                             for hl_trade in trades {
                                                 let price = Price::from_f32(hl_trade.px)
                                                     .round_to_min_tick(ticker_info.min_ticksize);
-                                                let qty = if size_in_quote_ccy {
-                                                    (hl_trade.sz * hl_trade.px).round()
-                                                } else {
-                                                    hl_trade.sz
-                                                };
 
                                                 let trade = Trade {
                                                     time: hl_trade.time,
                                                     is_sell: hl_trade.side == "A", // A for Ask/Sell, B for Bid/Buy
                                                     price,
-                                                    qty,
+                                                    qty: qty_norm
+                                                        .normalize_qty(hl_trade.sz, hl_trade.px),
                                                 };
                                                 trades_buffer.push(trade);
                                             }
@@ -931,22 +915,14 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|level| DeOrder {
                                                     price: level.px,
-                                                    qty: if size_in_quote_ccy {
-                                                        (level.sz * level.px).round()
-                                                    } else {
-                                                        level.sz
-                                                    },
+                                                    qty: level.sz,
                                                 })
                                                 .collect();
                                             let asks = depth.levels[1]
                                                 .iter()
                                                 .map(|level| DeOrder {
                                                     price: level.px,
-                                                    qty: if size_in_quote_ccy {
-                                                        (level.sz * level.px).round()
-                                                    } else {
-                                                        level.sz
-                                                    },
+                                                    qty: level.sz,
                                                 })
                                                 .collect();
 
@@ -956,9 +932,10 @@ pub fn connect_market_stream(
                                                 bids,
                                                 asks,
                                             };
-                                            local_depth_cache.update(
+                                            local_depth_cache.update_with_qty_norm(
                                                 DepthUpdate::Snapshot(depth_payload),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
 
                                             let stream_kind = StreamKind::DepthAndTrades {
@@ -1084,11 +1061,13 @@ pub fn connect_kline_stream(
                                             && tf.to_string() == hl_kline.interval.as_str()
                                     })
                             {
-                                let volume = if size_in_quote_ccy {
-                                    (hl_kline.volume * hl_kline.close).round()
-                                } else {
-                                    hl_kline.volume
-                                };
+                                let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                    size_in_quote_ccy,
+                                    *ticker_info,
+                                    raw_qty_unit_from_market_type(ticker_info.market_type()),
+                                );
+                                let volume =
+                                    qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
 
                                 let kline = Kline::new(
                                     hl_kline.time,
@@ -1096,7 +1075,7 @@ pub fn connect_kline_stream(
                                     hl_kline.high,
                                     hl_kline.low,
                                     hl_kline.close,
-                                    (-1.0, volume),
+                                    Volume::TotalOnly(volume),
                                     ticker_info.min_ticksize,
                                 );
 
@@ -1178,28 +1157,18 @@ async fn fetch_orderbook(
     let depth: HyperliquidDepth = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-
     let bids = depth.levels[0]
         .iter()
         .map(|level| DeOrder {
             price: level.px,
-            qty: if size_in_quote_ccy {
-                (level.sz * level.px).round()
-            } else {
-                level.sz
-            },
+            qty: level.sz,
         })
         .collect();
     let asks = depth.levels[1]
         .iter()
         .map(|level| DeOrder {
             price: level.px,
-            qty: if size_in_quote_ccy {
-                (level.sz * level.px).round()
-            } else {
-                level.sz
-            },
+            qty: level.sz,
         })
         .collect();
 

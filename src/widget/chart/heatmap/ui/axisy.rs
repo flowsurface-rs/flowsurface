@@ -1,5 +1,5 @@
 use super::{AxisInteraction, Message};
-use exchange::util::{MinTicksize, Price, PriceStep};
+use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
 

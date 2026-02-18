@@ -19,7 +19,7 @@ use data::aggr::time::TimeSeries;
 use data::chart::Basis;
 use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
 use exchange::depth::Depth;
-use exchange::util::{Price, PriceStep};
+use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
 
 use std::time::{Duration, Instant};
@@ -106,7 +106,7 @@ impl HeatmapShader {
 
         let depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
 
-        let qty_scale: f32 = match exchange::volume_size_unit() {
+        let qty_scale: f32 = match exchange::unit::qty::volume_size_unit() {
             exchange::SizeUnit::Base => {
                 let min_qty_f: f32 = ticker_info.min_qty.into();
                 assert!(min_qty_f > 0.0, "ticker_info.min_qty must be > 0");

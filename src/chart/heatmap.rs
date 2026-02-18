@@ -19,10 +19,10 @@ use data::{
     chart::Autoscale,
 };
 use exchange::{
-    TickerInfo, Trade,
+    SizeUnit, TickerInfo, Trade,
     depth::Depth,
-    util::{Price, PriceStep},
-    volume_size_unit,
+    unit::qty::volume_size_unit,
+    unit::{Price, PriceStep},
 };
 
 use iced::widget::canvas::{self, Event, Geometry, Path};
@@ -177,7 +177,7 @@ impl HeatmapChart {
             });
         }
 
-        let heatmap = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
+        let heatmap = HistoricalDepth::new(ticker_info.min_qty, step, basis);
 
         let view_state = ViewState::new(
             basis,
@@ -277,7 +277,7 @@ impl HeatmapChart {
                 .entry(rounded_depth_update)
                 .or_insert_with(|| HeatmapDataPoint {
                     grouped_trades: Box::new([]),
-                    buy_sell: (0.0, 0.0),
+                    buy_sell: Default::default(),
                 });
 
             for trade in trades_buffer {
@@ -309,11 +309,8 @@ impl HeatmapChart {
         self.chart.basis = basis;
 
         self.trades.datapoints.clear();
-        self.heatmap = HistoricalDepth::new(
-            self.chart.ticker_info.min_qty.into(),
-            self.chart.tick_size,
-            basis,
-        );
+        self.heatmap =
+            HistoricalDepth::new(self.chart.ticker_info.min_qty, self.chart.tick_size, basis);
 
         let chart = &mut self.chart;
         chart.translation = Vector::new(
@@ -375,7 +372,7 @@ impl HeatmapChart {
         chart_state.decimals = count_decimals(new_tick_size);
 
         self.trades.datapoints.clear();
-        self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty.into(), step, basis);
+        self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty, step, basis);
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -500,7 +497,7 @@ impl canvas::Program<Message> for HeatmapChart {
             let (max_aggr_volume, max_trade_qty) =
                 (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
 
-            let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
             let volume_indicator = self.indicators[HeatmapIndicator::Volume].is_some();
 
@@ -621,9 +618,10 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
+                        let trade_qty = f32::from(trade.qty);
 
                         let trade_size = market_type.qty_in_quote_value(
-                            trade.qty,
+                            trade_qty,
                             trade.price,
                             size_in_quote_ccy,
                         );
@@ -639,7 +637,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 if let Some(trade_size_scale) = self.visual_config.trade_size_scale
                                 {
                                     let scale_factor = (trade_size_scale as f32) / 100.0;
-                                    1.0 + (trade.qty / max_trade_qty)
+                                    1.0 + (trade_qty / max_trade_qty)
                                         * (MAX_CIRCLE_RADIUS - 1.0)
                                         * scale_factor
                                 } else {
@@ -664,8 +662,8 @@ impl canvas::Program<Message> for HeatmapChart {
                             frame,
                             x_position,
                             (region.y + region.height) - area_height,
-                            buy_volume,
-                            sell_volume,
+                            f32::from(buy_volume),
+                            f32::from(sell_volume),
                             max_aggr_volume,
                             area_height,
                             bar_width,
@@ -986,10 +984,11 @@ fn draw_volume_profile(
                 let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
 
                 if let Some(entry) = profile.get_mut(index) {
+                    let trade_qty = f32::from(trade.qty);
                     if trade.is_sell {
-                        entry.1 += trade.qty;
+                        entry.1 += trade_qty;
                     } else {
-                        entry.0 += trade.qty;
+                        entry.0 += trade_qty;
                     }
                     max_aggr_volume = max_aggr_volume.max(entry.0 + entry.1);
                 }

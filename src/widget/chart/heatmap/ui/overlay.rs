@@ -4,7 +4,7 @@ use crate::widget::chart::heatmap::depth_grid::GridRing;
 use crate::widget::chart::heatmap::scene::Scene;
 
 use data::util::abbr_large_numbers;
-use exchange::util::{Price, PriceStep};
+use exchange::unit::{Price, PriceStep};
 
 use iced::Vector;
 use iced::widget::canvas::Path;
