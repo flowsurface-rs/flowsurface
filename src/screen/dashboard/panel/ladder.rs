@@ -2,7 +2,8 @@ use super::Message;
 use crate::style;
 use data::panel::ladder::{ChaseTracker, Config, GroupedDepth, Side, TradeStore};
 use exchange::Trade;
-use exchange::util::{Price, PriceStep};
+use exchange::unit::qty::Qty;
+use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, depth::Depth};
 
 use iced::widget::canvas::{self, Path, Stroke, Text};
@@ -123,7 +124,7 @@ impl Ladder {
         }
     }
 
-    fn trade_qty_at(&self, price: Price) -> (f32, f32) {
+    fn trade_qty_at(&self, price: Price) -> (Qty, Qty) {
         self.trades.trade_qty_at(price)
     }
 
@@ -131,11 +132,11 @@ impl Ladder {
         self.last_tick
     }
 
-    fn grouped_asks(&self) -> &BTreeMap<Price, f32> {
+    fn grouped_asks(&self) -> &BTreeMap<Price, Qty> {
         &self.orderbook[Side::Ask.idx()].orders
     }
 
-    fn grouped_bids(&self) -> &BTreeMap<Price, f32> {
+    fn grouped_bids(&self) -> &BTreeMap<Price, Qty> {
         &self.orderbook[Side::Bid.idx()].orders
     }
 
@@ -197,8 +198,8 @@ impl Ladder {
         price.to_string(precision)
     }
 
-    fn format_quantity(&self, qty: f32) -> String {
-        data::util::abbr_large_numbers(qty)
+    fn format_quantity(&self, qty: Qty) -> String {
+        data::util::abbr_large_numbers(qty.to_f32())
     }
 }
 
@@ -445,8 +446,8 @@ struct Maxima {
 struct VisibleRow {
     row: DomRow,
     y: f32,
-    buy_t: f32,
-    sell_t: f32,
+    buy_t: Qty,
+    sell_t: Qty,
 }
 
 struct ColumnRanges {
@@ -553,25 +554,29 @@ impl Ladder {
         frame: &mut iced::widget::canvas::Frame,
         y: f32,
         price: Price,
-        order_qty: f32,
+        order_qty: Qty,
         is_bid: bool,
         side_color: iced::Color,
         text_color: iced::Color,
         max_order_qty: f32,
-        trade_buy_qty: f32,
-        trade_sell_qty: f32,
+        trade_buy_qty: Qty,
+        trade_sell_qty: Qty,
         max_trade_qty: f32,
         trade_buy_color: iced::Color,
         trade_sell_color: iced::Color,
         cols: &ColumnRanges,
     ) {
+        let order_qty_f32 = f32::from(order_qty);
+        let trade_buy_qty_f32 = f32::from(trade_buy_qty);
+        let trade_sell_qty_f32 = f32::from(trade_sell_qty);
+
         if is_bid {
             Self::fill_bar(
                 frame,
                 cols.bid_order,
                 y,
                 ROW_HEIGHT,
-                order_qty,
+                order_qty_f32,
                 max_order_qty,
                 side_color,
                 true,
@@ -586,7 +591,7 @@ impl Ladder {
                 cols.ask_order,
                 y,
                 ROW_HEIGHT,
-                order_qty,
+                order_qty_f32,
                 max_order_qty,
                 side_color,
                 false,
@@ -603,13 +608,13 @@ impl Ladder {
             cols.sell,
             y,
             ROW_HEIGHT,
-            trade_sell_qty,
+            trade_sell_qty_f32,
             max_trade_qty,
             trade_sell_color,
             false,
             0.30,
         );
-        let sell_txt = if trade_sell_qty > 0.0 {
+        let sell_txt = if trade_sell_qty_f32 > 0.0 {
             self.format_quantity(trade_sell_qty)
         } else {
             "".into()
@@ -629,13 +634,13 @@ impl Ladder {
             cols.buy,
             y,
             ROW_HEIGHT,
-            trade_buy_qty,
+            trade_buy_qty_f32,
             max_trade_qty,
             trade_buy_color,
             true,
             0.30,
         );
-        let buy_txt = if trade_buy_qty > 0.0 {
+        let buy_txt = if trade_buy_qty_f32 > 0.0 {
             self.format_quantity(trade_buy_qty)
         } else {
             "".into()
@@ -809,8 +814,8 @@ impl Ladder {
                     visible.push(VisibleRow {
                         row,
                         y: top_y_screen,
-                        buy_t: 0.0,
-                        sell_t: 0.0,
+                        buy_t: Qty::default(),
+                        sell_t: Qty::default(),
                     });
                 }
                 continue;
@@ -822,9 +827,9 @@ impl Ladder {
 
             let is_bid = idx > 0;
             let order_qty = if is_bid {
-                bids_grouped.get(&price).copied().unwrap_or(0.0)
+                bids_grouped.get(&price).copied().unwrap_or_default()
             } else {
-                asks_grouped.get(&price).copied().unwrap_or(0.0)
+                asks_grouped.get(&price).copied().unwrap_or_default()
             };
 
             let top_y_screen = mid_screen_y + PriceGrid::top_y(idx) - scroll;
@@ -832,9 +837,11 @@ impl Ladder {
                 continue;
             }
 
-            maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(order_qty);
+            maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(f32::from(order_qty));
             let (buy_t, sell_t) = self.trade_qty_at(price);
-            maxima.vis_max_trade_qty = maxima.vis_max_trade_qty.max(buy_t.max(sell_t));
+            maxima.vis_max_trade_qty = maxima
+                .vis_max_trade_qty
+                .max(f32::from(buy_t).max(f32::from(sell_t)));
 
             let row = if is_bid {
                 DomRow::Bid {
@@ -880,10 +887,10 @@ impl Ladder {
 }
 
 enum DomRow {
-    Ask { price: Price, qty: f32 },
+    Ask { price: Price, qty: Qty },
     Spread,
     CenterDivider,
-    Bid { price: Price, qty: f32 },
+    Bid { price: Price, qty: Qty },
 }
 
 struct PriceGrid {

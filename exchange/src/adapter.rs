@@ -170,7 +170,12 @@ impl MarketKind {
         MarketKind::InversePerps,
     ];
 
-    pub fn qty_in_quote_value(&self, qty: f32, price: Price, size_in_quote_ccy: bool) -> f32 {
+    pub fn qty_in_quote_value<T>(&self, qty: T, price: Price, size_in_quote_ccy: bool) -> f32
+    where
+        T: Into<f32>,
+    {
+        let qty = qty.into();
+
         match self {
             MarketKind::InversePerps => qty,
             _ => {
@@ -637,44 +642,45 @@ impl<I> StreamConfig<I> {
     }
 }
 
-pub async fn fetch_ticker_info(
+pub async fn fetch_ticker_metadata(
     exchange: Exchange,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let market_type = exchange.market_type();
 
     match exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
-            binance::fetch_ticksize(market_type).await
+            binance::fetch_ticker_metadata(market_type).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
-            bybit::fetch_ticksize(market_type).await
+            bybit::fetch_ticker_metadata(market_type).await
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
-            hyperliquid::fetch_ticksize(market_type).await
+            hyperliquid::fetch_ticker_metadata(market_type).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            okex::fetch_ticksize(market_type).await
+            okex::fetch_ticker_metadata(market_type).await
         }
     }
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     exchange: Exchange,
+    contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let market_type = exchange.market_type();
 
     match exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse | Exchange::BinanceSpot => {
-            binance::fetch_ticker_prices(market_type).await
+            binance::fetch_ticker_stats(market_type, contract_sizes).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse | Exchange::BybitSpot => {
-            bybit::fetch_ticker_prices(market_type).await
+            bybit::fetch_ticker_stats(market_type).await
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
-            hyperliquid::fetch_ticker_prices(market_type).await
+            hyperliquid::fetch_ticker_stats(market_type).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            okex::fetch_ticker_prices(market_type).await
+            okex::fetch_ticker_stats(market_type).await
         }
     }
 }
@@ -701,19 +707,19 @@ pub async fn fetch_klines(
 }
 
 pub async fn fetch_open_interest(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
-    match ticker.exchange {
+    match ticker_info.ticker.exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse => {
-            binance::fetch_historical_oi(ticker, range, timeframe).await
+            binance::fetch_historical_oi(ticker_info, range, timeframe).await
         }
         Exchange::BybitLinear | Exchange::BybitInverse => {
-            bybit::fetch_historical_oi(ticker, range, timeframe).await
+            bybit::fetch_historical_oi(ticker_info, range, timeframe).await
         }
         Exchange::OkexLinear | Exchange::OkexInverse => {
-            okex::fetch_historical_oi(ticker, range, timeframe).await
+            okex::fetch_historical_oi(ticker_info, range, timeframe).await
         }
         _ => Err(AdapterError::InvalidRequest("Invalid exchange".to_string())),
     }

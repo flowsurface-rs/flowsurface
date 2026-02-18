@@ -2,7 +2,8 @@ use crate::chart::kline::KlineTrades;
 use crate::util::ok_or_default;
 use exchange::{
     Trade,
-    util::{Price, PriceStep},
+    unit::price::{Price, PriceStep},
+    unit::qty::Qty,
 };
 
 use serde::{Deserialize, Serialize};
@@ -59,7 +60,7 @@ impl Side {
 
 #[derive(Default)]
 pub struct GroupedDepth {
-    pub orders: BTreeMap<Price, f32>,
+    pub orders: BTreeMap<Price, Qty>,
     pub chase: ChaseTracker,
 }
 
@@ -71,11 +72,11 @@ impl GroupedDepth {
         }
     }
 
-    pub fn regroup_from_raw(&mut self, levels: &BTreeMap<Price, f32>, side: Side, step: PriceStep) {
+    pub fn regroup_from_raw(&mut self, levels: &BTreeMap<Price, Qty>, side: Side, step: PriceStep) {
         self.orders.clear();
         for (price, qty) in levels.iter() {
             let grouped_price = price.round_to_side_step(side.is_bid(), step);
-            *self.orders.entry(grouped_price).or_insert(0.0) += *qty;
+            *self.orders.entry(grouped_price).or_default() += *qty;
         }
     }
 
@@ -125,11 +126,11 @@ impl TradeStore {
         }
     }
 
-    pub fn trade_qty_at(&self, price: Price) -> (f32, f32) {
+    pub fn trade_qty_at(&self, price: Price) -> (Qty, Qty) {
         if let Some(g) = self.grouped.trades.get(&price) {
             (g.buy_qty, g.sell_qty)
         } else {
-            (0.0, 0.0)
+            (Qty::default(), Qty::default())
         }
     }
 

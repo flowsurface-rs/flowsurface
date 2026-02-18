@@ -6,13 +6,12 @@ use data::{
     InternalError,
     layout::pane::ContentKind,
     tickers_table::{
-        PriceChangeDirection, Settings, SortOptions, TickerDisplayData, TickerRowData,
-        compute_display_data,
+        PriceChange, Settings, SortOptions, TickerDisplayData, TickerRowData, compute_display_data,
     },
 };
 use exchange::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{Exchange, ExchangeInclusive, MarketKind, fetch_ticker_info, fetch_ticker_prices},
+    adapter::{Exchange, ExchangeInclusive, MarketKind, fetch_ticker_metadata, fetch_ticker_stats},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
@@ -57,20 +56,6 @@ const EXCHANGE_FILTERS: [(ExchangeInclusive, Exchange, &str); 4] = [
     (ExchangeInclusive::Okex, Exchange::OkexLinear, "OKX"),
 ];
 
-pub fn fetch_tickers_info() -> Task<Message> {
-    let fetch_tasks = Exchange::ALL
-        .iter()
-        .map(|exchange| {
-            Task::perform(fetch_ticker_info(*exchange), move |result| match result {
-                Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
-                Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
-            })
-        })
-        .collect::<Vec<Task<Message>>>();
-
-    Task::batch(fetch_tasks)
-}
-
 pub enum Action {
     TickerSelected(TickerInfo, Option<ContentKind>),
     ErrorOccurred(data::InternalError),
@@ -91,7 +76,7 @@ pub enum Message {
     ToggleExchangeFilter(ExchangeInclusive),
     ToggleTable,
     ToggleFavorites,
-    FetchForTickerStats(Option<Exchange>),
+    FetchForTickerStats,
     UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
     UpdateTickerStats(Exchange, HashMap<Ticker, TickerStats>),
     ErrorOccurred(data::InternalError),
@@ -121,6 +106,21 @@ impl TickersTable {
     }
 
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
+        let fetch_metadata = Exchange::ALL
+            .iter()
+            .map(|exchange| {
+                Task::perform(
+                    fetch_ticker_metadata(*exchange),
+                    move |result| match result {
+                        Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
+                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(format!(
+                            "{exchange:?}: {err}"
+                        ))),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
         (
             Self {
                 ticker_rows: Vec::new(),
@@ -139,7 +139,7 @@ impl TickersTable {
                 row_index: FxHashMap::default(),
                 pending_stats_batches: 0,
             },
-            fetch_tickers_info(),
+            Task::batch(fetch_metadata),
         )
     }
 
@@ -218,14 +218,8 @@ impl TickersTable {
                     return Some(Action::FocusWidget("full_ticker_search_box".into()));
                 }
             }
-            Message::FetchForTickerStats(exchange) => {
-                let task = if let Some(exchange) = exchange {
-                    self.pending_stats_batches = 1;
-                    Task::perform(fetch_ticker_prices(exchange), move |result| match result {
-                        Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
-                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
-                    })
-                } else {
+            Message::FetchForTickerStats => {
+                let task = {
                     let exchanges: FxHashSet<Exchange> =
                         self.tickers_info.keys().map(|t| t.exchange).collect();
 
@@ -234,15 +228,16 @@ impl TickersTable {
                     let fetch_tasks = exchanges
                         .into_iter()
                         .map(|exchange| {
-                            Task::perform(fetch_ticker_prices(exchange), move |result| match result
-                            {
-                                Ok(ticker_rows) => {
-                                    Message::UpdateTickerStats(exchange, ticker_rows)
-                                }
-                                Err(err) => {
-                                    Message::ErrorOccurred(InternalError::Fetch(err.to_string()))
-                                }
-                            })
+                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
+                                Some(contract_sizes_for_exchange(
+                                    exchange,
+                                    self.tickers_info.iter(),
+                                ))
+                            } else {
+                                None
+                            };
+
+                            fetch_ticker_stats_task(exchange, contract_sizes)
                         })
                         .collect::<Vec<Task<Message>>>();
 
@@ -262,15 +257,20 @@ impl TickersTable {
                 }
             }
             Message::UpdateTickersInfo(exchange, info) => {
-                self.update_ticker_info(exchange, info);
+                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
+                    Some(contract_sizes_for_exchange(exchange, info.iter()))
+                } else {
+                    None
+                };
 
-                let task =
-                    Task::perform(fetch_ticker_prices(exchange), move |result| match result {
-                        Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
-                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
-                    });
+                for (ticker, ticker_info) in info.into_iter() {
+                    self.tickers_info.insert(ticker, ticker_info);
+                }
 
-                return Some(Action::Fetch(task));
+                return Some(Action::Fetch(fetch_ticker_stats_task(
+                    exchange,
+                    contract_sizes,
+                )));
             }
             Message::ErrorOccurred(err) => {
                 log::error!("Error occurred: {err}");
@@ -428,7 +428,7 @@ impl TickersTable {
         } else {
             INACTIVE_UPDATE_INTERVAL
         }))
-        .map(|_| Message::FetchForTickerStats(None))
+        .map(|_| Message::FetchForTickerStats)
     }
 
     fn sort_ticker_rows(&mut self) {
@@ -564,16 +564,6 @@ impl TickersTable {
             .padding(2)
             .style(style::dragger_row_container)
             .into()
-    }
-
-    fn update_ticker_info(
-        &mut self,
-        _exchange: Exchange,
-        info: HashMap<Ticker, Option<TickerInfo>>,
-    ) {
-        for (ticker, ticker_info) in info.into_iter() {
-            self.tickers_info.insert(ticker, ticker_info);
-        }
     }
 
     fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {
@@ -1218,10 +1208,10 @@ fn ticker_card<'a>(ticker: &Ticker, display_data: &'a TickerDisplayData) -> Elem
             text(&display_data.price_changed_part).style(move |theme: &Theme| {
                 let palette = theme.extended_palette();
                 iced::widget::text::Style {
-                    color: Some(match display_data.price_change_direction {
-                        PriceChangeDirection::Increased => palette.success.base.color,
-                        PriceChangeDirection::Decreased => palette.danger.base.color,
-                        PriceChangeDirection::Unchanged => palette.background.base.text,
+                    color: Some(match display_data.price_change {
+                        PriceChange::Increased => palette.success.base.color,
+                        PriceChange::Decreased => palette.danger.base.color,
+                        PriceChange::Unchanged => palette.background.base.text,
                     }),
                 }
             })
@@ -1472,6 +1462,36 @@ fn market_suffix(m: MarketKind) -> &'static str {
         MarketKind::Spot => "",
         MarketKind::LinearPerps | MarketKind::InversePerps => "P",
     }
+}
+
+fn fetch_ticker_stats_task(
+    exchange: Exchange,
+    contract_sizes: Option<HashMap<Ticker, f32>>,
+) -> Task<Message> {
+    Task::perform(
+        fetch_ticker_stats(exchange, contract_sizes),
+        move |result| match result {
+            Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
+            Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
+        },
+    )
+}
+
+fn contract_sizes_for_exchange<'a>(
+    exchange: Exchange,
+    ticker_info_iter: impl Iterator<Item = (&'a Ticker, &'a Option<TickerInfo>)>,
+) -> HashMap<Ticker, f32> {
+    ticker_info_iter
+        .filter_map(|(ticker, info)| {
+            if ticker.exchange != exchange {
+                return None;
+            }
+
+            let info = info.as_ref()?;
+            let contract_size = info.contract_size?;
+            Some((*ticker, contract_size.as_f32()))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug)]

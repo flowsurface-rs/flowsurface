@@ -1,20 +1,20 @@
 use crate::{
-    OpenInterest, Price, PushFrequency, SizeUnit,
+    OpenInterest, Price, PushFrequency, Volume,
     adapter::{StreamKind, StreamTicksize},
     limiter::{self, RateLimiter},
-    volume_size_unit,
 };
 
 use super::{
     super::{
         Exchange, Kline, MarketKind, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, connect_ws},
-        de_string_to_f32, de_string_to_u64, is_symbol_supported,
+        de_string_to_f32, de_string_to_u64,
+        depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
+        is_symbol_supported,
+        unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
-
-use super::super::depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache};
 
 use fastwebsockets::{Frame, OpCode};
 use iced_futures::{
@@ -60,6 +60,13 @@ impl RateLimiter for OkexLimiter {
 
     fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
         response.status() == 429
+    }
+}
+
+fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
+    match market {
+        MarketKind::Spot => RawQtyUnit::Base,
+        MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Contracts,
     }
 }
 
@@ -222,7 +229,11 @@ pub fn connect_market_stream(
         let mut orderbook = LocalDepthCache::default();
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let contract_size = ticker_info.contract_size.map(f32::from);
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            size_in_quote_ccy,
+            ticker_info,
+            raw_qty_unit_from_market_type(market_type),
+        );
 
         loop {
             match &mut state {
@@ -238,13 +249,8 @@ pub fn connect_market_stream(
                                         for de_trade in &de_trade_vec {
                                             let price = Price::from_f32(de_trade.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = calc_qty(
-                                                de_trade.qty,
-                                                de_trade.price,
-                                                size_in_quote_ccy,
-                                                contract_size,
-                                                market_type,
-                                            );
+                                            let qty = qty_norm
+                                                .normalize_qty(de_trade.qty, de_trade.price);
 
                                             let trade = Trade {
                                                 time: de_trade.time,
@@ -265,13 +271,7 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: calc_qty(
-                                                        x.qty,
-                                                        x.price,
-                                                        size_in_quote_ccy,
-                                                        contract_size,
-                                                        market_type,
-                                                    ),
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                             asks: de_depth
@@ -279,27 +279,23 @@ pub fn connect_market_stream(
                                                 .iter()
                                                 .map(|x| DeOrder {
                                                     price: x.price,
-                                                    qty: calc_qty(
-                                                        x.qty,
-                                                        x.price,
-                                                        size_in_quote_ccy,
-                                                        contract_size,
-                                                        market_type,
-                                                    ),
+                                                    qty: x.qty,
                                                 })
                                                 .collect(),
                                         };
 
                                         if (data_type == "snapshot") || (depth.last_update_id == 1)
                                         {
-                                            orderbook.update(
+                                            orderbook.update_with_qty_norm(
                                                 DepthUpdate::Snapshot(depth),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
                                         } else if data_type == "delta" {
-                                            orderbook.update(
+                                            orderbook.update_with_qty_norm(
                                                 DepthUpdate::Diff(depth),
                                                 ticker_info.min_ticksize,
+                                                Some(qty_norm),
                                             );
 
                                             let _ = output
@@ -405,8 +401,11 @@ pub fn connect_kline_stream(
                                         Some(t) => *t,
                                         None => continue,
                                     };
-
-                                let contract_size = ticker_info.contract_size.map(f32::from);
+                                let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                    size_in_quote_ccy,
+                                    ticker_info,
+                                    raw_qty_unit_from_market_type(market_type),
+                                );
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
@@ -448,15 +447,9 @@ pub fn connect_kline_stream(
                                             };
 
                                         let volume_in_display = if let Some(vq) = volume {
-                                            calc_qty(
-                                                vq,
-                                                close,
-                                                size_in_quote_ccy,
-                                                contract_size,
-                                                market_type,
-                                            )
+                                            qty_norm.normalize_qty(vq, close)
                                         } else {
-                                            0.0
+                                            qty_norm.normalize_qty(0.0, close)
                                         };
 
                                         let kline = Kline::new(
@@ -465,7 +458,7 @@ pub fn connect_kline_stream(
                                             high,
                                             low,
                                             close,
-                                            (-1.0, volume_in_display),
+                                            Volume::TotalOnly(volume_in_display),
                                             ticker_info.min_ticksize,
                                         );
                                         let _ = output
@@ -507,35 +500,6 @@ pub fn connect_kline_stream(
     })
 }
 
-fn calc_qty(
-    qty: f32,
-    price: f32,
-    size_in_quote_ccy: bool,
-    contract_size: Option<f32>,
-    market: MarketKind,
-) -> f32 {
-    let is_inverse = matches!(market, MarketKind::InversePerps);
-
-    match contract_size {
-        Some(cs) => {
-            if is_inverse {
-                if size_in_quote_ccy { qty * cs } else { qty }
-            } else if size_in_quote_ccy {
-                qty * cs * price
-            } else {
-                qty * cs
-            }
-        }
-        None => {
-            if size_in_quote_ccy {
-                qty * price
-            } else {
-                qty
-            }
-        }
-    }
-}
-
 fn okx_inst_type(m: MarketKind) -> &'static str {
     match m {
         MarketKind::Spot => "SPOT",
@@ -559,7 +523,7 @@ fn timeframe_to_okx_bar(tf: Timeframe) -> Option<&'static str> {
     })
 }
 
-pub async fn fetch_ticksize(
+pub async fn fetch_ticker_metadata(
     market_type: MarketKind,
 ) -> Result<std::collections::HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let inst_type = okx_inst_type(market_type);
@@ -634,7 +598,7 @@ pub async fn fetch_ticksize(
     Ok(map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market_type: MarketKind,
 ) -> Result<std::collections::HashMap<Ticker, TickerStats>, AdapterError> {
     let inst_type = okx_inst_type(market_type);
@@ -717,8 +681,7 @@ pub async fn fetch_klines(
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
-    let (symbol_str, market) = ticker.to_full_symbol_and_type();
-    let contract_size = ticker_info.contract_size.map(f32::from);
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let bar = timeframe_to_okx_bar(timeframe).ok_or_else(|| {
         AdapterError::InvalidRequest(format!("Unsupported timeframe: {timeframe}"))
@@ -747,6 +710,11 @@ pub async fn fetch_klines(
         .ok_or_else(|| AdapterError::ParseError("Kline result is not an array".to_string()))?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(market_type),
+    );
 
     let mut klines: Vec<Kline> = Vec::with_capacity(list.len());
 
@@ -781,9 +749,9 @@ pub async fn fetch_klines(
             _ => continue,
         };
         let volume_in_display = if let Some(vq) = volume {
-            calc_qty(vq, close, size_in_quote_ccy, contract_size, market)
+            qty_norm.normalize_qty(vq, close)
         } else {
-            0.0
+            qty_norm.normalize_qty(0.0, close)
         };
 
         let kline = Kline::new(
@@ -792,7 +760,7 @@ pub async fn fetch_klines(
             high,
             low,
             close,
-            (-1.0, volume_in_display),
+            Volume::TotalOnly(volume_in_display),
             ticker_info.min_ticksize,
         );
 
@@ -806,11 +774,11 @@ pub async fn fetch_klines(
 const TRADING_STATS_DOMAIN: &str = "https://www.okx.com/api/v5/rubik/stat";
 
 pub async fn fetch_historical_oi(
-    ticker: Ticker,
+    ticker_info: TickerInfo,
     range: Option<(u64, u64)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
-    let (ticker_str, _market) = ticker.to_full_symbol_and_type();
+    let (ticker_str, _market) = ticker_info.ticker.to_full_symbol_and_type();
 
     let bar = timeframe_to_okx_bar(period)
         .ok_or_else(|| AdapterError::InvalidRequest(format!("Unsupported timeframe: {period}")))?;
