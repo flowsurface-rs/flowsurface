@@ -330,7 +330,7 @@ pub fn load_saved_state() -> SavedState {
             };
 
             exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
-            exchange::set_preferred_currency(state.size_in_quote_ccy);
+            exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
 
             // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
             let mut proxy_cfg = state.proxy_cfg;

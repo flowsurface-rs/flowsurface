@@ -35,7 +35,7 @@ pub enum SortOptions {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum PriceChangeDirection {
+pub enum PriceChange {
     Increased,
     Decreased,
     Unchanged,
@@ -58,7 +58,7 @@ pub struct TickerDisplayData {
     pub mark_price_display: String,
     pub price_unchanged_part: String,
     pub price_changed_part: String,
-    pub price_change_direction: PriceChangeDirection,
+    pub price_change: PriceChange,
     pub card_color_alpha: f32,
 }
 
@@ -70,14 +70,14 @@ pub fn compute_display_data(
     let (display_ticker, _market) = ticker.display_symbol_and_type();
 
     let current_price = stats.mark_price;
-    let (price_unchanged_part, price_changed_part, price_change_direction) =
+    let (price_unchanged_part, price_changed_part, price_change) =
         if let Some(prev_price) = previous_price {
             split_price_changes(prev_price, current_price)
         } else {
             (
                 current_price.to_string(),
                 String::new(),
-                PriceChangeDirection::Unchanged,
+                PriceChange::Unchanged,
             )
         };
 
@@ -88,20 +88,17 @@ pub fn compute_display_data(
         mark_price_display: stats.mark_price.to_string(),
         price_unchanged_part,
         price_changed_part,
-        price_change_direction,
+        price_change,
         card_color_alpha: { (stats.daily_price_chg / 8.0).clamp(-1.0, 1.0) },
     }
 }
 
-fn split_price_changes(
-    previous_price: f32,
-    current_price: f32,
-) -> (String, String, PriceChangeDirection) {
+fn split_price_changes(previous_price: f32, current_price: f32) -> (String, String, PriceChange) {
     if previous_price == current_price {
         return (
             current_price.to_string(),
             String::new(),
-            PriceChangeDirection::Unchanged,
+            PriceChange::Unchanged,
         );
     }
 
@@ -109,9 +106,9 @@ fn split_price_changes(
     let curr_str = current_price.to_string();
 
     let direction = if current_price > previous_price {
-        PriceChangeDirection::Increased
+        PriceChange::Increased
     } else {
-        PriceChangeDirection::Decreased
+        PriceChange::Decreased
     };
 
     let mut split_index = 0;

@@ -4,46 +4,18 @@ pub mod depth;
 pub mod fetcher;
 mod limiter;
 pub mod proxy;
-pub mod util;
+pub mod unit;
 
-use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
+use unit::price::Price;
+pub use unit::qty::SizeUnit;
+use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::{fmt, hash::Hash};
-
-/// Unit for displaying volume/quantity size values.
-///
-/// - `Base`: Display in base asset units (e.g., BTC for BTCUSDT)
-/// - `Quote`: Display in quote currency value (e.g., USD/USDT equivalent)
-///
-/// Note: Only applies to linear perpetuals and spot markets.
-/// Inverse perpetuals always display in USD regardless of this setting.
-#[repr(u8)]
-#[derive(Default, Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub enum SizeUnit {
-    Base = 0,
-    #[default]
-    Quote = 1,
-}
-
-static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Base as u8);
-
-pub fn set_preferred_currency(v: SizeUnit) {
-    SIZE_CALC_UNIT.store(v as u8, Ordering::Relaxed);
-}
-
-pub fn volume_size_unit() -> SizeUnit {
-    match SIZE_CALC_UNIT.load(Ordering::Relaxed) {
-        0 => SizeUnit::Base,
-        1 => SizeUnit::Quote,
-        _ => SizeUnit::Base,
-    }
-}
 
 /// Desired frequency for orderbook depth updates.
 ///
@@ -580,7 +552,8 @@ pub struct Trade {
     #[serde(deserialize_with = "bool_from_int")]
     pub is_sell: bool,
     pub price: Price,
-    pub qty: f32,
+    #[serde(deserialize_with = "de_qty_from_number")]
+    pub qty: Qty,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -590,7 +563,7 @@ pub struct Kline {
     pub high: Price,
     pub low: Price,
     pub close: Price,
-    pub volume: (f32, f32),
+    pub volume: Volume,
 }
 
 impl Kline {
@@ -600,16 +573,81 @@ impl Kline {
         high: f32,
         low: f32,
         close: f32,
-        volume: (f32, f32),
+        volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
         Self {
             time,
-            open: Price::from_f32(open).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            high: Price::from_f32(high).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            low: Price::from_f32(low).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            close: Price::from_f32(close).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            open: Price::from_f32(open).round_to_min_tick(min_ticksize),
+            high: Price::from_f32(high).round_to_min_tick(min_ticksize),
+            low: Price::from_f32(low).round_to_min_tick(min_ticksize),
+            close: Price::from_f32(close).round_to_min_tick(min_ticksize),
             volume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Volume {
+    TotalOnly(Qty),
+    BuySell(Qty, Qty),
+}
+
+impl Volume {
+    pub fn total(&self) -> Qty {
+        match self {
+            Volume::TotalOnly(qty) => *qty,
+            Volume::BuySell(buy, sell) => *buy + *sell,
+        }
+    }
+
+    pub fn buy_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(buy, _) => Some(*buy),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn sell_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(_, sell) => Some(*sell),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_sell(&self) -> Option<(Qty, Qty)> {
+        match self {
+            Volume::BuySell(buy, sell) => Some((*buy, *sell)),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_qty_or_zero(&self) -> Qty {
+        self.buy_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub fn sell_qty_or_zero(&self) -> Qty {
+        self.sell_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub const fn empty_total() -> Self {
+        Volume::TotalOnly(Qty::ZERO)
+    }
+
+    pub const fn empty_buy_sell() -> Self {
+        Volume::BuySell(Qty::ZERO, Qty::ZERO)
+    }
+
+    pub fn add_trade_qty(self, is_sell: bool, qty: Qty) -> Self {
+        match self {
+            Volume::BuySell(buy, sell) => {
+                if is_sell {
+                    Volume::BuySell(buy, sell + qty)
+                } else {
+                    Volume::BuySell(buy + qty, sell)
+                }
+            }
+            Volume::TotalOnly(total) => Volume::TotalOnly(total + qty),
         }
     }
 }
@@ -660,6 +698,26 @@ where
 {
     let s: String = serde::Deserialize::deserialize(deserializer)?;
     s.parse::<u64>().map_err(serde::de::Error::custom)
+}
+
+fn de_qty_from_number<'de, D>(deserializer: D) -> Result<Qty, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+
+    let qty = match value {
+        Value::String(s) => s.parse::<f32>().map_err(serde::de::Error::custom)?,
+        Value::Number(n) => n
+            .as_f64()
+            .map(|v| v as f32)
+            .ok_or_else(|| serde::de::Error::custom("expected numeric qty"))?,
+        _ => {
+            return Err(serde::de::Error::custom("expected qty as string or number"));
+        }
+    };
+
+    Ok(Qty::from_f32(qty))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

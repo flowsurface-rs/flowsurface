@@ -10,7 +10,7 @@ use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
 use exchange::fetcher::{FetchRange, FetchRequests, FetchSpec, RequestHandler};
-use exchange::util::{Price, PriceStep};
+use exchange::unit::{Price, PriceStep};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
 

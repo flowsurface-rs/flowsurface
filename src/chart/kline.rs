@@ -6,19 +6,16 @@ use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
-use data::chart::Autoscale;
-use data::chart::kline::ClusterScaling;
-use data::chart::{
-    KlineChartKind, ViewConfig,
-    indicator::{Indicator, KlineIndicator},
-    kline::{ClusterKind, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl},
+use data::chart::indicator::{Indicator, KlineIndicator};
+use data::chart::kline::{
+    ClusterKind, ClusterScaling, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl,
 };
+use data::chart::{Autoscale, KlineChartKind, ViewConfig};
+
 use data::util::{abbr_large_numbers, count_decimals};
-use exchange::util::{Price, PriceStep};
-use exchange::{
-    Kline, OpenInterest as OIData, TickerInfo, Trade,
-    fetcher::{FetchRange, RequestHandler},
-};
+use exchange::fetcher::{FetchRange, RequestHandler};
+use exchange::unit::{Price, PriceStep, Qty};
+use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -683,28 +680,31 @@ impl KlineChart {
         cluster_kind: ClusterKind,
     ) -> f32 {
         let rounded_highest = highest.round_to_side_step(false, step).add_steps(1, step);
-
         let rounded_lowest = lowest.round_to_side_step(true, step).add_steps(-1, step);
 
         match &self.data_source {
-            PlotData::TimeBased(timeseries) => timeseries.max_qty_ts_range(
-                cluster_kind,
-                earliest,
-                latest,
-                rounded_highest,
-                rounded_lowest,
-            ),
-            PlotData::TickBased(tick_aggr) => {
-                let earliest = earliest as usize;
-                let latest = latest as usize;
-
-                tick_aggr.max_qty_idx_range(
+            PlotData::TimeBased(timeseries) => timeseries
+                .max_qty_ts_range(
                     cluster_kind,
                     earliest,
                     latest,
                     rounded_highest,
                     rounded_lowest,
                 )
+                .into(),
+            PlotData::TickBased(tick_aggr) => {
+                let earliest = earliest as usize;
+                let latest = latest as usize;
+
+                tick_aggr
+                    .max_qty_idx_range(
+                        cluster_kind,
+                        earliest,
+                        latest,
+                        rounded_highest,
+                        rounded_lowest,
+                    )
+                    .into()
             }
         }
     }
@@ -1314,27 +1314,29 @@ fn effective_cluster_qty(
             .trades
             .values()
             .map(|group| group.buy_qty.max(group.sell_qty))
-            .fold(0.0_f32, f32::max),
+            .max()
+            .unwrap_or_default(),
         ClusterKind::DeltaProfile => footprint
             .trades
             .values()
-            .map(|group| (group.buy_qty - group.sell_qty).abs())
-            .fold(0.0_f32, f32::max),
+            .map(|group| group.buy_qty.abs_diff(group.sell_qty))
+            .max()
+            .unwrap_or_default(),
         ClusterKind::VolumeProfile => footprint
             .trades
             .values()
             .map(|group| group.buy_qty + group.sell_qty)
-            .fold(0.0_f32, f32::max),
+            .max()
+            .unwrap_or_default(),
     };
-
-    let safe = |v: f32| if v <= f32::EPSILON { 1.0 } else { v };
+    let individual_max_f32 = f32::from(individual_max);
 
     match scaling {
-        ClusterScaling::VisibleRange => safe(visible_max),
-        ClusterScaling::Datapoint => safe(individual_max),
+        ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max),
+        ClusterScaling::Datapoint => individual_max.to_scale_or_one(),
         ClusterScaling::Hybrid { weight } => {
             let w = weight.clamp(0.0, 1.0);
-            safe(visible_max * w + individual_max * (1.0 - w))
+            Qty::scale_or_one(visible_max * w + individual_max_f32 * (1.0 - w))
         }
     }
 }
@@ -1378,6 +1380,8 @@ fn draw_clusters(
             let bar_alpha = if show_text { 0.25 } else { 1.0 };
 
             for (price, group) in &footprint.trades {
+                let buy_qty = f32::from(group.buy_qty);
+                let sell_qty = f32::from(group.sell_qty);
                 let y = price_to_y(*price);
 
                 match cluster_kind {
@@ -1386,8 +1390,8 @@ fn draw_clusters(
                             frame,
                             area.bars_left,
                             y,
-                            group.buy_qty,
-                            group.sell_qty,
+                            buy_qty,
+                            sell_qty,
                             max_cluster_qty,
                             area.bars_width,
                             cell_height,
@@ -1400,7 +1404,7 @@ fn draw_clusters(
                         if show_text {
                             draw_cluster_text(
                                 frame,
-                                &abbr_large_numbers(group.total_qty()),
+                                &abbr_large_numbers(f32::from(group.total_qty())),
                                 Point::new(area.bars_left, y),
                                 text_size,
                                 text_color,
@@ -1410,7 +1414,7 @@ fn draw_clusters(
                         }
                     }
                     ClusterKind::DeltaProfile => {
-                        let delta = group.delta_qty();
+                        let delta = f32::from(group.delta_qty());
                         if show_text {
                             draw_cluster_text(
                                 frame,
@@ -1455,7 +1459,7 @@ fn draw_clusters(
                         &price_to_y,
                         footprint,
                         *price,
-                        group.sell_qty,
+                        sell_qty,
                         higher_price,
                         threshold,
                         color_scale,
@@ -1504,13 +1508,15 @@ fn draw_clusters(
             let left_area_width = (area.ask_area_right - left_min_x).max(0.0);
 
             for (price, group) in &footprint.trades {
+                let buy_qty = f32::from(group.buy_qty);
+                let sell_qty = f32::from(group.sell_qty);
                 let y = price_to_y(*price);
 
-                if group.buy_qty > 0.0 && right_area_width > 0.0 {
+                if buy_qty > 0.0 && right_area_width > 0.0 {
                     if show_text {
                         draw_cluster_text(
                             frame,
-                            &abbr_large_numbers(group.buy_qty),
+                            &abbr_large_numbers(buy_qty),
                             Point::new(area.bid_area_left, y),
                             text_size,
                             text_color,
@@ -1519,7 +1525,7 @@ fn draw_clusters(
                         );
                     }
 
-                    let bar_width = (group.buy_qty / max_cluster_qty) * right_area_width;
+                    let bar_width = (buy_qty / max_cluster_qty) * right_area_width;
                     if bar_width > 0.0 {
                         frame.fill_rectangle(
                             Point::new(area.bid_area_left, y - (cell_height / 2.0)),
@@ -1528,11 +1534,11 @@ fn draw_clusters(
                         );
                     }
                 }
-                if group.sell_qty > 0.0 && left_area_width > 0.0 {
+                if sell_qty > 0.0 && left_area_width > 0.0 {
                     if show_text {
                         draw_cluster_text(
                             frame,
-                            &abbr_large_numbers(group.sell_qty),
+                            &abbr_large_numbers(sell_qty),
                             Point::new(area.ask_area_right, y),
                             text_size,
                             text_color,
@@ -1541,7 +1547,7 @@ fn draw_clusters(
                         );
                     }
 
-                    let bar_width = (group.sell_qty / max_cluster_qty) * left_area_width;
+                    let bar_width = (sell_qty / max_cluster_qty) * left_area_width;
                     if bar_width > 0.0 {
                         frame.fill_rectangle(
                             Point::new(area.ask_area_right, y - (cell_height / 2.0)),
@@ -1568,7 +1574,7 @@ fn draw_clusters(
                         &price_to_y,
                         footprint,
                         *price,
-                        group.sell_qty,
+                        sell_qty,
                         higher_price,
                         threshold,
                         color_scale,
@@ -1615,7 +1621,7 @@ fn draw_imbalance_markers(
     }
 
     if let Some(group) = footprint.trades.get(&higher_price) {
-        let diagonal_buy_qty = group.buy_qty;
+        let diagonal_buy_qty = f32::from(group.buy_qty);
 
         if ignore_zeros && diagonal_buy_qty <= 0.0 {
             return;

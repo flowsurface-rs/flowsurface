@@ -1247,7 +1247,7 @@ fn oi_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_open_interest(ticker_info.ticker, timeframe, range)
+            adapter::fetch_open_interest(ticker_info, timeframe, range)
                 .map_err(|err| format!("{err}")),
             move |result| match result {
                 Ok(oi) => {

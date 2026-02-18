@@ -3,7 +3,7 @@ use crate::style;
 use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
-use exchange::{TickerInfo, Trade, volume_size_unit};
+use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -108,7 +108,7 @@ impl TimeAndSales {
         };
 
         let market_type = self.ticker_info.market_type();
-        let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         for trade in trades_buffer {
             let trade_time_ms = trade.time;
@@ -120,7 +120,7 @@ impl TimeAndSales {
                 let trade_display = TradeDisplay {
                     time_str: trade_time.format("%M:%S.%3f").to_string(),
                     price: trade.price,
-                    qty: trade.qty,
+                    qty: trade.qty.to_f32_lossy(),
                     is_sell: trade.is_sell,
                 };
 
@@ -220,7 +220,7 @@ impl TimeAndSales {
 
         if popped_any {
             let market_type = self.ticker_info.market_type();
-            let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
             self.max_filtered_qty = self
                 .recent_trades
@@ -445,7 +445,7 @@ impl canvas::Program<Message> for TimeAndSales {
             let start_index = (row_scroll_offset / row_height).floor() as usize;
             let visible_rows = (bounds.height / row_height).ceil() as usize;
 
-            let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
             let trades_to_draw = self
                 .recent_trades
