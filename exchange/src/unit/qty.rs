@@ -206,6 +206,18 @@ pub struct QtyNormalization {
     size_in_quote_ccy: bool,
     contract_size: Option<f32>,
     market_kind: MarketKind,
+    raw_qty_unit: Option<RawQtyUnit>,
+}
+
+/// Unit of raw quantity values returned by an exchange API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawQtyUnit {
+    /// Raw quantity is in base asset units (e.g., BTC).
+    Base,
+    /// Raw quantity is in quote currency value (e.g., USD/USDT).
+    Quote,
+    /// Raw quantity is in contract count and requires `contract_size` for conversion.
+    Contracts,
 }
 
 impl QtyNormalization {
@@ -224,10 +236,51 @@ impl QtyNormalization {
             size_in_quote_ccy,
             contract_size,
             market_kind,
+            raw_qty_unit: None,
+        }
+    }
+
+    pub fn with_raw_qty_unit(
+        size_in_quote_ccy: bool,
+        ticker: TickerInfo,
+        raw_qty_unit: RawQtyUnit,
+    ) -> Self {
+        let mut normalizer = Self::new(size_in_quote_ccy, ticker);
+        normalizer.raw_qty_unit = Some(raw_qty_unit);
+        normalizer
+    }
+
+    fn normalize_with_raw_unit(self, qty: f32, price: f32, raw_qty_unit: RawQtyUnit) -> f32 {
+        let safe_price = Qty::scale_or_one(price);
+
+        let (base_qty, quote_qty) = match raw_qty_unit {
+            RawQtyUnit::Base => (qty, qty * price),
+            RawQtyUnit::Quote => (qty / safe_price, qty),
+            RawQtyUnit::Contracts => {
+                let contract_size = self.contract_size.unwrap_or(1.0);
+
+                if matches!(self.market_kind, MarketKind::InversePerps) {
+                    let quote_qty = qty * contract_size;
+                    (quote_qty / safe_price, quote_qty)
+                } else {
+                    let base_qty = qty * contract_size;
+                    (base_qty, base_qty * price)
+                }
+            }
+        };
+
+        if matches!(self.market_kind, MarketKind::InversePerps) || self.size_in_quote_ccy {
+            quote_qty
+        } else {
+            base_qty
         }
     }
 
     pub fn normalize(self, qty: f32, price: f32) -> f32 {
+        if let Some(raw_qty_unit) = self.raw_qty_unit {
+            return self.normalize_with_raw_unit(qty, price, raw_qty_unit);
+        }
+
         let is_inverse = matches!(self.market_kind, MarketKind::InversePerps);
 
         match self.contract_size {

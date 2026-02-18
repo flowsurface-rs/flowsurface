@@ -8,7 +8,7 @@ use super::{
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, http_request_with_limiter},
-        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -67,6 +67,13 @@ fn exchange_from_market_type(market: MarketKind) -> Exchange {
         MarketKind::Spot => Exchange::BybitSpot,
         MarketKind::LinearPerps => Exchange::BybitLinear,
         MarketKind::InversePerps => Exchange::BybitInverse,
+    }
+}
+
+fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
+    match market {
+        MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
+        MarketKind::InversePerps => RawQtyUnit::Quote,
     }
 }
 
@@ -316,9 +323,10 @@ pub fn connect_market_stream(
         let mut trades_buffer: Vec<Trade> = Vec::new();
         let mut orderbook = LocalDepthCache::default();
 
-        let qty_norm = QtyNormalization::new(
-            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps,
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
             ticker_info,
+            raw_qty_unit_from_market_type(market_type),
         );
 
         loop {
@@ -462,8 +470,7 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
 
         let exchange = exchange_from_market_type(market_type);
-        let size_in_quote_ccy =
-            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         let ticker_info_map = streams
             .iter()
@@ -472,7 +479,11 @@ pub fn connect_kline_stream(
                     ticker_info.ticker,
                     (
                         *ticker_info,
-                        QtyNormalization::new(size_in_quote_ccy, *ticker_info),
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(market_type),
+                        ),
                     ),
                 )
             })
@@ -757,9 +768,12 @@ pub async fn fetch_klines(
     let response: ApiResponse =
         limiter::http_parse_with_limiter(&url, &BYBIT_LIMITER, 1, None, None).await?;
 
-    let size_in_quote_ccy =
-        volume_size_unit() == SizeUnit::Quote && *market_type != MarketKind::InversePerps;
-    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(*market_type),
+    );
 
     let klines: Result<Vec<Kline>, AdapterError> = response
         .result

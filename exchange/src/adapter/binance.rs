@@ -9,7 +9,7 @@ use super::{
         is_symbol_supported,
         limiter::{self, RateLimiter},
         str_f32_parse,
-        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -100,6 +100,13 @@ fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
         MarketKind::Spot => "stream.binance.com",
         MarketKind::LinearPerps => "fstream.binance.com",
         MarketKind::InversePerps => "dstream.binance.com",
+    }
+}
+
+fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
+    match market {
+        MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
+        MarketKind::InversePerps => RawQtyUnit::Contracts,
     }
 }
 
@@ -351,7 +358,11 @@ pub fn connect_market_stream(
         let mut already_fetching: bool = false;
         let mut prev_id: u64 = 0;
 
-        let qty_norm = QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
+            ticker_info,
+            raw_qty_unit_from_market_type(market),
+        );
 
         loop {
             match &mut state {
@@ -618,7 +629,11 @@ pub fn connect_kline_stream(
                     ticker_info.ticker,
                     (
                         *ticker_info,
-                        QtyNormalization::new(size_in_quote_ccy, *ticker_info),
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(market),
+                        ),
                     ),
                 )
             })
@@ -937,7 +952,11 @@ pub async fn fetch_klines(
         limiter::http_parse_with_limiter(&url, limiter, weight, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(market_type),
+    );
     let min_ticksize = ticker_info.min_ticksize;
 
     let klines: Vec<_> = fetched_klines
@@ -1319,7 +1338,11 @@ pub async fn fetch_intraday_trades(
     let trades: Vec<Trade> = {
         let de_trades: Vec<SonicTrade> = sonic_rs::from_str(&text)
             .map_err(|e| AdapterError::ParseError(format!("Failed to parse trades: {e}")))?;
-        let qty_norm = QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
+            ticker_info,
+            raw_qty_unit_from_market_type(market_type),
+        );
 
         de_trades
             .into_iter()
@@ -1396,8 +1419,11 @@ pub async fn get_hist_trades(
             let mut archive = zip::ZipArchive::new(file)
                 .map_err(|e| AdapterError::ParseError(format!("Failed to unzip file: {e}")))?;
 
-            let qty_norm =
-                QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
+            let qty_norm = QtyNormalization::with_raw_qty_unit(
+                volume_size_unit() == SizeUnit::Quote,
+                ticker_info,
+                raw_qty_unit_from_market_type(market_type),
+            );
 
             let mut trades = Vec::new();
             for i in 0..archive.len() {

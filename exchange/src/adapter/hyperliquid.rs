@@ -6,7 +6,7 @@ use super::{
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -103,6 +103,12 @@ impl RateLimiter for HyperliquidLimiter {
 
     fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
         response.status() == 429
+    }
+}
+
+fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
+    match market {
+        MarketKind::Spot | MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Base,
     }
 }
 
@@ -715,7 +721,11 @@ pub async fn fetch_klines(
     .await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(ticker_info.market_type()),
+    );
 
     let mut klines = vec![];
     for kline_data in klines_data {
@@ -792,15 +802,14 @@ pub fn connect_market_stream(
         let mut local_depth_cache = LocalDepthCache::default();
         let mut trades_buffer = Vec::new();
 
-        let qty_norm = QtyNormalization::new(volume_size_unit() == SizeUnit::Quote, ticker_info);
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
+            ticker_info,
+            raw_qty_unit_from_market_type(ticker_info.market_type()),
+        );
         let user_multiplier = tick_multiplier.unwrap_or(TickMultiplier(1)).0;
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
-
-        log::debug!(
-            "Connecting market stream for ticker symbol: '{}'",
-            symbol_str
-        );
 
         loop {
             match &mut state {
@@ -817,12 +826,6 @@ pub fn connect_market_stream(
                         continue;
                     }
                     let price = price.unwrap();
-
-                    log::debug!(
-                        "Connecting to Hyperliquid market stream with price {} and multiplier {}",
-                        price,
-                        user_multiplier
-                    );
 
                     let depth_cfg = config_from_multiplier(price, user_multiplier);
 
@@ -842,12 +845,6 @@ pub fn connect_market_stream(
                                 depth_subscription["subscription"]["mantissa"] = json!(m);
                             }
 
-                            log::debug!(
-                                "Hyperliquid WS Depth Subscription: {}",
-                                serde_json::to_string_pretty(&depth_subscription)
-                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
-                            );
-
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
                                     depth_subscription.to_string().as_bytes(),
@@ -866,12 +863,6 @@ pub fn connect_market_stream(
                                     "coin": symbol_str
                                 }
                             });
-
-                            log::debug!(
-                                "Hyperliquid WS Trades Subscription: {}",
-                                serde_json::to_string_pretty(&trades_subscribe_msg)
-                                    .unwrap_or_else(|_| "Failed to serialize".to_string())
-                            );
 
                             if websocket
                                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -1070,8 +1061,11 @@ pub fn connect_kline_stream(
                                             && tf.to_string() == hl_kline.interval.as_str()
                                     })
                             {
-                                let qty_norm =
-                                    QtyNormalization::new(size_in_quote_ccy, *ticker_info);
+                                let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                    size_in_quote_ccy,
+                                    *ticker_info,
+                                    raw_qty_unit_from_market_type(ticker_info.market_type()),
+                                );
                                 let volume =
                                     qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
 

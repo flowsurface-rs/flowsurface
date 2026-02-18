@@ -11,7 +11,7 @@ use super::{
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
-        unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
+        unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
@@ -60,6 +60,13 @@ impl RateLimiter for OkexLimiter {
 
     fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
         response.status() == 429
+    }
+}
+
+fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
+    match market {
+        MarketKind::Spot => RawQtyUnit::Base,
+        MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Contracts,
     }
 }
 
@@ -207,7 +214,7 @@ pub fn connect_market_stream(
 
         let ticker = ticker_info.ticker;
 
-        let (symbol_str, _market_type) = ticker.to_full_symbol_and_type();
+        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
         let exchange = ticker.exchange;
 
         let subscribe_message = serde_json::json!({
@@ -222,7 +229,11 @@ pub fn connect_market_stream(
         let mut orderbook = LocalDepthCache::default();
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            size_in_quote_ccy,
+            ticker_info,
+            raw_qty_unit_from_market_type(market_type),
+        );
 
         loop {
             match &mut state {
@@ -333,7 +344,7 @@ pub fn connect_market_stream(
 
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
-    _market_type: MarketKind,
+    market_type: MarketKind,
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
@@ -390,8 +401,11 @@ pub fn connect_kline_stream(
                                         Some(t) => *t,
                                         None => continue,
                                     };
-                                let qty_norm =
-                                    QtyNormalization::new(size_in_quote_ccy, ticker_info);
+                                let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                    size_in_quote_ccy,
+                                    ticker_info,
+                                    raw_qty_unit_from_market_type(market_type),
+                                );
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
@@ -667,7 +681,7 @@ pub async fn fetch_klines(
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
-    let (symbol_str, _market) = ticker.to_full_symbol_and_type();
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
     let bar = timeframe_to_okx_bar(timeframe).ok_or_else(|| {
         AdapterError::InvalidRequest(format!("Unsupported timeframe: {timeframe}"))
@@ -696,7 +710,11 @@ pub async fn fetch_klines(
         .ok_or_else(|| AdapterError::ParseError("Kline result is not an array".to_string()))?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-    let qty_norm = QtyNormalization::new(size_in_quote_ccy, ticker_info);
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(market_type),
+    );
 
     let mut klines: Vec<Kline> = Vec::with_capacity(list.len());
 

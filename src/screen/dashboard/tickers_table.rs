@@ -6,8 +6,7 @@ use data::{
     InternalError,
     layout::pane::ContentKind,
     tickers_table::{
-        PriceChangeDirection, Settings, SortOptions, TickerDisplayData, TickerRowData,
-        compute_display_data,
+        PriceChange, Settings, SortOptions, TickerDisplayData, TickerRowData, compute_display_data,
     },
 };
 use exchange::{
@@ -1209,10 +1208,10 @@ fn ticker_card<'a>(ticker: &Ticker, display_data: &'a TickerDisplayData) -> Elem
             text(&display_data.price_changed_part).style(move |theme: &Theme| {
                 let palette = theme.extended_palette();
                 iced::widget::text::Style {
-                    color: Some(match display_data.price_change_direction {
-                        PriceChangeDirection::Increased => palette.success.base.color,
-                        PriceChangeDirection::Decreased => palette.danger.base.color,
-                        PriceChangeDirection::Unchanged => palette.background.base.text,
+                    color: Some(match display_data.price_change {
+                        PriceChange::Increased => palette.success.base.color,
+                        PriceChange::Decreased => palette.danger.base.color,
+                        PriceChange::Unchanged => palette.background.base.text,
                     }),
                 }
             })
