@@ -33,9 +33,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let col_w = max(params.grid.x, 1e-12);
-    let row_h = max(params.grid.y, 1e-12);
-    let steps_per = max(params.grid.z, 1.0);
-    let bin_h = row_h * steps_per;
+    let bin_h = y_bin_h_world();
+    let y_blend_w = y_blend_weight();
 
     let tex_w_u = u32(params.heatmap_tex.x);
     let tex_h_u = u32(params.heatmap_tex.y);
@@ -43,12 +42,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    let y_bin_rel = i32(floor((-world.y) / max(bin_h, 1e-12)));
+    let y_bin_f = (-world.y) / max(bin_h, 1e-12);
+    let y_sample_f = y_bin_f - (0.5 * y_blend_w);
+    let y_bin_rel = i32(floor(y_sample_f));
+    let y_frac = clamp(fract(y_sample_f), 0.0, 1.0);
     let y_start_bin = i32(params.heatmap_map.y);
-    let yi = y_bin_rel - y_start_bin;
-    if (yi < 0 || u32(yi) >= tex_h_u) {
+    let yi0 = y_bin_rel - y_start_bin;
+    if (yi0 < 0 || u32(yi0) >= tex_h_u) {
         return vec4<f32>(0.0);
     }
+    let yi1 = yi0 + 1;
+    let yi1_in_bounds = yi1 >= 0 && u32(yi1) < tex_h_u;
 
     let latest_bucket_rel = i32(params.heatmap_map.x);
     let render_rel = i32(floor(params.origin.x + (world.x / col_w)));
@@ -67,9 +71,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let inv_qty_scale = params.heatmap_tex.w;
 
-    let v = textureLoad(heatmap_rg, vec2<i32>(xi, yi), 0);
-    let bid_qty = f32(v.x) * inv_qty_scale;
-    let ask_qty = f32(v.y) * inv_qty_scale;
+    let v0 = textureLoad(heatmap_rg, vec2<i32>(xi, yi0), 0);
+    var bid_qty_u = f32(v0.x);
+    var ask_qty_u = f32(v0.y);
+
+    if (yi1_in_bounds) {
+        let v1 = textureLoad(heatmap_rg, vec2<i32>(xi, yi1), 0);
+        let y_mix = y_frac * y_blend_w;
+        bid_qty_u = mix(bid_qty_u, f32(v1.x), y_mix);
+        ask_qty_u = mix(ask_qty_u, f32(v1.y), y_mix);
+    }
+
+    let bid_qty = bid_qty_u * inv_qty_scale;
+    let ask_qty = ask_qty_u * inv_qty_scale;
 
     let max_depth = max(params.depth.x, 1e-12);
     let alpha_min = params.depth.y;

@@ -18,6 +18,30 @@ struct Params {
 @group(0) @binding(1)
 var<uniform> params: Params;
 
+// Adaptive y-blend by on-screen y-bin size (in pixels)
+const Y_BLEND_ON_BIN_PX: f32 = 3.0;
+const Y_BLEND_OFF_BIN_PX: f32 = 9.0;
+
+fn y_bin_h_world() -> f32 {
+    let row_h = max(params.grid.y, 1e-12);
+    let steps_per = max(params.grid.z, 1.0);
+    return row_h * steps_per;
+}
+
+fn y_bin_h_px() -> f32 {
+    return y_bin_h_world() * max(camera.a.y, 1e-12);
+}
+
+fn y_blend_weight() -> f32 {
+    return 1.0 - smoothstep(Y_BLEND_ON_BIN_PX, Y_BLEND_OFF_BIN_PX, y_bin_h_px());
+}
+
+fn y_bin_center_world(world_y: f32) -> f32 {
+    let bin_h = y_bin_h_world();
+    let y_bin_rel = floor((-world_y) / max(bin_h, 1e-12));
+    return -((y_bin_rel + 0.5) * bin_h);
+}
+
 fn world_to_clip(world_pos: vec2<f32>) -> vec4<f32> {
     let scale = camera.a.xy;
     let center = camera.a.zw;

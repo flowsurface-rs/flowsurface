@@ -101,7 +101,7 @@ impl HeatmapShader {
     pub fn new(basis: Basis, tick_size: f32, ticker_info: TickerInfo) -> Self {
         let step = PriceStep::from_f32(tick_size);
 
-        let depth_history = HistoricalDepth::new(ticker_info.min_qty.into(), step, basis);
+        let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
 
         let depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
