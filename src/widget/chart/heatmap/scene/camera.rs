@@ -29,6 +29,18 @@ impl Default for Camera {
 }
 
 impl Camera {
+    pub fn reset_to_live_edge(&mut self, viewport_w: f32, reset_camera: bool, reset_y: bool) {
+        if reset_camera {
+            *self = Self::default();
+        }
+
+        self.reset_offset_x(viewport_w);
+
+        if reset_y {
+            self.offset[1] = 0.0;
+        }
+    }
+
     /// Reset offset.x to starting state.
     /// Note: right padding is applied in `center()` via `right_edge()`,
     /// so offset.x should represent the live boundary at world x = 0

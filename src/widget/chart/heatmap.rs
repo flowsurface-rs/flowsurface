@@ -231,7 +231,9 @@ impl HeatmapShader {
             }
             Message::AxisXDoubleClicked => {
                 if let Some(size) = self.viewport_size_px() {
-                    self.scene.camera.reset_offset_x(size.width);
+                    self.scene
+                        .camera
+                        .reset_to_live_edge(size.width, false, false);
                     self.scene.set_default_column_width();
 
                     self.try_rebuild_instances();
@@ -239,34 +241,11 @@ impl HeatmapShader {
                 }
             }
             Message::PauseBtnClicked => {
-                let Ok((new_anchor, pending_price)) =
-                    std::mem::take(&mut self.anchor).resume_from_pause()
-                else {
-                    unreachable!("PauseBtnClicked should only be possible when paused");
-                };
-
-                self.anchor = new_anchor;
-
-                if let Some(mid_price) = pending_price {
-                    self.base_price = Some(mid_price);
-                }
-
                 if let Some(size) = self.viewport_size_px() {
-                    self.scene.camera = Default::default();
-                    self.scene.camera.reset_offset_x(size.width);
-                    self.scene.camera.offset[1] = 0.0;
-                }
+                    self.scene.camera.reset_to_live_edge(size.width, true, true);
 
-                self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
-
-                // Resume path must rebuild from historical immediately to backfill pause-gap
-                // buckets that were intentionally not ingested into the live ring while paused.
-                if self.viewport.is_some()
-                    && self.base_price.is_some()
-                    && self.latest_time.is_some()
-                {
-                    self.rebuild_all(None);
-                    self.rebuild_policy = view::RebuildPolicy::Idle;
+                    self.try_rebuild_instances();
+                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
                 }
             }
         }

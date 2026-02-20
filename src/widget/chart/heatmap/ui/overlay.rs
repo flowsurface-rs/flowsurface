@@ -6,7 +6,6 @@ use crate::widget::chart::heatmap::scene::Scene;
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep};
 
-use iced::Vector;
 use iced::widget::canvas::Path;
 use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
 
@@ -24,9 +23,14 @@ const HIGHLIGHT_CROSSHAIR_GAP_PX: f32 = 1.0;
 const HIGHLIGHT_BORDER_WIDTH_PX: f32 = 1.0;
 const HIGHLIGHT_BORDER_ALPHA: f32 = 0.95;
 
-const PAUSE_ICON_BAR_WIDTH_FRAC: f32 = 0.008;
-const PAUSE_ICON_BAR_HEIGHT_FRAC: f32 = 0.032;
-const PAUSE_ICON_PADDING_FRAC: f32 = 0.02;
+const PAUSED_CTRL_TEXT: &str = "Paused";
+const PAUSED_CTRL_ICON_SIZE_FRAC: f32 = 0.032;
+const PAUSED_CTRL_PADDING_FRAC: f32 = 0.02;
+const PAUSED_CTRL_ICON_GAP_PX: f32 = 6.0;
+const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = 11.0;
+const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
+const PAUSED_CTRL_BG_PAD_Y: f32 = 3.0;
+const PAUSED_CTRL_LABEL_WIDTH_FACTOR: f32 = 0.62;
 
 #[derive(Debug, Default)]
 pub enum Interaction {
@@ -83,6 +87,48 @@ impl TooltipLayout {
         let y = self.rect.y + ((row_idx as f32) * self.cell_h) + self.cell_h / 2.0;
         Point::new(x, y)
     }
+
+    fn avoid_overlap(mut self, bounds: Rectangle, blocked: Rectangle) -> Self {
+        if !Self::rects_overlap(self.rect, blocked) {
+            return self;
+        }
+
+        let max_x = (bounds.width - self.rect.width).max(0.0);
+        let max_y = (bounds.height - self.rect.height).max(0.0);
+
+        let move_left_x = (blocked.x - TOOLTIP_PADDING - self.rect.width).clamp(0.0, max_x);
+        let left_rect = Rectangle {
+            x: move_left_x,
+            ..self.rect
+        };
+        if !Self::rects_overlap(left_rect, blocked) {
+            self.rect = left_rect;
+            return self;
+        }
+
+        let move_down_y = (blocked.y + blocked.height + TOOLTIP_PADDING).clamp(0.0, max_y);
+        let down_rect = Rectangle {
+            y: move_down_y,
+            ..self.rect
+        };
+        if !Self::rects_overlap(down_rect, blocked) {
+            self.rect = down_rect;
+            return self;
+        }
+
+        let move_up_y = (blocked.y - TOOLTIP_PADDING - self.rect.height).clamp(0.0, max_y);
+        self.rect.y = move_up_y;
+        self
+    }
+
+    fn rects_overlap(a: Rectangle, b: Rectangle) -> bool {
+        let a_right = a.x + a.width;
+        let a_bottom = a.y + a.height;
+        let b_right = b.x + b.width;
+        let b_bottom = b.y + b.height;
+
+        a.x < b_right && a_right > b.x && a.y < b_bottom && a_bottom > b.y
+    }
 }
 
 pub struct OverlayCanvas<'a> {
@@ -122,7 +168,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(cursor_in_abs) = cursor.position_over(bounds) {
-                    if self.is_paused && self.pause_icon_rect(bounds).contains(cursor_in_abs) {
+                    if self.is_paused && self.paused_control_contains(bounds, cursor_in_abs) {
                         return Some(canvas::Action::publish(Message::PauseBtnClicked));
                     }
 
@@ -157,47 +203,8 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             .draw(renderer, bounds.size(), |frame| {
                 let palette = theme.extended_palette();
 
-                if self.is_paused
-                // pause indicator (top-right corner)
-                {
-                    let bar_width = PAUSE_ICON_BAR_WIDTH_FRAC * bounds.height;
-                    let bar_height = PAUSE_ICON_BAR_HEIGHT_FRAC * bounds.height;
-                    let padding = bounds.area().sqrt() * PAUSE_ICON_PADDING_FRAC;
-
-                    let region = Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        width: bounds.width,
-                        height: bounds.height,
-                    };
-
-                    let total_icon_width = bar_width * 3.0;
-
-                    let pause_bar = Rectangle {
-                        x: (region.x + region.width) - total_icon_width - padding,
-                        y: region.y + padding,
-                        width: bar_width,
-                        height: bar_height,
-                    };
-
-                    let hovered = cursor
-                        .position_over(bounds)
-                        .map(|p| self.pause_icon_rect(bounds).contains(p))
-                        .unwrap_or(false);
-
-                    let alpha = if hovered { 0.65 } else { 0.4 };
-
-                    frame.fill_rectangle(
-                        pause_bar.position(),
-                        pause_bar.size(),
-                        palette.background.base.text.scale_alpha(alpha),
-                    );
-
-                    frame.fill_rectangle(
-                        pause_bar.position() + Vector::new(pause_bar.width * 2.0, 0.0),
-                        pause_bar.size(),
-                        palette.background.base.text.scale_alpha(alpha),
-                    );
+                if self.is_paused {
+                    self.draw_paused_control(frame, theme, bounds, cursor);
                 }
 
                 let strip_h_px = (bounds.height * self.strip_height_frac).clamp(0.0, bounds.height);
@@ -314,7 +321,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             return vec![scale_labels];
         };
 
-        if self.is_paused && self.pause_icon_rect(bounds).contains(pos) {
+        if self.is_paused && self.paused_control_contains(bounds, pos) {
             return vec![scale_labels];
         }
 
@@ -407,7 +414,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
             let palette = theme.extended_palette();
             let bg = palette.background.weakest.color.scale_alpha(0.90);
-            let layout = TooltipLayout::from_cursor(bounds, local_x, local_y);
+            let mut layout = TooltipLayout::from_cursor(bounds, local_x, local_y);
+
+            if self.is_paused {
+                layout = layout.avoid_overlap(bounds, self.paused_control_local_rect(bounds));
+            }
 
             frame.fill_rectangle(layout.rect.position(), layout.rect.size(), bg);
 
@@ -475,7 +486,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         if let Some(pos) = cursor.position_over(bounds) {
-            if self.is_paused && self.pause_icon_rect(bounds).contains(pos) {
+            if self.is_paused && self.paused_control_contains(bounds, pos) {
                 return mouse::Interaction::Pointer;
             }
 
@@ -491,19 +502,109 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 }
 
 impl<'a> OverlayCanvas<'a> {
-    /// Compute the pause icon hit rectangle in local (canvas) coordinates.
-    fn pause_icon_rect(&self, bounds: Rectangle) -> Rectangle {
-        let bar_width = 0.008 * bounds.height;
-        let bar_height = 0.032 * bounds.height;
-        let padding = bounds.area().sqrt() * 0.02;
-        let total_icon_width = bar_width * 3.0;
+    fn paused_control_contains(&self, bounds: Rectangle, point_abs: Point) -> bool {
+        self.paused_control_rect(bounds).contains(point_abs)
+    }
+
+    fn paused_control_local_rect(&self, bounds: Rectangle) -> Rectangle {
+        let control_abs = self.paused_control_rect(bounds);
 
         Rectangle {
-            x: (bounds.x + bounds.width) - total_icon_width - padding,
-            y: bounds.y + padding,
-            width: total_icon_width,
-            height: bar_height,
+            x: control_abs.x - bounds.x,
+            y: control_abs.y - bounds.y,
+            width: control_abs.width,
+            height: control_abs.height,
         }
+    }
+
+    fn draw_paused_control(
+        &self,
+        frame: &mut canvas::Frame,
+        theme: &Theme,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) {
+        let palette = theme.extended_palette();
+        let control_rect = self.paused_control_local_rect(bounds);
+
+        let icon_size = self.pause_icon_size(bounds);
+        let icon_rect = Rectangle {
+            x: control_rect.x + control_rect.width - PAUSED_CTRL_BG_PAD_X - icon_size,
+            y: control_rect.y + ((control_rect.height - icon_size) * 0.5),
+            width: icon_size,
+            height: icon_size,
+        };
+
+        let hovered = cursor
+            .position_over(bounds)
+            .map(|p| self.paused_control_contains(bounds, p))
+            .unwrap_or(false);
+
+        let alpha = if hovered { 0.72 } else { 0.50 };
+        let bg_alpha = if hovered { 0.66 } else { 0.54 };
+
+        frame.fill_rectangle(
+            control_rect.position(),
+            control_rect.size(),
+            if palette.is_dark {
+                palette.background.weak.color.scale_alpha(bg_alpha)
+            } else {
+                palette.background.strong.color.scale_alpha(bg_alpha)
+            },
+        );
+
+        let inset = (icon_rect.width * 0.18).max(1.0);
+        let left = icon_rect.x + inset;
+        let right = icon_rect.x + icon_rect.width - inset;
+        let top = icon_rect.y + inset;
+        let bottom = icon_rect.y + icon_rect.height - inset;
+        let mid_y = (top + bottom) * 0.5;
+
+        let mut b = canvas::path::Builder::new();
+        b.move_to(Point::new(left, top));
+        b.line_to(Point::new(right, mid_y));
+        b.line_to(Point::new(left, bottom));
+        b.close();
+
+        frame.fill(&b.build(), palette.primary.strong.color.scale_alpha(alpha));
+
+        frame.fill_text(canvas::Text {
+            content: PAUSED_CTRL_TEXT.to_owned(),
+            position: Point::new(
+                icon_rect.x - PAUSED_CTRL_ICON_GAP_PX,
+                control_rect.y + (control_rect.height * 0.5),
+            ),
+            size: iced::Pixels(PAUSED_CTRL_LABEL_TEXT_SIZE),
+            color: palette.background.base.text.scale_alpha(0.82),
+            font: style::AZERET_MONO,
+            align_x: Alignment::End.into(),
+            align_y: Alignment::Center.into(),
+            ..canvas::Text::default()
+        });
+    }
+
+    /// Compute the paused-state control hit rectangle in absolute canvas coordinates.
+    fn paused_control_rect(&self, bounds: Rectangle) -> Rectangle {
+        let icon_size = self.pause_icon_size(bounds);
+        let padding = bounds.area().sqrt() * PAUSED_CTRL_PADDING_FRAC;
+        let label_width = (PAUSED_CTRL_TEXT.len() as f32)
+            * (PAUSED_CTRL_LABEL_TEXT_SIZE * PAUSED_CTRL_LABEL_WIDTH_FACTOR);
+
+        let content_w = label_width + PAUSED_CTRL_ICON_GAP_PX + icon_size;
+        let content_h = icon_size.max(PAUSED_CTRL_LABEL_TEXT_SIZE + 2.0);
+        let rect_w = content_w + (PAUSED_CTRL_BG_PAD_X * 3.6);
+        let rect_h = content_h + (PAUSED_CTRL_BG_PAD_Y * 2.0);
+
+        Rectangle {
+            x: (bounds.x + bounds.width) - rect_w - padding,
+            y: bounds.y + padding,
+            width: rect_w,
+            height: rect_h,
+        }
+    }
+
+    fn pause_icon_size(&self, bounds: Rectangle) -> f32 {
+        (PAUSED_CTRL_ICON_SIZE_FRAC * bounds.height).min(32.0)
     }
 
     fn draw_full_crosshair(
