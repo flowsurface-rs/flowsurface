@@ -224,6 +224,34 @@ impl Anchor {
 
         (scroll_ref_bucket, origin_x)
     }
+
+    /// Align Live anchor timing immediately to exchange clock to avoid stale paused timing
+    /// persisting until a later invalidate/input event.
+    pub fn align_live_anchor_to_clock(
+        &mut self,
+        now_i: Instant,
+        latest_time: Option<u64>,
+        aggr_time: u64,
+        clock: ExchangeClock,
+    ) {
+        if self.is_paused() {
+            return;
+        }
+
+        if let Some(exchange_now_ms) = clock.estimate_now_ms(now_i) {
+            let bucketed = round_time_to_bucket(exchange_now_ms, aggr_time);
+            let phase = (exchange_now_ms.saturating_sub(bucketed) as f32 / aggr_time as f32)
+                .clamp(0.0, 0.999_999);
+
+            self.update_live_timing(bucketed, phase);
+            return;
+        }
+
+        if let Some(t) = latest_time {
+            let bucketed = round_time_to_bucket(t, aggr_time);
+            self.update_live_timing(bucketed, 0.0);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

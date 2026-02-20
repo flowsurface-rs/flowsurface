@@ -232,7 +232,7 @@ impl HeatmapShader {
             Message::AxisXDoubleClicked => {
                 if let Some(size) = self.viewport_size_px() {
                     self.scene.camera.reset_offset_x(size.width);
-                    self.scene.cell.set_default_width();
+                    self.scene.set_default_column_width();
 
                     self.try_rebuild_instances();
                     self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
@@ -356,12 +356,25 @@ impl HeatmapShader {
 
         if let Some(exchange_now_ms) = self.clock.estimate_now_ms(now_i) {
             let aggr_time = self.depth_history.aggr_time.max(1);
+            let was_paused = self.anchor.is_paused();
 
             let (bucketed, live_render_latest_time, live_phase) =
                 view::live_timing(self.anchor, exchange_now_ms, aggr_time);
 
             self.anchor.update_live_timing(bucketed, live_phase);
             self.auto_update_anchor(viewport_size, live_render_latest_time, live_phase);
+
+            // If auto-follow resumed us in this same frame, immediately align render timing
+            // to the current live bucket/phase so labels, overlays and heatmap uniforms stay
+            // synchronized.
+            if was_paused && !self.anchor.is_paused() {
+                self.anchor.align_live_anchor_to_clock(
+                    now_i,
+                    self.latest_time,
+                    self.depth_history.aggr_time,
+                    self.clock,
+                );
+            }
 
             if let Some(w) = self.compute_view_window(viewport_size) {
                 self.invalidate_with_view_window(now_i, aggr_time, &w);

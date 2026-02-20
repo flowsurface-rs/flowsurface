@@ -30,10 +30,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let x_from_bins = input.x_from_bins != 0u;
 
     if !x_from_bins {
-        let snapped_center_y = y_bin_center_world(input.position.y);
-        let center_y = mix(input.position.y, snapped_center_y, y_blend_weight());
-        let center = vec2<f32>(input.position.x, center_y);
-        world_pos = center + input.local_pos * input.size;
+        world_pos = input.position + input.local_pos * input.size;
     } else {
         let start = f32(input.x0_bin) + volume_x_shift_bucket;
         let end_excl = f32(input.x1_bin_excl) + volume_x_shift_bucket;

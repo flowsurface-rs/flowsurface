@@ -26,9 +26,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
     let x_trade = f32(input.x_bin_rel) + input.x_frac;
     let center_x = bucket_rel_to_world_x(x_trade, now_bucket_rel_f, col_w);
-    let snapped_center_y = y_bin_center_world(input.y_world);
-    let center_y = mix(input.y_world, snapped_center_y, y_blend_weight());
-    let center = vec2<f32>(center_x, center_y);
+    let center = vec2<f32>(center_x, input.y_world);
 
     let radius_world = vec2<f32>(
         input.radius_px / max(scale.x, 1e-6),
