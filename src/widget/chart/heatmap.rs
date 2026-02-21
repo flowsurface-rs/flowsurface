@@ -155,8 +155,11 @@ impl HeatmapShader {
                 self.scene
                     .zoom_column_world_keep_anchor(factor, 0.0, anchor_screen_x, viewport_w);
 
+                let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
-                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                if !resumed {
+                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                }
             }
             Message::PanDeltaPx(delta_px) => {
                 let cam_scale = self.scene.camera.scale();
@@ -167,12 +170,13 @@ impl HeatmapShader {
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
 
+                let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
-                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                if !resumed {
+                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                }
             }
             Message::ZoomAt { factor, cursor } => {
-                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
-
                 let Some(size) = self.viewport_size_px() else {
                     return;
                 };
@@ -195,8 +199,13 @@ impl HeatmapShader {
                     size.height,
                 );
 
+                let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
                 self.force_rebuild_if_ybin_changed();
+
+                if !resumed {
+                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                }
             }
             Message::ScrolledAxisY {
                 factor,
@@ -218,8 +227,11 @@ impl HeatmapShader {
                 self.scene
                     .zoom_column_world_at(factor, cursor_x, viewport_w);
 
+                let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
-                self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                if !resumed {
+                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                }
             }
             Message::AxisYDoubleClicked => {
                 self.scene.camera.offset[1] = 0.0;
@@ -236,16 +248,24 @@ impl HeatmapShader {
                         .reset_to_live_edge(size.width, false, false);
                     self.scene.set_default_column_width();
 
+                    let resumed = self.try_resume_if_x0_visible();
                     self.try_rebuild_instances();
-                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                    if !resumed {
+                        self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                    }
                 }
             }
             Message::PauseBtnClicked => {
                 if let Some(size) = self.viewport_size_px() {
                     self.scene.camera.reset_to_live_edge(size.width, true, true);
 
+                    let resumed = self.try_resume_if_x0_visible();
+
                     self.try_rebuild_instances();
-                    self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+
+                    if !resumed {
+                        self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
+                    }
                 }
             }
         }
@@ -263,6 +283,7 @@ impl HeatmapShader {
         let latest_bucket: i64 = (render_latest_time / aggr_time) as i64;
 
         let cam_scale = self.scene.camera.scale();
+        let render_base_price = self.anchor.effective_base_price(self.base_price);
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
@@ -281,7 +302,7 @@ impl HeatmapShader {
         let y_axis = AxisYLabelCanvas {
             cache: &self.canvas_caches.y_axis,
             plot_bounds: self.viewport,
-            base_price: self.base_price,
+            base_price: render_base_price,
             step: self.step,
             row_h: self.scene.cell.height_world(),
             cam_offset_y: self.scene.camera.offset[1],
@@ -292,7 +313,7 @@ impl HeatmapShader {
         let overlay = OverlayCanvas {
             scene: &self.scene,
             depth_grid: &self.depth_grid,
-            base_price: self.base_price,
+            base_price: render_base_price,
             step: self.step,
             scroll_ref_bucket,
             qty_scale: self.qty_scale,
@@ -442,10 +463,8 @@ impl HeatmapShader {
     }
 
     fn compute_view_window(&self, viewport_size: iced::Size) -> Option<ViewWindow> {
-        let (base_price, latest_time) = match (self.base_price, self.latest_time) {
-            (Some(price), Some(time)) => (price, time),
-            _ => return None,
-        };
+        let latest_time = self.latest_time?;
+        let base_price = self.anchor.effective_base_price(self.base_price)?;
 
         let cfg = ViewConfig {
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
@@ -479,9 +498,13 @@ impl HeatmapShader {
         let Some(palette) = &self.palette else {
             return;
         };
-        let (base_price, latest_time) = match (self.base_price, self.latest_time) {
-            (Some(price), Some(time)) => (price, time),
-            _ => return,
+        let latest_time = match self.latest_time {
+            Some(time) => time,
+            None => return,
+        };
+        let base_price = match self.anchor.effective_base_price(self.base_price) {
+            Some(price) => price,
+            None => return,
         };
 
         // Keep trade-profile fade params synchronized with the same window used for
@@ -539,9 +562,13 @@ impl HeatmapShader {
             return;
         };
 
-        let (base_price, latest_time) = match (self.base_price, self.latest_time) {
-            (Some(price), Some(time)) => (price, time),
-            _ => return,
+        let latest_time = match self.latest_time {
+            Some(time) => time,
+            None => return,
+        };
+        let base_price = match self.anchor.effective_base_price(self.base_price) {
+            Some(price) => price,
+            None => return,
         };
 
         let aggr_time: u64 = self.depth_history.aggr_time.max(1);
@@ -553,10 +580,7 @@ impl HeatmapShader {
 
         // Consume one-shot rebuild directives.
         let force_from_policy = self.rebuild_policy.take_force_rebuild_from_historical();
-        let resume = self.anchor.take_live_resume();
-
-        let force_full_rebuild =
-            force_from_policy || matches!(resume, view::ResumeAction::FullRebuildFromHistorical);
+        let force_full_rebuild = force_from_policy;
 
         let recenter_target = self.scene.price_at_center(base_price, self.step);
 
@@ -609,7 +633,7 @@ impl HeatmapShader {
                 latest_time,
                 aggr_time,
                 self.anchor.scroll_ref_bucket(),
-                false,
+                true,
             );
         } else {
             let latest_time_for_scene = if self.anchor.is_paused() {
@@ -658,9 +682,13 @@ impl HeatmapShader {
     }
 
     fn invalidate_with_view_window(&mut self, now_i: Instant, aggr_time: u64, w: &ViewWindow) {
-        let (base_price, latest_time) = match (self.base_price, self.latest_time) {
-            (Some(price), Some(time)) => (price, time),
-            _ => return,
+        let latest_time = match self.latest_time {
+            Some(time) => time,
+            None => return,
+        };
+        let base_price = match self.anchor.effective_base_price(self.base_price) {
+            Some(price) => price,
+            None => return,
         };
 
         self.scene.params.set_trade_fade(w);
@@ -745,6 +773,35 @@ impl HeatmapShader {
         }
     }
 
+    /// Resume paused mode immediately if x=0 becomes visible due user input (pan/zoom/reset).
+    /// Returns whether a Paused -> Live transition happened.
+    fn try_resume_if_x0_visible(&mut self) -> bool {
+        if !self.anchor.is_paused() {
+            return false;
+        }
+
+        let Some(viewport_size) = self.viewport_size_px() else {
+            return false;
+        };
+
+        if !self.scene.profile_start_visible_x0(viewport_size) {
+            return false;
+        }
+
+        let resumed = self.anchor.resume_to_live();
+        if resumed {
+            self.rebuild_policy = self
+                .rebuild_policy
+                .request_rebuild_from_historical()
+                .promote_to_immediate();
+
+            self.rebuild_all(None);
+            self.rebuild_policy = view::RebuildPolicy::Idle;
+        }
+
+        resumed
+    }
+
     fn update_live_ring_and_scene(
         &mut self,
         depth: &Depth,
@@ -802,18 +859,25 @@ impl HeatmapShader {
     ) {
         let x0_visible = self.scene.profile_start_visible_x0(viewport_size);
 
-        let (state_changed, pending_price) = self.anchor.update_auto_follow(
+        let state_changed = self.anchor.update_auto_follow(
             x0_visible,
             live_render_latest_time,
             live_x_phase_bucket,
+            self.base_price,
         );
-
-        if let Some(price) = pending_price {
-            self.base_price = Some(price);
-        }
 
         if state_changed {
             self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
+
+            if !self.anchor.is_paused() {
+                self.rebuild_policy = self
+                    .rebuild_policy
+                    .request_rebuild_from_historical()
+                    .promote_to_immediate();
+
+                self.rebuild_all(None);
+                self.rebuild_policy = view::RebuildPolicy::Idle;
+            }
         }
     }
 }

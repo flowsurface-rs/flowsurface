@@ -16,16 +16,12 @@ pub enum Anchor {
         scroll_ref_bucket: i64,
         render_latest_time: u64,
         x_phase_bucket: f32,
-        /// One-shot directive to be consumed by the next rebuild.
-        resume: ResumeAction,
     },
     Paused {
         scroll_ref_bucket: i64,
         render_latest_time: u64,
         x_phase_bucket: f32,
-        pending_mid_price: Option<Price>,
-        /// Applied when transitioning to Live (then consumed in Live).
-        resume: ResumeAction,
+        frozen_base_price: Option<Price>,
     },
 }
 
@@ -35,7 +31,6 @@ impl Default for Anchor {
             scroll_ref_bucket: 0,
             render_latest_time: 0,
             x_phase_bucket: 0.0,
-            resume: ResumeAction::None,
         }
     }
 }
@@ -101,18 +96,6 @@ impl Anchor {
         }
     }
 
-    /// Consume the one-shot resume directive (Live only; Paused is not consumed).
-    pub fn take_live_resume(&mut self) -> ResumeAction {
-        match self {
-            Anchor::Live { resume, .. } => {
-                let r = *resume;
-                *resume = ResumeAction::None;
-                r
-            }
-            Anchor::Paused { .. } => ResumeAction::None,
-        }
-    }
-
     /// Render time used for view/overlay computations.
     /// While paused, clamp to the latest bucket we actually have data for to avoid "future" drift.
     pub fn effective_render_latest_time(&self, latest_time: u64) -> u64 {
@@ -124,14 +107,26 @@ impl Anchor {
         }
     }
 
+    /// Base price used for rendering.
+    /// While paused, use the frozen base-price snapshot.
+    pub fn effective_base_price(&self, live_base_price: Option<Price>) -> Option<Price> {
+        match self {
+            Anchor::Live { .. } => live_base_price,
+            Anchor::Paused {
+                frozen_base_price, ..
+            } => *frozen_base_price,
+        }
+    }
+
     /// Updates anchor state based on x=0 visibility.
-    /// Returns (state_changed, pending_price_to_apply)
+    /// Returns true if follow state changed.
     pub fn update_auto_follow(
         &mut self,
         x0_visible: bool,
         live_render_latest_time: u64,
         live_x_phase_bucket: f32,
-    ) -> (bool, Option<Price>) {
+        current_base_price: Option<Price>,
+    ) -> bool {
         match self {
             Anchor::Live {
                 scroll_ref_bucket,
@@ -144,51 +139,62 @@ impl Anchor {
                     *self = Anchor::Paused {
                         render_latest_time: live_render_latest_time.max(*render_latest_time),
                         x_phase_bucket: live_x_phase_bucket.max(*x_phase_bucket),
-                        pending_mid_price: None,
+                        frozen_base_price: current_base_price,
                         scroll_ref_bucket: *scroll_ref_bucket,
-                        resume: ResumeAction::FullRebuildFromHistorical,
                     };
-                    (true, None)
+                    true
                 } else {
-                    (false, None)
+                    false
                 }
             }
             Anchor::Paused {
-                pending_mid_price,
                 scroll_ref_bucket,
                 render_latest_time,
                 x_phase_bucket,
-                resume,
+                ..
             } => {
                 if x0_visible {
-                    let price_to_apply = *pending_mid_price;
-
                     // Transition to Live
                     *self = Anchor::Live {
                         scroll_ref_bucket: *scroll_ref_bucket,
                         render_latest_time: *render_latest_time,
                         x_phase_bucket: *x_phase_bucket,
-                        resume: *resume,
                     };
 
-                    (true, price_to_apply)
+                    true
                 } else {
-                    (false, None)
+                    false
                 }
             }
         }
     }
 
-    /// Apply a new mid price update.
-    /// - If paused: store as pending (so resuming can snap cleanly)
-    /// - If live: immediately updates `base_price`
-    pub fn apply_mid_price(&mut self, mid_rounded: Price, base_price: &mut Option<Price>) {
+    /// Explicitly resume from paused state (used by pause/resume button).
+    pub fn resume_to_live(&mut self) -> bool {
         match self {
             Anchor::Paused {
-                pending_mid_price, ..
-            } => *pending_mid_price = Some(mid_rounded),
-            Anchor::Live { .. } => *base_price = Some(mid_rounded),
+                scroll_ref_bucket,
+                render_latest_time,
+                x_phase_bucket,
+                ..
+            } => {
+                *self = Anchor::Live {
+                    scroll_ref_bucket: *scroll_ref_bucket,
+                    render_latest_time: *render_latest_time,
+                    x_phase_bucket: *x_phase_bucket,
+                };
+
+                true
+            }
+            Anchor::Live { .. } => false,
         }
+    }
+
+    /// Apply a new mid price update.
+    /// Keep live base price updated regardless of pause state.
+    pub fn apply_mid_price(&mut self, mid_rounded: Price, base_price: &mut Option<Price>) {
+        let _ = self;
+        *base_price = Some(mid_rounded);
     }
 
     /// Ensure scroll_ref_bucket is initialized and compute origin.x (bucket delta + phase).
@@ -230,12 +236,6 @@ impl Anchor {
             self.update_live_timing(bucketed, 0.0);
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ResumeAction {
-    None,
-    FullRebuildFromHistorical,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
