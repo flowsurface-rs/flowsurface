@@ -31,6 +31,7 @@ pub enum Action {
         exchange::TickerInfo,
         Option<data::layout::pane::ContentKind>,
     ),
+    SyncToAllPanes(exchange::TickerInfo),
     ErrorOccurred(data::InternalError),
 }
 
@@ -69,6 +70,9 @@ impl Sidebar {
                             Task::none(),
                             Some(Action::TickerSelected(ticker_info, content)),
                         );
+                    }
+                    Some(tickers_table::Action::SyncToAllPanes(ticker_info)) => {
+                        return (Task::none(), Some(Action::SyncToAllPanes(ticker_info)));
                     }
                     Some(tickers_table::Action::Fetch(task)) => {
                         return (task.map(Message::TickersTable), None);

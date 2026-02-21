@@ -790,6 +790,38 @@ impl Dashboard {
         }
     }
 
+    pub fn switch_all_panes_to_ticker(
+        &mut self,
+        main_window: window::Id,
+        ticker_info: TickerInfo,
+    ) -> Task<Message> {
+        let pane_infos: Vec<(window::Id, pane_grid::Pane, ContentKind)> = self
+            .iter_all_panes_mut(main_window)
+            .filter_map(|(window, pane, state)| {
+                // Skip Starter panes (empty panes)
+                match state.content.kind() {
+                    ContentKind::Starter => None,
+                    kind => Some((window, pane, kind)),
+                }
+            })
+            .collect();
+
+        if pane_infos.is_empty() {
+            return Task::done(Message::Notification(Toast::warn(
+                "No active panels to sync".to_string(),
+            )));
+        }
+
+        let tasks: Vec<Task<Message>> = pane_infos
+            .iter()
+            .map(|(window, pane, content_kind)| {
+                self.init_pane(main_window, *window, *pane, ticker_info, *content_kind)
+            })
+            .collect();
+
+        Task::batch(tasks)
+    }
+
     pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
         exchange::fetcher::toggle_trade_fetch(is_enabled);
 
