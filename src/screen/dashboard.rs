@@ -28,7 +28,7 @@ use exchange::{
 };
 
 use iced::{
-    Element, Length, Subscription, Task, Vector,
+    Element, Length, Subscription, Task, Vector, keyboard,
     task::{Straw, sipper},
     widget::{
         PaneGrid, center, container,
@@ -52,6 +52,8 @@ pub enum Message {
         data: FetchedData,
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
+    /// Pan the focused chart via keyboard (arrow keys, PageUp/Down, Home).
+    ChartKeyNav(keyboard::Event),
 }
 
 pub struct Dashboard {
@@ -407,6 +409,13 @@ impl Dashboard {
             }
             Message::Notification(toast) => {
                 return (Task::none(), Some(Event::Notification(toast)));
+            }
+            Message::ChartKeyNav(event) => {
+                if let Some((window, pane)) = self.focus
+                    && let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                {
+                    state.apply_keyboard_nav(&event);
+                }
             }
         }
 

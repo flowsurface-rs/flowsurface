@@ -2,6 +2,7 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
+mod keyboard_nav;
 mod scale;
 
 use crate::style;
@@ -81,6 +82,14 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
     fn supports_fit_autoscaling(&self) -> bool;
 
     fn is_empty(&self) -> bool;
+
+    /// Compute a pan [`Message`] from a keyboard event using this chart's current state.
+    ///
+    /// Default implementation delegates to [`keyboard_nav::handle`]; chart types do not
+    /// need to override this unless they have custom navigation behaviour.
+    fn keyboard_nav_msg(&self, event: &iced::keyboard::Event) -> Option<Message> {
+        keyboard_nav::handle(event, self.state())
+    }
 }
 
 fn canvas_interaction<T: Chart>(
@@ -253,10 +262,13 @@ fn canvas_interaction<T: Chart>(
             }
         }
         Event::Keyboard(keyboard_event) => {
-            cursor_position?;
+            // Note: cursor guard is only needed for Shift (ruler requires a
+            // cursor position to start from).  Navigation keys must work even
+            // when the pointer is outside the chart area.
             match keyboard_event {
                 iced::keyboard::Event::KeyPressed { key, .. } => match key.as_ref() {
                     keyboard::Key::Named(keyboard::key::Named::Shift) => {
+                        cursor_position?;
                         *interaction = Interaction::Ruler { start: None };
                         Some(canvas::Action::request_redraw().and_capture())
                     }
@@ -264,7 +276,8 @@ fn canvas_interaction<T: Chart>(
                         *interaction = Interaction::None;
                         Some(canvas::Action::request_redraw().and_capture())
                     }
-                    _ => None,
+                    _ => keyboard_nav::handle(keyboard_event, chart.state())
+                        .map(|msg| canvas::Action::publish(msg).and_capture()),
                 },
                 _ => None,
             }
