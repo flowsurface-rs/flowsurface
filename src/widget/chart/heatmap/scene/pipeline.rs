@@ -3,6 +3,7 @@ pub mod rectangle;
 
 use super::HeatmapColumnCpu;
 use super::camera::CameraUniform;
+use super::drain_dropped_scene_ids;
 use super::uniform::ParamsUniform;
 use circle::{CIRCLE_INDICES, CIRCLE_VERTICES, CircleInstance};
 use rectangle::{RECT_INDICES, RECT_VERTICES, RectInstance};
@@ -100,7 +101,6 @@ struct PerSceneGpu {
     heatmap_tex_bind_group: wgpu::BindGroup,
     heatmap_tex_size: (u32, u32),
     heatmap_uploaded_gen: u64,
-    heatmap_upload_scratch: Vec<u8>,
 
     last_camera: CameraUniform,
     has_last_camera: bool,
@@ -127,6 +127,7 @@ pub struct Pipeline {
     camera_bind_group_layout: wgpu::BindGroupLayout,
 
     per_scene: FxHashMap<u64, PerSceneGpu>,
+    heatmap_upload_scratch: Vec<u8>,
 
     rect_num_indices: u32,
     circle_num_indices: u32,
@@ -451,6 +452,7 @@ impl Pipeline {
             circle_index_buffer,
             camera_bind_group_layout,
             per_scene: FxHashMap::default(),
+            heatmap_upload_scratch: Vec::new(),
             rect_num_indices: RECT_INDICES.len() as u32,
             circle_num_indices: CIRCLE_INDICES.len() as u32,
             heatmap_pipeline,
@@ -486,6 +488,8 @@ impl Pipeline {
     }
 
     fn ensure_scene(&mut self, id: u64, device: &wgpu::Device) -> &mut PerSceneGpu {
+        self.cleanup_dropped_scenes();
+
         self.per_scene.entry(id).or_insert_with(|| {
             let rect_instance_capacity: usize = 4096;
             let rect_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -576,7 +580,6 @@ impl Pipeline {
                 heatmap_tex_bind_group,
                 heatmap_tex_size: (1, 1),
                 heatmap_uploaded_gen: 0,
-                heatmap_upload_scratch: Vec::new(),
 
                 last_camera: CameraUniform {
                     a: [1.0, 1.0, 0.0, 0.0],
@@ -587,6 +590,21 @@ impl Pipeline {
                 has_last_params: false,
             }
         })
+    }
+
+    fn cleanup_dropped_scenes(&mut self) {
+        for id in drain_dropped_scene_ids() {
+            self.per_scene.remove(&id);
+        }
+    }
+
+    pub fn trim_pipeline_cache(&mut self) {
+        self.cleanup_dropped_scenes();
+
+        if self.per_scene.is_empty() {
+            self.heatmap_upload_scratch.clear();
+            self.heatmap_upload_scratch.shrink_to_fit();
+        }
     }
 
     pub fn update_rect_instances(
@@ -691,7 +709,7 @@ impl Pipeline {
             self.resize_heatmap_textures_u32(id, device, width, height);
         }
 
-        let gpu = self.per_scene.get_mut(&id).unwrap();
+        let heatmap_tex = self.per_scene.get(&id).unwrap().heatmap_tex.clone();
 
         for col in heatmap_cols {
             let x = col.x;
@@ -701,15 +719,16 @@ impl Pipeline {
 
             Self::write_rg32u_texture_column(
                 queue,
-                &gpu.heatmap_tex,
+                &heatmap_tex,
                 x,
                 height,
                 col.bid_col.as_ref(),
                 col.ask_col.as_ref(),
-                &mut gpu.heatmap_upload_scratch,
+                &mut self.heatmap_upload_scratch,
             );
         }
 
+        let gpu = self.per_scene.get_mut(&id).unwrap();
         gpu.heatmap_uploaded_gen = generation;
     }
 
@@ -745,18 +764,19 @@ impl Pipeline {
             self.resize_heatmap_textures_u32(id, device, width, height);
         }
 
-        let gpu = self.per_scene.get_mut(&id).unwrap();
+        let heatmap_tex = self.per_scene.get(&id).unwrap().heatmap_tex.clone();
 
         Self::write_rg32u_texture_full(
             queue,
-            &gpu.heatmap_tex,
+            &heatmap_tex,
             width,
             height,
             bid_col_u32,
             ask_col_u32,
-            &mut gpu.heatmap_upload_scratch,
+            &mut self.heatmap_upload_scratch,
         );
 
+        let gpu = self.per_scene.get_mut(&id).unwrap();
         gpu.heatmap_uploaded_gen = generation;
     }
 

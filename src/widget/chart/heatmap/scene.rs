@@ -20,6 +20,7 @@ use iced::widget::shader::{self, Viewport};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 const PX_PER_NOTCH: f32 = 120.0;
 const ZOOM_BASE_PER_NOTCH: f32 = 1.08;
@@ -53,7 +54,6 @@ impl Default for Scene {
     }
 }
 
-#[derive(Clone)]
 pub struct Scene {
     pub id: u64,
 
@@ -72,6 +72,30 @@ pub struct Scene {
     heatmap_upload: Option<(u64, HeatmapUpload)>,
 
     pub cell: cell::Cell,
+}
+
+impl Drop for Scene {
+    fn drop(&mut self) {
+        enqueue_dropped_scene_id(self.id);
+    }
+}
+
+fn dropped_scene_ids() -> &'static Mutex<Vec<u64>> {
+    static DROPPED_SCENE_IDS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
+    DROPPED_SCENE_IDS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn enqueue_dropped_scene_id(id: u64) {
+    if let Ok(mut dropped) = dropped_scene_ids().lock() {
+        dropped.push(id);
+    }
+}
+
+fn drain_dropped_scene_ids() -> Vec<u64> {
+    match dropped_scene_ids().lock() {
+        Ok(mut dropped) => std::mem::take(&mut *dropped),
+        Err(_) => Vec::new(),
+    }
 }
 
 impl Scene {
@@ -548,6 +572,10 @@ impl shader::Primitive for Primitive {
 impl shader::Pipeline for Pipeline {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Pipeline {
         Self::new(device, queue, format)
+    }
+
+    fn trim(&mut self) {
+        self.trim_pipeline_cache();
     }
 }
 

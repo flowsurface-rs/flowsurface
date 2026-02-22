@@ -741,8 +741,17 @@ impl Flowsurface {
     }
 
     fn load_layout(&mut self, layout_uid: uuid::Uuid, main_window: window::Id) -> Task<Message> {
-        match self.layout_manager.set_active_layout(layout_uid) {
-            Ok(layout) => {
+        if let Err(err) = self.layout_manager.set_active_layout(layout_uid) {
+            log::error!("Failed to set active layout: {}", err);
+            return Task::none();
+        }
+
+        self.layout_manager
+            .park_inactive_layouts(layout_uid, main_window);
+
+        self.layout_manager
+            .get_mut(layout_uid)
+            .map(|layout| {
                 layout
                     .dashboard
                     .load_layout(main_window)
@@ -750,12 +759,11 @@ impl Flowsurface {
                         layout_id: Some(layout_uid),
                         event: msg,
                     })
-            }
-            Err(err) => {
-                log::error!("Failed to set active layout: {}", err);
+            })
+            .unwrap_or_else(|| {
+                log::error!("Active layout missing after selection: {}", layout_uid);
                 Task::none()
-            }
-        }
+            })
     }
 
     fn view_with_modal<'a>(

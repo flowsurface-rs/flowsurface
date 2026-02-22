@@ -1012,6 +1012,11 @@ impl Dashboard {
             });
     }
 
+    pub fn park_for_inactive_layout(&mut self, main_window: window::Id) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| state.park_for_inactive_layout());
+    }
+
     pub fn tick(&mut self, now: Instant, main_window: window::Id) -> Task<Message> {
         let mut tasks = vec![];
         let layout_id = self.layout_id;

@@ -9,7 +9,7 @@ use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
     tooltip::Position as TooltipPosition,
 };
-use iced::{Element, Theme, padding};
+use iced::{Element, Theme, padding, window};
 use std::vec;
 use uuid::Uuid;
 
@@ -124,6 +124,13 @@ impl LayoutManager {
 
     pub fn mut_dashboard(&mut self, id: Uuid) -> Option<&mut Dashboard> {
         self.get_mut(id).map(|e| &mut e.dashboard)
+    }
+
+    pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {
+        self.layouts
+            .iter_mut()
+            .filter(|layout| layout.id.unique != active_layout_id)
+            .for_each(|layout| layout.dashboard.park_for_inactive_layout(main_window));
     }
 
     pub fn set_active_layout(&mut self, layout_id: Uuid) -> Result<&mut Layout, String> {

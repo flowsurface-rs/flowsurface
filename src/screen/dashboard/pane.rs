@@ -1624,6 +1624,13 @@ impl State {
         }
     }
 
+    pub fn park_for_inactive_layout(&mut self) {
+        if let Content::ShaderHeatmap { chart } = &mut self.content {
+            *chart = None;
+            self.status = Status::Ready;
+        }
+    }
+
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
             Content::Kline { .. } | Content::Comparison(_) => Some(1000),
