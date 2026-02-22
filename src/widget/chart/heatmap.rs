@@ -423,7 +423,7 @@ impl HeatmapShader {
         self.depth_history.insert_latest_depth(depth, rounded_t);
 
         if !paused {
-            self.update_live_ring_and_scene(depth, rounded_t, aggr_time, is_interacting);
+            self.update_live_ring_and_scene(depth, rounded_t, is_interacting);
         }
 
         self.data_gen = self.data_gen.wrapping_add(1);
@@ -625,15 +625,14 @@ impl HeatmapShader {
 
             self.data_gen = self.data_gen.wrapping_add(1);
 
-            self.scene.sync_heatmap_from_grid(
-                &mut self.depth_grid,
+            self.scene.sync_heatmap_texture(
+                &self.depth_grid,
                 base_price,
                 self.step,
-                self.qty_scale,
+                1.0 / self.qty_scale,
                 latest_time,
                 aggr_time,
                 self.anchor.scroll_ref_bucket(),
-                true,
             );
         } else {
             let latest_time_for_scene = if self.anchor.is_paused() {
@@ -642,15 +641,14 @@ impl HeatmapShader {
                 latest_time.max(1)
             };
 
-            self.scene.sync_heatmap_from_grid(
-                &mut self.depth_grid,
+            self.scene.sync_heatmap_texture(
+                &self.depth_grid,
                 base_price,
                 self.step,
-                self.qty_scale,
+                1.0 / self.qty_scale,
                 latest_time_for_scene,
                 aggr_time,
                 self.anchor.scroll_ref_bucket(),
-                false,
             );
         }
 
@@ -737,6 +735,10 @@ impl HeatmapShader {
         if do_full {
             self.rebuild_all(Some(*w));
         }
+
+        self.scene
+            .sync_heatmap_upload_from_grid(&mut self.depth_grid, false);
+
         self.rebuild_policy = next_policy;
 
         self.update_depth_norm_and_params(*w, now_i);
@@ -802,13 +804,7 @@ impl HeatmapShader {
         resumed
     }
 
-    fn update_live_ring_and_scene(
-        &mut self,
-        depth: &Depth,
-        rounded_t: u64,
-        aggr_time: u64,
-        is_interacting: bool,
-    ) {
+    fn update_live_ring_and_scene(&mut self, depth: &Depth, rounded_t: u64, is_interacting: bool) {
         let Some(base_price) = self.base_price else {
             return;
         };
@@ -836,17 +832,6 @@ impl HeatmapShader {
             self.qty_scale,
             recenter_target,
             steps_per_y_bin,
-        );
-
-        self.scene.sync_heatmap_from_grid(
-            &mut self.depth_grid,
-            base_price,
-            self.step,
-            self.qty_scale,
-            rounded_t,
-            aggr_time,
-            self.anchor.scroll_ref_bucket(),
-            false,
         );
     }
 
