@@ -17,6 +17,7 @@ pub struct RectInstance {
     pub x1_bin_excl: i32,
     pub x_from_bins: u32,
     pub fade_mode: u32, // 0=fade, 1=skip
+    pub subpx_alpha: f32,
 }
 
 impl RectInstance {
@@ -28,6 +29,24 @@ impl RectInstance {
 
     const VOLUME_PROFILE_ALPHA: f32 = 1.0;
 
+    fn extent_and_subpx_alpha(raw_world: f32, cam_scale: f32) -> (f32, f32) {
+        let raw_world = raw_world.max(0.0);
+        if raw_world <= 0.0 {
+            return (0.0, 0.0);
+        }
+
+        let sx = cam_scale.max(1e-6);
+        let raw_px = raw_world * sx;
+
+        if raw_px >= MIN_BAR_PX {
+            return (raw_world, 1.0);
+        }
+
+        let draw_world = MIN_BAR_PX / sx;
+        let subpx_alpha = (raw_px / MIN_BAR_PX).clamp(0.0, 1.0);
+        (draw_world, subpx_alpha)
+    }
+
     pub fn depth_profile_bar(
         y_world: f32,
         qty: f32,
@@ -36,9 +55,9 @@ impl RectInstance {
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
-        let min_bar_w_world = MIN_BAR_PX / w.cam_scale;
         let t = (qty / max_qty).clamp(0.0, 1.0);
-        let w_world = (t * w.depth_profile_max_width).max(min_bar_w_world);
+        let raw_w_world = t * w.depth_profile_max_width;
+        let (w_world, subpx_alpha) = Self::extent_and_subpx_alpha(raw_w_world, w.cam_scale);
         let center_x = 0.5 * w_world;
 
         let rgb = if is_bid {
@@ -55,6 +74,7 @@ impl RectInstance {
             x1_bin_excl: 0,
             x_from_bins: 0,
             fade_mode: 0,
+            subpx_alpha,
         }
     }
 
@@ -68,11 +88,9 @@ impl RectInstance {
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
-        const MIN_BAR_PX: f32 = 1.0;
         const EPS: f32 = 1e-12;
 
         let denom = max_qty.max(1e-12);
-        let min_h_world = MIN_BAR_PX / w.cam_scale;
 
         let (base_rgb, _is_tie) = if buy_qty > sell_qty + EPS {
             (palette.buy_rgb, false)
@@ -82,7 +100,8 @@ impl RectInstance {
             (palette.secondary_rgb, true)
         };
 
-        let total_h = ((total_qty / denom) * w.volume_area_max_height).max(min_h_world);
+        let raw_total_h = (total_qty / denom) * w.volume_area_max_height;
+        let (total_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_total_h, w.cam_scale);
         let total_center_y = w.volume_area_bottom_y - 0.5 * total_h;
 
         Self {
@@ -98,6 +117,7 @@ impl RectInstance {
             x1_bin_excl,
             x_from_bins: 1,
             fade_mode: 0,
+            subpx_alpha,
         }
     }
 
@@ -110,13 +130,10 @@ impl RectInstance {
         x1_bin_excl: i32,
         w: &ViewWindow,
     ) -> Self {
-        const MIN_BAR_PX: f32 = 1.0;
-
         let denom = max_qty.max(1e-12);
-        let min_h_world = MIN_BAR_PX / w.cam_scale;
-
-        let mut overlay_h = ((diff_qty / denom) * w.volume_area_max_height).max(min_h_world);
-        overlay_h = overlay_h.min(total_h);
+        let raw_overlay_h = ((diff_qty / denom) * w.volume_area_max_height).min(total_h.max(0.0));
+        let (overlay_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_overlay_h, w.cam_scale);
+        let overlay_h = overlay_h.min(total_h.max(0.0));
 
         let t = Self::VOLUME_DELTA_TINT_TO_WHITE;
         let overlay_rgb = [
@@ -140,6 +157,7 @@ impl RectInstance {
             x1_bin_excl,
             x_from_bins: 1,
             fade_mode: 0,
+            subpx_alpha,
         }
     }
 
@@ -150,7 +168,8 @@ impl RectInstance {
         w: &ViewWindow,
         rgb: [f32; 3],
     ) -> Self {
-        let width_world = width_world.max(0.0);
+        let raw_width_world = width_world.max(0.0);
+        let (width_world, subpx_alpha) = Self::extent_and_subpx_alpha(raw_width_world, w.cam_scale);
         let center_x = left_edge_world + 0.5 * width_world;
 
         Self {
@@ -161,6 +180,7 @@ impl RectInstance {
             x1_bin_excl: 0,
             x_from_bins: 0,
             fade_mode: 1,
+            subpx_alpha,
         }
     }
 

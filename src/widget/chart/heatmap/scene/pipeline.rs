@@ -280,6 +280,12 @@ impl Pipeline {
                                 shader_location: 7,
                                 format: wgpu::VertexFormat::Uint32,
                             },
+                            // @location(8) subpx_alpha: f32
+                            wgpu::VertexAttribute {
+                                offset: 48,
+                                shader_location: 8,
+                                format: wgpu::VertexFormat::Float32,
+                            },
                         ],
                     },
                 ],

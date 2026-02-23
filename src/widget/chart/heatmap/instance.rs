@@ -1,6 +1,6 @@
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
-use crate::widget::chart::heatmap::scene::pipeline::rectangle::{MIN_BAR_PX, RectInstance};
+use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use crate::widget::chart::heatmap::scene::pipeline::{DrawItem, DrawLayer, DrawOp};
 use crate::widget::chart::heatmap::view::ViewWindow;
 
@@ -212,8 +212,6 @@ impl InstanceBuilder {
         let max_total_f32 = max_total.to_f32_lossy();
         self.trade_profile_scale_max_qty = Some(max_total_f32);
 
-        let min_w_world = MIN_BAR_PX / w.cam_scale;
-
         for i in 0..len {
             let rel_y_bin = min_rel_y_bin + i as i64;
             let y_world = w.y_center_for_bin(rel_y_bin);
@@ -230,8 +228,10 @@ impl InstanceBuilder {
             let sell_qty_f32 = sell_qty.to_f32_lossy();
             let total_f32 = total.to_f32_lossy();
 
-            let total_w =
-                ((total_f32 / max_total_f32) * w.volume_profile_max_width).max(min_w_world);
+            let total_w = (total_f32 / max_total_f32) * w.volume_profile_max_width;
+            if total_w <= 0.0 {
+                continue;
+            }
             let buy_w = total_w * (buy_qty_f32 / total_f32);
             let sell_w = total_w * (sell_qty_f32 / total_f32);
 
