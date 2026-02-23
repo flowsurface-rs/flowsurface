@@ -82,15 +82,15 @@ pub struct InstanceBuilder {
     // Reusable buffers
     volume_acc: Vec<(Qty, Qty)>,
     volume_touched: Vec<usize>,
-    profile_bid_acc: Vec<f32>,
-    profile_ask_acc: Vec<f32>,
+    profile_bid_acc: Vec<Qty>,
+    profile_ask_acc: Vec<Qty>,
     trade_profile_bid_acc: Vec<Qty>,
     trade_profile_ask_acc: Vec<Qty>,
 
     // Scale denominators (for external getters)
-    pub profile_scale_max_qty: Option<f32>,
-    pub volume_strip_scale_max_qty: Option<f32>,
-    pub trade_profile_scale_max_qty: Option<f32>,
+    pub profile_scale_max_qty: Option<Qty>,
+    pub volume_strip_scale_max_qty: Option<Qty>,
+    pub trade_profile_scale_max_qty: Option<Qty>,
 }
 
 impl InstanceBuilder {
@@ -210,7 +210,7 @@ impl InstanceBuilder {
         }
 
         let max_total_f32 = max_total.to_f32_lossy();
-        self.trade_profile_scale_max_qty = Some(max_total_f32);
+        self.trade_profile_scale_max_qty = Some(max_total);
 
         for i in 0..len {
             let rel_y_bin = min_rel_y_bin + i as i64;
@@ -289,19 +289,10 @@ impl InstanceBuilder {
             return vec![];
         }
 
-        let max_qty_f32 = max_qty.to_f32_lossy();
-
         let mut out = Vec::with_capacity(visible.len());
         for (bucket, trade) in visible {
             out.push(CircleInstance::from_trade(
-                trade,
-                bucket,
-                ref_bucket,
-                base_price,
-                step,
-                w,
-                palette,
-                max_qty_f32,
+                trade, bucket, ref_bucket, base_price, step, w, palette, max_qty,
             ));
         }
 
@@ -330,12 +321,12 @@ impl InstanceBuilder {
 
         let len = (max_rel_y_bin - min_rel_y_bin + 1) as usize;
 
-        self.profile_bid_acc.resize(len, 0.0);
-        self.profile_ask_acc.resize(len, 0.0);
-        self.profile_bid_acc[..].fill(0.0);
-        self.profile_ask_acc[..].fill(0.0);
+        self.profile_bid_acc.resize(len, Qty::ZERO);
+        self.profile_ask_acc.resize(len, Qty::ZERO);
+        self.profile_bid_acc[..].fill(Qty::ZERO);
+        self.profile_ask_acc[..].fill(Qty::ZERO);
 
-        let mut max_qty = 0.0f32;
+        let mut max_qty = Qty::ZERO;
 
         for (price, run) in heatmap.latest_order_runs(w.highest, w.lowest, latest_time) {
             if *price < w.lowest || *price > w.highest {
@@ -355,11 +346,11 @@ impl InstanceBuilder {
                 &mut self.profile_ask_acc[i]
             };
 
-            *v += run.qty();
+            *v += run.qty_raw();
             max_qty = max_qty.max(*v);
         }
 
-        if max_qty <= 0.0 {
+        if max_qty.is_zero() {
             return;
         }
 
@@ -373,7 +364,7 @@ impl InstanceBuilder {
                 (true, self.profile_bid_acc[i]),
                 (false, self.profile_ask_acc[i]),
             ] {
-                if qty > 0.0 {
+                if !qty.is_zero() {
                     rects.push(RectInstance::depth_profile_bar(
                         y, qty, max_qty, is_bid, w, palette,
                     ));
@@ -393,8 +384,6 @@ impl InstanceBuilder {
         const BUCKET_GAP_FRAC: f32 = 0.10;
         const MIN_BAR_W_PX: f32 = 2.0;
         const MAX_COLS_PER_X_BIN: i64 = 4096;
-        const EPS: f32 = 1e-12;
-
         if w.volume_area_max_height <= 0.0 {
             return;
         }
@@ -456,12 +445,12 @@ impl InstanceBuilder {
         self.volume_touched.dedup();
 
         // Find max total volume
-        let mut max_total = 0.0f32;
+        let mut max_total = Qty::ZERO;
         for &idx in &self.volume_touched {
             let (buy, sell) = self.volume_acc[idx];
-            max_total = max_total.max((buy + sell).to_f32_lossy());
+            max_total = max_total.max(buy + sell);
         }
-        if max_total <= 0.0 {
+        if max_total.is_zero() {
             return;
         }
 
@@ -470,13 +459,10 @@ impl InstanceBuilder {
         // Build rectangle instances
         for &idx in &self.volume_touched {
             let (buy, sell) = self.volume_acc[idx];
-            let total = (buy + sell).to_f32_lossy();
-            if total <= 0.0 {
+            let total_qty = buy + sell;
+            if total_qty.is_zero() {
                 continue;
             }
-
-            let buy_f32 = buy.to_f32_lossy();
-            let sell_f32 = sell.to_f32_lossy();
 
             let x_bin = min_x_bin + idx as i64;
             let start_bucket = x_bin * cols_per_x_bin;
@@ -491,15 +477,15 @@ impl InstanceBuilder {
 
             // Total volume bar
             let total_bar = RectInstance::volume_total_bar(
-                total, max_total, buy_f32, sell_f32, x0_bin, x1_bin, w, palette,
+                total_qty, max_total, buy, sell, x0_bin, x1_bin, w, palette,
             );
             let total_h = total_bar.size[1];
             let base_rgb = [total_bar.color[0], total_bar.color[1], total_bar.color[2]];
             rects.push(total_bar);
 
             // Delta overlay (if not tied)
-            let diff = buy.abs_diff(sell).to_f32_lossy();
-            if diff > EPS {
+            let diff = buy.abs_diff(sell);
+            if !diff.is_zero() {
                 rects.push(RectInstance::volume_delta_bar(
                     diff, total_h, max_total, base_rgb, x0_bin, x1_bin, w,
                 ));

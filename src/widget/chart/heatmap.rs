@@ -322,9 +322,18 @@ impl HeatmapShader {
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
             strip_height_frac: STRIP_HEIGHT_FRAC,
             is_paused: self.anchor.is_paused(),
-            volume_strip_max_qty: self.instances.volume_strip_scale_max_qty,
-            profile_max_qty: self.instances.profile_scale_max_qty,
-            trade_profile_max_qty: self.instances.trade_profile_scale_max_qty,
+            volume_strip_max_qty: self
+                .instances
+                .volume_strip_scale_max_qty
+                .map(|q| q.to_f32_lossy()),
+            profile_max_qty: self
+                .instances
+                .profile_scale_max_qty
+                .map(|q| q.to_f32_lossy()),
+            trade_profile_max_qty: self
+                .instances
+                .trade_profile_scale_max_qty
+                .map(|q| q.to_f32_lossy()),
         };
 
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);

@@ -64,7 +64,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
         let sx = max(camera.a.x, 1e-6);
         let raw_w_px = max(bar_w0 * sx, 0.0);
-        let bar_w_px = max(raw_w_px, 1.0);
+        let bar_w_px = max(round(raw_w_px), 1.0);
         let bar_w = bar_w_px / sx;
         subpx_alpha = subpx_alpha * clamp(raw_w_px, 0.0, 1.0);
 

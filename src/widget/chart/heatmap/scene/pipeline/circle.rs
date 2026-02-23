@@ -1,5 +1,5 @@
 use data::chart::heatmap::GroupedTrade;
-use exchange::unit::{Price, PriceStep, qty};
+use exchange::unit::{Price, PriceStep, Qty, qty};
 
 use crate::widget::chart::heatmap::{depth_grid::HeatmapPalette, view::ViewWindow};
 
@@ -30,7 +30,7 @@ impl CircleInstance {
         step: PriceStep,
         w: &ViewWindow,
         palette: &HeatmapPalette,
-        max_trade_qty: f32,
+        max_trade_qty: Qty,
     ) -> Self {
         let x_bin_rel = (bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let x_frac = 0.0;
@@ -38,11 +38,7 @@ impl CircleInstance {
         let y_world = Self::y_world_for_price(trade.price, base_price, step, w);
 
         let q = trade.qty.max(qty::Qty::zero()).to_f32_lossy();
-        let t = if max_trade_qty > 0.0 {
-            (q / max_trade_qty).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let t = (q / max_trade_qty.to_scale_or_one()).clamp(0.0, 1.0);
         let radius_px = Self::R_MIN_PX + t * (Self::R_MAX_PX - Self::R_MIN_PX);
 
         let rgba = if trade.is_sell {

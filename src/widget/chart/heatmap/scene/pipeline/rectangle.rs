@@ -1,6 +1,7 @@
 use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::view::ViewWindow;
 use bytemuck::{Pod, Zeroable};
+use exchange::unit::Qty;
 
 pub const RECT_VERTICES: &[[f32; 2]] = &[[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
 pub const RECT_INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
@@ -49,13 +50,13 @@ impl RectInstance {
 
     pub fn depth_profile_bar(
         y_world: f32,
-        qty: f32,
-        max_qty: f32,
+        qty: Qty,
+        max_qty: Qty,
         is_bid: bool,
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
-        let t = (qty / max_qty).clamp(0.0, 1.0);
+        let t = (qty.to_f32_lossy() / max_qty.to_scale_or_one()).clamp(0.0, 1.0);
         let raw_w_world = t * w.depth_profile_max_width;
         let (w_world, subpx_alpha) = Self::extent_and_subpx_alpha(raw_w_world, w.cam_scale);
         let center_x = 0.5 * w_world;
@@ -79,28 +80,26 @@ impl RectInstance {
     }
 
     pub fn volume_total_bar(
-        total_qty: f32,
-        max_qty: f32,
-        buy_qty: f32,
-        sell_qty: f32,
+        total_qty: Qty,
+        max_qty: Qty,
+        buy_qty: Qty,
+        sell_qty: Qty,
         x0_bin: i32,
         x1_bin_excl: i32,
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
-        const EPS: f32 = 1e-12;
+        let denom = max_qty.to_scale_or_one();
 
-        let denom = max_qty.max(1e-12);
-
-        let (base_rgb, _is_tie) = if buy_qty > sell_qty + EPS {
+        let (base_rgb, _is_tie) = if buy_qty > sell_qty {
             (palette.buy_rgb, false)
-        } else if sell_qty > buy_qty + EPS {
+        } else if sell_qty > buy_qty {
             (palette.sell_rgb, false)
         } else {
             (palette.secondary_rgb, true)
         };
 
-        let raw_total_h = (total_qty / denom) * w.volume_area_max_height;
+        let raw_total_h = (total_qty.to_f32_lossy() / denom) * w.volume_area_max_height;
         let (total_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_total_h, w.cam_scale);
         let total_center_y = w.volume_area_bottom_y - 0.5 * total_h;
 
@@ -122,16 +121,17 @@ impl RectInstance {
     }
 
     pub fn volume_delta_bar(
-        diff_qty: f32,
+        diff_qty: Qty,
         total_h: f32,
-        max_qty: f32,
+        max_qty: Qty,
         base_rgb: [f32; 3],
         x0_bin: i32,
         x1_bin_excl: i32,
         w: &ViewWindow,
     ) -> Self {
-        let denom = max_qty.max(1e-12);
-        let raw_overlay_h = ((diff_qty / denom) * w.volume_area_max_height).min(total_h.max(0.0));
+        let denom = max_qty.to_scale_or_one();
+        let raw_overlay_h =
+            ((diff_qty.to_f32_lossy() / denom) * w.volume_area_max_height).min(total_h.max(0.0));
         let (overlay_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_overlay_h, w.cam_scale);
         let overlay_h = overlay_h.min(total_h.max(0.0));
 
