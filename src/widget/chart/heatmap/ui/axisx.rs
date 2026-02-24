@@ -1,36 +1,25 @@
 use super::{AxisInteraction, Message};
 use crate::widget::chart::heatmap::ui::AxisZoomAnchor;
+use data::config::timezone::TimeLabelKind;
 
-use chrono::TimeZone;
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
 
 const DRAG_ZOOM_SENS: f32 = 0.005;
-
-fn unix_ms_to_local_string(ts_ms: i64, fmt: &str) -> String {
-    let utc = match chrono::Utc.timestamp_millis_opt(ts_ms).single() {
-        Some(dt) => dt,
-        None => return "".to_string(),
-    };
-
-    utc.with_timezone(&chrono::Local).format(fmt).to_string()
-}
-
-fn pick_time_format(visible_span_ms: i64) -> &'static str {
-    // Pick shorter/longer formats based on current visible time span.
-    if visible_span_ms <= 10_000 {
-        "%H:%M:%S%.3f" // up to ~10s: show milliseconds
-    } else if visible_span_ms <= 10 * 60_000 {
-        "%H:%M:%S" // up to ~10m: seconds
-    } else if visible_span_ms <= 24 * 3_600_000 {
-        "%H:%M" // up to ~1d: minutes
-    } else {
-        "%m-%d %H:%M" // zoomed way out: include date
-    }
-}
+const FONT_SIZE: f32 = 12.0;
+const PHASE_MAX: f64 = 0.999_999;
+const COL_EPS: f64 = 1e-18;
+const BUCKET_EPS: f64 = 1e-9;
+const APPROX_CHAR_WIDTH_RATIO: f32 = 0.62;
+const DRAW_MARGIN_EXTRA_PX: f32 = 6.0;
+const TARGET_LABEL_SPACING_PX: f32 = 110.0;
+const CURSOR_LABEL_PADDING_X: f32 = 10.0;
+const CURSOR_LABEL_PADDING_Y: f32 = 6.0;
+const TICK_CURSOR_GAP_PX: f32 = 2.0;
 
 pub struct AxisXLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
+    pub timezone: data::UserTimezone,
     pub plot_bounds: Option<Rectangle>,
     pub latest_bucket: i64,
     pub aggr_time: u64,
@@ -161,7 +150,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         renderer: &Renderer,
         theme: &Theme,
         bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         if self.aggr_time == 0
             || !self.column_world.is_finite()
@@ -182,12 +171,16 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let col_f = self.column_world as f64;
             let cam_offset_f = self.cam_offset_x as f64;
             let right_pad_frac_f = self.cam_right_pad_frac as f64;
+            let aggr_time_ms = i64::try_from(self.aggr_time).unwrap_or(i64::MAX);
 
-            let mut phase = self.x_phase_bucket as f64;
-            if !phase.is_finite() {
-                phase = 0.0;
-            }
-            phase = phase.clamp(0.0, 0.999_999);
+            let phase = {
+                let mut phase = self.x_phase_bucket as f64;
+                if !phase.is_finite() {
+                    phase = 0.0;
+                }
+
+                phase.clamp(0.0, PHASE_MAX)
+            };
 
             // Camera math (matches camera.rs)
             let pad_world = (vw_f * right_pad_frac_f) / cam_sx_f;
@@ -196,51 +189,38 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let x_world_left = right_edge_world - (vw_f / cam_sx_f);
             let x_world_right = right_edge_world;
 
-            let inv_col = 1.0f64 / col_f.max(1e-18);
-            let eps = 1e-9f64;
-
-            let u_min0 = ((x_world_left * inv_col) + phase + eps).floor() as i64;
-            let u_max0 = ((x_world_right * inv_col) + phase - eps).ceil() as i64;
+            let inv_col = 1.0f64 / col_f.max(COL_EPS);
 
             let latest_bucket: i64 = self.latest_bucket;
-            let b_min0: i64 = latest_bucket.saturating_add(u_min0);
-            let b_max0: i64 = latest_bucket.saturating_add(u_max0);
+            let (b_min0, b_max0) =
+                bucket_bounds(x_world_left, x_world_right, inv_col, phase, latest_bucket);
 
             let fmt = {
                 let visible_buckets0 = (b_max0 - b_min0).max(0);
 
-                let visible_span = visible_buckets0 * (self.aggr_time as i64);
+                let visible_span = visible_buckets0.saturating_mul(aggr_time_ms);
                 let visible_span_ms0 = visible_span.clamp(0, i64::MAX);
 
                 pick_time_format(visible_span_ms0)
             };
 
-            // Approx label width in px for mono font; used to pad bucket-range so labels don't "pop"
-            let font_size = 12.0f32;
-            let max_label_chars: usize = match fmt {
-                "%H:%M:%S%.3f" => 12, // "23:59:59.999"
-                "%H:%M:%S" => 8,      // "23:59:59"
-                "%H:%M" => 5,         // "23:59"
-                "%m-%d %H:%M" => 11,  // "12-31 23:59"
-                _ => 16,
-            };
-            let approx_char_w_px = font_size * 0.62;
-            let half_label_w_px = (max_label_chars as f32) * approx_char_w_px * 0.5;
-            let draw_margin_px = half_label_w_px + 6.0;
-            let draw_margin_world = (draw_margin_px as f64) / cam_sx_f.max(1e-18);
+            let half_label_w_px = 0.5 * approx_text_width_px(max_label_chars(fmt));
+            let draw_margin_px = half_label_w_px + DRAW_MARGIN_EXTRA_PX;
+            let draw_margin_world = (draw_margin_px as f64) / cam_sx_f.max(COL_EPS);
 
             let x_world_left_p = x_world_left - draw_margin_world;
             let x_world_right_p = x_world_right + draw_margin_world;
 
-            let u_min = ((x_world_left_p * inv_col) + phase + eps).floor() as i64;
-            let u_max = ((x_world_right_p * inv_col) + phase - eps).ceil() as i64;
-
-            let b_min: i64 = latest_bucket.saturating_add(u_min);
-            let b_max: i64 = latest_bucket.saturating_add(u_max);
+            let (b_min, b_max) = bucket_bounds(
+                x_world_left_p,
+                x_world_right_p,
+                inv_col,
+                phase,
+                latest_bucket,
+            );
 
             let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
-            let target_label_px = 110.0f32;
-            let rough_every = (target_label_px / px_per_bucket).ceil() as i64;
+            let rough_every = (TARGET_LABEL_SPACING_PX / px_per_bucket).ceil() as i64;
             let every = super::nice_step_i64(rough_every.max(1));
 
             let text_color = theme.palette().text;
@@ -251,25 +231,39 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
             let y = (0.5 * vh_f) as f32;
 
-            let cursor_label_padding = 6.0f32;
             let cursor_label = self
                 .plot_bounds
-                .and_then(|pb| _cursor.position_in(pb))
-                .map(|p| {
+                .and_then(|pb| cursor.position_in(pb))
+                .and_then(|p| {
                     let world_x_cursor = center_x + ((p.x as f64) - vw_f * 0.5) / cam_sx_f;
 
                     let u_at_cursor = ((world_x_cursor / col_f) + phase).round() as i64;
                     let b_at_cursor = latest_bucket.saturating_add(u_at_cursor);
                     let world_x_for_bucket = ((u_at_cursor as f64) - phase) * col_f;
                     let x_px = world_to_screen_x(world_x_for_bucket);
-                    let t_ms = (b_at_cursor) * (self.aggr_time as i64);
-                    let label = unix_ms_to_local_string(t_ms, "%H:%M:%S%.3f");
+                    let t_ms = b_at_cursor.saturating_mul(aggr_time_ms);
 
-                    let label_len = label.chars().count() as f32;
-                    let label_w = label_len * (font_size * 0.62) + 2.0 * cursor_label_padding;
-                    let label_h = font_size + 2.0 * cursor_label_padding;
+                    if let Some(label) = self
+                        .timezone
+                        .format_with_kind(t_ms, TimeLabelKind::Crosshair { show_millis: true })
+                    {
+                        let (width, height) = {
+                            let text_w = approx_text_width_px(label.chars().count());
+                            let label_w = text_w + 2.0 * CURSOR_LABEL_PADDING_X;
+                            let label_h = FONT_SIZE + 2.0 * CURSOR_LABEL_PADDING_Y;
 
-                    (x_px, label, label_w, label_h)
+                            (label_w, label_h)
+                        };
+
+                        Some(CursorLabel {
+                            x_px,
+                            text: label,
+                            width,
+                            height,
+                        })
+                    } else {
+                        None
+                    }
                 });
 
             let mut b = (b_min.div_euclid(every)) * every;
@@ -284,18 +278,21 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 let x_px = world_to_screen_x(world_x);
 
                 if x_px >= -draw_margin_px && x_px <= (vw + draw_margin_px) {
-                    let t_ms = (b) * (self.aggr_time as i64);
-                    let label = unix_ms_to_local_string(t_ms, fmt);
+                    let t_ms = b.saturating_mul(aggr_time_ms);
 
-                    if !label.is_empty() {
-                        let tick_label_len = label.chars().count() as f32;
-                        let tick_label_w = tick_label_len * approx_char_w_px;
+                    if let Some(label) = self
+                        .timezone
+                        .format_with_kind(t_ms, TimeLabelKind::Custom(fmt))
+                    {
+                        let tick_label_w = approx_text_width_px(label.chars().count());
                         let tick_half = 0.5 * tick_label_w;
 
-                        if let Some((cx, _, cw, _ch)) = cursor_label {
-                            let cursor_half = 0.5 * cw;
-                            if (x_px + tick_half + 2.0) >= (cx - cursor_half)
-                                && (x_px - tick_half - 2.0) <= (cx + cursor_half)
+                        if let Some(cursor_label) = cursor_label.as_ref() {
+                            let cursor_half = 0.5 * cursor_label.width;
+                            if (x_px + tick_half + TICK_CURSOR_GAP_PX)
+                                >= (cursor_label.x_px - cursor_half)
+                                && (x_px - tick_half - TICK_CURSOR_GAP_PX)
+                                    <= (cursor_label.x_px + cursor_half)
                             {
                                 b = b.saturating_add(every);
                                 if every <= 0 {
@@ -310,7 +307,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                             position: iced::Point::new(x_px, y),
                             color: text_color,
                             font: crate::style::AZERET_MONO,
-                            size: font_size.into(),
+                            size: FONT_SIZE.into(),
                             align_x: iced::Alignment::Center.into(),
                             align_y: iced::Alignment::Center.into(),
                             ..Default::default()
@@ -324,26 +321,29 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 }
             }
 
-            if let Some((x_px, label, label_w, label_h)) = cursor_label
-                && x_px >= -draw_margin_px
-                && x_px <= (vw + draw_margin_px)
-                && !label.is_empty()
+            if let Some(cursor_label) = cursor_label
+                && cursor_label.x_px >= -draw_margin_px
+                && cursor_label.x_px <= (vw + draw_margin_px)
+                && !cursor_label.text.is_empty()
             {
                 let mut bg = palette.secondary.base.color;
                 bg = iced::Color { a: 1.0, ..bg };
                 frame.fill_rectangle(
-                    iced::Point::new(x_px - 0.5 * label_w, y - 0.5 * label_h),
+                    iced::Point::new(
+                        cursor_label.x_px - 0.5 * cursor_label.width,
+                        y - 0.5 * cursor_label.height,
+                    ),
                     iced::Size {
-                        width: label_w,
-                        height: label_h,
+                        width: cursor_label.width,
+                        height: cursor_label.height,
                     },
                     bg,
                 );
                 frame.fill_text(canvas::Text {
-                    content: label,
-                    position: iced::Point::new(x_px, y),
+                    content: cursor_label.text,
+                    position: iced::Point::new(cursor_label.x_px, y),
                     color: palette.secondary.base.text,
-                    size: font_size.into(),
+                    size: FONT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
                     align_x: iced::Alignment::Center.into(),
                     align_y: iced::Alignment::Center.into(),
@@ -370,4 +370,54 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             iced_core::mouse::Interaction::default()
         }
     }
+}
+
+fn pick_time_format(visible_span_ms: i64) -> &'static str {
+    // Pick shorter/longer formats based on current visible time span.
+    if visible_span_ms <= 10_000 {
+        "%H:%M:%S%.3f" // up to ~10s: show milliseconds
+    } else if visible_span_ms <= 10 * 60_000 {
+        "%H:%M:%S" // up to ~10m: seconds
+    } else if visible_span_ms <= 24 * 3_600_000 {
+        "%H:%M" // up to ~1d: minutes
+    } else {
+        "%m-%d %H:%M" // zoomed way out: include date
+    }
+}
+
+struct CursorLabel {
+    x_px: f32,
+    text: String,
+    width: f32,
+    height: f32,
+}
+
+fn max_label_chars(fmt: &str) -> usize {
+    match fmt {
+        "%H:%M:%S%.3f" => 12,
+        "%H:%M:%S" => 8,
+        "%H:%M" => 5,
+        "%m-%d %H:%M" => 11,
+        _ => 16,
+    }
+}
+
+fn approx_text_width_px(chars: usize) -> f32 {
+    chars as f32 * (FONT_SIZE * APPROX_CHAR_WIDTH_RATIO)
+}
+
+fn bucket_bounds(
+    x_world_left: f64,
+    x_world_right: f64,
+    inv_col: f64,
+    phase: f64,
+    latest_bucket: i64,
+) -> (i64, i64) {
+    let u_min = ((x_world_left * inv_col) + phase + BUCKET_EPS).floor() as i64;
+    let u_max = ((x_world_right * inv_col) + phase - BUCKET_EPS).ceil() as i64;
+
+    (
+        latest_bucket.saturating_add(u_min),
+        latest_bucket.saturating_add(u_max),
+    )
 }

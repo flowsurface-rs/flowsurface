@@ -271,7 +271,7 @@ impl HeatmapShader {
         }
     }
 
-    pub fn view(&self) -> iced::Element<'_, Message> {
+    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
         if self.trades.datapoints.is_empty() {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
@@ -287,6 +287,7 @@ impl HeatmapShader {
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
+            timezone,
             plot_bounds: self.viewport,
             latest_bucket,
             aggr_time,
@@ -660,6 +661,11 @@ impl HeatmapShader {
                 self.anchor.scroll_ref_bucket(),
             );
         }
+
+        // Guard for callers that trigger `rebuild_all` outside `invalidate` (e.g. resume
+        // actions from `update`) which can lead to stale texture data but new y-mapping.
+        self.scene
+            .sync_heatmap_upload_from_grid(&mut self.depth_grid, need_full_rebuild);
 
         self.rebuild_instances(&w);
     }

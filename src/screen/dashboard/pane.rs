@@ -882,7 +882,7 @@ impl State {
             }
             Content::ShaderHeatmap { chart } => {
                 if let Some(chart) = chart {
-                    let base = HeatmapShader::view(chart).map(move |message| {
+                    let base = HeatmapShader::view(chart, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::HeatmapShaderInteraction(message))
                     });
 
