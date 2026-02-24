@@ -1,10 +1,10 @@
 use crate::chart::scale::{AxisLabel, TEXT_SIZE};
-
-use chrono::{DateTime, Datelike, Months, Offset};
 use data::{
     UserTimezone,
     util::{reset_to_start_of_month_utc, reset_to_start_of_year_utc},
 };
+
+use chrono::{DateTime, Datelike, Months};
 use iced::theme::palette::Extended;
 use iced_core::Rectangle;
 
@@ -371,7 +371,10 @@ fn sub_daily_labels_gen(
             let x_position = calc_x_pos(current_time, x_min, x_max, axis_bounds.width);
 
             if is_drawable(x_position, axis_bounds.width) {
-                let label_content = timezone.format_timestamp(current_time as i64, timeframe);
+                let label_content = timezone.format_with_kind(
+                    current_time as i64,
+                    data::config::timezone::TimeLabelKind::Axis { timeframe },
+                );
 
                 if let Some(content) = label_content {
                     all_labels.push(AxisLabel::new_x(
@@ -396,29 +399,14 @@ fn sub_daily_labels_gen(
     }
 }
 
-fn to_user_fixed_offset<Tz: chrono::TimeZone>(
-    dt: &chrono::DateTime<Tz>,
-    tz: UserTimezone,
-) -> chrono::DateTime<chrono::FixedOffset> {
-    match tz {
-        UserTimezone::Local => {
-            let offset = chrono::Local::now().offset().fix();
-            dt.with_timezone(&offset)
-        }
-        UserTimezone::Utc => {
-            let offset = chrono::FixedOffset::east_opt(0).unwrap();
-            dt.with_timezone(&offset)
-        }
-    }
-}
-
 fn with_user_timezone<Tz, F, R>(timezone: UserTimezone, f: F) -> impl Fn(&chrono::DateTime<Tz>) -> R
 where
     Tz: chrono::TimeZone,
     F: Fn(&chrono::DateTime<chrono::FixedOffset>) -> R,
 {
     move |dt| {
-        let dt_in_timezone = to_user_fixed_offset(dt, timezone);
+        let utc = dt.with_timezone(&chrono::Utc);
+        let dt_in_timezone = timezone.to_user_datetime(utc);
         f(&dt_in_timezone)
     }
 }
