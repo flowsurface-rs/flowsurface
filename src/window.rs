@@ -4,7 +4,6 @@ use data::layout::WindowSpec;
 use iced::{Point, Size, Subscription, Task, window};
 
 pub use iced::window::{Id, Position, Settings, close, open};
-use iced_futures::MaybeSend;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
@@ -47,7 +46,7 @@ fn filtered_events(
 pub fn collect_window_specs<M, F>(window_ids: Vec<window::Id>, message: F) -> Task<M>
 where
     F: Fn(HashMap<window::Id, WindowSpec>) -> M + Send + 'static,
-    M: MaybeSend + 'static,
+    M: Send + 'static,
 {
     // Create a task that collects specs for each window
     let window_spec_tasks = window_ids

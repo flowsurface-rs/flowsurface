@@ -35,7 +35,6 @@ use iced::{
         pane_grid::{self, Configuration},
     },
 };
-use iced_futures::futures::TryFutureExt;
 use std::{collections::HashMap, path::PathBuf, time::Instant, vec};
 
 #[derive(Debug, Clone)]
@@ -1247,8 +1246,10 @@ fn oi_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_open_interest(ticker_info, timeframe, range)
-                .map_err(|err| format!("{err}")),
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_open_interest(ticker_info, timeframe, range),
+                |err| format!("{err}"),
+            ),
             move |result| match result {
                 Ok(oi) => {
                     let data = FetchedData::OI { data: oi, req_id };
@@ -1285,8 +1286,10 @@ fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_klines(ticker_info, timeframe, range)
-                .map_err(|err| err.to_user_message()),
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_klines(ticker_info, timeframe, range),
+                |err| err.to_user_message(),
+            ),
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines {
