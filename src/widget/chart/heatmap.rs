@@ -5,8 +5,10 @@ mod view;
 mod widget;
 
 use instance::InstanceBuilder;
-use scene::depth_grid::HeatmapPalette;
-use scene::{Scene, depth_grid};
+use scene::{
+    Scene,
+    depth_grid::{GridRing, HeatmapPalette},
+};
 use ui::CanvasCaches;
 use ui::axisx::AxisXLabelCanvas;
 use ui::axisy::AxisYLabelCanvas;
@@ -88,13 +90,14 @@ pub struct HeatmapShader {
     clock: view::ExchangeClock,
     qty_scale: f32,
 
-    depth_grid: depth_grid::GridRing,
+    depth_grid: GridRing,
     // Cache for depth normalization denom (max qty) to avoid per-frame scans.
     depth_norm: view::DepthNormCache,
     data_gen: u64,
 
     anchor: view::Anchor,
     rebuild_policy: view::RebuildPolicy,
+    pub config: data::chart::heatmap::Config,
 }
 
 impl HeatmapShader {
@@ -104,7 +107,7 @@ impl HeatmapShader {
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
 
-        let depth_grid = depth_grid::GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
+        let depth_grid = GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
 
         let qty_scale: f32 = match exchange::unit::qty::volume_size_unit() {
             exchange::SizeUnit::Base => {
@@ -136,6 +139,7 @@ impl HeatmapShader {
             data_gen: 1,
             rebuild_policy: view::RebuildPolicy::Idle,
             anchor: view::Anchor::default(),
+            config: data::chart::heatmap::Config::default(),
         }
     }
 

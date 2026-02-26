@@ -1,4 +1,4 @@
-use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
+use crate::widget::chart::heatmap::scene::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::view::ViewWindow;
 use bytemuck::{Pod, Zeroable};
 use exchange::unit::Qty;

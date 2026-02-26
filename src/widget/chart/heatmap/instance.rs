@@ -1,4 +1,4 @@
-use crate::widget::chart::heatmap::depth_grid::HeatmapPalette;
+use crate::widget::chart::heatmap::scene::depth_grid::HeatmapPalette;
 use crate::widget::chart::heatmap::scene::pipeline::circle::CircleInstance;
 use crate::widget::chart::heatmap::scene::pipeline::rectangle::RectInstance;
 use crate::widget::chart::heatmap::scene::pipeline::{DrawItem, DrawLayer, DrawOp};

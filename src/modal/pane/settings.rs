@@ -270,6 +270,15 @@ pub fn heatmap_cfg_view<'a>(
     cfg_view_container(360, content)
 }
 
+pub fn heatmap_shader_cfg_view<'a>(
+    _cfg: heatmap::Config,
+    _pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    let content = text("This chart type doesn't have any configurations, WIP...");
+
+    cfg_view_container(360, content)
+}
+
 pub fn timesales_cfg_view<'a>(
     cfg: timeandsales::Config,
     pane: pane_grid::Pane,

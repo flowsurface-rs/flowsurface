@@ -1,7 +1,8 @@
 use data::chart::heatmap::GroupedTrade;
 use exchange::unit::{Price, PriceStep, Qty, qty};
 
-use crate::widget::chart::heatmap::{depth_grid::HeatmapPalette, view::ViewWindow};
+use crate::widget::chart::heatmap::scene::depth_grid::HeatmapPalette;
+use crate::widget::chart::heatmap::view::ViewWindow;
 
 pub const CIRCLE_VERTICES: &[[f32; 2]] = &[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
 pub const CIRCLE_INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];

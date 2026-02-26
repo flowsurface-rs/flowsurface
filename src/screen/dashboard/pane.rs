@@ -898,6 +898,9 @@ impl State {
                     let kind = ModifierKind::Heatmap(basis, tick_multiply);
                     let base_ticksize = tick_multiply.base(chart.tick_size());
 
+                    let settings_modal =
+                        || modal::pane::settings::heatmap_shader_cfg_view(chart.config, id);
+
                     let modifiers = row![
                         basis_modifier(id, basis, modifier, kind),
                         ticksize_modifier(
@@ -918,7 +921,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        settings_modal,
                         None,
                         tickers_table,
                     )

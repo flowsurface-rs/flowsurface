@@ -1,7 +1,7 @@
 use crate::style;
 use crate::widget::chart::heatmap::Message;
-use crate::widget::chart::heatmap::depth_grid::GridRing;
 use crate::widget::chart::heatmap::scene::Scene;
+use crate::widget::chart::heatmap::scene::depth_grid::GridRing;
 
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep};
