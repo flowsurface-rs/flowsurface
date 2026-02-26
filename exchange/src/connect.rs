@@ -1,7 +1,11 @@
-use crate::adapter::AdapterError;
+use crate::{
+    Event, TickerInfo, Timeframe,
+    adapter::{self, AdapterError, StreamConfig, Venue},
+};
 
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
+use futures::{StreamExt, stream::BoxStream};
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -23,17 +27,34 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
-pub fn channel<T, Fut, F>(buffer: usize, f: F) -> impl futures::Stream<Item = T>
-where
-    T: Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-    F: FnOnce(futures::channel::mpsc::Sender<T>) -> Fut + Send + 'static,
-{
-    let (sender, receiver) = futures::channel::mpsc::channel(buffer);
-    tokio::spawn(async move {
-        f(sender).await;
-    });
-    receiver
+pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
+    let ticker = config.id;
+    let push_freq = config.push_freq;
+
+    match config.exchange.venue() {
+        Venue::Binance => adapter::binance::connect_market_stream(ticker, push_freq).boxed(),
+        Venue::Bybit => adapter::bybit::connect_market_stream(ticker, push_freq).boxed(),
+        Venue::Hyperliquid => {
+            adapter::hyperliquid::connect_market_stream(ticker, config.tick_mltp, push_freq).boxed()
+        }
+        Venue::Okex => adapter::okex::connect_market_stream(ticker, push_freq).boxed(),
+    }
+}
+
+pub fn kline_stream(
+    config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>,
+) -> BoxStream<'static, Event> {
+    let streams = config.id.clone();
+    let market_kind = config.exchange.market_type();
+
+    match config.exchange.venue() {
+        Venue::Binance => adapter::binance::connect_kline_stream(streams, market_kind).boxed(),
+        Venue::Bybit => adapter::bybit::connect_kline_stream(streams, market_kind).boxed(),
+        Venue::Hyperliquid => {
+            adapter::hyperliquid::connect_kline_stream(streams, market_kind).boxed()
+        }
+        Venue::Okex => adapter::okex::connect_kline_stream(streams, market_kind).boxed(),
+    }
 }
 
 fn tls_connector() -> Result<TlsConnector, AdapterError> {
@@ -58,6 +79,19 @@ fn tls_connector() -> Result<TlsConnector, AdapterError> {
 pub enum State {
     Disconnected,
     Connected(FragmentCollector<TokioIo<Upgraded>>),
+}
+
+pub fn channel<T, Fut, F>(buffer: usize, f: F) -> impl futures::Stream<Item = T>
+where
+    T: Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+    F: FnOnce(futures::channel::mpsc::Sender<T>) -> Fut + Send + 'static,
+{
+    let (sender, receiver) = futures::channel::mpsc::channel(buffer);
+    tokio::spawn(async move {
+        f(sender).await;
+    });
+    receiver
 }
 
 pub async fn connect_ws(
