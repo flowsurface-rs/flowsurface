@@ -18,10 +18,10 @@ use data::{
     layout::{WindowSpec, pane::ContentKind},
 };
 use exchange::{
-    Kline, PushFrequency, StreamPairKind, TickMultiplier, TickerInfo, Timeframe, Trade,
+    Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
     adapter::{
         self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
-        StreamTicksize, UniqueStreams, binance, bybit, hyperliquid, okex,
+        StreamTicksize, UniqueStreams,
     },
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
@@ -35,7 +35,6 @@ use iced::{
         pane_grid::{self, Configuration},
     },
 };
-use iced_futures::futures::TryFutureExt;
 use std::{collections::HashMap, path::PathBuf, time::Instant, vec};
 
 #[derive(Debug, Clone)]
@@ -1089,7 +1088,15 @@ impl Dashboard {
                                 StreamTicksize::Client => None,
                                 StreamTicksize::ServerSide(tick_mltp) => Some(*tick_mltp),
                             };
-                            depth_subscription(*ticker, tick_mltp, *push_freq)
+
+                            let config = StreamConfig::new(
+                                *ticker,
+                                ticker.exchange(),
+                                tick_mltp,
+                                *push_freq,
+                            );
+
+                            Subscription::run_with(config, exchange::connect::depth_stream)
                         })
                         .collect::<Vec<_>>();
 
@@ -1105,7 +1112,15 @@ impl Dashboard {
                     .collect::<Vec<_>>();
 
                 if !kline_params.is_empty() {
-                    subs.push(kline_subscription(exchange, kline_params));
+                    let config = StreamConfig::new(
+                        kline_params,
+                        exchange,
+                        None,
+                        PushFrequency::ServerDefault,
+                    );
+
+                    let sub = Subscription::run_with(config, exchange::connect::kline_stream);
+                    subs.push(sub);
                 }
 
                 subs
@@ -1272,8 +1287,10 @@ fn oi_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_open_interest(ticker_info, timeframe, range)
-                .map_err(|err| format!("{err}")),
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_open_interest(ticker_info, timeframe, range),
+                |err| format!("{err}"),
+            ),
             move |result| match result {
                 Ok(oi) => {
                     let data = FetchedData::OI { data: oi, req_id };
@@ -1310,8 +1327,10 @@ fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => Task::perform(
-            adapter::fetch_klines(ticker_info, timeframe, range)
-                .map_err(|err| err.to_user_message()),
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_klines(ticker_info, timeframe, range),
+                |err| err.to_user_message(),
+            ),
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines {
@@ -1346,7 +1365,9 @@ pub fn fetch_trades_batched(
         let mut latest_trade_t = from_time;
 
         while latest_trade_t < to_time {
-            match binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone()).await {
+            match adapter::binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone())
+                .await
+            {
                 Ok(batch) => {
                     if batch.is_empty() {
                         break;
@@ -1362,73 +1383,4 @@ pub fn fetch_trades_batched(
 
         Ok(())
     })
-}
-
-pub fn depth_subscription(
-    ticker_info: TickerInfo,
-    tick_mlpt: Option<TickMultiplier>,
-    push_freq: PushFrequency,
-) -> Subscription<exchange::Event> {
-    let exchange = ticker_info.exchange();
-
-    let config = StreamConfig::new(ticker_info, exchange, tick_mlpt, push_freq);
-
-    match exchange {
-        Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
-            let builder = |cfg: &StreamConfig<TickerInfo>| {
-                binance::connect_market_stream(cfg.id, cfg.push_freq)
-            };
-            Subscription::run_with(config, builder)
-        }
-        Exchange::BybitSpot | Exchange::BybitLinear | Exchange::BybitInverse => {
-            let builder = |cfg: &StreamConfig<TickerInfo>| {
-                bybit::connect_market_stream(cfg.id, cfg.push_freq)
-            };
-            Subscription::run_with(config, builder)
-        }
-        Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
-            let builder = |cfg: &StreamConfig<TickerInfo>| {
-                hyperliquid::connect_market_stream(cfg.id, cfg.tick_mltp, cfg.push_freq)
-            };
-            Subscription::run_with(config, builder)
-        }
-        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            let builder =
-                |cfg: &StreamConfig<TickerInfo>| okex::connect_market_stream(cfg.id, cfg.push_freq);
-            Subscription::run_with(config, builder)
-        }
-    }
-}
-
-pub fn kline_subscription(
-    exchange: Exchange,
-    kline_subs: Vec<(TickerInfo, Timeframe)>,
-) -> Subscription<exchange::Event> {
-    let config = StreamConfig::new(kline_subs, exchange, None, PushFrequency::ServerDefault);
-    match exchange {
-        Exchange::BinanceSpot | Exchange::BinanceInverse | Exchange::BinanceLinear => {
-            let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
-                binance::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-            };
-            Subscription::run_with(config, builder)
-        }
-        Exchange::BybitSpot | Exchange::BybitInverse | Exchange::BybitLinear => {
-            let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
-                bybit::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-            };
-            Subscription::run_with(config, builder)
-        }
-        Exchange::HyperliquidSpot | Exchange::HyperliquidLinear => {
-            let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
-                hyperliquid::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-            };
-            Subscription::run_with(config, builder)
-        }
-        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => {
-            let builder = |cfg: &StreamConfig<Vec<(TickerInfo, Timeframe)>>| {
-                okex::connect_kline_stream(cfg.id.clone(), cfg.market_type)
-            };
-            Subscription::run_with(config, builder)
-        }
-    }
 }

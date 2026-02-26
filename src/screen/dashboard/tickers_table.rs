@@ -11,7 +11,7 @@ use data::{
 };
 use exchange::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{Exchange, ExchangeInclusive, MarketKind, fetch_ticker_metadata, fetch_ticker_stats},
+    adapter::{Exchange, MarketKind, Venue, fetch_ticker_metadata, fetch_ticker_stats},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
@@ -41,19 +41,15 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
-const EXCHANGE_FILTERS: [(ExchangeInclusive, Exchange, &str); 4] = [
-    (ExchangeInclusive::Bybit, Exchange::BybitLinear, "Bybit"),
+const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
+    (Venue::Bybit, Exchange::BybitLinear, "Bybit"),
+    (Venue::Binance, Exchange::BinanceLinear, "Binance"),
     (
-        ExchangeInclusive::Binance,
-        Exchange::BinanceLinear,
-        "Binance",
-    ),
-    (
-        ExchangeInclusive::Hyperliquid,
+        Venue::Hyperliquid,
         Exchange::HyperliquidLinear,
         "Hyperliquid",
     ),
-    (ExchangeInclusive::Okex, Exchange::OkexLinear, "OKX"),
+    (Venue::Okex, Exchange::OkexLinear, "OKX"),
 ];
 
 pub enum Action {
@@ -73,7 +69,7 @@ pub enum Message {
     FavoriteTicker(Ticker),
     Scrolled(scrollable::Viewport),
     ToggleMarketFilter(MarketKind),
-    ToggleExchangeFilter(ExchangeInclusive),
+    ToggleExchangeFilter(Venue),
     ToggleTable,
     ToggleFavorites,
     FetchForTickerStats,
@@ -93,7 +89,7 @@ pub struct TickersTable {
     scroll_offset: AbsoluteOffset,
     pub is_shown: bool,
     pub tickers_info: FxHashMap<Ticker, Option<TickerInfo>>,
-    selected_exchanges: FxHashSet<ExchangeInclusive>,
+    selected_exchanges: FxHashSet<Venue>,
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
     row_index: FxHashMap<Ticker, usize>,
@@ -535,7 +531,7 @@ impl TickersTable {
 
     fn exchange_filter_btn<'a>(
         &'a self,
-        exch_inc: ExchangeInclusive,
+        exch_inc: Venue,
         logo_exchange: Exchange,
         label: &'a str,
     ) -> Element<'a, Message> {
@@ -1016,10 +1012,8 @@ impl TickersTable {
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
         let matches_market =
             |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
-        let matches_exchange = |row: &TickerRowData| {
-            self.selected_exchanges
-                .contains(&ExchangeInclusive::of(row.exchange))
-        };
+        let matches_exchange =
+            |row: &TickerRowData| self.selected_exchanges.contains(&row.exchange.venue());
 
         // Collect fav_rows with search ranks
         let mut fav_rows: Vec<_> = if self.show_favorites {
