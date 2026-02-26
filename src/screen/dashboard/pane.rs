@@ -1,5 +1,5 @@
 use crate::{
-    chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
+    chart::{self, Chart, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
     modal::{
         self, ModifierKind,
         pane::{
@@ -923,6 +923,28 @@ impl State {
         } else {
             title_bar.always_show_controls()
         })
+    }
+
+    /// Pan the chart in this pane in response to a keyboard navigation event.
+    pub fn apply_keyboard_nav(&mut self, event: &iced::keyboard::Event) {
+        let msg = match &self.content {
+            Content::Kline { chart: Some(c), .. } => c.keyboard_nav_msg(event),
+            Content::Heatmap { chart: Some(c), .. } => c.keyboard_nav_msg(event),
+            _ => None,
+        };
+        if let Some(msg) = msg {
+            match &mut self.content {
+                Content::Kline { chart: Some(c), .. } => {
+                    super::chart::update(c, &msg);
+                    let _ = c.invalidate(None);
+                }
+                Content::Heatmap { chart: Some(c), .. } => {
+                    super::chart::update(c, &msg);
+                    let _ = c.invalidate(None);
+                }
+                _ => {}
+            }
+        }
     }
 
     pub fn update(&mut self, msg: Event) -> Option<Effect> {
