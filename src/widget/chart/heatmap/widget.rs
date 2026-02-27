@@ -63,6 +63,9 @@ struct State {
     // `Message::BoundsChanged` publishes when plot bounds change,
     // so `HeatmapShader` keeps working even if the current event is over an axis.
     last_plot_size: [f32; 2],
+    // Used to publish one extra cursor event when exiting plot so cursor-dependent
+    // labels/tooltips can be cleared without publishing every global mouse move.
+    was_cursor_in_plot: bool,
 }
 
 impl State {
@@ -184,6 +187,14 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         let over_x = cursor.position_over(x_axis_bounds).is_some();
         let over_y = cursor.position_over(y_axis_bounds).is_some();
         let over_plot = cursor.position_over(plot_bounds).is_some();
+
+        if matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. })) {
+            if over_plot || state.was_cursor_in_plot {
+                shell.publish(Message::CursorMoved);
+            }
+
+            state.was_cursor_in_plot = over_plot;
+        }
 
         let x_dragging = matches!(
             state.x_axis_state.interaction,

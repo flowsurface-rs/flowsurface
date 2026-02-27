@@ -9,10 +9,10 @@ use scene::{
     Scene,
     depth_grid::{GridRing, HeatmapPalette},
 };
-use ui::CanvasCaches;
 use ui::axisx::AxisXLabelCanvas;
 use ui::axisy::AxisYLabelCanvas;
 use ui::overlay::OverlayCanvas;
+use ui::{CanvasCaches, CanvasInvalidation};
 use view::{ViewConfig, ViewInputs, ViewWindow};
 use widget::HeatmapShaderWidget;
 
@@ -69,6 +69,7 @@ pub enum Message {
         anchor_screen_x: f32,
         viewport_w: f32,
     },
+    CursorMoved,
     PauseBtnClicked,
 }
 
@@ -79,6 +80,7 @@ pub struct HeatmapShader {
     palette: Option<HeatmapPalette>,
     instances: InstanceBuilder,
     canvas_caches: CanvasCaches,
+    canvas_invalidation: CanvasInvalidation,
 
     pub basis: Basis,
     step: PriceStep,
@@ -134,6 +136,7 @@ impl HeatmapShader {
             clock: view::ExchangeClock::Uninit,
             instances: InstanceBuilder::new(),
             canvas_caches: CanvasCaches::new(),
+            canvas_invalidation: CanvasInvalidation::default(),
             depth_grid,
             depth_norm: view::DepthNormCache::new(),
             data_gen: 1,
@@ -147,6 +150,7 @@ impl HeatmapShader {
         match message {
             Message::BoundsChanged(bounds) => {
                 self.viewport = Some(bounds);
+                self.canvas_invalidation.mark_all();
 
                 self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
                 self.rebuild_all(None);
@@ -158,6 +162,7 @@ impl HeatmapShader {
             } => {
                 self.scene
                     .zoom_column_world_keep_anchor(factor, 0.0, anchor_screen_x, viewport_w);
+                self.canvas_invalidation.mark_axis_x_motion();
 
                 let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
@@ -173,6 +178,7 @@ impl HeatmapShader {
 
                 self.scene.camera.offset[0] -= dx_world;
                 self.scene.camera.offset[1] -= dy_world;
+                self.canvas_invalidation.mark_axes_motion();
 
                 let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
@@ -202,6 +208,7 @@ impl HeatmapShader {
                     size.width,
                     size.height,
                 );
+                self.canvas_invalidation.mark_axes_motion();
 
                 let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
@@ -217,6 +224,7 @@ impl HeatmapShader {
                 viewport_h,
             } => {
                 self.scene.zoom_row_h_at(factor, cursor_y, viewport_h);
+                self.canvas_invalidation.mark_axis_y_motion();
 
                 self.try_rebuild_instances();
                 self.force_rebuild_if_ybin_changed();
@@ -230,6 +238,7 @@ impl HeatmapShader {
             } => {
                 self.scene
                     .zoom_column_world_at(factor, cursor_x, viewport_w);
+                self.canvas_invalidation.mark_axis_x_motion();
 
                 let resumed = self.try_resume_if_x0_visible();
                 self.try_rebuild_instances();
@@ -239,6 +248,7 @@ impl HeatmapShader {
             }
             Message::AxisYDoubleClicked => {
                 self.scene.camera.offset[1] = 0.0;
+                self.canvas_invalidation.mark_axis_y_motion();
 
                 self.try_rebuild_instances();
                 self.force_rebuild_if_ybin_changed();
@@ -251,6 +261,7 @@ impl HeatmapShader {
                         .camera
                         .reset_to_live_edge(size.width, false, false);
                     self.scene.set_default_column_width();
+                    self.canvas_invalidation.mark_axis_x_motion();
 
                     let resumed = self.try_resume_if_x0_visible();
                     self.try_rebuild_instances();
@@ -262,6 +273,7 @@ impl HeatmapShader {
             Message::PauseBtnClicked => {
                 if let Some(size) = self.viewport_size_px() {
                     self.scene.camera.reset_to_live_edge(size.width, true, true);
+                    self.canvas_invalidation.mark_axis_x_motion();
 
                     let resumed = self.try_resume_if_x0_visible();
 
@@ -271,6 +283,10 @@ impl HeatmapShader {
                         self.rebuild_policy = self.rebuild_policy.mark_input(Instant::now());
                     }
                 }
+            }
+            Message::CursorMoved => {
+                self.canvas_invalidation
+                    .mark_cursor_moved(self.anchor.is_paused());
             }
         }
     }
@@ -351,6 +367,7 @@ impl HeatmapShader {
         self.palette = Some(palette);
 
         self.scene.sync_palette(self.palette.as_ref());
+        self.canvas_invalidation.mark_all();
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -394,10 +411,13 @@ impl HeatmapShader {
                 self.invalidate_with_view_window(now_i, aggr_time, &w);
             }
 
-            self.canvas_caches.clear_axes();
+            if !self.anchor.is_paused() {
+                self.canvas_invalidation.mark_axis_x();
+                self.canvas_invalidation.mark_overlay_tooltip();
+            }
         }
 
-        self.canvas_caches.clear_overlays();
+        self.canvas_invalidation.apply(&self.canvas_caches);
         None
     }
 
@@ -410,6 +430,7 @@ impl HeatmapShader {
         depth: &Depth,
     ) {
         self.mark_needs_full_upload_if_stalled();
+        let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
         let paused = self.anchor.is_paused();
         let is_interacting = matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. });
@@ -448,6 +469,10 @@ impl HeatmapShader {
 
         if !paused && !is_interacting {
             self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
+        }
+
+        if self.anchor.effective_base_price(self.base_price) != prev_effective_base {
+            self.canvas_invalidation.mark_axis_y();
         }
     }
 
@@ -553,6 +578,7 @@ impl HeatmapShader {
         self.scene.set_circles(built.circles);
         self.scene.set_rectangles(built.rects);
         self.scene.set_draw_list(draw_list);
+        self.canvas_invalidation.mark_overlay_scale_labels();
     }
 
     fn try_rebuild_instances(&mut self) {
@@ -811,6 +837,8 @@ impl HeatmapShader {
 
         let resumed = self.anchor.resume_to_live();
         if resumed {
+            self.canvas_invalidation.mark_all();
+
             self.rebuild_policy = self
                 .rebuild_policy
                 .request_rebuild_from_historical()
@@ -871,6 +899,8 @@ impl HeatmapShader {
         );
 
         if state_changed {
+            self.canvas_invalidation.mark_all();
+
             self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
 
             if !self.anchor.is_paused() {
