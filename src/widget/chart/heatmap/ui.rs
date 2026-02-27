@@ -37,22 +37,12 @@ impl Default for AxisState {
     }
 }
 
+#[derive(Default)]
 pub struct CanvasCaches {
     pub y_axis: iced::widget::canvas::Cache,
     pub x_axis: iced::widget::canvas::Cache,
     pub overlay: iced::widget::canvas::Cache,
     pub scale_labels: iced::widget::canvas::Cache,
-}
-
-impl CanvasCaches {
-    pub fn new() -> Self {
-        Self {
-            y_axis: iced::widget::canvas::Cache::new(),
-            x_axis: iced::widget::canvas::Cache::new(),
-            overlay: iced::widget::canvas::Cache::new(),
-            scale_labels: iced::widget::canvas::Cache::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

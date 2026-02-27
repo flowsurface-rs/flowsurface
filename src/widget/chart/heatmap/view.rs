@@ -7,8 +7,9 @@ use exchange::unit::{Price, PriceStep};
 
 use iced::time::Instant;
 
-// Throttle depth denom recompute while interacting (keeps zoom smooth)
+/// Throttle depth denom recompute while interacting (keeps zoom smooth)
 const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
+const DEPTH_PROFILE_RIGHT_PAD_PX: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Anchor {
@@ -23,6 +24,13 @@ pub enum Anchor {
         x_phase_bucket: f32,
         frozen_base_price: Option<Price>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowStateChange {
+    Unchanged,
+    PausedFromLive,
+    ResumedToLive,
 }
 
 impl Default for Anchor {
@@ -169,6 +177,44 @@ impl Anchor {
         }
     }
 
+    /// Advance live timing, apply x=0 auto-follow, and if we resumed this frame,
+    /// immediately align Live timing to the current bucket/phase.
+    pub fn tick_live_and_auto_follow(
+        &mut self,
+        exchange_now_ms: u64,
+        aggr_time: u64,
+        x0_visible: bool,
+        current_base_price: Option<Price>,
+    ) -> FollowStateChange {
+        let (bucketed_time, render_latest_time, phase_bucket) =
+            self.live_timing(exchange_now_ms, aggr_time);
+
+        self.update_live_timing(bucketed_time, phase_bucket);
+
+        let changed = self.update_auto_follow(
+            x0_visible,
+            render_latest_time,
+            phase_bucket,
+            current_base_price,
+        );
+
+        if !changed {
+            return FollowStateChange::Unchanged;
+        }
+
+        let state_change = if self.is_paused() {
+            FollowStateChange::PausedFromLive
+        } else {
+            FollowStateChange::ResumedToLive
+        };
+
+        if state_change == FollowStateChange::ResumedToLive {
+            self.update_live_timing(bucketed_time, phase_bucket);
+        }
+
+        state_change
+    }
+
     /// Explicitly resume from paused state (used by pause/resume button).
     pub fn resume_to_live(&mut self) -> bool {
         match self {
@@ -209,32 +255,29 @@ impl Anchor {
         (scroll_ref_bucket, origin_x)
     }
 
-    /// Align Live anchor timing immediately to exchange clock to avoid stale paused timing
-    /// persisting until a later invalidate/input event.
-    pub fn align_live_anchor_to_clock(
-        &mut self,
-        now_i: Instant,
-        latest_time: Option<u64>,
-        aggr_time: u64,
-        clock: ExchangeClock,
-    ) {
-        if self.is_paused() {
-            return;
-        }
+    /// Computes "live" render timing from an exchange clock
+    ///
+    /// Returns:
+    /// - `bucketed`: exchange_now rounded down to bucket start
+    /// - `live_render_latest_time`: monotonic render latest time while live (paused stays frozen)
+    /// - `live_phase_bucket`: fractional phase within the current bucket [0, 1)
+    fn live_timing(&self, exchange_now_ms: u64, aggr_time: u64) -> (u64, u64, f32) {
+        let aggr_time = aggr_time.max(1);
+        let bucketed = round_time_to_bucket(exchange_now_ms, aggr_time);
 
-        if let Some(exchange_now_ms) = clock.estimate_now_ms(now_i) {
-            let bucketed = round_time_to_bucket(exchange_now_ms, aggr_time);
-            let phase = (exchange_now_ms.saturating_sub(bucketed) as f32 / aggr_time as f32)
-                .clamp(0.0, 0.999_999);
+        let live_render_latest_time = match &self {
+            Anchor::Live {
+                render_latest_time, ..
+            } => render_latest_time.max(&bucketed),
+            Anchor::Paused {
+                render_latest_time, ..
+            } => render_latest_time,
+        };
 
-            self.update_live_timing(bucketed, phase);
-            return;
-        }
+        let live_phase_ms = exchange_now_ms.saturating_sub(*live_render_latest_time);
+        let live_phase_bucket = (live_phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
 
-        if let Some(t) = latest_time {
-            let bucketed = round_time_to_bucket(t, aggr_time);
-            self.update_live_timing(bucketed, 0.0);
-        }
+        (bucketed, *live_render_latest_time, live_phase_bucket)
     }
 }
 
@@ -530,8 +573,11 @@ impl ViewWindow {
 
         // overlays (profile width depends on how much x>0 is visible)
         let visible_space_right_of_zero_world = (x_max - 0.0).max(0.0);
-        let depth_profile_max_width =
-            (cfg.profile_col_width_px / cam_scale).clamp(0.0, visible_space_right_of_zero_world);
+        let depth_profile_max_width = depth_profile_width_world(
+            cfg.profile_col_width_px,
+            cam_scale,
+            visible_space_right_of_zero_world,
+        );
 
         let strip_h_world: f32 = (vh_px * cfg.volume_area_height_pct) / cam_scale;
         let strip_bottom_y: f32 = y_max;
@@ -596,6 +642,7 @@ struct NormKey {
 }
 
 #[derive(Debug)]
+/// Cache for depth normalization denom (max qty) to avoid per-frame scans.
 pub struct DepthNormCache {
     key: Option<NormKey>,
     value: f32,
@@ -697,27 +744,22 @@ pub fn round_time_to_bucket(t_ms: u64, aggr_time: u64) -> u64 {
     (t_ms / aggr_time) * aggr_time
 }
 
-/// Computes "live" render timing from an exchange clock
-///
-/// Returns:
-/// - `bucketed`: exchange_now rounded down to bucket start
-/// - `live_render_latest_time`: monotonic render latest time while live (paused stays frozen)
-/// - `live_phase_bucket`: fractional phase within the current bucket [0, 1)
-pub fn live_timing(anchor: Anchor, exchange_now_ms: u64, aggr_time: u64) -> (u64, u64, f32) {
-    let aggr_time = aggr_time.max(1);
-    let bucketed = round_time_to_bucket(exchange_now_ms, aggr_time);
+pub fn depth_profile_width_world(
+    profile_col_width_px: f32,
+    cam_scale: f32,
+    visible_space_right_of_zero_world: f32,
+) -> f32 {
+    if !cam_scale.is_finite() || cam_scale <= 0.0 {
+        return 0.0;
+    }
 
-    let live_render_latest_time = match anchor {
-        Anchor::Live {
-            render_latest_time, ..
-        } => render_latest_time.max(bucketed),
-        Anchor::Paused {
-            render_latest_time, ..
-        } => render_latest_time,
-    };
+    let desired_profile_w_world = profile_col_width_px.max(0.0) / cam_scale;
+    let visible_space_right_of_zero_world = visible_space_right_of_zero_world.max(0.0);
 
-    let live_phase_ms = exchange_now_ms.saturating_sub(live_render_latest_time);
-    let live_phase_bucket = (live_phase_ms as f32 / aggr_time as f32).clamp(0.0, 0.999_999);
-
-    (bucketed, live_render_latest_time, live_phase_bucket)
+    if desired_profile_w_world > visible_space_right_of_zero_world {
+        let pad_world = DEPTH_PROFILE_RIGHT_PAD_PX / cam_scale;
+        (visible_space_right_of_zero_world - pad_world).max(0.0)
+    } else {
+        desired_profile_w_world
+    }
 }

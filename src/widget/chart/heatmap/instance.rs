@@ -20,7 +20,6 @@ pub struct OverlayBuild {
 }
 
 impl OverlayBuild {
-    #[inline]
     fn count(r: &std::ops::Range<u32>) -> u32 {
         r.end.saturating_sub(r.start)
     }
@@ -78,6 +77,7 @@ impl OverlayBuild {
     }
 }
 
+#[derive(Default)]
 pub struct InstanceBuilder {
     // Reusable buffers
     volume_acc: Vec<(Qty, Qty)>,
@@ -94,20 +94,6 @@ pub struct InstanceBuilder {
 }
 
 impl InstanceBuilder {
-    pub fn new() -> Self {
-        Self {
-            volume_acc: Vec::new(),
-            volume_touched: Vec::new(),
-            profile_bid_acc: Vec::new(),
-            profile_ask_acc: Vec::new(),
-            trade_profile_bid_acc: Vec::new(),
-            trade_profile_ask_acc: Vec::new(),
-            profile_scale_max_qty: None,
-            volume_strip_scale_max_qty: None,
-            trade_profile_scale_max_qty: None,
-        }
-    }
-
     pub fn build_instances(
         &mut self,
         w: &ViewWindow,

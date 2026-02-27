@@ -2,6 +2,7 @@ use crate::style;
 use crate::widget::chart::heatmap::Message;
 use crate::widget::chart::heatmap::scene::Scene;
 use crate::widget::chart::heatmap::scene::depth_grid::GridRing;
+use crate::widget::chart::heatmap::view;
 
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep};
@@ -240,9 +241,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
                     let visible_space_right_of_zero_world =
                         (self.scene.camera.right_edge(vw_px) - 0.0).max(0.0);
-                    let desired_profile_w_world = (self.profile_col_width_px.max(0.0)) / cam_scale;
-                    let profile_max_w_world =
-                        desired_profile_w_world.min(visible_space_right_of_zero_world);
+                    let profile_max_w_world = view::depth_profile_width_world(
+                        self.profile_col_width_px,
+                        cam_scale,
+                        visible_space_right_of_zero_world,
+                    );
 
                     if profile_max_w_world > 0.0 {
                         // Profile ends at world x = profile_max_w_world (since it starts at x=0).
@@ -437,12 +440,15 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     }
 
                     let idx = (y_tex as usize) * (tex_w as usize) + (x_ring as usize);
-                    if idx >= self.depth_grid.bid.len() || idx >= self.depth_grid.ask.len() {
+                    if idx >= self.depth_grid.bids_len() || idx >= self.depth_grid.asks_len() {
                         continue;
                     }
 
-                    let bid_u32 = self.depth_grid.bid[idx];
-                    let ask_u32 = self.depth_grid.ask[idx];
+                    let (bid_u32, ask_u32) =
+                        match (self.depth_grid.get_bid(idx), self.depth_grid.get_ask(idx)) {
+                            (Some(b), Some(a)) => (b, a),
+                            _ => continue,
+                        };
 
                     if bid_u32 == 0 && ask_u32 == 0 {
                         continue;
@@ -737,11 +743,10 @@ impl<'a> OverlayCanvas<'a> {
                 }
 
                 let idx = (y_tex as usize) * (tex_w as usize) + (x_ring as usize);
-                if idx >= self.depth_grid.bid.len() || idx >= self.depth_grid.ask.len() {
-                    continue;
-                }
 
-                if self.depth_grid.bid[idx] != 0 || self.depth_grid.ask[idx] != 0 {
+                if let Some((bid, ask)) = self.depth_grid.get_pair(idx)
+                    && (bid != 0 || ask != 0)
+                {
                     return true;
                 }
             }

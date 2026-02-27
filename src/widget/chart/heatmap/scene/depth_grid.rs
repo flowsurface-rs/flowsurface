@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
 use data::chart::heatmap::HistoricalDepth;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep, Qty};
+use std::sync::Arc;
 
 const Y_BLOCK_H: u32 = 16;
 const DEPTH_GRID_GRACE_MS: u64 = 500;
@@ -10,21 +9,24 @@ const DEPTH_GRID_GRACE_MS: u64 = 500;
 // Margin before forcing a full recenter rebuild (fraction of tex_h)
 const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
 
+const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
+const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
+
 #[derive(Debug, Clone)]
 pub struct GridRing {
-    /// How many aggregated buckets to keep in the ring
+    /// how many aggregated buckets to keep in the ring
     horizon_buckets: u32,
-    /// tolerate short gaps/out-of-order updates (ms)
-    pub grace_ms: u64,
+    /// tolerate short gaps
+    grace_ms: u64,
     tex_w: u32,
     tex_h: u32,
     aggr_time_ms: u64,
     last_bucket: Option<i64>,
     y_anchor: Option<Price>,
-    pub bid: Vec<u32>,
-    pub ask: Vec<u32>,
-    pub col_max_bid: Vec<u32>,
-    pub col_max_ask: Vec<u32>,
+    bid: Vec<u32>,
+    ask: Vec<u32>,
+    col_max_bid: Vec<u32>,
+    col_max_ask: Vec<u32>,
     steps_per_y_bin: i64,
     full_dirty: bool,
     dirty_cols: Vec<u32>,
@@ -32,87 +34,53 @@ pub struct GridRing {
     block_max_ask: Vec<u32>,
 }
 
+impl Default for GridRing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GridRing {
-    pub fn new(horizon_buckets: u32, tex_h: u32) -> Self {
+    pub fn new() -> Self {
         Self {
-            horizon_buckets: horizon_buckets.max(1),
+            horizon_buckets: DEPTH_GRID_HORIZON_BUCKETS,
             grace_ms: DEPTH_GRID_GRACE_MS,
             tex_w: 0,
-            tex_h,
-
+            tex_h: DEPTH_GRID_TEX_H,
             aggr_time_ms: 0,
             last_bucket: None,
-
             y_anchor: None,
-
             bid: Vec::new(),
             ask: Vec::new(),
-
             col_max_bid: Vec::new(),
             col_max_ask: Vec::new(),
-
             steps_per_y_bin: 1,
-
             full_dirty: false,
             dirty_cols: Vec::new(),
-
             block_max_bid: Vec::new(),
             block_max_ask: Vec::new(),
         }
     }
 
-    #[inline]
-    fn y_block_count(&self) -> u32 {
-        if self.tex_h == 0 {
-            0
-        } else {
-            self.tex_h.div_ceil(Y_BLOCK_H)
-        }
+    pub fn bids_len(&self) -> usize {
+        self.bid.len()
     }
 
-    #[inline]
-    fn block_idx(&self, x: u32, block_y: u32) -> usize {
-        (block_y as usize) * (self.tex_w as usize) + (x as usize)
+    pub fn asks_len(&self) -> usize {
+        self.ask.len()
     }
 
-    /// Returns `true` once after an internal reset/recenter/layout change that requires
-    /// a full texture upload. Consumes the flag.
-    #[inline]
-    pub fn take_full_dirty(&mut self) -> bool {
-        if self.full_dirty {
-            self.full_dirty = false;
-            self.dirty_cols.clear();
-            true
-        } else {
-            false
-        }
+    pub fn get_bid(&self, idx: usize) -> Option<u32> {
+        self.bid.get(idx).copied()
     }
 
-    /// Returns the set of x-columns that changed since last call (sorted, deduped).
-    /// If the grid is in "full dirty" state, returns an empty vec (caller should full-upload).
-    pub fn drain_dirty_columns(&mut self) -> Vec<u32> {
-        if self.full_dirty || self.dirty_cols.is_empty() {
-            self.dirty_cols.clear();
-            return Vec::new();
-        }
-
-        let mut out = std::mem::take(&mut self.dirty_cols);
-        out.sort_unstable();
-        out.dedup();
-        out
+    pub fn get_ask(&self, idx: usize) -> Option<u32> {
+        self.ask.get(idx).copied()
     }
 
-    #[inline]
-    fn mark_full_dirty(&mut self) {
-        self.full_dirty = true;
-        self.dirty_cols.clear();
-    }
-
-    #[inline]
-    fn mark_dirty(&mut self, x: u32) {
-        if !self.full_dirty {
-            self.dirty_cols.push(x);
-        }
+    /// `None` if `idx` is beyond the end of either buffer.
+    pub fn get_pair(&self, idx: usize) -> Option<(u32, u32)> {
+        Some((self.get_bid(idx)?, self.get_ask(idx)?))
     }
 
     #[inline]
@@ -125,17 +93,17 @@ impl GridRing {
         self.tex_h
     }
 
-    #[inline]
-    fn grace_buckets(&self) -> i64 {
-        let aggr = self.aggr_time_ms.max(1);
-        let b = self.grace_ms.div_ceil(aggr) as i64;
-        b.max(0)
-    }
-
     /// Current y-anchor used for mapping (if any).
     #[inline]
     pub fn y_anchor_price(&self) -> Option<Price> {
         self.y_anchor
+    }
+
+    /// Force the next `build_scene_upload_plan()` to produce a full texture upload.
+    /// Useful when GPU resources were recreated (e.g. window hidden/re-shown).
+    #[inline]
+    pub fn force_full_upload(&mut self) {
+        self.mark_full_dirty();
     }
 
     /// Current y-binning in steps.
@@ -295,6 +263,258 @@ impl GridRing {
         self.mark_full_dirty();
     }
 
+    /// Update the ring for a new snapshot at `rounded_t_ms` (must already be bucket-rounded).
+    ///
+    /// - Uses max-reduction per (bucket, y) to match the `accumulate_max` behavior.
+    pub fn ingest_snapshot(
+        &mut self,
+        depth: &Depth,
+        rounded_t_ms: u64,
+        step: PriceStep,
+        qty_scale: f32,
+        recenter_target: Price,
+        steps_per_y_bin: i64,
+    ) {
+        let steps_per_y_bin = steps_per_y_bin.max(1);
+        if self.steps_per_y_bin != steps_per_y_bin {
+            self.steps_per_y_bin = steps_per_y_bin;
+            self.clear_all();
+            self.last_bucket = None;
+            self.y_anchor = None;
+
+            // Binning change => full upload required.
+            self.mark_full_dirty();
+        }
+
+        if self.aggr_time_ms == 0 || self.tex_w == 0 || self.tex_h == 0 {
+            return;
+        }
+
+        let step_units = step.units.max(1);
+        let recenter_threshold_bins: i64 = (self.tex_h as i64) / 4;
+
+        match self.y_anchor {
+            None => self.y_anchor = Some(recenter_target),
+            Some(anchor) => {
+                let delta_steps = (recenter_target.units - anchor.units).div_euclid(step_units);
+                let delta_bins = delta_steps.div_euclid(self.steps_per_y_bin.max(1));
+
+                if delta_bins.unsigned_abs() as i64 > recenter_threshold_bins.max(1) {
+                    self.y_anchor = Some(recenter_target);
+                    self.clear_all();
+                    self.last_bucket = None;
+
+                    // Recentering => full upload required.
+                    self.mark_full_dirty();
+                }
+            }
+        }
+        let Some(anchor) = self.y_anchor else {
+            return;
+        };
+
+        let bucket: i64 = (rounded_t_ms / self.aggr_time_ms) as i64;
+        let w = self.tex_w as i64;
+        let x: u32 = (bucket.rem_euclid(w)) as u32;
+
+        // Late/out-of-order within grace: clear+rewrite that older bucket.
+        if let Some(prev) = self.last_bucket
+            && bucket < prev
+        {
+            let grace_b = self.grace_buckets();
+            let oldest_kept = prev - (self.tex_w as i64) + 1;
+
+            if grace_b > 0 && (prev - bucket) <= grace_b && bucket >= oldest_kept {
+                self.clear_column(x);
+                self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
+                self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
+                return;
+            } else {
+                return;
+            }
+        }
+
+        self.advance_and_fill_columns(bucket);
+
+        self.clear_column(x);
+        self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
+        self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
+    }
+
+    /// Map an absolute bucket index to the ring texture x coordinate.
+    /// Returns 0 if the ring is not laid out yet.
+    #[inline]
+    pub fn ring_x_for_bucket(&self, bucket: i64) -> u32 {
+        if self.tex_w == 0 {
+            return 0;
+        }
+        (bucket.rem_euclid(self.tex_w as i64)) as u32
+    }
+
+    /// Value for the shader uniform `heatmap_map[1]` (y_start_bin).
+    ///
+    /// This is the y-bin offset that aligns the texture's internal `y_anchor`
+    /// with the current `base_price`.
+    #[inline]
+    pub fn heatmap_y_start_bin(&self, base_price: Price, step: PriceStep) -> f32 {
+        let tex_h = self.tex_h.max(1);
+        let half_h = (tex_h as i32) / 2;
+
+        let Some(anchor) = self.y_anchor else {
+            return -(half_h as f32);
+        };
+
+        let step_units = step.units.max(1);
+        let steps_per_y_bin = self.steps_per_y_bin.max(1);
+
+        // delta_bins = (base - anchor) in y-bins
+        let delta_steps: i64 = (base_price.units - anchor.units).div_euclid(step_units);
+        let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
+
+        -(half_h as f32) - (delta_bins as f32)
+    }
+
+    pub fn upload_to_scene(&mut self, force_full: bool) -> Option<super::HeatmapUpload> {
+        let tex_w = self.tex_w();
+        let tex_h = self.tex_h();
+        if tex_w == 0 || tex_h == 0 {
+            return None;
+        }
+
+        if force_full {
+            self.force_full_upload();
+        }
+
+        self.build_scene_upload()
+    }
+
+    /// Determines if the grid should be recentered based on distance from current anchor.
+    /// Returns true if the target price has drifted beyond the acceptable margin.
+    pub fn should_recenter(&self, target: Price, step: PriceStep) -> bool {
+        let tex_h = self.tex_h() as i64;
+        if tex_h <= 0 {
+            return false;
+        }
+
+        let Some(anchor) = self.y_anchor_price() else {
+            return true; // No anchor set, should recenter
+        };
+
+        let step_units = step.units.max(1);
+        let steps_per_y_bin = self.steps_per_y_bin();
+
+        let delta_steps = (target.units - anchor.units).div_euclid(step_units);
+        let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
+
+        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
+
+        delta_bins > margin_bins
+    }
+
+    /// True if caller should perform a full rebuild-from-historical.
+    #[inline]
+    pub fn should_full_rebuild(
+        &self,
+        prev_steps_per_y_bin: i64,
+        new_steps_per_y_bin: i64,
+        recenter_target: Price,
+        step: PriceStep,
+        force_full_rebuild: bool,
+    ) -> bool {
+        let prev = prev_steps_per_y_bin.max(1);
+        let next = new_steps_per_y_bin.max(1);
+        (prev != next) || force_full_rebuild || self.should_recenter(recenter_target, step)
+    }
+
+    /// Time window (ms) required to fill the ring horizon ending at `latest_time_ms`.
+    #[inline]
+    pub fn horizon_time_window_ms(&self, latest_time_ms: u64, aggr_time_ms: u64) -> (u64, u64) {
+        let aggr_time_ms = aggr_time_ms.max(1);
+        let horizon_ms = (self.horizon_buckets as u64).saturating_mul(aggr_time_ms);
+        let oldest = latest_time_ms.saturating_sub(horizon_ms);
+        (oldest, latest_time_ms)
+    }
+
+    /// Compute rebuild bounds (highest/lowest prices) for the current texture height.
+    ///
+    /// These bounds are centered around `anchor` and span half the texture height in bins.
+    #[inline]
+    pub fn rebuild_price_bounds(
+        &self,
+        anchor: Price,
+        step: PriceStep,
+        steps_per_y_bin: i64,
+    ) -> (Price, Price) {
+        let tex_h_i64 = (self.tex_h.max(1)) as i64;
+        let half_bins = tex_h_i64 / 2;
+
+        let step_units = step.units.max(1);
+        let steps_per = steps_per_y_bin.max(1);
+
+        let half_steps = half_bins.saturating_mul(steps_per);
+        let delta_units = half_steps.saturating_mul(step_units);
+
+        let anchor_u = anchor.units;
+        let highest = Price::from_units(anchor_u.saturating_add(delta_units));
+        let lowest = Price::from_units(anchor_u.saturating_sub(delta_units));
+        (highest, lowest)
+    }
+
+    fn y_block_count(&self) -> u32 {
+        if self.tex_h == 0 {
+            0
+        } else {
+            self.tex_h.div_ceil(Y_BLOCK_H)
+        }
+    }
+
+    fn block_idx(&self, x: u32, block_y: u32) -> usize {
+        (block_y as usize) * (self.tex_w as usize) + (x as usize)
+    }
+
+    /// Returns `true` once after an internal reset/recenter/layout change that requires
+    /// a full texture upload. Consumes the flag.
+    fn take_full_dirty(&mut self) -> bool {
+        if self.full_dirty {
+            self.full_dirty = false;
+            self.dirty_cols.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the set of x-columns that changed since last call (sorted, deduped).
+    /// If the grid is in "full dirty" state, returns an empty vec (caller should full-upload).
+    fn drain_dirty_columns(&mut self) -> Vec<u32> {
+        if self.full_dirty || self.dirty_cols.is_empty() {
+            self.dirty_cols.clear();
+            return Vec::new();
+        }
+
+        let mut out = std::mem::take(&mut self.dirty_cols);
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    fn mark_full_dirty(&mut self) {
+        self.full_dirty = true;
+        self.dirty_cols.clear();
+    }
+
+    fn mark_dirty(&mut self, x: u32) {
+        if !self.full_dirty {
+            self.dirty_cols.push(x);
+        }
+    }
+
+    fn grace_buckets(&self) -> i64 {
+        let aggr = self.aggr_time_ms.max(1);
+        let b = self.grace_ms.div_ceil(aggr) as i64;
+        b.max(0)
+    }
+
     fn scatter_side(
         &mut self,
         side: &std::collections::BTreeMap<Price, Qty>,
@@ -380,89 +600,11 @@ impl GridRing {
         }
     }
 
-    /// Update the ring for a new snapshot at `rounded_t_ms` (must already be bucket-rounded).
-    ///
-    /// - Uses max-reduction per (bucket, y) to match the `accumulate_max` behavior.
-    pub fn ingest_snapshot(
-        &mut self,
-        depth: &Depth,
-        rounded_t_ms: u64,
-        step: PriceStep,
-        qty_scale: f32,
-        recenter_target: Price,
-        steps_per_y_bin: i64,
-    ) {
-        let steps_per_y_bin = steps_per_y_bin.max(1);
-        if self.steps_per_y_bin != steps_per_y_bin {
-            self.steps_per_y_bin = steps_per_y_bin;
-            self.clear_all();
-            self.last_bucket = None;
-            self.y_anchor = None;
-
-            // Binning change => full upload required.
-            self.mark_full_dirty();
-        }
-
-        if self.aggr_time_ms == 0 || self.tex_w == 0 || self.tex_h == 0 {
-            return;
-        }
-
-        let step_units = step.units.max(1);
-        let recenter_threshold_bins: i64 = (self.tex_h as i64) / 4;
-
-        match self.y_anchor {
-            None => self.y_anchor = Some(recenter_target),
-            Some(anchor) => {
-                let delta_steps = (recenter_target.units - anchor.units).div_euclid(step_units);
-                let delta_bins = delta_steps.div_euclid(self.steps_per_y_bin.max(1));
-
-                if delta_bins.unsigned_abs() as i64 > recenter_threshold_bins.max(1) {
-                    self.y_anchor = Some(recenter_target);
-                    self.clear_all();
-                    self.last_bucket = None;
-
-                    // Recentering => full upload required.
-                    self.mark_full_dirty();
-                }
-            }
-        }
-        let Some(anchor) = self.y_anchor else {
-            return;
-        };
-
-        let bucket: i64 = (rounded_t_ms / self.aggr_time_ms) as i64;
-        let w = self.tex_w as i64;
-        let x: u32 = (bucket.rem_euclid(w)) as u32;
-
-        // Late/out-of-order within grace: clear+rewrite that older bucket.
-        if let Some(prev) = self.last_bucket
-            && bucket < prev
-        {
-            let grace_b = self.grace_buckets();
-            let oldest_kept = prev - (self.tex_w as i64) + 1;
-
-            if grace_b > 0 && (prev - bucket) <= grace_b && bucket >= oldest_kept {
-                self.clear_column(x);
-                self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
-                self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
-                return;
-            } else {
-                return;
-            }
-        }
-
-        self.advance_and_fill_columns(bucket);
-
-        self.clear_column(x);
-        self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
-        self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
-    }
-
-    pub fn extract_bid_column(&self, x: u32) -> Vec<u32> {
+    fn extract_bid_column(&self, x: u32) -> Vec<u32> {
         self.extract_column_impl(x, true)
     }
 
-    pub fn extract_ask_column(&self, x: u32) -> Vec<u32> {
+    fn extract_ask_column(&self, x: u32) -> Vec<u32> {
         self.extract_column_impl(x, false)
     }
 
@@ -609,13 +751,6 @@ impl GridRing {
         self.last_bucket = Some(new_bucket);
     }
 
-    /// Force the next `build_scene_upload_plan()` to produce a full texture upload.
-    /// Useful when GPU resources were recreated (e.g. window hidden/re-shown).
-    #[inline]
-    pub fn force_full_upload(&mut self) {
-        self.mark_full_dirty();
-    }
-
     /// Build a renderer upload from the ring's dirty flags.
     fn build_scene_upload(&mut self) -> Option<super::HeatmapUpload> {
         if self.tex_w == 0 || self.tex_h == 0 {
@@ -650,125 +785,6 @@ impl GridRing {
             height: self.tex_h,
             cols: Arc::from(cols),
         })
-    }
-
-    /// Map an absolute bucket index to the ring texture x coordinate.
-    /// Returns 0 if the ring is not laid out yet.
-    #[inline]
-    pub fn ring_x_for_bucket(&self, bucket: i64) -> u32 {
-        if self.tex_w == 0 {
-            return 0;
-        }
-        (bucket.rem_euclid(self.tex_w as i64)) as u32
-    }
-
-    /// Value for the shader uniform `heatmap_map[1]` (y_start_bin).
-    ///
-    /// This is the y-bin offset that aligns the texture's internal `y_anchor`
-    /// with the current `base_price`.
-    #[inline]
-    pub fn heatmap_y_start_bin(&self, base_price: Price, step: PriceStep) -> f32 {
-        let tex_h = self.tex_h.max(1);
-        let half_h = (tex_h as i32) / 2;
-
-        let Some(anchor) = self.y_anchor else {
-            return -(half_h as f32);
-        };
-
-        let step_units = step.units.max(1);
-        let steps_per_y_bin = self.steps_per_y_bin.max(1);
-
-        // delta_bins = (base - anchor) in y-bins
-        let delta_steps: i64 = (base_price.units - anchor.units).div_euclid(step_units);
-        let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
-
-        -(half_h as f32) - (delta_bins as f32)
-    }
-
-    pub fn upload_to_scene(&mut self, force_full: bool) -> Option<super::HeatmapUpload> {
-        let tex_w = self.tex_w();
-        let tex_h = self.tex_h();
-        if tex_w == 0 || tex_h == 0 {
-            return None;
-        }
-
-        if force_full {
-            self.force_full_upload();
-        }
-
-        self.build_scene_upload()
-    }
-
-    /// Determines if the grid should be recentered based on distance from current anchor.
-    /// Returns true if the target price has drifted beyond the acceptable margin.
-    pub fn should_recenter(&self, target: Price, step: PriceStep) -> bool {
-        let tex_h = self.tex_h() as i64;
-        if tex_h <= 0 {
-            return false;
-        }
-
-        let Some(anchor) = self.y_anchor_price() else {
-            return true; // No anchor set, should recenter
-        };
-
-        let step_units = step.units.max(1);
-        let steps_per_y_bin = self.steps_per_y_bin();
-
-        let delta_steps = (target.units - anchor.units).div_euclid(step_units);
-        let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
-
-        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
-
-        delta_bins > margin_bins
-    }
-
-    /// True if caller should perform a full rebuild-from-historical.
-    #[inline]
-    pub fn should_full_rebuild(
-        &self,
-        prev_steps_per_y_bin: i64,
-        new_steps_per_y_bin: i64,
-        recenter_target: Price,
-        step: PriceStep,
-        force_full_rebuild: bool,
-    ) -> bool {
-        let prev = prev_steps_per_y_bin.max(1);
-        let next = new_steps_per_y_bin.max(1);
-        (prev != next) || force_full_rebuild || self.should_recenter(recenter_target, step)
-    }
-
-    /// Time window (ms) required to fill the ring horizon ending at `latest_time_ms`.
-    #[inline]
-    pub fn horizon_time_window_ms(&self, latest_time_ms: u64, aggr_time_ms: u64) -> (u64, u64) {
-        let aggr_time_ms = aggr_time_ms.max(1);
-        let horizon_ms = (self.horizon_buckets as u64).saturating_mul(aggr_time_ms);
-        let oldest = latest_time_ms.saturating_sub(horizon_ms);
-        (oldest, latest_time_ms)
-    }
-
-    /// Compute rebuild bounds (highest/lowest prices) for the current texture height.
-    ///
-    /// These bounds are centered around `anchor` and span half the texture height in bins.
-    #[inline]
-    pub fn rebuild_price_bounds(
-        &self,
-        anchor: Price,
-        step: PriceStep,
-        steps_per_y_bin: i64,
-    ) -> (Price, Price) {
-        let tex_h_i64 = (self.tex_h.max(1)) as i64;
-        let half_bins = tex_h_i64 / 2;
-
-        let step_units = step.units.max(1);
-        let steps_per = steps_per_y_bin.max(1);
-
-        let half_steps = half_bins.saturating_mul(steps_per);
-        let delta_units = half_steps.saturating_mul(step_units);
-
-        let anchor_u = anchor.units;
-        let highest = Price::from_units(anchor_u.saturating_add(delta_units));
-        let lowest = Price::from_units(anchor_u.saturating_sub(delta_units));
-        (highest, lowest)
     }
 }
 

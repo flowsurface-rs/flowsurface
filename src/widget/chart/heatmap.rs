@@ -26,9 +26,6 @@ use exchange::{TickerInfo, Trade};
 
 use std::time::{Duration, Instant};
 
-const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
-const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
-
 // Latest profile overlay (x > 0)
 const PROFILE_COL_WIDTH_PX: f32 = 180.0;
 
@@ -82,24 +79,23 @@ pub struct HeatmapShader {
     canvas_caches: CanvasCaches,
     canvas_invalidation: CanvasInvalidation,
 
-    pub basis: Basis,
     step: PriceStep,
+    pub basis: Basis,
     pub ticker_info: TickerInfo,
+    pub config: data::chart::heatmap::Config,
     trades: TimeSeries<HeatmapDataPoint>,
     depth_history: HistoricalDepth,
+
     latest_time: Option<u64>,
     base_price: Option<Price>,
     clock: view::ExchangeClock,
-    qty_scale: f32,
+    anchor: view::Anchor,
 
     depth_grid: GridRing,
-    // Cache for depth normalization denom (max qty) to avoid per-frame scans.
     depth_norm: view::DepthNormCache,
     data_gen: u64,
-
-    anchor: view::Anchor,
+    qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
-    pub config: data::chart::heatmap::Config,
 }
 
 impl HeatmapShader {
@@ -109,12 +105,9 @@ impl HeatmapShader {
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
 
-        let depth_grid = GridRing::new(DEPTH_GRID_HORIZON_BUCKETS, DEPTH_GRID_TEX_H);
-
         let qty_scale: f32 = match exchange::unit::qty::volume_size_unit() {
             exchange::SizeUnit::Base => {
                 let min_qty_f: f32 = ticker_info.min_qty.into();
-                assert!(min_qty_f > 0.0, "ticker_info.min_qty must be > 0");
                 1.0 / min_qty_f
             }
             exchange::SizeUnit::Quote => 1.0,
@@ -134,10 +127,10 @@ impl HeatmapShader {
             latest_time: None,
             base_price: None,
             clock: view::ExchangeClock::Uninit,
-            instances: InstanceBuilder::new(),
-            canvas_caches: CanvasCaches::new(),
+            instances: InstanceBuilder::default(),
+            canvas_caches: CanvasCaches::default(),
             canvas_invalidation: CanvasInvalidation::default(),
-            depth_grid,
+            depth_grid: GridRing::default(),
             depth_norm: view::DepthNormCache::new(),
             data_gen: 1,
             rebuild_policy: view::RebuildPolicy::Idle,
@@ -387,25 +380,16 @@ impl HeatmapShader {
 
         if let Some(exchange_now_ms) = self.clock.estimate_now_ms(now_i) {
             let aggr_time = self.depth_history.aggr_time.max(1);
-            let was_paused = self.anchor.is_paused();
+            let x0_visible = self.scene.profile_start_visible_x0(viewport_size);
 
-            let (bucketed, live_render_latest_time, live_phase) =
-                view::live_timing(self.anchor, exchange_now_ms, aggr_time);
+            let state_change = self.anchor.tick_live_and_auto_follow(
+                exchange_now_ms,
+                aggr_time,
+                x0_visible,
+                self.base_price,
+            );
 
-            self.anchor.update_live_timing(bucketed, live_phase);
-            self.auto_update_anchor(viewport_size, live_render_latest_time, live_phase);
-
-            // If auto-follow resumed us in this same frame, immediately align render timing
-            // to the current live bucket/phase so labels, overlays and heatmap uniforms stay
-            // synchronized.
-            if was_paused && !self.anchor.is_paused() {
-                self.anchor.align_live_anchor_to_clock(
-                    now_i,
-                    self.latest_time,
-                    self.depth_history.aggr_time,
-                    self.clock,
-                );
-            }
+            self.auto_update_anchor(state_change);
 
             if let Some(w) = self.compute_view_window(viewport_size) {
                 self.invalidate_with_view_window(now_i, aggr_time, &w);
@@ -509,7 +493,7 @@ impl HeatmapShader {
             profile_col_width_px: PROFILE_COL_WIDTH_PX,
             volume_area_height_pct: STRIP_HEIGHT_FRAC,
             volume_profile_width_pct: VOLUME_PROFILE_WIDTH_PCT,
-            max_steps_per_y_bin: DEPTH_GRID_TEX_H as i64,
+            max_steps_per_y_bin: i64::from(self.depth_grid.tex_h()),
         };
 
         let latest_render = self.anchor.effective_render_latest_time(latest_time);
@@ -882,36 +866,23 @@ impl HeatmapShader {
         );
     }
 
-    /// Auto pause/resume follow based on whether the x=0 profile start boundary is visible.
-    fn auto_update_anchor(
-        &mut self,
-        viewport_size: iced::Size,
-        live_render_latest_time: u64,
-        live_x_phase_bucket: f32,
-    ) {
-        let x0_visible = self.scene.profile_start_visible_x0(viewport_size);
+    /// Apply follow-transition side effects after anchor timing/auto-follow has been updated.
+    fn auto_update_anchor(&mut self, state_change: view::FollowStateChange) {
+        if state_change == view::FollowStateChange::Unchanged {
+            return;
+        }
 
-        let state_changed = self.anchor.update_auto_follow(
-            x0_visible,
-            live_render_latest_time,
-            live_x_phase_bucket,
-            self.base_price,
-        );
+        self.canvas_invalidation.mark_all();
+        self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
 
-        if state_changed {
-            self.canvas_invalidation.mark_all();
+        if state_change == view::FollowStateChange::ResumedToLive {
+            self.rebuild_policy = self
+                .rebuild_policy
+                .request_rebuild_from_historical()
+                .promote_to_immediate();
 
-            self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
-
-            if !self.anchor.is_paused() {
-                self.rebuild_policy = self
-                    .rebuild_policy
-                    .request_rebuild_from_historical()
-                    .promote_to_immediate();
-
-                self.rebuild_all(None);
-                self.rebuild_policy = view::RebuildPolicy::Idle;
-            }
+            self.rebuild_all(None);
+            self.rebuild_policy = view::RebuildPolicy::Idle;
         }
     }
 }
