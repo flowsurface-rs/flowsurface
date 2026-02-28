@@ -1016,46 +1016,60 @@ impl Dashboard {
             .for_each(|(_, _, state)| state.park_for_inactive_layout());
     }
 
-    pub fn tick(&mut self, now: Instant, main_window: window::Id) -> Task<Message> {
+    pub fn tick(&mut self, now: Instant, _main_window: window::Id) -> Task<Message> {
         let mut tasks = vec![];
-        let layout_id = self.layout_id;
 
-        self.iter_all_panes_mut(main_window)
-            .for_each(|(_window_id, _pane, state)| match state.tick(now) {
-                Some(pane::Action::Chart(action)) => match action {
-                    chart::Action::ErrorOccurred(err) => {
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
-                    }
-                    chart::Action::RequestFetch(reqs) => {
-                        tasks.push(request_fetch_many(
-                            state,
-                            layout_id,
-                            reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
-                        ));
-                    }
-                    chart::Action::RequestPalette => {
-                        tasks.push(Task::done(Message::RequestPalette));
-                    }
-                },
-                Some(pane::Action::Panel(_action)) => {}
-                Some(pane::Action::ResolveStreams(streams)) => {
-                    tasks.push(Task::done(Message::ResolveStreams(
-                        state.unique_id(),
-                        streams,
-                    )));
+        let mut tick_state = |state: &mut pane::State| match state.tick(now) {
+            Some(pane::Action::Chart(action)) => match action {
+                chart::Action::ErrorOccurred(err) => {
+                    state.status = pane::Status::Ready;
+                    state.notifications.push(Toast::error(err.to_string()));
                 }
-                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
-                    Some(StreamPairKind::MultiSource(tickers)) => {
-                        state.set_content_and_streams(tickers, state.content.kind());
-                    }
-                    Some(StreamPairKind::SingleSource(ticker)) => {
-                        state.set_content_and_streams(vec![ticker], state.content.kind());
-                    }
-                    None => {}
-                },
+                chart::Action::RequestFetch(reqs) => {
+                    tasks.push(request_fetch_many(
+                        state,
+                        self.layout_id,
+                        reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                    ));
+                }
+                chart::Action::RequestPalette => {
+                    tasks.push(Task::done(Message::RequestPalette));
+                }
+            },
+            Some(pane::Action::Panel(_action)) => {}
+            Some(pane::Action::ResolveStreams(streams)) => {
+                tasks.push(Task::done(Message::ResolveStreams(
+                    state.unique_id(),
+                    streams,
+                )));
+            }
+            Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                Some(StreamPairKind::MultiSource(tickers)) => {
+                    state.set_content_and_streams(tickers, state.content.kind());
+                }
+                Some(StreamPairKind::SingleSource(ticker)) => {
+                    state.set_content_and_streams(vec![ticker], state.content.kind());
+                }
                 None => {}
-            });
+            },
+            None => {}
+        };
+
+        // tick only the maximized pane if there is any, otherwise tick all panes
+        let maximized_pane = self.panes.maximized();
+        for (pane_id, state) in self.panes.iter_mut() {
+            if maximized_pane.is_some_and(|maximized| *pane_id != maximized) {
+                continue;
+            }
+
+            tick_state(state);
+        }
+
+        for (popout_state, _) in self.popout.values_mut() {
+            for (_, state) in popout_state.iter_mut() {
+                tick_state(state);
+            }
+        }
 
         Task::batch(tasks)
     }
