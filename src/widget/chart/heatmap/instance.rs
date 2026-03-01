@@ -16,9 +16,9 @@ pub struct OverlayBuild {
     pub rects: Vec<RectInstance>,
 
     // Ranges into `rects` for typed layering.
-    pub rect_profile_latest: std::ops::Range<u32>,
+    pub rect_depth_profile: std::ops::Range<u32>,
     pub rect_volume: std::ops::Range<u32>,
-    pub rect_trade_profile: std::ops::Range<u32>,
+    pub rect_volume_profile: std::ops::Range<u32>,
 }
 
 impl OverlayBuild {
@@ -33,12 +33,12 @@ impl OverlayBuild {
         out.push(DrawItem::new(DrawLayer::HEATMAP, DrawOp::Heatmap));
 
         // Behind circles
-        if Self::count(&self.rect_profile_latest) > 0 {
+        if Self::count(&self.rect_depth_profile) > 0 {
             out.push(DrawItem::new(
-                DrawLayer::PROFILE_LATEST,
+                DrawLayer::DEPTH_PROFILE,
                 DrawOp::Rects {
-                    start: self.rect_profile_latest.start,
-                    count: Self::count(&self.rect_profile_latest),
+                    start: self.rect_depth_profile.start,
+                    count: Self::count(&self.rect_depth_profile),
                 },
             ));
         }
@@ -65,12 +65,12 @@ impl OverlayBuild {
             ));
         }
 
-        if Self::count(&self.rect_trade_profile) > 0 {
+        if Self::count(&self.rect_volume_profile) > 0 {
             out.push(DrawItem::new(
-                DrawLayer::TRADE_PROFILE,
+                DrawLayer::VOLUME_PROFILE,
                 DrawOp::Rects {
-                    start: self.rect_trade_profile.start,
-                    count: Self::count(&self.rect_trade_profile),
+                    start: self.rect_volume_profile.start,
+                    count: Self::count(&self.rect_volume_profile),
                 },
             ));
         }
@@ -84,15 +84,15 @@ pub struct InstanceBuilder {
     // Reusable buffers
     volume_acc: Vec<(Qty, Qty)>,
     volume_touched: Vec<usize>,
-    profile_bid_acc: Vec<Qty>,
-    profile_ask_acc: Vec<Qty>,
-    trade_profile_bid_acc: Vec<Qty>,
-    trade_profile_ask_acc: Vec<Qty>,
+    depth_profile_bid_acc: Vec<Qty>,
+    depth_profile_ask_acc: Vec<Qty>,
+    volume_profile_bid_acc: Vec<Qty>,
+    volume_profile_ask_acc: Vec<Qty>,
 
     // Scale denominators (for external getters)
-    pub profile_scale_max_qty: Option<Qty>,
+    pub depth_profile_scale_max_qty: Option<Qty>,
     pub volume_strip_scale_max_qty: Option<Qty>,
-    pub trade_profile_scale_max_qty: Option<Qty>,
+    pub volume_profile_scale_max_qty: Option<Qty>,
 }
 
 impl InstanceBuilder {
@@ -112,9 +112,9 @@ impl InstanceBuilder {
         show_volume_strip: bool,
     ) -> OverlayBuild {
         // Reset denoms each rebuild to avoid stale overlay labels
-        self.profile_scale_max_qty = None;
+        self.depth_profile_scale_max_qty = None;
         self.volume_strip_scale_max_qty = None;
-        self.trade_profile_scale_max_qty = None;
+        self.volume_profile_scale_max_qty = None;
 
         let circles = self.build_circles(
             w,
@@ -165,9 +165,9 @@ impl InstanceBuilder {
         OverlayBuild {
             circles,
             rects,
-            rect_profile_latest: prof_start..prof_end,
+            rect_depth_profile: prof_start..prof_end,
             rect_volume: vol_start..vol_end,
-            rect_trade_profile: tp_start..tp_end,
+            rect_volume_profile: tp_start..tp_end,
         }
     }
 
@@ -194,10 +194,10 @@ impl InstanceBuilder {
 
         let len = (max_rel_y_bin - min_rel_y_bin + 1) as usize;
 
-        self.trade_profile_bid_acc.resize(len, Qty::ZERO);
-        self.trade_profile_ask_acc.resize(len, Qty::ZERO);
-        self.trade_profile_bid_acc[..].fill(Qty::ZERO);
-        self.trade_profile_ask_acc[..].fill(Qty::ZERO);
+        self.volume_profile_bid_acc.resize(len, Qty::ZERO);
+        self.volume_profile_ask_acc.resize(len, Qty::ZERO);
+        self.volume_profile_bid_acc[..].fill(Qty::ZERO);
+        self.volume_profile_ask_acc[..].fill(Qty::ZERO);
 
         let mut max_total = Qty::ZERO;
 
@@ -232,12 +232,12 @@ impl InstanceBuilder {
 
                 let i = idx as usize;
                 if t.is_sell {
-                    self.trade_profile_ask_acc[i] += t.qty;
+                    self.volume_profile_ask_acc[i] += t.qty;
                 } else {
-                    self.trade_profile_bid_acc[i] += t.qty;
+                    self.volume_profile_bid_acc[i] += t.qty;
                 }
 
-                let total = self.trade_profile_bid_acc[i] + self.trade_profile_ask_acc[i];
+                let total = self.volume_profile_bid_acc[i] + self.volume_profile_ask_acc[i];
                 max_total = max_total.max(total);
             }
         }
@@ -247,14 +247,14 @@ impl InstanceBuilder {
         }
 
         let max_total_f32 = max_total.to_f32_lossy();
-        self.trade_profile_scale_max_qty = Some(max_total);
+        self.volume_profile_scale_max_qty = Some(max_total);
 
         for i in 0..len {
             let rel_y_bin = min_rel_y_bin + i as i64;
             let y_world = w.y_center_for_bin(rel_y_bin);
 
-            let buy_qty = self.trade_profile_bid_acc[i];
-            let sell_qty = self.trade_profile_ask_acc[i];
+            let buy_qty = self.volume_profile_bid_acc[i];
+            let sell_qty = self.volume_profile_ask_acc[i];
             let total = buy_qty + sell_qty;
 
             if total.is_zero() {
@@ -380,10 +380,10 @@ impl InstanceBuilder {
 
         let len = (max_rel_y_bin - min_rel_y_bin + 1) as usize;
 
-        self.profile_bid_acc.resize(len, Qty::ZERO);
-        self.profile_ask_acc.resize(len, Qty::ZERO);
-        self.profile_bid_acc[..].fill(Qty::ZERO);
-        self.profile_ask_acc[..].fill(Qty::ZERO);
+        self.depth_profile_bid_acc.resize(len, Qty::ZERO);
+        self.depth_profile_ask_acc.resize(len, Qty::ZERO);
+        self.depth_profile_bid_acc[..].fill(Qty::ZERO);
+        self.depth_profile_ask_acc[..].fill(Qty::ZERO);
 
         let mut max_qty = Qty::ZERO;
 
@@ -400,9 +400,9 @@ impl InstanceBuilder {
 
             let i = idx as usize;
             let v = if run.is_bid {
-                &mut self.profile_bid_acc[i]
+                &mut self.depth_profile_bid_acc[i]
             } else {
-                &mut self.profile_ask_acc[i]
+                &mut self.depth_profile_ask_acc[i]
             };
 
             *v += run.qty_raw();
@@ -413,15 +413,15 @@ impl InstanceBuilder {
             return;
         }
 
-        self.profile_scale_max_qty = Some(max_qty);
+        self.depth_profile_scale_max_qty = Some(max_qty);
 
         for i in 0..len {
             let rel_y_bin = min_rel_y_bin + i as i64;
             let y = w.y_center_for_bin(rel_y_bin);
 
             for (is_bid, qty) in [
-                (true, self.profile_bid_acc[i]),
-                (false, self.profile_ask_acc[i]),
+                (true, self.depth_profile_bid_acc[i]),
+                (false, self.depth_profile_ask_acc[i]),
             ] {
                 if !qty.is_zero() {
                     rects.push(RectInstance::depth_profile_bar(

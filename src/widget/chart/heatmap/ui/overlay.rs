@@ -143,15 +143,14 @@ pub struct OverlayCanvas<'a> {
     pub scroll_ref_bucket: i64,
     pub qty_scale: f32,
 
-    pub profile_col_width_px: f32,
-    pub strip_height_frac: f32,
+    pub geometry: Option<view::OverlayGeometry>,
 
     /// Max qty used to scale the volume strip bars (display units).
     pub volume_strip_max_qty: Option<f32>,
     /// Max qty used to scale the latest profile bars (display units).
-    pub profile_max_qty: Option<f32>,
-    /// Max qty used to scale the trade profile bars (display units, total=buy+sell).
-    pub trade_profile_max_qty: Option<f32>,
+    pub depth_profile_max_qty: Option<f32>,
+    /// Max qty used to scale the volume profile bars (display units, total=buy+sell).
+    pub volume_profile_max_qty: Option<f32>,
 
     pub is_paused: bool,
 }
@@ -208,7 +207,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     self.draw_paused_control(frame, theme, bounds, cursor);
                 }
 
-                let strip_h_px = (bounds.height * self.strip_height_frac).clamp(0.0, bounds.height);
+                let strip_h_px = self
+                    .geometry
+                    .map(|g| (g.volume_strip_height_world * self.scene.camera.scale()).max(0.0))
+                    .unwrap_or(0.0)
+                    .clamp(0.0, bounds.height);
                 let strip_top_y = (bounds.height - strip_h_px).clamp(0.0, bounds.height);
 
                 // Volume strip denom label:
@@ -233,19 +236,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
                 // Profile denom label:
                 // anchored to the *world-space end* of the profile scale (x = profile_max_w_world).
-                if let Some(qty) = self.profile_max_qty {
+                if let Some(qty) = self.depth_profile_max_qty {
                     let vw_px = bounds.width;
                     let vh_px = bounds.height;
 
-                    let cam_scale = self.scene.camera.scale();
-
-                    let visible_space_right_of_zero_world =
-                        (self.scene.camera.right_edge(vw_px) - 0.0).max(0.0);
-                    let profile_max_w_world = view::depth_profile_width_world(
-                        self.profile_col_width_px,
-                        cam_scale,
-                        visible_space_right_of_zero_world,
-                    );
+                    let profile_max_w_world = self
+                        .geometry
+                        .map(|g| g.depth_profile_max_width_world)
+                        .unwrap_or(0.0);
 
                     if profile_max_w_world > 0.0 {
                         // Profile ends at world x = profile_max_w_world (since it starts at x=0).
@@ -278,24 +276,28 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 }
 
                 // Trade-profile denom label:
-                // anchored to the *world-space end* of the trade-profile zone.
-                if let Some(qty) = self.trade_profile_max_qty {
+                // anchored to the *world-space end* of the volume-profile zone.
+                if let Some(qty) = self.volume_profile_max_qty {
                     let vw_px = bounds.width;
                     let vh_px = bounds.height;
 
-                    let left_edge_world = self.scene.params.fade_start();
-                    let trade_profile_max_w_world = self.scene.params.fade_width();
+                    let left_edge_world = self.geometry.map(|g| g.left_edge_world);
+                    let volume_profile_max_w_world =
+                        self.geometry.map(|g| g.volume_profile_max_width_world);
 
-                    if left_edge_world.is_finite()
-                        && trade_profile_max_w_world.is_finite()
-                        && trade_profile_max_w_world > 0.0
+                    if let (Some(left_edge_world), Some(volume_profile_max_w_world)) =
+                        (left_edge_world, volume_profile_max_w_world)
+                        && left_edge_world.is_finite()
+                        && volume_profile_max_w_world.is_finite()
+                        && volume_profile_max_w_world > 0.0
                     {
-                        let trade_profile_end_world_x = left_edge_world + trade_profile_max_w_world;
+                        let volume_profile_end_world_x =
+                            left_edge_world + volume_profile_max_w_world;
 
                         let y_world = self.scene.camera.offset[1];
 
                         let [end_px_x, _] = self.scene.camera.world_to_screen(
-                            trade_profile_end_world_x,
+                            volume_profile_end_world_x,
                             y_world,
                             vw_px,
                             vh_px,
@@ -311,7 +313,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                                 size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                                 color: palette.background.base.text.scale_alpha(0.85),
                                 font: style::AZERET_MONO,
-                                align_x: Alignment::End.into(),
+                                align_x: Alignment::Start.into(),
                                 align_y: Alignment::Start.into(),
                                 ..canvas::Text::default()
                             });

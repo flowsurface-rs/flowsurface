@@ -57,10 +57,10 @@ pub struct DrawLayer(pub i16);
 
 impl DrawLayer {
     pub const HEATMAP: Self = Self(0);
-    pub const PROFILE_LATEST: Self = Self(10);
+    pub const DEPTH_PROFILE: Self = Self(10);
     pub const CIRCLES: Self = Self(20);
     pub const VOLUME: Self = Self(30);
-    pub const TRADE_PROFILE: Self = Self(40);
+    pub const VOLUME_PROFILE: Self = Self(40);
 }
 
 #[derive(Copy, Clone, Debug)]

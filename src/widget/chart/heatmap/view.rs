@@ -464,12 +464,106 @@ impl ExchangeClock {
 #[derive(Debug, Clone, Copy)]
 pub struct ViewConfig {
     // Overlays
-    pub profile_col_width_px: f32,
-    pub volume_area_height_pct: f32,
+    pub depth_profile_col_width_px: f32,
+    pub volume_strip_height_pct: f32,
     pub volume_profile_width_pct: f32,
 
     // Y downsampling
     pub max_steps_per_y_bin: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OverlayGeometryConfig {
+    pub depth_profile_col_width_px: f32,
+    pub volume_strip_height_pct: f32,
+    pub volume_profile_width_pct: f32,
+}
+
+impl ViewConfig {
+    fn overlay_geometry_config(&self) -> OverlayGeometryConfig {
+        OverlayGeometryConfig {
+            depth_profile_col_width_px: self.depth_profile_col_width_px,
+            volume_strip_height_pct: self.volume_strip_height_pct,
+            volume_profile_width_pct: self.volume_profile_width_pct,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OverlayGeometry {
+    pub left_edge_world: f32,
+    pub right_edge_world: f32,
+    pub top_edge_world: f32,
+    pub bottom_edge_world: f32,
+
+    pub depth_profile_max_width_world: f32,
+    pub volume_profile_max_width_world: f32,
+    pub volume_strip_height_world: f32,
+}
+
+impl OverlayGeometry {
+    pub fn compute(
+        camera: &Camera,
+        viewport_px: iced::Size,
+        cfg: OverlayGeometryConfig,
+    ) -> Option<Self> {
+        let [vw_px, vh_px] = viewport_px.into();
+
+        if !vw_px.is_finite() || vw_px <= 1.0 || !vh_px.is_finite() || vh_px <= 1.0 {
+            return None;
+        }
+
+        let cam_scale = camera.scale();
+        if !cam_scale.is_finite() || cam_scale <= 0.0 {
+            return None;
+        }
+
+        let right_edge_world = camera.right_edge(vw_px);
+        let left_edge_world = right_edge_world - (vw_px / cam_scale);
+
+        let y_center = camera.offset[1];
+        let half_h_world = (vh_px / cam_scale) * 0.5;
+        let top_edge_world = y_center - half_h_world;
+        let bottom_edge_world = y_center + half_h_world;
+
+        let visible_space_right_of_zero_world = right_edge_world.max(0.0);
+
+        let depth_profile_max_width_world = {
+            let desired_profile_w_world = cfg.depth_profile_col_width_px.max(0.0) / cam_scale;
+            let visible_space_right_of_zero_world = visible_space_right_of_zero_world.max(0.0);
+
+            if desired_profile_w_world > visible_space_right_of_zero_world {
+                let pad_world = DEPTH_PROFILE_RIGHT_PAD_PX / cam_scale;
+                (visible_space_right_of_zero_world - pad_world).max(0.0)
+            } else {
+                desired_profile_w_world
+            }
+        };
+
+        let visible_w_world = vw_px / cam_scale;
+
+        let volume_profile_width_pct = if cfg.volume_profile_width_pct.is_finite() {
+            cfg.volume_profile_width_pct.max(0.0)
+        } else {
+            0.0
+        };
+
+        let volume_strip_height_pct = if cfg.volume_strip_height_pct.is_finite() {
+            cfg.volume_strip_height_pct.max(0.0)
+        } else {
+            0.0
+        };
+
+        Some(Self {
+            left_edge_world,
+            right_edge_world,
+            top_edge_world,
+            bottom_edge_world,
+            depth_profile_max_width_world,
+            volume_profile_max_width_world: (visible_w_world * volume_profile_width_pct).max(0.0),
+            volume_strip_height_world: ((vh_px * volume_strip_height_pct) / cam_scale).max(0.0),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -520,17 +614,17 @@ impl ViewWindow {
         viewport_px: iced::Size,
         input: ViewInputs,
     ) -> Option<Self> {
-        let [vw_px, vh_px] = viewport_px.into();
-
         if input.aggr_time == 0 || input.latest_time_data == 0 {
             return None;
         }
 
         let cam_scale = camera.scale();
 
+        let overlay = OverlayGeometry::compute(camera, viewport_px, cfg.overlay_geometry_config())?;
+
         // world x-range visible (plus margins)
-        let x_max = camera.right_edge(vw_px);
-        let x_min = x_max - (vw_px / cam_scale);
+        let x_max = overlay.right_edge_world;
+        let x_min = overlay.left_edge_world;
 
         let col_w_world = input.cell.width_world();
 
@@ -543,10 +637,8 @@ impl ViewWindow {
         let bucket_max = bucket_max_strict.saturating_add(2);
 
         // world y-range visible
-        let y_center = camera.offset[1];
-        let half_h_world = (vh_px / cam_scale) * 0.5;
-        let y_min = y_center - half_h_world;
-        let y_max = y_center + half_h_world;
+        let y_min = overlay.top_edge_world;
+        let y_max = overlay.bottom_edge_world;
 
         // time range derived from buckets
         let latest_time_for_view: u64 = input.latest_time_render.max(input.latest_time_data);
@@ -572,20 +664,6 @@ impl ViewWindow {
         let lowest = input.base_price.add_steps(min_steps, input.step);
         let highest = input.base_price.add_steps(max_steps, input.step);
 
-        // overlays (profile width depends on how much x>0 is visible)
-        let visible_space_right_of_zero_world = (x_max - 0.0).max(0.0);
-        let depth_profile_max_width = depth_profile_width_world(
-            cfg.profile_col_width_px,
-            cam_scale,
-            visible_space_right_of_zero_world,
-        );
-
-        let strip_h_world: f32 = (vh_px * cfg.volume_area_height_pct) / cam_scale;
-        let strip_bottom_y: f32 = y_max;
-
-        let visible_w_world = vw_px / cam_scale;
-        let volume_profile_max_width = visible_w_world * cfg.volume_profile_width_pct;
-
         // y-downsampling
         let px_per_step = row_h * cam_scale;
         let mut steps_per_y_bin: i64 = 1;
@@ -603,11 +681,11 @@ impl ViewWindow {
             highest,
             row_h,
             cam_scale,
-            volume_profile_max_width,
-            depth_profile_max_width,
-            volume_area_max_height: strip_h_world,
-            volume_area_bottom_y: strip_bottom_y,
-            left_edge_world: x_min,
+            volume_profile_max_width: overlay.volume_profile_max_width_world,
+            depth_profile_max_width: overlay.depth_profile_max_width_world,
+            volume_area_max_height: overlay.volume_strip_height_world,
+            volume_area_bottom_y: overlay.bottom_edge_world,
+            left_edge_world: overlay.left_edge_world,
             steps_per_y_bin,
             y_bin_h_world,
         })
@@ -773,24 +851,4 @@ impl DepthNormCache {
 pub fn round_time_to_bucket(t_ms: u64, aggr_time: u64) -> u64 {
     let aggr_time = aggr_time.max(1);
     (t_ms / aggr_time) * aggr_time
-}
-
-pub fn depth_profile_width_world(
-    profile_col_width_px: f32,
-    cam_scale: f32,
-    visible_space_right_of_zero_world: f32,
-) -> f32 {
-    if !cam_scale.is_finite() || cam_scale <= 0.0 {
-        return 0.0;
-    }
-
-    let desired_profile_w_world = profile_col_width_px.max(0.0) / cam_scale;
-    let visible_space_right_of_zero_world = visible_space_right_of_zero_world.max(0.0);
-
-    if desired_profile_w_world > visible_space_right_of_zero_world {
-        let pad_world = DEPTH_PROFILE_RIGHT_PAD_PX / cam_scale;
-        (visible_space_right_of_zero_world - pad_world).max(0.0)
-    } else {
-        desired_profile_w_world
-    }
 }

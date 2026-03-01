@@ -33,7 +33,7 @@ use exchange::{TickerInfo, Trade};
 use std::time::{Duration, Instant};
 
 // Latest profile overlay (x > 0)
-const PROFILE_COL_WIDTH_PX: f32 = 180.0;
+const DEPTH_PROFILE_COL_WIDTH_PX: f32 = 180.0;
 
 // Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
@@ -316,6 +316,18 @@ impl HeatmapShader {
         let cam_scale = self.scene.camera.scale();
         let render_base_price = self.anchor.effective_base_price(self.base_price);
 
+        let overlay_geometry = self.viewport.and_then(|vp| {
+            view::OverlayGeometry::compute(
+                &self.scene.camera,
+                vp.size(),
+                view::OverlayGeometryConfig {
+                    depth_profile_col_width_px: DEPTH_PROFILE_COL_WIDTH_PX,
+                    volume_strip_height_pct: STRIP_HEIGHT_FRAC,
+                    volume_profile_width_pct: VOLUME_PROFILE_WIDTH_PCT,
+                },
+            )
+        });
+
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
             timezone,
@@ -351,20 +363,19 @@ impl HeatmapShader {
             qty_scale: self.qty_scale,
             tooltip_cache: &self.canvas_caches.overlay,
             scale_labels_cache: &self.canvas_caches.scale_labels,
-            profile_col_width_px: PROFILE_COL_WIDTH_PX,
-            strip_height_frac: STRIP_HEIGHT_FRAC,
+            geometry: overlay_geometry,
             is_paused: self.anchor.is_paused(),
             volume_strip_max_qty: self
                 .instances
                 .volume_strip_scale_max_qty
                 .map(|q| q.to_f32_lossy()),
-            profile_max_qty: self
+            depth_profile_max_qty: self
                 .instances
-                .profile_scale_max_qty
+                .depth_profile_scale_max_qty
                 .map(|q| q.to_f32_lossy()),
-            trade_profile_max_qty: self
+            volume_profile_max_qty: self
                 .instances
-                .trade_profile_scale_max_qty
+                .volume_profile_scale_max_qty
                 .map(|q| q.to_f32_lossy()),
         };
 
@@ -594,8 +605,8 @@ impl HeatmapShader {
         let base_price = self.anchor.effective_base_price(self.base_price)?;
 
         let cfg = ViewConfig {
-            profile_col_width_px: PROFILE_COL_WIDTH_PX,
-            volume_area_height_pct: STRIP_HEIGHT_FRAC,
+            depth_profile_col_width_px: DEPTH_PROFILE_COL_WIDTH_PX,
+            volume_strip_height_pct: STRIP_HEIGHT_FRAC,
             volume_profile_width_pct: VOLUME_PROFILE_WIDTH_PCT,
             max_steps_per_y_bin: i64::from(self.depth_grid.tex_h()),
         };

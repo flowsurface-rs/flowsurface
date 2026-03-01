@@ -107,14 +107,6 @@ impl ParamsUniform {
         self.fade = [fade_end, fade_start, alpha_min, alpha_max];
     }
 
-    pub fn fade_start(&self) -> f32 {
-        self.fade[0]
-    }
-
-    pub fn fade_width(&self) -> f32 {
-        self.fade[1]
-    }
-
     pub fn heatmap_start_bin(&self) -> i64 {
         self.heatmap_map[1].round() as i64
     }
