@@ -110,12 +110,59 @@ pub async fn init_range_bar_symbols() -> Vec<String> {
             } else {
                 log::info!("cached {count} range bar symbols from ClickHouse");
             }
+            // Non-blocking schema coherence check after successful connection
+            validate_schema().await;
         }
         Err(e) => {
             log::warn!("failed to fetch range bar symbols from ClickHouse: {e}");
         }
     }
     RANGE_BAR_SYMBOLS.get().cloned().unwrap_or_default()
+}
+
+/// Startup schema coherence check — logs column presence and rangebar-py version.
+/// Non-fatal: logs warnings on mismatch, never blocks startup.
+async fn validate_schema() {
+    // Check expected columns exist in the range_bars table
+    let expected_cols = [
+        "close_time_ms", "open_time_ms", "open", "high", "low", "close",
+        "buy_volume", "sell_volume", "individual_trade_count", "ofi", "trade_intensity",
+    ];
+    let col_sql = "SELECT name FROM system.columns \
+                   WHERE database = 'rangebar_cache' AND table = 'range_bars' \
+                   FORMAT TabSeparated";
+    match query(col_sql).await {
+        Ok(body) => {
+            let actual: Vec<&str> = body.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+            let missing: Vec<&str> = expected_cols.iter()
+                .filter(|c| !actual.iter().any(|a| a == *c))
+                .copied()
+                .collect();
+            if missing.is_empty() {
+                log::info!("[CH schema] all {}/{} expected columns present",
+                    expected_cols.len(), expected_cols.len());
+            } else {
+                log::warn!("[CH schema] MISSING columns: {missing:?} — indicators may show no data");
+            }
+        }
+        Err(e) => {
+            log::warn!("[CH schema] column check failed: {e}");
+        }
+    }
+
+    // Query rangebar_version from most recent bar (silent if column absent)
+    let ver_sql = "SELECT rangebar_version FROM rangebar_cache.range_bars \
+                   ORDER BY close_time_ms DESC LIMIT 1 FORMAT TabSeparated";
+    match query(ver_sql).await {
+        Ok(body) => {
+            if let Some(version) = body.lines().next().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                log::info!("[CH schema] rangebar-py version: {version}");
+            }
+        }
+        Err(_) => {
+            // rangebar_version column may not exist on older schemas — silently skip
+        }
+    }
 }
 
 /// Returns the range bar symbol allowlist, or None if not yet loaded or empty.
@@ -170,7 +217,7 @@ async fn query(sql: &str) -> Result<String, AdapterError> {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        log::error!("[CH] HTTP {status}: {body}");
+        log::error!("[CH] HTTP {status}: {body} — SQL: {sql_preview}…");
         return Err(AdapterError::ParseError(format!(
             "ClickHouse HTTP {}: {}",
             status, body
@@ -193,7 +240,9 @@ fn bare_symbol(ticker_info: &TickerInfo) -> String {
 
 #[derive(Debug, Deserialize)]
 struct ChKline {
-    timestamp_ms: i64,
+    close_time_ms: i64,
+    #[serde(default, rename = "open_time_ms")]
+    _open_time_ms: Option<i64>,
     open: f64,
     high: f64,
     low: f64,
@@ -230,7 +279,7 @@ pub async fn fetch_klines(
             .map_err(|e| AdapterError::ParseError(format!("ClickHouse kline parse: {e}")))?;
 
         klines.push(Kline::new(
-            ck.timestamp_ms as u64,
+            ck.close_time_ms as u64,
             ck.open as f32,
             ck.high as f32,
             ck.low as f32,
@@ -255,15 +304,15 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
     // Both paths use DESC ordering + reverse to get the N most recent bars
     // within the requested window. ASC ordering would return bars from the
     // beginning of time, creating gaps when loading historical data.
-    let cols = "timestamp_ms, open, high, low, close, buy_volume, sell_volume, \
+    let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity";
     if let Some((start, end)) = range {
         format!(
             "SELECT {cols} \
              FROM rangebar_cache.range_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-               AND timestamp_ms BETWEEN {start} AND {end} \
-             ORDER BY timestamp_ms DESC \
+               AND close_time_ms BETWEEN {start} AND {end} \
+             ORDER BY close_time_ms DESC \
              LIMIT 2000 \
              FORMAT JSONEachRow"
         )
@@ -280,7 +329,7 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
             "SELECT {cols} \
              FROM rangebar_cache.range_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-             ORDER BY timestamp_ms DESC \
+             ORDER BY close_time_ms DESC \
              LIMIT {limit} \
              FORMAT JSONEachRow"
         )
@@ -321,7 +370,7 @@ pub async fn fetch_klines_with_microstructure(
             .map_err(|e| AdapterError::ParseError(format!("ClickHouse kline parse: {e}")))?;
 
         klines.push(Kline::new(
-            ck.timestamp_ms as u64,
+            ck.close_time_ms as u64,
             ck.open as f32,
             ck.high as f32,
             ck.low as f32,
@@ -374,8 +423,8 @@ pub async fn request_backfill(
 
     let insert_sql = format!(
         "INSERT INTO rangebar_cache.backfill_requests \
-         (symbol, threshold_decimal_bps, source) VALUES \
-         ('{symbol}', {threshold_dbps}, 'flowsurface')"
+         (symbol, threshold_decimal_bps, source, ouroboros_mode) VALUES \
+         ('{symbol}', {threshold_dbps}, 'flowsurface', 'month')"
     );
 
     query(&insert_sql).await?;
@@ -409,7 +458,7 @@ pub fn connect_kline_stream(
         // doesn't re-fetch bars already loaded by the initial fetch_klines().
         let mut last_ts: u64 = {
             let sql = format!(
-                "SELECT max(timestamp_ms) AS ts FROM rangebar_cache.range_bars \
+                "SELECT max(close_time_ms) AS ts FROM rangebar_cache.range_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} FORMAT JSONEachRow",
                 symbol, threshold_dbps
             );
@@ -432,18 +481,20 @@ pub fn connect_kline_stream(
             }
         };
 
+        let mut logged_micro_warning = false;
+
         loop {
             // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
             // 5s polling for near-real-time range bar updates (from 60s)
             tokio::time::sleep(Duration::from_secs(5)).await;
 
             let sql = format!(
-                "SELECT timestamp_ms, open, high, low, close, buy_volume, sell_volume, \
+                "SELECT close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                         individual_trade_count, ofi, trade_intensity \
                  FROM rangebar_cache.range_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
-                   AND timestamp_ms > {} \
-                 ORDER BY timestamp_ms ASC \
+                   AND close_time_ms > {} \
+                 ORDER BY close_time_ms ASC \
                  LIMIT 100 \
                  FORMAT JSONEachRow",
                 symbol, threshold_dbps, last_ts
@@ -458,7 +509,7 @@ pub fn connect_kline_stream(
                             continue;
                         }
                         if let Ok(ck) = serde_json::from_str::<ChKline>(line) {
-                            let ts = ck.timestamp_ms as u64;
+                            let ts = ck.close_time_ms as u64;
                             if ts > last_ts {
                                 last_ts = ts;
                             }
@@ -480,6 +531,24 @@ pub fn connect_kline_stream(
                             "[CH poll] {} @{}: {} new bars, last_ts={}",
                             symbol, threshold_dbps, count, last_ts
                         );
+                        // One-time warning if first polled bar lacks microstructure
+                        if !logged_micro_warning {
+                            logged_micro_warning = true;
+                            if let Some(first_line) = body.lines().find(|l| !l.trim().is_empty()) {
+                                if let Ok(ck) = serde_json::from_str::<ChKline>(first_line.trim()) {
+                                    if ck.individual_trade_count.is_none()
+                                        && ck.ofi.is_none()
+                                        && ck.trade_intensity.is_none()
+                                    {
+                                        log::warn!(
+                                            "[CH poll] {} @{}: bars missing microstructure \
+                                             — check rangebar-py feature toggles",
+                                            symbol, threshold_dbps
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {

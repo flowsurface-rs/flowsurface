@@ -48,11 +48,11 @@ fetch_klines() / fetch_klines_with_microstructure()
 ### SQL Query
 
 ```sql
-SELECT timestamp_ms, open, high, low, close, buy_volume, sell_volume,
+SELECT close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume,
        individual_trade_count, ofi, trade_intensity
 FROM rangebar_cache.range_bars
 WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold}
-ORDER BY timestamp_ms DESC
+ORDER BY close_time_ms DESC
 LIMIT {limit}
 FORMAT JSONEachRow
 ```
@@ -61,7 +61,7 @@ FORMAT JSONEachRow
 
 ### Streaming (Polling)
 
-`connect_kline_stream()` polls ClickHouse every 5 seconds for new bars with `timestamp_ms > last_ts`. Uses ASC ordering for incremental updates. The 5s interval is designed for near-real-time range bar updates once rangebar-py's streaming sidecar (terrylica/rangebar-py#91) writes live bars to ClickHouse.
+`connect_kline_stream()` polls ClickHouse every 5 seconds for new bars with `close_time_ms > last_ts`. Uses ASC ordering for incremental updates. The 5s interval is designed for near-real-time range bar updates once rangebar-py's streaming sidecar (terrylica/rangebar-py#91) writes live bars to ClickHouse.
 
 ### Key Types
 
