@@ -1726,7 +1726,11 @@ impl canvas::Program<Message> for KlineChart {
                     );
                 }
                 KlineChartKind::Candles | KlineChartKind::RangeBar => {
-                    let candle_width = chart.cell_width * 0.8;
+                    // Range bars represent continuous price action — use tighter
+                    // spacing (95%) so bars visually connect. Candles keep 80%
+                    // for temporal separation between time periods.
+                    let candle_fill = if chart.basis.is_range_bar() { 0.95 } else { 0.8 };
+                    let candle_width = chart.cell_width * candle_fill;
                     // Look up heatmap indicator once for thermal candle body colouring.
                     let heatmap_indi =
                         self.indicators[KlineIndicator::TradeIntensityHeatmap].as_deref();

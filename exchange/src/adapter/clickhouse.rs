@@ -306,11 +306,15 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
     // beginning of time, creating gaps when loading historical data.
     let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity";
+    // Filter by ouroboros_mode='year' to avoid duplicates from month/year overlap.
+    // The ORDER BY key is (symbol, threshold_decimal_bps, ouroboros_mode, close_time_ms),
+    // so this filter leverages the index for efficient scans.
     if let Some((start, end)) = range {
         format!(
             "SELECT {cols} \
              FROM rangebar_cache.range_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
+               AND ouroboros_mode = 'year' \
                AND close_time_ms BETWEEN {start} AND {end} \
              ORDER BY close_time_ms DESC \
              LIMIT 2000 \
@@ -329,6 +333,7 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
             "SELECT {cols} \
              FROM rangebar_cache.range_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
+               AND ouroboros_mode = 'year' \
              ORDER BY close_time_ms DESC \
              LIMIT {limit} \
              FORMAT JSONEachRow"
@@ -459,7 +464,8 @@ pub fn connect_kline_stream(
         let mut last_ts: u64 = {
             let sql = format!(
                 "SELECT max(close_time_ms) AS ts FROM rangebar_cache.range_bars \
-                 WHERE symbol = '{}' AND threshold_decimal_bps = {} FORMAT JSONEachRow",
+                 WHERE symbol = '{}' AND threshold_decimal_bps = {} \
+                   AND ouroboros_mode = 'year' FORMAT JSONEachRow",
                 symbol, threshold_dbps
             );
             match query(&sql).await {
@@ -493,6 +499,7 @@ pub fn connect_kline_stream(
                         individual_trade_count, ofi, trade_intensity \
                  FROM rangebar_cache.range_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
+                   AND ouroboros_mode = 'year' \
                    AND close_time_ms > {} \
                  ORDER BY close_time_ms ASC \
                  LIMIT 100 \
