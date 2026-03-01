@@ -5,7 +5,9 @@ use crate::widget::chart::heatmap::scene::pipeline::{DrawItem, DrawLayer, DrawOp
 use crate::widget::chart::heatmap::view::ViewWindow;
 
 use data::aggr::time::TimeSeries;
-use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
+use data::chart::heatmap::{Config, HeatmapDataPoint, HistoricalDepth, ProfileKind};
+use exchange::SizeUnit;
+use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep, Qty};
 
 #[derive(Debug, Clone)]
@@ -104,13 +106,26 @@ impl InstanceBuilder {
         latest_time: u64,
         scroll_ref_bucket: i64,
         palette: &HeatmapPalette,
+        config: &Config,
+        market_type: &MarketKind,
+        profile_kind: Option<&ProfileKind>,
+        show_volume_strip: bool,
     ) -> OverlayBuild {
         // Reset denoms each rebuild to avoid stale overlay labels
         self.profile_scale_max_qty = None;
         self.volume_strip_scale_max_qty = None;
         self.trade_profile_scale_max_qty = None;
 
-        let circles = self.build_circles(w, trades, base_price, step, scroll_ref_bucket, palette);
+        let circles = self.build_circles(
+            w,
+            trades,
+            base_price,
+            step,
+            scroll_ref_bucket,
+            palette,
+            config,
+            market_type,
+        );
 
         let mut rects: Vec<RectInstance> = Vec::new();
 
@@ -127,11 +142,24 @@ impl InstanceBuilder {
         let prof_end = rects.len() as u32;
 
         let vol_start = rects.len() as u32;
-        self.build_volume_strip_rects(w, trades, scroll_ref_bucket, palette, &mut rects);
+        if show_volume_strip {
+            self.build_volume_strip_rects(w, trades, scroll_ref_bucket, palette, &mut rects);
+        }
         let vol_end = rects.len() as u32;
 
         let tp_start = rects.len() as u32;
-        self.build_volume_profile_rects(w, trades, base_price, step, palette, &mut rects);
+        if let Some(kind) = profile_kind {
+            self.build_volume_profile_rects(
+                w,
+                trades,
+                base_price,
+                step,
+                latest_time,
+                kind,
+                palette,
+                &mut rects,
+            );
+        }
         let tp_end = rects.len() as u32;
 
         OverlayBuild {
@@ -149,6 +177,8 @@ impl InstanceBuilder {
         trades: &TimeSeries<HeatmapDataPoint>,
         base_price: Price,
         step: PriceStep,
+        latest_time: u64,
+        profile_kind: &ProfileKind,
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
@@ -171,7 +201,28 @@ impl InstanceBuilder {
 
         let mut max_total = Qty::ZERO;
 
-        for (_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
+        let latest_profile_time = latest_time.min(w.latest_vis);
+
+        let (earliest_profile_time, latest_profile_time) = match profile_kind {
+            ProfileKind::VisibleRange => (w.earliest, w.latest_vis),
+            ProfileKind::FixedWindow(datapoints) => {
+                let aggr = w.aggr_time.max(1);
+                let window_ms = (*datapoints as u64).saturating_mul(aggr);
+                (
+                    latest_profile_time.saturating_sub(window_ms),
+                    latest_profile_time,
+                )
+            }
+        };
+
+        if latest_profile_time < earliest_profile_time {
+            return;
+        }
+
+        for (_time, dp) in trades
+            .datapoints
+            .range(earliest_profile_time..=latest_profile_time)
+        {
             for t in dp.grouped_trades.iter() {
                 let rel_y_bin = w.y_bin_for_price(t.price, base_price, step);
                 let idx = rel_y_bin - min_rel_y_bin;
@@ -254,9 +305,14 @@ impl InstanceBuilder {
         step: PriceStep,
         ref_bucket: i64,
         palette: &HeatmapPalette,
+        config: &Config,
+        market_type: &MarketKind,
     ) -> Vec<CircleInstance> {
         let mut visible = vec![];
         let mut max_qty = Qty::ZERO;
+        let size_in_quote_ccy = exchange::unit::qty::volume_size_unit() == SizeUnit::Quote;
+        let trade_size_filter = config.trade_size_filter.max(0.0);
+        let fallback_radius_px = (0.5 * w.row_h * w.cam_scale).max(CircleInstance::R_MIN_PX);
 
         for (bucket_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
             let bucket = (*bucket_time / w.aggr_time) as i64;
@@ -267,6 +323,14 @@ impl InstanceBuilder {
                 }
 
                 max_qty = max_qty.max(trade.qty);
+
+                let trade_qty = trade.qty.to_f32_lossy();
+                let trade_size =
+                    market_type.qty_in_quote_value(trade_qty, trade.price, size_in_quote_ccy);
+                if trade_size <= trade_size_filter {
+                    continue;
+                }
+
                 visible.push((bucket, trade));
             }
         }
@@ -278,7 +342,16 @@ impl InstanceBuilder {
         let mut out = Vec::with_capacity(visible.len());
         for (bucket, trade) in visible {
             out.push(CircleInstance::from_trade(
-                trade, bucket, ref_bucket, base_price, step, w, palette, max_qty,
+                trade,
+                bucket,
+                ref_bucket,
+                base_price,
+                step,
+                w,
+                palette,
+                max_qty,
+                config.trade_size_scale,
+                fallback_radius_px,
             ));
         }
 

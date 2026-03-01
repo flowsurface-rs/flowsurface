@@ -24,8 +24,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let viewport = camera.b.xy;
 
-    let px = input.uv * viewport;
-    let screen_xy = floor(px) + vec2<f32>(0.5, 0.5);
+    let screen_xy = input.uv * viewport;
     let world = screen_to_world(screen_xy);
 
     if (world.x > 0.0) {

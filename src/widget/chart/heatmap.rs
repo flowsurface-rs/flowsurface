@@ -16,10 +16,16 @@ use ui::{CanvasCaches, CanvasInvalidation};
 use view::{ViewConfig, ViewInputs, ViewWindow};
 use widget::HeatmapShaderWidget;
 
-use crate::chart::Action;
-use data::aggr::time::TimeSeries;
+use crate::{
+    chart::Action,
+    modal::pane::settings::study::{self, Study},
+};
 use data::chart::Basis;
-use data::chart::heatmap::{HeatmapDataPoint, HistoricalDepth};
+use data::chart::{
+    heatmap::{HeatmapDataPoint, HistoricalDepth},
+    indicator::HeatmapIndicator,
+};
+use data::{aggr::time::TimeSeries, chart::heatmap::HeatmapStudy};
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
@@ -96,10 +102,19 @@ pub struct HeatmapShader {
     data_gen: u64,
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
+    indicators: Vec<HeatmapIndicator>,
+    pub studies: Vec<HeatmapStudy>,
+    pub study_configurator: study::Configurator<HeatmapStudy>,
 }
 
 impl HeatmapShader {
-    pub fn new(basis: Basis, tick_size: f32, ticker_info: TickerInfo) -> Self {
+    pub fn new(
+        basis: Basis,
+        tick_size: f32,
+        ticker_info: TickerInfo,
+        studies: Vec<HeatmapStudy>,
+        indicators: Vec<HeatmapIndicator>,
+    ) -> Self {
         let step = PriceStep::from_f32(tick_size);
 
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
@@ -134,8 +149,11 @@ impl HeatmapShader {
             depth_norm: view::DepthNormCache::new(),
             data_gen: 1,
             rebuild_policy: view::RebuildPolicy::Idle,
+            indicators,
             anchor: view::Anchor::default(),
             config: data::chart::heatmap::Config::default(),
+            studies,
+            study_configurator: study::Configurator::new(),
         }
     }
 
@@ -460,6 +478,92 @@ impl HeatmapShader {
         }
     }
 
+    pub fn visual_config(&self) -> data::chart::heatmap::Config {
+        self.config
+    }
+
+    pub fn study_configurator(&self) -> &study::Configurator<HeatmapStudy> {
+        &self.study_configurator
+    }
+
+    pub fn update_study_configurator(&mut self, message: study::Message<HeatmapStudy>) {
+        let studies = &mut self.studies;
+        let mut studies_changed = false;
+
+        match self.study_configurator.update(message) {
+            Some(study::Action::ToggleStudy(study, is_selected)) => {
+                if is_selected {
+                    let already_exists = studies.iter().any(|s| s.is_same_type(&study));
+                    if !already_exists {
+                        studies.push(study);
+                        studies_changed = true;
+                    }
+                } else {
+                    let before = studies.len();
+                    studies.retain(|s| !s.is_same_type(&study));
+                    studies_changed = studies.len() != before;
+                }
+            }
+            Some(study::Action::ConfigureStudy(study)) => {
+                if let Some(existing_study) = studies.iter_mut().find(|s| s.is_same_type(&study)) {
+                    *existing_study = study;
+                    studies_changed = true;
+                }
+            }
+            None => {}
+        }
+
+        if !studies_changed {
+            return;
+        }
+
+        self.canvas_invalidation.mark_overlay_tooltip();
+        self.canvas_invalidation.mark_overlay_scale_labels();
+        self.try_rebuild_instances();
+    }
+
+    pub fn set_visual_config(&mut self, config: data::chart::heatmap::Config) {
+        if self.config == config {
+            return;
+        }
+
+        let prev = self.config;
+        self.config = config;
+
+        let order_filter_changed =
+            prev.order_size_filter.to_bits() != self.config.order_size_filter.to_bits();
+        let trade_visual_changed = prev.trade_size_filter.to_bits()
+            != self.config.trade_size_filter.to_bits()
+            || prev.trade_size_scale != self.config.trade_size_scale;
+
+        self.canvas_invalidation.mark_overlay_tooltip();
+        self.canvas_invalidation.mark_overlay_scale_labels();
+
+        if trade_visual_changed || order_filter_changed {
+            self.try_rebuild_instances();
+        }
+
+        if order_filter_changed {
+            self.data_gen = self.data_gen.wrapping_add(1);
+            self.rebuild_policy = self
+                .rebuild_policy
+                .request_rebuild_from_historical()
+                .mark_input(Instant::now());
+        }
+    }
+
+    pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
+        if self.indicators.contains(&indicator) {
+            self.indicators.retain(|i| i != &indicator);
+        } else {
+            self.indicators.push(indicator);
+        }
+
+        self.canvas_invalidation.mark_overlay_tooltip();
+        self.canvas_invalidation.mark_overlay_scale_labels();
+        self.try_rebuild_instances();
+    }
+
     fn cleanup_old_data(&mut self, aggr_time: u64) {
         // Keep CPU history aligned with what the ring can represent
         let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
@@ -546,6 +650,14 @@ impl HeatmapShader {
             }
         }
 
+        let volume_profile = self
+            .studies
+            .iter()
+            .map(|study| match study {
+                HeatmapStudy::VolumeProfile(profile) => profile,
+            })
+            .next();
+
         let built = self.instances.build_instances(
             &effective_window,
             &self.trades,
@@ -555,6 +667,10 @@ impl HeatmapShader {
             latest_time,
             self.anchor.scroll_ref_bucket(),
             palette,
+            &self.config,
+            &self.ticker_info.market_type(),
+            volume_profile,
+            self.indicators.contains(&HeatmapIndicator::Volume),
         );
 
         let draw_list = built.draw_list();
@@ -596,6 +712,10 @@ impl HeatmapShader {
         };
 
         let aggr_time: u64 = self.depth_history.aggr_time.max(1);
+        let market_type = self.ticker_info.market_type();
+        let size_in_quote_ccy =
+            exchange::unit::qty::volume_size_unit() == exchange::SizeUnit::Quote;
+        let order_size_filter = self.config.order_size_filter.max(0.0);
 
         let prev_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         let new_steps_per_y_bin: i64 = w.steps_per_y_bin.max(1);
@@ -645,6 +765,9 @@ impl HeatmapShader {
                 self.qty_scale,
                 rebuild_highest,
                 rebuild_lowest,
+                &market_type,
+                size_in_quote_ccy,
+                order_size_filter,
             );
 
             self.data_gen = self.data_gen.wrapping_add(1);
@@ -788,6 +911,8 @@ impl HeatmapShader {
             &w,
             latest_incl,
             self.step,
+            &self.ticker_info.market_type(),
+            self.config.order_size_filter.max(0.0),
             norm_gen,
             now_i,
             is_interacting,
@@ -863,6 +988,9 @@ impl HeatmapShader {
             self.qty_scale,
             recenter_target,
             steps_per_y_bin,
+            &self.ticker_info.market_type(),
+            exchange::unit::qty::volume_size_unit() == exchange::SizeUnit::Quote,
+            self.config.order_size_filter.max(0.0),
         );
     }
 

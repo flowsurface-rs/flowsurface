@@ -3,6 +3,7 @@ use crate::widget::chart::heatmap::scene::{
     cell::{Cell, MIN_ROW_PX},
 };
 use data::chart::heatmap::HistoricalDepth;
+use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep};
 
 use iced::time::Instant;
@@ -639,6 +640,7 @@ struct NormKey {
     end_bucket_excl: i64,
     y0_bin: i64,
     y1_bin: i64,
+    order_filter_bits: u32,
 }
 
 #[derive(Debug)]
@@ -660,7 +662,13 @@ impl DepthNormCache {
         }
     }
 
-    fn make_key(&self, w: &ViewWindow, latest_incl: u64, step: PriceStep) -> NormKey {
+    fn make_key(
+        &self,
+        w: &ViewWindow,
+        latest_incl: u64,
+        step: PriceStep,
+        order_size_filter: f32,
+    ) -> NormKey {
         let aggr = w.aggr_time.max(1);
         let start_bucket = (w.earliest / aggr) as i64;
         let end_bucket_excl = latest_incl.div_ceil(aggr) as i64;
@@ -679,6 +687,7 @@ impl DepthNormCache {
             end_bucket_excl,
             y0_bin,
             y1_bin,
+            order_filter_bits: order_size_filter.max(0.0).to_bits(),
         }
     }
 
@@ -688,11 +697,13 @@ impl DepthNormCache {
         w: &ViewWindow,
         latest_incl: u64,
         step: PriceStep,
+        market_type: &MarketKind,
+        order_size_filter: f32,
         data_gen: u64,
         now: Instant,
         is_interacting: bool,
     ) -> f32 {
-        let key = self.make_key(w, latest_incl, step);
+        let key = self.make_key(w, latest_incl, step, order_size_filter);
         let key_changed = self.key != Some(key);
 
         let throttle_ms = if is_interacting {
@@ -711,7 +722,15 @@ impl DepthNormCache {
         }
 
         self.last_recompute = Some(now);
-        self.compute_with_key(hist, w, latest_incl, key, data_gen)
+        self.compute_with_key(
+            hist,
+            w,
+            latest_incl,
+            key,
+            market_type,
+            order_size_filter,
+            data_gen,
+        )
     }
 
     fn compute_with_key(
@@ -720,15 +739,27 @@ impl DepthNormCache {
         w: &ViewWindow,
         latest_incl: u64,
         key: NormKey,
+        market_type: &MarketKind,
+        order_size_filter: f32,
         data_gen: u64,
     ) -> f32 {
         if self.key == Some(key) && self.generation == data_gen {
             return self.value.max(1e-6);
         }
 
-        let max_qty = hist
-            .max_qty_in_range_raw(w.earliest, latest_incl, w.highest, w.lowest)
-            .max(1e-6);
+        let max_qty = if order_size_filter > 0.0 {
+            hist.max_depth_qty_in_range(
+                w.earliest,
+                latest_incl,
+                w.highest,
+                w.lowest,
+                *market_type,
+                order_size_filter,
+            )
+        } else {
+            hist.max_qty_in_range_raw(w.earliest, latest_incl, w.highest, w.lowest)
+        }
+        .max(1e-6);
 
         self.key = Some(key);
         self.value = max_qty;

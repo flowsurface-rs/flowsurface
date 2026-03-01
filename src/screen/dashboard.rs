@@ -271,6 +271,7 @@ impl Dashboard {
                                             ) | (
                                                 data::layout::pane::VisualConfig::Heatmap(_),
                                                 pane::Content::Heatmap { .. }
+                                                    | pane::Content::ShaderHeatmap { .. }
                                             ) | (
                                                 data::layout::pane::VisualConfig::TimeAndSales(_),
                                                 pane::Content::TimeAndSales(_)
@@ -968,7 +969,7 @@ impl Dashboard {
                                 c.insert_datapoint(trades_buffer, depth_update_t, depth);
                             }
                         }
-                        pane::Content::ShaderHeatmap { chart } => {
+                        pane::Content::ShaderHeatmap { chart, .. } => {
                             if let Some(c) = chart {
                                 c.insert_datapoint(trades_buffer, depth_update_t, depth);
                             }

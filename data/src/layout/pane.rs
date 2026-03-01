@@ -46,9 +46,13 @@ pub enum Pane {
     },
     ShaderHeatmap {
         #[serde(deserialize_with = "ok_or_default", default)]
+        studies: Vec<HeatmapStudy>,
+        #[serde(deserialize_with = "ok_or_default", default)]
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        indicators: Vec<HeatmapIndicator>,
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },

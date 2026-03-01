@@ -1,4 +1,5 @@
 use data::chart::heatmap::HistoricalDepth;
+use exchange::adapter::MarketKind;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep, Qty};
 use std::sync::Arc;
@@ -127,6 +128,9 @@ impl GridRing {
         qty_scale: f32,
         highest: Price,
         lowest: Price,
+        market_type: &MarketKind,
+        size_in_quote_ccy: bool,
+        order_size_filter: f32,
     ) {
         if self.aggr_time_ms == 0 || self.tex_w == 0 || self.tex_h == 0 {
             return;
@@ -190,6 +194,13 @@ impl GridRing {
                 if !q.is_finite() || q <= 0.0 {
                     continue;
                 }
+                if order_size_filter > 0.0 {
+                    let order_size = market_type.qty_in_quote_value(q, *price, size_in_quote_ccy);
+                    if order_size <= order_size_filter {
+                        continue;
+                    }
+                }
+
                 let q_u32 = (q * qty_scale).round().clamp(0.0, u32::MAX as f32) as u32;
                 if q_u32 == 0 {
                     continue;
@@ -274,6 +285,9 @@ impl GridRing {
         qty_scale: f32,
         recenter_target: Price,
         steps_per_y_bin: i64,
+        market_type: &MarketKind,
+        size_in_quote_ccy: bool,
+        order_size_filter: f32,
     ) {
         let steps_per_y_bin = steps_per_y_bin.max(1);
         if self.steps_per_y_bin != steps_per_y_bin {
@@ -326,8 +340,30 @@ impl GridRing {
 
             if grace_b > 0 && (prev - bucket) <= grace_b && bucket >= oldest_kept {
                 self.clear_column(x);
-                self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
-                self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
+                self.scatter_side(
+                    &depth.bids,
+                    x,
+                    anchor,
+                    step,
+                    step_units,
+                    qty_scale,
+                    true,
+                    market_type,
+                    size_in_quote_ccy,
+                    order_size_filter,
+                );
+                self.scatter_side(
+                    &depth.asks,
+                    x,
+                    anchor,
+                    step,
+                    step_units,
+                    qty_scale,
+                    false,
+                    market_type,
+                    size_in_quote_ccy,
+                    order_size_filter,
+                );
                 return;
             } else {
                 return;
@@ -337,8 +373,30 @@ impl GridRing {
         self.advance_and_fill_columns(bucket);
 
         self.clear_column(x);
-        self.scatter_side(&depth.bids, x, anchor, step, step_units, qty_scale, true);
-        self.scatter_side(&depth.asks, x, anchor, step, step_units, qty_scale, false);
+        self.scatter_side(
+            &depth.bids,
+            x,
+            anchor,
+            step,
+            step_units,
+            qty_scale,
+            true,
+            market_type,
+            size_in_quote_ccy,
+            order_size_filter,
+        );
+        self.scatter_side(
+            &depth.asks,
+            x,
+            anchor,
+            step,
+            step_units,
+            qty_scale,
+            false,
+            market_type,
+            size_in_quote_ccy,
+            order_size_filter,
+        );
     }
 
     /// Map an absolute bucket index to the ring texture x coordinate.
@@ -524,6 +582,9 @@ impl GridRing {
         step_units: i64,
         qty_scale: f32,
         is_bid: bool,
+        market_type: &MarketKind,
+        size_in_quote_ccy: bool,
+        order_size_filter: f32,
     ) {
         let half_h = (self.tex_h as i64) / 2;
         let steps_per_y_bin = self.steps_per_y_bin.max(1);
@@ -552,6 +613,14 @@ impl GridRing {
             let q = qty_sum.to_f32_lossy();
             if q <= 0.0 || !q.is_finite() {
                 return;
+            }
+
+            if order_size_filter > 0.0 {
+                let order_size =
+                    market_type.qty_in_quote_value(q, rounded_price, size_in_quote_ccy);
+                if order_size <= order_size_filter {
+                    return;
+                }
             }
 
             let dy_steps: i64 = (rounded_price.units - anchor.units).div_euclid(step_units);

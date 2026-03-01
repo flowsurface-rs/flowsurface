@@ -19,7 +19,7 @@ pub struct CircleInstance {
 }
 
 impl CircleInstance {
-    const R_MIN_PX: f32 = 1.5;
+    pub const R_MIN_PX: f32 = 1.5;
     const R_MAX_PX: f32 = 25.0;
     const ALPHA: f32 = 0.8;
 
@@ -32,6 +32,8 @@ impl CircleInstance {
         w: &ViewWindow,
         palette: &HeatmapPalette,
         max_trade_qty: Qty,
+        trade_size_scale: Option<i32>,
+        fallback_radius_px: f32,
     ) -> Self {
         let x_bin_rel = (bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let x_frac = 0.0;
@@ -40,7 +42,12 @@ impl CircleInstance {
 
         let q = trade.qty.max(qty::Qty::zero()).to_f32_lossy();
         let t = (q / max_trade_qty.to_scale_or_one()).clamp(0.0, 1.0);
-        let radius_px = Self::R_MIN_PX + t * (Self::R_MAX_PX - Self::R_MIN_PX);
+        let radius_px = if let Some(scale_pct) = trade_size_scale {
+            let scale_factor = (scale_pct as f32 / 100.0).max(0.0);
+            Self::R_MIN_PX + t * (Self::R_MAX_PX - Self::R_MIN_PX) * scale_factor
+        } else {
+            fallback_radius_px.max(Self::R_MIN_PX)
+        };
 
         let rgba = if trade.is_sell {
             [

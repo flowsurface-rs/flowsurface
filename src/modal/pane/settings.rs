@@ -271,10 +271,117 @@ pub fn heatmap_cfg_view<'a>(
 }
 
 pub fn heatmap_shader_cfg_view<'a>(
-    _cfg: heatmap::Config,
-    _pane: pane_grid::Pane,
+    cfg: heatmap::Config,
+    pane: pane_grid::Pane,
+    study_config: &'a study::Configurator<HeatmapStudy>,
+    studies: &'a [HeatmapStudy],
+    basis: data::chart::Basis,
 ) -> Element<'a, Message> {
-    let content = text("This chart type doesn't have any configurations, WIP...");
+    let trade_size_slider = {
+        let filter = cfg.trade_size_filter;
+        labeled_slider(
+            "Trade",
+            0.0..=50000.0,
+            filter,
+            move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        trade_size_filter: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            },
+            |value| format!(">${}", format_with_commas(*value)),
+            Some(500.0),
+        )
+    };
+
+    let order_size_slider = {
+        let filter = cfg.order_size_filter;
+        labeled_slider(
+            "Order",
+            0.0..=500_000.0,
+            filter,
+            move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        order_size_filter: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            },
+            |value| format!(">${}", format_with_commas(*value)),
+            Some(5000.0),
+        )
+    };
+
+    let circle_scaling_slider = cfg.trade_size_scale.map(|radius_scale| {
+        classic_slider_row(
+            text("Circle radius scaling"),
+            slider(10..=200, radius_scale, move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        trade_size_scale: Some(value),
+                        ..cfg
+                    }),
+                    false,
+                )
+            })
+            .step(10)
+            .into(),
+            Some(text(format!("{}%", radius_scale)).size(13)),
+        )
+    });
+
+    let size_filters_column = column![
+        text("Size filters").size(14),
+        column![trade_size_slider, order_size_slider].spacing(8),
+    ]
+    .spacing(8);
+
+    let trade_viz_column = {
+        let dyn_checkbox = checkbox(cfg.trade_size_scale.is_some())
+            .label("Dynamic circle radius")
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Heatmap(heatmap::Config {
+                        trade_size_scale: if value { Some(100) } else { None },
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        let mut col = column![text("Trade visualization").size(14), dyn_checkbox].spacing(8);
+        if let Some(slider) = circle_scaling_slider {
+            col = col.push(slider);
+        }
+        col
+    };
+
+    let study_cfg = study_config.view(studies, basis).map(move |msg| {
+        Message::PaneEvent(
+            pane,
+            Event::StudyConfigurator(study::StudyMessage::Heatmap(msg)),
+        )
+    });
+
+    let content = split_column![
+        size_filters_column,
+        trade_viz_column,
+        column![text("Studies").size(14), study_cfg].spacing(8),
+        row![
+            space::horizontal(),
+            sync_all_button(pane, VisualConfig::Heatmap(cfg))
+        ]
+        ; spacing = 12, align_x = Alignment::Start
+    ];
 
     cfg_view_container(360, content)
 }
