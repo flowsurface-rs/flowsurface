@@ -1,6 +1,6 @@
 # CLAUDE.md - Project Memory
 
-**flowsurface**: Native desktop charting app for crypto markets. Rust + iced 0.14 + WGPU. This fork adds **range bar visualization** from precomputed [rangebar-py](https://github.com/terrylica/rangebar-py) cache via ClickHouse.
+**flowsurface**: Native desktop charting app for crypto markets. Rust + iced 0.14 + WGPU. This fork adds **range bar visualization** from precomputed [opendeviationbar-py](https://github.com/terrylica/opendeviationbar-py) cache via ClickHouse.
 
 **Upstream**: [flowsurface-rs/flowsurface](https://github.com/flowsurface-rs/flowsurface) | **Fork**: [terrylica/flowsurface](https://github.com/terrylica/flowsurface)
 
@@ -29,7 +29,7 @@
 flowsurface/                 Main crate — GUI, chart rendering, event handling
 ├── exchange/                Exchange adapters, WebSocket/REST streams
 │   └── adapter/
-│       ├── clickhouse.rs    Range bar adapter (HTTP, reads rangebar-py cache)
+│       ├── clickhouse.rs    Range bar adapter (HTTP, reads opendeviationbar-py cache)
 │       ├── binance.rs       Binance Spot + Perpetuals
 │       ├── bybit.rs         Bybit Perpetuals
 │       ├── hyperliquid.rs   Hyperliquid DEX
@@ -64,15 +64,15 @@ Stream 2: Binance @aggTrade WebSocket (live trades)
 Reconciliation: ClickHouse bar replaces locally-built bar (authoritative)
 ```
 
-**Three-layer data pipeline** (rangebar-py owns all layers, flowsurface polls ClickHouse):
+**Three-layer data pipeline** (opendeviationbar-py owns all layers, flowsurface polls ClickHouse):
 
-| Layer         | Source                  | Latency | Status  | Tracking                                                             |
-| ------------- | ----------------------- | ------- | ------- | -------------------------------------------------------------------- |
-| L1 Historical | Binance Vision archives | Batch   | Working | —                                                                    |
-| L2 Recent     | REST API backfill       | Minutes | Planned | [rangebar-py#92](https://github.com/terrylica/rangebar-py/issues/92) |
-| L3 Live       | WebSocket `@aggTrade`   | ~5s     | Planned | [rangebar-py#91](https://github.com/terrylica/rangebar-py/issues/91) |
+| Layer         | Source                  | Latency | Status  | Tracking                                                                             |
+| ------------- | ----------------------- | ------- | ------- | ------------------------------------------------------------------------------------ |
+| L1 Historical | Binance Vision archives | Batch   | Working | —                                                                                    |
+| L2 Recent     | REST API backfill       | Minutes | Planned | [opendeviationbar-py#92](https://github.com/terrylica/opendeviationbar-py/issues/92) |
+| L3 Live       | WebSocket `@aggTrade`   | ~5s     | Planned | [opendeviationbar-py#91](https://github.com/terrylica/opendeviationbar-py/issues/91) |
 
-flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `rangebar_cache.range_bars`. See also [rangebar-py#93](https://github.com/terrylica/rangebar-py/issues/93) for crash recovery.
+flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `opendeviationbar_cache.open_deviation_bars`. See also [opendeviationbar-py#93](https://github.com/terrylica/opendeviationbar-py/issues/93) for crash recovery.
 
 **Key types**:
 
@@ -104,10 +104,10 @@ flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `rang
 
 1. Establishes SSH tunnel (idempotent)
 2. Verifies ClickHouse responds (3 retries)
-3. Verifies `rangebar_cache.range_bars` table exists
+3. Verifies `opendeviationbar_cache.open_deviation_bars` table exists
 4. Verifies BTCUSDT data present for all thresholds
 
-**Data source**: [rangebar-py](https://github.com/terrylica/rangebar-py) populates the cache on bigblack. See rangebar-py's `populate_cache_resumable()`.
+**Data source**: [opendeviationbar-py](https://github.com/terrylica/opendeviationbar-py) populates the cache on bigblack. See opendeviationbar-py's `populate_cache_resumable()`.
 
 ---
 
@@ -189,13 +189,13 @@ When modifying range bar rendering, check **all** match arms for `Basis::RangeBa
 
 ## Common Errors
 
-| Error                     | Cause                  | Fix                                  |
-| ------------------------- | ---------------------- | ------------------------------------ |
-| "Fetching Klines..." loop | ClickHouse unreachable | `mise run preflight`                 |
-| Tiny dot candlesticks     | Wrong cell_width/limit | Check adaptive scaling in `kline.rs` |
-| Crosshair panic           | NaN in indicator data  | Add NaN guard before rendering       |
-| "ClickHouse HTTP 404"     | Wrong table/schema     | Verify `rangebar_cache.range_bars`   |
-| Missing BPR threshold     | No data for that dbps  | Check `mise run tunnel:status`       |
+| Error                     | Cause                  | Fix                                                 |
+| ------------------------- | ---------------------- | --------------------------------------------------- |
+| "Fetching Klines..." loop | ClickHouse unreachable | `mise run preflight`                                |
+| Tiny dot candlesticks     | Wrong cell_width/limit | Check adaptive scaling in `kline.rs`                |
+| Crosshair panic           | NaN in indicator data  | Add NaN guard before rendering                      |
+| "ClickHouse HTTP 404"     | Wrong table/schema     | Verify `opendeviationbar_cache.open_deviation_bars` |
+| Missing BPR threshold     | No data for that dbps  | Check `mise run tunnel:status`                      |
 
 ---
 

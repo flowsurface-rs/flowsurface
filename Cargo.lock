@@ -1233,7 +1233,7 @@ dependencies = [
  "hyper-util",
  "iced_futures",
  "log",
- "rangebar-core",
+ "opendeviationbar-core",
  "reqwest",
  "rustc-hash 2.1.1",
  "serde",
@@ -2975,6 +2975,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendeviationbar-core"
+version = "12.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d468780044b301600b158ee0a7b8b3cd4892a7b5ec696d043451d533e3ff4e"
+dependencies = [
+ "chrono",
+ "foldhash 0.2.0",
+ "libm",
+ "mimalloc",
+ "num_cpus",
+ "opendeviationbar-hurst",
+ "parking_lot",
+ "quick_cache",
+ "rayon",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.17",
+ "wide",
+]
+
+[[package]]
+name = "opendeviationbar-hurst"
+version = "12.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29898e74ff99825d179c142da0e55b7cae318eef887168ed922fc498d73550d"
+dependencies = [
+ "linreg",
+]
+
+[[package]]
 name = "orbclient"
 version = "0.3.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3423,37 +3454,6 @@ name = "range-alloc"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d6831663a5098ea164f89cff59c6284e95f4e3c76ce9848d4529f5ccca9bde"
-
-[[package]]
-name = "rangebar-core"
-version = "12.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c28cf3345c703f937c78988d17e0ec5504a190157ccef656fa8b138fc2a38101"
-dependencies = [
- "chrono",
- "foldhash 0.2.0",
- "libm",
- "mimalloc",
- "num_cpus",
- "parking_lot",
- "quick_cache",
- "rangebar-hurst",
- "rayon",
- "serde",
- "serde_json",
- "smallvec",
- "thiserror 2.0.17",
- "wide",
-]
-
-[[package]]
-name = "rangebar-hurst"
-version = "12.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b167d7bfa6bafa1fcb41f5c65634ac745a396682d7652d57bd9c91226b6dc44f"
-dependencies = [
- "linreg",
-]
 
 [[package]]
 name = "rangemap"

@@ -8,13 +8,13 @@ Exchange adapters, WebSocket/REST stream handling, and type definitions. Crate n
 
 ## Quick Reference
 
-| Adapter         | File             | Protocol           | Markets                    |
-| --------------- | ---------------- | ------------------ | -------------------------- |
-| **ClickHouse**  | `clickhouse.rs`  | HTTP (rangebar-py) | Range bars from cache      |
-| **Binance**     | `binance.rs`     | REST + WebSocket   | Spot, Linear/Inverse Perps |
-| **Bybit**       | `bybit.rs`       | REST + WebSocket   | Perpetuals                 |
-| **Hyperliquid** | `hyperliquid.rs` | REST + WebSocket   | DEX Perpetuals             |
-| **OKX**         | `okex.rs`        | REST + WebSocket   | Multi-product              |
+| Adapter         | File             | Protocol                   | Markets                    |
+| --------------- | ---------------- | -------------------------- | -------------------------- |
+| **ClickHouse**  | `clickhouse.rs`  | HTTP (opendeviationbar-py) | Range bars from cache      |
+| **Binance**     | `binance.rs`     | REST + WebSocket           | Spot, Linear/Inverse Perps |
+| **Bybit**       | `bybit.rs`       | REST + WebSocket           | Perpetuals                 |
+| **Hyperliquid** | `hyperliquid.rs` | REST + WebSocket           | DEX Perpetuals             |
+| **OKX**         | `okex.rs`        | REST + WebSocket           | Multi-product              |
 
 ---
 
@@ -22,7 +22,7 @@ Exchange adapters, WebSocket/REST stream handling, and type definitions. Crate n
 
 **File**: `src/adapter/clickhouse.rs` (~300 LOC)
 
-Reads precomputed range bars from rangebar-py's ClickHouse cache via HTTP.
+Reads precomputed range bars from opendeviationbar-py's ClickHouse cache via HTTP.
 
 ### Connection
 
@@ -50,7 +50,7 @@ fetch_klines() / fetch_klines_with_microstructure()
 ```sql
 SELECT close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume,
        individual_trade_count, ofi, trade_intensity
-FROM rangebar_cache.range_bars
+FROM opendeviationbar_cache.open_deviation_bars
 WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold}
 ORDER BY close_time_ms DESC
 LIMIT {limit}
@@ -61,7 +61,7 @@ FORMAT JSONEachRow
 
 ### Streaming (Polling)
 
-`connect_kline_stream()` polls ClickHouse every 5 seconds for new bars with `close_time_ms > last_ts`. Uses ASC ordering for incremental updates. The 5s interval is designed for near-real-time range bar updates once rangebar-py's streaming sidecar (terrylica/rangebar-py#91) writes live bars to ClickHouse.
+`connect_kline_stream()` polls ClickHouse every 5 seconds for new bars with `close_time_ms > last_ts`. Uses ASC ordering for incremental updates. The 5s interval is designed for near-real-time range bar updates once opendeviationbar-py's streaming sidecar (terrylica/opendeviationbar-py#91) writes live bars to ClickHouse.
 
 ### Key Types
 
@@ -72,7 +72,7 @@ FORMAT JSONEachRow
 
 ### Microstructure Fields
 
-Three fields from rangebar-py's 10 microstructure features are surfaced as indicators:
+Three fields from opendeviationbar-py's 10 microstructure features are surfaced as indicators:
 
 | Field                    | Type          | Used By        |
 | ------------------------ | ------------- | -------------- |

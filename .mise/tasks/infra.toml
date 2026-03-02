@@ -34,7 +34,7 @@ if [ -n "$PID" ]; then
   RESULT=$(curl -sf --connect-timeout 2 "http://localhost:18123" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1)
   if [ "$RESULT" = "ok" ]; then
     echo "ClickHouse reachable via tunnel"
-    curl -s "http://localhost:18123" --data "SELECT threshold_decimal_bps, count(*) as bars FROM rangebar_cache.range_bars WHERE symbol = 'BTCUSDT' GROUP BY threshold_decimal_bps ORDER BY threshold_decimal_bps FORMAT TabSeparated"
+    curl -s "http://localhost:18123" --data "SELECT threshold_decimal_bps, count(*) as bars FROM opendeviationbar_cache.open_deviation_bars WHERE symbol = 'BTCUSDT' GROUP BY threshold_decimal_bps ORDER BY threshold_decimal_bps FORMAT TabSeparated"
   else
     echo "WARNING: Tunnel exists but ClickHouse not responding"
   fi
@@ -70,23 +70,23 @@ if [ "$RESULT" != "ok" ]; then
 fi
 echo "  ClickHouse responding"
 
-# 2. Verify rangebar_cache database and table exist
+# 2. Verify opendeviationbar_cache database and table exist
 echo ""
-echo "[2/3] Checking rangebar_cache schema..."
-TABLE_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='rangebar_cache' AND name='range_bars' FORMAT TabSeparated" 2>&1)
+echo "[2/3] Checking opendeviationbar_cache schema..."
+TABLE_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='opendeviationbar_cache' AND name='open_deviation_bars' FORMAT TabSeparated" 2>&1)
 if [ "$TABLE_EXISTS" != "1" ]; then
-  echo "FATAL: rangebar_cache.range_bars table not found"
-  echo "  Run populate_cache_resumable() from rangebar-py first"
+  echo "FATAL: opendeviationbar_cache.open_deviation_bars table not found"
+  echo "  Run populate_cache_resumable() from opendeviationbar-py first"
   exit 1
 fi
-echo "  rangebar_cache.range_bars exists"
+echo "  opendeviationbar_cache.open_deviation_bars exists"
 
 # 3. Verify data is present for at least one symbol/threshold
 echo ""
 echo "[3/3] Checking range bar data..."
 DATA=$(curl -sf "$CH" --data "
   SELECT threshold_decimal_bps, count(*) as bars
-  FROM rangebar_cache.range_bars
+  FROM opendeviationbar_cache.open_deviation_bars
   WHERE symbol = 'BTCUSDT'
   GROUP BY threshold_decimal_bps
   ORDER BY threshold_decimal_bps
@@ -117,13 +117,13 @@ CH="http://localhost:18123"
 echo "Querying ClickHouse for available range bar symbols..."
 SYMBOLS=$(curl -sf "$CH" --data "
   SELECT DISTINCT symbol
-  FROM rangebar_cache.range_bars
+  FROM opendeviationbar_cache.open_deviation_bars
   ORDER BY symbol
   FORMAT TabSeparated
 " 2>&1)
 
 if [ -z "$SYMBOLS" ]; then
-  echo "ERROR: No symbols found in rangebar_cache.range_bars"
+  echo "ERROR: No symbols found in opendeviationbar_cache.open_deviation_bars"
   exit 1
 fi
 

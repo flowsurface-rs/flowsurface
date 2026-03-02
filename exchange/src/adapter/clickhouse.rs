@@ -1,6 +1,6 @@
-//! ClickHouse adapter for precomputed range bars from rangebar-py cache.
+//! ClickHouse adapter for precomputed open deviation bars from opendeviationbar-py cache.
 //!
-//! Reads from `rangebar_cache.range_bars` table via ClickHouse HTTP interface.
+//! Reads from `opendeviationbar_cache.open_deviation_bars` table via ClickHouse HTTP interface.
 //! Tickers come from real exchanges (e.g. Binance) — the symbol in ClickHouse
 //! is just the base symbol name like "BTCUSDT".
 //!
@@ -23,7 +23,7 @@ use serde::Deserialize;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
-pub use rangebar_core::{FixedPoint, RangeBar, RangeBarProcessor};
+pub use opendeviationbar_core::{FixedPoint, OpenDeviationBar, OpenDeviationBarProcessor};
 
 /// Microstructure fields from ClickHouse range bar cache.
 /// Kept in exchange crate to avoid circular dependency with data crate.
@@ -34,23 +34,23 @@ pub struct ChMicrostructure {
     pub trade_intensity: f32,
 }
 
-// === rangebar-core in-process integration ===
+// === opendeviationbar-core in-process integration ===
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 
-/// Convert a flowsurface Trade into a rangebar-core AggTrade.
+/// Convert a flowsurface Trade into an opendeviationbar-core AggTrade.
 ///
 /// Both Price and FixedPoint use i64 with 10^8 scale, so price conversion
 /// is a direct copy of the underlying units. Volume uses f32→FixedPoint
 /// via string round-trip for precision.
-pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> rangebar_core::AggTrade {
-    // Binance WebSocket trades have millisecond timestamps. rangebar-core uses
+pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> opendeviationbar_core::AggTrade {
+    // Binance WebSocket trades have millisecond timestamps. opendeviationbar-core uses
     // microseconds and has a same-timestamp gate (prevent_same_timestamp_close)
     // that blocks bar closure when trade.timestamp == bar.open_time.
     // Add sub-millisecond offset from seq_id so trades within the same ms batch
     // get unique µs timestamps, preventing the gate from stalling bar completion.
     let base_us = (trade.time as i64) * 1000;
     let sub_ms_offset = seq_id % 1000; // 0-999 µs within the millisecond
-    rangebar_core::AggTrade {
+    opendeviationbar_core::AggTrade {
         agg_trade_id: seq_id,
         price: FixedPoint(trade.price.units),
         volume: FixedPoint((f32::from(trade.qty) as f64 * 1e8) as i64),
@@ -62,9 +62,9 @@ pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> rangebar_core::AggTrade
     }
 }
 
-/// Convert a completed rangebar-core RangeBar into a flowsurface Kline.
-pub fn range_bar_to_kline(bar: &RangeBar, min_tick: MinTicksize) -> Kline {
-    let scale = rangebar_core::fixed_point::SCALE as f64;
+/// Convert a completed OpenDeviationBar into a flowsurface Kline.
+pub fn odb_to_kline(bar: &OpenDeviationBar, min_tick: MinTicksize) -> Kline {
+    let scale = opendeviationbar_core::fixed_point::SCALE as f64;
     Kline::new(
         (bar.close_time / 1000) as u64, // µs → ms
         bar.open.to_f64() as f32,
@@ -79,8 +79,8 @@ pub fn range_bar_to_kline(bar: &RangeBar, min_tick: MinTicksize) -> Kline {
     )
 }
 
-/// Extract microstructure indicators from a completed RangeBar.
-pub fn range_bar_to_microstructure(bar: &RangeBar) -> ChMicrostructure {
+/// Extract microstructure indicators from a completed OpenDeviationBar.
+pub fn odb_to_microstructure(bar: &OpenDeviationBar) -> ChMicrostructure {
     ChMicrostructure {
         trade_count: bar.individual_trade_count,
         ofi: bar.ofi as f32,
@@ -95,7 +95,7 @@ static RANGE_BAR_SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
 /// Fetch available range bar symbols from ClickHouse and cache them.
 /// Called once at startup; gracefully returns empty vec on failure.
 pub async fn init_range_bar_symbols() -> Vec<String> {
-    let sql = "SELECT DISTINCT symbol FROM rangebar_cache.range_bars ORDER BY symbol FORMAT TabSeparated";
+    let sql = "SELECT DISTINCT symbol FROM opendeviationbar_cache.open_deviation_bars ORDER BY symbol FORMAT TabSeparated";
     match query(sql).await {
         Ok(body) => {
             let symbols: Vec<String> = body
@@ -120,7 +120,7 @@ pub async fn init_range_bar_symbols() -> Vec<String> {
     RANGE_BAR_SYMBOLS.get().cloned().unwrap_or_default()
 }
 
-/// Startup schema coherence check — logs column presence and rangebar-py version.
+/// Startup schema coherence check — logs column presence and opendeviationbar-py version.
 /// Non-fatal: logs warnings on mismatch, never blocks startup.
 async fn validate_schema() {
     // Check expected columns exist in the range_bars table
@@ -129,7 +129,7 @@ async fn validate_schema() {
         "buy_volume", "sell_volume", "individual_trade_count", "ofi", "trade_intensity",
     ];
     let col_sql = "SELECT name FROM system.columns \
-                   WHERE database = 'rangebar_cache' AND table = 'range_bars' \
+                   WHERE database = 'opendeviationbar_cache' AND table = 'open_deviation_bars' \
                    FORMAT TabSeparated";
     match query(col_sql).await {
         Ok(body) => {
@@ -150,17 +150,17 @@ async fn validate_schema() {
         }
     }
 
-    // Query rangebar_version from most recent bar (silent if column absent)
-    let ver_sql = "SELECT rangebar_version FROM rangebar_cache.range_bars \
+    // Query opendeviationbar_version from most recent bar (silent if column absent)
+    let ver_sql = "SELECT opendeviationbar_version FROM opendeviationbar_cache.open_deviation_bars \
                    ORDER BY close_time_ms DESC LIMIT 1 FORMAT TabSeparated";
     match query(ver_sql).await {
         Ok(body) => {
             if let Some(version) = body.lines().next().map(|l| l.trim()).filter(|l| !l.is_empty()) {
-                log::info!("[CH schema] rangebar-py version: {version}");
+                log::info!("[CH schema] opendeviationbar version: {version}");
             }
         }
         Err(_) => {
-            // rangebar_version column may not exist on older schemas — silently skip
+            // opendeviationbar_version column may not exist on older schemas — silently skip
         }
     }
 }
@@ -306,15 +306,16 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
     // beginning of time, creating gaps when loading historical data.
     let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity";
-    // Filter by ouroboros_mode='year' to avoid duplicates from month/year overlap.
+    // Filter by ouroboros_mode='month' — month-mode is the sole production mode.
+    // Year-mode data is being retired (opendeviationbar-py#140).
     // The ORDER BY key is (symbol, threshold_decimal_bps, ouroboros_mode, close_time_ms),
     // so this filter leverages the index for efficient scans.
     if let Some((start, end)) = range {
         format!(
             "SELECT {cols} \
-             FROM rangebar_cache.range_bars \
+             FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-               AND ouroboros_mode = 'year' \
+               AND ouroboros_mode = 'month' \
                AND close_time_ms BETWEEN {start} AND {end} \
              ORDER BY close_time_ms DESC \
              LIMIT 2000 \
@@ -331,9 +332,9 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
             .max(13_000.0) as u32;
         format!(
             "SELECT {cols} \
-             FROM rangebar_cache.range_bars \
+             FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-               AND ouroboros_mode = 'year' \
+               AND ouroboros_mode = 'month' \
              ORDER BY close_time_ms DESC \
              LIMIT {limit} \
              FORMAT JSONEachRow"
@@ -393,7 +394,7 @@ pub async fn fetch_klines_with_microstructure(
     Ok((klines, micro))
 }
 
-// -- Backfill request (Issue #97: on-demand trigger for rangebar-py) --
+// -- Backfill request (Issue #97: on-demand trigger for opendeviationbar-py) --
 
 /// Request a backfill by inserting into the backfill_requests table.
 /// Returns Ok(true) if the request was inserted, Ok(false) if a recent
@@ -405,7 +406,7 @@ pub async fn request_backfill(
     // Check for recent pending/running request to avoid spam
     let check_sql = format!(
         "SELECT count() as cnt \
-         FROM rangebar_cache.backfill_requests FINAL \
+         FROM opendeviationbar_cache.backfill_requests FINAL \
          WHERE symbol = '{symbol}' AND status IN ('pending', 'running') \
            AND requested_at > now64(3) - INTERVAL 5 MINUTE \
          FORMAT JSONEachRow"
@@ -427,7 +428,7 @@ pub async fn request_backfill(
     }
 
     let insert_sql = format!(
-        "INSERT INTO rangebar_cache.backfill_requests \
+        "INSERT INTO opendeviationbar_cache.backfill_requests \
          (symbol, threshold_decimal_bps, source, ouroboros_mode) VALUES \
          ('{symbol}', {threshold_dbps}, 'flowsurface', 'month')"
     );
@@ -463,9 +464,9 @@ pub fn connect_kline_stream(
         // doesn't re-fetch bars already loaded by the initial fetch_klines().
         let mut last_ts: u64 = {
             let sql = format!(
-                "SELECT max(close_time_ms) AS ts FROM rangebar_cache.range_bars \
+                "SELECT max(close_time_ms) AS ts FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
-                   AND ouroboros_mode = 'year' FORMAT JSONEachRow",
+                   AND ouroboros_mode = 'month' FORMAT JSONEachRow",
                 symbol, threshold_dbps
             );
             match query(&sql).await {
@@ -497,9 +498,9 @@ pub fn connect_kline_stream(
             let sql = format!(
                 "SELECT close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                         individual_trade_count, ofi, trade_intensity \
-                 FROM rangebar_cache.range_bars \
+                 FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
-                   AND ouroboros_mode = 'year' \
+                   AND ouroboros_mode = 'month' \
                    AND close_time_ms > {} \
                  ORDER BY close_time_ms ASC \
                  LIMIT 100 \
@@ -549,7 +550,7 @@ pub fn connect_kline_stream(
                                     {
                                         log::warn!(
                                             "[CH poll] {} @{}: bars missing microstructure \
-                                             — check rangebar-py feature toggles",
+                                             — check opendeviationbar-py feature toggles",
                                             symbol, threshold_dbps
                                         );
                                     }

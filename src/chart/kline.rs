@@ -18,7 +18,7 @@ use data::util::{abbr_large_numbers, count_decimals};
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
-    adapter::clickhouse::{RangeBarProcessor, range_bar_to_kline, range_bar_to_microstructure, trade_to_agg_trade},
+    adapter::clickhouse::{OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, trade_to_agg_trade},
     fetcher::{FetchRange, RequestHandler},
 };
 
@@ -227,7 +227,7 @@ pub struct KlineChart {
     last_tick: Instant,
     /// In-process range bar processor (rangebar-core). Produces completed bars
     /// from raw WebSocket trades, eliminating the ClickHouse live polling path.
-    range_bar_processor: Option<RangeBarProcessor>,
+    odb_processor: Option<OpenDeviationBarProcessor>,
     /// Monotonic counter for AggTrade IDs fed to the range bar processor.
     next_agg_id: i64,
     /// Total completed bars from the in-process processor (diagnostic).
@@ -330,7 +330,7 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
-                    range_bar_processor: None,
+                    odb_processor: None,
                     next_agg_id: 0,
                     range_bar_completed_count: 0,
                     kline_config,
@@ -393,7 +393,7 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
-                    range_bar_processor: None,
+                    odb_processor: None,
                     next_agg_id: 0,
                     range_bar_completed_count: 0,
                     kline_config,
@@ -452,8 +452,8 @@ impl KlineChart {
                     indicators[i] = Some(indi);
                 }
 
-                let range_bar_processor = RangeBarProcessor::new(threshold_dbps)
-                    .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
+                let odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
+                    .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
                     .ok();
 
                 // Fix stale splits: saved states may have more splits than current
@@ -478,7 +478,7 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
-                    range_bar_processor,
+                    odb_processor,
                     next_agg_id: 0,
                     range_bar_completed_count: 0,
                     kline_config,
@@ -580,8 +580,8 @@ impl KlineChart {
             indicators[i] = Some(indi);
         }
 
-        let range_bar_processor = RangeBarProcessor::new(threshold_dbps)
-            .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
+        let odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
+            .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
             .ok();
 
         // Fix stale splits (same as in new() RangeBar path above).
@@ -604,7 +604,7 @@ impl KlineChart {
             kind: kind.clone(),
             study_configurator: study::Configurator::new(),
             last_tick: Instant::now(),
-            range_bar_processor,
+            odb_processor,
             next_agg_id: 0,
             range_bar_completed_count: 0,
             kline_config,
@@ -652,7 +652,7 @@ impl KlineChart {
                         .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
                     // Check forming bar existence before taking &mut self via mut_state().
-                    let has_forming = self.range_bar_processor.as_ref()
+                    let has_forming = self.odb_processor.as_ref()
                         .and_then(|p| p.get_incomplete_bar())
                         .is_some();
 
@@ -924,8 +924,8 @@ impl KlineChart {
 
                 // Recreate the processor for the new threshold so live trades
                 // produce bars at the correct range.
-                self.range_bar_processor = RangeBarProcessor::new(threshold_dbps)
-                    .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
+                self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
+                    .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
                     .ok();
                 self.next_agg_id = 0;
                 self.range_bar_completed_count = 0;
@@ -934,7 +934,7 @@ impl KlineChart {
 
         // Clear processor when switching away from range bars.
         if !matches!(new_basis, Basis::RangeBar(_)) {
-            self.range_bar_processor = None;
+            self.odb_processor = None;
             self.next_agg_id = 0;
             self.range_bar_completed_count = 0;
         }
@@ -1033,7 +1033,7 @@ impl KlineChart {
                     // Feed each WebSocket trade into the processor; completed
                     // bars are appended to the chart, replacing ClickHouse
                     // polling as the live data source.
-                    if let Some(ref mut processor) = self.range_bar_processor {
+                    if let Some(ref mut processor) = self.odb_processor {
                         let min_tick = self.chart.ticker_info.min_ticksize;
                         let old_dp_len = tick_aggr.datapoints.len();
                         let mut new_bars = 0u32;
@@ -1086,8 +1086,8 @@ impl KlineChart {
                                         completed.low.to_f64(),
                                         completed.agg_record_count,
                                     );
-                                    let kline = range_bar_to_kline(&completed, min_tick);
-                                    let micro = range_bar_to_microstructure(&completed);
+                                    let kline = odb_to_kline(&completed, min_tick);
+                                    let micro = odb_to_microstructure(&completed);
                                     let last_time = tick_aggr.datapoints.last().map(|dp| dp.kline.time);
                                     log::info!(
                                         "[RBP]   kline.time={} last_dp_time={:?} action={}",
@@ -1113,7 +1113,7 @@ impl KlineChart {
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    log::warn!("RangeBarProcessor error: {e}");
+                                    log::warn!("OpenDeviationBarProcessor error: {e}");
                                 }
                             }
                         }
@@ -1198,8 +1198,8 @@ impl KlineChart {
     }
 
     pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
-        if self.chart.basis.is_range_bar() && self.range_bar_processor.is_some() {
-            // Gap-fill path: feed REST-fetched trades through RangeBarProcessor.
+        if self.chart.basis.is_range_bar() && self.odb_processor.is_some() {
+            // Gap-fill path: feed REST-fetched trades through OpenDeviationBarProcessor.
             //
             // On the first batch, historical trades arrive AFTER the WebSocket has
             // already pushed a few bars at the current price.  We must:
@@ -1216,7 +1216,7 @@ impl KlineChart {
                 // The forming bar's open_time is in microseconds; convert
                 // the trade's millisecond timestamp for comparison.
                 let forming_is_newer = self
-                    .range_bar_processor
+                    .odb_processor
                     .as_ref()
                     .and_then(|p| p.get_incomplete_bar())
                     .is_some_and(|bar| {
@@ -1250,8 +1250,8 @@ impl KlineChart {
 
                     // Recreate the processor with a clean forming-bar state.
                     if let Basis::RangeBar(threshold_dbps) = self.chart.basis {
-                        self.range_bar_processor =
-                            RangeBarProcessor::new(threshold_dbps)
+                        self.odb_processor =
+                            OpenDeviationBarProcessor::new(threshold_dbps)
                                 .map_err(|e| {
                                     log::warn!("failed to recreate RBP: {e}")
                                 })
@@ -1498,7 +1498,7 @@ impl KlineChart {
                         && start_interval == 0
                         && chart.layout.include_forming
                     {
-                        self.range_bar_processor.as_ref().and_then(|p| {
+                        self.odb_processor.as_ref().and_then(|p| {
                             p.get_incomplete_bar().map(|b| {
                                 (b.low.to_f64() as f32, b.high.to_f64() as f32)
                             })
@@ -1773,7 +1773,7 @@ impl canvas::Program<Message> for KlineChart {
                     // Drawn at x = +cell_width (one slot right of index-0 = newest completed bar).
                     // Semi-transparent to signal it is still accumulating.
                     if chart.basis.is_range_bar()
-                        && let Some(ref processor) = self.range_bar_processor
+                        && let Some(ref processor) = self.odb_processor
                             && let Some(forming) = processor.get_incomplete_bar() {
                                 let x_forming = chart.cell_width;
                                 let open_f32 = forming.open.to_f64() as f32;

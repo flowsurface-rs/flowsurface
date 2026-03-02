@@ -1295,7 +1295,7 @@ impl Dashboard {
                 }
 
                 // ClickHouse polling: fetch completed bars periodically.
-                // In-process RangeBarProcessor builds live bars from WebSocket trades,
+                // In-process OpenDeviationBarProcessor builds live bars from WebSocket trades,
                 // but ClickHouse provides authoritative completed bars and fills gaps
                 // (e.g., after sleep/disconnect when trades were missed).
                 for (ticker_info, threshold_dbps) in &specs.range_bar_kline {

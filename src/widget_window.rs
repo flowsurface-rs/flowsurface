@@ -1,13 +1,13 @@
 //! Floating always-on-top mini range bar chart widget.
 //! WebSocket-only — no ClickHouse dependency. Builds bars in-process
-//! from live Binance `@aggTrade` trades via `RangeBarProcessor`.
+//! from live Binance `@aggTrade` trades via `OpenDeviationBarProcessor`.
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1
 
 use crate::chart::kline::draw_candle_dp;
 use crate::chart::scale::linear::PriceInfoLabel;
 use crate::screen::dashboard;
 
-use exchange::adapter::clickhouse::{RangeBarProcessor, range_bar_to_kline, trade_to_agg_trade};
+use exchange::adapter::clickhouse::{OpenDeviationBarProcessor, odb_to_kline, trade_to_agg_trade};
 use exchange::adapter::{Exchange, StreamKind};
 use exchange::unit::Price;
 use exchange::{Kline, PushFrequency, TickerInfo, Ticker, Trade};
@@ -132,7 +132,7 @@ impl WidgetController {
 
 struct WidgetState {
     bars: Vec<Kline>,
-    processor: RangeBarProcessor,
+    processor: OpenDeviationBarProcessor,
     next_agg_id: i64,
     last_price: Option<PriceInfoLabel>,
     last_trade_time: Option<u64>,
@@ -143,7 +143,7 @@ struct WidgetState {
 impl WidgetState {
     fn new(ticker_info: TickerInfo) -> Self {
         let processor =
-            RangeBarProcessor::new(THRESHOLD_DBPS).expect("BPR25 threshold is always valid");
+            OpenDeviationBarProcessor::new(THRESHOLD_DBPS).expect("BPR25 threshold is always valid");
         Self {
             bars: Vec::with_capacity(MAX_BARS),
             processor,
@@ -164,14 +164,14 @@ impl WidgetState {
 
             match self.processor.process_single_trade(&agg) {
                 Ok(Some(completed)) => {
-                    let kline = range_bar_to_kline(&completed, min_tick);
+                    let kline = odb_to_kline(&completed, min_tick);
                     self.bars.push(kline);
                     if self.bars.len() > MAX_BARS {
                         self.bars.remove(0);
                     }
                 }
                 Ok(None) => {}
-                Err(e) => log::warn!("[widget] RangeBarProcessor error: {e}"),
+                Err(e) => log::warn!("[widget] OpenDeviationBarProcessor error: {e}"),
             }
         }
 
