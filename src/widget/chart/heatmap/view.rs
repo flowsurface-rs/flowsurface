@@ -10,7 +10,7 @@ use iced::time::Instant;
 
 /// Throttle depth denom recompute while interacting (keeps zoom smooth)
 const NORM_RECOMPUTE_THROTTLE_MS: u64 = 100;
-const DEPTH_PROFILE_RIGHT_PAD_PX: f32 = 4.0;
+const DEPTH_PROFILE_RIGHT_PAD_PX: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Anchor {

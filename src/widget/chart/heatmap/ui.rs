@@ -4,6 +4,8 @@ pub mod overlay;
 
 pub use super::Message;
 
+const AXIS_FONT_SIZE: f32 = 12.0;
+
 #[derive(Debug, Clone, Copy)]
 pub enum AxisZoomAnchor {
     /// Keep a specific world coordinate (along the active axis) fixed at a given screen position.
@@ -147,14 +149,45 @@ fn nice_step_i64(rough: i64) -> i64 {
         pow10 *= 10;
     }
     let m = (rough + pow10 - 1) / pow10; // ceil
-    let mult = if m <= 1 {
-        1
-    } else if m <= 2 {
-        2
-    } else if m <= 5 {
-        5
-    } else {
-        10
-    };
+    let mult = nice_step_multiplier_125(m as f64) as i64;
     mult * pow10
+}
+
+fn nice_step_multiplier_125(v: f64) -> f64 {
+    if v <= 1.0 {
+        1.0
+    } else if v <= 2.0 {
+        2.0
+    } else if v <= 5.0 {
+        5.0
+    } else {
+        10.0
+    }
+}
+
+fn nice_step_f64(rough: f64) -> f64 {
+    if !rough.is_finite() || rough <= 0.0 {
+        return 1.0;
+    }
+
+    let base = 10.0f64.powf(rough.log10().floor());
+    let fraction = rough / base;
+
+    nice_step_multiplier_125(fraction) * base
+}
+
+fn step_center_pos_from_world_y(world_y: f32, row_h: f32) -> f64 {
+    (-(world_y as f64) / (row_h as f64)) - 0.5
+}
+
+fn world_y_for_step_center(step: i64, row_h: f32) -> f32 {
+    -((step as f32 + 0.5) * row_h)
+}
+
+fn step_floor_from_world_y(world_y: f32, row_h: f32) -> i64 {
+    ((-(world_y as f64)) / (row_h as f64)).floor() as i64
+}
+
+fn world_y_for_y_bin_center(y_bin: i64, steps_per_y_bin: i64, row_h: f32) -> f32 {
+    -((y_bin as f32 + 0.5) * (steps_per_y_bin.max(1) as f32) * row_h)
 }

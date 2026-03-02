@@ -67,7 +67,6 @@ impl Camera {
         base_price.add_steps(steps_i, step)
     }
 
-    #[inline]
     fn right_pad_world(&self, viewport_w: f32) -> f32 {
         let s = self.scale_with_min(MIN_CAMERA_SCALE);
         (viewport_w * self.right_pad_frac) / s
@@ -92,23 +91,19 @@ impl Camera {
     }
 
     /// Internal: return clamped scale but don't mutate.
-    #[inline]
     fn clamped_scale(&self) -> f32 {
         self.scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE)
     }
 
-    #[inline]
     fn scale_with_min(&self, min_scale: f32) -> f32 {
         self.scale
             .clamp(min_scale.max(MIN_CAMERA_SCALE), MAX_CAMERA_SCALE)
     }
 
-    #[inline]
     fn scale_x_with_min(&self, min_scale: f32) -> f32 {
         self.scale_with_min(min_scale)
     }
 
-    #[inline]
     fn scale_y_with_min(&self, min_scale: f32) -> f32 {
         self.scale_with_min(min_scale)
     }
@@ -116,6 +111,13 @@ impl Camera {
     #[inline]
     pub fn right_edge(&self, viewport_w: f32) -> f32 {
         self.offset[0] + self.right_pad_world(viewport_w)
+    }
+
+    #[inline]
+    pub fn x_world_bounds(&self, viewport_w: f32) -> (f32, f32) {
+        let right = self.right_edge(viewport_w);
+        let left = right - (viewport_w / self.clamped_scale());
+        (left, right)
     }
 
     #[inline]
@@ -144,6 +146,20 @@ impl Camera {
         [screen_x, screen_y]
     }
 
+    #[inline]
+    pub fn world_to_screen_x(&self, world_x: f32, viewport_w: f32) -> f32 {
+        let s = self.clamped_scale();
+        let [cx, _] = self.center(viewport_w);
+        (world_x - cx) * s + viewport_w * 0.5
+    }
+
+    #[inline]
+    pub fn world_to_screen_y(&self, world_y: f32, viewport_w: f32, viewport_h: f32) -> f32 {
+        let s = self.clamped_scale();
+        let [_, cy] = self.center(viewport_w);
+        (world_y - cy) * s + viewport_h * 0.5
+    }
+
     pub fn zoom_at_cursor(
         &mut self,
         factor: f32,
@@ -170,7 +186,6 @@ impl Camera {
         self.offset[1] = wy - view_y_px / new_s;
     }
 
-    #[inline]
     fn world_x_at_screen_x_padded_right(
         &self,
         screen_x: f32,
@@ -260,7 +275,6 @@ impl Camera {
     }
 
     /// Set camera.offset[0] so that `world_x` stays under `screen_x` using the padded-right mapping.
-    #[inline]
     fn set_offset_x_for_world_x_at_screen_x_padded_right(
         &mut self,
         world_x: f32,
@@ -293,6 +307,20 @@ impl Camera {
         [world_x, world_y]
     }
 
+    #[inline]
+    pub fn screen_to_world_x(&self, screen_x: f32, viewport_w: f32) -> f32 {
+        let s = self.clamped_scale();
+        let [cx, _] = self.center(viewport_w);
+        cx + (screen_x - viewport_w * 0.5) / s
+    }
+
+    #[inline]
+    pub fn screen_to_world_y(&self, screen_y: f32, viewport_w: f32, viewport_h: f32) -> f32 {
+        let s = self.clamped_scale();
+        let [_, cy] = self.center(viewport_w);
+        cy + (screen_y - viewport_h * 0.5) / s
+    }
+
     pub fn to_uniform(self, viewport_w: f32, viewport_h: f32) -> CameraUniform {
         let vw = viewport_w.round().max(1.0);
         let vh = viewport_h.round().max(1.0);
@@ -308,14 +336,12 @@ impl Camera {
 
     /// World Y at a screen Y, where screen origin is top-left of viewport and Y grows downward.
     /// This uses the *centered* anchor (matches current row-height zoom math).
-    #[inline]
     fn world_y_at_screen_y_centered(&self, screen_y: f32, viewport_h: f32, min_scale: f32) -> f32 {
         let s = self.scale_y_with_min(min_scale);
         self.offset[1] + (screen_y - 0.5 * viewport_h) / s
     }
 
     /// Set camera.offset[1] so that `world_y` stays under `screen_y` (centered anchor).
-    #[inline]
     fn set_offset_y_for_world_y_at_screen_y_centered(
         &mut self,
         world_y: f32,

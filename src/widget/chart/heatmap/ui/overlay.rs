@@ -219,26 +219,24 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 if let Some(qty) = self.volume_strip_max_qty
                     && strip_h_px >= 16.0
                 {
-                    let tx = bounds.width - OVERLAY_LABEL_PAD_PX;
-                    let ty = strip_top_y + OVERLAY_LABEL_PAD_PX;
+                    let x_pos = bounds.width - OVERLAY_LABEL_PAD_PX;
 
                     frame.fill_text(canvas::Text {
                         content: abbr_large_numbers(qty),
-                        position: Point::new(tx, ty),
+                        position: Point::new(x_pos, strip_top_y),
                         size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                         color: palette.background.base.text.scale_alpha(0.85),
                         font: style::AZERET_MONO,
                         align_x: Alignment::End.into(),
-                        align_y: Alignment::Start.into(),
+                        align_y: Alignment::Center.into(),
                         ..canvas::Text::default()
                     });
                 }
 
-                // Profile denom label:
+                // Depth profile denom label:
                 // anchored to the *world-space end* of the profile scale (x = profile_max_w_world).
                 if let Some(qty) = self.depth_profile_max_qty {
                     let vw_px = bounds.width;
-                    let vh_px = bounds.height;
 
                     let profile_max_w_world = self
                         .geometry
@@ -246,19 +244,15 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         .unwrap_or(0.0);
 
                     if profile_max_w_world > 0.0 {
-                        // Profile ends at world x = profile_max_w_world (since it starts at x=0).
-                        let profile_end_world_x = profile_max_w_world;
-
-                        let [profile_end_px_x, _] = self.scene.camera.world_to_screen(
-                            profile_end_world_x,
-                            0.0,
-                            vw_px,
-                            vh_px,
-                        );
+                        // Profile ends at world x = profile_max_w_world (since it starts at x=0)
+                        let profile_end_px_x = self
+                            .scene
+                            .camera
+                            .world_to_screen_x(profile_max_w_world, vw_px);
 
                         // Only draw if visible.
                         if (0.0..=vw_px).contains(&profile_end_px_x) {
-                            let tx = (profile_end_px_x - OVERLAY_LABEL_PAD_PX).clamp(0.0, vw_px);
+                            let tx = profile_end_px_x;
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
@@ -275,11 +269,10 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     }
                 }
 
-                // Trade-profile denom label:
+                // Trade profile denom label:
                 // anchored to the *world-space end* of the volume-profile zone.
                 if let Some(qty) = self.volume_profile_max_qty {
                     let vw_px = bounds.width;
-                    let vh_px = bounds.height;
 
                     let left_edge_world = self.geometry.map(|g| g.left_edge_world);
                     let volume_profile_max_w_world =
@@ -294,14 +287,10 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         let volume_profile_end_world_x =
                             left_edge_world + volume_profile_max_w_world;
 
-                        let y_world = self.scene.camera.offset[1];
-
-                        let [end_px_x, _] = self.scene.camera.world_to_screen(
-                            volume_profile_end_world_x,
-                            y_world,
-                            vw_px,
-                            vh_px,
-                        );
+                        let end_px_x = self
+                            .scene
+                            .camera
+                            .world_to_screen_x(volume_profile_end_world_x, vw_px);
 
                         if end_px_x.is_finite() && (0.0..=vw_px).contains(&end_px_x) {
                             let tx = (end_px_x - OVERLAY_LABEL_PAD_PX).clamp(0.0, vw_px);
@@ -363,17 +352,19 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             let snapped_world_x = (x_bin_rel - origin0) * cell_width;
 
             let steps_per_y_bin = self.scene.params.steps_per_y_bin();
-            let steps_at_y = ((-world_y) / cell_height).floor() as i64;
+            let steps_at_y = super::step_floor_from_world_y(world_y, cell_height);
             let base_rel_y_bin = steps_at_y.div_euclid(steps_per_y_bin.max(1));
             let snapped_world_y =
-                -((base_rel_y_bin as f32 + 0.5) * (steps_per_y_bin as f32) * cell_height);
+                super::world_y_for_y_bin_center(base_rel_y_bin, steps_per_y_bin, cell_height);
 
-            let [snap_px_x, snap_px_y] = self.scene.camera.world_to_screen(
-                snapped_world_x,
-                snapped_world_y,
-                bounds.width,
-                bounds.height,
-            );
+            let snap_px_x = self
+                .scene
+                .camera
+                .world_to_screen_x(snapped_world_x, bounds.width);
+            let snap_px_y =
+                self.scene
+                    .camera
+                    .world_to_screen_y(snapped_world_y, bounds.width, bounds.height);
 
             let x = (snap_px_x.round() + 0.5).clamp(0.0, bounds.width);
             let y = (snap_px_y.round() + 0.5).clamp(0.0, bounds.height);

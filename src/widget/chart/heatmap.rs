@@ -32,9 +32,6 @@ use exchange::{TickerInfo, Trade};
 
 use std::time::{Duration, Instant};
 
-// Latest profile overlay (x > 0)
-const DEPTH_PROFILE_COL_WIDTH_PX: f32 = 180.0;
-
 // Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
 
@@ -46,6 +43,9 @@ const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
 // Volume profile width as % of viewport width
 const VOLUME_PROFILE_WIDTH_PCT: f32 = 0.10;
+
+// Depth profile width in pixels fixed
+const DEPTH_PROFILE_WIDTH_PX: f32 = 160.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -312,8 +312,6 @@ impl HeatmapShader {
 
         let aggr_time = self.depth_history.aggr_time.max(1);
         let latest_bucket: i64 = (render_latest_time / aggr_time) as i64;
-
-        let cam_scale = self.scene.camera.scale();
         let render_base_price = self.anchor.effective_base_price(self.base_price);
 
         let overlay_geometry = self.viewport.and_then(|vp| {
@@ -321,7 +319,7 @@ impl HeatmapShader {
                 &self.scene.camera,
                 vp.size(),
                 view::OverlayGeometryConfig {
-                    depth_profile_col_width_px: DEPTH_PROFILE_COL_WIDTH_PX,
+                    depth_profile_col_width_px: DEPTH_PROFILE_WIDTH_PX,
                     volume_strip_height_pct: STRIP_HEIGHT_FRAC,
                     volume_profile_width_pct: VOLUME_PROFILE_WIDTH_PCT,
                 },
@@ -330,14 +328,12 @@ impl HeatmapShader {
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
+            camera: &self.scene.camera,
             timezone,
             plot_bounds: self.viewport,
             latest_bucket,
             aggr_time,
             column_world: self.scene.cell.width_world(),
-            cam_offset_x: self.scene.camera.offset[0],
-            cam_sx: cam_scale,
-            cam_right_pad_frac: self.scene.camera.right_pad_frac,
             x_phase_bucket: self.anchor.x_phase_bucket(),
             is_x0_visible: self
                 .viewport
@@ -346,11 +342,10 @@ impl HeatmapShader {
         let y_axis = AxisYLabelCanvas {
             cache: &self.canvas_caches.y_axis,
             plot_bounds: self.viewport,
+            camera: &self.scene.camera,
             base_price: render_base_price,
             step: self.step,
             row_h: self.scene.cell.height_world(),
-            cam_offset_y: self.scene.camera.offset[1],
-            cam_sy: cam_scale,
             label_precision: self.ticker_info.min_ticksize,
         };
 
@@ -605,7 +600,7 @@ impl HeatmapShader {
         let base_price = self.anchor.effective_base_price(self.base_price)?;
 
         let cfg = ViewConfig {
-            depth_profile_col_width_px: DEPTH_PROFILE_COL_WIDTH_PX,
+            depth_profile_col_width_px: DEPTH_PROFILE_WIDTH_PX,
             volume_strip_height_pct: STRIP_HEIGHT_FRAC,
             volume_profile_width_pct: VOLUME_PROFILE_WIDTH_PCT,
             max_steps_per_y_bin: i64::from(self.depth_grid.tex_h()),

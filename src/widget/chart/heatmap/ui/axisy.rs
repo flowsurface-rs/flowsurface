@@ -1,4 +1,5 @@
 use super::{AxisInteraction, Message};
+use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_FONT_SIZE};
 use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
@@ -10,11 +11,10 @@ const DRAG_ZOOM_SENS: f32 = 0.005;
 pub struct AxisYLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
     pub plot_bounds: Option<Rectangle>,
+    pub camera: &'a Camera,
     pub base_price: Option<Price>,
     pub step: PriceStep,
     pub row_h: f32,
-    pub cam_offset_y: f32,
-    pub cam_sy: f32,
     /// Rounds/formats labels to a decade step (e.g. power=-2 => 0.01).
     /// Type alias: MinTicksize = Power10<-8, 2>
     pub label_precision: MinTicksize,
@@ -39,19 +39,36 @@ impl LabelKind {
     }
 }
 
-/// Converts world y to pixel y.
-fn world_to_px(y_world: f64, cam_offset_y: f64, cam_sy: f64, vh: f64) -> f32 {
-    ((y_world - cam_offset_y) * cam_sy + 0.5 * vh) as f32
-}
-
-/// Converts pixel y to world y.
-fn px_to_world(y_px: f32, cam_offset_y: f64, cam_sy: f64, vh: f64) -> f64 {
-    cam_offset_y + (y_px as f64 - 0.5 * vh) / cam_sy
-}
-
 /// Checks if two ranges overlap.
 fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
     a.1 >= b.0 && a.0 <= b.1
+}
+
+fn major_step_units_for_range(
+    lowest_units: f64,
+    highest_units: f64,
+    labels_can_fit: i32,
+    step_units: i64,
+) -> i64 {
+    let range_units = (highest_units - lowest_units).abs().max(step_units as f64);
+    let target_labels = labels_can_fit.max(2) as f64;
+    let raw_major = range_units / target_labels;
+    let nice_major = super::nice_step_f64(raw_major);
+
+    let major_multiple = (nice_major / step_units as f64).ceil().max(1.0) as i64;
+    step_units.saturating_mul(major_multiple)
+}
+
+impl AxisYLabelCanvas<'_> {
+    fn world_to_px_y(&self, y_world: f32, bounds: Rectangle) -> f32 {
+        self.camera
+            .world_to_screen_y(y_world, bounds.width, bounds.height)
+    }
+
+    fn px_to_world_y(&self, y_px: f32, bounds: Rectangle) -> f32 {
+        self.camera
+            .screen_to_world_y(y_px, bounds.width, bounds.height)
+    }
 }
 
 impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
@@ -138,11 +155,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        if !self.row_h.is_finite()
-            || self.row_h <= 0.0
-            || !self.cam_sy.is_finite()
-            || self.cam_sy <= 0.0
-        {
+        let cam_sy = self.camera.scale();
+        if !self.row_h.is_finite() || self.row_h <= 0.0 || !cam_sy.is_finite() || cam_sy <= 0.0 {
             return vec![];
         }
 
@@ -153,26 +167,32 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
         let palette = theme.extended_palette();
 
         let tick_labels = self.cache.draw(renderer, bounds.size(), |frame| {
-            let vh = bounds.height as f64;
-            let cam_offset_y = self.cam_offset_y as f64;
-            let cam_sy = self.cam_sy as f64;
-            let row_h = self.row_h as f64;
+            let row_h = self.row_h;
 
-            let y_world_top = cam_offset_y + (0.0 - 0.5 * vh) / cam_sy;
-            let y_world_bottom = cam_offset_y + (vh - 0.5 * vh) / cam_sy;
+            let y_world_top = self.px_to_world_y(0.0, bounds);
+            let y_world_bottom = self.px_to_world_y(bounds.height, bounds);
 
-            let min_steps = (-(y_world_bottom) / row_h).floor() as i64;
-            let max_steps = (-(y_world_top) / row_h).ceil() as i64;
+            let step_units = self.step.units.max(1);
+            let base_units = base_price.units;
 
-            let px_per_step = (row_h * cam_sy).max(1e-9);
-            let rough_every_steps = (LABEL_TARGET_PX / px_per_step).ceil() as i64;
-            let every_steps = super::nice_step_i64(rough_every_steps.max(1));
+            let step_at_top = super::step_center_pos_from_world_y(y_world_top, row_h);
+            let step_at_bottom = super::step_center_pos_from_world_y(y_world_bottom, row_h);
+
+            let price_units_top = base_units as f64 + step_at_top * step_units as f64;
+            let price_units_bottom = base_units as f64 + step_at_bottom * step_units as f64;
+
+            let lowest_units = price_units_top.min(price_units_bottom);
+            let highest_units = price_units_top.max(price_units_bottom);
+
+            let labels_can_fit = ((bounds.height as f64) / LABEL_TARGET_PX).floor() as i32;
+            let major_step_units =
+                major_step_units_for_range(lowest_units, highest_units, labels_can_fit, step_units)
+                    .max(step_units);
 
             let text_color = theme.palette().text;
-            let font_size = 12.0f32;
             let x = bounds.width / 2.0;
             let cursor_label_padding = 6.0f32;
-            let cursor_label_height = font_size + 2.0 * cursor_label_padding;
+            let cursor_label_height = AXIS_FONT_SIZE + 2.0 * cursor_label_padding;
             let size_cursor_label = iced::Size {
                 width: bounds.width,
                 height: cursor_label_height,
@@ -186,10 +206,13 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                 self.plot_bounds
                     .and_then(|pb| cursor.position_in(pb))
                     .map(|p| {
-                        let y_world_cursor = px_to_world(p.y, cam_offset_y, cam_sy, vh);
-                        let step_at_cursor = (-(y_world_cursor) / row_h - 0.5).round() as i64;
-                        let y_world_for_step = -((step_at_cursor as f64 + 0.5) * row_h);
-                        let y_px = world_to_px(y_world_for_step, cam_offset_y, cam_sy, vh);
+                        let y_world_cursor = self.px_to_world_y(p.y, bounds);
+                        let step_at_cursor =
+                            super::step_center_pos_from_world_y(y_world_cursor, row_h).round()
+                                as i64;
+                        let y_world_for_step =
+                            super::world_y_for_step_center(step_at_cursor, row_h);
+                        let y_px = self.world_to_px_y(y_world_for_step, bounds);
 
                         let price_at_cursor = base_price.add_steps(step_at_cursor, self.step);
                         let label_at_cursor = price_at_cursor.to_string(self.label_precision);
@@ -202,8 +225,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
             // Base price label (secondary priority)
             let base_step: i64 = 0;
-            let y_world_base = -((base_step as f64 + 0.5) * row_h);
-            let y_px_base = world_to_px(y_world_base, cam_offset_y, cam_sy, vh);
+            let y_world_base = super::world_y_for_step_center(base_step, row_h);
+            let y_px_base = self.world_to_px_y(y_world_base, bounds);
 
             let price_base = base_price.add_steps(base_step, self.step);
             let label_base = price_base.to_string(self.label_precision);
@@ -213,25 +236,30 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                 label: label_base,
             };
 
-            // Tick labels
-            let mut s = min_steps.div_euclid(every_steps) * every_steps;
-            if s < min_steps {
-                s += every_steps;
-            }
-            while s <= max_steps {
-                let y_world = -((s as f64 + 0.5) * row_h);
-                let y_px = world_to_px(y_world, cam_offset_y, cam_sy, vh);
+            // Tick labels (absolute price-domain majors, then projected to row grid)
+            let mut tick_units = ((lowest_units / major_step_units as f64).ceil() as i64)
+                .saturating_mul(major_step_units);
+            let mut safety_counter = 0usize;
 
-                if (0.0..=bounds.height).contains(&y_px) {
-                    let price = base_price.add_steps(s, self.step);
-                    let label = price.to_string(self.label_precision);
-                    labels.push(LabelKind::Tick { y_px, label });
+            while (tick_units as f64) <= highest_units + (major_step_units as f64 * 0.5)
+                && safety_counter < 2_048
+            {
+                let rel_units = tick_units.saturating_sub(base_units);
+
+                if rel_units % step_units == 0 {
+                    let s = rel_units / step_units;
+                    let y_world = super::world_y_for_step_center(s, row_h);
+                    let y_px = self.world_to_px_y(y_world, bounds);
+
+                    if (0.0..=bounds.height).contains(&y_px) {
+                        let price = Price::from_units(tick_units);
+                        let label = price.to_string(self.label_precision);
+                        labels.push(LabelKind::Tick { y_px, label });
+                    }
                 }
 
-                s = s.saturating_add(every_steps);
-                if every_steps <= 0 {
-                    break;
-                }
+                tick_units = tick_units.saturating_add(major_step_units);
+                safety_counter += 1;
             }
 
             // --- Render labels with overlap filtering ---
@@ -243,7 +271,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
             // Draw tick labels, skipping overlaps
             for label in &labels {
-                let tick_clip = label.clip_range(font_size * 0.7 * 2.0);
+                let tick_clip = label.clip_range(AXIS_FONT_SIZE * 0.7 * 2.0);
                 // Skip if overlaps cursor or base label
                 if cursor_clip_range.is_some_and(|c| ranges_overlap(tick_clip, c)) {
                     continue;
@@ -257,7 +285,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         content: label.clone(),
                         position: iced::Point::new(x, *y_px),
                         color: text_color,
-                        size: font_size.into(),
+                        size: AXIS_FONT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
                         align_x: iced::Alignment::Center.into(),
                         align_y: iced::Alignment::Center.into(),
@@ -286,7 +314,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         content: label.clone(),
                         position: iced::Point::new(x, y_px_base),
                         color: palette.primary.strong.text,
-                        size: font_size.into(),
+                        size: AXIS_FONT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
                         align_x: iced::Alignment::Center.into(),
                         align_y: iced::Alignment::Center.into(),
@@ -310,7 +338,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                     content: label,
                     position: iced::Point::new(x, y_px),
                     color: palette.secondary.base.text,
-                    size: font_size.into(),
+                    size: AXIS_FONT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
                     align_x: iced::Alignment::Center.into(),
                     align_y: iced::Alignment::Center.into(),
