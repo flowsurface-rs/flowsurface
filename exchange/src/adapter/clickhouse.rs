@@ -542,19 +542,17 @@ pub fn connect_kline_stream(
                         // One-time warning if first polled bar lacks microstructure
                         if !logged_micro_warning {
                             logged_micro_warning = true;
-                            if let Some(first_line) = body.lines().find(|l| !l.trim().is_empty()) {
-                                if let Ok(ck) = serde_json::from_str::<ChKline>(first_line.trim()) {
-                                    if ck.individual_trade_count.is_none()
-                                        && ck.ofi.is_none()
-                                        && ck.trade_intensity.is_none()
-                                    {
-                                        log::warn!(
-                                            "[CH poll] {} @{}: bars missing microstructure \
-                                             — check opendeviationbar-py feature toggles",
-                                            symbol, threshold_dbps
-                                        );
-                                    }
-                                }
+                            if let Some(first_line) = body.lines().find(|l| !l.trim().is_empty())
+                                && let Ok(ck) = serde_json::from_str::<ChKline>(first_line.trim())
+                                && ck.individual_trade_count.is_none()
+                                && ck.ofi.is_none()
+                                && ck.trade_intensity.is_none()
+                            {
+                                log::warn!(
+                                    "[CH poll] {} @{}: bars missing microstructure \
+                                     — check opendeviationbar-py feature toggles",
+                                    symbol, threshold_dbps
+                                );
                             }
                         }
                     }
