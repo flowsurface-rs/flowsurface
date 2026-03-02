@@ -123,7 +123,7 @@ pub async fn init_range_bar_symbols() -> Vec<String> {
 /// Startup schema coherence check — logs column presence and opendeviationbar-py version.
 /// Non-fatal: logs warnings on mismatch, never blocks startup.
 async fn validate_schema() {
-    // Check expected columns exist in the range_bars table
+    // Check expected columns exist in the open_deviation_bars table
     let expected_cols = [
         "close_time_ms", "open_time_ms", "open", "high", "low", "close",
         "buy_volume", "sell_volume", "individual_trade_count", "ofi", "trade_intensity",
@@ -307,9 +307,8 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
     let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity";
     // Filter by ouroboros_mode='month' — month-mode is the sole production mode.
-    // Year-mode data is being retired (opendeviationbar-py#140).
-    // The ORDER BY key is (symbol, threshold_decimal_bps, ouroboros_mode, close_time_ms),
-    // so this filter leverages the index for efficient scans.
+    // Gaps in month-mode coverage are filled by Ariadne/Kintsugi on the
+    // opendeviationbar-py side (Issue #115), not by mixing year-mode data here.
     if let Some((start, end)) = range {
         format!(
             "SELECT {cols} \

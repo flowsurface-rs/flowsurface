@@ -20,7 +20,7 @@ Exchange adapters, WebSocket/REST stream handling, and type definitions. Crate n
 
 ## ClickHouse Adapter (Fork-Specific)
 
-**File**: `src/adapter/clickhouse.rs` (~300 LOC)
+**File**: `src/adapter/clickhouse.rs` (~570 LOC)
 
 Reads precomputed range bars from opendeviationbar-py's ClickHouse cache via HTTP.
 

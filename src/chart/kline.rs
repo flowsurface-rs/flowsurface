@@ -225,7 +225,7 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
-    /// In-process range bar processor (rangebar-core). Produces completed bars
+    /// In-process range bar processor (opendeviationbar-core). Produces completed bars
     /// from raw WebSocket trades, eliminating the ClickHouse live polling path.
     odb_processor: Option<OpenDeviationBarProcessor>,
     /// Monotonic counter for AggTrade IDs fed to the range bar processor.
@@ -1029,7 +1029,7 @@ impl KlineChart {
                         return;
                     }
 
-                    // In-process range bar computation via rangebar-core.
+                    // In-process range bar computation via opendeviationbar-core.
                     // Feed each WebSocket trade into the processor; completed
                     // bars are appended to the chart, replacing ClickHouse
                     // polling as the live data source.
