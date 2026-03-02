@@ -14,10 +14,8 @@ use super::{
 };
 use crate::unit::{MinTicksize, Qty};
 
-use iced_futures::{
-    futures::{SinkExt, Stream},
-    stream,
-};
+use crate::connect;
+use futures::{SinkExt, Stream};
 use serde::Deserialize;
 
 use std::sync::{LazyLock, OnceLock};
@@ -448,7 +446,7 @@ pub fn connect_kline_stream(
         "[CH poll] connect_kline_stream STARTED: {} @{} dbps",
         ticker_info.ticker, threshold_dbps
     );
-    stream::channel(16, async move |mut output| {
+    connect::channel(16, async move |mut output| {
         let exchange = ticker_info.exchange();
         let _ = output.send(Event::Connected(exchange)).await;
 

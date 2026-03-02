@@ -8,7 +8,6 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-iced_futures.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -36,3 +35,4 @@ tokio-socks = "0.5.2"
 base64 = "0.22.1"
 opendeviationbar-core = "12"
 backon = "1.6"
+futures = "0.3.32"

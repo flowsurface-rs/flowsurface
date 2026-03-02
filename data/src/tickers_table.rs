@@ -1,6 +1,6 @@
 use exchange::{
     Ticker, TickerStats,
-    adapter::{Exchange, ExchangeInclusive, MarketKind},
+    adapter::{Exchange, MarketKind, Venue},
 };
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ pub struct Settings {
     pub favorited_tickers: Vec<Ticker>,
     pub show_favorites: bool,
     pub selected_sort_option: SortOptions,
-    pub selected_exchanges: Vec<ExchangeInclusive>,
+    pub selected_exchanges: Vec<Venue>,
     pub selected_markets: Vec<MarketKind>,
 }
 
@@ -19,7 +19,7 @@ impl Default for Settings {
             favorited_tickers: vec![],
             show_favorites: false,
             selected_sort_option: SortOptions::VolumeDesc,
-            selected_exchanges: ExchangeInclusive::ALL.to_vec(),
+            selected_exchanges: Venue::ALL.to_vec(),
             selected_markets: MarketKind::ALL.into_iter().collect(),
         }
     }

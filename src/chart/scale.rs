@@ -7,7 +7,9 @@ use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 
 use super::{Basis, Interaction, Message};
 use chrono::{TimeZone, Utc};
-use data::{chart::Autoscale, util::round_to_tick};
+use data::chart::Autoscale;
+use data::config::timezone::TimeLabelKind;
+use data::util::round_to_tick;
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,
@@ -250,7 +252,7 @@ impl AxisLabelsX<'_> {
         palette: &Extended,
     ) -> Option<AxisLabel> {
         match self.basis {
-            Basis::Tick(interval) => {
+            Basis::Tick(_) => {
                 let Some(interval_keys) = &self.interval_keys else {
                     return None;
                 };
@@ -277,9 +279,10 @@ impl AxisLabelsX<'_> {
                 let array_index = last_index - offset;
 
                 if let Some(timestamp) = interval_keys.get(array_index) {
-                    let label_content = self
-                        .timezone
-                        .format_crosshair_timestamp(*timestamp as i64, interval.0.into());
+                    let label_content = self.timezone.format_with_kind(
+                        *timestamp as i64,
+                        TimeLabelKind::Crosshair { show_millis: true },
+                    );
 
                     if let Some(content) = label_content {
                         return Some(AxisLabel::new_x(snap_x, content, bounds, true, palette));
@@ -324,9 +327,14 @@ impl AxisLabelsX<'_> {
                         .map(|&adj| timestamp.abs_diff(adj))
                         .unwrap_or(1_000);
 
-                    let text_content = self
-                        .timezone
-                        .format_range_bar_crosshair(*timestamp as i64, bar_duration_ms);
+                    let text_content = self.timezone.format_with_kind(
+                        *timestamp as i64,
+                        if bar_duration_ms < 1_000 {
+                            TimeLabelKind::Custom("%a %b %-d %H:%M:%S.%3f")
+                        } else {
+                            TimeLabelKind::Custom("%a %b %-d %H:%M:%S")
+                        },
+                    );
 
                     if let Some(content) = text_content {
                         return Some(AxisLabel::new_x(
@@ -364,9 +372,12 @@ impl AxisLabelsX<'_> {
                     return None;
                 }
 
-                let label_content = self
-                    .timezone
-                    .format_crosshair_timestamp(rounded_timestamp as i64, interval);
+                let label_content = self.timezone.format_with_kind(
+                    rounded_timestamp as i64,
+                    TimeLabelKind::Crosshair {
+                        show_millis: interval < 10_000,
+                    },
+                );
 
                 if let Some(content) = label_content {
                     return Some(AxisLabel::new_x(
@@ -552,9 +563,11 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                                     label_span_ms,
                                 )
                             } else {
-                                self.timezone.format_timestamp(
+                                self.timezone.format_with_kind(
                                     (timestamp / 1000) as i64,
-                                    exchange::Timeframe::MS100,
+                                    TimeLabelKind::Axis {
+                                        timeframe: exchange::Timeframe::MS100,
+                                    },
                                 ).unwrap_or_default()
                             };
                             labels

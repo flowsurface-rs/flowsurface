@@ -2,7 +2,7 @@ use super::{
     super::{
         Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
-        connect::{self, State, connect_ws},
+        connect::{self, State, channel, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
@@ -13,12 +13,9 @@ use super::{
 };
 
 use fastwebsockets::{FragmentCollector, Frame, OpCode};
+use futures::{SinkExt, Stream, future::join_all};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use iced_futures::{
-    futures::{SinkExt, Stream, future::join_all},
-    stream,
-};
 use reqwest::Method;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -794,7 +791,7 @@ pub fn connect_market_stream(
     tick_multiplier: Option<TickMultiplier>,
     push_freq: PushFrequency,
 ) -> impl Stream<Item = Event> {
-    stream::channel(100, async move |mut output| {
+    channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
         let mut backoff = resilience::reconnect_backoff();
 
@@ -1019,7 +1016,7 @@ pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     _market: MarketKind,
 ) -> impl Stream<Item = Event> {
-    stream::channel(100, async move |mut output| {
+    channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
         let mut backoff = resilience::reconnect_backoff();
 

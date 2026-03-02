@@ -5,10 +5,9 @@
 
 use crate::chart::kline::draw_candle_dp;
 use crate::chart::scale::linear::PriceInfoLabel;
-use crate::screen::dashboard;
 
 use exchange::adapter::clickhouse::{OpenDeviationBarProcessor, odb_to_kline, trade_to_agg_trade};
-use exchange::adapter::{Exchange, StreamKind};
+use exchange::adapter::{Exchange, StreamConfig, StreamKind};
 use exchange::unit::Price;
 use exchange::{Kline, PushFrequency, TickerInfo, Ticker, Trade};
 
@@ -88,11 +87,14 @@ impl WidgetController {
 
     /// Create the depth subscription for the widget's ticker.
     pub fn subscription(&self) -> Subscription<exchange::Event> {
-        dashboard::depth_subscription(
-            self.state.ticker_info,
+        let ticker_info = self.state.ticker_info;
+        let config = StreamConfig::new(
+            ticker_info,
+            ticker_info.exchange(),
             None,
             PushFrequency::ServerDefault,
-        )
+        );
+        Subscription::run_with(config, exchange::connect::depth_stream)
     }
 
     /// Render the widget canvas wrapped in a drag-triggering mouse area.

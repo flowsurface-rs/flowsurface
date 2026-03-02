@@ -2,12 +2,6 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-// Named format string constants — avoids magic string literals and ensures
-// that any future change only needs to happen in one place.
-const FMT_TIME_MS: &str = "%M:%S.%3f";
-const FMT_DATETIME: &str = "%a %b %-d %H:%M";
-const FMT_DATETIME_SEC: &str = "%a %b %-d %H:%M:%S";
-const FMT_DATETIME_SEC_MS: &str = "%a %b %-d %H:%M:%S.%3f";
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
 /// Compact bar timestamp: "2026 Feb 26 14:35:42.123" — year prefix, no weekday, always ms precision.
 /// Used for range-bar open/close fields in the crosshair tooltip.
@@ -20,67 +14,44 @@ pub enum UserTimezone {
     Local,
 }
 
+/// Specifies the *purpose* of a timestamp label when requesting a formatted
+/// string from a `UserTimezone` instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeLabelKind<'a> {
+    /// Formatting suitable for axis ticks.  Will choose the appropriate
+    /// `HH:MM`, `MM:SS`, or `D` style based on the timeframe.
+    Axis { timeframe: exchange::Timeframe },
+    /// Formatting for the crosshair tooltip.
+    /// Sub-10-second intervals will show `HH:MM:SS.mmm`,
+    /// while larger intervals will show `Day Mon D HH:MM`.
+    Crosshair { show_millis: bool },
+    /// Arbitrary formatting using the given `chrono` specifier string.
+    Custom(&'a str),
+}
+
 impl UserTimezone {
-    /// Formats a Unix timestamp (milliseconds) for axis labels based on the selected timezone.
-    ///
-    /// The input is interpreted as a UTC instant and then converted to either local time
-    /// or UTC depending on `self`. The output format is chosen from the `timeframe`:
-    ///
-    /// - sub-10s intervals: `MM:SS`
-    /// - larger intervals at midnight: day of month (`D`)
-    /// - otherwise: `HH:MM`
-    ///
-    /// Returns `Some(formatted_timestamp)` when `timestamp_ms` is valid, otherwise `None`.
-    pub fn format_timestamp(
+    pub fn to_user_datetime(
         &self,
-        timestamp_ms: i64,
-        timeframe: exchange::Timeframe,
-    ) -> Option<String> {
-        DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
-            self.with_user_timezone(datetime, |time_with_zone| {
-                Self::format_by_timeframe(&time_with_zone, timeframe)
-            })
-        })
+        datetime: DateTime<chrono::Utc>,
+    ) -> DateTime<chrono::FixedOffset> {
+        self.with_user_timezone(datetime, |time_with_zone| time_with_zone)
     }
 
-    /// Formats a Unix timestamp (milliseconds) for crosshair tooltips in the selected timezone.
-    ///
-    /// The input is interpreted as a UTC instant and converted to the user's timezone.
-    /// Formatting depends on the provided candle/tick `interval` in milliseconds:
-    ///
-    /// - sub-10s intervals: `MM:SS.mmm`
-    /// - otherwise: `Weekday Mon D HH:MM`
-    ///
-    /// Returns `Some(formatted_timestamp)` when `timestamp_ms` is valid, otherwise `None`.
-    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: de-duped from String variant)
-    pub fn format_crosshair_timestamp(&self, timestamp_ms: i64, interval: u64) -> Option<String> {
+    /// Formats a Unix timestamp (milliseconds) according to the kind.
+    pub fn format_with_kind(&self, timestamp_ms: i64, kind: TimeLabelKind<'_>) -> Option<String> {
         DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
-            self.with_user_timezone(datetime, |time_with_zone| {
-                if interval < 10000 {
-                    time_with_zone.format(FMT_TIME_MS).to_string()
-                } else {
-                    time_with_zone.format(FMT_DATETIME).to_string()
+            self.with_user_timezone(datetime, |time_with_zone| match kind {
+                TimeLabelKind::Axis { timeframe } => {
+                    Self::format_by_timeframe(&time_with_zone, timeframe)
                 }
-            })
-        })
-    }
-
-    /// Formats a Unix timestamp (milliseconds) for range bar crosshair tooltips.
-    ///
-    /// Always includes seconds since range bars can complete within seconds.
-    /// Shows milliseconds when `bar_duration_ms` is sub-second (< 1 000 ms).
-    pub fn format_range_bar_crosshair(
-        &self,
-        timestamp_ms: i64,
-        bar_duration_ms: u64,
-    ) -> Option<String> {
-        DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
-            self.with_user_timezone(datetime, |time_with_zone| {
-                if bar_duration_ms < 1_000 {
-                    time_with_zone.format(FMT_DATETIME_SEC_MS).to_string()
-                } else {
-                    time_with_zone.format(FMT_DATETIME_SEC).to_string()
+                TimeLabelKind::Crosshair { show_millis } => {
+                    if show_millis {
+                        time_with_zone.format("%H:%M:%S.%3f").to_string()
+                    } else {
+                        time_with_zone.format("%a %b %-d %H:%M").to_string()
+                    }
                 }
+                TimeLabelKind::Custom(fmt) => time_with_zone.format(fmt).to_string(),
             })
         })
     }
@@ -111,7 +82,7 @@ impl UserTimezone {
     ) -> String {
         let interval = timeframe.to_milliseconds();
 
-        if interval < 10000 {
+        if interval < 10_000 {
             datetime.format("%M:%S").to_string()
         } else if datetime.format("%H:%M").to_string() == "00:00" {
             datetime.format("%-d").to_string()

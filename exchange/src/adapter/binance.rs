@@ -3,7 +3,7 @@ use super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::StreamTicksize,
-        connect::{self, State, connect_ws},
+        connect::{self, State, channel, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
@@ -17,10 +17,7 @@ use super::{
 
 use csv::ReaderBuilder;
 use fastwebsockets::OpCode;
-use iced_futures::{
-    futures::{SinkExt, Stream, channel::mpsc},
-    stream,
-};
+use futures::{SinkExt, Stream, channel::mpsc};
 use serde::Deserialize;
 use sonic_rs::{FastStr, to_object_iter_unchecked};
 use tokio::sync::Mutex;
@@ -346,7 +343,7 @@ pub fn connect_market_stream(
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
 ) -> impl Stream<Item = Event> {
-    stream::channel(100, async move |mut output| {
+    channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
         let mut backoff = resilience::reconnect_backoff();
 
@@ -631,7 +628,7 @@ pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     market: MarketKind,
 ) -> impl Stream<Item = Event> {
-    stream::channel(100, async move |mut output| {
+    channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
         let mut backoff = resilience::reconnect_backoff();
         let exchange = exchange_from_market_type(market);
