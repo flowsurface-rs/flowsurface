@@ -5,7 +5,7 @@ use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
 
 /// Rough vertical spacing (in screen pixels) between Y-axis labels.
-const LABEL_TARGET_PX: f64 = 48.0;
+const LABEL_TARGET_PX: f32 = 48.0;
 const DRAG_ZOOM_SENS: f32 = 0.005;
 
 pub struct AxisYLabelCanvas<'a> {
@@ -44,19 +44,34 @@ fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
     a.1 >= b.0 && a.0 <= b.1
 }
 
-fn major_step_units_for_range(
-    lowest_units: f64,
-    highest_units: f64,
-    labels_can_fit: i32,
-    step_units: i64,
-) -> i64 {
-    let range_units = (highest_units - lowest_units).abs().max(step_units as f64);
-    let target_labels = labels_can_fit.max(2) as f64;
-    let raw_major = range_units / target_labels;
-    let nice_major = super::nice_step_f64(raw_major);
+fn div_ceil_i64(value: i64, divisor: i64) -> i64 {
+    let q = value.div_euclid(divisor);
+    if value.rem_euclid(divisor) == 0 {
+        q
+    } else {
+        q.saturating_add(1)
+    }
+}
 
-    let major_multiple = (nice_major / step_units as f64).ceil().max(1.0) as i64;
-    step_units.saturating_mul(major_multiple)
+fn major_step_for_range(
+    lowest_price: Price,
+    highest_price: Price,
+    labels_can_fit: i32,
+    step: PriceStep,
+) -> PriceStep {
+    let step_units = step.units.max(1);
+
+    let range_units = (i128::from(highest_price.units) - i128::from(lowest_price.units))
+        .abs()
+        .max(i128::from(step_units));
+    let target_labels = labels_can_fit.max(2) as f32;
+    let raw_major = (range_units as f32) / target_labels;
+    let nice_major = crate::widget::chart::nice_step(raw_major);
+
+    let major_multiple = (nice_major / step_units as f32).ceil().max(1.0) as i64;
+    PriceStep {
+        units: step_units.saturating_mul(major_multiple),
+    }
 }
 
 impl AxisYLabelCanvas<'_> {
@@ -172,24 +187,24 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let y_world_top = self.px_to_world_y(0.0, bounds);
             let y_world_bottom = self.px_to_world_y(bounds.height, bounds);
 
-            let step_units = self.step.units.max(1);
-            let base_units = base_price.units;
+            let step = PriceStep {
+                units: self.step.units.max(1),
+            };
 
             let step_at_top = super::step_center_pos_from_world_y(y_world_top, row_h);
             let step_at_bottom = super::step_center_pos_from_world_y(y_world_bottom, row_h);
 
-            let price_units_top = base_units as f64 + step_at_top * step_units as f64;
-            let price_units_bottom = base_units as f64 + step_at_bottom * step_units as f64;
+            let lowest_step = step_at_top.min(step_at_bottom).floor() as i64;
+            let highest_step = step_at_top.max(step_at_bottom).ceil() as i64;
 
-            let lowest_units = price_units_top.min(price_units_bottom);
-            let highest_units = price_units_top.max(price_units_bottom);
+            let lowest_price = base_price.add_steps(lowest_step, step);
+            let highest_price = base_price.add_steps(highest_step, step);
 
-            let labels_can_fit = ((bounds.height as f64) / LABEL_TARGET_PX).floor() as i32;
-            let major_step_units =
-                major_step_units_for_range(lowest_units, highest_units, labels_can_fit, step_units)
-                    .max(step_units);
+            let labels_can_fit = (bounds.height / LABEL_TARGET_PX).floor() as i32;
+            let major_step =
+                major_step_for_range(lowest_price, highest_price, labels_can_fit, step);
+            let major_step_units = major_step.units.max(step.units);
 
-            let text_color = theme.palette().text;
             let x = bounds.width / 2.0;
             let cursor_label_padding = 6.0f32;
             let cursor_label_height = AXIS_FONT_SIZE + 2.0 * cursor_label_padding;
@@ -214,7 +229,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                             super::world_y_for_step_center(step_at_cursor, row_h);
                         let y_px = self.world_to_px_y(y_world_for_step, bounds);
 
-                        let price_at_cursor = base_price.add_steps(step_at_cursor, self.step);
+                        let price_at_cursor = base_price.add_steps(step_at_cursor, step);
                         let label_at_cursor = price_at_cursor.to_string(self.label_precision);
 
                         LabelKind::Cursor {
@@ -228,7 +243,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let y_world_base = super::world_y_for_step_center(base_step, row_h);
             let y_px_base = self.world_to_px_y(y_world_base, bounds);
 
-            let price_base = base_price.add_steps(base_step, self.step);
+            let price_base = base_price.add_steps(base_step, step);
             let label_base = price_base.to_string(self.label_precision);
 
             let base_label = LabelKind::Base {
@@ -237,17 +252,16 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             };
 
             // Tick labels (absolute price-domain majors, then projected to row grid)
-            let mut tick_units = ((lowest_units / major_step_units as f64).ceil() as i64)
-                .saturating_mul(major_step_units);
+            let mut tick_units =
+                div_ceil_i64(lowest_price.units, major_step_units).saturating_mul(major_step_units);
             let mut safety_counter = 0usize;
+            let tick_limit = highest_price.units.saturating_add(major_step_units / 2);
 
-            while (tick_units as f64) <= highest_units + (major_step_units as f64 * 0.5)
-                && safety_counter < 2_048
-            {
-                let rel_units = tick_units.saturating_sub(base_units);
+            while tick_units <= tick_limit && safety_counter < 2_048 {
+                let rel_units = tick_units.saturating_sub(base_price.units);
 
-                if rel_units % step_units == 0 {
-                    let s = rel_units / step_units;
+                if rel_units % step.units == 0 {
+                    let s = rel_units / step.units;
                     let y_world = super::world_y_for_step_center(s, row_h);
                     let y_px = self.world_to_px_y(y_world, bounds);
 
@@ -258,11 +272,17 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                     }
                 }
 
-                tick_units = tick_units.saturating_add(major_step_units);
+                let next_tick = tick_units.saturating_add(major_step_units);
+                if next_tick == tick_units {
+                    break;
+                }
+                tick_units = next_tick;
                 safety_counter += 1;
             }
 
             // --- Render labels with overlap filtering ---
+            let text_color = palette.background.base.text;
+
             // Compute clip ranges for cursor and base labels
             let cursor_clip_range = cursor_label_snapped
                 .as_ref()

@@ -148,15 +148,10 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let cam_sx = self.camera.scale();
-        if self.aggr_time == 0
-            || !self.column_world.is_finite()
-            || self.column_world <= 0.0
-            || !cam_sx.is_finite()
-            || cam_sx <= 0.0
-        {
+        if self.aggr_time == 0 || !self.column_world.is_finite() || self.column_world <= 0.0 {
             return vec![];
         }
+        let palette = theme.extended_palette();
 
         let labels = self.cache.draw(renderer, bounds.size(), |frame| {
             let vw = bounds.width;
@@ -210,12 +205,8 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 latest_bucket,
             );
 
-            let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
-            let rough_every = (TARGET_LABEL_SPACING_PX / px_per_bucket).ceil() as i64;
-            let every = super::nice_step_i64(rough_every.max(1));
+            let text_color = palette.background.base.text;
 
-            let text_color = theme.palette().text;
-            let palette = theme.extended_palette();
             let world_to_screen_x =
                 |world_x: f64| -> f32 { self.camera.world_to_screen_x(world_x as f32, vw) };
 
@@ -255,6 +246,19 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                         None
                     }
                 });
+
+            let every = {
+                let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
+                let rough = (TARGET_LABEL_SPACING_PX / px_per_bucket).ceil().max(1.) as i64;
+
+                let mut pow10 = 1i64;
+                while pow10.saturating_mul(10) <= rough {
+                    pow10 *= 10;
+                }
+                let m = (rough + pow10 - 1) / pow10;
+                let mult = crate::widget::chart::nice_step_multiplier_125(m as f32) as i64;
+                mult * pow10
+            };
 
             let mut b = (b_min.div_euclid(every)) * every;
             if b < b_min {
