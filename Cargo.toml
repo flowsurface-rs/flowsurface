@@ -61,6 +61,7 @@ rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 
 exchange = { version = "0.1.0", path = "exchange", package = "flowsurface-exchange" }
 data = { version = "0.1.0", path = "data", package = "flowsurface-data" }
+zigzag = { path = "../../eon/opendeviationbar-py/crates/zigzag" }
 
 [features]
 debug = ["iced/hot"]

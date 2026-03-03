@@ -68,8 +68,11 @@ impl Chart for KlineChart {
             if !KlineIndicator::for_market(market).contains(selected_indicator) {
                 continue;
             }
-            // TradeIntensityHeatmap colours candle bodies; it has no subplot panel.
-            if *selected_indicator == KlineIndicator::TradeIntensityHeatmap {
+            // TradeIntensityHeatmap colours candle bodies; ZigZag draws on the main
+            // candle pane. Neither has a subplot panel.
+            if *selected_indicator == KlineIndicator::TradeIntensityHeatmap
+                || *selected_indicator == KlineIndicator::ZigZag
+            {
                 continue;
             }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
@@ -460,7 +463,7 @@ impl KlineChart {
                 // subplot panels (e.g. TradeIntensityHeatmap was reclassified from
                 // subplot → candle colouring). Recalculate only when count mismatches.
                 let subplot_count = indicators.iter()
-                    .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+                    .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap && *k != KlineIndicator::ZigZag)
                     .count();
                 if let Some(&main_split) = chart.layout.splits.first()
                     && chart.layout.splits.len() != subplot_count {
@@ -586,7 +589,7 @@ impl KlineChart {
 
         // Fix stale splits (same as in new() RangeBar path above).
         let subplot_count = indicators.iter()
-            .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+            .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap && *k != KlineIndicator::ZigZag)
             .count();
         if let Some(&main_split) = chart.layout.splits.first()
             && chart.layout.splits.len() != subplot_count {
@@ -1558,7 +1561,7 @@ impl KlineChart {
     pub fn toggle_indicator(&mut self, indicator: KlineIndicator) {
         // Count only panel indicators (TradeIntensityHeatmap colours candles, not a panel).
         let prev_panel_count = self.indicators.iter()
-            .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+            .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap && *k != KlineIndicator::ZigZag)
             .count();
 
         if self.indicators[indicator].is_some() {
@@ -1571,7 +1574,7 @@ impl KlineChart {
 
         if let Some(main_split) = self.chart.layout.splits.first() {
             let current_panel_count = self.indicators.iter()
-                .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+                .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap && *k != KlineIndicator::ZigZag)
                 .count();
             self.chart.layout.splits = data::util::calc_panel_splits(
                 *main_split,
@@ -1821,6 +1824,24 @@ impl canvas::Program<Message> for KlineChart {
                                     forming_color,
                                 );
                             }
+
+                    // ZigZag overlay: draw confirmed + pending pivot lines on main candle pane.
+                    if let Some(zigzag_indi) = self.indicators[KlineIndicator::ZigZag].as_ref()
+                        && let Some(zigzag) = zigzag_indi
+                            .as_any()
+                            .downcast_ref::<indicator::kline::zigzag::ZigZagOverlayIndicator>()
+                    {
+                        indicator::kline::zigzag::draw_zigzag_overlay(
+                            zigzag,
+                            frame,
+                            total_len,
+                            earliest as usize,
+                            latest as usize,
+                            &price_to_y,
+                            &interval_to_x,
+                            palette,
+                        );
+                    }
                 }
             }
 

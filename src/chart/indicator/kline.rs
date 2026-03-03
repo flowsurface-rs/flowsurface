@@ -16,8 +16,13 @@ pub mod trade_intensity;
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 pub mod trade_intensity_heatmap;
 pub mod volume;
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+pub mod zigzag;
 
-pub trait KlineIndicatorImpl {
+pub trait KlineIndicatorImpl: 'static {
+    /// Downcast to concrete type (for overlay indicators that draw on the main chart).
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Clear all caches for a full redraw
     fn clear_all_caches(&mut self);
 
@@ -93,6 +98,10 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
         KlineIndicator::TradeIntensityHeatmap => Box::new(
             super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::new(),
+        ),
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        KlineIndicator::ZigZag => Box::new(
+            super::kline::zigzag::ZigZagOverlayIndicator::new(),
         ),
     }
 }
