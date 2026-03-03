@@ -1853,6 +1853,21 @@ impl canvas::Program<Message> for KlineChart {
                 let (_, rounded_aggregation) =
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
 
+                // Build forming bar Kline from odb_processor for tooltip
+                let forming_kline = if rounded_aggregation == u64::MAX {
+                    let fk = self.odb_processor
+                        .as_ref()
+                        .and_then(|p| p.get_incomplete_bar())
+                        .map(|bar| odb_to_kline(&bar, chart.ticker_info.min_ticksize));
+                    log::trace!(
+                        "[XHAIR] forming bar zone: forming_kline={}",
+                        fk.is_some()
+                    );
+                    fk
+                } else {
+                    None
+                };
+
                 draw_crosshair_tooltip(
                     &self.data_source,
                     &chart.ticker_info,
@@ -1861,6 +1876,7 @@ impl canvas::Program<Message> for KlineChart {
                     rounded_aggregation,
                     chart.basis,
                     chart.timezone.get(),
+                    forming_kline.as_ref(),
                 );
             }
         });
@@ -2612,6 +2628,7 @@ fn draw_crosshair_tooltip(
     at_interval: u64,
     basis: Basis,
     timezone: data::UserTimezone,
+    forming_kline: Option<&Kline>,
 ) {
     let kline_opt = match data {
         PlotData::TimeBased(timeseries) => timeseries
@@ -2632,11 +2649,17 @@ fn draw_crosshair_tooltip(
                 }
             }),
         PlotData::TickBased(tick_aggr) => {
-            let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
-            if index < tick_aggr.datapoints.len() {
-                Some(&tick_aggr.datapoints[tick_aggr.datapoints.len() - 1 - index].kline)
+            if at_interval == u64::MAX {
+                // Sentinel: cursor on forming bar → use the forming kline if available
+                log::trace!("[TOOLTIP] forming bar sentinel detected, forming_kline={}", forming_kline.is_some());
+                forming_kline
             } else {
-                None
+                let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
+                if index < tick_aggr.datapoints.len() {
+                    Some(&tick_aggr.datapoints[tick_aggr.datapoints.len() - 1 - index].kline)
+                } else {
+                    None
+                }
             }
         }
     };
@@ -2680,12 +2703,21 @@ fn draw_crosshair_tooltip(
         // Shows both UTC and Local so the user always sees both at a glance.
         let timing_lines: Option<(String, String)> = match (basis, data) {
             (Basis::RangeBar(_) | Basis::Tick(_), PlotData::TickBased(tick_aggr)) => {
-                let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
-                let fwd = tick_aggr.datapoints.len().saturating_sub(1 + index);
-                let close_ms = kline.time as i64;
-                // Open time = previous bar's close time (bars are stored oldest-first).
-                let open_ms = (fwd > 0)
-                    .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
+                let (open_ms, close_ms) = if at_interval == u64::MAX {
+                    // Forming bar: open = last completed bar's close_time, close = forming kline's time
+                    let open = tick_aggr.datapoints.last().map(|dp| dp.kline.time as i64);
+                    let close = kline.time as i64;
+                    log::trace!("[TOOLTIP] forming timing: open_ms={:?} close_ms={}", open, close);
+                    (open, close)
+                } else {
+                    let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
+                    let fwd = tick_aggr.datapoints.len().saturating_sub(1 + index);
+                    let close = kline.time as i64;
+                    // Open time = previous bar's close time (bars are stored oldest-first).
+                    let open = (fwd > 0)
+                        .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
+                    (open, close)
+                };
 
                 let alt_tz = match timezone {
                     data::UserTimezone::Utc => data::UserTimezone::Local,

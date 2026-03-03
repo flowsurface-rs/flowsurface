@@ -1112,7 +1112,11 @@ impl ViewState {
                     0.5
                 };
 
-                let rounded_index = -cell_index as u64;
+                let rounded_index = if cell_index > 0.0 {
+                    u64::MAX // sentinel: cursor is in forming bar territory
+                } else {
+                    (-cell_index) as u64
+                };
 
                 if snap_ratio.is_finite() {
                     frame.stroke(
@@ -1236,7 +1240,11 @@ impl ViewState {
                     0.5
                 };
 
-                let rounded_index = -cell_index as u64;
+                let rounded_index = if cell_index > 0.0 {
+                    u64::MAX // sentinel: cursor is in forming bar territory
+                } else {
+                    (-cell_index) as u64
+                };
 
                 (rounded_index, snap_ratio)
             }
