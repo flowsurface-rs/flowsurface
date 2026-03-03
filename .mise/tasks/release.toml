@@ -12,8 +12,16 @@ run = "bash scripts/build-macos.sh aarch64"
 description = "Build macOS x86_64-only release binary"
 run = "bash scripts/build-macos.sh x86_64"
 
+["sign:app"]
+description = "Ad-hoc codesign the Flowsurface.app bundle"
+run = """
+echo "→ Signing Flowsurface.app..."
+codesign --deep --force --sign - Flowsurface.app
+echo "✓ Ad-hoc signature applied"
+"""
+
 ["release:app-bundle"]
-description = "Build release binary, update .app bundle, register icon with LaunchServices"
+description = "Build release binary, update .app bundle, sign, register icon"
 depends = ["release:macos-arm64"]
 run = """
 cp target/aarch64-apple-darwin/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
@@ -29,8 +37,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 exec "$DIR/flowsurface.bin" "$@"
 LAUNCHER
 chmod +x Flowsurface.app/Contents/MacOS/flowsurface
+codesign --deep --force --sign - Flowsurface.app
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f Flowsurface.app
-echo "Flowsurface.app bundle updated. Launch with: open Flowsurface.app"
+echo "✓ Flowsurface.app signed and registered"
 """
 
 ["icon:generate"]

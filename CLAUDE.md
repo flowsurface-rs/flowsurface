@@ -132,7 +132,8 @@ flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `open
 | --------------------- | -------------------------------------------- |
 | `release:macos`       | Universal binary (x86_64 + aarch64 via lipo) |
 | `release:macos-arm64` | aarch64-only release                         |
-| `release:app-bundle`  | Build + update .app + SSH launcher + icon    |
+| `release:app-bundle`  | Build + update .app + sign + register icon   |
+| `sign:app`            | Ad-hoc codesign the .app bundle              |
 | `icon:generate`       | Generate 1024x1024 app icon PNG              |
 | `icon:convert`        | PNG → macOS .icns                            |
 
@@ -170,6 +171,9 @@ This is a **native desktop app** (not a library). "Release" means building and b
 | `mise run release:macos`       | Universal binary (x86_64 + aarch64 via lipo)     |
 
 There is no version tagging, changelog generation, or package publishing pipeline. Commits are pushed directly to `main`.
+
+**Code signing**: Ad-hoc via `codesign --deep --force --sign -` (built into `run:app` and `release:app-bundle`).
+`rcodesign` installed via mise for future Developer ID upgrade: `rcodesign sign --p12-file <cert.p12> --code-signature-flags runtime` + `rcodesign notary-submit --wait --staple`.
 
 ---
 

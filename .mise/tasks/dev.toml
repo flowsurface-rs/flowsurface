@@ -14,12 +14,13 @@ depends = ["preflight"]
 run = "cargo run"
 
 ["run:app"]
-description = "Build release binary, update .app bundle, and launch"
+description = "Build release binary, update .app bundle, sign, and launch"
 depends = ["preflight", "build:release"]
 run = """
 kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
 sleep 0.5
 cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+codesign --deep --force --sign - Flowsurface.app
 open Flowsurface.app
 """
 

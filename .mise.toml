@@ -5,6 +5,7 @@ min_version = "2024.9.5"
 
 [tools]
 rust = "1.93.1"
+"cargo:apple-codesign" = "latest"
 
 [env]
 FLOWSURFACE_CH_HOST = "localhost"
