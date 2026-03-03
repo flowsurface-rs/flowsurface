@@ -1193,6 +1193,7 @@ dependencies = [
  "thiserror 2.0.17",
  "url",
  "uuid",
+ "zigzag",
 ]
 
 [[package]]
@@ -2974,9 +2975,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-core"
-version = "12.40.2"
+version = "12.41.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10d468780044b301600b158ee0a7b8b3cd4892a7b5ec696d043451d533e3ff4e"
+checksum = "ee24825a847312419da32cf332af98905b3aa271fb141e8eefa27eaedf5c08c1"
 dependencies = [
  "chrono",
  "foldhash 0.2.0",
@@ -5861,6 +5862,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "zigzag"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
