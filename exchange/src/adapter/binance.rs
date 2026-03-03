@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 
 use std::{collections::HashMap, io::BufReader, path::PathBuf, sync::LazyLock, time::Duration};
 
-const SPOT_DOMAIN: &str = "https://api.binance.com";
+const SPOT_DOMAIN: &str = "https://api1.binance.com";
 const LINEAR_PERP_DOMAIN: &str = "https://fapi.binance.com";
 const INVERSE_PERP_DOMAIN: &str = "https://dapi.binance.com";
 

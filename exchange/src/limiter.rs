@@ -12,7 +12,9 @@ static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
 
     let builder = builder
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30));
+        .timeout(Duration::from_secs(30))
+        .brotli(true)
+        .gzip(true);
 
     builder
         .build()
