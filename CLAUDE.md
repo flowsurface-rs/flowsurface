@@ -156,6 +156,23 @@ flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `open
 
 ---
 
+## Release Model
+
+**Not applicable**: semantic-release, crates.io, PyPI, GitHub Releases with version tags.
+
+This is a **native desktop app** (not a library). "Release" means building and bundling:
+
+| Task                           | What It Does                                     |
+| ------------------------------ | ------------------------------------------------ |
+| `mise run build:release`       | Optimized binary at `target/release/flowsurface` |
+| `mise run release:app-bundle`  | Build + update `.app` + SSH launcher + icon      |
+| `mise run release:macos-arm64` | aarch64-only release binary                      |
+| `mise run release:macos`       | Universal binary (x86_64 + aarch64 via lipo)     |
+
+There is no version tagging, changelog generation, or package publishing pipeline. Commits are pushed directly to `main`.
+
+---
+
 ## Common Patterns
 
 ### Adding a New Indicator
