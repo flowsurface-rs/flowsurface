@@ -185,7 +185,7 @@ impl Scene {
         depth_grid: &depth_grid::GridRing,
         base_price: Price,
         step: PriceStep,
-        qty_scale_inv: f32, // 1.0 / qty_scale
+        qty_scale: f32,
         latest_time: u64,
         aggr_time: u64,
         scroll_ref_bucket: i64,
@@ -205,8 +205,7 @@ impl Scene {
         let latest_x_ring: u32 = depth_grid.ring_x_for_bucket(latest_bucket);
         self.params.set_heatmap_latest_x_ring(latest_x_ring);
 
-        self.params
-            .set_heatmap_tex_info(tex_w, tex_h, qty_scale_inv);
+        self.params.set_heatmap_tex_info(tex_w, tex_h, qty_scale);
 
         self.params
             .set_heatmap_y_start_bin(depth_grid.heatmap_y_start_bin(base_price, step));

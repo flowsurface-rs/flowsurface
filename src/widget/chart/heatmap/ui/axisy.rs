@@ -1,5 +1,5 @@
 use super::{AxisInteraction, Message};
-use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_FONT_SIZE};
+use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_TEXT_SIZE};
 use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
@@ -11,6 +11,7 @@ const DRAG_ZOOM_SENS: f32 = 0.005;
 pub struct AxisYLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
     pub plot_bounds: Option<Rectangle>,
+    pub is_paused: bool,
     pub camera: &'a Camera,
     pub base_price: Option<Price>,
     pub step: PriceStep,
@@ -207,7 +208,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
             let x = bounds.width / 2.0;
             let cursor_label_padding = 6.0f32;
-            let cursor_label_height = AXIS_FONT_SIZE + 2.0 * cursor_label_padding;
+            let cursor_label_height = AXIS_TEXT_SIZE + 2.0 * cursor_label_padding;
             let size_cursor_label = iced::Size {
                 width: bounds.width,
                 height: cursor_label_height,
@@ -216,8 +217,13 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             // --- Compute label positions and values ---
             let mut labels: Vec<LabelKind> = Vec::new();
 
+            let suppress_cursor_label =
+                super::paused_control_hovered(self.is_paused, self.plot_bounds, cursor);
+
             // Cursor label (highest priority)
-            let cursor_label_snapped =
+            let cursor_label_snapped = if suppress_cursor_label {
+                None
+            } else {
                 self.plot_bounds
                     .and_then(|pb| cursor.position_in(pb))
                     .map(|p| {
@@ -236,7 +242,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                             y_px,
                             label: label_at_cursor,
                         }
-                    });
+                    })
+            };
 
             // Base price label (secondary priority)
             let base_step: i64 = 0;
@@ -291,7 +298,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
             // Draw tick labels, skipping overlaps
             for label in &labels {
-                let tick_clip = label.clip_range(AXIS_FONT_SIZE * 0.7 * 2.0);
+                let tick_clip = label.clip_range(AXIS_TEXT_SIZE * 0.7 * 2.0);
                 // Skip if overlaps cursor or base label
                 if cursor_clip_range.is_some_and(|c| ranges_overlap(tick_clip, c)) {
                     continue;
@@ -305,7 +312,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         content: label.clone(),
                         position: iced::Point::new(x, *y_px),
                         color: text_color,
-                        size: AXIS_FONT_SIZE.into(),
+                        size: AXIS_TEXT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
                         align_x: iced::Alignment::Center.into(),
                         align_y: iced::Alignment::Center.into(),
@@ -334,7 +341,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         content: label.clone(),
                         position: iced::Point::new(x, y_px_base),
                         color: palette.primary.strong.text,
-                        size: AXIS_FONT_SIZE.into(),
+                        size: AXIS_TEXT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
                         align_x: iced::Alignment::Center.into(),
                         align_y: iced::Alignment::Center.into(),
@@ -358,7 +365,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                     content: label,
                     position: iced::Point::new(x, y_px),
                     color: palette.secondary.base.text,
-                    size: AXIS_FONT_SIZE.into(),
+                    size: AXIS_TEXT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
                     align_x: iced::Alignment::Center.into(),
                     align_y: iced::Alignment::Center.into(),

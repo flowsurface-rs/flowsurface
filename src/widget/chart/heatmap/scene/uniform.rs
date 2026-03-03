@@ -74,12 +74,13 @@ impl ParamsUniform {
         self.heatmap_map[3] = x_ring as f32;
     }
 
-    pub fn set_heatmap_tex_info(&mut self, tex_w: u32, tex_h: u32, qty_scale_inv: f32) {
+    pub fn set_heatmap_tex_info(&mut self, tex_w: u32, tex_h: u32, qty_scale: f32) {
         debug_assert!(
             tex_w.is_power_of_two(),
             "heatmap tex width must be power-of-two because shader wraps with bitmask (& (tex_w-1))"
         );
 
+        let qty_scale_inv = 1.0 / qty_scale;
         self.heatmap_tex = [
             tex_w as f32,
             tex_h as f32,

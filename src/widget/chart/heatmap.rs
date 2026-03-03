@@ -20,12 +20,12 @@ use crate::{
     chart::Action,
     modal::pane::settings::study::{self, Study},
 };
-use data::chart::Basis;
+use data::aggr::time::TimeSeries;
 use data::chart::{
-    heatmap::{HeatmapDataPoint, HistoricalDepth},
+    Basis,
+    heatmap::{HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
     indicator::HeatmapIndicator,
 };
-use data::{aggr::time::TimeSeries, chart::heatmap::HeatmapStudy};
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade};
@@ -309,9 +309,10 @@ impl HeatmapShader {
 
         let render_latest_time = self.anchor.render_latest_time();
         let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
+        let is_paused = self.anchor.is_paused();
 
         let aggr_time = self.depth_history.aggr_time.max(1);
-        let latest_bucket: i64 = (render_latest_time / aggr_time) as i64;
+        let latest_bucket = (render_latest_time / aggr_time) as i64;
         let render_base_price = self.anchor.effective_base_price(self.base_price);
 
         let overlay_geometry = self.viewport.and_then(|vp| {
@@ -331,6 +332,7 @@ impl HeatmapShader {
             camera: &self.scene.camera,
             timezone,
             plot_bounds: self.viewport,
+            is_paused,
             latest_bucket,
             aggr_time,
             column_world: self.scene.cell.width_world(),
@@ -342,6 +344,7 @@ impl HeatmapShader {
         let y_axis = AxisYLabelCanvas {
             cache: &self.canvas_caches.y_axis,
             plot_bounds: self.viewport,
+            is_paused,
             camera: &self.scene.camera,
             base_price: render_base_price,
             step: self.step,
@@ -359,19 +362,10 @@ impl HeatmapShader {
             tooltip_cache: &self.canvas_caches.overlay,
             scale_labels_cache: &self.canvas_caches.scale_labels,
             geometry: overlay_geometry,
-            is_paused: self.anchor.is_paused(),
-            volume_strip_max_qty: self
-                .instances
-                .volume_strip_scale_max_qty
-                .map(|q| q.to_f32_lossy()),
-            depth_profile_max_qty: self
-                .instances
-                .depth_profile_scale_max_qty
-                .map(|q| q.to_f32_lossy()),
-            volume_profile_max_qty: self
-                .instances
-                .volume_profile_scale_max_qty
-                .map(|q| q.to_f32_lossy()),
+            is_paused,
+            volume_strip_max_qty: self.instances.volume_strip_scale_max_qty,
+            depth_profile_max_qty: self.instances.depth_profile_scale_max_qty,
+            volume_profile_max_qty: self.instances.volume_profile_scale_max_qty,
         };
 
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
@@ -742,18 +736,18 @@ impl HeatmapShader {
             force_full_rebuild,
         );
 
-        if need_full_rebuild {
+        let effective_latest = if self.anchor.is_paused() {
+            self.anchor.effective_render_latest_time(latest_time).max(1)
+        } else {
+            latest_time.max(1)
+        };
+
+        let final_latest = if need_full_rebuild {
             self.depth_grid.ensure_layout(aggr_time);
 
-            let latest_time = if self.anchor.is_paused() {
-                self.anchor.effective_render_latest_time(latest_time).max(1)
-            } else {
-                latest_time.max(1)
-            };
-
-            let (oldest_time, latest_time) = self
+            let (oldest, newest) = self
                 .depth_grid
-                .horizon_time_window_ms(latest_time, aggr_time);
+                .horizon_time_window_ms(effective_latest, aggr_time);
 
             let (rebuild_highest, rebuild_lowest) = self.depth_grid.rebuild_price_bounds(
                 recenter_target,
@@ -763,8 +757,8 @@ impl HeatmapShader {
 
             self.depth_grid.rebuild_from_historical(
                 &self.depth_history,
-                oldest_time,
-                latest_time,
+                oldest,
+                newest,
                 recenter_target,
                 self.step,
                 new_steps_per_y_bin,
@@ -778,32 +772,20 @@ impl HeatmapShader {
 
             self.data_gen = self.data_gen.wrapping_add(1);
 
-            self.scene.sync_heatmap_texture(
-                &self.depth_grid,
-                base_price,
-                self.step,
-                1.0 / self.qty_scale,
-                latest_time,
-                aggr_time,
-                self.anchor.scroll_ref_bucket(),
-            );
+            newest
         } else {
-            let latest_time_for_scene = if self.anchor.is_paused() {
-                self.anchor.effective_render_latest_time(latest_time).max(1)
-            } else {
-                latest_time.max(1)
-            };
+            effective_latest
+        };
 
-            self.scene.sync_heatmap_texture(
-                &self.depth_grid,
-                base_price,
-                self.step,
-                1.0 / self.qty_scale,
-                latest_time_for_scene,
-                aggr_time,
-                self.anchor.scroll_ref_bucket(),
-            );
-        }
+        self.scene.sync_heatmap_texture(
+            &self.depth_grid,
+            base_price,
+            self.step,
+            self.qty_scale,
+            final_latest,
+            aggr_time,
+            self.anchor.scroll_ref_bucket(),
+        );
 
         // Guard for callers that trigger `rebuild_all` outside `invalidate` (e.g. resume
         // actions from `update`) which can lead to stale texture data but new y-mapping.
@@ -878,7 +860,7 @@ impl HeatmapShader {
             &self.depth_grid,
             base_price,
             self.step,
-            1.0 / self.qty_scale,
+            self.qty_scale,
             latest_time_for_heatmap,
             aggr_time,
             scroll_ref_bucket,

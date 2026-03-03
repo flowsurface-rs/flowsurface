@@ -2,9 +2,11 @@ use crate::style;
 use crate::widget::chart::heatmap::Message;
 use crate::widget::chart::heatmap::scene::Scene;
 use crate::widget::chart::heatmap::scene::depth_grid::GridRing;
+use crate::widget::chart::heatmap::ui;
 use crate::widget::chart::heatmap::view;
 
 use data::util::abbr_large_numbers;
+use exchange::unit::Qty;
 use exchange::unit::{Price, PriceStep};
 
 use iced::widget::canvas::Path;
@@ -25,13 +27,9 @@ const HIGHLIGHT_BORDER_WIDTH_PX: f32 = 1.0;
 const HIGHLIGHT_BORDER_ALPHA: f32 = 0.95;
 
 const PAUSED_CTRL_TEXT: &str = "Paused";
-const PAUSED_CTRL_ICON_SIZE_FRAC: f32 = 0.032;
-const PAUSED_CTRL_PADDING_FRAC: f32 = 0.02;
 const PAUSED_CTRL_ICON_GAP_PX: f32 = 6.0;
 const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = 11.0;
 const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
-const PAUSED_CTRL_BG_PAD_Y: f32 = 3.0;
-const PAUSED_CTRL_LABEL_WIDTH_FACTOR: f32 = 0.62;
 
 #[derive(Debug, Default)]
 pub enum Interaction {
@@ -146,11 +144,11 @@ pub struct OverlayCanvas<'a> {
     pub geometry: Option<view::OverlayGeometry>,
 
     /// Max qty used to scale the volume strip bars (display units).
-    pub volume_strip_max_qty: Option<f32>,
+    pub volume_strip_max_qty: Option<Qty>,
     /// Max qty used to scale the latest profile bars (display units).
-    pub depth_profile_max_qty: Option<f32>,
+    pub depth_profile_max_qty: Option<Qty>,
     /// Max qty used to scale the volume profile bars (display units, total=buy+sell).
-    pub volume_profile_max_qty: Option<f32>,
+    pub volume_profile_max_qty: Option<Qty>,
 
     pub is_paused: bool,
 }
@@ -222,7 +220,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let x_pos = bounds.width - OVERLAY_LABEL_PAD_PX;
 
                     frame.fill_text(canvas::Text {
-                        content: abbr_large_numbers(qty),
+                        content: abbr_large_numbers(qty.into()),
                         position: Point::new(x_pos, strip_top_y),
                         size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                         color: palette.background.base.text.scale_alpha(0.85),
@@ -256,7 +254,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
-                                content: abbr_large_numbers(qty),
+                                content: abbr_large_numbers(qty.into()),
                                 position: Point::new(tx, ty),
                                 size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                                 color: palette.background.base.text.scale_alpha(0.85),
@@ -297,7 +295,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
-                                content: abbr_large_numbers(qty),
+                                content: abbr_large_numbers(qty.into()),
                                 position: Point::new(tx, ty),
                                 size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                                 color: palette.background.base.text.scale_alpha(0.85),
@@ -502,11 +500,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
 
 impl<'a> OverlayCanvas<'a> {
     fn paused_control_contains(&self, bounds: Rectangle, point_abs: Point) -> bool {
-        self.paused_control_rect(bounds).contains(point_abs)
+        ui::paused_control_rect(bounds).contains(point_abs)
     }
 
     fn paused_control_local_rect(&self, bounds: Rectangle) -> Rectangle {
-        let control_abs = self.paused_control_rect(bounds);
+        let control_abs = ui::paused_control_rect(bounds);
 
         Rectangle {
             x: control_abs.x - bounds.x,
@@ -526,7 +524,7 @@ impl<'a> OverlayCanvas<'a> {
         let palette = theme.extended_palette();
         let control_rect = self.paused_control_local_rect(bounds);
 
-        let icon_size = self.pause_icon_size(bounds);
+        let icon_size = ui::pause_icon_size(bounds);
         let icon_rect = Rectangle {
             x: control_rect.x + control_rect.width - PAUSED_CTRL_BG_PAD_X - icon_size,
             y: control_rect.y + ((control_rect.height - icon_size) * 0.5),
@@ -580,30 +578,6 @@ impl<'a> OverlayCanvas<'a> {
             align_y: Alignment::Center.into(),
             ..canvas::Text::default()
         });
-    }
-
-    /// Compute the paused-state control hit rectangle in absolute canvas coordinates.
-    fn paused_control_rect(&self, bounds: Rectangle) -> Rectangle {
-        let icon_size = self.pause_icon_size(bounds);
-        let padding = bounds.area().sqrt() * PAUSED_CTRL_PADDING_FRAC;
-        let label_width = (PAUSED_CTRL_TEXT.len() as f32)
-            * (PAUSED_CTRL_LABEL_TEXT_SIZE * PAUSED_CTRL_LABEL_WIDTH_FACTOR);
-
-        let content_w = label_width + PAUSED_CTRL_ICON_GAP_PX + icon_size;
-        let content_h = icon_size.max(PAUSED_CTRL_LABEL_TEXT_SIZE + 2.0);
-        let rect_w = content_w + (PAUSED_CTRL_BG_PAD_X * 3.6);
-        let rect_h = content_h + (PAUSED_CTRL_BG_PAD_Y * 2.0);
-
-        Rectangle {
-            x: (bounds.x + bounds.width) - rect_w - padding,
-            y: bounds.y + padding,
-            width: rect_w,
-            height: rect_h,
-        }
-    }
-
-    fn pause_icon_size(&self, bounds: Rectangle) -> f32 {
-        (PAUSED_CTRL_ICON_SIZE_FRAC * bounds.height).min(32.0)
     }
 
     fn draw_full_crosshair(

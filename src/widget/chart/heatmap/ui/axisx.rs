@@ -1,7 +1,7 @@
 use super::{AxisInteraction, Message};
 use crate::widget::chart::heatmap::{
     scene::camera::Camera,
-    ui::{AXIS_FONT_SIZE, AxisZoomAnchor},
+    ui::{AXIS_TEXT_SIZE, AxisZoomAnchor},
 };
 use data::config::timezone::TimeLabelKind;
 
@@ -24,6 +24,7 @@ pub struct AxisXLabelCanvas<'a> {
     pub camera: &'a Camera,
     pub timezone: data::UserTimezone,
     pub plot_bounds: Option<Rectangle>,
+    pub is_paused: bool,
     pub latest_bucket: i64,
     pub aggr_time: u64,
     pub column_world: f32,
@@ -212,40 +213,46 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
             let y = (0.5 * vh_f) as f32;
 
-            let cursor_label = self
-                .plot_bounds
-                .and_then(|pb| cursor.position_in(pb))
-                .and_then(|p| {
-                    let world_x_cursor = self.camera.screen_to_world_x(p.x, vw) as f64;
+            let suppress_cursor_label =
+                super::paused_control_hovered(self.is_paused, self.plot_bounds, cursor);
 
-                    let u_at_cursor = ((world_x_cursor / col_f) + phase).round() as i64;
-                    let b_at_cursor = latest_bucket.saturating_add(u_at_cursor);
-                    let world_x_for_bucket = ((u_at_cursor as f64) - phase) * col_f;
-                    let x_px = world_to_screen_x(world_x_for_bucket);
-                    let t_ms = b_at_cursor.saturating_mul(aggr_time_ms);
+            let cursor_label = if suppress_cursor_label {
+                None
+            } else {
+                self.plot_bounds
+                    .and_then(|pb| cursor.position_in(pb))
+                    .and_then(|p| {
+                        let world_x_cursor = self.camera.screen_to_world_x(p.x, vw) as f64;
 
-                    if let Some(label) = self
-                        .timezone
-                        .format_with_kind(t_ms, TimeLabelKind::Crosshair { show_millis: true })
-                    {
-                        let (width, height) = {
-                            let text_w = approx_text_width_px(label.chars().count());
-                            let label_w = text_w + 2.0 * CURSOR_LABEL_PADDING_X;
-                            let label_h = AXIS_FONT_SIZE + 2.0 * CURSOR_LABEL_PADDING_Y;
+                        let u_at_cursor = ((world_x_cursor / col_f) + phase).round() as i64;
+                        let b_at_cursor = latest_bucket.saturating_add(u_at_cursor);
+                        let world_x_for_bucket = ((u_at_cursor as f64) - phase) * col_f;
+                        let x_px = world_to_screen_x(world_x_for_bucket);
+                        let t_ms = b_at_cursor.saturating_mul(aggr_time_ms);
 
-                            (label_w, label_h)
-                        };
+                        if let Some(label) = self
+                            .timezone
+                            .format_with_kind(t_ms, TimeLabelKind::Crosshair { show_millis: true })
+                        {
+                            let (width, height) = {
+                                let text_w = approx_text_width_px(label.chars().count());
+                                let label_w = text_w + 2.0 * CURSOR_LABEL_PADDING_X;
+                                let label_h = AXIS_TEXT_SIZE + 2.0 * CURSOR_LABEL_PADDING_Y;
 
-                        Some(CursorLabel {
-                            x_px,
-                            text: label,
-                            width,
-                            height,
-                        })
-                    } else {
-                        None
-                    }
-                });
+                                (label_w, label_h)
+                            };
+
+                            Some(CursorLabel {
+                                x_px,
+                                text: label,
+                                width,
+                                height,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+            };
 
             let every = {
                 let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
@@ -301,7 +308,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                             position: iced::Point::new(x_px, y),
                             color: text_color,
                             font: crate::style::AZERET_MONO,
-                            size: AXIS_FONT_SIZE.into(),
+                            size: AXIS_TEXT_SIZE.into(),
                             align_x: iced::Alignment::Center.into(),
                             align_y: iced::Alignment::Center.into(),
                             ..Default::default()
@@ -337,7 +344,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     content: cursor_label.text,
                     position: iced::Point::new(cursor_label.x_px, y),
                     color: palette.secondary.base.text,
-                    size: AXIS_FONT_SIZE.into(),
+                    size: AXIS_TEXT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
                     align_x: iced::Alignment::Center.into(),
                     align_y: iced::Alignment::Center.into(),
@@ -397,7 +404,7 @@ fn max_label_chars(fmt: &str) -> usize {
 }
 
 fn approx_text_width_px(chars: usize) -> f32 {
-    chars as f32 * (AXIS_FONT_SIZE * APPROX_CHAR_WIDTH_RATIO)
+    chars as f32 * (AXIS_TEXT_SIZE * APPROX_CHAR_WIDTH_RATIO)
 }
 
 fn bucket_bounds(

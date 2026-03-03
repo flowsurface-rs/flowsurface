@@ -4,7 +4,16 @@ pub mod overlay;
 
 pub use super::Message;
 
-const AXIS_FONT_SIZE: f32 = 12.0;
+const AXIS_TEXT_SIZE: f32 = 12.0;
+const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = 11.0;
+
+const PAUSED_CTRL_TEXT: &str = "Paused";
+const PAUSED_CTRL_ICON_SIZE_FRAC: f32 = 0.032;
+const PAUSED_CTRL_PADDING_FRAC: f32 = 0.02;
+const PAUSED_CTRL_ICON_GAP_PX: f32 = 6.0;
+const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
+const PAUSED_CTRL_BG_PAD_Y: f32 = 3.0;
+const PAUSED_CTRL_LABEL_WIDTH_FACTOR: f32 = 0.62;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AxisZoomAnchor {
@@ -155,4 +164,47 @@ fn step_floor_from_world_y(world_y: f32, row_h: f32) -> i64 {
 
 fn world_y_for_y_bin_center(y_bin: i64, steps_per_y_bin: i64, row_h: f32) -> f32 {
     -((y_bin as f32 + 0.5) * (steps_per_y_bin.max(1) as f32) * row_h)
+}
+
+fn paused_control_hovered(
+    is_paused: bool,
+    plot_bounds: Option<iced::Rectangle>,
+    cursor: iced_core::mouse::Cursor,
+) -> bool {
+    if !is_paused {
+        return false;
+    }
+
+    let Some(bounds) = plot_bounds else {
+        return false;
+    };
+
+    let Some(pos) = cursor.position_over(bounds) else {
+        return false;
+    };
+
+    paused_control_rect(bounds).contains(pos)
+}
+
+fn paused_control_rect(bounds: iced::Rectangle) -> iced::Rectangle {
+    let icon_size = pause_icon_size(bounds);
+    let padding = bounds.area().sqrt() * PAUSED_CTRL_PADDING_FRAC;
+    let label_width = (PAUSED_CTRL_TEXT.len() as f32)
+        * (PAUSED_CTRL_LABEL_TEXT_SIZE * PAUSED_CTRL_LABEL_WIDTH_FACTOR);
+
+    let content_w = label_width + PAUSED_CTRL_ICON_GAP_PX + icon_size;
+    let content_h = icon_size.max(PAUSED_CTRL_LABEL_TEXT_SIZE + 2.0);
+    let rect_w = content_w + (PAUSED_CTRL_BG_PAD_X * 3.6);
+    let rect_h = content_h + (PAUSED_CTRL_BG_PAD_Y * 2.0);
+
+    iced::Rectangle {
+        x: (bounds.x + bounds.width) - rect_w - padding,
+        y: bounds.y + padding,
+        width: rect_w,
+        height: rect_h,
+    }
+}
+
+fn pause_icon_size(bounds: iced::Rectangle) -> f32 {
+    (PAUSED_CTRL_ICON_SIZE_FRAC * bounds.height).min(32.0)
 }
