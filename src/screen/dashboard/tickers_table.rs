@@ -41,7 +41,7 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
-const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
+const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 5] = [
     (Venue::Bybit, Exchange::BybitLinear, "Bybit"),
     (Venue::Binance, Exchange::BinanceLinear, "Binance"),
     (
@@ -50,6 +50,7 @@ const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
         "Hyperliquid",
     ),
     (Venue::Okex, Exchange::OkexLinear, "OKX"),
+    (Venue::Mexc, Exchange::MexcLinear, "MEXC"),
 ];
 
 pub enum Action {
