@@ -21,6 +21,11 @@ kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
 sleep 0.5
 cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
 codesign --deep --force --sign - Flowsurface.app
+
+# Reset lockfile drift — cargo build may re-dirty Cargo.lock after postflight reset
+if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
+  git checkout -- Cargo.lock
+fi
 open Flowsurface.app
 """
 

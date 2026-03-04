@@ -39,6 +39,12 @@ LAUNCHER
 chmod +x Flowsurface.app/Contents/MacOS/flowsurface
 codesign --deep --force --sign - Flowsurface.app
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f Flowsurface.app
+
+# Reset lockfile drift — cargo build during release:macos-arm64 may re-dirty
+# Cargo.lock after postflight already reset it (parallel dependency race)
+if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
+  git checkout -- Cargo.lock
+fi
 echo "✓ Flowsurface.app signed and registered"
 """
 
