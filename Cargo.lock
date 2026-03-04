@@ -3003,9 +3003,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-core"
-version = "12.43.1"
+version = "12.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28da948a506b4aaec6cbcc5182f443aad154c2762e3fe324cadf502c17040533"
+checksum = "d2d1ddad6cdd3aad2632ba3de86b9478e667ec72068c40abeff862c333515da2"
 dependencies = [
  "chrono",
  "foldhash 0.2.0",
