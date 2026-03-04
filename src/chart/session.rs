@@ -105,12 +105,17 @@ pub fn draw_sessions(
 }
 
 /// Time-based charts: session timestamps map directly to x via `interval_to_x`.
+///
+/// Expands the query range by 24h each side so that session open/close boundaries
+/// just off-screen are still resolved — enabling partial strip rendering when
+/// zoomed into the middle of a session.
 fn resolve_time_based(
     earliest: u64,
     latest: u64,
     interval_to_x: &impl Fn(u64) -> f32,
 ) -> Vec<ResolvedBoundary> {
-    let boundaries = compute_boundaries(earliest, latest);
+    const DAY_MS: u64 = 86_400_000;
+    let boundaries = compute_boundaries(earliest.saturating_sub(DAY_MS), latest + DAY_MS);
     let resolved: Vec<_> = boundaries
         .into_iter()
         .map(|b| {
@@ -168,45 +173,29 @@ fn resolve_tick_based(
          time_range=[{vis_start_ms}, {vis_end_ms}]"
     );
 
-    let boundaries = compute_boundaries(vis_start_ms, vis_end_ms);
+    // Expand by 24h each side so partially-visible sessions are still resolved.
+    const DAY_MS: u64 = 86_400_000;
+    let boundaries = compute_boundaries(vis_start_ms.saturating_sub(DAY_MS), vis_end_ms + DAY_MS);
     let mut resolved = Vec::with_capacity(boundaries.len());
-    let mut skipped_oob = 0u32;
-    let mut skipped_vis = 0u32;
 
     for b in boundaries {
         // Binary search: find first bar that closed at or after this timestamp
         let fwd = dps.partition_point(|dp| dp.kline.time < b.timestamp_ms);
 
-        // Skip if outside loaded data
-        if fwd == 0 || fwd >= len {
-            skipped_oob += 1;
-            log::trace!(
-                "[SESSION/tick] {} {} ts={} → fwd={fwd} OUT OF BOUNDS (len={len})",
-                b.session, b.kind, b.timestamp_ms,
-            );
-            continue;
-        }
+        // Clamp to loaded data range instead of skipping — the boundary is
+        // off-screen but we need it for partial strip rendering.
+        let fwd_clamped = fwd.clamp(0, len - 1);
 
         // Convert forward index to visual index (0 = newest = rightmost)
-        let visual_idx = (len - 1) - fwd;
+        let visual_idx = (len - 1) - fwd_clamped;
 
-        // Visibility check: earliest/latest are visual indices
-        // interval_range returns (earliest=right/newest/smallest_vis, latest=left/oldest/largest_vis)
-        // Same semantics as render_data_source: index >= earliest && index <= latest
+        // No visibility filter — allow off-screen boundaries through so that
+        // strips can render partially when zoomed into the middle of a session.
         let vis = visual_idx as u64;
-        if vis < earliest || vis > latest {
-            skipped_vis += 1;
-            log::trace!(
-                "[SESSION/tick] {} {} ts={} → fwd={fwd} vis={vis} NOT VISIBLE [earliest={earliest}..latest={latest}]",
-                b.session, b.kind, b.timestamp_ms,
-            );
-            continue;
-        }
-
         let x = interval_to_x(vis);
-        let bar_close_ms = dps[fwd].kline.time;
+        let bar_close_ms = dps[fwd_clamped].kline.time;
         log::trace!(
-            "[SESSION/tick] {} {} ts={} → fwd={fwd} vis={vis} x={x:.1} (bar_close={bar_close_ms}, delta={}ms)",
+            "[SESSION/tick] {} {} ts={} → fwd={fwd} clamped={fwd_clamped} vis={vis} x={x:.1} (bar_close={bar_close_ms}, delta={}ms)",
             b.session, b.kind, b.timestamp_ms, bar_close_ms as i64 - b.timestamp_ms as i64,
         );
 
@@ -219,7 +208,7 @@ fn resolve_tick_based(
     }
 
     log::debug!(
-        "[SESSION/tick] resolved={}, skipped: oob={skipped_oob} vis={skipped_vis}",
+        "[SESSION/tick] resolved={} boundaries",
         resolved.len(),
     );
 
@@ -260,12 +249,23 @@ fn draw_session_strips(
             let (r, g, b) = open.session.color_rgb();
             let color = Color::from_rgb8(r, g, b);
 
-            let x_left = open.x.min(close.x);
-            let width = (close.x - open.x).abs();
+            // Clamp strip to region bounds — enables partial strip rendering
+            // when zoomed in so only part of a session is visible.
+            let raw_left = open.x.min(close.x);
+            let raw_right = open.x.max(close.x);
+            let x_left = raw_left.max(region.x);
+            let x_right = raw_right.min(region.x + region.width);
+            let width = x_right - x_left;
+
+            if width <= 0.0 {
+                // Entirely off-screen (both boundaries on same side)
+                paired += 1;
+                continue;
+            }
 
             log::trace!(
-                "[SESSION/strip] {} day={} open_x={:.1} close_x={:.1} width={:.1}",
-                open.session, open.day_key, open.x, close.x, width,
+                "[SESSION/strip] {} day={} open_x={:.1} close_x={:.1} clamped=[{:.1}..{:.1}] width={:.1}",
+                open.session, open.day_key, open.x, close.x, x_left, x_right, width,
             );
 
             // Colored strip at top of chart.
@@ -277,12 +277,15 @@ fn draw_session_strips(
                 Color { a: 0.2, ..color },
             );
 
-            // Session label at left edge of strip (where the session starts)
-            if width > 15.0 {
+            // Session label at left edge of strip (where the session starts).
+            // Only show if the session open boundary is within the visible region
+            // and the strip is wide enough for the label to be legible.
+            let label_x = raw_left + 3.0;
+            if label_x >= region.x && label_x <= region.x + region.width && width > 15.0 {
                 frame.fill_text(canvas::Text {
                     content: open.session.label().to_string(),
                     position: Point::new(
-                        x_left + 3.0,
+                        label_x,
                         region.y + strip_height / 2.0,
                     ),
                     size: iced::Pixels(9.0),
