@@ -55,9 +55,39 @@ RETRY_DELAY=2
 
 echo "=== Flowsurface Preflight ==="
 
-# 1. Verify ClickHouse responds
+# 0a. Auto-update opendeviationbar-core to latest compatible version
 echo ""
-echo "[1/3] Checking ClickHouse connectivity..."
+echo "[0/5] Updating opendeviationbar-core..."
+BEFORE=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
+cargo update -p opendeviationbar-core --quiet 2>/dev/null || true
+AFTER=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
+if [ "$BEFORE" != "$AFTER" ]; then
+  echo "  Updated: $BEFORE -> $AFTER"
+else
+  echo "  Already at latest: $AFTER"
+fi
+
+# 0b. Sync upstream fork (fast-forward only — never conflicts)
+echo ""
+echo "[1/5] Syncing upstream (flowsurface-rs/flowsurface)..."
+git fetch upstream --quiet 2>/dev/null || true
+BEHIND=$(git rev-list --count HEAD..upstream/main 2>/dev/null || echo 0)
+if [ "$BEHIND" -gt 0 ]; then
+  if git merge-base --is-ancestor HEAD upstream/main 2>/dev/null; then
+    echo "  Fast-forwarding $BEHIND commits from upstream..."
+    git merge upstream/main --ff-only --quiet
+    echo "  Upstream synced (fast-forward)"
+  else
+    echo "  WARNING: $BEHIND upstream commits available but merge requires conflict resolution"
+    echo "  Run: mise run upstream:merge"
+  fi
+else
+  echo "  Already up to date with upstream"
+fi
+
+# 2. Verify ClickHouse responds
+echo ""
+echo "[2/5] Checking ClickHouse connectivity..."
 for i in $(seq 1 $MAX_RETRIES); do
   RESULT=$(curl -sf --connect-timeout 3 "$CH" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1) && break
   echo "  Attempt $i/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
@@ -72,7 +102,7 @@ echo "  ClickHouse responding"
 
 # 2. Verify opendeviationbar_cache database and table exist
 echo ""
-echo "[2/3] Checking opendeviationbar_cache schema..."
+echo "[3/5] Checking opendeviationbar_cache schema..."
 TABLE_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='opendeviationbar_cache' AND name='open_deviation_bars' FORMAT TabSeparated" 2>&1)
 if [ "$TABLE_EXISTS" != "1" ]; then
   echo "FATAL: opendeviationbar_cache.open_deviation_bars table not found"
@@ -83,7 +113,7 @@ echo "  opendeviationbar_cache.open_deviation_bars exists"
 
 # 3. Verify data is present for at least one symbol/threshold
 echo ""
-echo "[3/3] Checking range bar data..."
+echo "[4/5] Checking range bar data..."
 DATA=$(curl -sf "$CH" --data "
   SELECT threshold_decimal_bps, count(*) as bars
   FROM opendeviationbar_cache.open_deviation_bars
