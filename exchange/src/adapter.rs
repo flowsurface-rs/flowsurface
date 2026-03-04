@@ -7,130 +7,15 @@ use crate::{
 use enum_map::{Enum, EnumMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 pub mod binance;
 pub mod bybit;
 pub mod hyperliquid;
 pub mod okex;
 
-/// Persisted stream resolution to avoid loop retries
-const RESOLVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-
 /// Buffer trades and flush in this interval
 const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ResolvedStream {
-    /// Streams that are persisted but needs to be resolved for use
-    Waiting {
-        streams: Vec<PersistStreamKind>,
-        last_attempt: Option<Instant>,
-    },
-    /// Streams that are active and ready to use, but can't persist
-    Ready(Vec<StreamKind>),
-}
-
-impl ResolvedStream {
-    pub fn waiting(streams: Vec<PersistStreamKind>) -> Self {
-        ResolvedStream::Waiting {
-            streams,
-            last_attempt: None,
-        }
-    }
-
-    /// Returns streams to resolve only if the retry interval has elapsed
-    pub fn due_streams_to_resolve(&mut self, now: Instant) -> Option<Vec<PersistStreamKind>> {
-        let ResolvedStream::Waiting {
-            streams,
-            last_attempt,
-        } = self
-        else {
-            return None;
-        };
-
-        if streams.is_empty() {
-            return None;
-        }
-
-        let should_retry = last_attempt
-            .map(|t| now.duration_since(t) >= RESOLVE_RETRY_INTERVAL)
-            .unwrap_or(true);
-
-        if !should_retry {
-            return None;
-        }
-
-        *last_attempt = Some(now);
-        Some(streams.clone())
-    }
-
-    pub fn matches_stream(&self, stream: &StreamKind) -> bool {
-        match self {
-            ResolvedStream::Ready(existing) => existing.iter().any(|s| s == stream),
-            _ => false,
-        }
-    }
-
-    pub fn ready_iter_mut(&mut self) -> Option<impl Iterator<Item = &mut StreamKind>> {
-        match self {
-            ResolvedStream::Ready(streams) => Some(streams.iter_mut()),
-            _ => None,
-        }
-    }
-
-    pub fn ready_iter(&self) -> Option<impl Iterator<Item = &StreamKind>> {
-        match self {
-            ResolvedStream::Ready(streams) => Some(streams.iter()),
-            _ => None,
-        }
-    }
-
-    pub fn find_ready_map<F, T>(&self, f: F) -> Option<T>
-    where
-        F: FnMut(&StreamKind) -> Option<T>,
-    {
-        match self {
-            ResolvedStream::Ready(streams) => streams.iter().find_map(f),
-            _ => None,
-        }
-    }
-
-    pub fn into_waiting(self) -> Vec<PersistStreamKind> {
-        match self {
-            ResolvedStream::Waiting { streams, .. } => streams,
-            ResolvedStream::Ready(streams) => streams
-                .into_iter()
-                .map(|s| match s {
-                    StreamKind::Depth {
-                        ticker_info,
-                        depth_aggr,
-                        push_freq,
-                    } => PersistStreamKind::Depth(PersistDepth {
-                        ticker: ticker_info.ticker,
-                        depth_aggr,
-                        push_freq,
-                    }),
-                    StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
-                        ticker: ticker_info.ticker,
-                    },
-                    StreamKind::Kline {
-                        ticker_info,
-                        timeframe,
-                    } => PersistStreamKind::Kline {
-                        ticker: ticker_info.ticker,
-                        timeframe,
-                    },
-                })
-                .collect(),
-        }
-    }
-}
 
 #[derive(thiserror::Error, Debug)]
 pub enum AdapterError {
@@ -364,100 +249,6 @@ impl UniqueStreams {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub enum PersistStreamKind {
-    Kline {
-        ticker: Ticker,
-        timeframe: Timeframe,
-    },
-    Depth(PersistDepth),
-    Trades {
-        ticker: Ticker,
-    },
-    /// Deprecated combined stream, kept for backward compatibility.
-    /// Will be converted to separate Depth and Trades on load.
-    DepthAndTrades(PersistDepth),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct PersistDepth {
-    ticker: Ticker,
-    #[serde(default = "default_depth_aggr")]
-    depth_aggr: StreamTicksize,
-    #[serde(default = "default_push_freq")]
-    push_freq: PushFrequency,
-}
-
-impl From<StreamKind> for PersistStreamKind {
-    fn from(s: StreamKind) -> Self {
-        match s {
-            StreamKind::Kline {
-                ticker_info,
-                timeframe,
-            } => PersistStreamKind::Kline {
-                ticker: ticker_info.ticker,
-                timeframe,
-            },
-            StreamKind::Depth {
-                ticker_info,
-                depth_aggr,
-                push_freq,
-            } => PersistStreamKind::Depth(PersistDepth {
-                ticker: ticker_info.ticker,
-                depth_aggr,
-                push_freq,
-            }),
-            StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
-                ticker: ticker_info.ticker,
-            },
-        }
-    }
-}
-
-impl PersistStreamKind {
-    /// Try to convert into runtime StreamKind list. `resolver` should return Some(TickerInfo) for a ticker string,
-    /// otherwise the conversion fails (so caller can trigger a refresh / fetch).
-    pub fn into_stream_kinds<F>(self, mut resolver: F) -> Result<Vec<StreamKind>, String>
-    where
-        F: FnMut(&Ticker) -> Option<TickerInfo>,
-    {
-        match self {
-            PersistStreamKind::Kline { ticker, timeframe } => resolver(&ticker)
-                .map(|ti| {
-                    vec![StreamKind::Kline {
-                        ticker_info: ti,
-                        timeframe,
-                    }]
-                })
-                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
-            PersistStreamKind::Depth(d) => resolver(&d.ticker)
-                .map(|ti| {
-                    vec![StreamKind::Depth {
-                        ticker_info: ti,
-                        depth_aggr: d.depth_aggr,
-                        push_freq: d.push_freq,
-                    }]
-                })
-                .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
-            PersistStreamKind::Trades { ticker } => resolver(&ticker)
-                .map(|ti| vec![StreamKind::Trades { ticker_info: ti }])
-                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
-            PersistStreamKind::DepthAndTrades(d) => resolver(&d.ticker)
-                .map(|ti| {
-                    vec![
-                        StreamKind::Depth {
-                            ticker_info: ti,
-                            depth_aggr: d.depth_aggr,
-                            push_freq: d.push_freq,
-                        },
-                        StreamKind::Trades { ticker_info: ti },
-                    ]
-                })
-                .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum StreamTicksize {
     ServerSide(TickMultiplier),
@@ -467,10 +258,6 @@ pub enum StreamTicksize {
 
 fn default_depth_aggr() -> StreamTicksize {
     StreamTicksize::Client
-}
-
-fn default_push_freq() -> PushFrequency {
-    PushFrequency::ServerDefault
 }
 
 #[derive(Debug, Clone, Default)]

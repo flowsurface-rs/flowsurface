@@ -2,9 +2,11 @@
 
 mod audio;
 mod chart;
+mod fetcher;
 mod layout;
 mod logger;
 mod modal;
+mod resolved_stream;
 mod screen;
 mod style;
 mod widget;
@@ -861,7 +863,7 @@ impl Flowsurface {
                     };
 
                     let trade_fetch_checkbox = {
-                        let is_active = exchange::fetcher::is_trade_fetch_enabled();
+                        let is_active = fetcher::is_trade_fetch_enabled();
 
                         let checkbox = iced::widget::checkbox(is_active)
                             .label("Fetch trades (Binance)")
@@ -1170,6 +1172,7 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
+            fetcher::is_trade_fetch_enabled(),
             self.volume_size_unit,
             proxy_cfg_persisted,
         );

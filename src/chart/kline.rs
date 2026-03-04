@@ -3,6 +3,7 @@ use super::{
     indicator, request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
+use crate::fetcher::{FetchRange, RequestHandler};
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
@@ -13,7 +14,6 @@ use data::chart::kline::{
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
 use data::util::{abbr_large_numbers, count_decimals};
-use exchange::fetcher::{FetchRange, RequestHandler};
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
@@ -385,7 +385,7 @@ impl KlineChart {
 
                 // priority 2, trades fetch
                 if !self.fetching_trades.0
-                    && exchange::fetcher::is_trade_fetch_enabled()
+                    && crate::fetcher::is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
                         timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
                 {

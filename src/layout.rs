@@ -329,7 +329,7 @@ pub fn load_saved_state() -> SavedState {
                 LayoutManager::from_config(layouts, active_layout)
             };
 
-            exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
+            crate::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
             exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
 
             // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)

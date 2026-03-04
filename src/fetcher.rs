@@ -1,7 +1,10 @@
-use crate::adapter::StreamKind;
-use crate::{Kline, OpenInterest, Trade};
+use exchange::adapter::StreamKind;
+use exchange::{Kline, OpenInterest, Trade};
 
-use smallvec::SmallVec;
+// replaced `SmallVec` with the standard `Vec` type; the helper alias
+// `FetchRequests` used to be a `SmallVec<[FetchSpec; 1]>` which gave a small
+// allocation optimization for the common single‑element case.  We no longer
+// need the external dependency so the alias now just points to `Vec`.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
@@ -34,8 +37,6 @@ pub enum FetchedData {
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ReqError {
-    #[error("Request is already completed")]
-    Completed,
     #[error("Request is already failed: {0}")]
     Failed(String),
     #[error("Request overlaps with an existing request")]
@@ -161,8 +162,6 @@ impl From<(uuid::Uuid, FetchRange, Option<StreamKind>)> for FetchSpec {
         }
     }
 }
-
-pub type FetchRequests = SmallVec<[FetchSpec; 1]>;
 
 impl std::fmt::Debug for FetchSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

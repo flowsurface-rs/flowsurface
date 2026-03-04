@@ -8,6 +8,8 @@ pub use sidebar::Sidebar;
 use super::DashboardError;
 use crate::{
     chart,
+    fetcher::{self, FetchRange, FetchedData, InfoKind},
+    resolved_stream::ResolvedStream,
     screen::dashboard::tickers_table::TickersTable,
     style,
     widget::toast::Toast,
@@ -16,15 +18,14 @@ use crate::{
 use data::{
     UserTimezone,
     layout::{WindowSpec, pane::ContentKind},
+    stream::PersistStreamKind,
 };
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
     adapter::{
-        self, AdapterError, Exchange, PersistStreamKind, ResolvedStream, StreamConfig, StreamKind,
-        StreamTicksize, UniqueStreams,
+        self, AdapterError, Exchange, StreamConfig, StreamKind, StreamTicksize, UniqueStreams,
     },
     depth::Depth,
-    fetcher::{FetchRange, FetchedData},
 };
 
 use iced::{
@@ -790,7 +791,7 @@ impl Dashboard {
     }
 
     pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
-        exchange::fetcher::toggle_trade_fetch(is_enabled);
+        fetcher::toggle_trade_fetch(is_enabled);
 
         self.iter_all_panes_mut(main_window.id)
             .for_each(|(_, _, state)| {
@@ -881,13 +882,11 @@ impl Dashboard {
             })?;
 
         match &mut pane_state.status {
-            pane::Status::Loading(exchange::fetcher::InfoKind::FetchingTrades(count)) => {
+            pane::Status::Loading(InfoKind::FetchingTrades(count)) => {
                 *count += trades.len();
             }
             _ => {
-                pane_state.status = pane::Status::Loading(
-                    exchange::fetcher::InfoKind::FetchingTrades(trades.len()),
-                );
+                pane_state.status = pane::Status::Loading(InfoKind::FetchingTrades(trades.len()));
             }
         }
 
@@ -1311,7 +1310,7 @@ fn oi_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane_id,
-        pane::Status::Loading(exchange::fetcher::InfoKind::FetchingOI),
+        pane::Status::Loading(InfoKind::FetchingOI),
     ));
 
     let fetch_task = match stream {
@@ -1351,7 +1350,7 @@ fn kline_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane_id,
-        pane::Status::Loading(exchange::fetcher::InfoKind::FetchingKlines),
+        pane::Status::Loading(InfoKind::FetchingKlines),
     ));
 
     let fetch_task = match stream {

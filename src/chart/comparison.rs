@@ -1,10 +1,10 @@
+use crate::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
 use crate::widget::chart::{Series, Zoom, domain};
 
 use data::chart::Basis;
 use data::chart::comparison::Config;
 use exchange::adapter::StreamKind;
-use exchange::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
 
 use rustc_hash::FxHashMap;
@@ -329,8 +329,7 @@ impl ComparisonChart {
                     stream,
                 })
                 .collect();
-            let requests = exchange::fetcher::FetchRequests::from(fetch_specs);
-            Some(super::Action::RequestFetch(requests))
+            Some(super::Action::RequestFetch(fetch_specs))
         }
     }
 

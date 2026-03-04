@@ -1,5 +1,6 @@
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
+    fetcher::{FetchSpec, InfoKind},
     modal::{
         self, ModifierKind,
         pane::{
@@ -9,6 +10,7 @@ use crate::{
             stack_modal,
         },
     },
+    resolved_stream::ResolvedStream,
     screen::dashboard::{
         panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
         tickers_table::TickersTable,
@@ -24,11 +26,11 @@ use data::{
         indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
+    stream::PersistStreamKind,
 };
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
-    fetcher::FetchRequests,
+    adapter::{MarketKind, StreamKind, StreamTicksize},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -41,7 +43,7 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
-    RequestFetch(FetchRequests),
+    RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
 }
@@ -50,7 +52,7 @@ pub enum Effect {
 pub enum Status {
     #[default]
     Ready,
-    Loading(exchange::fetcher::InfoKind),
+    Loading(InfoKind),
     Stale(String),
 }
 
@@ -870,14 +872,14 @@ impl State {
         };
 
         match &self.status {
-            Status::Loading(exchange::fetcher::InfoKind::FetchingKlines) => {
+            Status::Loading(InfoKind::FetchingKlines) => {
                 stream_info_element = stream_info_element.push(text("Fetching Klines..."));
             }
-            Status::Loading(exchange::fetcher::InfoKind::FetchingTrades(count)) => {
+            Status::Loading(InfoKind::FetchingTrades(count)) => {
                 stream_info_element =
                     stream_info_element.push(text(format!("Fetching Trades... {count} fetched")));
             }
-            Status::Loading(exchange::fetcher::InfoKind::FetchingOI) => {
+            Status::Loading(InfoKind::FetchingOI) => {
                 stream_info_element = stream_info_element.push(text("Fetching Open Interest..."));
             }
             Status::Stale(msg) => {
