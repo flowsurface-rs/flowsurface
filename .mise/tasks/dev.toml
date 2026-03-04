@@ -44,6 +44,57 @@ run = "cargo fmt --all -- --check"
 description = "Run format check + clippy (matches CI)"
 depends = ["fmt:check", "clippy"]
 
+[postflight]
+description = "Post-flight: verify clean git state (no uncommitted changes, no unpushed commits)"
+run = """
+set -e
+echo "=== Post-flight Validation ==="
+
+DIRTY=$(git status --porcelain)
+UNPUSHED=$(git log --oneline @{u}..HEAD 2>/dev/null)
+LOCKFILE_DRIFT=$(git diff --name-only | grep -E '^Cargo\\.lock$' || true)
+ERRORS=0
+
+# 1. Reset lockfile drift (build artifact, not intentional)
+if [ -n "$LOCKFILE_DRIFT" ]; then
+  echo "[1/3] Cargo.lock drift detected — resetting (build artifact)"
+  git checkout -- Cargo.lock
+else
+  echo "[1/3] No lockfile drift"
+fi
+
+# Re-check after lockfile reset
+DIRTY=$(git status --porcelain)
+
+# 2. Check for uncommitted changes
+echo ""
+if [ -n "$DIRTY" ]; then
+  echo "[2/3] FAIL: Uncommitted changes detected:"
+  echo "$DIRTY" | head -20
+  ERRORS=$((ERRORS + 1))
+else
+  echo "[2/3] Working directory clean"
+fi
+
+# 3. Check for unpushed commits
+echo ""
+if [ -n "$UNPUSHED" ]; then
+  echo "[3/3] FAIL: Unpushed commits:"
+  echo "$UNPUSHED"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "[3/3] All commits pushed to remote"
+fi
+
+echo ""
+if [ $ERRORS -gt 0 ]; then
+  echo "=== Post-flight FAILED ($ERRORS issue(s)) ==="
+  exit 1
+else
+  echo "=== Post-flight PASSED ==="
+fi
+"""
+
 ["widget:validate"]
 description = "Validate widget code and run app to test floating BTC widget"
 run = """

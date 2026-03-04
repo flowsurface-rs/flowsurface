@@ -21,8 +21,8 @@ echo "✓ Ad-hoc signature applied"
 """
 
 ["release:app-bundle"]
-description = "Build release binary, update .app bundle, sign, register icon"
-depends = ["release:macos-arm64"]
+description = "Build release binary, update .app bundle, sign, register icon, validate git state"
+depends = ["postflight", "release:macos-arm64"]
 run = """
 cp target/aarch64-apple-darwin/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
 cat > Flowsurface.app/Contents/MacOS/flowsurface << 'LAUNCHER'
