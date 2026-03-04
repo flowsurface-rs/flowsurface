@@ -607,8 +607,20 @@ impl KlineChart {
         {
             use data::telemetry::{self, TelemetryEvent};
             let micro_count = micro.iter().filter(|m| m.is_some()).count();
+            let oldest_ts = klines_raw.first().map(|k| k.time).unwrap_or(0);
+            let newest_ts = klines_raw.last().map(|k| k.time).unwrap_or(0);
+            let now = telemetry::now_ms();
+            telemetry::emit(TelemetryEvent::ChInitialFetch {
+                ts_ms: now,
+                symbol: ticker_info.ticker.to_string(),
+                threshold_dbps,
+                bar_count: klines_raw.len(),
+                oldest_ts,
+                newest_ts,
+                micro_count,
+            });
             telemetry::emit(TelemetryEvent::ChartOpen {
-                ts_ms: telemetry::now_ms(),
+                ts_ms: now,
                 symbol: ticker_info.ticker.to_string(),
                 threshold_dbps,
                 bar_count: klines_raw.len(),
@@ -1652,7 +1664,11 @@ impl KlineChart {
                         symbol: self.chart.ticker_info.ticker.to_string(),
                         threshold_dbps: telem_dbps,
                         total_bars: tick_aggr.datapoints.len(),
-                        visible_bars: 0, // TODO: compute from visible region
+                        visible_bars: if self.chart.cell_width > 0.0 {
+                            (self.chart.bounds.width / self.chart.cell_width).ceil() as usize
+                        } else {
+                            0
+                        },
                         newest_bar_ts: tick_aggr
                             .datapoints
                             .last()
