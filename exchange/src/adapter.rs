@@ -7,7 +7,12 @@ use crate::{
 use enum_map::{Enum, EnumMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub mod binance;
 pub mod bybit;
@@ -15,7 +20,10 @@ pub mod hyperliquid;
 pub mod okex;
 
 /// Persisted stream resolution to avoid loop retries
-pub const RESOLVE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const RESOLVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Buffer trades and flush in this interval
+const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedStream {
@@ -99,22 +107,25 @@ impl ResolvedStream {
             ResolvedStream::Ready(streams) => streams
                 .into_iter()
                 .map(|s| match s {
-                    StreamKind::DepthAndTrades {
+                    StreamKind::Depth {
                         ticker_info,
                         depth_aggr,
                         push_freq,
-                    } => PersistStreamKind::DepthAndTrades(PersistDepth {
+                    } => PersistStreamKind::Depth(PersistDepth {
                         ticker: ticker_info.ticker,
                         depth_aggr,
                         push_freq,
                     }),
+                    StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
+                        ticker: ticker_info.ticker,
+                    },
                     StreamKind::Kline {
                         ticker_info,
                         timeframe,
-                    } => PersistStreamKind::Kline(PersistKline {
+                    } => PersistStreamKind::Kline {
                         ticker: ticker_info.ticker,
                         timeframe,
-                    }),
+                    },
                 })
                 .collect(),
         }
@@ -209,11 +220,14 @@ pub enum StreamKind {
         ticker_info: TickerInfo,
         timeframe: Timeframe,
     },
-    DepthAndTrades {
+    Depth {
         ticker_info: TickerInfo,
         #[serde(default = "default_depth_aggr")]
         depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
+    },
+    Trades {
+        ticker_info: TickerInfo,
     },
 }
 
@@ -221,17 +235,25 @@ impl StreamKind {
     pub fn ticker_info(&self) -> TickerInfo {
         match self {
             StreamKind::Kline { ticker_info, .. }
-            | StreamKind::DepthAndTrades { ticker_info, .. } => *ticker_info,
+            | StreamKind::Depth { ticker_info, .. }
+            | StreamKind::Trades { ticker_info, .. } => *ticker_info,
         }
     }
 
     pub fn as_depth_stream(&self) -> Option<(TickerInfo, StreamTicksize, PushFrequency)> {
         match self {
-            StreamKind::DepthAndTrades {
+            StreamKind::Depth {
                 ticker_info,
                 depth_aggr,
                 push_freq,
             } => Some((*ticker_info, *depth_aggr, *push_freq)),
+            _ => None,
+        }
+    }
+
+    pub fn as_trade_stream(&self) -> Option<TickerInfo> {
+        match self {
+            StreamKind::Trades { ticker_info } => Some(*ticker_info),
             _ => None,
         }
     }
@@ -265,9 +287,8 @@ impl UniqueStreams {
     pub fn add(&mut self, stream: StreamKind) {
         let (exchange, ticker_info) = match stream {
             StreamKind::Kline { ticker_info, .. }
-            | StreamKind::DepthAndTrades { ticker_info, .. } => {
-                (ticker_info.exchange(), ticker_info)
-            }
+            | StreamKind::Depth { ticker_info, .. }
+            | StreamKind::Trades { ticker_info, .. } => (ticker_info.exchange(), ticker_info),
         };
 
         self.streams[exchange]
@@ -287,10 +308,12 @@ impl UniqueStreams {
 
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
+        let trade_streams = self.trade_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));
 
         self.specs[exchange] = Some(StreamSpecs {
             depth: depth_streams,
+            trade: trade_streams,
             kline: kline_streams,
         });
     }
@@ -326,6 +349,10 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_kline_stream())
     }
 
+    pub fn trade_streams(&self, exchange_filter: Option<Exchange>) -> Vec<TickerInfo> {
+        self.streams(exchange_filter, |_, stream| stream.as_trade_stream())
+    }
+
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
         self.specs
             .iter()
@@ -339,23 +366,26 @@ impl UniqueStreams {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum PersistStreamKind {
-    Kline(PersistKline),
+    Kline {
+        ticker: Ticker,
+        timeframe: Timeframe,
+    },
+    Depth(PersistDepth),
+    Trades {
+        ticker: Ticker,
+    },
+    /// Deprecated combined stream, kept for backward compatibility.
+    /// Will be converted to separate Depth and Trades on load.
     DepthAndTrades(PersistDepth),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PersistDepth {
-    pub ticker: Ticker,
+    ticker: Ticker,
     #[serde(default = "default_depth_aggr")]
-    pub depth_aggr: StreamTicksize,
+    depth_aggr: StreamTicksize,
     #[serde(default = "default_push_freq")]
-    pub push_freq: PushFrequency,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct PersistKline {
-    pub ticker: Ticker,
-    pub timeframe: Timeframe,
+    push_freq: PushFrequency,
 }
 
 impl From<StreamKind> for PersistStreamKind {
@@ -364,42 +394,64 @@ impl From<StreamKind> for PersistStreamKind {
             StreamKind::Kline {
                 ticker_info,
                 timeframe,
-            } => PersistStreamKind::Kline(PersistKline {
+            } => PersistStreamKind::Kline {
                 ticker: ticker_info.ticker,
                 timeframe,
-            }),
-            StreamKind::DepthAndTrades {
+            },
+            StreamKind::Depth {
                 ticker_info,
                 depth_aggr,
                 push_freq,
-            } => PersistStreamKind::DepthAndTrades(PersistDepth {
+            } => PersistStreamKind::Depth(PersistDepth {
                 ticker: ticker_info.ticker,
                 depth_aggr,
                 push_freq,
             }),
+            StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
+                ticker: ticker_info.ticker,
+            },
         }
     }
 }
 
 impl PersistStreamKind {
-    /// Try to convert into runtime StreamKind. `resolver` should return Some(TickerInfo) for a ticker string,
+    /// Try to convert into runtime StreamKind list. `resolver` should return Some(TickerInfo) for a ticker string,
     /// otherwise the conversion fails (so caller can trigger a refresh / fetch).
-    pub fn into_stream_kind<F>(self, mut resolver: F) -> Result<StreamKind, String>
+    pub fn into_stream_kinds<F>(self, mut resolver: F) -> Result<Vec<StreamKind>, String>
     where
         F: FnMut(&Ticker) -> Option<TickerInfo>,
     {
         match self {
-            PersistStreamKind::Kline(k) => resolver(&k.ticker)
-                .map(|ti| StreamKind::Kline {
-                    ticker_info: ti,
-                    timeframe: k.timeframe,
+            PersistStreamKind::Kline { ticker, timeframe } => resolver(&ticker)
+                .map(|ti| {
+                    vec![StreamKind::Kline {
+                        ticker_info: ti,
+                        timeframe,
+                    }]
                 })
-                .ok_or_else(|| format!("TickerInfo not found for {}", k.ticker)),
+                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
+            PersistStreamKind::Depth(d) => resolver(&d.ticker)
+                .map(|ti| {
+                    vec![StreamKind::Depth {
+                        ticker_info: ti,
+                        depth_aggr: d.depth_aggr,
+                        push_freq: d.push_freq,
+                    }]
+                })
+                .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
+            PersistStreamKind::Trades { ticker } => resolver(&ticker)
+                .map(|ti| vec![StreamKind::Trades { ticker_info: ti }])
+                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
             PersistStreamKind::DepthAndTrades(d) => resolver(&d.ticker)
-                .map(|ti| StreamKind::DepthAndTrades {
-                    ticker_info: ti,
-                    depth_aggr: d.depth_aggr,
-                    push_freq: d.push_freq,
+                .map(|ti| {
+                    vec![
+                        StreamKind::Depth {
+                            ticker_info: ti,
+                            depth_aggr: d.depth_aggr,
+                            push_freq: d.push_freq,
+                        },
+                        StreamKind::Trades { ticker_info: ti },
+                    ]
                 })
                 .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
         }
@@ -424,6 +476,7 @@ fn default_push_freq() -> PushFrequency {
 #[derive(Debug, Clone, Default)]
 pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
+    pub trade: Vec<TickerInfo>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
 }
 
@@ -613,7 +666,8 @@ impl Exchange {
 pub enum Event {
     Connected(Exchange),
     Disconnected(Exchange, String),
-    DepthReceived(StreamKind, u64, Arc<Depth>, Box<[Trade]>),
+    DepthReceived(StreamKind, u64, Arc<Depth>),
+    TradesReceived(StreamKind, u64, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),
 }
 

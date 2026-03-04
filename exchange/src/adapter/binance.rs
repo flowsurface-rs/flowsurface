@@ -1,3 +1,5 @@
+use crate::adapter::TRADE_BUCKET_INTERVAL;
+
 use super::{
     super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
@@ -338,7 +340,7 @@ async fn try_resync(
 }
 
 #[allow(unused_assignments)]
-pub fn connect_market_stream(
+pub fn connect_depth_stream(
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
 ) -> impl Stream<Item = Event> {
@@ -351,7 +353,6 @@ pub fn connect_market_stream(
         let exchange = exchange_from_market_type(market);
 
         let mut orderbook: LocalDepthCache = LocalDepthCache::default();
-        let mut trades_buffer: Vec<Trade> = Vec::new();
         let mut already_fetching: bool = false;
         let mut prev_id: u64 = 0;
 
@@ -364,12 +365,10 @@ pub fn connect_market_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    let stream_1 = format!("{}@aggTrade", symbol_str.to_lowercase());
-                    let stream_2 = format!("{}@depth@100ms", symbol_str.to_lowercase());
+                    let stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
                     let domain = ws_domain_from_market_type(market);
-                    let streams = format!("{stream_1}/{stream_2}");
-                    let url = format!("wss://{domain}/stream?streams={streams}");
+                    let url = format!("wss://{domain}/stream?streams={stream}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -423,162 +422,133 @@ pub fn connect_market_stream(
                     match ws.read_frame().await {
                         Ok(msg) => match msg.opcode {
                             OpCode::Text => {
-                                if let Ok(data) = feed_de(&msg.payload[..], market) {
-                                    match data {
-                                        StreamData::Trade(de_trade) => {
-                                            let price = Price::from_f32(de_trade.price)
-                                                .round_to_min_tick(ticker_info.min_ticksize);
+                                if let Ok(StreamData::Depth(depth_type)) =
+                                    feed_de(&msg.payload[..], market)
+                                {
+                                    if already_fetching {
+                                        log::warn!("Already fetching...\n");
+                                        continue;
+                                    }
 
-                                            let trade = Trade {
-                                                time: de_trade.time,
-                                                is_sell: de_trade.is_sell,
-                                                price,
-                                                qty: qty_norm
-                                                    .normalize_qty(de_trade.qty, de_trade.price),
-                                            };
+                                    let last_update_id = orderbook.last_update_id;
 
-                                            trades_buffer.push(trade);
-                                        }
-                                        StreamData::Depth(depth_type) => {
-                                            if already_fetching {
-                                                log::warn!("Already fetching...\n");
+                                    match depth_type {
+                                        SonicDepth::Perp(ref de_depth) => {
+                                            if (de_depth.final_id <= last_update_id)
+                                                || last_update_id == 0
+                                            {
                                                 continue;
                                             }
 
-                                            let last_update_id = orderbook.last_update_id;
+                                            if prev_id == 0
+                                                && (de_depth.first_id > last_update_id + 1)
+                                                || (last_update_id + 1 > de_depth.final_id)
+                                            {
+                                                log::warn!(
+                                                    "Out of sync at first event. Trying to resync...\n"
+                                                );
 
-                                            match depth_type {
-                                                SonicDepth::Perp(ref de_depth) => {
-                                                    if (de_depth.final_id <= last_update_id)
-                                                        || last_update_id == 0
-                                                    {
-                                                        continue;
-                                                    }
+                                                try_resync(
+                                                    exchange,
+                                                    ticker_info,
+                                                    qty_norm,
+                                                    &mut orderbook,
+                                                    &mut state,
+                                                    &mut output,
+                                                    &mut already_fetching,
+                                                )
+                                                .await;
+                                            }
 
-                                                    if prev_id == 0
-                                                        && (de_depth.first_id > last_update_id + 1)
-                                                        || (last_update_id + 1 > de_depth.final_id)
-                                                    {
-                                                        log::warn!(
-                                                            "Out of sync at first event. Trying to resync...\n"
-                                                        );
+                                            if (prev_id == 0) || (prev_id == de_depth.prev_final_id)
+                                            {
+                                                orderbook.update_with_qty_norm(
+                                                    DepthUpdate::Diff(new_depth_cache(&depth_type)),
+                                                    ticker_info.min_ticksize,
+                                                    Some(qty_norm),
+                                                );
 
-                                                        try_resync(
-                                                            exchange,
+                                                let _ = output
+                                                    .send(Event::DepthReceived(
+                                                        StreamKind::Depth {
                                                             ticker_info,
-                                                            qty_norm,
-                                                            &mut orderbook,
-                                                            &mut state,
-                                                            &mut output,
-                                                            &mut already_fetching,
-                                                        )
-                                                        .await;
-                                                    }
+                                                            depth_aggr: StreamTicksize::Client,
+                                                            push_freq,
+                                                        },
+                                                        de_depth.time,
+                                                        orderbook.depth.clone(),
+                                                    ))
+                                                    .await;
 
-                                                    if (prev_id == 0)
-                                                        || (prev_id == de_depth.prev_final_id)
-                                                    {
-                                                        orderbook.update_with_qty_norm(
-                                                            DepthUpdate::Diff(new_depth_cache(
-                                                                &depth_type,
-                                                            )),
-                                                            ticker_info.min_ticksize,
-                                                            Some(qty_norm),
-                                                        );
-
-                                                        let _ = output
-                                                            .send(Event::DepthReceived(
-                                                                StreamKind::DepthAndTrades {
-                                                                    ticker_info,
-                                                                    depth_aggr:
-                                                                        StreamTicksize::Client,
-                                                                    push_freq,
-                                                                },
-                                                                de_depth.time,
-                                                                orderbook.depth.clone(),
-                                                                std::mem::take(&mut trades_buffer)
-                                                                    .into_boxed_slice(),
-                                                            ))
-                                                            .await;
-
-                                                        prev_id = de_depth.final_id;
-                                                    } else {
-                                                        state = State::Disconnected;
-                                                        let _ = output.send(
+                                                prev_id = de_depth.final_id;
+                                            } else {
+                                                state = State::Disconnected;
+                                                let _ = output.send(
                                                                 Event::Disconnected(
                                                                     exchange,
                                                                     format!("Out of sync. Expected update_id: {}, got: {}", de_depth.prev_final_id, prev_id)
                                                                 )
                                                             ).await;
-                                                    }
-                                                }
-                                                SonicDepth::Spot(ref de_depth) => {
-                                                    if (de_depth.final_id <= last_update_id)
-                                                        || last_update_id == 0
-                                                    {
-                                                        continue;
-                                                    }
+                                            }
+                                        }
+                                        SonicDepth::Spot(ref de_depth) => {
+                                            if (de_depth.final_id <= last_update_id)
+                                                || last_update_id == 0
+                                            {
+                                                continue;
+                                            }
 
-                                                    if prev_id == 0
-                                                        && (de_depth.first_id > last_update_id + 1)
-                                                        || (last_update_id + 1 > de_depth.final_id)
-                                                    {
-                                                        log::warn!(
-                                                            "Out of sync at first event. Trying to resync...\n"
-                                                        );
+                                            if prev_id == 0
+                                                && (de_depth.first_id > last_update_id + 1)
+                                                || (last_update_id + 1 > de_depth.final_id)
+                                            {
+                                                log::warn!(
+                                                    "Out of sync at first event. Trying to resync...\n"
+                                                );
 
-                                                        try_resync(
-                                                            exchange,
+                                                try_resync(
+                                                    exchange,
+                                                    ticker_info,
+                                                    qty_norm,
+                                                    &mut orderbook,
+                                                    &mut state,
+                                                    &mut output,
+                                                    &mut already_fetching,
+                                                )
+                                                .await;
+                                            }
+
+                                            if (prev_id == 0) || (prev_id == de_depth.first_id - 1)
+                                            {
+                                                orderbook.update_with_qty_norm(
+                                                    DepthUpdate::Diff(new_depth_cache(&depth_type)),
+                                                    ticker_info.min_ticksize,
+                                                    Some(qty_norm),
+                                                );
+
+                                                let _ = output
+                                                    .send(Event::DepthReceived(
+                                                        StreamKind::Depth {
                                                             ticker_info,
-                                                            qty_norm,
-                                                            &mut orderbook,
-                                                            &mut state,
-                                                            &mut output,
-                                                            &mut already_fetching,
-                                                        )
-                                                        .await;
-                                                    }
+                                                            depth_aggr: StreamTicksize::Client,
+                                                            push_freq,
+                                                        },
+                                                        de_depth.time,
+                                                        orderbook.depth.clone(),
+                                                    ))
+                                                    .await;
 
-                                                    if (prev_id == 0)
-                                                        || (prev_id == de_depth.first_id - 1)
-                                                    {
-                                                        orderbook.update_with_qty_norm(
-                                                            DepthUpdate::Diff(new_depth_cache(
-                                                                &depth_type,
-                                                            )),
-                                                            ticker_info.min_ticksize,
-                                                            Some(qty_norm),
-                                                        );
-
-                                                        let _ = output
-                                                            .send(Event::DepthReceived(
-                                                                StreamKind::DepthAndTrades {
-                                                                    ticker_info,
-                                                                    depth_aggr:
-                                                                        StreamTicksize::Client,
-                                                                    push_freq,
-                                                                },
-                                                                de_depth.time,
-                                                                orderbook.depth.clone(),
-                                                                std::mem::take(&mut trades_buffer)
-                                                                    .into_boxed_slice(),
-                                                            ))
-                                                            .await;
-
-                                                        prev_id = de_depth.final_id;
-                                                    } else {
-                                                        state = State::Disconnected;
-                                                        let _ = output.send(
+                                                prev_id = de_depth.final_id;
+                                            } else {
+                                                state = State::Disconnected;
+                                                let _ = output.send(
                                                                 Event::Disconnected(
                                                                     exchange,
                                                                     format!("Out of sync. Expected update_id: {}, got: {}", de_depth.final_id, prev_id)
                                                                 )
                                                             ).await;
-                                                    }
-                                                }
                                             }
                                         }
-                                        _ => {}
                                     }
                                 }
                             }
@@ -594,6 +564,153 @@ pub fn connect_market_stream(
                             _ => {}
                         },
                         Err(e) => {
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Error reading frame: ".to_string() + &e.to_string(),
+                                ))
+                                .await;
+                        }
+                    };
+                }
+            }
+        }
+    })
+}
+
+pub fn connect_trade_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
+    channel(100, move |mut output| async move {
+        let mut state = State::Disconnected;
+
+        let ticker = ticker_info.ticker;
+
+        let (symbol_str, market) = ticker.to_full_symbol_and_type();
+        let exchange = exchange_from_market_type(market);
+
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
+            ticker_info,
+            raw_qty_unit_from_market_type(market),
+        );
+
+        let mut trades_buffer: Vec<Trade> = Vec::new();
+        let mut last_flush = tokio::time::Instant::now();
+
+        loop {
+            match &mut state {
+                State::Disconnected => {
+                    let stream = format!("{}@aggTrade", symbol_str.to_lowercase());
+
+                    let domain = ws_domain_from_market_type(market);
+                    let url = format!("wss://{domain}/stream?streams={stream}");
+
+                    if let Ok(websocket) = connect_ws(domain, &url).await {
+                        state = State::Connected(websocket);
+                        last_flush = tokio::time::Instant::now();
+
+                        let _ = output.send(Event::Connected(exchange)).await;
+                    } else {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Failed to connect to websocket".to_string(),
+                            ))
+                            .await;
+                    }
+                }
+                State::Connected(ws) => {
+                    match ws.read_frame().await {
+                        Ok(msg) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Trade(de_trade)) =
+                                    feed_de(&msg.payload[..], market)
+                                {
+                                    let price = Price::from_f32(de_trade.price)
+                                        .round_to_min_tick(ticker_info.min_ticksize);
+
+                                    let trade = Trade {
+                                        time: de_trade.time,
+                                        is_sell: de_trade.is_sell,
+                                        price,
+                                        qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
+                                    };
+
+                                    trades_buffer.push(trade);
+                                }
+
+                                if !trades_buffer.is_empty()
+                                    && last_flush.elapsed() >= TRADE_BUCKET_INTERVAL
+                                {
+                                    let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
+                                    let bucket_update_t = trades_buffer
+                                        .iter()
+                                        .map(|t| t.time)
+                                        .max()
+                                        .map(|t| (t / interval_ms) * interval_ms)
+                                        .unwrap_or(0);
+
+                                    let _ = output
+                                        .send(Event::TradesReceived(
+                                            StreamKind::Trades { ticker_info },
+                                            bucket_update_t,
+                                            std::mem::take(&mut trades_buffer).into_boxed_slice(),
+                                        ))
+                                        .await;
+
+                                    last_flush = tokio::time::Instant::now();
+                                }
+                            }
+                            OpCode::Close => {
+                                if !trades_buffer.is_empty() {
+                                    let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
+                                    let bucket_update_t = trades_buffer
+                                        .iter()
+                                        .map(|t| t.time)
+                                        .max()
+                                        .map(|t| (t / interval_ms) * interval_ms)
+                                        .unwrap_or(0);
+
+                                    let _ = output
+                                        .send(Event::TradesReceived(
+                                            StreamKind::Trades { ticker_info },
+                                            bucket_update_t,
+                                            std::mem::take(&mut trades_buffer).into_boxed_slice(),
+                                        ))
+                                        .await;
+                                }
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            if !trades_buffer.is_empty() {
+                                let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
+                                let bucket_update_t = trades_buffer
+                                    .iter()
+                                    .map(|t| t.time)
+                                    .max()
+                                    .map(|t| (t / interval_ms) * interval_ms)
+                                    .unwrap_or(0);
+
+                                let _ = output
+                                    .send(Event::TradesReceived(
+                                        StreamKind::Trades { ticker_info },
+                                        bucket_update_t,
+                                        std::mem::take(&mut trades_buffer).into_boxed_slice(),
+                                    ))
+                                    .await;
+                            }
+
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(

@@ -585,13 +585,13 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade]) {
-        self.raw_trades.extend_from_slice(trades_buffer);
+    pub fn insert_trades(&mut self, buffer: &[Trade]) {
+        self.raw_trades.extend_from_slice(buffer);
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
                 let old_dp_len = tick_aggr.datapoints.len();
-                tick_aggr.insert_trades(trades_buffer);
+                tick_aggr.insert_trades(buffer);
 
                 if let Some(last_dp) = tick_aggr.datapoints.last() {
                     self.chart.last_price =
@@ -603,14 +603,12 @@ impl KlineChart {
                 self.indicators
                     .values_mut()
                     .filter_map(Option::as_mut)
-                    .for_each(|indi| {
-                        indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
-                    });
+                    .for_each(|indi| indi.on_insert_trades(buffer, old_dp_len, &self.data_source));
 
                 self.invalidate(None);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.insert_trades_existing_buckets(trades_buffer);
+                timeseries.insert_trades_existing_buckets(buffer);
             }
         }
     }

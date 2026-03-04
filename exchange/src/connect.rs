@@ -32,12 +32,23 @@ pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Eve
     let push_freq = config.push_freq;
 
     match config.exchange.venue() {
-        Venue::Binance => adapter::binance::connect_market_stream(ticker, push_freq).boxed(),
-        Venue::Bybit => adapter::bybit::connect_market_stream(ticker, push_freq).boxed(),
+        Venue::Binance => adapter::binance::connect_depth_stream(ticker, push_freq).boxed(),
+        Venue::Bybit => adapter::bybit::connect_depth_stream(ticker, push_freq).boxed(),
         Venue::Hyperliquid => {
-            adapter::hyperliquid::connect_market_stream(ticker, config.tick_mltp, push_freq).boxed()
+            adapter::hyperliquid::connect_depth_stream(ticker, config.tick_mltp, push_freq).boxed()
         }
-        Venue::Okex => adapter::okex::connect_market_stream(ticker, push_freq).boxed(),
+        Venue::Okex => adapter::okex::connect_depth_stream(ticker, push_freq).boxed(),
+    }
+}
+
+pub fn trade_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
+    let ticker = config.id;
+
+    match config.exchange.venue() {
+        Venue::Binance => adapter::binance::connect_trade_stream(ticker).boxed(),
+        Venue::Bybit => adapter::bybit::connect_trade_stream(ticker).boxed(),
+        Venue::Hyperliquid => adapter::hyperliquid::connect_trade_stream(ticker).boxed(),
+        Venue::Okex => adapter::okex::connect_trade_stream(ticker).boxed(),
     }
 }
 

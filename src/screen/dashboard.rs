@@ -944,12 +944,11 @@ impl Dashboard {
         }
     }
 
-    pub fn update_depth_and_trades(
+    pub fn ingest_depth(
         &mut self,
         stream: &StreamKind,
         depth_update_t: u64,
         depth: &Depth,
-        trades_buffer: &[Trade],
         main_window: window::Id,
     ) -> Task<Message> {
         let mut found_match = false;
@@ -960,22 +959,12 @@ impl Dashboard {
                     match &mut pane_state.content {
                         pane::Content::Heatmap { chart, .. } => {
                             if let Some(c) = chart {
-                                c.insert_datapoint(trades_buffer, depth_update_t, depth);
-                            }
-                        }
-                        pane::Content::Kline { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades_buffer(trades_buffer);
-                            }
-                        }
-                        pane::Content::TimeAndSales(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_buffer(trades_buffer);
+                                c.insert_depth(depth, depth_update_t);
                             }
                         }
                         pane::Content::Ladder(panel) => {
                             if let Some(panel) = panel {
-                                panel.insert_buffers(depth_update_t, depth, trades_buffer);
+                                panel.insert_depth(depth, depth_update_t);
                             }
                         }
                         _ => {
@@ -989,7 +978,54 @@ impl Dashboard {
         if found_match {
             Task::none()
         } else {
-            log::debug!("No matching pane found for the stream: {stream:?}");
+            self.refresh_streams(main_window)
+        }
+    }
+
+    pub fn ingest_trades(
+        &mut self,
+        stream: &StreamKind,
+        buffer: &[Trade],
+        update_t: u64,
+        main_window: window::Id,
+    ) -> Task<Message> {
+        let mut found_match = false;
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                if pane_state.matches_stream(stream) {
+                    match &mut pane_state.content {
+                        pane::Content::Heatmap { chart, .. } => {
+                            if let Some(c) = chart {
+                                c.insert_trades(buffer, update_t);
+                            }
+                        }
+                        pane::Content::Kline { chart, .. } => {
+                            if let Some(c) = chart {
+                                c.insert_trades(buffer);
+                            }
+                        }
+                        pane::Content::TimeAndSales(panel) => {
+                            if let Some(p) = panel {
+                                p.insert_buffer(buffer);
+                            }
+                        }
+                        pane::Content::Ladder(panel) => {
+                            if let Some(p) = panel {
+                                p.insert_trades(buffer);
+                            }
+                        }
+                        _ => {
+                            log::error!("No chart found for the stream: {stream:?}");
+                        }
+                    }
+                    found_match = true;
+                }
+            });
+
+        if found_match {
+            Task::none()
+        } else {
             self.refresh_streams(main_window)
         }
     }
@@ -1087,6 +1123,27 @@ impl Dashboard {
                     }
                 }
 
+                if !specs.trade.is_empty() {
+                    let trade_subs = specs
+                        .trade
+                        .iter()
+                        .map(|ticker| {
+                            let config = StreamConfig::new(
+                                *ticker,
+                                ticker.exchange(),
+                                None,
+                                PushFrequency::ServerDefault,
+                            );
+
+                            Subscription::run_with(config, exchange::connect::trade_stream)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if !trade_subs.is_empty() {
+                        subs.push(Subscription::batch(trade_subs));
+                    }
+                }
+
                 let kline_params = specs
                     .kline
                     .iter()
@@ -1178,7 +1235,7 @@ fn request_fetch(
         }
         FetchRange::Trades(from_time, to_time) => {
             let trade_info = state.streams.find_ready_map(|stream| {
-                if let StreamKind::DepthAndTrades { ticker_info, .. } = stream {
+                if let StreamKind::Trades { ticker_info } = stream {
                     Some((*ticker_info, pane_id, *stream))
                 } else {
                     None

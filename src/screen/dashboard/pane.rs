@@ -129,8 +129,9 @@ impl State {
 
     pub fn stream_pair(&self) -> Option<TickerInfo> {
         self.streams.find_ready_map(|stream| match stream {
-            StreamKind::DepthAndTrades { ticker_info, .. }
-            | StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+            StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+            StreamKind::Depth { ticker_info, .. } => Some(*ticker_info),
+            StreamKind::Trades { ticker_info, .. } => Some(*ticker_info),
         })
     }
 
@@ -181,10 +182,16 @@ impl State {
                 ticker_info: ti,
                 timeframe: tf,
             };
-            let depth_stream = |derived_plan: &PaneSetup| StreamKind::DepthAndTrades {
+            let depth_stream = |derived_plan: &PaneSetup| StreamKind::Depth {
                 ticker_info: derived_plan.ticker_info,
                 depth_aggr: derived_plan.depth_aggr,
                 push_freq: derived_plan.push_freq,
+            };
+            let trades_stream = |derived_plan: &PaneSetup| StreamKind::Trades {
+                ticker_info: derived_plan.ticker_info,
+            };
+            let depth_and_trades_streams = |derived_plan: &PaneSetup| {
+                vec![depth_stream(derived_plan), trades_stream(derived_plan)]
             };
 
             match kind {
@@ -196,7 +203,7 @@ impl State {
                         derived_plan.tick_size,
                     );
 
-                    let streams = vec![depth_stream(&derived_plan)];
+                    let streams = depth_and_trades_streams(&derived_plan);
 
                     (content, streams)
                 }
@@ -215,10 +222,11 @@ impl State {
                         |tf| {
                             vec![
                                 depth_stream(&derived_plan),
+                                trades_stream(&derived_plan),
                                 kline_stream(derived_plan.ticker_info, tf),
                             ]
                         },
-                        || vec![depth_stream(&derived_plan)],
+                        || depth_and_trades_streams(&derived_plan),
                     );
 
                     (content, streams)
@@ -248,7 +256,7 @@ impl State {
                                 depth_aggr,
                                 ..derived_plan
                             };
-                            vec![depth_stream(&temp)]
+                            depth_and_trades_streams(&temp)
                         },
                     );
 
@@ -270,7 +278,7 @@ impl State {
                         ..derived_plan
                     };
 
-                    (content, vec![depth_stream(&temp)])
+                    (content, depth_and_trades_streams(&temp))
                 }
                 ContentKind::Ladder => {
                     let config = self
@@ -284,7 +292,7 @@ impl State {
                         derived_plan.tick_size,
                     )));
 
-                    (content, vec![depth_stream(&derived_plan)])
+                    (content, depth_and_trades_streams(&derived_plan))
                 }
                 ContentKind::ComparisonChart => {
                     let config = self
@@ -1046,7 +1054,7 @@ impl State {
 
                                 if let Some(mut it) = self.streams.ready_iter_mut() {
                                     for s in &mut it {
-                                        if let StreamKind::DepthAndTrades { depth_aggr, .. } = s {
+                                        if let StreamKind::Depth { depth_aggr, .. } = s {
                                             *depth_aggr = if is_client {
                                                 StreamTicksize::Client
                                             } else {
@@ -1071,11 +1079,9 @@ impl State {
 
                                         if let Some(stream_type) =
                                             self.streams.ready_iter_mut().and_then(|mut it| {
-                                                it.find(|s| {
-                                                    matches!(s, StreamKind::DepthAndTrades { .. })
-                                                })
+                                                it.find(|s| matches!(s, StreamKind::Depth { .. }))
                                             })
-                                            && let StreamKind::DepthAndTrades {
+                                            && let StreamKind::Depth {
                                                 push_freq,
                                                 ticker_info,
                                                 ..
@@ -1121,10 +1127,13 @@ impl State {
                                                                     .unwrap_or(TickMultiplier(1)),
                                                             )
                                                         };
-                                                        streams.push(StreamKind::DepthAndTrades {
+                                                        streams.push(StreamKind::Depth {
                                                             ticker_info: base_ticker,
                                                             depth_aggr,
                                                             push_freq: exchange::PushFrequency::ServerDefault,
+                                                        });
+                                                        streams.push(StreamKind::Trades {
+                                                            ticker_info: base_ticker,
                                                         });
                                                     }
 
@@ -1153,10 +1162,13 @@ impl State {
                                                     };
 
                                                     self.streams = ResolvedStream::Ready(vec![
-                                                        StreamKind::DepthAndTrades {
+                                                        StreamKind::Depth {
                                                             ticker_info: base_ticker,
                                                             depth_aggr,
                                                             push_freq: exchange::PushFrequency::ServerDefault,
+                                                        },
+                                                        StreamKind::Trades {
+                                                            ticker_info: base_ticker,
                                                         },
                                                     ]);
                                                     c.set_basis(new_basis);
