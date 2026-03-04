@@ -40,6 +40,15 @@ use std::{borrow::Cow, collections::HashMap, vec};
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
 
+    #[cfg(feature = "telemetry")]
+    {
+        data::telemetry::init();
+        data::telemetry::emit(data::telemetry::TelemetryEvent::SessionStart {
+            ts_ms: data::telemetry::now_ms(),
+            build_version: env!("CARGO_PKG_VERSION"),
+        });
+    }
+
     std::panic::set_hook(Box::new(|info| {
         let location = info.location().map_or_else(
             || "unknown location".to_string(),
@@ -246,9 +255,9 @@ impl Flowsurface {
 
                         return task;
                     }
-                    exchange::Event::KlineReceived(stream, kline) => {
+                    exchange::Event::KlineReceived(stream, kline, raw_f64) => {
                         return dashboard
-                            .update_latest_klines(&stream, &kline, main_window_id)
+                            .update_latest_klines(&stream, &kline, raw_f64, main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,

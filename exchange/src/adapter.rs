@@ -645,7 +645,9 @@ pub enum Event {
     Connected(Exchange),
     Disconnected(Exchange, String),
     DepthReceived(StreamKind, u64, Arc<Depth>, Box<[Trade]>),
-    KlineReceived(StreamKind, Kline),
+    /// The optional `[f64; 6]` carries raw ClickHouse values [o, h, l, c, buy_vol, sell_vol]
+    /// before f32 conversion. Only the ClickHouse adapter populates this; others pass `None`.
+    KlineReceived(StreamKind, Kline, Option<[f64; 6]>),
 }
 
 #[derive(Debug, Clone, Hash)]

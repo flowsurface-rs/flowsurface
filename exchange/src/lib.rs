@@ -558,7 +558,9 @@ pub struct Trade {
     pub qty: Qty,
 }
 
-#[derive(Debug, Clone, Copy)]
+// Serialize: range bar forensic telemetry NDJSON artifacts (--features telemetry)
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/telemetry
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Kline {
     pub time: u64,
     pub open: Price,
@@ -589,7 +591,7 @@ impl Kline {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub enum Volume {
     TotalOnly(Qty),
     BuySell(Qty, Qty),

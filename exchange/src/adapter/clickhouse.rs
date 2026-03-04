@@ -25,7 +25,8 @@ pub use opendeviationbar_core::{FixedPoint, OpenDeviationBar, OpenDeviationBarPr
 
 /// Microstructure fields from ClickHouse range bar cache.
 /// Kept in exchange crate to avoid circular dependency with data crate.
-#[derive(Debug, Clone, Copy)]
+/// Serialize: range bar forensic telemetry (--features telemetry)
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct ChMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
@@ -263,7 +264,7 @@ fn bare_symbol(ticker_info: &TickerInfo) -> String {
 
 // -- Kline data --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct ChKline {
     close_time_ms: i64,
     #[serde(default, rename = "open_time_ms")]
@@ -560,6 +561,14 @@ pub fn connect_kline_stream(
                             if ts > last_ts {
                                 last_ts = ts;
                             }
+                            let raw_f64 = [
+                                ck.open,
+                                ck.high,
+                                ck.low,
+                                ck.close,
+                                ck.buy_volume,
+                                ck.sell_volume,
+                            ];
                             let kline = Kline::new(
                                 ts,
                                 ck.open as f32,
@@ -572,7 +581,9 @@ pub fn connect_kline_stream(
                                 ),
                                 ticker_info.min_ticksize,
                             );
-                            let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
+                            let _ = output
+                                .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64)))
+                                .await;
                             count += 1;
                         }
                     }

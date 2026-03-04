@@ -65,3 +65,4 @@ zigzag = { path = "../../eon/opendeviationbar-py/crates/zigzag" }
 
 [features]
 debug = ["iced/hot"]
+telemetry = ["data/telemetry"]

@@ -1091,8 +1091,26 @@ impl Dashboard {
         &mut self,
         stream: &StreamKind,
         kline: &Kline,
+        #[cfg(feature = "telemetry")] raw_f64: Option<[f64; 6]>,
+        #[cfg(not(feature = "telemetry"))] _raw_f64: Option<[f64; 6]>,
         main_window: window::Id,
     ) -> Task<Message> {
+        #[cfg(feature = "telemetry")]
+        if let StreamKind::RangeBarKline {
+            ticker_info,
+            threshold_dbps,
+        } = stream
+        {
+            use data::telemetry::{self, ChKlineRaw, KlineSnapshot, TelemetryEvent};
+            telemetry::emit(TelemetryEvent::ChPollBar {
+                ts_ms: telemetry::now_ms(),
+                symbol: ticker_info.ticker.to_string(),
+                threshold_dbps: *threshold_dbps,
+                kline: KlineSnapshot::from_kline(kline),
+                raw_f64: raw_f64.map(ChKlineRaw::from_array),
+            });
+        }
+
         let mut found_match = false;
 
         self.iter_all_panes_mut(main_window)

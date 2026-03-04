@@ -7,6 +7,8 @@ pub mod layout;
 pub mod log;
 pub mod panel;
 pub mod session;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 pub mod tickers_table;
 pub mod util;
 

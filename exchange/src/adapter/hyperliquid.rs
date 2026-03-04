@@ -1110,8 +1110,9 @@ pub fn connect_kline_stream(
                                         ticker_info: *ticker_info,
                                         timeframe: *timeframe,
                                     };
-                                    let _ =
-                                        output.send(Event::KlineReceived(stream_kind, kline)).await;
+                                    let _ = output
+                                        .send(Event::KlineReceived(stream_kind, kline, None))
+                                        .await;
                                 }
                             }
                             OpCode::Close => {

@@ -29,6 +29,11 @@ fi
 open Flowsurface.app
 """
 
+["run:telemetry"]
+description = "Build and run with forensic telemetry (NDJSON artifacts)"
+depends = ["preflight"]
+run = "FLOWSURFACE_TELEMETRY=1 cargo run --features telemetry --release"
+
 [check]
 description = "Run cargo check (fast type-check without codegen)"
 run = "cargo check --workspace"

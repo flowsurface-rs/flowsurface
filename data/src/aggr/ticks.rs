@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 /// Microstructure data from precomputed range bars (ClickHouse).
 /// Separate from Kline to avoid polluting the shared exchange type.
-#[derive(Debug, Clone, Copy)]
+/// Serialize: range bar forensic telemetry (--features telemetry)
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct RangeBarMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
@@ -368,6 +369,41 @@ impl TickAggr {
     /// - Newer timestamp → append as new completed bar
     /// - Older timestamp → ignore (stale)
     pub fn replace_or_append_kline(&mut self, kline: &Kline) {
+        #[cfg(feature = "telemetry")]
+        {
+            use crate::telemetry::{self, KlineSnapshot, ReconcileAction, TelemetryEvent};
+            let action = match self.datapoints.last() {
+                Some(last) if kline.time == last.kline.time => ReconcileAction::Replace,
+                Some(last) if kline.time > last.kline.time => ReconcileAction::Append,
+                Some(_) => ReconcileAction::Drop,
+                None => ReconcileAction::AppendEmpty,
+            };
+            let existing_last = self
+                .datapoints
+                .last()
+                .map(|dp| KlineSnapshot::from_kline(&dp.kline));
+            let micro_before = self.datapoints.last().and_then(|dp| dp.microstructure);
+
+            // Emit MicroLoss if we're about to replace a bar that has microstructure
+            if matches!(action, ReconcileAction::Replace)
+                && let Some(micro) = micro_before
+            {
+                telemetry::emit(TelemetryEvent::MicroLoss {
+                    ts_ms: telemetry::now_ms(),
+                    bar_time_ms: kline.time,
+                    micro_before: micro,
+                });
+            }
+
+            telemetry::emit(TelemetryEvent::Reconcile {
+                ts_ms: telemetry::now_ms(),
+                action,
+                incoming: KlineSnapshot::from_kline(kline),
+                existing_last,
+                micro_before,
+            });
+        }
+
         if let Some(last) = self.datapoints.last_mut() {
             if kline.time == last.kline.time {
                 last.kline = *kline;

@@ -734,6 +734,7 @@ pub fn connect_kline_stream(
                                                         timeframe,
                                                     },
                                                     kline,
+                                                    None,
                                                 ))
                                                 .await;
                                         } else {

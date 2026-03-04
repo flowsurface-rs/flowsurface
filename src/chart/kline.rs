@@ -603,6 +603,19 @@ impl KlineChart {
             chart.layout.splits = data::util::calc_panel_splits(main_split, subplot_count, None);
         }
 
+        #[cfg(feature = "telemetry")]
+        {
+            use data::telemetry::{self, TelemetryEvent};
+            let micro_count = micro.iter().filter(|m| m.is_some()).count();
+            telemetry::emit(TelemetryEvent::ChartOpen {
+                ts_ms: telemetry::now_ms(),
+                symbol: ticker_info.ticker.to_string(),
+                threshold_dbps,
+                bar_count: klines_raw.len(),
+                micro_coverage: micro_count,
+            });
+        }
+
         KlineChart {
             chart,
             data_source,
@@ -1067,6 +1080,22 @@ impl KlineChart {
 
                         for trade in trades_buffer {
                             let agg = trade_to_agg_trade(trade, self.next_agg_id);
+
+                            // Telemetry: sample every 500th WebSocket trade
+                            #[cfg(feature = "telemetry")]
+                            if self.next_agg_id % 500 == 0 {
+                                use data::telemetry::{self, TelemetryEvent};
+                                telemetry::emit(TelemetryEvent::WsTradeSample {
+                                    ts_ms: telemetry::now_ms(),
+                                    trade_time_ms: trade.time,
+                                    price_units: trade.price.units,
+                                    price_f32: trade.price.to_f32(),
+                                    qty_units: trade.qty.units,
+                                    is_sell: trade.is_sell,
+                                    seq_id: self.next_agg_id,
+                                });
+                            }
+
                             // Diagnostic: log trade details every 2000 trades
                             if self.next_agg_id % 2000 == 0 {
                                 log::info!(
@@ -1117,6 +1146,31 @@ impl KlineChart {
                                     );
                                     let kline = odb_to_kline(&completed, min_tick);
                                     let micro = odb_to_microstructure(&completed);
+
+                                    #[cfg(feature = "telemetry")]
+                                    {
+                                        use data::telemetry::{
+                                            self, KlineSnapshot, TelemetryEvent,
+                                        };
+                                        let telem_dbps = if let data::chart::Basis::RangeBar(d) =
+                                            self.chart.basis
+                                        {
+                                            d
+                                        } else {
+                                            0
+                                        };
+                                        telemetry::emit(TelemetryEvent::RbpBarComplete {
+                                            ts_ms: telemetry::now_ms(),
+                                            symbol: self.chart.ticker_info.ticker.to_string(),
+                                            threshold_dbps: telem_dbps,
+                                            kline: KlineSnapshot::from_kline(&kline),
+                                            trade_count: micro.trade_count,
+                                            ofi: micro.ofi,
+                                            trade_intensity: micro.trade_intensity,
+                                            completed_bar_index: self.range_bar_completed_count,
+                                        });
+                                    }
+
                                     let last_time =
                                         tick_aggr.datapoints.last().map(|dp| dp.kline.time);
                                     log::info!(
@@ -1573,6 +1627,47 @@ impl KlineChart {
         chart.cache.clear_all();
         for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
             indi.clear_all_caches();
+        }
+
+        #[cfg(feature = "telemetry")]
+        if let Some(t) = now {
+            // Emit ChartSnapshot every ~30s for range bar charts
+            if self.chart.basis.is_range_bar()
+                && t.duration_since(self.last_tick) >= std::time::Duration::from_secs(30)
+            {
+                use data::telemetry::{self, TelemetryEvent};
+                if let PlotData::TickBased(ref tick_aggr) = self.data_source {
+                    let telem_dbps = if let data::chart::Basis::RangeBar(d) = self.chart.basis {
+                        d
+                    } else {
+                        0
+                    };
+                    let forming_ts = self
+                        .odb_processor
+                        .as_ref()
+                        .and_then(|p| p.get_incomplete_bar())
+                        .map(|b| (b.close_time / 1000) as u64); // µs → ms
+                    telemetry::emit(TelemetryEvent::ChartSnapshot {
+                        ts_ms: telemetry::now_ms(),
+                        symbol: self.chart.ticker_info.ticker.to_string(),
+                        threshold_dbps: telem_dbps,
+                        total_bars: tick_aggr.datapoints.len(),
+                        visible_bars: 0, // TODO: compute from visible region
+                        newest_bar_ts: tick_aggr
+                            .datapoints
+                            .last()
+                            .map(|dp| dp.kline.time)
+                            .unwrap_or(0),
+                        oldest_bar_ts: tick_aggr
+                            .datapoints
+                            .first()
+                            .map(|dp| dp.kline.time)
+                            .unwrap_or(0),
+                        forming_bar_ts: forming_ts,
+                        rbp_completed_count: self.range_bar_completed_count,
+                    });
+                }
+            }
         }
 
         if let Some(t) = now {
