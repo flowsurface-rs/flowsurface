@@ -19,10 +19,7 @@ pub mod volume;
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 pub mod zigzag;
 
-pub trait KlineIndicatorImpl: 'static {
-    /// Downcast to concrete type (for overlay indicators that draw on the main chart).
-    fn as_any(&self) -> &dyn std::any::Any;
-
+pub trait KlineIndicatorImpl {
     /// Clear all caches for a full redraw
     fn clear_all_caches(&mut self);
 
@@ -66,6 +63,20 @@ pub trait KlineIndicatorImpl: 'static {
     /// Only overridden by `TradeIntensityHeatmap` which colours candle bodies, not a subplot.
     fn thermal_body_color(&self, _storage_idx: u64) -> Option<Color> {
         None
+    }
+
+    /// Draw overlay graphics on the main candle pane.
+    /// Default: no-op. Overridden by overlay indicators (e.g. ZigZag).
+    fn draw_overlay(
+        &self,
+        _frame: &mut iced::widget::canvas::Frame,
+        _total_len: usize,
+        _earliest_visual: usize,
+        _latest_visual: usize,
+        _price_to_y: &dyn Fn(exchange::unit::Price) -> f32,
+        _interval_to_x: &dyn Fn(u64) -> f32,
+        _palette: &iced::theme::palette::Extended,
+    ) {
     }
 }
 

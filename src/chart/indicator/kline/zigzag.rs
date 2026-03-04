@@ -63,6 +63,18 @@ impl ZigZagOverlayIndicator {
         self.next_idx = 0;
     }
 
+    /// Recreate the ZigZag state machine if the chart's bar threshold changed.
+    fn reconfigure_if_needed(&mut self, dbps: u32) {
+        if self.state.config().bar_threshold_dbps != dbps {
+            let config = ZigZagConfig::new(3.0, 1.0, dbps)
+                .expect("valid dbps from chart config");
+            self.state = ZigZagState::new(config);
+            self.confirmed_pivots.clear();
+            self.pending_pivot = None;
+            self.next_idx = 0;
+        }
+    }
+
     /// Feed a single bar (by storage index) to the zigzag state machine.
     fn process_one(&mut self, storage_idx: usize, kline: &Kline, timestamp_us: i64) {
         let bar = BarInput {
@@ -94,7 +106,6 @@ impl ZigZagOverlayIndicator {
 }
 
 impl KlineIndicatorImpl for ZigZagOverlayIndicator {
-    fn as_any(&self) -> &dyn std::any::Any { self }
     fn clear_all_caches(&mut self) {
         // ZigZag draws on the main chart cache, not its own — nothing to clear here.
     }
@@ -111,8 +122,10 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
-        self.reset_state();
         if let PlotData::TickBased(tickseries) = source {
+            let dbps = tickseries.range_bar_threshold_dbps.unwrap_or(250);
+            self.reconfigure_if_needed(dbps);
+            self.reset_state();
             for (idx, dp) in tickseries.datapoints.iter().enumerate() {
                 let timestamp_us = (dp.kline.time as i64) * 1000; // ms → µs
                 self.process_one(idx, &dp.kline, timestamp_us);
@@ -154,130 +167,131 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
     }
 
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        if let PlotData::TickBased(tickseries) = source {
+            let dbps = tickseries.range_bar_threshold_dbps.unwrap_or(250);
+            self.reconfigure_if_needed(dbps);
+        }
         self.rebuild_from_source(source);
     }
-}
 
-/// Draw the ZigZag overlay (confirmed lines + pending) on a canvas frame.
-///
-/// Called from the main chart's `draw()` method after candles are rendered.
-pub fn draw_zigzag_overlay(
-    indicator: &ZigZagOverlayIndicator,
-    frame: &mut iced::widget::canvas::Frame,
-    total_len: usize,
-    earliest_visual: usize,
-    latest_visual: usize,
-    price_to_y: &dyn Fn(Price) -> f32,
-    interval_to_x: &dyn Fn(u64) -> f32,
-    palette: &iced::theme::palette::Extended,
-) {
-    use iced::widget::canvas::{Path, Stroke, path};
+    fn draw_overlay(
+        &self,
+        frame: &mut iced::widget::canvas::Frame,
+        total_len: usize,
+        earliest_visual: usize,
+        latest_visual: usize,
+        price_to_y: &dyn Fn(Price) -> f32,
+        interval_to_x: &dyn Fn(u64) -> f32,
+        palette: &iced::theme::palette::Extended,
+    ) {
+        use iced::widget::canvas::{Path, Stroke, path};
 
-    if indicator.confirmed_pivots.is_empty() {
-        return;
-    }
-
-    let storage_to_visual = |storage_idx: usize| -> usize {
-        total_len.saturating_sub(1 + storage_idx)
-    };
-
-    let pivot_xy = |pivot: &OverlayPivot| -> (f32, f32) {
-        let visual_idx = storage_to_visual(pivot.storage_idx);
-        let x = interval_to_x(visual_idx as u64);
-        let y = price_to_y(Price::from_units(pivot.price_units));
-        (x, y)
-    };
-
-    // Pivot colour: swing high = danger (red family), swing low = success (green family).
-    let pivot_color = |kind: PivotKind| -> Color {
-        match kind {
-            PivotKind::High => palette.danger.base.color,
-            PivotKind::Low => palette.success.base.color,
-        }
-    };
-
-    // Draw confirmed pivot lines.
-    for window in indicator.confirmed_pivots.windows(2) {
-        let a = &window[0];
-        let b = &window[1];
-
-        // Cull segments fully outside the visible range.
-        let a_vis = storage_to_visual(a.storage_idx);
-        let b_vis = storage_to_visual(b.storage_idx);
-        let seg_earliest = a_vis.min(b_vis);
-        let seg_latest = a_vis.max(b_vis);
-        if seg_earliest > latest_visual || seg_latest < earliest_visual {
-            continue;
+        if self.confirmed_pivots.is_empty() {
+            return;
         }
 
-        let (ax, ay) = pivot_xy(a);
-        let (bx, by) = pivot_xy(b);
-
-        let line = Path::line(iced::Point::new(ax, ay), iced::Point::new(bx, by));
-        let stroke = Stroke {
-            width: 1.5,
-            style: iced::widget::canvas::stroke::Style::Solid(pivot_color(b.kind)),
-            ..Default::default()
+        let storage_to_visual = |storage_idx: usize| -> usize {
+            total_len.saturating_sub(1 + storage_idx)
         };
-        frame.stroke(&line, stroke);
-    }
 
-    // Draw pending pivot line (dashed, dimmed).
-    if let Some(ref pending) = indicator.pending_pivot
-        && let Some(last_confirmed) = indicator.confirmed_pivots.last()
-    {
-        let (ax, ay) = pivot_xy(last_confirmed);
-        let (bx, by) = pivot_xy(pending);
-
-        let mut builder = path::Builder::new();
-        builder.move_to(iced::Point::new(ax, ay));
-        builder.line_to(iced::Point::new(bx, by));
-        let dashed_path = builder.build();
-
-        let pending_color = Color {
-            a: 0.5,
-            ..pivot_color(pending.kind)
+        let pivot_xy = |pivot: &OverlayPivot| -> (f32, f32) {
+            let visual_idx = storage_to_visual(pivot.storage_idx);
+            let x = interval_to_x(visual_idx as u64);
+            let y = price_to_y(Price::from_units(pivot.price_units));
+            (x, y)
         };
-        let stroke = Stroke {
-            width: 1.0,
-            style: iced::widget::canvas::stroke::Style::Solid(pending_color),
-            line_dash: iced::widget::canvas::LineDash {
-                segments: &[4.0, 3.0],
-                offset: 0,
-            },
-            ..Default::default()
-        };
-        frame.stroke(&dashed_path, stroke);
-    }
 
-    // Draw circles at confirmed pivots (visible ones only).
-    let circle_radius = 3.0;
-    for pivot in &indicator.confirmed_pivots {
-        let vis = storage_to_visual(pivot.storage_idx);
-        if vis < earliest_visual || vis > latest_visual {
-            continue;
+        // Pivot colour: swing high = danger (red family), swing low = success (green family).
+        let pivot_color = |kind: PivotKind| -> Color {
+            match kind {
+                PivotKind::High => palette.danger.base.color,
+                PivotKind::Low => palette.success.base.color,
+            }
+        };
+
+        // Draw confirmed pivot lines.
+        for window in self.confirmed_pivots.windows(2) {
+            let a = &window[0];
+            let b = &window[1];
+
+            // Cull segments fully outside the visible range.
+            let a_vis = storage_to_visual(a.storage_idx);
+            let b_vis = storage_to_visual(b.storage_idx);
+            let seg_earliest = a_vis.min(b_vis);
+            let seg_latest = a_vis.max(b_vis);
+            if seg_earliest > latest_visual || seg_latest < earliest_visual {
+                continue;
+            }
+
+            let (ax, ay) = pivot_xy(a);
+            let (bx, by) = pivot_xy(b);
+
+            let line = Path::line(iced::Point::new(ax, ay), iced::Point::new(bx, by));
+            let stroke = Stroke {
+                width: 1.5,
+                style: iced::widget::canvas::stroke::Style::Solid(pivot_color(b.kind)),
+                ..Default::default()
+            };
+            frame.stroke(&line, stroke);
         }
-        let (x, y) = pivot_xy(pivot);
-        let circle = Path::circle(iced::Point::new(x, y), circle_radius);
-        frame.fill(&circle, pivot_color(pivot.kind));
-    }
 
-    // Draw pending pivot circle (hollow, dimmed).
-    if let Some(ref pending) = indicator.pending_pivot {
-        let vis = storage_to_visual(pending.storage_idx);
-        if vis >= earliest_visual && vis <= latest_visual {
-            let (x, y) = pivot_xy(pending);
-            let circle = Path::circle(iced::Point::new(x, y), circle_radius);
+        // Draw pending pivot line (dashed, dimmed).
+        if let Some(ref pending) = self.pending_pivot
+            && let Some(last_confirmed) = self.confirmed_pivots.last()
+        {
+            let (ax, ay) = pivot_xy(last_confirmed);
+            let (bx, by) = pivot_xy(pending);
+
+            let mut builder = path::Builder::new();
+            builder.move_to(iced::Point::new(ax, ay));
+            builder.line_to(iced::Point::new(bx, by));
+            let dashed_path = builder.build();
+
             let pending_color = Color {
-                a: 0.4,
+                a: 0.5,
                 ..pivot_color(pending.kind)
             };
             let stroke = Stroke {
                 width: 1.0,
                 style: iced::widget::canvas::stroke::Style::Solid(pending_color),
+                line_dash: iced::widget::canvas::LineDash {
+                    segments: &[4.0, 3.0],
+                    offset: 0,
+                },
                 ..Default::default()
             };
-            frame.stroke(&circle, stroke);
+            frame.stroke(&dashed_path, stroke);
+        }
+
+        // Draw circles at confirmed pivots (visible ones only).
+        let circle_radius = 3.0;
+        for pivot in &self.confirmed_pivots {
+            let vis = storage_to_visual(pivot.storage_idx);
+            if vis < earliest_visual || vis > latest_visual {
+                continue;
+            }
+            let (x, y) = pivot_xy(pivot);
+            let circle = Path::circle(iced::Point::new(x, y), circle_radius);
+            frame.fill(&circle, pivot_color(pivot.kind));
+        }
+
+        // Draw pending pivot circle (hollow, dimmed).
+        if let Some(ref pending) = self.pending_pivot {
+            let vis = storage_to_visual(pending.storage_idx);
+            if vis >= earliest_visual && vis <= latest_visual {
+                let (x, y) = pivot_xy(pending);
+                let circle = Path::circle(iced::Point::new(x, y), circle_radius);
+                let pending_color = Color {
+                    a: 0.4,
+                    ..pivot_color(pending.kind)
+                };
+                let stroke = Stroke {
+                    width: 1.0,
+                    style: iced::widget::canvas::stroke::Style::Solid(pending_color),
+                    ..Default::default()
+                };
+                frame.stroke(&circle, stroke);
+            }
         }
     }
 }

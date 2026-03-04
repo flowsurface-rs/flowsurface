@@ -37,6 +37,12 @@ impl Indicator for KlineIndicator {
 }
 
 impl KlineIndicator {
+    /// Whether this indicator renders as its own subplot panel.
+    /// Returns `false` for overlays that draw on the main candle pane.
+    pub fn has_subplot(&self) -> bool {
+        !matches!(self, Self::TradeIntensityHeatmap | Self::ZigZag)
+    }
+
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers

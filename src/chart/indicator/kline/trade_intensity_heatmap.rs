@@ -217,7 +217,6 @@ impl TradeIntensityHeatmapIndicator {
 }
 
 impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
-    fn as_any(&self) -> &dyn std::any::Any { self }
     fn clear_all_caches(&mut self) {
         self.cache.clear_all();
     }
