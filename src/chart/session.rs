@@ -277,17 +277,17 @@ fn draw_session_strips(
                 Color { a: 0.2, ..color },
             );
 
-            // Session label centered in strip
+            // Session label at left edge of strip (where the session starts)
             if width > 15.0 {
                 frame.fill_text(canvas::Text {
                     content: open.session.label().to_string(),
                     position: Point::new(
-                        (open.x + close.x) / 2.0,
+                        x_left + 3.0,
                         region.y + strip_height / 2.0,
                     ),
                     size: iced::Pixels(9.0),
                     color: Color { a: 0.8, ..color },
-                    align_x: Alignment::Center.into(),
+                    align_x: Alignment::Start.into(),
                     align_y: Alignment::Center.into(),
                     font: AZERET_MONO,
                     ..canvas::Text::default()
