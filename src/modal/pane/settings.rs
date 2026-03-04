@@ -527,9 +527,29 @@ pub fn kline_cfg_view<'a>(
     include_forming: bool,
 ) -> Element<'a, Message> {
     let content = match kind {
-        KlineChartKind::Candles => column![text(
-            "This chart type doesn't have any configurations, WIP..."
-        )],
+        KlineChartKind::Candles => {
+            let session_toggle = checkbox(cfg.show_sessions)
+                .label("Session Lines (NY / LDN / TKY)")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            show_sessions: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+            column![
+                session_toggle,
+                row![
+                    space::horizontal(),
+                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                ]
+            ]
+            .spacing(12)
+        }
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
         KlineChartKind::RangeBar => {
             let period = cfg.ofi_ema_period;
@@ -566,6 +586,19 @@ pub fn kline_cfg_view<'a>(
                         pane,
                         VisualConfig::Kline(data::chart::kline::Config {
                             thermal_wicks: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+            let session_toggle = checkbox(cfg.show_sessions)
+                .label("Session Lines (NY / LDN / TKY)")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            show_sessions: value,
                             ..cfg
                         }),
                         false,
@@ -615,6 +648,7 @@ pub fn kline_cfg_view<'a>(
                     .spacing(8)
                     .align_y(Alignment::Center),
                     thermal_wicks_toggle,
+                    session_toggle,
                 ]
                 .spacing(8),
                 row![

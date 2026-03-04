@@ -337,6 +337,7 @@ impl std::fmt::Display for ClusterKind {
 fn default_ofi_ema_period() -> usize { 20 }
 fn default_intensity_lookback() -> usize { 2000 }
 fn default_thermal_wicks() -> bool { true }
+fn default_show_sessions() -> bool { false }
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
@@ -349,6 +350,9 @@ pub struct Config {
     /// When false, wicks show candle direction: green (bullish) / red (bearish).
     #[serde(default = "default_thermal_wicks")]
     pub thermal_wicks: bool,
+    /// Overlay NY/London/Tokyo session boundary lines on the chart.
+    #[serde(default = "default_show_sessions")]
+    pub show_sessions: bool,
 }
 
 impl Default for Config {
@@ -357,6 +361,7 @@ impl Default for Config {
             ofi_ema_period: default_ofi_ema_period(),
             intensity_lookback: default_intensity_lookback(),
             thermal_wicks: default_thermal_wicks(),
+            show_sessions: default_show_sessions(),
         }
     }
 }

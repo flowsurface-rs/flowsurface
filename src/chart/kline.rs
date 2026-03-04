@@ -1007,6 +1007,11 @@ impl KlineChart {
         self.invalidate(None);
     }
 
+    pub fn set_show_sessions(&mut self, show: bool) {
+        self.kline_config.show_sessions = show;
+        self.invalidate(None);
+    }
+
     /// NOTE(fork): Compute a keyboard navigation message using this chart's current state.
     /// Called from the app-level `keyboard::listen()` subscription to navigate without canvas focus.
     /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
@@ -1729,6 +1734,20 @@ impl canvas::Program<Message> for KlineChart {
                     );
                 }
                 KlineChartKind::Candles | KlineChartKind::RangeBar => {
+                    // Session lines (behind candles)
+                    if self.kline_config.show_sessions {
+                        super::session::draw_sessions(
+                            frame,
+                            &region,
+                            &chart.basis,
+                            chart.cell_width,
+                            interval_to_x,
+                            &self.data_source,
+                            earliest,
+                            latest,
+                        );
+                    }
+
                     // Range bars represent continuous price action — use tighter
                     // spacing (95%) so bars visually connect. Candles keep 80%
                     // for temporal separation between time periods.
@@ -2752,7 +2771,10 @@ fn draw_crosshair_tooltip(
         let bg_width = ohlc_width.max(timing_width);
         let bg_height = if timing_lines.is_some() { 48.0 } else { 16.0 };
 
-        let position = Point::new(8.0, 8.0);
+        let position = Point::new(
+            frame.width() - bg_width - 8.0,
+            frame.height() - bg_height - 8.0,
+        );
 
         frame.fill_rectangle(
             position,

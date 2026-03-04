@@ -4,6 +4,7 @@ pub mod indicator;
 pub mod kline;
 pub mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
 pub(crate) mod scale;
+pub(crate) mod session;
 
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
