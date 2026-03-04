@@ -1350,12 +1350,9 @@ fn expanded_ticker_card<'a>(
         row![
             Space::new().width(Length::Fill).height(Length::Shrink),
             button(
-                row![
-                    icon_text(Icon::Link, 12),
-                    text("Sync All").size(11)
-                ]
-                .spacing(4)
-                .align_y(Alignment::Center)
+                row![icon_text(Icon::Link, 12), text("Sync All").size(11)]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
             )
             .on_press(Message::SyncToAllPanes(*ticker))
             .style(|theme, status| style::button::confirm(theme, status, false)),

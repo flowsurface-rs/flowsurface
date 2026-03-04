@@ -107,12 +107,10 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
             Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
         }
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-        KlineIndicator::TradeIntensityHeatmap => Box::new(
-            super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::new(),
-        ),
+        KlineIndicator::TradeIntensityHeatmap => {
+            Box::new(super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::new())
+        }
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-        KlineIndicator::ZigZag => Box::new(
-            super::kline::zigzag::ZigZagOverlayIndicator::new(),
-        ),
+        KlineIndicator::ZigZag => Box::new(super::kline::zigzag::ZigZagOverlayIndicator::new()),
     }
 }

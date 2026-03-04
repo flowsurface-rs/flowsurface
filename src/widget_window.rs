@@ -9,7 +9,7 @@ use crate::chart::scale::linear::PriceInfoLabel;
 use exchange::adapter::clickhouse::{OpenDeviationBarProcessor, odb_to_kline, trade_to_agg_trade};
 use exchange::adapter::{Exchange, StreamConfig, StreamKind};
 use exchange::unit::Price;
-use exchange::{Kline, PushFrequency, TickerInfo, Ticker, Trade};
+use exchange::{Kline, PushFrequency, Ticker, TickerInfo, Trade};
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -18,7 +18,10 @@ use chrono::{Local, TimeZone, Utc};
 
 use iced::widget::canvas::{self, Cache, Canvas, Frame, Path, Stroke, Text};
 use iced::widget::mouse_area;
-use iced::{self, Color, Element, Length, Point, Rectangle, Renderer, Size, Subscription, Theme, mouse, window};
+use iced::{
+    self, Color, Element, Length, Point, Rectangle, Renderer, Size, Subscription, Theme, mouse,
+    window,
+};
 
 /// The symbol string used to identify the BTCUSDT Binance Linear Perps ticker.
 const BTCUSDT_SYMBOL: &str = "BTCUSDT";
@@ -144,8 +147,8 @@ struct WidgetState {
 
 impl WidgetState {
     fn new(ticker_info: TickerInfo) -> Self {
-        let processor =
-            OpenDeviationBarProcessor::new(THRESHOLD_DBPS).expect("BPR25 threshold is always valid");
+        let processor = OpenDeviationBarProcessor::new(THRESHOLD_DBPS)
+            .expect("BPR25 threshold is always valid");
         Self {
             bars: Vec::with_capacity(MAX_BARS),
             processor,
@@ -210,11 +213,7 @@ impl WidgetState {
             hi = hi.max(forming.high.to_f64() as f32);
         }
 
-        if lo == f32::MAX {
-            (0.0, 1.0)
-        } else {
-            (lo, hi)
-        }
+        if lo == f32::MAX { (0.0, 1.0) } else { (lo, hi) }
     }
 }
 
@@ -232,11 +231,7 @@ impl canvas::Program<WidgetMessage> for WidgetState {
         let geometry = self.cache.draw(renderer, bounds.size(), |frame| {
             let palette = theme.extended_palette();
 
-            frame.fill_rectangle(
-                Point::ORIGIN,
-                bounds.size(),
-                palette.background.base.color,
-            );
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), palette.background.base.color);
 
             let header_h = 34.0;
             let margin = 6.0;
@@ -261,8 +256,10 @@ impl canvas::Program<WidgetMessage> for WidgetState {
                     if let (Some(u), Some(l)) = (utc_dt, local_dt) {
                         let ts_text = format!(
                             "{}.{:03} UTC  /  {}.{:03} local",
-                            u.format("%H:%M:%S"), millis,
-                            l.format("%H:%M:%S"), millis,
+                            u.format("%H:%M:%S"),
+                            millis,
+                            l.format("%H:%M:%S"),
+                            millis,
                         );
                         frame.fill_text(Text {
                             content: ts_text,
@@ -310,9 +307,8 @@ impl canvas::Program<WidgetMessage> for WidgetState {
                 chart_top + ((p_high as f64 - p) / p_range as f64 * chart_height as f64) as f32
             };
 
-            let price_f32_to_y = |p: f32| -> f32 {
-                chart_top + (p_high - p) / p_range * chart_height
-            };
+            let price_f32_to_y =
+                |p: f32| -> f32 { chart_top + (p_high - p) / p_range * chart_height };
 
             let candle_width = CELL_WIDTH * 0.8;
             let right_edge = bounds.width - margin - CELL_WIDTH;
@@ -322,7 +318,16 @@ impl canvas::Program<WidgetMessage> for WidgetState {
                 if x < margin {
                     break;
                 }
-                draw_candle_dp(frame, price_to_y, candle_width, palette, x, kline, None, None);
+                draw_candle_dp(
+                    frame,
+                    price_to_y,
+                    candle_width,
+                    palette,
+                    x,
+                    kline,
+                    None,
+                    None,
+                );
             }
 
             if let Some(forming) = self.processor.get_incomplete_bar() {
@@ -363,10 +368,7 @@ impl canvas::Program<WidgetMessage> for WidgetState {
             if let Some(label) = self.last_price {
                 let (price, color) = label.get_with_color(palette);
                 let y = price_to_y(price);
-                let dash_color = Color {
-                    a: 0.5,
-                    ..color
-                };
+                let dash_color = Color { a: 0.5, ..color };
                 draw_dashed_hline(frame, y, margin, bounds.width - margin, dash_color);
             }
         });

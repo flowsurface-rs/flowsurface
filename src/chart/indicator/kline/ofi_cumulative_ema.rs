@@ -91,9 +91,18 @@ impl OFICumulativeEmaIndicator {
         }
         // Vec push: O(1) amortised. Resize with sentinel for any gap (bars without micro).
         if idx > self.data.len() {
-            self.data.resize(idx, CumOfiPoint { cumsum: 0.0, bullish: false });
+            self.data.resize(
+                idx,
+                CumOfiPoint {
+                    cumsum: 0.0,
+                    bullish: false,
+                },
+            );
         }
-        self.data.push(CumOfiPoint { cumsum: self.rolling_sum, bullish });
+        self.data.push(CumOfiPoint {
+            cumsum: self.rolling_sum,
+            bullish,
+        });
     }
 
     fn indicator_elem<'a>(

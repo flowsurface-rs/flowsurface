@@ -470,10 +470,8 @@ pub fn timesales_cfg_view<'a>(
     };
 
     let time_format_column = {
-        let time_format_picker = pick_list(
-            TimeFormat::ALL,
-            Some(cfg.time_format),
-            move |new_format| {
+        let time_format_picker =
+            pick_list(TimeFormat::ALL, Some(cfg.time_format), move |new_format| {
                 Message::VisualConfigChanged(
                     pane,
                     VisualConfig::TimeAndSales(timeandsales::Config {
@@ -482,8 +480,7 @@ pub fn timesales_cfg_view<'a>(
                     }),
                     false,
                 )
-            },
-        );
+            });
 
         column![text("Time format").size(14), time_format_picker].spacing(8)
     };
@@ -614,19 +611,14 @@ pub fn kline_cfg_view<'a>(
                 },
             );
 
-            let mut scaling_section = column![
-                text("Y-Axis Scaling").size(14),
-                autoscale_picker,
-            ]
-            .spacing(8);
+            let mut scaling_section =
+                column![text("Y-Axis Scaling").size(14), autoscale_picker,].spacing(8);
 
             if matches!(autoscale, Some(Autoscale::FitToVisible)) {
                 scaling_section = scaling_section.push(
                     checkbox(include_forming)
                         .label("Include forming bar")
-                        .on_toggle(move |value| {
-                            Message::IncludeFormingChanged(pane, value)
-                        }),
+                        .on_toggle(move |value| Message::IncludeFormingChanged(pane, value)),
                 );
             }
 

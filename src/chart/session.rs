@@ -1,8 +1,8 @@
 // Historical trading session boundary rendering (NY / London / Tokyo).
 // Handles both time-based charts (direct timestamp→x) and range bar charts
 // (binary search on close timestamps via partition_point).
-use data::chart::{Basis, PlotData};
 use data::chart::kline::KlineDataPoint;
+use data::chart::{Basis, PlotData};
 use data::session::{BoundaryKind, TradingSession, compute_boundaries};
 
 use iced::widget::canvas::{self, LineDash, Path, Stroke};
@@ -36,9 +36,7 @@ pub fn draw_sessions(
 ) {
     let resolved = match basis {
         Basis::Time(_) => {
-            log::trace!(
-                "[SESSION/render] Time basis: earliest_ts={earliest}, latest_ts={latest}"
-            );
+            log::trace!("[SESSION/render] Time basis: earliest_ts={earliest}, latest_ts={latest}");
             resolve_time_based(earliest, latest, &interval_to_x)
         }
         Basis::Tick(_) | Basis::RangeBar(_) => {
@@ -65,7 +63,10 @@ pub fn draw_sessions(
     for rb in resolved.iter().take(6) {
         log::trace!(
             "[SESSION/render]   {} {} x={:.1} day_key={}",
-            rb.session, rb.kind, rb.x, rb.day_key,
+            rb.session,
+            rb.kind,
+            rb.x,
+            rb.day_key,
         );
     }
     if resolved.len() > 6 {
@@ -122,7 +123,10 @@ fn resolve_time_based(
             let x = interval_to_x(b.timestamp_ms);
             log::trace!(
                 "[SESSION/time] {} {} ts={} → x={:.1}",
-                b.session, b.kind, b.timestamp_ms, x,
+                b.session,
+                b.kind,
+                b.timestamp_ms,
+                x,
             );
             ResolvedBoundary {
                 session: b.session,
@@ -147,7 +151,9 @@ fn resolve_tick_based(
     interval_to_x: &impl Fn(u64) -> f32,
 ) -> Vec<ResolvedBoundary> {
     let PlotData::TickBased(tick_aggr) = data_source else {
-        log::warn!("[SESSION/tick] expected TickBased data for RangeBar/Tick basis — got TimeBased");
+        log::warn!(
+            "[SESSION/tick] expected TickBased data for RangeBar/Tick basis — got TimeBased"
+        );
         return Vec::new();
     };
 
@@ -164,8 +170,8 @@ fn resolve_tick_based(
     // Forward index = (len-1) - visual_idx (0=oldest in storage).
     let oldest_visible_fwd = (len - 1).saturating_sub(latest as usize);
     let newest_visible_fwd = ((len - 1).saturating_sub(earliest as usize)).min(len - 1);
-    let vis_start_ms = dps[oldest_visible_fwd].kline.time;  // older timestamp
-    let vis_end_ms = dps[newest_visible_fwd].kline.time;    // newer timestamp
+    let vis_start_ms = dps[oldest_visible_fwd].kline.time; // older timestamp
+    let vis_end_ms = dps[newest_visible_fwd].kline.time; // newer timestamp
 
     log::debug!(
         "[SESSION/tick] len={len}, visible: earliest_vis={earliest} latest_vis={latest}, \
@@ -196,7 +202,10 @@ fn resolve_tick_based(
         let bar_close_ms = dps[fwd_clamped].kline.time;
         log::trace!(
             "[SESSION/tick] {} {} ts={} → fwd={fwd} clamped={fwd_clamped} vis={vis} x={x:.1} (bar_close={bar_close_ms}, delta={}ms)",
-            b.session, b.kind, b.timestamp_ms, bar_close_ms as i64 - b.timestamp_ms as i64,
+            b.session,
+            b.kind,
+            b.timestamp_ms,
+            bar_close_ms as i64 - b.timestamp_ms as i64,
         );
 
         resolved.push(ResolvedBoundary {
@@ -207,10 +216,7 @@ fn resolve_tick_based(
         });
     }
 
-    log::debug!(
-        "[SESSION/tick] resolved={} boundaries",
-        resolved.len(),
-    );
+    log::debug!("[SESSION/tick] resolved={} boundaries", resolved.len(),);
 
     resolved
 }
@@ -265,7 +271,13 @@ fn draw_session_strips(
 
             log::trace!(
                 "[SESSION/strip] {} day={} open_x={:.1} close_x={:.1} clamped=[{:.1}..{:.1}] width={:.1}",
-                open.session, open.day_key, open.x, close.x, x_left, x_right, width,
+                open.session,
+                open.day_key,
+                open.x,
+                close.x,
+                x_left,
+                x_right,
+                width,
             );
 
             // Colored strip at top of chart.
@@ -284,10 +296,7 @@ fn draw_session_strips(
             if label_x >= region.x && label_x <= region.x + region.width && width > 15.0 {
                 frame.fill_text(canvas::Text {
                     content: open.session.label().to_string(),
-                    position: Point::new(
-                        label_x,
-                        region.y + strip_height / 2.0,
-                    ),
+                    position: Point::new(label_x, region.y + strip_height / 2.0),
                     size: iced::Pixels(9.0),
                     color: Color { a: 0.8, ..color },
                     align_x: Alignment::Start.into(),
@@ -302,7 +311,9 @@ fn draw_session_strips(
             unpaired += 1;
             log::trace!(
                 "[SESSION/strip] {} day={} UNPAIRED (open at x={:.1}, no matching close)",
-                open.session, open.day_key, open.x,
+                open.session,
+                open.day_key,
+                open.x,
             );
         }
     }

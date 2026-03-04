@@ -32,7 +32,13 @@ pub fn indicator_row<'a, P, Y>(
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
-    indicator_row_impl(main_chart, cache, plot, AnySeries::for_basis(main_chart.basis, datapoints), visible_range)
+    indicator_row_impl(
+        main_chart,
+        cache,
+        plot,
+        AnySeries::for_basis(main_chart.basis, datapoints),
+        visible_range,
+    )
 }
 
 /// Like `indicator_row` but backed by a `&[Y]` slice (forward-indexed: 0 = oldest).
@@ -48,7 +54,13 @@ pub fn indicator_row_slice<'a, P, Y>(
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
-    indicator_row_impl(main_chart, cache, plot, AnySeries::for_basis_slice(datapoints), visible_range)
+    indicator_row_impl(
+        main_chart,
+        cache,
+        plot,
+        AnySeries::for_basis_slice(datapoints),
+        visible_range,
+    )
 }
 
 fn indicator_row_impl<'a, P, Y>(

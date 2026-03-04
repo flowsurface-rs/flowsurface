@@ -123,24 +123,43 @@ pub async fn init_range_bar_symbols() -> Vec<String> {
 async fn validate_schema() {
     // Check expected columns exist in the open_deviation_bars table
     let expected_cols = [
-        "close_time_ms", "open_time_ms", "open", "high", "low", "close",
-        "buy_volume", "sell_volume", "individual_trade_count", "ofi", "trade_intensity",
+        "close_time_ms",
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "buy_volume",
+        "sell_volume",
+        "individual_trade_count",
+        "ofi",
+        "trade_intensity",
     ];
     let col_sql = "SELECT name FROM system.columns \
                    WHERE database = 'opendeviationbar_cache' AND table = 'open_deviation_bars' \
                    FORMAT TabSeparated";
     match query(col_sql).await {
         Ok(body) => {
-            let actual: Vec<&str> = body.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-            let missing: Vec<&str> = expected_cols.iter()
+            let actual: Vec<&str> = body
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect();
+            let missing: Vec<&str> = expected_cols
+                .iter()
                 .filter(|c| !actual.iter().any(|a| a == *c))
                 .copied()
                 .collect();
             if missing.is_empty() {
-                log::info!("[CH schema] all {}/{} expected columns present",
-                    expected_cols.len(), expected_cols.len());
+                log::info!(
+                    "[CH schema] all {}/{} expected columns present",
+                    expected_cols.len(),
+                    expected_cols.len()
+                );
             } else {
-                log::warn!("[CH schema] MISSING columns: {missing:?} — indicators may show no data");
+                log::warn!(
+                    "[CH schema] MISSING columns: {missing:?} — indicators may show no data"
+                );
             }
         }
         Err(e) => {
@@ -153,7 +172,12 @@ async fn validate_schema() {
                    ORDER BY close_time_ms DESC LIMIT 1 FORMAT TabSeparated";
     match query(ver_sql).await {
         Ok(body) => {
-            if let Some(version) = body.lines().next().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+            if let Some(version) = body
+                .lines()
+                .next()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+            {
                 log::info!("[CH schema] opendeviationbar version: {version}");
             }
         }
@@ -207,8 +231,11 @@ async fn query(sql: &str) -> Result<String, AdapterError> {
         .send()
         .await
         .map_err(|e| {
-            log::error!("[CH] reqwest failed: {e} (is_timeout={}, is_connect={}, url={url})",
-                e.is_timeout(), e.is_connect());
+            log::error!(
+                "[CH] reqwest failed: {e} (is_timeout={}, is_connect={}, url={url})",
+                e.is_timeout(),
+                e.is_connect()
+            );
             AdapterError::FetchError(e)
         })?;
 
@@ -282,7 +309,10 @@ pub async fn fetch_klines(
             ck.high as f32,
             ck.low as f32,
             ck.close as f32,
-            Volume::BuySell(Qty::from(ck.buy_volume as f32), Qty::from(ck.sell_volume as f32)),
+            Volume::BuySell(
+                Qty::from(ck.buy_volume as f32),
+                Qty::from(ck.sell_volume as f32),
+            ),
             min_tick,
         ));
     }
@@ -378,7 +408,10 @@ pub async fn fetch_klines_with_microstructure(
             ck.high as f32,
             ck.low as f32,
             ck.close as f32,
-            Volume::BuySell(Qty::from(ck.buy_volume as f32), Qty::from(ck.sell_volume as f32)),
+            Volume::BuySell(
+                Qty::from(ck.buy_volume as f32),
+                Qty::from(ck.sell_volume as f32),
+            ),
             min_tick,
         ));
         micro.push(parse_microstructure(&ck));
@@ -396,10 +429,7 @@ pub async fn fetch_klines_with_microstructure(
 /// Request a backfill by inserting into the backfill_requests table.
 /// Returns Ok(true) if the request was inserted, Ok(false) if a recent
 /// pending/running request already exists (dedup within 5 minutes).
-pub async fn request_backfill(
-    symbol: &str,
-    threshold_dbps: u32,
-) -> Result<bool, AdapterError> {
+pub async fn request_backfill(symbol: &str, threshold_dbps: u32) -> Result<bool, AdapterError> {
     // Check for recent pending/running request to avoid spam
     let check_sql = format!(
         "SELECT count() as cnt \
@@ -444,7 +474,8 @@ pub fn connect_kline_stream(
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
     log::info!(
         "[CH poll] connect_kline_stream STARTED: {} @{} dbps",
-        ticker_info.ticker, threshold_dbps
+        ticker_info.ticker,
+        threshold_dbps
     );
     connect::channel(16, async move |mut output| {
         let exchange = ticker_info.exchange();
@@ -468,18 +499,29 @@ pub fn connect_kline_stream(
             );
             match query(&sql).await {
                 Ok(body) => {
-                    let ts = body.lines()
+                    let ts = body
+                        .lines()
                         .find_map(|line| {
                             serde_json::from_str::<serde_json::Value>(line.trim())
                                 .ok()
                                 .and_then(|v| v["ts"].as_u64())
                         })
                         .unwrap_or(0);
-                    log::info!("[CH poll] init last_ts={} for {} @{}", ts, symbol, threshold_dbps);
+                    log::info!(
+                        "[CH poll] init last_ts={} for {} @{}",
+                        ts,
+                        symbol,
+                        threshold_dbps
+                    );
                     ts
                 }
                 Err(e) => {
-                    log::warn!("[CH poll] init query failed for {} @{}: {}", symbol, threshold_dbps, e);
+                    log::warn!(
+                        "[CH poll] init query failed for {} @{}: {}",
+                        symbol,
+                        threshold_dbps,
+                        e
+                    );
                     0
                 }
             }
@@ -524,7 +566,10 @@ pub fn connect_kline_stream(
                                 ck.high as f32,
                                 ck.low as f32,
                                 ck.close as f32,
-                                Volume::BuySell(Qty::from(ck.buy_volume as f32), Qty::from(ck.sell_volume as f32)),
+                                Volume::BuySell(
+                                    Qty::from(ck.buy_volume as f32),
+                                    Qty::from(ck.sell_volume as f32),
+                                ),
                                 ticker_info.min_ticksize,
                             );
                             let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
@@ -534,7 +579,10 @@ pub fn connect_kline_stream(
                     if count > 0 {
                         log::info!(
                             "[CH poll] {} @{}: {} new bars, last_ts={}",
-                            symbol, threshold_dbps, count, last_ts
+                            symbol,
+                            threshold_dbps,
+                            count,
+                            last_ts
                         );
                         // One-time warning if first polled bar lacks microstructure
                         if !logged_micro_warning {
@@ -548,14 +596,20 @@ pub fn connect_kline_stream(
                                 log::warn!(
                                     "[CH poll] {} @{}: bars missing microstructure \
                                      — check opendeviationbar-py feature toggles",
-                                    symbol, threshold_dbps
+                                    symbol,
+                                    threshold_dbps
                                 );
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    log::warn!("[CH poll] {} @{}: query error: {}", symbol, threshold_dbps, e);
+                    log::warn!(
+                        "[CH poll] {} @{}: query error: {}",
+                        symbol,
+                        threshold_dbps,
+                        e
+                    );
                 }
             }
         }

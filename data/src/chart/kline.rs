@@ -334,10 +334,18 @@ impl std::fmt::Display for ClusterKind {
 }
 
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-fn default_ofi_ema_period() -> usize { 20 }
-fn default_intensity_lookback() -> usize { 2000 }
-fn default_thermal_wicks() -> bool { true }
-fn default_show_sessions() -> bool { false }
+fn default_ofi_ema_period() -> usize {
+    20
+}
+fn default_intensity_lookback() -> usize {
+    2000
+}
+fn default_thermal_wicks() -> bool {
+    true
+}
+fn default_show_sessions() -> bool {
+    false
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {

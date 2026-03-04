@@ -7,13 +7,13 @@
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::chart::{Message, ViewState};
 
-use data::chart::kline::KlineDataPoint;
 use data::chart::PlotData;
+use data::chart::kline::KlineDataPoint;
 use exchange::unit::Price;
 use exchange::{Kline, Trade};
 
-use iced::widget::center;
 use iced::Color;
+use iced::widget::center;
 use std::ops::RangeInclusive;
 
 use zigzag::{BarInput, PivotKind, ZigZagConfig, ZigZagState};
@@ -45,8 +45,7 @@ pub struct ZigZagOverlayIndicator {
 impl ZigZagOverlayIndicator {
     pub fn new() -> Self {
         // Default: reversal_depth=3.0, epsilon=1.0, 250 dbps (0.25%)
-        let config = ZigZagConfig::new(3.0, 1.0, 250)
-            .expect("default ZigZag config is valid");
+        let config = ZigZagConfig::new(3.0, 1.0, 250).expect("default ZigZag config is valid");
         Self {
             state: ZigZagState::new(config),
             confirmed_pivots: Vec::new(),
@@ -66,8 +65,7 @@ impl ZigZagOverlayIndicator {
     /// Recreate the ZigZag state machine if the chart's bar threshold changed.
     fn reconfigure_if_needed(&mut self, dbps: u32) {
         if self.state.config().bar_threshold_dbps != dbps {
-            let config = ZigZagConfig::new(3.0, 1.0, dbps)
-                .expect("valid dbps from chart config");
+            let config = ZigZagConfig::new(3.0, 1.0, dbps).expect("valid dbps from chart config");
             self.state = ZigZagState::new(config);
             self.confirmed_pivots.clear();
             self.pending_pivot = None;
@@ -190,9 +188,8 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
             return;
         }
 
-        let storage_to_visual = |storage_idx: usize| -> usize {
-            total_len.saturating_sub(1 + storage_idx)
-        };
+        let storage_to_visual =
+            |storage_idx: usize| -> usize { total_len.saturating_sub(1 + storage_idx) };
 
         let pivot_xy = |pivot: &OverlayPivot| -> (f32, f32) {
             let visual_idx = storage_to_visual(pivot.storage_idx);

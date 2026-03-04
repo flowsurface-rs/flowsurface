@@ -271,7 +271,11 @@ impl Flowsurface {
             Message::WindowEvent(event) => match event {
                 window::Event::CloseRequested(window) => {
                     // Widget window close.
-                    if self.widget.as_ref().is_some_and(|c| c.window_id() == window) {
+                    if self
+                        .widget
+                        .as_ref()
+                        .is_some_and(|c| c.window_id() == window)
+                    {
                         let ctrl = self.widget.take().unwrap();
                         return ctrl.close();
                     }
@@ -363,7 +367,13 @@ impl Flowsurface {
                             data,
                             stream,
                         }) => dashboard
-                            .distribute_fetched_data(main_window.id, layout_id, pane_id, data, stream)
+                            .distribute_fetched_data(
+                                main_window.id,
+                                layout_id,
+                                pane_id,
+                                data,
+                                stream,
+                            )
                             .map(move |msg| Message::Dashboard {
                                 layout_id: Some(layout_id),
                                 event: msg,
@@ -739,11 +749,7 @@ impl Flowsurface {
                 base.into()
             }
         } else if self.widget.as_ref().is_some_and(|c| c.window_id() == id) {
-            self.widget
-                .as_ref()
-                .unwrap()
-                .view()
-                .map(Message::Widget)
+            self.widget.as_ref().unwrap().view().map(Message::Widget)
         } else {
             container(
                 dashboard
@@ -1255,9 +1261,15 @@ impl Flowsurface {
 
                 let app_menu: Element<'_, Message> = container(
                     column![
-                        button(text(widget_label)).width(iced::Length::Fill).on_press(Message::ToggleWidget),
-                        button(text("Restart")).width(iced::Length::Fill).on_press(Message::RequestRestart),
-                        button(text("Quit")).width(iced::Length::Fill).on_press(Message::RequestQuit),
+                        button(text(widget_label))
+                            .width(iced::Length::Fill)
+                            .on_press(Message::ToggleWidget),
+                        button(text("Restart"))
+                            .width(iced::Length::Fill)
+                            .on_press(Message::RequestRestart),
+                        button(text("Quit"))
+                            .width(iced::Length::Fill)
+                            .on_press(Message::RequestQuit),
                     ]
                     .spacing(4),
                 )

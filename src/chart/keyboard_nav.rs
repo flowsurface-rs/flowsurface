@@ -83,7 +83,11 @@ fn pan(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
     // Shift applies to both Named arrow keys (via modifiers flag) and vim keys
     // (implicitly — pressing H means Shift is already held, so modifiers.shift()==true).
     // Either way, `step` is BARS_LARGE when Shift is held, BARS_SMALL otherwise.
-    let bars = if modifiers.shift() { BARS_LARGE } else { BARS_SMALL };
+    let bars = if modifiers.shift() {
+        BARS_LARGE
+    } else {
+        BARS_SMALL
+    };
     let step = bars * state.cell_width / state.scaling;
 
     let is_fixed_scale = state.layout.autoscale.is_none();
@@ -179,10 +183,18 @@ fn zoom(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
 
     let delta = match key.as_ref() {
         keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-            if modifiers.shift() { ZOOM_STEP_LARGE } else { ZOOM_STEP }
+            if modifiers.shift() {
+                ZOOM_STEP_LARGE
+            } else {
+                ZOOM_STEP
+            }
         }
         keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
-            if modifiers.shift() { -ZOOM_STEP_LARGE } else { -ZOOM_STEP }
+            if modifiers.shift() {
+                -ZOOM_STEP_LARGE
+            } else {
+                -ZOOM_STEP
+            }
         }
         keyboard::Key::Character(c) => match c {
             "k" => ZOOM_STEP,

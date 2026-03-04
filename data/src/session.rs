@@ -1,6 +1,6 @@
 // Historical trading session boundary computation.
 // Computes NY/London/Tokyo session open/close timestamps using jiff for DST-aware timezone handling.
-use jiff::{civil, tz::TimeZone, Timestamp};
+use jiff::{Timestamp, civil, tz::TimeZone};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradingSession {
@@ -105,7 +105,9 @@ pub fn compute_boundaries(start_ms: u64, end_ms: u64) -> Vec<SessionBoundary> {
             Err(e) => {
                 log::warn!(
                     "[SESSION] jiff timezone {} not found: {} — skipping {} session",
-                    session.iana_zone(), e, session.label()
+                    session.iana_zone(),
+                    e,
+                    session.label()
                 );
                 continue;
             }
@@ -113,10 +115,9 @@ pub fn compute_boundaries(start_ms: u64, end_ms: u64) -> Vec<SessionBoundary> {
 
         // Pad by 2 days to handle timezone offsets (e.g., Tokyo +9 means the UTC
         // representation of a Tokyo morning session is the previous UTC day).
-        let start_ts = Timestamp::from_millisecond(start_ms as i64)
-            .unwrap_or(Timestamp::UNIX_EPOCH);
-        let end_ts = Timestamp::from_millisecond(end_ms as i64)
-            .unwrap_or(Timestamp::UNIX_EPOCH);
+        let start_ts =
+            Timestamp::from_millisecond(start_ms as i64).unwrap_or(Timestamp::UNIX_EPOCH);
+        let end_ts = Timestamp::from_millisecond(end_ms as i64).unwrap_or(Timestamp::UNIX_EPOCH);
 
         let start_date = start_ts.to_zoned(tz.clone()).date();
         let end_date = end_ts.to_zoned(tz.clone()).date();
@@ -132,8 +133,7 @@ pub fn compute_boundaries(start_ms: u64, end_ms: u64) -> Vec<SessionBoundary> {
         while date <= last_date {
             // Skip weekends (Saturday=6, Sunday=7 in jiff)
             let weekday = date.weekday();
-            if weekday == jiff::civil::Weekday::Saturday
-                || weekday == jiff::civil::Weekday::Sunday
+            if weekday == jiff::civil::Weekday::Saturday || weekday == jiff::civil::Weekday::Sunday
             {
                 skipped_weekends += 1;
                 date = date.tomorrow().unwrap_or(last_date);
@@ -142,11 +142,14 @@ pub fn compute_boundaries(start_ms: u64, end_ms: u64) -> Vec<SessionBoundary> {
 
             // Open boundary
             if let Some(ms) = civil_to_utc_ms(date, open_h, open_m, &tz)
-                && ms >= start_ms && ms <= end_ms
+                && ms >= start_ms
+                && ms <= end_ms
             {
                 log::trace!(
                     "[SESSION] {} OPEN  {date} {:02}:{:02} → UTC ms={ms}",
-                    session.label(), open_h, open_m,
+                    session.label(),
+                    open_h,
+                    open_m,
                 );
                 boundaries.push(SessionBoundary {
                     session,
@@ -158,11 +161,14 @@ pub fn compute_boundaries(start_ms: u64, end_ms: u64) -> Vec<SessionBoundary> {
 
             // Close boundary
             if let Some(ms) = civil_to_utc_ms(date, close_h, close_m, &tz)
-                && ms >= start_ms && ms <= end_ms
+                && ms >= start_ms
+                && ms <= end_ms
             {
                 log::trace!(
                     "[SESSION] {} CLOSE {date} {:02}:{:02} → UTC ms={ms}",
-                    session.label(), close_h, close_m,
+                    session.label(),
+                    close_h,
+                    close_m,
                 );
                 boundaries.push(SessionBoundary {
                     session,
@@ -213,19 +219,19 @@ mod tests {
     // ========================================================================
 
     // --- 2026-03-02 (Monday, US EST / UK GMT / JST) ---
-    const NY_OPEN_20260302_MS: u64  = 1772461800_000; // 09:30 EST = 14:30 UTC
+    const NY_OPEN_20260302_MS: u64 = 1772461800_000; // 09:30 EST = 14:30 UTC
     const NY_CLOSE_20260302_MS: u64 = 1772485200_000; // 16:00 EST = 21:00 UTC
-    const LDN_OPEN_20260302_MS: u64  = 1772438400_000; // 08:00 GMT = 08:00 UTC
+    const LDN_OPEN_20260302_MS: u64 = 1772438400_000; // 08:00 GMT = 08:00 UTC
     const LDN_CLOSE_20260302_MS: u64 = 1772469000_000; // 16:30 GMT = 16:30 UTC
-    const TKY_OPEN_20260302_MS: u64  = 1772409600_000; // 09:00 JST = 00:00 UTC
+    const TKY_OPEN_20260302_MS: u64 = 1772409600_000; // 09:00 JST = 00:00 UTC
     const TKY_CLOSE_20260302_MS: u64 = 1772431200_000; // 15:00 JST = 06:00 UTC
 
     // --- 2026-03-06 (Friday, last EST day before spring forward) ---
-    const NY_OPEN_20260306_MS: u64  = 1772807400_000; // 09:30 EST = 14:30 UTC
+    const NY_OPEN_20260306_MS: u64 = 1772807400_000; // 09:30 EST = 14:30 UTC
     const NY_CLOSE_20260306_MS: u64 = 1772830800_000; // 16:00 EST = 21:00 UTC
 
     // --- 2026-03-09 (Monday, first EDT day after spring forward 2026-03-08) ---
-    const NY_OPEN_20260309_MS: u64  = 1773063000_000; // 09:30 EDT = 13:30 UTC
+    const NY_OPEN_20260309_MS: u64 = 1773063000_000; // 09:30 EDT = 13:30 UTC
     const NY_CLOSE_20260309_MS: u64 = 1773086400_000; // 16:00 EDT = 20:00 UTC
 
     // --- 2026-03-30 (Monday, first BST day in UK, spring forward 2026-03-29) ---
@@ -298,16 +304,20 @@ mod tests {
         // Range that covers the entire Monday 2026-03-02 in UTC
         // Tokyo opens at 00:00 UTC, NY closes at 21:00 UTC
         let start = TKY_OPEN_20260302_MS - 1000; // just before Tokyo open
-        let end = NY_CLOSE_20260302_MS + 1000;     // just after NY close
+        let end = NY_CLOSE_20260302_MS + 1000; // just after NY close
 
         let boundaries = compute_boundaries(start, end);
 
         // Exactly 6 boundaries: 3 sessions × (open + close)
         assert_eq!(
-            boundaries.len(), 6,
+            boundaries.len(),
+            6,
             "expected 6 boundaries for single weekday, got {}: {:?}",
             boundaries.len(),
-            boundaries.iter().map(|b| (b.session.label(), format!("{}", b.kind), b.timestamp_ms)).collect::<Vec<_>>()
+            boundaries
+                .iter()
+                .map(|b| (b.session.label(), format!("{}", b.kind), b.timestamp_ms))
+                .collect::<Vec<_>>()
         );
 
         // Bit-exact verification against oracle
@@ -344,21 +354,30 @@ mod tests {
 
         // Verify sorted order invariant (chronological)
         for w in boundaries.windows(2) {
-            assert!(w[0].timestamp_ms <= w[1].timestamp_ms, "not sorted: {} > {}", w[0].timestamp_ms, w[1].timestamp_ms);
+            assert!(
+                w[0].timestamp_ms <= w[1].timestamp_ms,
+                "not sorted: {} > {}",
+                w[0].timestamp_ms,
+                w[1].timestamp_ms
+            );
         }
 
         // Verify chronological ordering matches known UTC sequence:
         // TKY open (00:00) < TKY close (06:00) < LDN open (08:00) < NY open (14:30)
         // < LDN close (16:30) < NY close (21:00)
         let ts: Vec<u64> = boundaries.iter().map(|b| b.timestamp_ms).collect();
-        assert_eq!(ts, vec![
-            TKY_OPEN_20260302_MS,
-            TKY_CLOSE_20260302_MS,
-            LDN_OPEN_20260302_MS,
-            NY_OPEN_20260302_MS,
-            LDN_CLOSE_20260302_MS,
-            NY_CLOSE_20260302_MS,
-        ], "chronological order mismatch");
+        assert_eq!(
+            ts,
+            vec![
+                TKY_OPEN_20260302_MS,
+                TKY_CLOSE_20260302_MS,
+                LDN_OPEN_20260302_MS,
+                NY_OPEN_20260302_MS,
+                LDN_CLOSE_20260302_MS,
+                NY_CLOSE_20260302_MS,
+            ],
+            "chronological order mismatch"
+        );
     }
 
     // ========================================================================
@@ -380,15 +399,27 @@ mod tests {
             .collect();
 
         // Friday (EST): open=14:30 UTC, close=21:00 UTC
-        assert_eq!(ny_bounds[0].timestamp_ms, NY_OPEN_20260306_MS, "Fri NY OPEN (EST)");
+        assert_eq!(
+            ny_bounds[0].timestamp_ms, NY_OPEN_20260306_MS,
+            "Fri NY OPEN (EST)"
+        );
         assert_eq!(ny_bounds[0].kind, BoundaryKind::Open);
-        assert_eq!(ny_bounds[1].timestamp_ms, NY_CLOSE_20260306_MS, "Fri NY CLOSE (EST)");
+        assert_eq!(
+            ny_bounds[1].timestamp_ms, NY_CLOSE_20260306_MS,
+            "Fri NY CLOSE (EST)"
+        );
         assert_eq!(ny_bounds[1].kind, BoundaryKind::Close);
 
         // Monday (EDT): open=13:30 UTC, close=20:00 UTC (1 hour earlier!)
-        assert_eq!(ny_bounds[2].timestamp_ms, NY_OPEN_20260309_MS, "Mon NY OPEN (EDT)");
+        assert_eq!(
+            ny_bounds[2].timestamp_ms, NY_OPEN_20260309_MS,
+            "Mon NY OPEN (EDT)"
+        );
         assert_eq!(ny_bounds[2].kind, BoundaryKind::Open);
-        assert_eq!(ny_bounds[3].timestamp_ms, NY_CLOSE_20260309_MS, "Mon NY CLOSE (EDT)");
+        assert_eq!(
+            ny_bounds[3].timestamp_ms, NY_CLOSE_20260309_MS,
+            "Mon NY CLOSE (EDT)"
+        );
         assert_eq!(ny_bounds[3].kind, BoundaryKind::Close);
 
         // DST shift: Monday open is 1 hour earlier in UTC than Friday open
@@ -408,7 +439,7 @@ mod tests {
         // 2026-03-07 = Saturday, 2026-03-08 = Sunday
         // Range: Saturday 00:00 UTC to Sunday 23:59 UTC
         let sat_start = 1772870400_000u64; // 2026-03-07 00:00 UTC
-        let sun_end = 1772956799_000u64;   // 2026-03-08 23:59:59 UTC
+        let sun_end = 1772956799_000u64; // 2026-03-08 23:59:59 UTC
 
         let boundaries = compute_boundaries(sat_start, sun_end);
 
@@ -417,7 +448,10 @@ mod tests {
             boundaries.is_empty(),
             "expected no boundaries on weekend, got {}: {:?}",
             boundaries.len(),
-            boundaries.iter().map(|b| (b.session.label(), format!("{}", b.kind), b.timestamp_ms)).collect::<Vec<_>>()
+            boundaries
+                .iter()
+                .map(|b| (b.session.label(), format!("{}", b.kind), b.timestamp_ms))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -443,7 +477,10 @@ mod tests {
         // No session is open/closing at this moment
         let base = 1772416800_000u64; // 2026-03-02 02:00:00 UTC
         let b = compute_boundaries(base, base + 1000);
-        assert!(b.is_empty(), "1-second window at 02:00 UTC should have no boundaries");
+        assert!(
+            b.is_empty(),
+            "1-second window at 02:00 UTC should have no boundaries"
+        );
     }
 
     // ========================================================================
@@ -455,14 +492,23 @@ mod tests {
         // Mon 2026-03-02 to Fri 2026-03-06, covering all sessions
         // Use a wide range to capture everything
         let start = TKY_OPEN_20260302_MS - 1; // just before Mon Tokyo open
-        let end = NY_CLOSE_20260306_MS + 1;     // just after Fri NY close
+        let end = NY_CLOSE_20260306_MS + 1; // just after Fri NY close
 
         let boundaries = compute_boundaries(start, end);
 
         // 5 weekdays × 3 sessions × 2 (open+close) = 30 boundaries
-        let ny_count = boundaries.iter().filter(|b| b.session == TradingSession::NewYork).count();
-        let ldn_count = boundaries.iter().filter(|b| b.session == TradingSession::London).count();
-        let tky_count = boundaries.iter().filter(|b| b.session == TradingSession::Tokyo).count();
+        let ny_count = boundaries
+            .iter()
+            .filter(|b| b.session == TradingSession::NewYork)
+            .count();
+        let ldn_count = boundaries
+            .iter()
+            .filter(|b| b.session == TradingSession::London)
+            .count();
+        let tky_count = boundaries
+            .iter()
+            .filter(|b| b.session == TradingSession::Tokyo)
+            .count();
 
         assert_eq!(ny_count, 10, "NY: 5 days × 2 = 10");
         assert_eq!(ldn_count, 10, "LDN: 5 days × 2 = 10");
@@ -471,18 +517,31 @@ mod tests {
 
         // Every open must be paired with a close for the same session
         for session in TradingSession::ALL {
-            let opens: Vec<u64> = boundaries.iter()
+            let opens: Vec<u64> = boundaries
+                .iter()
                 .filter(|b| b.session == session && b.kind == BoundaryKind::Open)
                 .map(|b| b.timestamp_ms)
                 .collect();
-            let closes: Vec<u64> = boundaries.iter()
+            let closes: Vec<u64> = boundaries
+                .iter()
                 .filter(|b| b.session == session && b.kind == BoundaryKind::Close)
                 .map(|b| b.timestamp_ms)
                 .collect();
-            assert_eq!(opens.len(), closes.len(), "{}: open/close count mismatch", session.label());
+            assert_eq!(
+                opens.len(),
+                closes.len(),
+                "{}: open/close count mismatch",
+                session.label()
+            );
             // Each open must precede its corresponding close
             for (o, c) in opens.iter().zip(closes.iter()) {
-                assert!(o < c, "{}: open {} not before close {}", session.label(), o, c);
+                assert!(
+                    o < c,
+                    "{}: open {} not before close {}",
+                    session.label(),
+                    o,
+                    c
+                );
             }
         }
     }

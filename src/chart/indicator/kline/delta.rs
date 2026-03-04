@@ -20,7 +20,8 @@ use std::ops::RangeInclusive;
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 
 fn kline_volume_delta(volume: &Volume) -> f32 {
-    volume.buy_sell()
+    volume
+        .buy_sell()
         .map(|(b, s)| f32::from(b) - f32::from(s))
         .unwrap_or(0.0)
 }
@@ -89,7 +90,8 @@ impl KlineIndicatorImpl for DeltaIndicator {
                     .into_iter()
                     // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Volume newtype)
                     .map(|(k, volume)| {
-                        let (buy, sell) = volume.buy_sell()
+                        let (buy, sell) = volume
+                            .buy_sell()
                             .map(|(b, s)| (f32::from(b), f32::from(s)))
                             .unwrap_or((0.0, 0.0));
                         (k, (buy - sell, buy >= sell))

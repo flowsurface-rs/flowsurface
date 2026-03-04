@@ -89,12 +89,10 @@ impl OFIIndicator {
             },
         ];
 
-        let plot = BarWithEmaOverlay::new(value_fn, bar_kind, ema_lines)
-            .with_tooltip(tooltip);
+        let plot = BarWithEmaOverlay::new(value_fn, bar_kind, ema_lines).with_tooltip(tooltip);
 
         indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
     }
-
 }
 
 impl KlineIndicatorImpl for OFIIndicator {
@@ -132,12 +130,15 @@ impl KlineIndicatorImpl for OFIIndicator {
                             let bullish = dp.kline.close >= dp.kline.open;
                             let g = self.green_ema.update(m.ofi, bullish);
                             let r = self.red_ema.update(m.ofi, !bullish);
-                            (idx as u64, OfiPoint {
-                                ofi: m.ofi,
-                                bullish,
-                                green_ema: g,
-                                red_ema: r,
-                            })
+                            (
+                                idx as u64,
+                                OfiPoint {
+                                    ofi: m.ofi,
+                                    bullish,
+                                    green_ema: g,
+                                    red_ema: r,
+                                },
+                            )
                         })
                     })
                     .collect();
@@ -163,12 +164,15 @@ impl KlineIndicatorImpl for OFIIndicator {
                         let bullish = dp.kline.close >= dp.kline.open;
                         let g = self.green_ema.update(m.ofi, bullish);
                         let r = self.red_ema.update(m.ofi, !bullish);
-                        self.data.insert(idx as u64, OfiPoint {
-                            ofi: m.ofi,
-                            bullish,
-                            green_ema: g,
-                            red_ema: r,
-                        });
+                        self.data.insert(
+                            idx as u64,
+                            OfiPoint {
+                                ofi: m.ofi,
+                                bullish,
+                                green_ema: g,
+                                red_ema: r,
+                            },
+                        );
                     }
                 }
             }

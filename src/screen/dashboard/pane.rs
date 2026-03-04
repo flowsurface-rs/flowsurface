@@ -30,7 +30,9 @@ use data::{
 use enum_map::EnumMap;
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{Exchange, MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
+    adapter::{
+        Exchange, MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize,
+    },
     fetcher::FetchRequests,
     health::ConnectionHealth,
 };
@@ -2046,9 +2048,7 @@ impl Content {
             },
             ContentKind::RangeBarChart => Content::Kline {
                 chart: None,
-                indicators: vec![
-                    KlineIndicator::TradeIntensity,
-                ],
+                indicators: vec![KlineIndicator::TradeIntensity],
                 kind: data::chart::KlineChartKind::RangeBar,
                 layout: ViewConfig {
                     splits: vec![],

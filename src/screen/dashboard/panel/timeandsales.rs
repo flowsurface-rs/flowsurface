@@ -2,8 +2,8 @@
 // GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/89
 use super::Message;
 use crate::style;
-use data::config::theme::{darken, lighten};
 use data::UserTimezone;
+use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
 use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
@@ -130,7 +130,9 @@ impl TimeAndSales {
                 (trade_time_ms % 1000) as u32 * 1_000_000,
             ) {
                 let trade_display = TradeDisplay {
-                    time_str: trade_time.format(self.config.time_format.format_str()).to_string(),
+                    time_str: trade_time
+                        .format(self.config.time_format.format_str())
+                        .to_string(),
                     price: trade.price,
                     qty: trade.qty.to_f32_lossy(),
                     is_sell: trade.is_sell,
@@ -532,7 +534,9 @@ impl canvas::Program<Message> for TimeAndSales {
                 );
 
                 let trade_time = create_text(
-                    self.config.time_format.format_timestamp(entry.ts_ms, self.timezone),
+                    self.config
+                        .time_format
+                        .format_timestamp(entry.ts_ms, self.timezone),
                     Point {
                         x: row_width * 0.1,
                         y: y_position,

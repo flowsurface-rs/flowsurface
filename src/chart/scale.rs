@@ -337,13 +337,7 @@ impl AxisLabelsX<'_> {
                     );
 
                     if let Some(content) = text_content {
-                        return Some(AxisLabel::new_x(
-                            snap_x,
-                            content,
-                            bounds,
-                            true,
-                            palette,
-                        ));
+                        return Some(AxisLabel::new_x(snap_x, content, bounds, true, palette));
                     }
                 }
             }
@@ -563,12 +557,14 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                                     label_span_ms,
                                 )
                             } else {
-                                self.timezone.format_with_kind(
-                                    (timestamp / 1000) as i64,
-                                    TimeLabelKind::Axis {
-                                        timeframe: exchange::Timeframe::MS100,
-                                    },
-                                ).unwrap_or_default()
+                                self.timezone
+                                    .format_with_kind(
+                                        (timestamp / 1000) as i64,
+                                        TimeLabelKind::Axis {
+                                            timeframe: exchange::Timeframe::MS100,
+                                        },
+                                    )
+                                    .unwrap_or_default()
                             };
                             labels
                                 .push(AxisLabel::new_x(snap_x, label_text, bounds, false, palette));
@@ -783,26 +779,21 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                         }
                     }
                     Basis::Tick(_) => None,
-                    Basis::RangeBar(_) => {
-                        self.last_trade_time.and_then(|ms| {
-                            let secs = (ms / 1000) as i64;
-                            let millis = (ms % 1000) as u32;
-                            let u = Utc.timestamp_opt(secs, millis * 1_000_000).single()?;
-                            Some(LabelContent {
-                                content: format!(
-                                    "{}.{:03} UTC",
-                                    u.format("%H:%M:%S"), millis,
-                                ),
-                                background_color: Some(palette.background.strong.color),
-                                text_color: if palette.is_dark {
-                                    Color::BLACK.scale_alpha(0.8)
-                                } else {
-                                    Color::WHITE.scale_alpha(0.8)
-                                },
-                                text_size: 11.0,
-                            })
+                    Basis::RangeBar(_) => self.last_trade_time.and_then(|ms| {
+                        let secs = (ms / 1000) as i64;
+                        let millis = (ms % 1000) as u32;
+                        let u = Utc.timestamp_opt(secs, millis * 1_000_000).single()?;
+                        Some(LabelContent {
+                            content: format!("{}.{:03} UTC", u.format("%H:%M:%S"), millis,),
+                            background_color: Some(palette.background.strong.color),
+                            text_color: if palette.is_dark {
+                                Color::BLACK.scale_alpha(0.8)
+                            } else {
+                                Color::WHITE.scale_alpha(0.8)
+                            },
+                            text_size: 11.0,
                         })
-                    }
+                    }),
                 };
 
                 let (price, color) = label.get_with_color(palette);

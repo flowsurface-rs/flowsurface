@@ -1,8 +1,8 @@
 // FILE-SIZE-OK: upstream file, splitting out of scope for this fork
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
 use super::{
-    Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, ViewState,
-    indicator, request_fetch, scale::linear::PriceInfoLabel,
+    Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, ViewState, indicator,
+    request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
@@ -18,7 +18,9 @@ use data::util::{abbr_large_numbers, count_decimals};
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
-    adapter::clickhouse::{OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, trade_to_agg_trade},
+    adapter::clickhouse::{
+        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, trade_to_agg_trade,
+    },
     fetcher::{FetchRange, RequestHandler},
 };
 
@@ -435,11 +437,13 @@ impl KlineChart {
                 // appears immediately, before any WebSocket trades arrive.
                 // Color = last bar's close vs previous bar's close (market direction).
                 if let Some(last_kline) = klines_raw.last() {
-                    let prev_close = klines_raw.iter().rev().nth(1)
+                    let prev_close = klines_raw
+                        .iter()
+                        .rev()
+                        .nth(1)
                         .map(|k| k.close)
                         .unwrap_or(last_kline.close);
-                    chart.last_price =
-                        Some(PriceInfoLabel::new(last_kline.close, prev_close));
+                    chart.last_price = Some(PriceInfoLabel::new(last_kline.close, prev_close));
                 }
 
                 let data_source = PlotData::TickBased(tick_aggr);
@@ -458,14 +462,16 @@ impl KlineChart {
                 // Fix stale splits: saved states may have more splits than current
                 // subplot panels (e.g. TradeIntensityHeatmap was reclassified from
                 // subplot → candle colouring). Recalculate only when count mismatches.
-                let subplot_count = indicators.iter()
+                let subplot_count = indicators
+                    .iter()
                     .filter(|(k, v)| v.is_some() && k.has_subplot())
                     .count();
                 if let Some(&main_split) = chart.layout.splits.first()
-                    && chart.layout.splits.len() != subplot_count {
-                        chart.layout.splits =
-                            data::util::calc_panel_splits(main_split, subplot_count, None);
-                    }
+                    && chart.layout.splits.len() != subplot_count
+                {
+                    chart.layout.splits =
+                        data::util::calc_panel_splits(main_split, subplot_count, None);
+                }
 
                 KlineChart {
                     chart,
@@ -564,7 +570,10 @@ impl KlineChart {
         // appears immediately, before any WebSocket trades arrive.
         // Color = last bar's close vs previous bar's close (market direction).
         if let Some(last_kline) = klines_raw.last() {
-            let prev_close = klines_raw.iter().rev().nth(1)
+            let prev_close = klines_raw
+                .iter()
+                .rev()
+                .nth(1)
                 .map(|k| k.close)
                 .unwrap_or(last_kline.close);
             chart.last_price = Some(PriceInfoLabel::new(last_kline.close, prev_close));
@@ -584,14 +593,15 @@ impl KlineChart {
             .ok();
 
         // Fix stale splits (same as in new() RangeBar path above).
-        let subplot_count = indicators.iter()
+        let subplot_count = indicators
+            .iter()
             .filter(|(k, v)| v.is_some() && k.has_subplot())
             .count();
         if let Some(&main_split) = chart.layout.splits.first()
-            && chart.layout.splits.len() != subplot_count {
-                chart.layout.splits =
-                    data::util::calc_panel_splits(main_split, subplot_count, None);
-            }
+            && chart.layout.splits.len() != subplot_count
+        {
+            chart.layout.splits = data::util::calc_panel_splits(main_split, subplot_count, None);
+        }
 
         KlineChart {
             chart,
@@ -633,9 +643,18 @@ impl KlineChart {
                     // Get previous bar's close for color direction.
                     // If this kline replaces the last bar (same timestamp), use second-to-last.
                     // If this kline appends (new bar), use the current last bar.
-                    let prev_close = if tick_aggr.datapoints.last().is_some_and(|dp| dp.kline.time == kline.time) {
+                    let prev_close = if tick_aggr
+                        .datapoints
+                        .last()
+                        .is_some_and(|dp| dp.kline.time == kline.time)
+                    {
                         // Replace case: second-to-last bar
-                        tick_aggr.datapoints.iter().rev().nth(1).map(|dp| dp.kline.close)
+                        tick_aggr
+                            .datapoints
+                            .iter()
+                            .rev()
+                            .nth(1)
+                            .map(|dp| dp.kline.close)
                     } else {
                         // Append case: current last bar
                         tick_aggr.datapoints.last().map(|dp| dp.kline.close)
@@ -651,7 +670,9 @@ impl KlineChart {
                         .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
                     // Check forming bar existence before taking &mut self via mut_state().
-                    let has_forming = self.odb_processor.as_ref()
+                    let has_forming = self
+                        .odb_processor
+                        .as_ref()
                         .and_then(|p| p.get_incomplete_bar())
                         .is_some();
 
@@ -666,8 +687,7 @@ impl KlineChart {
                     // Once live trades arrive, insert_trades_buffer() takes over.
                     if !has_forming {
                         let reference = prev_close.unwrap_or(kline.close);
-                        chart.last_price =
-                            Some(PriceInfoLabel::new(kline.close, reference));
+                        chart.last_price = Some(PriceInfoLabel::new(kline.close, reference));
                     }
                 }
             }
@@ -976,8 +996,11 @@ impl KlineChart {
             self.indicators[KlineIndicator::OFI] = Some(new_indi);
         }
         if self.indicators[KlineIndicator::OFICumulativeEma].is_some() {
-            let mut new_indi: Box<dyn KlineIndicatorImpl> =
-                Box::new(indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(period));
+            let mut new_indi: Box<dyn KlineIndicatorImpl> = Box::new(
+                indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
+                    period,
+                ),
+            );
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::OFICumulativeEma] = Some(new_indi);
         }
@@ -1066,7 +1089,8 @@ impl KlineChart {
                                     let open = forming.open.to_f64();
                                     let high_excursion = forming.high.to_f64() - open;
                                     let low_excursion = open - forming.low.to_f64();
-                                    let threshold_pct = processor.threshold_decimal_bps() as f64 / 100_000.0;
+                                    let threshold_pct =
+                                        processor.threshold_decimal_bps() as f64 / 100_000.0;
                                     let expected_delta = open * threshold_pct;
                                     log::info!(
                                         "[RBP]   dbps={} delta={:.2} up={:.2} dn={:.2} breach={}",
@@ -1074,7 +1098,8 @@ impl KlineChart {
                                         expected_delta,
                                         high_excursion,
                                         low_excursion,
-                                        high_excursion >= expected_delta || low_excursion >= expected_delta,
+                                        high_excursion >= expected_delta
+                                            || low_excursion >= expected_delta,
                                     );
                                 }
                             }
@@ -1092,7 +1117,8 @@ impl KlineChart {
                                     );
                                     let kline = odb_to_kline(&completed, min_tick);
                                     let micro = odb_to_microstructure(&completed);
-                                    let last_time = tick_aggr.datapoints.last().map(|dp| dp.kline.time);
+                                    let last_time =
+                                        tick_aggr.datapoints.last().map(|dp| dp.kline.time);
                                     log::info!(
                                         "[RBP]   kline.time={} last_dp_time={:?} action={}",
                                         kline.time,
@@ -1129,12 +1155,11 @@ impl KlineChart {
                         if let Some(last_trade) = trades_buffer.last() {
                             self.chart.last_trade_time = Some(last_trade.time);
                         }
-                        let prev_close = tick_aggr
-                            .datapoints
-                            .last()
-                            .map(|dp| dp.kline.close);
+                        let prev_close = tick_aggr.datapoints.last().map(|dp| dp.kline.close);
                         if let Some(forming) = processor.get_incomplete_bar() {
-                            let close = Price { units: forming.close.0 };
+                            let close = Price {
+                                units: forming.close.0,
+                            };
                             let reference = prev_close.unwrap_or(close);
                             self.chart.last_price = Some(PriceInfoLabel::new(close, reference));
                         } else if let Some(last_trade) = trades_buffer.last() {
@@ -1147,13 +1172,18 @@ impl KlineChart {
                             self.range_bar_completed_count += new_bars;
                             log::info!(
                                 "[RBP] batch: {} new bars, total_completed={}",
-                                new_bars, self.range_bar_completed_count,
+                                new_bars,
+                                self.range_bar_completed_count,
                             );
                             self.indicators
                                 .values_mut()
                                 .filter_map(Option::as_mut)
                                 .for_each(|indi| {
-                                    indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
+                                    indi.on_insert_trades(
+                                        trades_buffer,
+                                        old_dp_len,
+                                        &self.data_source,
+                                    )
                                 });
                         }
                     } else {
@@ -1240,9 +1270,7 @@ impl KlineChart {
                     if let PlotData::TickBased(ref mut tick_aggr) = self.data_source {
                         let gap_start = first_trade.time;
                         let before = tick_aggr.datapoints.len();
-                        tick_aggr
-                            .datapoints
-                            .retain(|dp| dp.kline.time <= gap_start);
+                        tick_aggr.datapoints.retain(|dp| dp.kline.time <= gap_start);
                         let removed = before - tick_aggr.datapoints.len();
                         log::info!(
                             "[gap-fill] reset: removed {removed} WS-added bars, \
@@ -1254,12 +1282,9 @@ impl KlineChart {
 
                     // Recreate the processor with a clean forming-bar state.
                     if let Basis::RangeBar(threshold_dbps) = self.chart.basis {
-                        self.odb_processor =
-                            OpenDeviationBarProcessor::new(threshold_dbps)
-                                .map_err(|e| {
-                                    log::warn!("failed to recreate RBP: {e}")
-                                })
-                                .ok();
+                        self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
+                            .map_err(|e| log::warn!("failed to recreate RBP: {e}"))
+                            .ok();
                         self.next_agg_id = 0;
                     }
 
@@ -1503,9 +1528,8 @@ impl KlineChart {
                         && chart.layout.include_forming
                     {
                         self.odb_processor.as_ref().and_then(|p| {
-                            p.get_incomplete_bar().map(|b| {
-                                (b.low.to_f64() as f32, b.high.to_f64() as f32)
-                            })
+                            p.get_incomplete_bar()
+                                .map(|b| (b.low.to_f64() as f32, b.high.to_f64() as f32))
                         })
                     } else {
                         None
@@ -1561,7 +1585,9 @@ impl KlineChart {
 
     pub fn toggle_indicator(&mut self, indicator: KlineIndicator) {
         // Count only panel indicators (TradeIntensityHeatmap colours candles, not a panel).
-        let prev_panel_count = self.indicators.iter()
+        let prev_panel_count = self
+            .indicators
+            .iter()
             .filter(|(k, v)| v.is_some() && k.has_subplot())
             .count();
 
@@ -1574,7 +1600,9 @@ impl KlineChart {
         }
 
         if let Some(main_split) = self.chart.layout.splits.first() {
-            let current_panel_count = self.indicators.iter()
+            let current_panel_count = self
+                .indicators
+                .iter()
                 .filter(|(k, v)| v.is_some() && k.has_subplot())
                 .count();
             self.chart.layout.splits = data::util::calc_panel_splits(
@@ -1747,7 +1775,11 @@ impl canvas::Program<Message> for KlineChart {
                     // Range bars represent continuous price action — use tighter
                     // spacing (95%) so bars visually connect. Candles keep 80%
                     // for temporal separation between time periods.
-                    let candle_fill = if chart.basis.is_range_bar() { 0.95 } else { 0.8 };
+                    let candle_fill = if chart.basis.is_range_bar() {
+                        0.95
+                    } else {
+                        0.8
+                    };
                     let candle_width = chart.cell_width * candle_fill;
                     // Look up heatmap indicator once for thermal candle body colouring.
                     let heatmap_indi =
@@ -1792,53 +1824,42 @@ impl canvas::Program<Message> for KlineChart {
                     // Semi-transparent to signal it is still accumulating.
                     if chart.basis.is_range_bar()
                         && let Some(ref processor) = self.odb_processor
-                            && let Some(forming) = processor.get_incomplete_bar() {
-                                let x_forming = chart.cell_width;
-                                let open_f32 = forming.open.to_f64() as f32;
-                                let high_f32 = forming.high.to_f64() as f32;
-                                let low_f32 = forming.low.to_f64() as f32;
-                                let close_f32 = forming.close.to_f64() as f32;
+                        && let Some(forming) = processor.get_incomplete_bar()
+                    {
+                        let x_forming = chart.cell_width;
+                        let open_f32 = forming.open.to_f64() as f32;
+                        let high_f32 = forming.high.to_f64() as f32;
+                        let low_f32 = forming.low.to_f64() as f32;
+                        let close_f32 = forming.close.to_f64() as f32;
 
-                                let direction_color = if close_f32 >= open_f32 {
-                                    palette.success.base.color
-                                } else {
-                                    palette.danger.base.color
-                                };
-                                let forming_color = iced::Color {
-                                    a: 0.4,
-                                    ..direction_color
-                                };
+                        let direction_color = if close_f32 >= open_f32 {
+                            palette.success.base.color
+                        } else {
+                            palette.danger.base.color
+                        };
+                        let forming_color = iced::Color {
+                            a: 0.4,
+                            ..direction_color
+                        };
 
-                                let y_open = price_to_y(Price::from_f32(open_f32));
-                                let y_high = price_to_y(Price::from_f32(high_f32));
-                                let y_low = price_to_y(Price::from_f32(low_f32));
-                                let y_close = price_to_y(Price::from_f32(close_f32));
+                        let y_open = price_to_y(Price::from_f32(open_f32));
+                        let y_high = price_to_y(Price::from_f32(high_f32));
+                        let y_low = price_to_y(Price::from_f32(low_f32));
+                        let y_close = price_to_y(Price::from_f32(close_f32));
 
-                                // Body
-                                frame.fill_rectangle(
-                                    Point::new(
-                                        x_forming - candle_width / 2.0,
-                                        y_open.min(y_close),
-                                    ),
-                                    Size::new(
-                                        candle_width,
-                                        (y_open - y_close).abs().max(1.0),
-                                    ),
-                                    forming_color,
-                                );
-                                // Wick
-                                frame.fill_rectangle(
-                                    Point::new(
-                                        x_forming - candle_width / 8.0,
-                                        y_high,
-                                    ),
-                                    Size::new(
-                                        candle_width / 4.0,
-                                        (y_high - y_low).abs(),
-                                    ),
-                                    forming_color,
-                                );
-                            }
+                        // Body
+                        frame.fill_rectangle(
+                            Point::new(x_forming - candle_width / 2.0, y_open.min(y_close)),
+                            Size::new(candle_width, (y_open - y_close).abs().max(1.0)),
+                            forming_color,
+                        );
+                        // Wick
+                        frame.fill_rectangle(
+                            Point::new(x_forming - candle_width / 8.0, y_high),
+                            Size::new(candle_width / 4.0, (y_high - y_low).abs()),
+                            forming_color,
+                        );
+                    }
 
                     // Draw overlay indicators (e.g. ZigZag) on the main candle pane.
                     for (_kind, indi) in &self.indicators {
@@ -1870,14 +1891,12 @@ impl canvas::Program<Message> for KlineChart {
 
                 // Build forming bar Kline from odb_processor for tooltip
                 let forming_kline = if rounded_aggregation == u64::MAX {
-                    let fk = self.odb_processor
+                    let fk = self
+                        .odb_processor
                         .as_ref()
                         .and_then(|p| p.get_incomplete_bar())
                         .map(|bar| odb_to_kline(&bar, chart.ticker_info.min_ticksize));
-                    log::trace!(
-                        "[XHAIR] forming bar zone: forming_kline={}",
-                        fk.is_some()
-                    );
+                    log::trace!("[XHAIR] forming bar zone: forming_kline={}", fk.is_some());
                     fk
                 } else {
                     None
@@ -2026,7 +2045,13 @@ fn render_data_source<F>(
                 .for_each(|(index, tick_aggr)| {
                     let x_position = interval_to_x(index as u64);
 
-                    draw_fn(frame, index, x_position, &tick_aggr.kline, &tick_aggr.footprint);
+                    draw_fn(
+                        frame,
+                        index,
+                        x_position,
+                        &tick_aggr.kline,
+                        &tick_aggr.footprint,
+                    );
                 });
         }
         PlotData::TimeBased(timeseries) => {
@@ -2666,7 +2691,10 @@ fn draw_crosshair_tooltip(
         PlotData::TickBased(tick_aggr) => {
             if at_interval == u64::MAX {
                 // Sentinel: cursor on forming bar → use the forming kline if available
-                log::trace!("[TOOLTIP] forming bar sentinel detected, forming_kline={}", forming_kline.is_some());
+                log::trace!(
+                    "[TOOLTIP] forming bar sentinel detected, forming_kline={}",
+                    forming_kline.is_some()
+                );
                 forming_kline
             } else {
                 let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
@@ -2722,15 +2750,18 @@ fn draw_crosshair_tooltip(
                     // Forming bar: open = last completed bar's close_time, close = forming kline's time
                     let open = tick_aggr.datapoints.last().map(|dp| dp.kline.time as i64);
                     let close = kline.time as i64;
-                    log::trace!("[TOOLTIP] forming timing: open_ms={:?} close_ms={}", open, close);
+                    log::trace!(
+                        "[TOOLTIP] forming timing: open_ms={:?} close_ms={}",
+                        open,
+                        close
+                    );
                     (open, close)
                 } else {
                     let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
                     let fwd = tick_aggr.datapoints.len().saturating_sub(1 + index);
                     let close = kline.time as i64;
                     // Open time = previous bar's close time (bars are stored oldest-first).
-                    let open = (fwd > 0)
-                        .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
+                    let open = (fwd > 0).then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
                     (open, close)
                 };
 

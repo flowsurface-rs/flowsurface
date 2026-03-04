@@ -10,8 +10,7 @@ use super::{
         connect::{self, State, channel, connect_ws},
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
-        is_symbol_supported,
-        resilience,
+        is_symbol_supported, resilience,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -243,113 +242,116 @@ pub fn connect_market_stream(
                         tokio::time::sleep(delay).await;
                     }
                 }
-                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(data) = feed_de(&msg.payload[..], ticker) {
-                                match data {
-                                    StreamData::Trade(de_trade_vec) => {
-                                        for de_trade in &de_trade_vec {
-                                            let price = Price::from_f32(de_trade.price)
-                                                .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = qty_norm
-                                                .normalize_qty(de_trade.qty, de_trade.price);
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(data) = feed_de(&msg.payload[..], ticker) {
+                                    match data {
+                                        StreamData::Trade(de_trade_vec) => {
+                                            for de_trade in &de_trade_vec {
+                                                let price = Price::from_f32(de_trade.price)
+                                                    .round_to_min_tick(ticker_info.min_ticksize);
+                                                let qty = qty_norm
+                                                    .normalize_qty(de_trade.qty, de_trade.price);
 
-                                            let trade = Trade {
-                                                time: de_trade.time,
-                                                is_sell: de_trade.is_sell == "sell"
-                                                    || de_trade.is_sell == "SELL",
-                                                price,
-                                                qty,
-                                            };
-                                            trades_buffer.push(trade);
+                                                let trade = Trade {
+                                                    time: de_trade.time,
+                                                    is_sell: de_trade.is_sell == "sell"
+                                                        || de_trade.is_sell == "SELL",
+                                                    price,
+                                                    qty,
+                                                };
+                                                trades_buffer.push(trade);
+                                            }
                                         }
-                                    }
-                                    StreamData::Depth(de_depth, data_type, time) => {
-                                        let depth = DepthPayload {
-                                            last_update_id: de_depth.update_id,
-                                            time,
-                                            bids: de_depth
-                                                .bids
-                                                .iter()
-                                                .map(|x| DeOrder {
-                                                    price: x.price,
-                                                    qty: x.qty,
-                                                })
-                                                .collect(),
-                                            asks: de_depth
-                                                .asks
-                                                .iter()
-                                                .map(|x| DeOrder {
-                                                    price: x.price,
-                                                    qty: x.qty,
-                                                })
-                                                .collect(),
-                                        };
+                                        StreamData::Depth(de_depth, data_type, time) => {
+                                            let depth = DepthPayload {
+                                                last_update_id: de_depth.update_id,
+                                                time,
+                                                bids: de_depth
+                                                    .bids
+                                                    .iter()
+                                                    .map(|x| DeOrder {
+                                                        price: x.price,
+                                                        qty: x.qty,
+                                                    })
+                                                    .collect(),
+                                                asks: de_depth
+                                                    .asks
+                                                    .iter()
+                                                    .map(|x| DeOrder {
+                                                        price: x.price,
+                                                        qty: x.qty,
+                                                    })
+                                                    .collect(),
+                                            };
 
-                                        if (data_type == "snapshot") || (depth.last_update_id == 1)
-                                        {
-                                            orderbook.update_with_qty_norm(
-                                                DepthUpdate::Snapshot(depth),
-                                                ticker_info.min_ticksize,
-                                                Some(qty_norm),
-                                            );
-                                        } else if data_type == "delta" {
-                                            orderbook.update_with_qty_norm(
-                                                DepthUpdate::Diff(depth),
-                                                ticker_info.min_ticksize,
-                                                Some(qty_norm),
-                                            );
+                                            if (data_type == "snapshot")
+                                                || (depth.last_update_id == 1)
+                                            {
+                                                orderbook.update_with_qty_norm(
+                                                    DepthUpdate::Snapshot(depth),
+                                                    ticker_info.min_ticksize,
+                                                    Some(qty_norm),
+                                                );
+                                            } else if data_type == "delta" {
+                                                orderbook.update_with_qty_norm(
+                                                    DepthUpdate::Diff(depth),
+                                                    ticker_info.min_ticksize,
+                                                    Some(qty_norm),
+                                                );
 
-                                            let _ = output
-                                                .send(Event::DepthReceived(
-                                                    StreamKind::DepthAndTrades {
-                                                        ticker_info,
-                                                        depth_aggr: StreamTicksize::Client,
-                                                        push_freq,
-                                                    },
-                                                    time,
-                                                    orderbook.depth.clone(),
-                                                    std::mem::take(&mut trades_buffer)
-                                                        .into_boxed_slice(),
-                                                ))
-                                                .await;
+                                                let _ = output
+                                                    .send(Event::DepthReceived(
+                                                        StreamKind::DepthAndTrades {
+                                                            ticker_info,
+                                                            depth_aggr: StreamTicksize::Client,
+                                                            push_freq,
+                                                        },
+                                                        time,
+                                                        orderbook.depth.clone(),
+                                                        std::mem::take(&mut trades_buffer)
+                                                            .into_boxed_slice(),
+                                                    ))
+                                                    .await;
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                        Err(_elapsed) => {
+                            log::warn!("[OKX] read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                    Err(_elapsed) => {
-                        log::warn!("[OKX] read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })
@@ -402,128 +404,131 @@ pub fn connect_kline_stream(
                         tokio::time::sleep(delay).await;
                     }
                 }
-                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(v) = serde_json::from_slice::<Value>(&msg.payload[..]) {
-                                let channel = v["arg"]["channel"].as_str().unwrap_or("");
-                                if !channel.starts_with("candle") {
-                                    continue;
-                                }
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(v) = serde_json::from_slice::<Value>(&msg.payload[..]) {
+                                    let channel = v["arg"]["channel"].as_str().unwrap_or("");
+                                    if !channel.starts_with("candle") {
+                                        continue;
+                                    }
 
-                                let inst = match v["arg"]["instId"].as_str() {
-                                    Some(s) => s,
-                                    None => continue,
-                                };
-                                let (ticker_info, timeframe) =
-                                    match lookup.get(&(channel.to_string(), inst.to_string())) {
+                                    let inst = match v["arg"]["instId"].as_str() {
+                                        Some(s) => s,
+                                        None => continue,
+                                    };
+                                    let (ticker_info, timeframe) = match lookup
+                                        .get(&(channel.to_string(), inst.to_string()))
+                                    {
                                         Some(t) => *t,
                                         None => continue,
                                     };
-                                let qty_norm = QtyNormalization::with_raw_qty_unit(
-                                    size_in_quote_ccy,
-                                    ticker_info,
-                                    raw_qty_unit_from_market_type(market_type),
-                                );
+                                    let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                        size_in_quote_ccy,
+                                        ticker_info,
+                                        raw_qty_unit_from_market_type(market_type),
+                                    );
 
-                                if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
-                                    for row in data {
-                                        let time = row
-                                            .get(0)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<u64>().ok());
-                                        let open = row
-                                            .get(1)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let high = row
-                                            .get(2)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let low = row
-                                            .get(3)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let close = row
-                                            .get(4)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let volume = row
-                                            .get(5)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
+                                    if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                                        for row in data {
+                                            let time = row
+                                                .get(0)
+                                                .and_then(|x| x.as_str())
+                                                .and_then(|s| s.parse::<u64>().ok());
+                                            let open = row
+                                                .get(1)
+                                                .and_then(|x| x.as_str())
+                                                .and_then(|s| s.parse::<f32>().ok());
+                                            let high = row
+                                                .get(2)
+                                                .and_then(|x| x.as_str())
+                                                .and_then(|s| s.parse::<f32>().ok());
+                                            let low = row
+                                                .get(3)
+                                                .and_then(|x| x.as_str())
+                                                .and_then(|s| s.parse::<f32>().ok());
+                                            let close = row
+                                                .get(4)
+                                                .and_then(|x| x.as_str())
+                                                .and_then(|s| s.parse::<f32>().ok());
+                                            let volume = row
+                                                .get(5)
+                                                .and_then(|x| x.as_str())
+                                                .and_then(|s| s.parse::<f32>().ok());
 
-                                        let (ts, open, high, low, close) =
-                                            match (time, open, high, low, close) {
-                                                (
-                                                    Some(ts),
-                                                    Some(open),
-                                                    Some(high),
-                                                    Some(low),
-                                                    Some(close),
-                                                ) => (ts, open, high, low, close),
-                                                _ => continue,
+                                            let (ts, open, high, low, close) =
+                                                match (time, open, high, low, close) {
+                                                    (
+                                                        Some(ts),
+                                                        Some(open),
+                                                        Some(high),
+                                                        Some(low),
+                                                        Some(close),
+                                                    ) => (ts, open, high, low, close),
+                                                    _ => continue,
+                                                };
+
+                                            let volume_in_display = if let Some(vq) = volume {
+                                                qty_norm.normalize_qty(vq, close)
+                                            } else {
+                                                qty_norm.normalize_qty(0.0, close)
                                             };
 
-                                        let volume_in_display = if let Some(vq) = volume {
-                                            qty_norm.normalize_qty(vq, close)
-                                        } else {
-                                            qty_norm.normalize_qty(0.0, close)
-                                        };
-
-                                        let kline = Kline::new(
-                                            ts,
-                                            open,
-                                            high,
-                                            low,
-                                            close,
-                                            Volume::TotalOnly(volume_in_display),
-                                            ticker_info.min_ticksize,
-                                        );
-                                        let _ = output
-                                            .send(Event::KlineReceived(
-                                                StreamKind::Kline {
-                                                    ticker_info,
-                                                    timeframe,
-                                                },
-                                                kline,
-                                            ))
-                                            .await;
+                                            let kline = Kline::new(
+                                                ts,
+                                                open,
+                                                high,
+                                                low,
+                                                close,
+                                                Volume::TotalOnly(volume_in_display),
+                                                ticker_info.min_ticksize,
+                                            );
+                                            let _ = output
+                                                .send(Event::KlineReceived(
+                                                    StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe,
+                                                    },
+                                                    kline,
+                                                ))
+                                                .await;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                        Err(_elapsed) => {
+                            log::warn!("[OKX] kline read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                    Err(_elapsed) => {
-                        log::warn!("[OKX] kline read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })

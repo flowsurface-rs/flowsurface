@@ -1,8 +1,8 @@
 pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
-pub mod kline;
 pub mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
+pub mod kline;
 pub(crate) mod scale;
 pub(crate) mod session;
 

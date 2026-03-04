@@ -275,7 +275,10 @@ impl TickAggr {
             .iter()
             .enumerate()
             .map(|(idx, dp)| {
-                let delta = dp.kline.volume.buy_sell()
+                let delta = dp
+                    .kline
+                    .volume
+                    .buy_sell()
                     .map(|(b, s)| f32::from(b) - f32::from(s))
                     .unwrap_or(0.0);
                 (idx as u64, delta)

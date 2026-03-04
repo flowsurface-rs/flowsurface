@@ -38,8 +38,8 @@ use crate::chart::{
 use data::chart::{PlotData, kline::KlineDataPoint, kline::adaptive_k};
 use exchange::{Kline, Trade};
 
-use iced::widget::{center, text};
 use iced::Color;
+use iced::widget::{center, text};
 use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 
@@ -80,11 +80,17 @@ fn thermal_color(t: f32) -> Color {
         (1.00, 0.957, 0.263, 0.212), // #F44336 red
     ];
     let t = t.clamp(0.0, 1.0);
-    let i = STOPS.partition_point(|&(s, _, _, _)| s < t).saturating_sub(1);
+    let i = STOPS
+        .partition_point(|&(s, _, _, _)| s < t)
+        .saturating_sub(1);
     let i = i.min(STOPS.len() - 2);
     let (t0, r0, g0, b0) = STOPS[i];
     let (t1, r1, g1, b1) = STOPS[i + 1];
-    let f = if (t1 - t0).abs() < f32::EPSILON { 0.0 } else { (t - t0) / (t1 - t0) };
+    let f = if (t1 - t0).abs() < f32::EPSILON {
+        0.0
+    } else {
+        (t - t0) / (t1 - t0)
+    };
     Color::from_rgb(r0 + f * (r1 - r0), g0 + f * (g1 - g0), b0 + f * (b1 - b0))
 }
 
@@ -130,7 +136,7 @@ impl TradeIntensityHeatmapIndicator {
     fn reset_state(&mut self) {
         self.ring.clear();
         self.sorted.clear(); // Vec::clear keeps allocation — no realloc on next rebuild
-        self.data.clear();   // Vec::clear keeps allocation
+        self.data.clear(); // Vec::clear keeps allocation
         self.next_idx = 0;
     }
 
@@ -162,9 +168,22 @@ impl TradeIntensityHeatmapIndicator {
         // Vec push: O(1) amortised. idx must equal self.data.len() (sequential calls only).
         // Resize with sentinel (bin=0) for any gap caused by bars without microstructure.
         if idx > self.data.len() {
-            self.data.resize(idx, HeatmapPoint { intensity: 0.0, bin: 0, k_actual: 0, bullish: false });
+            self.data.resize(
+                idx,
+                HeatmapPoint {
+                    intensity: 0.0,
+                    bin: 0,
+                    k_actual: 0,
+                    bullish: false,
+                },
+            );
         }
-        self.data.push(HeatmapPoint { intensity, bin, k_actual, bullish });
+        self.data.push(HeatmapPoint {
+            intensity,
+            bin,
+            k_actual,
+            bullish,
+        });
 
         // --- Push current bar into sorted window ---
         // Insert in sorted order: O(N) Vec shift, but cache-friendly (contiguous memory).

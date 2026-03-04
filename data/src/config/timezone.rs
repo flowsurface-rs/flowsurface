@@ -151,7 +151,6 @@ impl UserTimezone {
             datetime.format("%H:%M:%S.%3f").to_string()
         }
     }
-
 }
 
 impl fmt::Display for UserTimezone {

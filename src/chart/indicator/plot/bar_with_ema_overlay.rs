@@ -8,9 +8,9 @@ use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::{Color, Point, Size, Theme};
 
+use super::bar::{BarClass, Baseline};
 use crate::chart::ViewState;
 use crate::chart::indicator::plot::{Plot, PlotTooltip, Series, TooltipFn, YScale};
-use super::bar::{BarClass, Baseline};
 
 /// Configuration for a single EMA overlay line.
 /// Uses function pointers for the extract fn so multiple configs
@@ -70,13 +70,21 @@ where
         datapoints.for_each_in(range, |_, y| {
             // Bar value
             let v = (self.value)(y);
-            if v < min_v { min_v = v; }
-            if v > max_v { max_v = v; }
+            if v < min_v {
+                min_v = v;
+            }
+            if v > max_v {
+                max_v = v;
+            }
             // EMA values
             for ema in &self.ema_lines {
                 let ev = (ema.extract)(y);
-                if ev < min_v { min_v = ev; }
-                if ev > max_v { max_v = ev; }
+                if ev < min_v {
+                    min_v = ev;
+                }
+                if ev > max_v {
+                    max_v = ev;
+                }
             }
             n += 1;
         });
@@ -226,10 +234,7 @@ where
                 let vy = (ema.extract)(y);
                 let sy = scale.to_y(vy);
                 if let Some((px, py)) = prev {
-                    frame.stroke(
-                        &Path::line(Point::new(px, py), Point::new(sx, sy)),
-                        stroke,
-                    );
+                    frame.stroke(&Path::line(Point::new(px, py), Point::new(sx, sy)), stroke);
                 }
                 prev = Some((sx, sy));
             });

@@ -898,7 +898,9 @@ pub fn connect_market_stream(
                     }
                 }
                 State::Connected(websocket) => {
-                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame())
+                        .await
+                    {
                         Ok(Ok(msg)) => match msg.opcode {
                             OpCode::Text => {
                                 if let Ok(stream_data) = parse_websocket_message(&msg.payload) {
@@ -1072,76 +1074,81 @@ pub fn connect_kline_stream(
                             .await;
                     }
                 },
-                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Kline(hl_kline)) =
-                                parse_websocket_message(&msg.payload)
-                                && let Some((ticker_info, timeframe)) =
-                                    streams.iter().find(|(t, tf)| {
-                                        t.ticker.as_str() == hl_kline.symbol
-                                            && tf.to_string() == hl_kline.interval.as_str()
-                                    })
-                            {
-                                let qty_norm = QtyNormalization::with_raw_qty_unit(
-                                    size_in_quote_ccy,
-                                    *ticker_info,
-                                    raw_qty_unit_from_market_type(ticker_info.market_type()),
-                                );
-                                let volume =
-                                    qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
+                State::Connected(websocket) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame())
+                        .await
+                    {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Kline(hl_kline)) =
+                                    parse_websocket_message(&msg.payload)
+                                    && let Some((ticker_info, timeframe)) =
+                                        streams.iter().find(|(t, tf)| {
+                                            t.ticker.as_str() == hl_kline.symbol
+                                                && tf.to_string() == hl_kline.interval.as_str()
+                                        })
+                                {
+                                    let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                        size_in_quote_ccy,
+                                        *ticker_info,
+                                        raw_qty_unit_from_market_type(ticker_info.market_type()),
+                                    );
+                                    let volume =
+                                        qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
 
-                                let kline = Kline::new(
-                                    hl_kline.time,
-                                    hl_kline.open,
-                                    hl_kline.high,
-                                    hl_kline.low,
-                                    hl_kline.close,
-                                    Volume::TotalOnly(volume),
-                                    ticker_info.min_ticksize,
-                                );
+                                    let kline = Kline::new(
+                                        hl_kline.time,
+                                        hl_kline.open,
+                                        hl_kline.high,
+                                        hl_kline.low,
+                                        hl_kline.close,
+                                        Volume::TotalOnly(volume),
+                                        ticker_info.min_ticksize,
+                                    );
 
-                                let stream_kind = StreamKind::Kline {
-                                    ticker_info: *ticker_info,
-                                    timeframe: *timeframe,
-                                };
-                                let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
+                                    let stream_kind = StreamKind::Kline {
+                                        ticker_info: *ticker_info,
+                                        timeframe: *timeframe,
+                                    };
+                                    let _ =
+                                        output.send(Event::KlineReceived(stream_kind, kline)).await;
+                                }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "WebSocket closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            OpCode::Ping => {
+                                let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "WebSocket closed".to_string(),
+                                    format!("WebSocket error: {}", e),
                                 ))
                                 .await;
                         }
-                        OpCode::Ping => {
-                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        Err(_elapsed) => {
+                            log::warn!("[Hyperliquid] kline read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                format!("WebSocket error: {}", e),
-                            ))
-                            .await;
                     }
-                    Err(_elapsed) => {
-                        log::warn!("[Hyperliquid] kline read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })

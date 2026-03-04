@@ -30,6 +30,7 @@ use exchange::{
     health::ConnectionHealth,
 };
 
+use enum_map::EnumMap;
 use iced::{
     Element, Length, Subscription, Task, Vector, keyboard,
     task::{Straw, sipper},
@@ -38,7 +39,6 @@ use iced::{
         pane_grid::{self, Configuration},
     },
 };
-use enum_map::EnumMap;
 use std::{collections::HashMap, path::PathBuf, time::Instant, vec};
 
 #[derive(Debug, Clone)]
@@ -431,8 +431,7 @@ impl Dashboard {
                     // When gap-fill sip completes, clear the chart's fetching_trades
                     // flag so WebSocket trades resume flowing through the RBP.
                     if matches!(status, pane::Status::Ready)
-                        && let pane::Content::Kline { chart: Some(c), .. } =
-                            &mut pane_state.content
+                        && let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
                     {
                         c.clear_fetching_trades();
                     }
@@ -869,11 +868,9 @@ impl Dashboard {
     ) -> Task<Message> {
         let pane_infos: Vec<(window::Id, pane_grid::Pane, ContentKind)> = self
             .iter_all_panes_mut(main_window)
-            .filter_map(|(window, pane, state)| {
-                match state.content.kind() {
-                    ContentKind::Starter => None,
-                    kind => Some((window, pane, kind)),
-                }
+            .filter_map(|(window, pane, state)| match state.content.kind() {
+                ContentKind::Starter => None,
+                kind => Some((window, pane, kind)),
             })
             .collect();
 
@@ -993,7 +990,8 @@ impl Dashboard {
                                     if gap_hours > MAX_GAPFILL_HOURS {
                                         log::warn!(
                                             "[staleness] pane={} {:.0}h gap too large for client-side gap-fill (max {MAX_GAPFILL_HOURS}h)",
-                                            pane_id, gap_hours,
+                                            pane_id,
+                                            gap_hours,
                                         );
                                         pane_state.status = pane::Status::Stale(format!(
                                             "Data {:.0}h old — gap too large for client gap-fill",
@@ -1002,7 +1000,8 @@ impl Dashboard {
                                     } else if gap_minutes > 5.0 {
                                         log::info!(
                                             "[staleness] pane={} {:.1}h gap detected, triggering client-side gap-fill trades",
-                                            pane_id, gap_hours,
+                                            pane_id,
+                                            gap_hours,
                                         );
                                         pane_state.status = pane::Status::Stale(format!(
                                             "Data {:.0}h old — fetching trades to fill gap...",
@@ -1118,8 +1117,7 @@ impl Dashboard {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
-                        let gap_hours =
-                            (now_ms.saturating_sub(kline.time)) as f64 / 3_600_000.0;
+                        let gap_hours = (now_ms.saturating_sub(kline.time)) as f64 / 3_600_000.0;
                         if gap_hours <= 24.0 {
                             pane_state.status = pane::Status::Ready;
                         }
@@ -1194,43 +1192,50 @@ impl Dashboard {
             });
     }
 
-    pub fn tick(&mut self, now: Instant, timezone: UserTimezone, main_window: window::Id) -> Task<Message> {
+    pub fn tick(
+        &mut self,
+        now: Instant,
+        timezone: UserTimezone,
+        main_window: window::Id,
+    ) -> Task<Message> {
         let mut tasks = vec![];
         let layout_id = self.layout_id;
 
         self.iter_all_panes_mut(main_window)
-            .for_each(|(_window_id, _pane, state)| match state.tick(now, timezone) {
-                Some(pane::Action::Chart(action)) => match action {
-                    chart::Action::ErrorOccurred(err) => {
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
+            .for_each(
+                |(_window_id, _pane, state)| match state.tick(now, timezone) {
+                    Some(pane::Action::Chart(action)) => match action {
+                        chart::Action::ErrorOccurred(err) => {
+                            state.status = pane::Status::Ready;
+                            state.notifications.push(Toast::error(err.to_string()));
+                        }
+                        chart::Action::RequestFetch(reqs) => {
+                            tasks.push(request_fetch_many(
+                                state,
+                                layout_id,
+                                reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                            ));
+                        }
+                    },
+                    Some(pane::Action::Panel(_action)) => {}
+                    Some(pane::Action::ResolveStreams(streams)) => {
+                        tasks.push(Task::done(Message::ResolveStreams(
+                            state.unique_id(),
+                            streams,
+                        )));
                     }
-                    chart::Action::RequestFetch(reqs) => {
-                        tasks.push(request_fetch_many(
-                            state,
-                            layout_id,
-                            reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
-                        ));
-                    }
-                },
-                Some(pane::Action::Panel(_action)) => {}
-                Some(pane::Action::ResolveStreams(streams)) => {
-                    tasks.push(Task::done(Message::ResolveStreams(
-                        state.unique_id(),
-                        streams,
-                    )));
-                }
-                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
-                    Some(StreamPairKind::MultiSource(tickers)) => {
-                        state.set_content_and_streams(tickers, state.content.kind());
-                    }
-                    Some(StreamPairKind::SingleSource(ticker)) => {
-                        state.set_content_and_streams(vec![ticker], state.content.kind());
-                    }
+                    Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                        Some(StreamPairKind::MultiSource(tickers)) => {
+                            state.set_content_and_streams(tickers, state.content.kind());
+                        }
+                        Some(StreamPairKind::SingleSource(ticker)) => {
+                            state.set_content_and_streams(vec![ticker], state.content.kind());
+                        }
+                        None => {}
+                    },
                     None => {}
                 },
-                None => {}
-            });
+            );
 
         Task::batch(tasks)
     }
@@ -1249,7 +1254,9 @@ impl Dashboard {
         if !rb_streams.is_empty() {
             log::info!(
                 "[SUBS] resolve_streams pane {}: {} total streams, {} range_bar_kline",
-                pane_id, streams.len(), rb_streams.len()
+                pane_id,
+                streams.len(),
+                rb_streams.len()
             );
         }
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
@@ -1337,7 +1344,10 @@ impl Dashboard {
             .map(|(_, specs)| specs.range_bar_kline.len())
             .sum();
         if rb_count > 0 {
-            log::info!("[SUBS] refresh_streams: {} range_bar_kline in UniqueStreams", rb_count);
+            log::info!(
+                "[SUBS] refresh_streams: {} range_bar_kline in UniqueStreams",
+                rb_count
+            );
         }
 
         Task::none()
@@ -1610,7 +1620,11 @@ fn kline_fetch_task(
             threshold_dbps,
         } => Task::perform(
             iced::futures::TryFutureExt::map_err(
-                adapter::fetch_klines_range_bar_with_microstructure(ticker_info, threshold_dbps, range),
+                adapter::fetch_klines_range_bar_with_microstructure(
+                    ticker_info,
+                    threshold_dbps,
+                    range,
+                ),
                 |err: AdapterError| err.to_user_message(),
             ),
             move |result| match result {
@@ -1668,7 +1682,6 @@ pub fn fetch_trades_batched(
     })
 }
 
-
 /// Gap-fill variant: uses `binance::fetch_trades()` which auto-routes to
 /// daily zip archives for completed days (fast bulk download) and falls back
 /// to REST `/aggTrades?startTime=` for today's data.
@@ -1693,10 +1706,8 @@ fn fetch_gapfill_trades(
                     latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
 
                     // Filter out trades beyond our target window
-                    let filtered: Vec<Trade> = batch
-                        .into_iter()
-                        .filter(|t| t.time <= to_time)
-                        .collect();
+                    let filtered: Vec<Trade> =
+                        batch.into_iter().filter(|t| t.time <= to_time).collect();
 
                     if filtered.is_empty() {
                         break;

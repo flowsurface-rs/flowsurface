@@ -8,8 +8,7 @@ use super::{
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, RateLimiter},
-        resilience,
-        str_f32_parse,
+        resilience, str_f32_parse,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -688,91 +687,96 @@ pub fn connect_kline_stream(
                             .await;
                     }
                 }
-                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Kline(ticker, de_kline)) =
-                                feed_de(&msg.payload[..], market)
-                            {
-                                let (buy_volume, sell_volume) = {
-                                    let buy_volume = de_kline.taker_buy_base_asset_volume;
-                                    let sell_volume = de_kline.volume - buy_volume;
-                                    (buy_volume, sell_volume)
-                                };
-
-                                if let Some((_, tf)) = streams
-                                    .iter()
-                                    .find(|(_, tf)| tf.to_string() == de_kline.interval)
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Kline(ticker, de_kline)) =
+                                    feed_de(&msg.payload[..], market)
                                 {
-                                    if let Some((ticker_info, qty_norm)) =
-                                        ticker_info_map.get(&ticker)
+                                    let (buy_volume, sell_volume) = {
+                                        let buy_volume = de_kline.taker_buy_base_asset_volume;
+                                        let sell_volume = de_kline.volume - buy_volume;
+                                        (buy_volume, sell_volume)
+                                    };
+
+                                    if let Some((_, tf)) = streams
+                                        .iter()
+                                        .find(|(_, tf)| tf.to_string() == de_kline.interval)
                                     {
-                                        let ticker_info = *ticker_info;
-                                        let timeframe = *tf;
+                                        if let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(&ticker)
+                                        {
+                                            let ticker_info = *ticker_info;
+                                            let timeframe = *tf;
 
-                                        let buy_volume =
-                                            qty_norm.normalize_qty(buy_volume, de_kline.close);
-                                        let sell_volume =
-                                            qty_norm.normalize_qty(sell_volume, de_kline.close);
+                                            let buy_volume =
+                                                qty_norm.normalize_qty(buy_volume, de_kline.close);
+                                            let sell_volume =
+                                                qty_norm.normalize_qty(sell_volume, de_kline.close);
 
-                                        let volume = Volume::BuySell(buy_volume, sell_volume);
+                                            let volume = Volume::BuySell(buy_volume, sell_volume);
 
-                                        let kline = Kline::new(
-                                            de_kline.time,
-                                            de_kline.open,
-                                            de_kline.high,
-                                            de_kline.low,
-                                            de_kline.close,
-                                            volume,
-                                            ticker_info.min_ticksize,
-                                        );
+                                            let kline = Kline::new(
+                                                de_kline.time,
+                                                de_kline.open,
+                                                de_kline.high,
+                                                de_kline.low,
+                                                de_kline.close,
+                                                volume,
+                                                ticker_info.min_ticksize,
+                                            );
 
-                                        let _ = output
-                                            .send(Event::KlineReceived(
-                                                StreamKind::Kline {
-                                                    ticker_info,
-                                                    timeframe,
-                                                },
-                                                kline,
-                                            ))
-                                            .await;
-                                    } else {
-                                        log::error!("Ticker info not found for ticker: {}", ticker);
+                                            let _ = output
+                                                .send(Event::KlineReceived(
+                                                    StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe,
+                                                    },
+                                                    kline,
+                                                ))
+                                                .await;
+                                        } else {
+                                            log::error!(
+                                                "Ticker info not found for ticker: {}",
+                                                ticker
+                                            );
+                                        }
                                     }
                                 }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                        Err(_elapsed) => {
+                            log::warn!("[Binance] kline read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                    Err(_elapsed) => {
-                        log::warn!("[Binance] kline read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })

@@ -39,10 +39,9 @@ impl TimeFormat {
     pub fn format_timestamp(&self, ts_ms: u64, timezone: crate::UserTimezone) -> String {
         use chrono::DateTime;
 
-        let Some(datetime) = DateTime::from_timestamp(
-            ts_ms as i64 / 1000,
-            (ts_ms % 1000) as u32 * 1_000_000,
-        ) else {
+        let Some(datetime) =
+            DateTime::from_timestamp(ts_ms as i64 / 1000, (ts_ms % 1000) as u32 * 1_000_000)
+        else {
             return String::new();
         };
 
