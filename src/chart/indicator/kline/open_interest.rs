@@ -6,7 +6,7 @@ use crate::chart::{
         plot::{PlotTooltip, line::LinePlot},
     },
 };
-use crate::fetcher::FetchRange;
+use crate::connector::fetcher::FetchRange;
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;

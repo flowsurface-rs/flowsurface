@@ -1,5 +1,5 @@
 use crate::chart::{Message, ViewState};
-use crate::fetcher::FetchRange;
+use crate::connector::fetcher::FetchRange;
 
 use data::chart::PlotData;
 use data::chart::indicator::KlineIndicator;

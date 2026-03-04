@@ -1,6 +1,7 @@
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
-    fetcher::{FetchSpec, InfoKind},
+    connector::ResolvedStream,
+    connector::fetcher::{FetchSpec, InfoKind},
     modal::{
         self, ModifierKind,
         pane::{
@@ -10,7 +11,6 @@ use crate::{
             stack_modal,
         },
     },
-    resolved_stream::ResolvedStream,
     screen::dashboard::{
         panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
         tickers_table::TickersTable,

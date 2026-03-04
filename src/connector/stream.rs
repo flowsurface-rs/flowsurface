@@ -1,6 +1,7 @@
+use std::time::{Duration, Instant};
+
 use data::stream::PersistStreamKind;
 use exchange::adapter::StreamKind;
-use std::time::{Duration, Instant};
 
 /// Persisted stream resolution to avoid loop retries
 const RESOLVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);

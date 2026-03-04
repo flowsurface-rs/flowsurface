@@ -29,29 +29,6 @@ pub enum AdapterError {
     InvalidRequest(String),
 }
 
-impl AdapterError {
-    pub fn to_user_message(&self) -> &'static str {
-        match self {
-            AdapterError::InvalidRequest(err) => {
-                log::error!("Adapter invalid request: {err}");
-                "Invalid request made to the exchange. Check logs for details."
-            }
-            AdapterError::FetchError(err) => {
-                log::error!("Adapter fetch error: {err}");
-                "Network error while contacting the exchange."
-            }
-            AdapterError::ParseError(err) => {
-                log::error!("Adapter parse error: {err}");
-                "Unexpected response from the exchange. Check logs for details."
-            }
-            AdapterError::WebsocketError(err) => {
-                log::error!("Adapter websocket error: {err}");
-                "Realtime connection error. Trying to reconnect..."
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum MarketKind {
     Spot,

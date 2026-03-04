@@ -4,7 +4,7 @@ pub mod indicator;
 pub mod kline;
 mod scale;
 
-use crate::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;

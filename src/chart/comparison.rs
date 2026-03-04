@@ -1,4 +1,4 @@
-use crate::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
 use crate::widget::chart::{Series, Zoom, domain};
 
@@ -77,7 +77,7 @@ impl ComparisonChart {
             timeframe,
             request_handler: tickers
                 .iter()
-                .map(|t| (*t, RequestHandler::new()))
+                .map(|t| (*t, RequestHandler::default()))
                 .collect(),
             selected_tickers: tickers.to_vec(),
             pan: DEFAULT_PAN_POINTS,
@@ -459,7 +459,7 @@ impl ComparisonChart {
         self.request_handler.clear();
 
         for &t in &self.selected_tickers {
-            self.request_handler.insert(t, RequestHandler::new());
+            self.request_handler.insert(t, RequestHandler::default());
         }
     }
 
