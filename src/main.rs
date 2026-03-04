@@ -775,9 +775,9 @@ impl Flowsurface {
 
     fn title(&self, _window: window::Id) -> String {
         if let Some(id) = self.layout_manager.active_layout_id() {
-            format!("Flowsurface [{}]", id.name)
+            format!("Flowsurface v{} [{}]", env!("CARGO_PKG_VERSION"), id.name)
         } else {
-            "Flowsurface".to_string()
+            format!("Flowsurface v{}", env!("CARGO_PKG_VERSION"))
         }
     }
 

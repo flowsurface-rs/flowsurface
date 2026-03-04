@@ -17,9 +17,10 @@ use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
 
 use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};
+use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, Geometry, LineDash, Path, Stroke};
 use iced::{
-    Alignment, Element, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, padding,
+    Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse,
+    padding,
     widget::{button, center, column, container, mouse_area, row, rule, text},
 };
 
@@ -640,6 +641,7 @@ pub struct Caches {
     x_labels: Cache,
     y_labels: Cache,
     crosshair: Cache,
+    watermark: Cache,
 }
 
 impl Caches {
@@ -648,6 +650,7 @@ impl Caches {
         self.x_labels.clear();
         self.y_labels.clear();
         self.crosshair.clear();
+        self.watermark.clear();
     }
 
     fn clear_crosshair(&self) {
@@ -655,6 +658,32 @@ impl Caches {
         self.y_labels.clear();
         self.x_labels.clear();
     }
+}
+
+pub fn draw_watermark(
+    cache: &Cache,
+    renderer: &Renderer,
+    bounds_size: Size,
+    palette: &Extended,
+) -> Geometry {
+    cache.draw(renderer, bounds_size, |frame| {
+        let content = format!(
+            "v{} \u{00B7} ODB {} \u{00B7} {}",
+            env!("CARGO_PKG_VERSION"),
+            env!("FLOWSURFACE_ODB_VERSION"),
+            env!("FLOWSURFACE_BUILD_TIME"),
+        );
+        frame.fill_text(canvas::Text {
+            content,
+            position: Point::new(8.0, bounds_size.height - 8.0),
+            size: iced::Pixels(9.0),
+            color: palette.background.base.text.scale_alpha(0.3),
+            font: style::AZERET_MONO,
+            align_x: Alignment::Start.into(),
+            align_y: Alignment::End.into(),
+            ..canvas::Text::default()
+        });
+    })
 }
 
 pub struct ViewState {

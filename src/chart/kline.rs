@@ -1867,6 +1867,9 @@ impl canvas::Program<Message> for KlineChart {
             chart.draw_last_price_line(frame, palette, region);
         });
 
+        let watermark =
+            super::draw_watermark(&chart.cache.watermark, renderer, bounds_size, palette);
+
         let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
             if let Some(cursor_position) = cursor.position_in(bounds) {
                 let (_, rounded_aggregation) =
@@ -1900,7 +1903,7 @@ impl canvas::Program<Message> for KlineChart {
             }
         });
 
-        vec![klines, crosshair]
+        vec![klines, watermark, crosshair]
     }
 
     fn mouse_interaction(

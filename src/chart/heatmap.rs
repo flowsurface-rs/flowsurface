@@ -763,6 +763,9 @@ impl canvas::Program<Message> for HeatmapChart {
             }
         });
 
+        let watermark =
+            super::draw_watermark(&chart.cache.watermark, renderer, bounds_size, palette);
+
         if !self.is_empty() {
             let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
@@ -889,9 +892,9 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
             });
 
-            vec![heatmap, crosshair]
+            vec![heatmap, watermark, crosshair]
         } else {
-            vec![heatmap]
+            vec![heatmap, watermark]
         }
     }
 
