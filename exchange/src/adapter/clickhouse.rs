@@ -491,16 +491,20 @@ pub fn connect_kline_stream(
 
         // Initialize last_ts to the latest bar's timestamp so the first poll
         // doesn't re-fetch bars already loaded by the initial fetch_klines().
-        let mut last_ts: u64 = {
-            let sql = format!(
-                "SELECT max(close_time_ms) AS ts FROM opendeviationbar_cache.open_deviation_bars \
-                 WHERE symbol = '{}' AND threshold_decimal_bps = {} \
-                   AND ouroboros_mode = 'month' FORMAT JSONEachRow",
-                symbol, threshold_dbps
-            );
-            match query(&sql).await {
+        // Retry up to 3 times with 2s backoff — a single transient failure
+        // (e.g. SSH tunnel not yet up) would otherwise set last_ts=0, causing
+        // the poll loop to crawl from epoch through all historical data.
+        let max_ts_sql = format!(
+            "SELECT max(close_time_ms) AS ts FROM opendeviationbar_cache.open_deviation_bars \
+             WHERE symbol = '{}' AND threshold_decimal_bps = {} \
+               AND ouroboros_mode = 'month' FORMAT JSONEachRow",
+            symbol, threshold_dbps
+        );
+        let mut last_ts: u64 = 0;
+        for attempt in 1..=3 {
+            match query(&max_ts_sql).await {
                 Ok(body) => {
-                    let ts = body
+                    last_ts = body
                         .lines()
                         .find_map(|line| {
                             serde_json::from_str::<serde_json::Value>(line.trim())
@@ -509,24 +513,28 @@ pub fn connect_kline_stream(
                         })
                         .unwrap_or(0);
                     log::info!(
-                        "[CH poll] init last_ts={} for {} @{}",
-                        ts,
+                        "[CH poll] init last_ts={} for {} @{} (attempt {})",
+                        last_ts,
                         symbol,
-                        threshold_dbps
+                        threshold_dbps,
+                        attempt
                     );
-                    ts
+                    break;
                 }
                 Err(e) => {
                     log::warn!(
-                        "[CH poll] init query failed for {} @{}: {}",
+                        "[CH poll] init query failed for {} @{} (attempt {}/3): {}",
                         symbol,
                         threshold_dbps,
+                        attempt,
                         e
                     );
-                    0
+                    if attempt < 3 {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
                 }
             }
-        };
+        }
 
         let mut logged_micro_warning = false;
 
@@ -595,6 +603,38 @@ pub fn connect_kline_stream(
                             count,
                             last_ts
                         );
+
+                        // Defense in depth: if last_ts is >30 days behind now,
+                        // the watermark likely started from 0 due to a failed init.
+                        // Re-query max(close_time_ms) to jump to the present.
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        if last_ts < now_ms.saturating_sub(30 * 86_400_000) {
+                            log::warn!(
+                                "[CH poll] {} @{}: last_ts={} is >30 days stale, re-initializing watermark",
+                                symbol,
+                                threshold_dbps,
+                                last_ts
+                            );
+                            if let Ok(body) = query(&max_ts_sql).await
+                                && let Some(ts) = body.lines().find_map(|line| {
+                                    serde_json::from_str::<serde_json::Value>(line.trim())
+                                        .ok()
+                                        .and_then(|v| v["ts"].as_u64())
+                                })
+                            {
+                                last_ts = ts;
+                                log::info!(
+                                    "[CH poll] {} @{}: watermark reset to {}",
+                                    symbol,
+                                    threshold_dbps,
+                                    last_ts
+                                );
+                            }
+                        }
+
                         // One-time warning if first polled bar lacks microstructure
                         if !logged_micro_warning {
                             logged_micro_warning = true;
