@@ -130,7 +130,7 @@ fn writer_loop(receiver: mpsc::Receiver<TelemetryMessage>, dir: &Path) {
                 }
                 if writer.write_all(&data).is_ok() {
                     current_size += len;
-                    // Flush periodically (BufWriter handles batching)
+                    let _ = writer.flush();
                 }
             }
             Ok(TelemetryMessage::Shutdown) | Err(_) => {
