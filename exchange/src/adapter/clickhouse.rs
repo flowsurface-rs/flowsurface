@@ -21,6 +21,8 @@ use serde::Deserialize;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
+use opendeviationbar_client::{OdbBar, OdbSseClient, OdbSseConfig, OdbSseEvent};
+
 pub use opendeviationbar_core::{FixedPoint, OpenDeviationBar, OpenDeviationBarProcessor};
 
 /// Microstructure fields from ClickHouse range bar cache.
@@ -661,6 +663,124 @@ pub fn connect_kline_stream(
                         threshold_dbps,
                         e
                     );
+                }
+            }
+        }
+    })
+}
+
+// -- SSE streaming (push-based, replaces polling when enabled) --
+
+static SSE_HOST: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("FLOWSURFACE_SSE_HOST").unwrap_or_else(|_| "localhost".into())
+});
+static SSE_PORT: LazyLock<u16> = LazyLock::new(|| {
+    std::env::var("FLOWSURFACE_SSE_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(18081)
+});
+
+pub fn sse_enabled() -> bool {
+    std::env::var("FLOWSURFACE_SSE_ENABLED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
+fn odb_bar_to_kline_tuple(
+    bar: &OdbBar,
+    min_tick: MinTicksize,
+) -> (Kline, [f64; 6], Option<ChMicrostructure>) {
+    let raw_f64 = [
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+        bar.buy_volume.unwrap_or(0.0),
+        bar.sell_volume.unwrap_or(0.0),
+    ];
+    let kline = Kline::new(
+        bar.close_time_ms as u64,
+        bar.open as f32,
+        bar.high as f32,
+        bar.low as f32,
+        bar.close as f32,
+        Volume::BuySell(
+            Qty::from(bar.buy_volume.unwrap_or(0.0) as f32),
+            Qty::from(bar.sell_volume.unwrap_or(0.0) as f32),
+        ),
+        min_tick,
+    );
+    let micro = match (bar.individual_trade_count, bar.ofi, bar.trade_intensity) {
+        (Some(tc), Some(ofi), Some(ti)) => Some(ChMicrostructure {
+            trade_count: tc,
+            ofi: ofi as f32,
+            trade_intensity: ti as f32,
+        }),
+        _ => None,
+    };
+    (kline, raw_f64, micro)
+}
+
+pub fn connect_sse_stream(
+    ticker_info: TickerInfo,
+    threshold_dbps: u32,
+) -> impl Stream<Item = Event> {
+    log::info!(
+        "[SSE] connect_sse_stream STARTED: {} @{} dbps",
+        ticker_info.ticker,
+        threshold_dbps
+    );
+    connect::channel(16, async move |mut output| {
+        let exchange = ticker_info.exchange();
+        let _ = output.send(Event::Connected(exchange)).await;
+
+        let stream_kind = StreamKind::RangeBarKline {
+            ticker_info,
+            threshold_dbps,
+        };
+        let symbol = bare_symbol(&ticker_info);
+
+        let client = OdbSseClient::new(OdbSseConfig {
+            host: SSE_HOST.clone(),
+            port: *SSE_PORT,
+            symbols: vec![symbol.clone()],
+            thresholds: vec![threshold_dbps],
+        });
+
+        use futures::StreamExt;
+        let mut stream = std::pin::pin!(client.connect());
+        while let Some(event) = stream.next().await {
+            match event {
+                OdbSseEvent::Connected => {
+                    log::info!("[SSE] connected: {} @{}", symbol, threshold_dbps);
+                }
+                OdbSseEvent::Bar(bar) => {
+                    if bar.symbol != symbol || bar.threshold != threshold_dbps {
+                        continue;
+                    }
+                    let (kline, raw_f64, _micro) =
+                        odb_bar_to_kline_tuple(&bar, ticker_info.min_ticksize);
+                    log::info!(
+                        "[SSE] {} @{}: bar ts={}",
+                        symbol,
+                        threshold_dbps,
+                        kline.time
+                    );
+                    let _ = output
+                        .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64)))
+                        .await;
+                }
+                OdbSseEvent::Heartbeat => {}
+                OdbSseEvent::DeserializationError { error, raw_data } => {
+                    log::warn!(
+                        "[SSE] deser error: {error}, data: {}",
+                        &raw_data[..raw_data.len().min(200)]
+                    );
+                }
+                OdbSseEvent::Disconnected(reason) => {
+                    log::warn!("[SSE] disconnected: {reason}");
+                    return;
                 }
             }
         }

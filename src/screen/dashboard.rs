@@ -1753,7 +1753,12 @@ pub fn rangebar_kline_subscription(
         PushFrequency::ServerDefault,
     );
     let builder = |cfg: &StreamConfig<(TickerInfo, u32)>| {
-        adapter::clickhouse::connect_kline_stream(cfg.id.0, cfg.id.1)
+        use iced::futures::StreamExt;
+        if adapter::clickhouse::sse_enabled() {
+            adapter::clickhouse::connect_sse_stream(cfg.id.0, cfg.id.1).boxed()
+        } else {
+            adapter::clickhouse::connect_kline_stream(cfg.id.0, cfg.id.1).boxed()
+        }
     };
     Subscription::run_with(config, builder)
 }

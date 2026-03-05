@@ -2,15 +2,15 @@
 # SSH tunnel to bigblack ClickHouse for range bar data
 
 ["tunnel:start"]
-description = "Start SSH tunnel to bigblack ClickHouse (localhost:18123 → bigblack:8123)"
+description = "Start SSH tunnel to bigblack (CH:18123→8123, SSE:18081→8081)"
 run = """
 if lsof -ti:18123 >/dev/null 2>&1; then
   echo "Tunnel already running on port 18123"
   exit 0
 fi
 echo "Starting SSH tunnel to bigblack..."
-ssh -fNL 18123:localhost:8123 bigblack
-echo "SSH tunnel started: localhost:18123 → bigblack:8123"
+ssh -fNL 18123:localhost:8123 -L 18081:localhost:8081 bigblack
+echo "SSH tunnel started: localhost:18123→bigblack:8123 + localhost:18081→bigblack:8081"
 """
 
 ["tunnel:stop"]
@@ -133,6 +133,20 @@ echo "  BTCUSDT thresholds available:"
 echo "$DATA" | while IFS=$'\t' read -r threshold bars; do
   printf "    BPR%-4s  %s bars\n" "$((threshold / 10))" "$bars"
 done
+
+# 5. SSE sidecar health (only when enabled)
+echo ""
+if [ "${FLOWSURFACE_SSE_ENABLED:-false}" = "true" ]; then
+  echo "[5/5] Checking SSE sidecar..."
+  SSE_RESULT=$(curl -sf --connect-timeout 2 "http://localhost:${FLOWSURFACE_SSE_PORT:-18081}/health" 2>&1)
+  if [ $? -eq 0 ]; then
+    echo "  SSE sidecar OK"
+  else
+    echo "  WARNING: SSE sidecar not responding (app will fail to receive SSE bars)"
+  fi
+else
+  echo "[5/5] SSE disabled (FLOWSURFACE_SSE_ENABLED=false)"
+fi
 
 echo ""
 echo "=== Preflight PASSED ==="
