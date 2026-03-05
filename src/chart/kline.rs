@@ -237,6 +237,10 @@ pub struct KlineChart {
     next_agg_id: i64,
     /// Total completed bars from the in-process processor (diagnostic).
     odb_completed_count: u32,
+    /// Locally-completed ODB bars appended while SSE is active. These have
+    /// approximate boundaries and are popped when the authoritative SSE/CH
+    /// bar arrives via `update_latest_kline()`.
+    pending_local_bars: u32,
     /// Kline chart configuration (e.g. OFI EMA period).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
@@ -340,6 +344,7 @@ impl KlineChart {
                     odb_processor: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
+                    pending_local_bars: 0,
                     kline_config,
                 }
             }
@@ -405,6 +410,7 @@ impl KlineChart {
                     odb_processor: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
+                    pending_local_bars: 0,
                     kline_config,
                 }
             }
@@ -496,6 +502,7 @@ impl KlineChart {
                     odb_processor,
                     next_agg_id: 0,
                     odb_completed_count: 0,
+                    pending_local_bars: 0,
                     kline_config,
                 }
             }
@@ -653,6 +660,7 @@ impl KlineChart {
             odb_processor,
             next_agg_id: 0,
             odb_completed_count: 0,
+            pending_local_bars: 0,
             kline_config,
         }
     }
@@ -677,6 +685,23 @@ impl KlineChart {
             }
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_odb() {
+                    // Pop locally-completed bars before reconciling with authoritative
+                    // SSE/CH bars. Local bars have approximate boundaries (arbitrary WS
+                    // start point) and are replaced by the authoritative version.
+                    if self.pending_local_bars > 0 {
+                        let to_pop =
+                            (self.pending_local_bars as usize).min(tick_aggr.datapoints.len());
+                        tick_aggr
+                            .datapoints
+                            .truncate(tick_aggr.datapoints.len() - to_pop);
+                        log::info!(
+                            "[SSE] popped {} pending local bar(s), appending authoritative bar ts={}",
+                            to_pop,
+                            kline.time,
+                        );
+                        self.pending_local_bars = 0;
+                    }
+
                     // Get previous bar's close for color direction.
                     // If this kline replaces the last bar (same timestamp), use second-to-last.
                     // If this kline appends (new bar), use the current last bar.
@@ -1215,48 +1240,43 @@ impl KlineChart {
                                     let last_time =
                                         tick_aggr.datapoints.last().map(|dp| dp.kline.time);
 
-                                    if sse_enabled() && sse_connected() {
-                                        // SSE mode: don't append locally-completed bars.
-                                        // The local RBP starts from an arbitrary WS trade
-                                        // (not the CH bar boundary), producing misaligned
-                                        // bars with different timestamps → duplicates.
-                                        // SSE delivers authoritative bars via update_latest_klines().
-                                        log::info!(
-                                            "[RBP]   kline.time={} last_dp_time={:?} action=SKIPPED(sse)",
-                                            kline.time,
-                                            last_time,
-                                        );
+                                    // Always append locally-completed bars to avoid
+                                    // visual gaps. In SSE mode these are provisional
+                                    // (approximate boundaries) and will be popped when
+                                    // the authoritative SSE/CH bar arrives.
+                                    let action = if sse_enabled() && sse_connected() {
+                                        "APPEND(local-provisional)"
+                                    } else if sse_enabled() && !sse_connected() {
+                                        "APPEND(sse-fallback)"
                                     } else {
-                                        if sse_enabled() && !sse_connected() {
-                                            log::info!(
-                                                "[RBP]   kline.time={} last_dp_time={:?} action=APPEND(sse-fallback)",
-                                                kline.time,
-                                                last_time,
-                                            );
-                                        } else {
-                                            log::info!(
-                                                "[RBP]   kline.time={} last_dp_time={:?} action={}",
-                                                kline.time,
-                                                last_time,
-                                                match last_time {
-                                                    Some(t) if kline.time == t => "REPLACE",
-                                                    Some(t) if kline.time > t => "APPEND",
-                                                    Some(_) => "DROPPED!",
-                                                    None => "APPEND(empty)",
-                                                }
-                                            );
+                                        match last_time {
+                                            Some(t) if kline.time == t => "REPLACE",
+                                            Some(t) if kline.time > t => "APPEND",
+                                            Some(_) => "DROPPED!",
+                                            None => "APPEND(empty)",
                                         }
-                                        tick_aggr.replace_or_append_kline(&kline);
-                                        // Attach microstructure to the newly appended bar
-                                        if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
-                                            last_dp.microstructure = Some(OdbMicrostructure {
-                                                trade_count: micro.trade_count,
-                                                ofi: micro.ofi,
-                                                trade_intensity: micro.trade_intensity,
-                                            });
-                                        }
-                                        new_bars += 1;
+                                    };
+                                    log::info!(
+                                        "[RBP]   kline.time={} last_dp_time={:?} action={}",
+                                        kline.time,
+                                        last_time,
+                                        action,
+                                    );
+
+                                    tick_aggr.replace_or_append_kline(&kline);
+                                    // Attach microstructure to the newly appended bar
+                                    if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                                        last_dp.microstructure = Some(OdbMicrostructure {
+                                            trade_count: micro.trade_count,
+                                            ofi: micro.ofi,
+                                            trade_intensity: micro.trade_intensity,
+                                        });
                                     }
+                                    // Track provisional bars for cleanup on SSE/CH delivery
+                                    if sse_enabled() && sse_connected() {
+                                        self.pending_local_bars += 1;
+                                    }
+                                    new_bars += 1;
                                 }
                                 Ok(None) => {}
                                 Err(e) => {

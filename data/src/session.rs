@@ -192,7 +192,7 @@ pub fn compute_boundaries(start_ms: u64, end_ms: u64) -> Vec<SessionBoundary> {
 
     boundaries.sort_by_key(|b| b.timestamp_ms);
 
-    log::debug!(
+    log::trace!(
         "[SESSION] compute_boundaries: range=[{start_ms}, {end_ms}] → {} boundaries, {skipped_weekends} weekend days skipped",
         boundaries.len(),
     );
