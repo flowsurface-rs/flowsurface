@@ -1132,6 +1132,16 @@ impl KlineChart {
                     // gap-fill data.  Gap-fill batches pass is_gap_fill=true to
                     // bypass this guard.
                     if self.fetching_trades.0 && !is_gap_fill {
+                        // Still update the live price line from the latest trade
+                        // so the chart stays in sync with the widget during gap-fill.
+                        if let Some(last_trade) = trades_buffer.last() {
+                            let prev_close =
+                                tick_aggr.datapoints.last().map(|dp| dp.kline.close);
+                            let reference = prev_close.unwrap_or(last_trade.price);
+                            self.chart.last_price =
+                                Some(PriceInfoLabel::new(last_trade.price, reference));
+                            self.chart.last_trade_time = Some(last_trade.time);
+                        }
                         return;
                     }
 
