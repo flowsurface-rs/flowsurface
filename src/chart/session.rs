@@ -52,7 +52,7 @@ pub fn draw_sessions(
         return;
     }
 
-    log::debug!(
+    log::trace!(
         "[SESSION/render] drawing {} boundaries (region: {:.0}x{:.0})",
         resolved.len(),
         region.width,
@@ -136,7 +136,7 @@ fn resolve_time_based(
             }
         })
         .collect();
-    log::debug!("[SESSION/time] resolved {} boundaries", resolved.len());
+    log::trace!("[SESSION/time] resolved {} boundaries", resolved.len());
     resolved
 }
 
@@ -173,7 +173,7 @@ fn resolve_tick_based(
     let vis_start_ms = dps[oldest_visible_fwd].kline.time; // older timestamp
     let vis_end_ms = dps[newest_visible_fwd].kline.time; // newer timestamp
 
-    log::debug!(
+    log::trace!(
         "[SESSION/tick] len={len}, visible: earliest_vis={earliest} latest_vis={latest}, \
          fwd=[{oldest_visible_fwd}..{newest_visible_fwd}], \
          time_range=[{vis_start_ms}, {vis_end_ms}]"
@@ -216,7 +216,7 @@ fn resolve_tick_based(
         });
     }
 
-    log::debug!("[SESSION/tick] resolved={} boundaries", resolved.len(),);
+    log::trace!("[SESSION/tick] resolved={} boundaries", resolved.len(),);
 
     resolved
 }
@@ -318,5 +318,5 @@ fn draw_session_strips(
         }
     }
 
-    log::debug!("[SESSION/strip] {paired} strips drawn, {unpaired} unpaired opens");
+    log::trace!("[SESSION/strip] {paired} strips drawn, {unpaired} unpaired opens");
 }

@@ -18,6 +18,7 @@ use crate::connect;
 use futures::{SinkExt, Stream};
 use serde::Deserialize;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
@@ -681,6 +682,12 @@ static SSE_PORT: LazyLock<u16> = LazyLock::new(|| {
         .unwrap_or(18081)
 });
 
+static SSE_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+pub fn sse_connected() -> bool {
+    SSE_CONNECTED.load(Ordering::Relaxed)
+}
+
 pub fn sse_enabled() -> bool {
     std::env::var("FLOWSURFACE_SSE_ENABLED")
         .map(|v| v == "true" || v == "1")
@@ -741,48 +748,65 @@ pub fn connect_sse_stream(
         };
         let symbol = bare_symbol(&ticker_info);
 
-        let client = OdbSseClient::new(OdbSseConfig {
-            host: SSE_HOST.clone(),
-            port: *SSE_PORT,
-            symbols: vec![symbol.clone()],
-            thresholds: vec![threshold_dbps],
-        });
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            log::info!(
+                "[SSE] connecting: {} @{} (attempt #{})",
+                symbol,
+                threshold_dbps,
+                attempt
+            );
 
-        use futures::StreamExt;
-        let mut stream = std::pin::pin!(client.connect());
-        while let Some(event) = stream.next().await {
-            match event {
-                OdbSseEvent::Connected => {
-                    log::info!("[SSE] connected: {} @{}", symbol, threshold_dbps);
-                }
-                OdbSseEvent::Bar(bar) => {
-                    if bar.symbol != symbol || bar.threshold != threshold_dbps {
-                        continue;
+            let client = OdbSseClient::new(OdbSseConfig {
+                host: SSE_HOST.clone(),
+                port: *SSE_PORT,
+                symbols: vec![symbol.clone()],
+                thresholds: vec![threshold_dbps],
+            });
+
+            use futures::StreamExt;
+            let mut stream = std::pin::pin!(client.connect());
+            while let Some(event) = stream.next().await {
+                match event {
+                    OdbSseEvent::Connected => {
+                        attempt = 0;
+                        SSE_CONNECTED.store(true, Ordering::Relaxed);
+                        log::info!("[SSE] connected: {} @{}", symbol, threshold_dbps);
                     }
-                    let (kline, raw_f64, _micro) =
-                        odb_bar_to_kline_tuple(&bar, ticker_info.min_ticksize);
-                    log::info!(
-                        "[SSE] {} @{}: bar ts={}",
-                        symbol,
-                        threshold_dbps,
-                        kline.time
-                    );
-                    let _ = output
-                        .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64)))
-                        .await;
-                }
-                OdbSseEvent::Heartbeat => {}
-                OdbSseEvent::DeserializationError { error, raw_data } => {
-                    log::warn!(
-                        "[SSE] deser error: {error}, data: {}",
-                        &raw_data[..raw_data.len().min(200)]
-                    );
-                }
-                OdbSseEvent::Disconnected(reason) => {
-                    log::warn!("[SSE] disconnected: {reason}");
-                    return;
+                    OdbSseEvent::Bar(bar) => {
+                        if bar.symbol != symbol || bar.threshold != threshold_dbps {
+                            continue;
+                        }
+                        let (kline, raw_f64, _micro) =
+                            odb_bar_to_kline_tuple(&bar, ticker_info.min_ticksize);
+                        log::info!(
+                            "[SSE] {} @{}: bar ts={}",
+                            symbol,
+                            threshold_dbps,
+                            kline.time
+                        );
+                        let _ = output
+                            .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64)))
+                            .await;
+                    }
+                    OdbSseEvent::Heartbeat => {}
+                    OdbSseEvent::DeserializationError { error, raw_data } => {
+                        log::warn!(
+                            "[SSE] deser error: {error}, data: {}",
+                            &raw_data[..raw_data.len().min(200)]
+                        );
+                    }
+                    OdbSseEvent::Disconnected(reason) => {
+                        SSE_CONNECTED.store(false, Ordering::Relaxed);
+                        log::warn!("[SSE] disconnected: {reason}, reconnecting in 5s");
+                        break;
+                    }
                 }
             }
+            // Stream ended (with or without Disconnected event)
+            SSE_CONNECTED.store(false, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     })
 }

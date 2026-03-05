@@ -1198,7 +1198,7 @@ impl Dashboard {
         if found_match {
             Task::none()
         } else {
-            log::debug!("No matching pane found for the stream: {stream:?}");
+            log::trace!("No matching pane found for the stream: {stream:?}");
             self.refresh_streams(main_window)
         }
     }

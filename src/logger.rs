@@ -2,7 +2,6 @@ use std::{
     fs,
     io::{self, Write},
     path::PathBuf,
-    process,
     sync::mpsc,
     thread,
 };
@@ -153,6 +152,7 @@ impl Drop for BackgroundLogger {
 struct Logger {
     file: fs::File,
     current_size: u64,
+    path: PathBuf,
 }
 
 impl Logger {
@@ -167,7 +167,34 @@ impl Logger {
         Ok(Logger {
             file,
             current_size: size,
+            path: path.clone(),
         })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        self.file.flush()?;
+
+        let dir = self.path.parent().unwrap_or(std::path::Path::new("."));
+        let previous = dir.join("flowsurface-previous.log");
+
+        let _ = fs::remove_file(&previous);
+        let _ = fs::rename(&self.path, &previous);
+
+        self.file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        self.current_size = 0;
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
+        let msg = format!(
+            "{}:INFO -- [logger] Log rotated (previous file preserved)\n",
+            timestamp
+        );
+        self.file.write_all(msg.as_bytes())?;
+        self.current_size += msg.len() as u64;
+
+        Ok(())
     }
 }
 
@@ -176,18 +203,7 @@ impl Write for Logger {
         let buf_len = buf.len() as u64;
 
         if self.current_size + buf_len > MAX_LOG_FILE_SIZE {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
-            let error_msg = format!(
-                "\n{}:FATAL -- Log file size would exceed the maximum allowed size of {} bytes\n",
-                timestamp, MAX_LOG_FILE_SIZE
-            );
-
-            eprintln!("{error_msg}");
-
-            let _ = self.file.write_all(error_msg.as_bytes());
-            let _ = self.file.flush();
-
-            process::abort();
+            self.rotate()?;
         }
 
         let bytes = self.file.write(buf)?;

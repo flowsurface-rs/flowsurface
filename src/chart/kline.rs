@@ -19,8 +19,8 @@ use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
     adapter::clickhouse::{
-        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, sse_enabled,
-        trade_to_agg_trade,
+        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, sse_connected,
+        sse_enabled, trade_to_agg_trade,
     },
     fetcher::{FetchRange, RequestHandler},
 };
@@ -709,7 +709,7 @@ impl KlineChart {
                     // When SSE delivers a bar, reset the local RBP processor so
                     // the forming bar starts from the next WS trade (near this
                     // bar's close) instead of the old misaligned boundary.
-                    if sse_enabled()
+                    if sse_enabled() && sse_connected()
                         && let Basis::Odb(threshold_dbps) = self.chart.basis
                     {
                         self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
@@ -1215,7 +1215,7 @@ impl KlineChart {
                                     let last_time =
                                         tick_aggr.datapoints.last().map(|dp| dp.kline.time);
 
-                                    if sse_enabled() {
+                                    if sse_enabled() && sse_connected() {
                                         // SSE mode: don't append locally-completed bars.
                                         // The local RBP starts from an arbitrary WS trade
                                         // (not the CH bar boundary), producing misaligned
@@ -1227,17 +1227,25 @@ impl KlineChart {
                                             last_time,
                                         );
                                     } else {
-                                        log::info!(
-                                            "[RBP]   kline.time={} last_dp_time={:?} action={}",
-                                            kline.time,
-                                            last_time,
-                                            match last_time {
-                                                Some(t) if kline.time == t => "REPLACE",
-                                                Some(t) if kline.time > t => "APPEND",
-                                                Some(_) => "DROPPED!",
-                                                None => "APPEND(empty)",
-                                            }
-                                        );
+                                        if sse_enabled() && !sse_connected() {
+                                            log::info!(
+                                                "[RBP]   kline.time={} last_dp_time={:?} action=APPEND(sse-fallback)",
+                                                kline.time,
+                                                last_time,
+                                            );
+                                        } else {
+                                            log::info!(
+                                                "[RBP]   kline.time={} last_dp_time={:?} action={}",
+                                                kline.time,
+                                                last_time,
+                                                match last_time {
+                                                    Some(t) if kline.time == t => "REPLACE",
+                                                    Some(t) if kline.time > t => "APPEND",
+                                                    Some(_) => "DROPPED!",
+                                                    None => "APPEND(empty)",
+                                                }
+                                            );
+                                        }
                                         tick_aggr.replace_or_append_kline(&kline);
                                         // Attach microstructure to the newly appended bar
                                         if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
