@@ -19,7 +19,8 @@ use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
     adapter::clickhouse::{
-        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, trade_to_agg_trade,
+        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, sse_enabled,
+        trade_to_agg_trade,
     },
     fetcher::{FetchRange, RequestHandler},
 };
@@ -1196,27 +1197,41 @@ impl KlineChart {
 
                                     let last_time =
                                         tick_aggr.datapoints.last().map(|dp| dp.kline.time);
-                                    log::info!(
-                                        "[RBP]   kline.time={} last_dp_time={:?} action={}",
-                                        kline.time,
-                                        last_time,
-                                        match last_time {
-                                            Some(t) if kline.time == t => "REPLACE",
-                                            Some(t) if kline.time > t => "APPEND",
-                                            Some(_) => "DROPPED!",
-                                            None => "APPEND(empty)",
+
+                                    if sse_enabled() {
+                                        // SSE mode: don't append locally-completed bars.
+                                        // The local RBP starts from an arbitrary WS trade
+                                        // (not the CH bar boundary), producing misaligned
+                                        // bars with different timestamps → duplicates.
+                                        // SSE delivers authoritative bars via update_latest_klines().
+                                        log::info!(
+                                            "[RBP]   kline.time={} last_dp_time={:?} action=SKIPPED(sse)",
+                                            kline.time,
+                                            last_time,
+                                        );
+                                    } else {
+                                        log::info!(
+                                            "[RBP]   kline.time={} last_dp_time={:?} action={}",
+                                            kline.time,
+                                            last_time,
+                                            match last_time {
+                                                Some(t) if kline.time == t => "REPLACE",
+                                                Some(t) if kline.time > t => "APPEND",
+                                                Some(_) => "DROPPED!",
+                                                None => "APPEND(empty)",
+                                            }
+                                        );
+                                        tick_aggr.replace_or_append_kline(&kline);
+                                        // Attach microstructure to the newly appended bar
+                                        if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                                            last_dp.microstructure = Some(OdbMicrostructure {
+                                                trade_count: micro.trade_count,
+                                                ofi: micro.ofi,
+                                                trade_intensity: micro.trade_intensity,
+                                            });
                                         }
-                                    );
-                                    tick_aggr.replace_or_append_kline(&kline);
-                                    // Attach microstructure to the newly appended bar
-                                    if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
-                                        last_dp.microstructure = Some(OdbMicrostructure {
-                                            trade_count: micro.trade_count,
-                                            ofi: micro.ofi,
-                                            trade_intensity: micro.trade_intensity,
-                                        });
+                                        new_bars += 1;
                                     }
-                                    new_bars += 1;
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
