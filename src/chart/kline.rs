@@ -706,6 +706,23 @@ impl KlineChart {
                         .filter_map(Option::as_mut)
                         .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
+                    // When SSE delivers a bar, reset the local RBP processor so
+                    // the forming bar starts from the next WS trade (near this
+                    // bar's close) instead of the old misaligned boundary.
+                    if sse_enabled()
+                        && let Basis::Odb(threshold_dbps) = self.chart.basis
+                    {
+                        self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
+                            .map_err(|e| log::warn!("failed to reset ODB processor: {e}"))
+                            .ok();
+                        self.next_agg_id = 0;
+                        log::info!(
+                            "[SSE] reset ODB processor after bar ts={}, close={:?}",
+                            kline.time,
+                            kline.close
+                        );
+                    }
+
                     // Check forming bar existence before taking &mut self via mut_state().
                     let has_forming = self
                         .odb_processor
