@@ -25,6 +25,7 @@ use data::{
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
     adapter::{StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
+    connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
     depth::Depth,
 };
 
@@ -1164,27 +1165,45 @@ impl Dashboard {
                 }
 
                 if !specs.trade.is_empty() {
-                    let config = StreamConfig::new(
-                        specs.trade.clone(),
-                        exchange,
-                        None,
-                        PushFrequency::ServerDefault,
-                    );
+                    let trade_subs = specs
+                        .trade
+                        .chunks(MAX_TRADE_TICKERS_PER_STREAM)
+                        .map(|tickers| {
+                            let config = StreamConfig::new(
+                                tickers.to_vec(),
+                                exchange,
+                                None,
+                                PushFrequency::ServerDefault,
+                            );
 
-                    let sub = Subscription::run_with(config, exchange::connect::trade_stream);
-                    subs.push(sub);
+                            Subscription::run_with(config, exchange::connect::trade_stream)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if !trade_subs.is_empty() {
+                        subs.push(Subscription::batch(trade_subs));
+                    }
                 }
 
                 if !specs.kline.is_empty() {
-                    let config = StreamConfig::new(
-                        specs.kline.clone(),
-                        exchange,
-                        None,
-                        PushFrequency::ServerDefault,
-                    );
+                    let kline_subs = specs
+                        .kline
+                        .chunks(MAX_KLINE_STREAMS_PER_STREAM)
+                        .map(|streams| {
+                            let config = StreamConfig::new(
+                                streams.to_vec(),
+                                exchange,
+                                None,
+                                PushFrequency::ServerDefault,
+                            );
 
-                    let sub = Subscription::run_with(config, exchange::connect::kline_stream);
-                    subs.push(sub);
+                            Subscription::run_with(config, exchange::connect::kline_stream)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if !kline_subs.is_empty() {
+                        subs.push(Subscription::batch(kline_subs));
+                    }
                 }
 
                 subs

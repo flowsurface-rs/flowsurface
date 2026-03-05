@@ -67,14 +67,11 @@ pub fn exact_multipliers_for_price(price: f32) -> &'static [u16] {
     }
 }
 
-#[allow(dead_code)]
 const LIMIT: usize = 1200; // Conservative rate limit
 
-#[allow(dead_code)]
 const REFILL_RATE: Duration = Duration::from_secs(60);
 const LIMITER_BUFFER_PCT: f32 = 0.05;
 
-#[allow(dead_code)]
 static HYPERLIQUID_LIMITER: LazyLock<Mutex<HyperliquidLimiter>> =
     LazyLock::new(|| Mutex::new(HyperliquidLimiter::new(LIMIT, REFILL_RATE)));
 
@@ -956,7 +953,7 @@ pub fn connect_depth_stream(
 }
 
 pub fn connect_trade_stream(
-    streams: Vec<TickerInfo>,
+    tickers: Vec<TickerInfo>,
     market_type: MarketKind,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
@@ -969,7 +966,7 @@ pub fn connect_trade_stream(
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
-        let ticker_info_map = streams
+        let ticker_info_map = tickers
             .iter()
             .map(|ticker_info| {
                 (
@@ -986,7 +983,7 @@ pub fn connect_trade_stream(
             })
             .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
-        let symbol_to_ticker = streams
+        let symbol_to_ticker = tickers
             .iter()
             .map(|ticker_info| {
                 let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
@@ -1002,7 +999,7 @@ pub fn connect_trade_stream(
                 State::Disconnected => match connect_websocket(WS_DOMAIN, "/ws").await {
                     Ok(mut websocket) => {
                         let mut subscribe_ok = true;
-                        for ticker_info in &streams {
+                        for ticker_info in &tickers {
                             let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
 
                             let trades_subscribe_msg = json!({

@@ -34,16 +34,17 @@ async fn flush_trade_buffers<V>(
             .iter()
             .map(|t| t.time)
             .max()
-            .map(|t| (t / interval_ms) * interval_ms)
-            .unwrap_or(0);
+            .map(|t| (t / interval_ms) * interval_ms);
 
-        if let Some((ticker_info, _)) = ticker_info_map.get(ticker) {
+        if let Some((ticker_info, _)) = ticker_info_map.get(ticker)
+            && let Some(update_t) = bucket_update_t
+        {
             let _ = output
                 .send(Event::TradesReceived(
                     StreamKind::Trades {
                         ticker_info: *ticker_info,
                     },
-                    bucket_update_t,
+                    update_t,
                     std::mem::take(trades_buffer).into_boxed_slice(),
                 ))
                 .await;

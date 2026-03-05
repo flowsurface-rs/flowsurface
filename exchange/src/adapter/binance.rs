@@ -594,7 +594,7 @@ pub fn connect_depth_stream(
 }
 
 pub fn connect_trade_stream(
-    streams: Vec<TickerInfo>,
+    tickers: Vec<TickerInfo>,
     market: MarketKind,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
@@ -602,7 +602,7 @@ pub fn connect_trade_stream(
         let exchange = exchange_from_market_type(market);
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let ticker_info_map = streams
+        let ticker_info_map = tickers
             .iter()
             .map(|ticker_info| {
                 (
@@ -625,7 +625,7 @@ pub fn connect_trade_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    let stream = streams
+                    let stream = tickers
                         .iter()
                         .map(|ticker_info| {
                             format!(

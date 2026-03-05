@@ -27,6 +27,11 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
+// Keep topics per websocket conservative across venues
+// allow up to 100 tickers per websocket stream
+pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
+pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
+
 pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
     let ticker = config.id;
     let push_freq = config.push_freq;
