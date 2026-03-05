@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 /// Trade intensity indicator: trades per second per bar.
-/// Reveals urgency — unique to range bars since their duration varies.
-/// Only available for range bars with microstructure data.
+/// Reveals urgency — unique to ODB bars since their duration varies.
+/// Only available for ODB bars with microstructure data.
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 pub struct TradeIntensityIndicator {
     cache: Caches,

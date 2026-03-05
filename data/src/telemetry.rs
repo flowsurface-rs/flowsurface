@@ -13,7 +13,7 @@ use std::thread;
 use chrono::Utc;
 use serde::Serialize;
 
-use crate::aggr::ticks::RangeBarMicrostructure;
+use crate::aggr::ticks::OdbMicrostructure;
 use exchange::Kline;
 
 // ---------------------------------------------------------------------------
@@ -216,14 +216,14 @@ pub enum TelemetryEvent {
         action: ReconcileAction,
         incoming: KlineSnapshot,
         existing_last: Option<KlineSnapshot>,
-        micro_before: Option<RangeBarMicrostructure>,
+        micro_before: Option<OdbMicrostructure>,
     },
 
     /// Microstructure cleared during REPLACE reconciliation
     MicroLoss {
         ts_ms: u64,
         bar_time_ms: u64,
-        micro_before: RangeBarMicrostructure,
+        micro_before: OdbMicrostructure,
     },
 
     /// Periodic state dump (every 30s)

@@ -89,8 +89,8 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
 
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 /// Series backed by a contiguous `&[Y]` slice where index 0 = oldest bar (forward order).
-/// Used for RangeBar/Tick indicators that store data in `Vec<Y>` for O(1) rebuild.
-/// Translates the `.rev()` index space used by RangeBar rendering into slice indices.
+/// Used for Odb/Tick indicators that store data in `Vec<Y>` for O(1) rebuild.
+/// Translates the `.rev()` index space used by Odb rendering into slice indices.
 pub struct ReversedSliceSeries<'a, Y> {
     inner: &'a [Y],
     /// Largest `.rev()` index = index of the OLDEST bar = slice.len() - 1.
@@ -148,20 +148,20 @@ impl<'a, Y> Series for ReversedSliceSeries<'a, Y> {
 pub enum AnySeries<'a, Y> {
     Forward(&'a BTreeMap<u64, Y>),
     Reversed(ReversedBTreeSeries<'a, Y>),
-    /// Slice-backed series for Vec-based indicators (RangeBar/Tick only).
+    /// Slice-backed series for Vec-based indicators (Odb/Tick only).
     ReversedSlice(ReversedSliceSeries<'a, Y>),
 }
 
 impl<'a, Y> AnySeries<'a, Y> {
     pub fn for_basis(basis: Basis, data: &'a BTreeMap<u64, Y>) -> Self {
         match basis {
-            Basis::Tick(_) | Basis::RangeBar(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
+            Basis::Tick(_) | Basis::Odb(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
             Basis::Time(_) => Self::Forward(data),
         }
     }
 
     /// Create a slice-backed series for Vec-based indicators.
-    /// `data` is forward-indexed (0 = oldest bar). Only valid for RangeBar/Tick basis.
+    /// `data` is forward-indexed (0 = oldest bar). Only valid for Odb/Tick basis.
     pub fn for_basis_slice(data: &'a [Y]) -> Self {
         Self::ReversedSlice(ReversedSliceSeries::new(data))
     }
@@ -359,7 +359,7 @@ where
                         };
                         (rx, sr)
                     }
-                    Basis::Tick(_) | Basis::RangeBar(_) => {
+                    Basis::Tick(_) | Basis::Odb(_) => {
                         let world_x = region.x + (cursor_position.x / bounds.width) * region.width;
                         let snapped_world_x = (world_x / ctx.cell_width).round() * ctx.cell_width;
 

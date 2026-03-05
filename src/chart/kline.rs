@@ -6,7 +6,7 @@ use super::{
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
-use data::aggr::ticks::{RangeBarMicrostructure, TickAggr};
+use data::aggr::ticks::{OdbMicrostructure, TickAggr};
 use data::aggr::time::TimeSeries;
 use data::chart::indicator::{Indicator, KlineIndicator};
 use data::chart::kline::{
@@ -102,8 +102,8 @@ impl Chart for KlineChart {
             Basis::Tick(_) => {
                 unimplemented!()
             }
-            Basis::RangeBar(_) => {
-                // Range bars use TickBased storage (Vec, oldest-first).
+            Basis::Odb(_) => {
+                // ODB bars use TickBased storage (Vec, oldest-first).
                 // Return the full timestamp range of loaded data.
                 if let PlotData::TickBased(tick_aggr) = &self.data_source {
                     if tick_aggr.datapoints.is_empty() {
@@ -139,7 +139,7 @@ impl Chart for KlineChart {
             KlineChartKind::Footprint { .. } => {
                 0.5 * (chart.bounds.width / chart.scaling) - (chart.cell_width / chart.scaling)
             }
-            KlineChartKind::Candles | KlineChartKind::RangeBar => {
+            KlineChartKind::Candles | KlineChartKind::Odb => {
                 0.5 * (chart.bounds.width / chart.scaling)
                     - (8.0 * chart.cell_width / chart.scaling)
             }
@@ -226,13 +226,13 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
-    /// In-process range bar processor (opendeviationbar-core). Produces completed bars
+    /// In-process ODB processor (opendeviationbar-core). Produces completed bars
     /// from raw WebSocket trades, eliminating the ClickHouse live polling path.
     odb_processor: Option<OpenDeviationBarProcessor>,
-    /// Monotonic counter for AggTrade IDs fed to the range bar processor.
+    /// Monotonic counter for AggTrade IDs fed to the ODB processor.
     next_agg_id: i64,
     /// Total completed bars from the in-process processor (diagnostic).
-    range_bar_completed_count: u32,
+    odb_completed_count: u32,
     /// Kline chart configuration (e.g. OFI EMA period).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
@@ -263,7 +263,7 @@ impl KlineChart {
                 let (scale_high, scale_low) = timeseries.price_scale({
                     match kind {
                         KlineChartKind::Footprint { .. } => 12,
-                        KlineChartKind::Candles | KlineChartKind::RangeBar => 60,
+                        KlineChartKind::Candles | KlineChartKind::Odb => 60,
                     }
                 });
 
@@ -277,11 +277,11 @@ impl KlineChart {
 
                 let cell_width = match kind {
                     KlineChartKind::Footprint { .. } => 80.0,
-                    KlineChartKind::Candles | KlineChartKind::RangeBar => 4.0,
+                    KlineChartKind::Candles | KlineChartKind::Odb => 4.0,
                 };
                 let cell_height = match kind {
                     KlineChartKind::Footprint { .. } => 800.0 / y_ticks,
-                    KlineChartKind::Candles | KlineChartKind::RangeBar => 200.0 / y_ticks,
+                    KlineChartKind::Candles | KlineChartKind::Odb => 200.0 / y_ticks,
                 };
 
                 let mut chart = ViewState::new(
@@ -305,7 +305,7 @@ impl KlineChart {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (chart.cell_width / chart.scaling)
                     }
-                    KlineChartKind::Candles | KlineChartKind::RangeBar => {
+                    KlineChartKind::Candles | KlineChartKind::Odb => {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (8.0 * chart.cell_width / chart.scaling)
                     }
@@ -333,7 +333,7 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     odb_processor: None,
                     next_agg_id: 0,
-                    range_bar_completed_count: 0,
+                    odb_completed_count: 0,
                     kline_config,
                 }
             }
@@ -342,11 +342,11 @@ impl KlineChart {
 
                 let cell_width = match kind {
                     KlineChartKind::Footprint { .. } => 80.0,
-                    KlineChartKind::Candles | KlineChartKind::RangeBar => 4.0,
+                    KlineChartKind::Candles | KlineChartKind::Odb => 4.0,
                 };
                 let cell_height = match kind {
                     KlineChartKind::Footprint { .. } => 90.0,
-                    KlineChartKind::Candles | KlineChartKind::RangeBar => 8.0,
+                    KlineChartKind::Candles | KlineChartKind::Odb => 8.0,
                 };
 
                 let mut chart = ViewState::new(
@@ -368,7 +368,7 @@ impl KlineChart {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (chart.cell_width / chart.scaling)
                     }
-                    KlineChartKind::Candles | KlineChartKind::RangeBar => {
+                    KlineChartKind::Candles | KlineChartKind::Odb => {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (8.0 * chart.cell_width / chart.scaling)
                     }
@@ -396,18 +396,18 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     odb_processor: None,
                     next_agg_id: 0,
-                    range_bar_completed_count: 0,
+                    odb_completed_count: 0,
                     kline_config,
                 }
             }
-            Basis::RangeBar(threshold_dbps) => {
-                // Range bars use TickBased storage (Vec indexed by position) with
+            Basis::Odb(threshold_dbps) => {
+                // ODB bars use TickBased storage (Vec indexed by position) with
                 // index-based rendering, matching the Tick coordinate system.
                 // Data comes from ClickHouse as precomputed klines.
                 let step = PriceStep::from_f32(tick_size);
 
                 let mut tick_aggr = TickAggr::from_klines(step, klines_raw);
-                tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
+                tick_aggr.odb_threshold_dbps = Some(threshold_dbps);
 
                 // Scale cell width with threshold: larger thresholds have fewer bars
                 // covering the same time span, so each bar deserves more horizontal space.
@@ -485,7 +485,7 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     odb_processor,
                     next_agg_id: 0,
-                    range_bar_completed_count: 0,
+                    odb_completed_count: 0,
                     kline_config,
                 }
             }
@@ -493,7 +493,7 @@ impl KlineChart {
     }
 
     /// Like `new()` but accepts optional microstructure sidecar from ClickHouse.
-    /// Converts `ChMicrostructure` → `RangeBarMicrostructure` at the crate boundary.
+    /// Converts `ChMicrostructure` → `OdbMicrostructure` at the crate boundary.
     pub fn new_with_microstructure(
         layout: ViewConfig,
         basis: Basis,
@@ -507,8 +507,8 @@ impl KlineChart {
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
         kline_config: data::chart::kline::Config,
     ) -> Self {
-        // For non-RangeBar bases or missing microstructure, delegate to plain new()
-        if !matches!(basis, Basis::RangeBar(_)) || microstructure.is_none() {
+        // For non-Odb bases or missing microstructure, delegate to plain new()
+        if !matches!(basis, Basis::Odb(_)) || microstructure.is_none() {
             return Self::new(
                 layout,
                 basis,
@@ -525,11 +525,11 @@ impl KlineChart {
         let micro_slice = microstructure.unwrap();
         let step = PriceStep::from_f32(tick_size);
 
-        // Convert ChMicrostructure → RangeBarMicrostructure
-        let micro: Vec<Option<RangeBarMicrostructure>> = micro_slice
+        // Convert ChMicrostructure → OdbMicrostructure
+        let micro: Vec<Option<OdbMicrostructure>> = micro_slice
             .iter()
             .map(|m| {
-                m.map(|cm| RangeBarMicrostructure {
+                m.map(|cm| OdbMicrostructure {
                     trade_count: cm.trade_count,
                     ofi: cm.ofi,
                     trade_intensity: cm.trade_intensity,
@@ -541,10 +541,10 @@ impl KlineChart {
 
         // Scale cell width with threshold (see non-microstructure constructor)
         let threshold_dbps = match basis {
-            Basis::RangeBar(t) => t,
+            Basis::Odb(t) => t,
             _ => 250,
         };
-        tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
+        tick_aggr.odb_threshold_dbps = Some(threshold_dbps);
         let cell_width = 4.0_f32 * (threshold_dbps as f32 / 250.0);
         let cell_height = 8.0;
 
@@ -592,7 +592,7 @@ impl KlineChart {
             .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
             .ok();
 
-        // Fix stale splits (same as in new() RangeBar path above).
+        // Fix stale splits (same as in new() Odb path above).
         let subplot_count = indicators
             .iter()
             .filter(|(k, v)| v.is_some() && k.has_subplot())
@@ -640,7 +640,7 @@ impl KlineChart {
             last_tick: Instant::now(),
             odb_processor,
             next_agg_id: 0,
-            range_bar_completed_count: 0,
+            odb_completed_count: 0,
             kline_config,
         }
     }
@@ -664,7 +664,7 @@ impl KlineChart {
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
             }
             PlotData::TickBased(ref mut tick_aggr) => {
-                if self.chart.basis.is_range_bar() {
+                if self.chart.basis.is_odb() {
                     // Get previous bar's close for color direction.
                     // If this kline replaces the last bar (same timestamp), use second-to-last.
                     // If this kline appends (new bar), use the current last bar.
@@ -685,7 +685,7 @@ impl KlineChart {
                         tick_aggr.datapoints.last().map(|dp| dp.kline.close)
                     };
 
-                    // Range bar streaming update — reconcile ClickHouse completed bar
+                    // ODB streaming update — reconcile ClickHouse completed bar
                     // with locally-constructed forming bar. ClickHouse is authoritative.
                     tick_aggr.replace_or_append_kline(kline);
 
@@ -796,7 +796,7 @@ impl KlineChart {
                 }
             }
             PlotData::TickBased(tick_aggr) => {
-                if self.chart.basis.is_range_bar() {
+                if self.chart.basis.is_odb() {
                     if tick_aggr.datapoints.is_empty() {
                         // Initial fetch — get latest 500 bars
                         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -960,10 +960,10 @@ impl KlineChart {
                 let tick_aggr = TickAggr::new(tick_count, step, &self.raw_trades);
                 self.data_source = PlotData::TickBased(tick_aggr);
             }
-            Basis::RangeBar(threshold_dbps) => {
+            Basis::Odb(threshold_dbps) => {
                 let step = self.chart.tick_size;
                 let mut tick_aggr = TickAggr::from_klines(step, &[]);
-                tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
+                tick_aggr.odb_threshold_dbps = Some(threshold_dbps);
                 self.data_source = PlotData::TickBased(tick_aggr);
 
                 // Recreate the processor for the new threshold so live trades
@@ -972,15 +972,15 @@ impl KlineChart {
                     .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
                     .ok();
                 self.next_agg_id = 0;
-                self.range_bar_completed_count = 0;
+                self.odb_completed_count = 0;
             }
         }
 
-        // Clear processor when switching away from range bars.
-        if !matches!(new_basis, Basis::RangeBar(_)) {
+        // Clear processor when switching away from ODB bars.
+        if !matches!(new_basis, Basis::Odb(_)) {
             self.odb_processor = None;
             self.next_agg_id = 0;
-            self.range_bar_completed_count = 0;
+            self.odb_completed_count = 0;
         }
 
         self.indicators
@@ -1072,7 +1072,7 @@ impl KlineChart {
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
-                if self.chart.basis.is_range_bar() {
+                if self.chart.basis.is_odb() {
                     // While gap-fill is active, skip RBP for WebSocket trades
                     // to avoid interleaving current-price trades with historical
                     // gap-fill data.  Gap-fill batches pass is_gap_fill=true to
@@ -1081,7 +1081,7 @@ impl KlineChart {
                         return;
                     }
 
-                    // In-process range bar computation via opendeviationbar-core.
+                    // In-process ODB computation via opendeviationbar-core.
                     // Feed each WebSocket trade into the processor; completed
                     // bars are appended to the chart, replacing ClickHouse
                     // polling as the live data source.
@@ -1164,7 +1164,7 @@ impl KlineChart {
                                         use data::telemetry::{
                                             self, KlineSnapshot, TelemetryEvent,
                                         };
-                                        let telem_dbps = if let data::chart::Basis::RangeBar(d) =
+                                        let telem_dbps = if let data::chart::Basis::Odb(d) =
                                             self.chart.basis
                                         {
                                             d
@@ -1179,7 +1179,7 @@ impl KlineChart {
                                             trade_count: micro.trade_count,
                                             ofi: micro.ofi,
                                             trade_intensity: micro.trade_intensity,
-                                            completed_bar_index: self.range_bar_completed_count,
+                                            completed_bar_index: self.odb_completed_count,
                                         });
                                     }
 
@@ -1199,7 +1199,7 @@ impl KlineChart {
                                     tick_aggr.replace_or_append_kline(&kline);
                                     // Attach microstructure to the newly appended bar
                                     if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
-                                        last_dp.microstructure = Some(RangeBarMicrostructure {
+                                        last_dp.microstructure = Some(OdbMicrostructure {
                                             trade_count: micro.trade_count,
                                             ofi: micro.ofi,
                                             trade_intensity: micro.trade_intensity,
@@ -1235,11 +1235,11 @@ impl KlineChart {
                         }
 
                         if new_bars > 0 {
-                            self.range_bar_completed_count += new_bars;
+                            self.odb_completed_count += new_bars;
                             log::info!(
                                 "[RBP] batch: {} new bars, total_completed={}",
                                 new_bars,
-                                self.range_bar_completed_count,
+                                self.odb_completed_count,
                             );
                             self.indicators
                                 .values_mut()
@@ -1298,7 +1298,7 @@ impl KlineChart {
     }
 
     pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
-        if self.chart.basis.is_range_bar() && self.odb_processor.is_some() {
+        if self.chart.basis.is_odb() && self.odb_processor.is_some() {
             // Gap-fill path: feed REST-fetched trades through OpenDeviationBarProcessor.
             //
             // On the first batch, historical trades arrive AFTER the WebSocket has
@@ -1347,7 +1347,7 @@ impl KlineChart {
                     }
 
                     // Recreate the processor with a clean forming-bar state.
-                    if let Basis::RangeBar(threshold_dbps) = self.chart.basis {
+                    if let Basis::Odb(threshold_dbps) = self.chart.basis {
                         self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
                             .map_err(|e| log::warn!("failed to recreate RBP: {e}"))
                             .ok();
@@ -1410,15 +1410,15 @@ impl KlineChart {
         }
     }
 
-    /// Insert older range bar klines into the TickBased data source (historical scroll-back).
-    pub fn insert_range_bar_hist_klines(
+    /// Insert older ODB klines into the TickBased data source (historical scroll-back).
+    pub fn insert_odb_hist_klines(
         &mut self,
         req_id: uuid::Uuid,
         klines: &[Kline],
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
     ) {
         log::info!(
-            "[RB-HIST] insert_range_bar_hist_klines: {} klines, micro={}, datasource=TickBased?{}",
+            "[RB-HIST] insert_odb_hist_klines: {} klines, micro={}, datasource=TickBased?{}",
             klines.len(),
             microstructure.is_some(),
             matches!(self.data_source, PlotData::TickBased(_)),
@@ -1430,11 +1430,11 @@ impl KlineChart {
                     self.request_handler
                         .mark_failed(req_id, "No data received".to_string());
                 } else {
-                    let micro: Option<Vec<Option<RangeBarMicrostructure>>> =
+                    let micro: Option<Vec<Option<OdbMicrostructure>>> =
                         microstructure.map(|ms| {
                             ms.iter()
                                 .map(|m| {
-                                    m.map(|cm| RangeBarMicrostructure {
+                                    m.map(|cm| OdbMicrostructure {
                                         trade_count: cm.trade_count,
                                         ofi: cm.ofi,
                                         trade_intensity: cm.trade_intensity,
@@ -1472,7 +1472,7 @@ impl KlineChart {
                 self.invalidate(None);
             }
             PlotData::TimeBased(_) => {
-                log::warn!("[RB-HIST] data_source is TimeBased — range bar klines ignored!");
+                log::warn!("[RB-HIST] data_source is TimeBased — ODB klines ignored!");
             }
         }
     }
@@ -1546,7 +1546,7 @@ impl KlineChart {
                             0.5 * (chart.bounds.width / chart.scaling)
                                 - (chart.cell_width / chart.scaling)
                         }
-                        KlineChartKind::Candles | KlineChartKind::RangeBar => {
+                        KlineChartKind::Candles | KlineChartKind::Odb => {
                             0.5 * (chart.bounds.width / chart.scaling)
                                 - (8.0 * chart.cell_width / chart.scaling)
                         }
@@ -1585,11 +1585,11 @@ impl KlineChart {
                     let visible_region = chart.visible_region(chart.bounds.size());
                     let (start_interval, end_interval) = chart.interval_range(&visible_region);
 
-                    // For range bars, include the forming bar's price range only when
+                    // For ODB bars, include the forming bar's price range only when
                     // the viewport includes the newest bar (index 0 = rightmost edge).
                     // Without this gate, scrolling to historical data (e.g., 2022 prices)
                     // and back causes the live price to stretch the Y-axis permanently.
-                    let forming_price_range = if chart.basis.is_range_bar()
+                    let forming_price_range = if chart.basis.is_odb()
                         && start_interval == 0
                         && chart.layout.include_forming
                     {
@@ -1643,13 +1643,13 @@ impl KlineChart {
 
         #[cfg(feature = "telemetry")]
         if let Some(t) = now {
-            // Emit ChartSnapshot every ~30s for range bar charts
-            if self.chart.basis.is_range_bar()
+            // Emit ChartSnapshot every ~30s for ODB charts
+            if self.chart.basis.is_odb()
                 && t.duration_since(self.last_tick) >= std::time::Duration::from_secs(30)
             {
                 use data::telemetry::{self, TelemetryEvent};
                 if let PlotData::TickBased(ref tick_aggr) = self.data_source {
-                    let telem_dbps = if let data::chart::Basis::RangeBar(d) = self.chart.basis {
+                    let telem_dbps = if let data::chart::Basis::Odb(d) = self.chart.basis {
                         d
                     } else {
                         0
@@ -1680,7 +1680,7 @@ impl KlineChart {
                             .map(|dp| dp.kline.time)
                             .unwrap_or(0),
                         forming_bar_ts: forming_ts,
-                        rbp_completed_count: self.range_bar_completed_count,
+                        rbp_completed_count: self.odb_completed_count,
                     });
                 }
             }
@@ -1868,7 +1868,7 @@ impl canvas::Program<Message> for KlineChart {
                         },
                     );
                 }
-                KlineChartKind::Candles | KlineChartKind::RangeBar => {
+                KlineChartKind::Candles | KlineChartKind::Odb => {
                     // Session lines (behind candles)
                     if self.kline_config.show_sessions {
                         super::session::draw_sessions(
@@ -1883,10 +1883,10 @@ impl canvas::Program<Message> for KlineChart {
                         );
                     }
 
-                    // Range bars represent continuous price action — use tighter
+                    // ODB bars represent continuous price action — use tighter
                     // spacing (95%) so bars visually connect. Candles keep 80%
                     // for temporal separation between time periods.
-                    let candle_fill = if chart.basis.is_range_bar() {
+                    let candle_fill = if chart.basis.is_odb() {
                         0.95
                     } else {
                         0.8
@@ -1930,10 +1930,10 @@ impl canvas::Program<Message> for KlineChart {
                         },
                     );
 
-                    // Render the in-process forming bar (range bars only).
+                    // Render the in-process forming bar (ODB bars only).
                     // Drawn at x = +cell_width (one slot right of index-0 = newest completed bar).
                     // Semi-transparent to signal it is still accumulating.
-                    if chart.basis.is_range_bar()
+                    if chart.basis.is_odb()
                         && let Some(ref processor) = self.odb_processor
                         && let Some(forming) = processor.get_incomplete_bar()
                     {
@@ -2856,7 +2856,7 @@ fn draw_crosshair_tooltip(
         // Timing rows: open time, close time, duration — only for index-based bases.
         // Shows both UTC and Local so the user always sees both at a glance.
         let timing_lines: Option<(String, String)> = match (basis, data) {
-            (Basis::RangeBar(_) | Basis::Tick(_), PlotData::TickBased(tick_aggr)) => {
+            (Basis::Odb(_) | Basis::Tick(_), PlotData::TickBased(tick_aggr)) => {
                 let (open_ms, close_ms) = if at_interval == u64::MAX {
                     // Forming bar: open = last completed bar's close_time, close = forming kline's time
                     let open = tick_aggr.datapoints.last().map(|dp| dp.kline.time as i64);

@@ -548,7 +548,7 @@ pub fn kline_cfg_view<'a>(
             .spacing(12)
         }
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-        KlineChartKind::RangeBar => {
+        KlineChartKind::Odb => {
             let period = cfg.ofi_ema_period;
             let ema_slider = slider(3..=100, period as u32, move |new_val| {
                 Message::VisualConfigChanged(
@@ -963,7 +963,7 @@ pub mod study {
         ) -> Element<'a, Message<Self>> {
             let interval_ms = match basis {
                 data::chart::Basis::Time(interval) => interval.to_milliseconds(),
-                data::chart::Basis::Tick(_) | data::chart::Basis::RangeBar(_) => {
+                data::chart::Basis::Tick(_) | data::chart::Basis::Odb(_) => {
                     return iced::widget::center(text(
                         "Heatmap studies are not supported for tick-based charts",
                     ))

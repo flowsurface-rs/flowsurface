@@ -172,10 +172,10 @@ impl TimeSeries<KlineDataPoint> {
         timeseries
     }
 
-    /// Create a TimeSeries for range bars (no fixed time interval).
+    /// Create a TimeSeries for open deviation bars (no fixed time interval).
     /// Uses M1 as placeholder interval — never used for coordinate math since
-    /// range bars use index-based rendering like Tick charts.
-    pub fn new_range_bar(tick_size: PriceStep, klines: &[Kline]) -> Self {
+    /// ODBs use index-based rendering like Tick charts.
+    pub fn new_odb(tick_size: PriceStep, klines: &[Kline]) -> Self {
         let mut timeseries = Self {
             datapoints: BTreeMap::new(),
             interval: Timeframe::M1,
@@ -396,7 +396,7 @@ impl TimeSeries<HeatmapDataPoint> {
     pub fn new(basis: Basis, tick_size: PriceStep) -> Self {
         let timeframe = match basis {
             Basis::Time(interval) => interval,
-            Basis::Tick(_) | Basis::RangeBar(_) => unimplemented!(),
+            Basis::Tick(_) | Basis::Odb(_) => unimplemented!(),
         };
 
         Self {

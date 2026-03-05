@@ -106,16 +106,16 @@ impl UserTimezone {
 
     /// Formats a timestamp for range bar axis labels.
     /// `label_span_ms` is the time span between adjacent labels (not between bars).
-    pub fn format_range_bar_label(&self, timestamp: i64, label_span_ms: u64) -> String {
+    pub fn format_odb_label(&self, timestamp: i64, label_span_ms: u64) -> String {
         if let Some(datetime) = DateTime::from_timestamp(timestamp, 0) {
             match self {
                 UserTimezone::Local => {
                     let dt = datetime.with_timezone(&chrono::Local);
-                    Self::format_range_bar_dt(&dt, label_span_ms)
+                    Self::format_odb_dt(&dt, label_span_ms)
                 }
                 UserTimezone::Utc => {
                     let dt = datetime.with_timezone(&chrono::Utc);
-                    Self::format_range_bar_dt(&dt, label_span_ms)
+                    Self::format_odb_dt(&dt, label_span_ms)
                 }
             }
         } else {
@@ -124,7 +124,7 @@ impl UserTimezone {
     }
 
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-    fn format_range_bar_dt<Tz: chrono::TimeZone>(
+    fn format_odb_dt<Tz: chrono::TimeZone>(
         datetime: &DateTime<Tz>,
         label_span_ms: u64,
     ) -> String

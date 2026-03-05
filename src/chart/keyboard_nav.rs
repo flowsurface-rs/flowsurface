@@ -6,7 +6,7 @@
 //! file gets only a one-line delegation call.
 //!
 //! Sign convention (verified against mouse drag path):
-//!   `interval_to_x` returns `-(idx * cell_width)` for Tick/RangeBar basis.
+//!   `interval_to_x` returns `-(idx * cell_width)` for Tick/Odb basis.
 //!   Older bars → larger idx → more-negative cx. After the canvas transform
 //!   `screen_x = center.x + scaling * (cx + translation.x)`, increasing
 //!   `translation.x` shifts all content rightward, bringing older bars into view.

@@ -247,7 +247,7 @@ impl KlineTrades {
 pub enum KlineChartKind {
     #[default]
     Candles,
-    RangeBar,
+    Odb,
     Footprint {
         clusters: ClusterKind,
         #[serde(default)]
@@ -260,49 +260,49 @@ impl KlineChartKind {
     pub fn min_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 0.4,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 0.6,
+            KlineChartKind::Candles | KlineChartKind::Odb => 0.6,
         }
     }
 
     pub fn max_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 1.2,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 2.5,
+            KlineChartKind::Candles | KlineChartKind::Odb => 2.5,
         }
     }
 
     pub fn max_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 360.0,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 128.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 128.0,
         }
     }
 
     pub fn min_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 1.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 1.0,
         }
     }
 
     pub fn max_cell_height(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 90.0,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 24.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 24.0,
         }
     }
 
     pub fn min_cell_height(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 1.0,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 0.001,
+            KlineChartKind::Candles | KlineChartKind::Odb => 0.001,
         }
     }
 
     pub fn default_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles | KlineChartKind::RangeBar => 4.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 4.0,
         }
     }
 }

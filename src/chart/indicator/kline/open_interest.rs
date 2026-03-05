@@ -55,7 +55,7 @@ impl OpenInterestIndicator {
                     return row![].into();
                 }
             }
-            Basis::Tick(_) | Basis::RangeBar(_) => {
+            Basis::Tick(_) | Basis::Odb(_) => {
                 return center(text("WIP: Open Interest is not available for tick charts.")).into();
             }
         }

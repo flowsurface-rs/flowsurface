@@ -1,4 +1,4 @@
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
 use exchange::unit::Qty;
@@ -7,11 +7,11 @@ use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;
 
-/// Microstructure data from precomputed range bars (ClickHouse).
+/// Microstructure data from precomputed open deviation bars (ClickHouse).
 /// Separate from Kline to avoid polluting the shared exchange type.
-/// Serialize: range bar forensic telemetry (--features telemetry)
+/// Serialize: ODB forensic telemetry (--features telemetry)
 #[derive(Debug, Clone, Copy, serde::Serialize)]
-pub struct RangeBarMicrostructure {
+pub struct OdbMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
     pub trade_intensity: f32,
@@ -22,7 +22,7 @@ pub struct TickAccumulation {
     pub tick_count: usize,
     pub kline: Kline,
     pub footprint: KlineTrades,
-    pub microstructure: Option<RangeBarMicrostructure>,
+    pub microstructure: Option<OdbMicrostructure>,
 }
 
 impl TickAccumulation {
@@ -71,9 +71,9 @@ impl TickAccumulation {
         self.tick_count >= interval.0 as usize
     }
 
-    /// Range bar completion: `|close - open| / open >= threshold_dbps / 1_000_000`
+    /// ODB completion: `|close - open| / open >= threshold_dbps / 1_000_000`
     /// Uses integer Price units (i64, scale 10^8) for precision.
-    pub fn is_full_range_bar(&self, threshold_dbps: u32) -> bool {
+    pub fn is_full_odb(&self, threshold_dbps: u32) -> bool {
         let open = self.kline.open.units;
         if open == 0 {
             return false;
@@ -101,9 +101,9 @@ pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,
     pub tick_size: PriceStep,
-    /// When set, `insert_trades()` uses price-based range bar completion
+    /// When set, `insert_trades()` uses price-based ODB completion
     /// instead of tick-count. Value is threshold in dbps.
-    pub range_bar_threshold_dbps: Option<u32>,
+    pub odb_threshold_dbps: Option<u32>,
 }
 
 impl TickAggr {
@@ -112,7 +112,7 @@ impl TickAggr {
             datapoints: Vec::new(),
             interval,
             tick_size,
-            range_bar_threshold_dbps: None,
+            odb_threshold_dbps: None,
         };
 
         if !raw_trades.is_empty() {
@@ -154,8 +154,8 @@ impl TickAggr {
             } else {
                 let last_idx = self.datapoints.len() - 1;
 
-                let bar_complete = match self.range_bar_threshold_dbps {
-                    Some(dbps) => self.datapoints[last_idx].is_full_range_bar(dbps),
+                let bar_complete = match self.odb_threshold_dbps {
+                    Some(dbps) => self.datapoints[last_idx].is_full_odb(dbps),
                     None => self.datapoints[last_idx].is_full(self.interval),
                 };
                 if bar_complete {
@@ -217,7 +217,7 @@ impl TickAggr {
         }
     }
 
-    /// Create a TickAggr from precomputed klines (e.g., range bars from ClickHouse).
+    /// Create a TickAggr from precomputed klines (e.g., open deviation bars from ClickHouse).
     /// Each kline becomes one TickAccumulation entry.
     /// The `interval` is set to TickCount(1) since each entry is already a complete bar.
     ///
@@ -240,7 +240,7 @@ impl TickAggr {
             datapoints,
             interval: aggr::TickCount(1),
             tick_size,
-            range_bar_threshold_dbps: None,
+            odb_threshold_dbps: None,
         }
     }
 
@@ -249,7 +249,7 @@ impl TickAggr {
     pub fn from_klines_with_microstructure(
         tick_size: PriceStep,
         klines: &[Kline],
-        micro: &[Option<RangeBarMicrostructure>],
+        micro: &[Option<OdbMicrostructure>],
     ) -> Self {
         let datapoints: Vec<TickAccumulation> = klines
             .iter()
@@ -266,7 +266,7 @@ impl TickAggr {
             datapoints,
             interval: aggr::TickCount(1),
             tick_size,
-            range_bar_threshold_dbps: None,
+            odb_threshold_dbps: None,
         }
     }
 
@@ -328,7 +328,7 @@ impl TickAggr {
     pub fn prepend_klines_with_microstructure(
         &mut self,
         klines: &[Kline],
-        micro: Option<&[Option<RangeBarMicrostructure>]>,
+        micro: Option<&[Option<OdbMicrostructure>]>,
     ) {
         // Deduplicate: only prepend klines older than the current oldest bar
         let oldest_existing_ts = self.datapoints.first().map(|dp| dp.kline.time);

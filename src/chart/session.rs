@@ -1,5 +1,5 @@
 // Historical trading session boundary rendering (NY / London / Tokyo).
-// Handles both time-based charts (direct timestamp→x) and range bar charts
+// Handles both time-based charts (direct timestamp→x) and ODB charts
 // (binary search on close timestamps via partition_point).
 use data::chart::kline::KlineDataPoint;
 use data::chart::{Basis, PlotData};
@@ -22,7 +22,7 @@ struct ResolvedBoundary {
 /// Draw session boundary lines, strips, and labels onto the chart canvas.
 ///
 /// For `Basis::Time`: `earliest`/`latest` are UTC timestamps, `interval_to_x` maps directly.
-/// For `Basis::RangeBar`/`Tick`: `earliest`/`latest` are visual indices (0=newest),
+/// For `Basis::Odb`/`Tick`: `earliest`/`latest` are visual indices (0=newest),
 /// and we binary-search `TickAggr::datapoints` to snap session timestamps to bar positions.
 pub fn draw_sessions(
     frame: &mut canvas::Frame,
@@ -39,9 +39,9 @@ pub fn draw_sessions(
             log::trace!("[SESSION/render] Time basis: earliest_ts={earliest}, latest_ts={latest}");
             resolve_time_based(earliest, latest, &interval_to_x)
         }
-        Basis::Tick(_) | Basis::RangeBar(_) => {
+        Basis::Tick(_) | Basis::Odb(_) => {
             log::trace!(
-                "[SESSION/render] Tick/RangeBar basis: earliest_vis={earliest}, latest_vis={latest}"
+                "[SESSION/render] Tick/Odb basis: earliest_vis={earliest}, latest_vis={latest}"
             );
             resolve_tick_based(data_source, earliest, latest, &interval_to_x)
         }
@@ -140,7 +140,7 @@ fn resolve_time_based(
     resolved
 }
 
-/// Tick/RangeBar charts: binary search on close timestamps to snap to bar positions.
+/// Tick/Odb charts: binary search on close timestamps to snap to bar positions.
 ///
 /// `partition_point` finds the first bar whose close_time >= session_timestamp,
 /// mirroring MQL5's `iBarShift()` for nearest-bar semantics.
@@ -152,7 +152,7 @@ fn resolve_tick_based(
 ) -> Vec<ResolvedBoundary> {
     let PlotData::TickBased(tick_aggr) = data_source else {
         log::warn!(
-            "[SESSION/tick] expected TickBased data for RangeBar/Tick basis — got TimeBased"
+            "[SESSION/tick] expected TickBased data for Odb/Tick basis — got TimeBased"
         );
         return Vec::new();
     };

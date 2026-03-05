@@ -100,7 +100,7 @@ struct Flowsurface {
     timezone: data::UserTimezone,
     theme: data::Theme,
     notifications: Vec<Toast>,
-    /// Floating BTC range bar widget. None = widget hidden.
+    /// Floating BTC ODB widget. None = widget hidden.
     widget: Option<widget_window::WidgetController>,
 }
 
@@ -188,9 +188,9 @@ impl Flowsurface {
         );
         let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
-        // Fetch available range bar symbols from ClickHouse (non-blocking)
-        let init_range_bar_symbols = Task::perform(
-            exchange::adapter::clickhouse::init_range_bar_symbols(),
+        // Fetch available ODB symbols from ClickHouse (non-blocking)
+        let init_odb_symbols = Task::perform(
+            exchange::adapter::clickhouse::init_odb_symbols(),
             |_| Message::Tick(std::time::Instant::now()),
         );
 
@@ -200,7 +200,7 @@ impl Flowsurface {
                 .discard()
                 .chain(load_layout)
                 .chain(launch_sidebar.map(Message::Sidebar))
-                .chain(init_range_bar_symbols),
+                .chain(init_odb_symbols),
         )
     }
 

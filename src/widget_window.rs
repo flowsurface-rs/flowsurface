@@ -1,4 +1,4 @@
-//! Floating always-on-top mini range bar chart widget.
+//! Floating always-on-top mini ODB chart widget.
 //! WebSocket-only — no ClickHouse dependency. Builds bars in-process
 //! from live Binance `@aggTrade` trades via `OpenDeviationBarProcessor`.
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1
@@ -29,7 +29,7 @@ const BTCUSDT_SYMBOL: &str = "BTCUSDT";
 const THRESHOLD_DBPS: u32 = 250;
 /// Maximum completed bars retained.
 const MAX_BARS: usize = 100;
-/// Cell width (pixels per bar) — same as existing BPR25 range bar rendering.
+/// Cell width (pixels per bar) — same as existing BPR25 ODB rendering.
 const CELL_WIDTH: f32 = 4.0;
 /// Widget window dimensions.
 const WINDOW_WIDTH: f32 = 600.0;

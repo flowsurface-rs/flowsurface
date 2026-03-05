@@ -20,7 +20,7 @@ pub enum KlineIndicator {
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     OFICumulativeEma,
     TradeIntensity,
-    /// Rolling log-quantile percentile heatmap for trade intensity (range bars).
+    /// Rolling log-quantile percentile heatmap for trade intensity (open deviation bars).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     TradeIntensityHeatmap,
     /// Streaming ZigZag swing structure overlay (confirmed + pending pivots).

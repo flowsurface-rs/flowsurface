@@ -143,7 +143,7 @@ impl State {
         self.streams.find_ready_map(|stream| match stream {
             StreamKind::DepthAndTrades { ticker_info, .. }
             | StreamKind::Kline { ticker_info, .. }
-            | StreamKind::RangeBarKline { ticker_info, .. } => Some(*ticker_info),
+            | StreamKind::OdbKline { ticker_info, .. } => Some(*ticker_info),
         })
     }
 
@@ -235,7 +235,7 @@ impl State {
                         |threshold| {
                             vec![
                                 depth_stream(&derived_plan),
-                                StreamKind::RangeBarKline {
+                                StreamKind::OdbKline {
                                     ticker_info: derived_plan.ticker_info,
                                     threshold_dbps: threshold,
                                 },
@@ -274,7 +274,7 @@ impl State {
                         },
                         |threshold| {
                             vec![
-                                StreamKind::RangeBarKline {
+                                StreamKind::OdbKline {
                                     ticker_info: derived_plan.ticker_info,
                                     threshold_dbps: threshold,
                                 },
@@ -286,7 +286,7 @@ impl State {
                     (content, streams)
                 }
                 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
-                ContentKind::RangeBarChart => {
+                ContentKind::OdbChart => {
                     let content = Content::new_kline(
                         kind,
                         &self.content,
@@ -295,11 +295,11 @@ impl State {
                         base_ticker.min_ticksize.into(),
                     );
                     let threshold = match derived_plan.basis {
-                        Some(Basis::RangeBar(t)) => t,
+                        Some(Basis::Odb(t)) => t,
                         _ => 250,
                     };
                     let streams = vec![
-                        StreamKind::RangeBarKline {
+                        StreamKind::OdbKline {
                             ticker_info: derived_plan.ticker_info,
                             threshold_dbps: threshold,
                         },
@@ -364,7 +364,7 @@ impl State {
                             tickers
                                 .iter()
                                 .copied()
-                                .map(|ti| StreamKind::RangeBarKline {
+                                .map(|ti| StreamKind::OdbKline {
                                     ticker_info: ti,
                                     threshold_dbps: threshold,
                                 })
@@ -471,7 +471,7 @@ impl State {
         }
     }
 
-    pub fn insert_range_bar_klines(
+    pub fn insert_odb_klines(
         &mut self,
         req_id: Option<uuid::Uuid>,
         ticker_info: TickerInfo,
@@ -483,12 +483,12 @@ impl State {
                 chart, indicators, ..
             } => {
                 let Some(chart) = chart else {
-                    panic!("chart wasn't initialized when inserting range bar klines");
+                    panic!("chart wasn't initialized when inserting ODB klines");
                 };
 
                 if let Some(id) = req_id {
                     // Historical data load — prepend older klines to TickAggr
-                    chart.insert_range_bar_hist_klines(id, klines, microstructure);
+                    chart.insert_odb_hist_klines(id, klines, microstructure);
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
@@ -512,7 +512,7 @@ impl State {
                 }
             }
             _ => {
-                log::error!("pane content not candlestick for range bar klines");
+                log::error!("pane content not candlestick for ODB klines");
             }
         }
     }
@@ -929,10 +929,10 @@ impl State {
 
                             stream_info_element = stream_info_element.push(modifiers);
                         }
-                        data::chart::KlineChartKind::RangeBar => {
+                        data::chart::KlineChartKind::Odb => {
                             let selected_basis =
-                                self.settings.selected_basis.unwrap_or(Basis::RangeBar(250));
-                            let kind = ModifierKind::RangeBarChart(selected_basis);
+                                self.settings.selected_basis.unwrap_or(Basis::Odb(250));
+                            let kind = ModifierKind::OdbChart(selected_basis);
 
                             let modifiers =
                                 row![basis_modifier(id, selected_basis, modifier, kind),]
@@ -981,7 +981,7 @@ impl State {
                 } else {
                     let content_kind = match chart_kind {
                         data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
-                        data::chart::KlineChartKind::RangeBar => ContentKind::RangeBarChart,
+                        data::chart::KlineChartKind::Odb => ContentKind::OdbChart,
                         data::chart::KlineChartKind::Footprint { .. } => {
                             ContentKind::FootprintChart
                         }
@@ -1244,7 +1244,7 @@ impl State {
                                                 Basis::Time(tf) => {
                                                     *push_freq = exchange::PushFrequency::Custom(tf)
                                                 }
-                                                Basis::Tick(_) | Basis::RangeBar(_) => {
+                                                Basis::Tick(_) | Basis::Odb(_) => {
                                                     *push_freq =
                                                         exchange::PushFrequency::ServerDefault
                                                 }
@@ -1320,8 +1320,8 @@ impl State {
                                                     c.set_basis(new_basis);
                                                     effect = Some(Effect::RefreshStreams);
                                                 }
-                                                Basis::RangeBar(threshold) => {
-                                                    let rb_stream = StreamKind::RangeBarKline {
+                                                Basis::Odb(threshold) => {
+                                                    let rb_stream = StreamKind::OdbKline {
                                                         ticker_info: base_ticker,
                                                         threshold_dbps: threshold,
                                                     };
@@ -1379,12 +1379,12 @@ impl State {
                                                 effect = Some(Effect::RequestFetch(fetch));
                                             }
                                         }
-                                        Basis::RangeBar(threshold) => {
+                                        Basis::Odb(threshold) => {
                                             let streams: Vec<StreamKind> = c
                                                 .selected_tickers()
                                                 .iter()
                                                 .copied()
-                                                .map(|ti| StreamKind::RangeBarKline {
+                                                .map(|ti| StreamKind::OdbKline {
                                                     ticker_info: ti,
                                                     threshold_dbps: threshold,
                                                 })
@@ -1617,12 +1617,12 @@ impl State {
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
-                // Filter tickers to range bar symbols when in range bar chart mode
-                let range_bar_filter = match &self.content {
+                // Filter tickers to ODB symbols when in ODB chart mode
+                let odb_filter = match &self.content {
                     Content::Kline {
-                        kind: data::chart::KlineChartKind::RangeBar,
+                        kind: data::chart::KlineChartKind::Odb,
                         ..
-                    } => exchange::adapter::clickhouse::range_bar_symbol_filter(),
+                    } => exchange::adapter::clickhouse::odb_symbol_filter(),
                     _ => None,
                 };
 
@@ -1631,7 +1631,7 @@ impl State {
                         tickers_table,
                         selected_tickers,
                         self.stream_pair(),
-                        range_bar_filter,
+                        odb_filter,
                     )
                     .map(move |msg| {
                         Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
@@ -1922,7 +1922,7 @@ impl Content {
                     }),
             ),
             ContentKind::CandlestickChart => (Timeframe::M15, data::chart::KlineChartKind::Candles),
-            ContentKind::RangeBarChart => (Timeframe::M15, data::chart::KlineChartKind::RangeBar),
+            ContentKind::OdbChart => (Timeframe::M15, data::chart::KlineChartKind::Odb),
             _ => unreachable!("invalid content kind for kline chart"),
         };
 
@@ -1932,7 +1932,7 @@ impl Content {
             let available = KlineIndicator::for_market(ticker_info.market_type());
             prev_indis.map_or_else(
                 || match determined_chart_kind {
-                    data::chart::KlineChartKind::RangeBar => vec![],
+                    data::chart::KlineChartKind::Odb => vec![],
                     _ => vec![KlineIndicator::Volume],
                 },
                 |indis| {
@@ -1946,7 +1946,7 @@ impl Content {
 
         let splits = {
             let main_chart_split: f32 = match determined_chart_kind {
-                data::chart::KlineChartKind::RangeBar => 0.6,
+                data::chart::KlineChartKind::Odb => 0.6,
                 _ => 0.8,
             };
             let mut splits_vec = vec![main_chart_split];
@@ -2046,10 +2046,10 @@ impl Content {
                     include_forming: true,
                 },
             },
-            ContentKind::RangeBarChart => Content::Kline {
+            ContentKind::OdbChart => Content::Kline {
                 chart: None,
                 indicators: vec![KlineIndicator::TradeIntensity],
-                kind: data::chart::KlineChartKind::RangeBar,
+                kind: data::chart::KlineChartKind::Odb,
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
@@ -2213,7 +2213,7 @@ impl Content {
             Content::Kline { kind, .. } => match kind {
                 data::chart::KlineChartKind::Footprint { .. } => ContentKind::FootprintChart,
                 data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
-                data::chart::KlineChartKind::RangeBar => ContentKind::RangeBarChart,
+                data::chart::KlineChartKind::Odb => ContentKind::OdbChart,
             },
             Content::TimeAndSales(_) => ContentKind::TimeAndSales,
             Content::Ladder(_) => ContentKind::Ladder,
@@ -2344,11 +2344,11 @@ fn by_basis_default<T>(
     default_tf: Timeframe,
     on_time: impl FnOnce(Timeframe) -> T,
     on_tick: impl FnOnce() -> T,
-    on_range_bar: impl FnOnce(u32) -> T,
+    on_odb: impl FnOnce(u32) -> T,
 ) -> T {
     match basis.unwrap_or(Basis::Time(default_tf)) {
         Basis::Time(tf) => on_time(tf),
         Basis::Tick(_) => on_tick(),
-        Basis::RangeBar(threshold) => on_range_bar(threshold),
+        Basis::Odb(threshold) => on_odb(threshold),
     }
 }

@@ -121,7 +121,7 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         if let PlotData::TickBased(tickseries) = source {
-            let dbps = tickseries.range_bar_threshold_dbps.unwrap_or(250);
+            let dbps = tickseries.odb_threshold_dbps.unwrap_or(250);
             self.reconfigure_if_needed(dbps);
             self.reset_state();
             for (idx, dp) in tickseries.datapoints.iter().enumerate() {
@@ -166,7 +166,7 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
 
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
         if let PlotData::TickBased(tickseries) = source {
-            let dbps = tickseries.range_bar_threshold_dbps.unwrap_or(250);
+            let dbps = tickseries.odb_threshold_dbps.unwrap_or(250);
             self.reconfigure_if_needed(dbps);
         }
         self.rebuild_from_source(source);

@@ -266,7 +266,7 @@ impl HeatmapChart {
 
         let aggregate_time: u64 = match chart.basis {
             Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) | Basis::RangeBar(_) => todo!(),
+            Basis::Tick(_) | Basis::Odb(_) => todo!(),
         };
 
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
@@ -354,7 +354,7 @@ impl HeatmapChart {
     pub fn basis_interval(&self) -> Option<u64> {
         match self.chart.basis {
             Basis::Time(interval) => Some(interval.into()),
-            Basis::Tick(_) | Basis::RangeBar(_) => None,
+            Basis::Tick(_) | Basis::Odb(_) => None,
         }
     }
 
@@ -785,7 +785,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     let aggr_time: u64 = match chart.basis {
                         Basis::Time(interval) => interval.into(),
-                        Basis::Tick(_) | Basis::RangeBar(_) => return,
+                        Basis::Tick(_) | Basis::Odb(_) => return,
                     };
                     let tick_size = chart.tick_size.to_f32_lossy();
                     let step = chart.tick_size;
@@ -945,7 +945,7 @@ fn draw_volume_profile(
         ProfileKind::FixedWindow(datapoints) => {
             let basis_interval: u64 = match chart.basis {
                 Basis::Time(interval) => interval.into(),
-                Basis::Tick(_) | Basis::RangeBar(_) => return,
+                Basis::Tick(_) | Basis::Odb(_) => return,
             };
 
             let latest = chart

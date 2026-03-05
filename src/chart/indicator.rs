@@ -42,7 +42,7 @@ where
 }
 
 /// Like `indicator_row` but backed by a `&[Y]` slice (forward-indexed: 0 = oldest).
-/// Use for RangeBar/Tick indicators that store data in `Vec<Y>` for O(1) push on rebuild,
+/// Use for Odb/Tick indicators that store data in `Vec<Y>` for O(1) push on rebuild,
 /// eliminating the O(N log N) BTreeMap insert cost that causes UI freezes at large bar counts.
 pub fn indicator_row_slice<'a, P, Y>(
     main_chart: &'a ViewState,

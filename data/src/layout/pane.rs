@@ -188,7 +188,7 @@ pub enum ContentKind {
     HeatmapChart,
     FootprintChart,
     CandlestickChart,
-    RangeBarChart,
+    OdbChart,
     ComparisonChart,
     TimeAndSales,
     Ladder,
@@ -200,7 +200,7 @@ impl ContentKind {
         ContentKind::HeatmapChart,
         ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
-        ContentKind::RangeBarChart,
+        ContentKind::OdbChart,
         ContentKind::ComparisonChart,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
@@ -214,7 +214,7 @@ impl std::fmt::Display for ContentKind {
             ContentKind::HeatmapChart => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
-            ContentKind::RangeBarChart => "Range Bar Chart",
+            ContentKind::OdbChart => "Open Deviation Bar Chart",
             ContentKind::ComparisonChart => "Comparison Chart",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
@@ -265,7 +265,7 @@ impl PaneSetup {
             ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
                 Some(current_basis.unwrap_or(Basis::Time(Timeframe::M15)))
             }
-            ContentKind::RangeBarChart => Some(current_basis.unwrap_or(Basis::RangeBar(250))),
+            ContentKind::OdbChart => Some(current_basis.unwrap_or(Basis::Odb(250))),
             ContentKind::Starter | ContentKind::TimeAndSales => None,
         };
 
@@ -286,7 +286,7 @@ impl PaneSetup {
                 Some(current_tick_multiplier.unwrap_or(TickMultiplier(50)))
             }
             ContentKind::CandlestickChart
-            | ContentKind::RangeBarChart
+            | ContentKind::OdbChart
             | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
             | ContentKind::Starter => current_tick_multiplier,

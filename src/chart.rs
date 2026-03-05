@@ -414,7 +414,7 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
 
                         state.interval_to_x(cursor_time)
                     }
-                    Basis::Tick(_) | Basis::RangeBar(_) => {
+                    Basis::Tick(_) | Basis::Odb(_) => {
                         let tick_index = cursor_chart_x / state.cell_width;
                         state.cell_width = new_width;
 
@@ -763,7 +763,7 @@ impl ViewState {
 
     fn interval_range(&self, region: &Rectangle) -> (u64, u64) {
         match self.basis {
-            Basis::Tick(_) | Basis::RangeBar(_) => (
+            Basis::Tick(_) | Basis::Odb(_) => (
                 self.x_to_interval(region.x + region.width),
                 self.x_to_interval(region.x),
             ),
@@ -794,7 +794,7 @@ impl ViewState {
                 let diff = value as f64 - self.latest_x as f64;
                 (diff / interval * cell_width) as f32
             }
-            Basis::Tick(_) | Basis::RangeBar(_) => -((value as f32) * self.cell_width),
+            Basis::Tick(_) | Basis::Odb(_) => -((value as f32) * self.cell_width),
         }
     }
 
@@ -811,7 +811,7 @@ impl ViewState {
                     self.latest_x.saturating_add(diff)
                 }
             }
-            Basis::Tick(_) | Basis::RangeBar(_) => {
+            Basis::Tick(_) | Basis::Odb(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
@@ -930,7 +930,7 @@ impl ViewState {
                     let tick_diff = tick1.abs_diff(tick2);
                     format!("{} ticks", tick_diff)
                 }
-                Basis::RangeBar(_) => {
+                Basis::Odb(_) => {
                     let (idx1, _) = self.snap_x_to_index(p1.x, bounds, region);
                     let (idx2, _) = self.snap_x_to_index(p2.x, bounds, region);
 
@@ -996,7 +996,7 @@ impl ViewState {
                     let datapoints = (tick_diff / u64::from(aggregation.0)).max(1);
                     format!("{} bars", datapoints)
                 }
-                Basis::RangeBar(_) => {
+                Basis::Odb(_) => {
                     let (idx1, _) = self.snap_x_to_index(p1.x, bounds, region);
                     let (idx2, _) = self.snap_x_to_index(p2.x, bounds, region);
 
@@ -1128,7 +1128,7 @@ impl ViewState {
                 }
                 (rounded_price, rounded_tick)
             }
-            Basis::RangeBar(_) => {
+            Basis::Odb(_) => {
                 let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
                 let x_range = chart_x_max - chart_x_min;
                 let crosshair_pos = chart_x_min + (cursor_position.x / bounds.width) * x_range;
@@ -1210,7 +1210,7 @@ impl ViewState {
         let price_width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
 
         // Range bar timer label ("HH:MM:SS.mmm UTC") needs more room
-        let width = if matches!(self.basis, Basis::RangeBar(_)) {
+        let width = if matches!(self.basis, Basis::Odb(_)) {
             price_width.max(135.0)
         } else {
             price_width
@@ -1257,7 +1257,7 @@ impl ViewState {
 
                 (rounded_tick, snap_ratio)
             }
-            Basis::RangeBar(_) => {
+            Basis::Odb(_) => {
                 let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
                 let chart_x = chart_x_min + x_ratio * (chart_x_max - chart_x_min);
 

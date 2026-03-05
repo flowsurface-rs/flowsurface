@@ -384,7 +384,7 @@ impl Dashboard {
                             for stream in &streams {
                                 if matches!(
                                     stream,
-                                    StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                                    StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
                                 ) {
                                     return (
                                         kline_fetch_task(*layout_id, pane_id, *stream, None, None),
@@ -756,7 +756,7 @@ impl Dashboard {
             for stream in &streams {
                 if matches!(
                     stream,
-                    StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                    StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
                 ) {
                     return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
@@ -795,7 +795,7 @@ impl Dashboard {
             for stream in &streams {
                 if matches!(
                     stream,
-                    StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                    StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
                 ) {
                     return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
@@ -955,11 +955,11 @@ impl Dashboard {
                         } => {
                             pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
                         }
-                        StreamKind::RangeBarKline {
+                        StreamKind::OdbKline {
                             ticker_info,
                             threshold_dbps: _,
                         } => {
-                            pane_state.insert_range_bar_klines(
+                            pane_state.insert_odb_klines(
                                 req_id,
                                 ticker_info,
                                 &data,
@@ -1096,7 +1096,7 @@ impl Dashboard {
         main_window: window::Id,
     ) -> Task<Message> {
         #[cfg(feature = "telemetry")]
-        if let StreamKind::RangeBarKline {
+        if let StreamKind::OdbKline {
             ticker_info,
             threshold_dbps,
         } = stream
@@ -1129,7 +1129,7 @@ impl Dashboard {
                     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
                     // Clear stale status when fresh data arrives via polling
                     if matches!(pane_state.status, pane::Status::Stale(_))
-                        && matches!(stream, StreamKind::RangeBarKline { .. })
+                        && matches!(stream, StreamKind::OdbKline { .. })
                     {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -1267,11 +1267,11 @@ impl Dashboard {
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
         let rb_streams: Vec<_> = streams
             .iter()
-            .filter(|s| matches!(s, StreamKind::RangeBarKline { .. }))
+            .filter(|s| matches!(s, StreamKind::OdbKline { .. }))
             .collect();
         if !rb_streams.is_empty() {
             log::info!(
-                "[SUBS] resolve_streams pane {}: {} total streams, {} range_bar_kline",
+                "[SUBS] resolve_streams pane {}: {} total streams, {} odb_kline",
                 pane_id,
                 streams.len(),
                 rb_streams.len()
@@ -1338,8 +1338,8 @@ impl Dashboard {
                 // In-process OpenDeviationBarProcessor builds live bars from WebSocket trades,
                 // but ClickHouse provides authoritative completed bars and fills gaps
                 // (e.g., after sleep/disconnect when trades were missed).
-                for (ticker_info, threshold_dbps) in &specs.range_bar_kline {
-                    subs.push(rangebar_kline_subscription(*ticker_info, *threshold_dbps));
+                for (ticker_info, threshold_dbps) in &specs.odb_kline {
+                    subs.push(odb_kline_subscription(*ticker_info, *threshold_dbps));
                 }
 
                 subs
@@ -1359,11 +1359,11 @@ impl Dashboard {
         let rb_count: usize = self
             .streams
             .combined_used()
-            .map(|(_, specs)| specs.range_bar_kline.len())
+            .map(|(_, specs)| specs.odb_kline.len())
             .sum();
         if rb_count > 0 {
             log::info!(
-                "[SUBS] refresh_streams: {} range_bar_kline in UniqueStreams",
+                "[SUBS] refresh_streams: {} odb_kline in UniqueStreams",
                 rb_count
             );
         }
@@ -1390,7 +1390,7 @@ fn request_fetch(
                     state.streams.find_ready_map(|stream| {
                         if matches!(
                             stream,
-                            StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                            StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
                         ) {
                             Some((*stream, pane_id))
                         } else {
@@ -1418,7 +1418,7 @@ fn request_fetch(
                     state.streams.find_ready_map(|stream| {
                         if matches!(
                             stream,
-                            StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                            StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
                         ) {
                             Some((*stream, pane_id))
                         } else {
@@ -1633,12 +1633,12 @@ fn kline_fetch_task(
                 }
             },
         ),
-        StreamKind::RangeBarKline {
+        StreamKind::OdbKline {
             ticker_info,
             threshold_dbps,
         } => Task::perform(
             iced::futures::TryFutureExt::map_err(
-                adapter::fetch_klines_range_bar_with_microstructure(
+                adapter::fetch_odb_klines_with_microstructure(
                     ticker_info,
                     threshold_dbps,
                     range,
@@ -1741,7 +1741,7 @@ fn fetch_gapfill_trades(
     })
 }
 
-pub fn rangebar_kline_subscription(
+pub fn odb_kline_subscription(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
 ) -> Subscription<exchange::Event> {

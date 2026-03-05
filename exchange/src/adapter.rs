@@ -192,7 +192,7 @@ pub enum StreamKind {
         ticker_info: TickerInfo,
         timeframe: Timeframe,
     },
-    RangeBarKline {
+    OdbKline {
         ticker_info: TickerInfo,
         threshold_dbps: u32,
     },
@@ -208,7 +208,7 @@ impl StreamKind {
     pub fn ticker_info(&self) -> TickerInfo {
         match self {
             StreamKind::Kline { ticker_info, .. }
-            | StreamKind::RangeBarKline { ticker_info, .. }
+            | StreamKind::OdbKline { ticker_info, .. }
             | StreamKind::DepthAndTrades { ticker_info, .. } => *ticker_info,
         }
     }
@@ -234,9 +234,9 @@ impl StreamKind {
         }
     }
 
-    pub fn as_range_bar_kline_stream(&self) -> Option<(TickerInfo, u32)> {
+    pub fn as_odb_kline_stream(&self) -> Option<(TickerInfo, u32)> {
         match self {
-            StreamKind::RangeBarKline {
+            StreamKind::OdbKline {
                 ticker_info,
                 threshold_dbps,
             } => Some((*ticker_info, *threshold_dbps)),
@@ -263,7 +263,7 @@ impl UniqueStreams {
     pub fn add(&mut self, stream: StreamKind) {
         let (exchange, ticker_info) = match stream {
             StreamKind::Kline { ticker_info, .. }
-            | StreamKind::RangeBarKline { ticker_info, .. }
+            | StreamKind::OdbKline { ticker_info, .. }
             | StreamKind::DepthAndTrades { ticker_info, .. } => {
                 (ticker_info.exchange(), ticker_info)
             }
@@ -287,12 +287,12 @@ impl UniqueStreams {
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));
-        let range_bar_kline_streams = self.range_bar_kline_streams(Some(exchange));
+        let odb_kline_streams = self.odb_kline_streams(Some(exchange));
 
         self.specs[exchange] = Some(StreamSpecs {
             depth: depth_streams,
             kline: kline_streams,
-            range_bar_kline: range_bar_kline_streams,
+            odb_kline: odb_kline_streams,
         });
     }
 
@@ -327,12 +327,12 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_kline_stream())
     }
 
-    pub fn range_bar_kline_streams(
+    pub fn odb_kline_streams(
         &self,
         exchange_filter: Option<Exchange>,
     ) -> Vec<(TickerInfo, u32)> {
         self.streams(exchange_filter, |_, stream| {
-            stream.as_range_bar_kline_stream()
+            stream.as_odb_kline_stream()
         })
     }
 
@@ -350,7 +350,7 @@ impl UniqueStreams {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum PersistStreamKind {
     Kline(PersistKline),
-    RangeBarKline(PersistRangeBarKline),
+    OdbKline(PersistOdbKline),
     DepthAndTrades(PersistDepth),
 }
 
@@ -370,7 +370,7 @@ pub struct PersistKline {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct PersistRangeBarKline {
+pub struct PersistOdbKline {
     pub ticker: Ticker,
     pub threshold_dbps: u32,
 }
@@ -385,10 +385,10 @@ impl From<StreamKind> for PersistStreamKind {
                 ticker: ticker_info.ticker,
                 timeframe,
             }),
-            StreamKind::RangeBarKline {
+            StreamKind::OdbKline {
                 ticker_info,
                 threshold_dbps,
-            } => PersistStreamKind::RangeBarKline(PersistRangeBarKline {
+            } => PersistStreamKind::OdbKline(PersistOdbKline {
                 ticker: ticker_info.ticker,
                 threshold_dbps,
             }),
@@ -419,8 +419,8 @@ impl PersistStreamKind {
                     timeframe: k.timeframe,
                 })
                 .ok_or_else(|| format!("TickerInfo not found for {}", k.ticker)),
-            PersistStreamKind::RangeBarKline(r) => resolver(&r.ticker)
-                .map(|ti| StreamKind::RangeBarKline {
+            PersistStreamKind::OdbKline(r) => resolver(&r.ticker)
+                .map(|ti| StreamKind::OdbKline {
                     ticker_info: ti,
                     threshold_dbps: r.threshold_dbps,
                 })
@@ -455,7 +455,7 @@ fn default_push_freq() -> PushFrequency {
 pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
-    pub range_bar_kline: Vec<(TickerInfo, u32)>,
+    pub odb_kline: Vec<(TickerInfo, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -715,7 +715,7 @@ pub async fn fetch_klines(
 }
 
 /// Fetch klines from ClickHouse range bar cache with a specific threshold.
-pub async fn fetch_klines_range_bar(
+pub async fn fetch_odb_klines(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
     range: Option<(u64, u64)>,
@@ -724,7 +724,7 @@ pub async fn fetch_klines_range_bar(
 }
 
 /// Fetch klines + microstructure from ClickHouse range bar cache.
-pub async fn fetch_klines_range_bar_with_microstructure(
+pub async fn fetch_odb_klines_with_microstructure(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
     range: Option<(u64, u64)>,

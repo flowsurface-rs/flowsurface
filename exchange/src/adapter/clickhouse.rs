@@ -90,12 +90,12 @@ pub fn odb_to_microstructure(bar: &OpenDeviationBar) -> ChMicrostructure {
 }
 
 /// Range bar symbols fetched from ClickHouse at startup.
-/// Populated by `init_range_bar_symbols()`, accessed synchronously from view code.
-static RANGE_BAR_SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
+/// Populated by `init_odb_symbols()`, accessed synchronously from view code.
+static ODB_SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Fetch available range bar symbols from ClickHouse and cache them.
 /// Called once at startup; gracefully returns empty vec on failure.
-pub async fn init_range_bar_symbols() -> Vec<String> {
+pub async fn init_odb_symbols() -> Vec<String> {
     let sql = "SELECT DISTINCT symbol FROM opendeviationbar_cache.open_deviation_bars ORDER BY symbol FORMAT TabSeparated";
     match query(sql).await {
         Ok(body) => {
@@ -106,7 +106,7 @@ pub async fn init_range_bar_symbols() -> Vec<String> {
                 .map(|l| l.to_string())
                 .collect();
             let count = symbols.len();
-            if RANGE_BAR_SYMBOLS.set(symbols).is_err() {
+            if ODB_SYMBOLS.set(symbols).is_err() {
                 log::warn!("range bar symbol cache already initialized");
             } else {
                 log::info!("cached {count} range bar symbols from ClickHouse");
@@ -118,7 +118,7 @@ pub async fn init_range_bar_symbols() -> Vec<String> {
             log::warn!("failed to fetch range bar symbols from ClickHouse: {e}");
         }
     }
-    RANGE_BAR_SYMBOLS.get().cloned().unwrap_or_default()
+    ODB_SYMBOLS.get().cloned().unwrap_or_default()
 }
 
 /// Startup schema coherence check — logs column presence and opendeviationbar-py version.
@@ -191,8 +191,8 @@ async fn validate_schema() {
 }
 
 /// Returns the range bar symbol allowlist, or None if not yet loaded or empty.
-pub fn range_bar_symbol_filter() -> Option<&'static [String]> {
-    RANGE_BAR_SYMBOLS
+pub fn odb_symbol_filter() -> Option<&'static [String]> {
+    ODB_SYMBOLS
         .get()
         .filter(|v| !v.is_empty())
         .map(|v| v.as_slice())
@@ -293,7 +293,7 @@ pub async fn fetch_klines(
     let symbol = bare_symbol(&ticker_info);
     let min_tick = ticker_info.min_ticksize;
 
-    let sql = build_range_bar_sql(&symbol, threshold_dbps, range);
+    let sql = build_odb_sql(&symbol, threshold_dbps, range);
 
     let body = query(&sql).await?;
     let mut klines = Vec::new();
@@ -331,7 +331,7 @@ pub async fn fetch_klines(
 /// The initial fetch limit is scaled inversely with threshold so all thresholds
 /// show a similar time window. BPR25 (250 dbps) is the reference at 500 bars;
 /// BPR50 gets ~250, BPR100 gets ~125.
-fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -> String {
+fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -> String {
     // Both paths use DESC ordering + reverse to get the N most recent bars
     // within the requested window. ASC ordering would return bars from the
     // beginning of time, creating gaps when loading historical data.
@@ -391,7 +391,7 @@ pub async fn fetch_klines_with_microstructure(
 ) -> Result<(Vec<Kline>, Vec<Option<ChMicrostructure>>), AdapterError> {
     let symbol = bare_symbol(&ticker_info);
     let min_tick = ticker_info.min_ticksize;
-    let sql = build_range_bar_sql(&symbol, threshold_dbps, range);
+    let sql = build_odb_sql(&symbol, threshold_dbps, range);
 
     let body = query(&sql).await?;
     let mut klines = Vec::new();
@@ -484,7 +484,7 @@ pub fn connect_kline_stream(
         let exchange = ticker_info.exchange();
         let _ = output.send(Event::Connected(exchange)).await;
 
-        let stream_kind = StreamKind::RangeBarKline {
+        let stream_kind = StreamKind::OdbKline {
             ticker_info,
             threshold_dbps,
         };
@@ -735,7 +735,7 @@ pub fn connect_sse_stream(
         let exchange = ticker_info.exchange();
         let _ = output.send(Event::Connected(exchange)).await;
 
-        let stream_kind = StreamKind::RangeBarKline {
+        let stream_kind = StreamKind::OdbKline {
             ticker_info,
             threshold_dbps,
         };

@@ -1,4 +1,4 @@
-// FILE-SIZE-OK: 834 lines — multi-axis scale logic (linear + timeseries + range bar)
+// FILE-SIZE-OK: 834 lines — multi-axis scale logic (linear + timeseries + ODB)
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Option<String> crosshair API)
 pub mod linear;
 pub mod timeseries;
@@ -289,7 +289,7 @@ impl AxisLabelsX<'_> {
                     }
                 }
             }
-            Basis::RangeBar(_) => {
+            Basis::Odb(_) => {
                 let Some(interval_keys) = &self.interval_keys else {
                     return None;
                 };
@@ -412,7 +412,7 @@ impl AxisLabelsX<'_> {
                     self.max.saturating_add(diff)
                 }
             }
-            Basis::Tick(_) | Basis::RangeBar(_) => {
+            Basis::Tick(_) | Basis::Odb(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
@@ -512,10 +512,10 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
             let mut labels: Vec<AxisLabel> = Vec::with_capacity(label_count + 1); // +1 for crosshair
 
             match self.basis {
-                Basis::Tick(_) | Basis::RangeBar(_) => {
+                Basis::Tick(_) | Basis::Odb(_) => {
                     if let Some(interval_keys) = &self.interval_keys {
                         let last_idx = interval_keys.len() - 1;
-                        let is_range_bar = matches!(self.basis, Basis::RangeBar(_));
+                        let is_odb = matches!(self.basis, Basis::Odb(_));
 
                         // First pass: collect visible label positions and timestamps
                         let mut visible_labels: Vec<(f32, u64)> = Vec::new();
@@ -551,8 +551,8 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
 
                         // Second pass: format and emit labels
                         for (snap_x, timestamp) in visible_labels {
-                            let label_text = if is_range_bar {
-                                self.timezone.format_range_bar_label(
+                            let label_text = if is_odb {
+                                self.timezone.format_odb_label(
                                     (timestamp / 1000) as i64,
                                     label_span_ms,
                                 )
@@ -779,7 +779,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                         }
                     }
                     Basis::Tick(_) => None,
-                    Basis::RangeBar(_) => self.last_trade_time.and_then(|ms| {
+                    Basis::Odb(_) => self.last_trade_time.and_then(|ms| {
                         let secs = (ms / 1000) as i64;
                         let millis = (ms % 1000) as u32;
                         let u = Utc.timestamp_opt(secs, millis * 1_000_000).single()?;
