@@ -17,6 +17,26 @@ run = "cargo run"
 description = "Build release binary, update .app bundle, sign, and launch"
 depends = ["preflight", "build:release"]
 run = """
+set -e
+
+# Post-build tunnel integrity check — preflight runs in parallel with
+# build:release (~60s), so the tunnel may have died during the build.
+# Must pass before anything else; fail early, don't launch into broken state.
+if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+  echo "⚠ Tunnel died during build — re-establishing..."
+  mise run tunnel:start
+  if ! curl -sf -m 5 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║  LAUNCH ABORTED: ClickHouse unreachable             ║"
+    echo "║  Tunnel restart failed — bigblack may be offline.   ║"
+    echo "║  Check: ping 172.25.253.142 / zerotier-cli peers    ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    exit 1
+  fi
+  echo "✓ Tunnel re-established"
+fi
+
 kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
 sleep 0.5
 cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
@@ -27,17 +47,6 @@ if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
   git checkout -- Cargo.lock
 fi
 
-# Post-build tunnel check — preflight runs in parallel with build:release,
-# so the tunnel may have died during the ~60s build phase.
-if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
-  echo "⚠ Tunnel died during build — re-establishing..."
-  mise run tunnel:start
-  # Final check
-  if ! curl -sf -m 5 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
-    echo "ERROR: ClickHouse unreachable after tunnel restart. Aborting launch."
-    exit 1
-  fi
-fi
 open Flowsurface.app
 """
 
