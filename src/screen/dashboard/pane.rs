@@ -1185,13 +1185,13 @@ impl State {
                                             studies,
                                             ..
                                         } => {
-                                            *c = Box::new(HeatmapShader::new(
+                                            **c = HeatmapShader::new(
                                                 c.basis,
                                                 tm.multiply_with_min_tick_size(ticker),
                                                 c.ticker_info,
                                                 studies.clone(),
                                                 indicators.clone(),
-                                            ));
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -1256,13 +1256,13 @@ impl State {
                                         indicators,
                                         ..
                                     } => {
-                                        *c = Box::new(HeatmapShader::new(
+                                        **c = HeatmapShader::new(
                                             new_basis,
                                             c.tick_size(),
                                             c.ticker_info,
                                             c.studies.clone(),
                                             indicators.clone(),
-                                        ));
+                                        );
 
                                         if let Some(stream_type) =
                                             self.streams.ready_iter_mut().and_then(|mut it| {

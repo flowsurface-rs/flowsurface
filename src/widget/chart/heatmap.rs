@@ -303,7 +303,7 @@ impl HeatmapShader {
     }
 
     pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
-        if self.trades.datapoints.is_empty() {
+        if self.base_price.is_none() {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
 
