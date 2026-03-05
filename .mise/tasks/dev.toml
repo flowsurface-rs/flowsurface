@@ -26,6 +26,18 @@ codesign --deep --force --sign - Flowsurface.app
 if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
   git checkout -- Cargo.lock
 fi
+
+# Post-build tunnel check — preflight runs in parallel with build:release,
+# so the tunnel may have died during the ~60s build phase.
+if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+  echo "⚠ Tunnel died during build — re-establishing..."
+  mise run tunnel:start
+  # Final check
+  if ! curl -sf -m 5 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+    echo "ERROR: ClickHouse unreachable after tunnel restart. Aborting launch."
+    exit 1
+  fi
+fi
 open Flowsurface.app
 """
 
