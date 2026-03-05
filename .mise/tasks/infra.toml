@@ -9,7 +9,7 @@ set -e
 # bigblack ZeroTier Node ID (immutable) and IPs
 BIGBLACK_ZT_NODE="8f53f201b7"
 BIGBLACK_ZT_IP="172.25.253.142"
-BIGBLACK_LAN_IP="192.168.0.87"
+BIGBLACK_LAN_IP="192.168.0.111"
 
 if lsof -ti:18123 >/dev/null 2>&1; then
   echo "Tunnel already running on port 18123"
