@@ -107,6 +107,7 @@ fi
 
 ["widget:validate"]
 description = "Validate widget code and run app to test floating BTC widget"
+depends = ["preflight"]
 run = """
 echo "→ Checking widget module..."
 cargo check --bin flowsurface -p flowsurface 2>&1 | grep -E "error|widget" || echo "✓ Widget code checks out"

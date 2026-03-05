@@ -52,7 +52,7 @@ pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> opendeviationbar_core::
     opendeviationbar_core::AggTrade {
         agg_trade_id: seq_id,
         price: FixedPoint(trade.price.units),
-        volume: FixedPoint((f32::from(trade.qty) as f64 * 1e8) as i64),
+        volume: FixedPoint(trade.qty.units),
         first_trade_id: seq_id,
         last_trade_id: seq_id,
         timestamp: base_us + sub_ms_offset,

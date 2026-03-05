@@ -406,8 +406,11 @@ impl TickAggr {
 
         if let Some(last) = self.datapoints.last_mut() {
             if kline.time == last.kline.time {
+                let preserved_micro = last.microstructure;
                 last.kline = *kline;
-                last.microstructure = None;
+                // Preserve locally-built microstructure when ClickHouse bar
+                // replaces the forming bar (CH doesn't carry micro in poll stream).
+                last.microstructure = preserved_micro;
             } else if kline.time > last.kline.time {
                 self.datapoints.push(TickAccumulation {
                     tick_count: 1,
