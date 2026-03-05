@@ -226,6 +226,9 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
+    /// Separate timer for telemetry ChartSnapshot (not reset by per-frame ticks).
+    #[cfg(feature = "telemetry")]
+    last_snapshot: Instant,
     /// In-process ODB processor (opendeviationbar-core). Produces completed bars
     /// from raw WebSocket trades, eliminating the ClickHouse live polling path.
     odb_processor: Option<OpenDeviationBarProcessor>,
@@ -331,6 +334,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    #[cfg(feature = "telemetry")]
+                    last_snapshot: Instant::now(),
                     odb_processor: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
@@ -394,6 +399,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    #[cfg(feature = "telemetry")]
+                    last_snapshot: Instant::now(),
                     odb_processor: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
@@ -483,6 +490,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    #[cfg(feature = "telemetry")]
+                    last_snapshot: Instant::now(),
                     odb_processor,
                     next_agg_id: 0,
                     odb_completed_count: 0,
@@ -638,6 +647,8 @@ impl KlineChart {
             kind: kind.clone(),
             study_configurator: study::Configurator::new(),
             last_tick: Instant::now(),
+            #[cfg(feature = "telemetry")]
+            last_snapshot: Instant::now(),
             odb_processor,
             next_agg_id: 0,
             odb_completed_count: 0,
@@ -1643,10 +1654,12 @@ impl KlineChart {
 
         #[cfg(feature = "telemetry")]
         if let Some(t) = now {
-            // Emit ChartSnapshot every ~30s for ODB charts
+            // Emit ChartSnapshot every ~30s for ODB charts.
+            // Uses `last_snapshot` (not `last_tick`) so per-frame updates don't reset the timer.
             if self.chart.basis.is_odb()
-                && t.duration_since(self.last_tick) >= std::time::Duration::from_secs(30)
+                && t.duration_since(self.last_snapshot) >= std::time::Duration::from_secs(30)
             {
+                self.last_snapshot = t;
                 use data::telemetry::{self, TelemetryEvent};
                 if let PlotData::TickBased(ref tick_aggr) = self.data_source {
                     let telem_dbps = if let data::chart::Basis::Odb(d) = self.chart.basis {
