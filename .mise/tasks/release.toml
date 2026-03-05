@@ -29,9 +29,12 @@ cat > Flowsurface.app/Contents/MacOS/flowsurface << 'LAUNCHER'
 #!/bin/bash
 export FLOWSURFACE_CH_HOST="${FLOWSURFACE_CH_HOST:-localhost}"
 export FLOWSURFACE_CH_PORT="${FLOWSURFACE_CH_PORT:-18123}"
-# Auto-start SSH tunnel to bigblack if not running
+export FLOWSURFACE_SSE_ENABLED="${FLOWSURFACE_SSE_ENABLED:-true}"
+export FLOWSURFACE_SSE_HOST="${FLOWSURFACE_SSE_HOST:-localhost}"
+export FLOWSURFACE_SSE_PORT="${FLOWSURFACE_SSE_PORT:-18081}"
+# Auto-start SSH tunnel to bigblack if not running (CH + SSE ports)
 if ! lsof -ti:18123 >/dev/null 2>&1; then
-  ssh -fNL 18123:localhost:8123 bigblack 2>/dev/null
+  ssh -fNL 18123:localhost:8123 -L 18081:localhost:8081 bigblack 2>/dev/null
 fi
 DIR="$(cd "$(dirname "$0")" && pwd)"
 exec "$DIR/flowsurface.bin" "$@"

@@ -350,6 +350,7 @@ impl UniqueStreams {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum PersistStreamKind {
     Kline(PersistKline),
+    #[serde(alias = "RangeBarKline")]
     OdbKline(PersistOdbKline),
     DepthAndTrades(PersistDepth),
 }

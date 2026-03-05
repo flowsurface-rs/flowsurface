@@ -247,6 +247,7 @@ impl KlineTrades {
 pub enum KlineChartKind {
     #[default]
     Candles,
+    #[serde(alias = "RangeBar")]
     Odb,
     Footprint {
         clusters: ClusterKind,

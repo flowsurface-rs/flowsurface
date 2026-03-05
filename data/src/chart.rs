@@ -91,6 +91,7 @@ pub enum Basis {
     ///
     /// The u32 value is `threshold_decimal_bps` (e.g., 250 = 25 basis points = 0.25%).
     /// Uses index-based rendering (like Tick) since bars have non-uniform time spacing.
+    #[serde(alias = "RangeBar")]
     Odb(u32),
 }
 
