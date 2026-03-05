@@ -41,14 +41,17 @@ pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Eve
     }
 }
 
-pub fn trade_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
-    let ticker = config.id;
+pub fn trade_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static, Event> {
+    let tickers = config.id.clone();
+    let market_kind = config.exchange.market_type();
 
     match config.exchange.venue() {
-        Venue::Binance => adapter::binance::connect_trade_stream(ticker).boxed(),
-        Venue::Bybit => adapter::bybit::connect_trade_stream(ticker).boxed(),
-        Venue::Hyperliquid => adapter::hyperliquid::connect_trade_stream(ticker).boxed(),
-        Venue::Okex => adapter::okex::connect_trade_stream(ticker).boxed(),
+        Venue::Bybit => adapter::bybit::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Binance => adapter::binance::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Hyperliquid => {
+            adapter::hyperliquid::connect_trade_stream(tickers, market_kind).boxed()
+        }
+        Venue::Okex => adapter::okex::connect_trade_stream(tickers, market_kind).boxed(),
     }
 }
 

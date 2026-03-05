@@ -5,6 +5,7 @@ use crate::{
 };
 
 use enum_map::{Enum, EnumMap};
+use futures::SinkExt;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
@@ -16,6 +17,39 @@ pub mod okex;
 
 /// Buffer trades and flush in this interval
 const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
+
+async fn flush_trade_buffers<V>(
+    output: &mut futures::channel::mpsc::Sender<Event>,
+    ticker_info_map: &FxHashMap<Ticker, (TickerInfo, V)>,
+    trade_buffers_map: &mut FxHashMap<Ticker, Vec<Trade>>,
+) {
+    let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
+
+    for (ticker, trades_buffer) in trade_buffers_map.iter_mut() {
+        if trades_buffer.is_empty() {
+            continue;
+        }
+
+        let bucket_update_t = trades_buffer
+            .iter()
+            .map(|t| t.time)
+            .max()
+            .map(|t| (t / interval_ms) * interval_ms)
+            .unwrap_or(0);
+
+        if let Some((ticker_info, _)) = ticker_info_map.get(ticker) {
+            let _ = output
+                .send(Event::TradesReceived(
+                    StreamKind::Trades {
+                        ticker_info: *ticker_info,
+                    },
+                    bucket_update_t,
+                    std::mem::take(trades_buffer).into_boxed_slice(),
+                ))
+                .await;
+        }
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum AdapterError {

@@ -1,9 +1,8 @@
-use crate::adapter::TRADE_BUCKET_INTERVAL;
-
 use super::{
     super::{
         Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
+        adapter::{TRADE_BUCKET_INTERVAL, flush_trade_buffers},
         connect::{State, channel, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -18,6 +17,7 @@ use futures::{SinkExt, Stream, future::join_all};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use reqwest::Method;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -955,42 +955,77 @@ pub fn connect_depth_stream(
     })
 }
 
-pub fn connect_trade_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event> {
+pub fn connect_trade_stream(
+    streams: Vec<TickerInfo>,
+    market_type: MarketKind,
+) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
 
-        let ticker = ticker_info.ticker;
-        let exchange = ticker.exchange;
-        let (symbol_str, _) = ticker.to_full_symbol_and_type();
+        let exchange = match market_type {
+            MarketKind::Spot => Exchange::HyperliquidSpot,
+            MarketKind::LinearPerps | MarketKind::InversePerps => Exchange::HyperliquidLinear,
+        };
 
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
-            volume_size_unit() == SizeUnit::Quote,
-            ticker_info,
-            raw_qty_unit_from_market_type(ticker_info.market_type()),
-        );
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
-        let mut trades_buffer = Vec::new();
+        let ticker_info_map = streams
+            .iter()
+            .map(|ticker_info| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(ticker_info.market_type()),
+                        ),
+                    ),
+                )
+            })
+            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+
+        let symbol_to_ticker = streams
+            .iter()
+            .map(|ticker_info| {
+                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+                (symbol_str, ticker_info.ticker)
+            })
+            .collect::<FxHashMap<String, Ticker>>();
+
+        let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
 
         loop {
             match &mut state {
                 State::Disconnected => match connect_websocket(WS_DOMAIN, "/ws").await {
                     Ok(mut websocket) => {
-                        let trades_subscribe_msg = json!({
-                            "method": "subscribe",
-                            "subscription": {
-                                "type": "trades",
-                                "coin": symbol_str
-                            }
-                        });
+                        let mut subscribe_ok = true;
+                        for ticker_info in &streams {
+                            let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
 
-                        if websocket
-                            .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                trades_subscribe_msg.to_string().as_bytes(),
-                            )))
-                            .await
-                            .is_err()
-                        {
+                            let trades_subscribe_msg = json!({
+                                "method": "subscribe",
+                                "subscription": {
+                                    "type": "trades",
+                                    "coin": symbol_str
+                                }
+                            });
+
+                            if websocket
+                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                    trades_subscribe_msg.to_string().as_bytes(),
+                                )))
+                                .await
+                                .is_err()
+                            {
+                                subscribe_ok = false;
+                                break;
+                            }
+                        }
+
+                        if !subscribe_ok {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             continue;
                         }
@@ -1016,59 +1051,47 @@ pub fn connect_trade_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event
                                 parse_websocket_message(&msg.payload)
                             {
                                 for hl_trade in trades {
-                                    let price = Price::from_f32(hl_trade.px)
-                                        .round_to_min_tick(ticker_info.min_ticksize);
+                                    if let Some(ticker) = symbol_to_ticker.get(&hl_trade.coin)
+                                        && let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(ticker)
+                                    {
+                                        let ticker_info = *ticker_info;
+                                        let price = Price::from_f32(hl_trade.px)
+                                            .round_to_min_tick(ticker_info.min_ticksize);
 
-                                    let trade = Trade {
-                                        time: hl_trade.time,
-                                        is_sell: hl_trade.side == "A",
-                                        price,
-                                        qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
-                                    };
-                                    trades_buffer.push(trade);
+                                        let trade = Trade {
+                                            time: hl_trade.time,
+                                            is_sell: hl_trade.side == "A",
+                                            price,
+                                            qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
+                                        };
+                                        trades_buffer_map.entry(*ticker).or_default().push(trade);
+                                    } else {
+                                        log::error!(
+                                            "Ticker info not found for Hyperliquid coin: {}",
+                                            hl_trade.coin
+                                        );
+                                    }
                                 }
                             }
 
-                            if !trades_buffer.is_empty()
-                                && last_flush.elapsed() >= TRADE_BUCKET_INTERVAL
-                            {
-                                let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
-                                let bucket_update_t = trades_buffer
-                                    .iter()
-                                    .map(|t| t.time)
-                                    .max()
-                                    .map(|t| (t / interval_ms) * interval_ms)
-                                    .unwrap_or(0);
-
-                                let _ = output
-                                    .send(Event::TradesReceived(
-                                        StreamKind::Trades { ticker_info },
-                                        bucket_update_t,
-                                        std::mem::take(&mut trades_buffer).into_boxed_slice(),
-                                    ))
-                                    .await;
-
+                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
                                 last_flush = tokio::time::Instant::now();
                             }
                         }
                         OpCode::Close => {
-                            if !trades_buffer.is_empty() {
-                                let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
-                                let bucket_update_t = trades_buffer
-                                    .iter()
-                                    .map(|t| t.time)
-                                    .max()
-                                    .map(|t| (t / interval_ms) * interval_ms)
-                                    .unwrap_or(0);
-
-                                let _ = output
-                                    .send(Event::TradesReceived(
-                                        StreamKind::Trades { ticker_info },
-                                        bucket_update_t,
-                                        std::mem::take(&mut trades_buffer).into_boxed_slice(),
-                                    ))
-                                    .await;
-                            }
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
+                            .await;
 
                             state = State::Disconnected;
                             let _ = output
@@ -1084,23 +1107,8 @@ pub fn connect_trade_stream(ticker_info: TickerInfo) -> impl Stream<Item = Event
                         _ => {}
                     },
                     Err(e) => {
-                        if !trades_buffer.is_empty() {
-                            let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
-                            let bucket_update_t = trades_buffer
-                                .iter()
-                                .map(|t| t.time)
-                                .max()
-                                .map(|t| (t / interval_ms) * interval_ms)
-                                .unwrap_or(0);
-
-                            let _ = output
-                                .send(Event::TradesReceived(
-                                    StreamKind::Trades { ticker_info },
-                                    bucket_update_t,
-                                    std::mem::take(&mut trades_buffer).into_boxed_slice(),
-                                ))
-                                .await;
-                        }
+                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                            .await;
 
                         state = State::Disconnected;
                         let _ = output

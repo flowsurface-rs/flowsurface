@@ -1164,35 +1164,20 @@ impl Dashboard {
                 }
 
                 if !specs.trade.is_empty() {
-                    let trade_subs = specs
-                        .trade
-                        .iter()
-                        .map(|ticker| {
-                            let config = StreamConfig::new(
-                                *ticker,
-                                ticker.exchange(),
-                                None,
-                                PushFrequency::ServerDefault,
-                            );
+                    let config = StreamConfig::new(
+                        specs.trade.clone(),
+                        exchange,
+                        None,
+                        PushFrequency::ServerDefault,
+                    );
 
-                            Subscription::run_with(config, exchange::connect::trade_stream)
-                        })
-                        .collect::<Vec<_>>();
-
-                    if !trade_subs.is_empty() {
-                        subs.push(Subscription::batch(trade_subs));
-                    }
+                    let sub = Subscription::run_with(config, exchange::connect::trade_stream);
+                    subs.push(sub);
                 }
 
-                let kline_params = specs
-                    .kline
-                    .iter()
-                    .map(|(ticker, timeframe)| (*ticker, *timeframe))
-                    .collect::<Vec<_>>();
-
-                if !kline_params.is_empty() {
+                if !specs.kline.is_empty() {
                     let config = StreamConfig::new(
-                        kline_params,
+                        specs.kline.clone(),
                         exchange,
                         None,
                         PushFrequency::ServerDefault,

@@ -1,7 +1,9 @@
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
-    connector::ResolvedStream,
-    connector::fetcher::{FetchSpec, InfoKind},
+    connector::{
+        ResolvedStream,
+        fetcher::{FetchSpec, InfoKind},
+    },
     modal::{
         self, ModifierKind,
         pane::{
@@ -192,9 +194,6 @@ impl State {
             let trades_stream = |derived_plan: &PaneSetup| StreamKind::Trades {
                 ticker_info: derived_plan.ticker_info,
             };
-            let depth_and_trades_streams = |derived_plan: &PaneSetup| {
-                vec![depth_stream(derived_plan), trades_stream(derived_plan)]
-            };
 
             match kind {
                 ContentKind::HeatmapChart => {
@@ -205,7 +204,7 @@ impl State {
                         derived_plan.tick_size,
                     );
 
-                    let streams = depth_and_trades_streams(&derived_plan);
+                    let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
 
                     (content, streams)
                 }
@@ -223,12 +222,11 @@ impl State {
                         Timeframe::M5,
                         |tf| {
                             vec![
-                                depth_stream(&derived_plan),
                                 trades_stream(&derived_plan),
                                 kline_stream(derived_plan.ticker_info, tf),
                             ]
                         },
-                        || depth_and_trades_streams(&derived_plan),
+                        || vec![trades_stream(&derived_plan)],
                     );
 
                     (content, streams)
@@ -258,7 +256,7 @@ impl State {
                                 depth_aggr,
                                 ..derived_plan
                             };
-                            depth_and_trades_streams(&temp)
+                            vec![trades_stream(&temp)]
                         },
                     );
 
@@ -280,7 +278,9 @@ impl State {
                         ..derived_plan
                     };
 
-                    (content, depth_and_trades_streams(&temp))
+                    let streams = vec![trades_stream(&temp)];
+
+                    (content, streams)
                 }
                 ContentKind::Ladder => {
                     let config = self
@@ -294,7 +294,9 @@ impl State {
                         derived_plan.tick_size,
                     )));
 
-                    (content, depth_and_trades_streams(&derived_plan))
+                    let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
+
+                    (content, streams)
                 }
                 ContentKind::ComparisonChart => {
                     let config = self
