@@ -26,12 +26,12 @@ if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
   echo "⚠ Tunnel died during build — re-establishing..."
   mise run tunnel:start
   if ! curl -sf -m 5 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
-    echo ""
-    echo "╔══════════════════════════════════════════════════════╗"
-    echo "║  LAUNCH ABORTED: ClickHouse unreachable             ║"
-    echo "║  Tunnel restart failed — bigblack may be offline.   ║"
-    echo "║  Check: ping 172.25.253.142 / zerotier-cli peers    ║"
-    echo "╚══════════════════════════════════════════════════════╝"
+    echo "" >&2
+    echo "╔══════════════════════════════════════════════════════╗" >&2
+    echo "║  LAUNCH ABORTED: ClickHouse unreachable             ║" >&2
+    echo "║  Tunnel restart failed — bigblack may be offline.   ║" >&2
+    echo "║  Check: ping 172.25.253.142 / zerotier-cli peers    ║" >&2
+    echo "╚══════════════════════════════════════════════════════╝" >&2
     exit 1
   fi
   echo "✓ Tunnel re-established"
