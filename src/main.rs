@@ -2,6 +2,7 @@
 
 mod audio;
 mod chart;
+mod connector;
 mod layout;
 mod logger;
 mod modal;
@@ -173,27 +174,25 @@ impl Flowsurface {
                     exchange::Event::Disconnected(exchange, reason) => {
                         log::info!("a stream disconnected from {exchange} WS: {reason:?}");
                     }
-                    exchange::Event::DepthReceived(
-                        stream,
-                        depth_update_t,
-                        depth,
-                        trades_buffer,
-                    ) => {
+                    exchange::Event::DepthReceived(stream, depth_update_t, depth) => {
                         let task = dashboard
-                            .update_depth_and_trades(
-                                &stream,
-                                depth_update_t,
-                                &depth,
-                                &trades_buffer,
-                                main_window_id,
-                            )
+                            .ingest_depth(&stream, depth_update_t, &depth, main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,
                             });
 
-                        if let Some(msg) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
-                        {
+                        return task;
+                    }
+                    exchange::Event::TradesReceived(stream, update_t, buffer) => {
+                        let task = dashboard
+                            .ingest_trades(&stream, &buffer, update_t, main_window_id)
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
+
+                        if let Some(msg) = self.audio_stream.try_play_sound(&stream, &buffer) {
                             self.notifications.push(Toast::error(msg));
                         }
 
@@ -326,9 +325,9 @@ impl Flowsurface {
                                         tickers_info.get(t).and_then(|opt| *opt)
                                     };
 
-                                    match persist.into_stream_kind(resolver) {
-                                        Ok(stream) => {
-                                            acc.push(stream);
+                                    match persist.into_stream_kinds(resolver) {
+                                        Ok(mut resolved) => {
+                                            acc.append(&mut resolved);
                                             Ok(acc)
                                         }
                                         Err(err) => Err(format!(
@@ -883,7 +882,7 @@ impl Flowsurface {
                     };
 
                     let trade_fetch_checkbox = {
-                        let is_active = exchange::fetcher::is_trade_fetch_enabled();
+                        let is_active = connector::fetcher::is_trade_fetch_enabled();
 
                         let checkbox = iced::widget::checkbox(is_active)
                             .label("Fetch trades (Binance)")
@@ -1091,12 +1090,12 @@ impl Flowsurface {
                     sidebar::Position::Right => (Alignment::End, padding::right(44).top(76)),
                 };
 
-                let depth_streams_list = dashboard.streams.depth_streams(None);
+                let trade_streams_list = dashboard.streams.trade_streams(None);
 
                 dashboard_modal(
                     base,
                     self.audio_stream
-                        .view(depth_streams_list)
+                        .view(trade_streams_list)
                         .map(Message::AudioStream),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
@@ -1192,6 +1191,7 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
+            connector::fetcher::is_trade_fetch_enabled(),
             self.volume_size_unit,
             proxy_cfg_persisted,
         );

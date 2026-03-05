@@ -423,14 +423,7 @@ impl HeatmapShader {
         None
     }
 
-    /// the only data insertion point, called when new data arrives
-    /// could be 1s, 500ms or 100ms, on par with aggregation interval but with additional network latency
-    pub fn insert_datapoint(
-        &mut self,
-        trades_buffer: &[Trade],
-        depth_update_t: u64,
-        depth: &Depth,
-    ) {
+    pub fn insert_depth(&mut self, depth: &Depth, update_t: u64) {
         self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
@@ -438,10 +431,7 @@ impl HeatmapShader {
         let is_interacting = matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. });
 
         let aggr_time = self.depth_history.aggr_time.max(1);
-        let rounded_t = view::round_time_to_bucket(depth_update_t, aggr_time);
-
-        self.trades
-            .ingest_trades_bucket(rounded_t, trades_buffer, self.step);
+        let rounded_t = view::round_time_to_bucket(update_t, aggr_time);
 
         if let Some(mid) = depth.mid_price() {
             let mid_rounded = mid.round_to_step(self.step);
@@ -451,7 +441,7 @@ impl HeatmapShader {
 
         self.latest_time = Some(rounded_t);
 
-        self.clock = self.clock.anchor_with_update(depth_update_t);
+        self.clock = self.clock.anchor_with_update(update_t);
 
         self.anchor
             .set_scroll_ref_bucket_if_zero((rounded_t / aggr_time) as i64);
@@ -476,6 +466,22 @@ impl HeatmapShader {
         if self.anchor.effective_base_price(self.base_price) != prev_effective_base {
             self.canvas_invalidation.mark_axis_y();
         }
+    }
+
+    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: u64) {
+        if buffer.is_empty() {
+            return;
+        }
+
+        let aggr_time = self.depth_history.aggr_time.max(1);
+        let rounded_t = view::round_time_to_bucket(update_t, aggr_time);
+
+        self.trades
+            .ingest_trades_bucket(rounded_t, buffer, self.step);
+
+        self.canvas_invalidation.mark_overlay_tooltip();
+        self.canvas_invalidation.mark_overlay_scale_labels();
+        self.try_rebuild_instances();
     }
 
     pub fn visual_config(&self) -> data::chart::heatmap::Config {
