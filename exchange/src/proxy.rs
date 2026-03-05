@@ -415,52 +415,20 @@ impl std::fmt::Display for Proxy {
     }
 }
 
-// Single runtime source of truth (set by UI/persisted config at startup)
-static RUNTIME_PROXY_CFG: OnceLock<Option<Proxy>> = OnceLock::new();
+type ProxyCfgProvider = fn() -> Option<Proxy>;
+static RUNTIME_PROXY_CFG_PROVIDER: OnceLock<ProxyCfgProvider> = OnceLock::new();
 
-/// Set the runtime proxy config (intended to be called once, early at startup)
-pub fn set_runtime_proxy_cfg(cfg: &Option<Proxy>) {
-    if let Some(existing) = RUNTIME_PROXY_CFG.get() {
-        if existing != cfg {
-            log::debug!(
-                "Attempted to re-set runtime proxy config (ignored). existing={}, requested={}",
-                existing
-                    .as_ref()
-                    .map(|p| p.to_log_string())
-                    .unwrap_or_else(|| "direct (no proxy)".to_string()),
-                cfg.as_ref()
-                    .map(|p| p.to_log_string())
-                    .unwrap_or_else(|| "direct (no proxy)".to_string()),
-            );
-        }
-        return;
-    }
-
-    RUNTIME_PROXY_CFG
-        .set(cfg.clone())
-        .expect("Proxy runtime already initialized (set_runtime_proxy_cfg called twice)");
-
-    match cfg {
-        Some(c) => log::debug!("Runtime proxy config set: {}", c.to_log_string()),
-        None => log::debug!("Runtime proxy config set: direct (no proxy)"),
-    }
+pub fn set_runtime_proxy_cfg_provider(provider: ProxyCfgProvider) {
+    let _ = RUNTIME_PROXY_CFG_PROVIDER.set(provider);
 }
 
-pub fn runtime_proxy_cfg_ref() -> Option<&'static Proxy> {
-    match RUNTIME_PROXY_CFG.get() {
-        Some(cfg) => cfg.as_ref(),
-        None => {
-            log::warn!(
-                "Proxy runtime not initialized yet; defaulting to direct (no proxy)\n
-                Call set_runtime_proxy_cfg(Some(..)|None) early at startup."
-            );
-            None
-        }
-    }
-}
+pub(crate) fn runtime_proxy_cfg() -> Option<Proxy> {
+    let Some(provider) = RUNTIME_PROXY_CFG_PROVIDER.get() else {
+        log::warn!("Proxy runtime provider not initialized; defaulting to direct (no proxy).");
+        return None;
+    };
 
-pub fn runtime_proxy_cfg() -> Option<Proxy> {
-    runtime_proxy_cfg_ref().cloned()
+    provider()
 }
 
 fn authority_host_port(host: &str, port: u16) -> String {
@@ -547,8 +515,11 @@ where
     }
 }
 
-pub fn try_apply_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(cfg) = runtime_proxy_cfg_ref() else {
+pub fn try_apply_proxy(
+    builder: reqwest::ClientBuilder,
+    proxy_cfg: Option<&Proxy>,
+) -> reqwest::ClientBuilder {
+    let Some(cfg) = proxy_cfg else {
         return builder;
     };
 

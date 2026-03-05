@@ -1,3 +1,4 @@
+use crate::connector::{runtime_proxy_cfg, set_runtime_proxy_cfg};
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
 use data::{
@@ -329,7 +330,7 @@ pub fn load_saved_state() -> SavedState {
                 LayoutManager::from_config(layouts, active_layout)
             };
 
-            exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
+            crate::connector::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
             exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
 
             // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
@@ -340,7 +341,8 @@ pub fn load_saved_state() -> SavedState {
             {
                 proxy.auth = Some(auth);
             }
-            exchange::proxy::set_runtime_proxy_cfg(&proxy_cfg);
+            set_runtime_proxy_cfg(proxy_cfg.clone());
+            exchange::proxy::set_runtime_proxy_cfg_provider(runtime_proxy_cfg);
 
             SavedState {
                 theme: state.selected_theme,

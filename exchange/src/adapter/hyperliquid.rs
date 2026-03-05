@@ -2,6 +2,7 @@ use super::{
     super::{
         Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
+        adapter::{TRADE_BUCKET_INTERVAL, flush_trade_buffers},
         connect::{State, channel, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -16,6 +17,7 @@ use futures::{SinkExt, Stream, future::join_all};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use reqwest::Method;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -65,14 +67,11 @@ pub fn exact_multipliers_for_price(price: f32) -> &'static [u16] {
     }
 }
 
-#[allow(dead_code)]
 const LIMIT: usize = 1200; // Conservative rate limit
 
-#[allow(dead_code)]
 const REFILL_RATE: Duration = Duration::from_secs(60);
 const LIMITER_BUFFER_PCT: f32 = 0.05;
 
-#[allow(dead_code)]
 static HYPERLIQUID_LIMITER: LazyLock<Mutex<HyperliquidLimiter>> =
     LazyLock::new(|| Mutex::new(HyperliquidLimiter::new(LIMIT, REFILL_RATE)));
 
@@ -785,7 +784,7 @@ fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
     }
 }
 
-pub fn connect_market_stream(
+pub fn connect_depth_stream(
     ticker_info: TickerInfo,
     tick_multiplier: Option<TickMultiplier>,
     push_freq: PushFrequency,
@@ -797,8 +796,6 @@ pub fn connect_market_stream(
         let exchange = ticker.exchange;
 
         let mut local_depth_cache = LocalDepthCache::default();
-        let mut trades_buffer = Vec::new();
-
         let qty_norm = QtyNormalization::with_raw_qty_unit(
             volume_size_unit() == SizeUnit::Quote,
             ticker_info,
@@ -853,25 +850,6 @@ pub fn connect_market_stream(
                                 continue;
                             }
 
-                            let trades_subscribe_msg = json!({
-                                "method": "subscribe",
-                                "subscription": {
-                                    "type": "trades",
-                                    "coin": symbol_str
-                                }
-                            });
-
-                            if websocket
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    trades_subscribe_msg.to_string().as_bytes(),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                                continue;
-                            }
-
                             state = State::Connected(websocket);
                             let _ = output.send(Event::Connected(exchange)).await;
                         }
@@ -892,21 +870,6 @@ pub fn connect_market_stream(
                             OpCode::Text => {
                                 if let Ok(stream_data) = parse_websocket_message(&msg.payload) {
                                     match stream_data {
-                                        StreamData::Trade(trades) => {
-                                            for hl_trade in trades {
-                                                let price = Price::from_f32(hl_trade.px)
-                                                    .round_to_min_tick(ticker_info.min_ticksize);
-
-                                                let trade = Trade {
-                                                    time: hl_trade.time,
-                                                    is_sell: hl_trade.side == "A", // A for Ask/Sell, B for Bid/Buy
-                                                    price,
-                                                    qty: qty_norm
-                                                        .normalize_qty(hl_trade.sz, hl_trade.px),
-                                                };
-                                                trades_buffer.push(trade);
-                                            }
-                                        }
                                         StreamData::Depth(depth) => {
                                             let bids = depth.levels[0]
                                                 .iter()
@@ -935,7 +898,7 @@ pub fn connect_market_stream(
                                                 Some(qty_norm),
                                             );
 
-                                            let stream_kind = StreamKind::DepthAndTrades {
+                                            let stream_kind = StreamKind::Depth {
                                                 ticker_info,
                                                 depth_aggr: super::StreamTicksize::ServerSide(
                                                     TickMultiplier(user_multiplier),
@@ -943,18 +906,16 @@ pub fn connect_market_stream(
                                                 push_freq,
                                             };
                                             let current_depth = local_depth_cache.depth.clone();
-                                            let trades = std::mem::take(&mut trades_buffer)
-                                                .into_boxed_slice();
 
                                             let _ = output
                                                 .send(Event::DepthReceived(
                                                     stream_kind,
                                                     depth.time,
                                                     current_depth,
-                                                    trades,
                                                 ))
                                                 .await;
                                         }
+                                        StreamData::Trade(_) => {}
                                         StreamData::Kline(_) => {
                                             // Handle kline data if needed for depth stream
                                         }
@@ -986,6 +947,175 @@ pub fn connect_market_stream(
                         }
                     }
                 }
+            }
+        }
+    })
+}
+
+pub fn connect_trade_stream(
+    tickers: Vec<TickerInfo>,
+    market_type: MarketKind,
+) -> impl Stream<Item = Event> {
+    channel(100, move |mut output| async move {
+        let mut state = State::Disconnected;
+
+        let exchange = match market_type {
+            MarketKind::Spot => Exchange::HyperliquidSpot,
+            MarketKind::LinearPerps | MarketKind::InversePerps => Exchange::HyperliquidLinear,
+        };
+
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+
+        let ticker_info_map = tickers
+            .iter()
+            .map(|ticker_info| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(ticker_info.market_type()),
+                        ),
+                    ),
+                )
+            })
+            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+
+        let symbol_to_ticker = tickers
+            .iter()
+            .map(|ticker_info| {
+                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+                (symbol_str, ticker_info.ticker)
+            })
+            .collect::<FxHashMap<String, Ticker>>();
+
+        let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
+        let mut last_flush = tokio::time::Instant::now();
+
+        loop {
+            match &mut state {
+                State::Disconnected => match connect_websocket(WS_DOMAIN, "/ws").await {
+                    Ok(mut websocket) => {
+                        let mut subscribe_ok = true;
+                        for ticker_info in &tickers {
+                            let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+
+                            let trades_subscribe_msg = json!({
+                                "method": "subscribe",
+                                "subscription": {
+                                    "type": "trades",
+                                    "coin": symbol_str
+                                }
+                            });
+
+                            if websocket
+                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                    trades_subscribe_msg.to_string().as_bytes(),
+                                )))
+                                .await
+                                .is_err()
+                            {
+                                subscribe_ok = false;
+                                break;
+                            }
+                        }
+
+                        if !subscribe_ok {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+
+                        state = State::Connected(websocket);
+                        last_flush = tokio::time::Instant::now();
+                        let _ = output.send(Event::Connected(exchange)).await;
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Failed to connect to websocket".to_string(),
+                            ))
+                            .await;
+                    }
+                },
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            if let Ok(StreamData::Trade(trades)) =
+                                parse_websocket_message(&msg.payload)
+                            {
+                                for hl_trade in trades {
+                                    if let Some(ticker) = symbol_to_ticker.get(&hl_trade.coin)
+                                        && let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(ticker)
+                                    {
+                                        let ticker_info = *ticker_info;
+                                        let price = Price::from_f32(hl_trade.px)
+                                            .round_to_min_tick(ticker_info.min_ticksize);
+
+                                        let trade = Trade {
+                                            time: hl_trade.time,
+                                            is_sell: hl_trade.side == "A",
+                                            price,
+                                            qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
+                                        };
+                                        trades_buffer_map.entry(*ticker).or_default().push(trade);
+                                    } else {
+                                        log::error!(
+                                            "Ticker info not found for Hyperliquid coin: {}",
+                                            hl_trade.coin
+                                        );
+                                    }
+                                }
+                            }
+
+                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
+                                last_flush = tokio::time::Instant::now();
+                            }
+                        }
+                        OpCode::Close => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
+                            .await;
+
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "WebSocket closed".to_string(),
+                                ))
+                                .await;
+                        }
+                        OpCode::Ping => {
+                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                            .await;
+
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                format!("WebSocket error: {}", e),
+                            ))
+                            .await;
+                    }
+                },
             }
         }
     })

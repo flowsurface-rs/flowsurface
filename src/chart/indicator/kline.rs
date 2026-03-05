@@ -1,9 +1,9 @@
 use crate::chart::{Message, ViewState};
+use crate::connector::fetcher::FetchRange;
 
 use data::chart::PlotData;
 use data::chart::indicator::KlineIndicator;
 use data::chart::kline::KlineDataPoint;
-use exchange::fetcher::FetchRange;
 use exchange::{Kline, Timeframe, Trade};
 
 pub mod open_interest;

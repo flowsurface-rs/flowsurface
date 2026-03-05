@@ -205,12 +205,20 @@ impl HeatmapChart {
         }
     }
 
-    pub fn insert_datapoint(
-        &mut self,
-        trades_buffer: &[Trade],
-        depth_update_t: u64,
-        depth: &Depth,
-    ) {
+    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: u64) {
+        let rounded_update_t = self.round_to_basis_time(update_t);
+
+        let entry = self.trades.datapoints.entry(rounded_update_t).or_default();
+
+        let tick_size = self.chart.tick_size;
+        for trade in buffer {
+            entry.add_trade(trade, tick_size);
+        }
+    }
+
+    pub fn insert_depth(&mut self, depth: &Depth, depth_update_t: u64) {
+        let rounded_depth_update = self.round_to_basis_time(depth_update_t);
+
         let chart = &mut self.chart;
 
         let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
@@ -221,23 +229,33 @@ impl HeatmapChart {
 
         if is_paused {
             self.pause_buffer.push((
-                depth_update_t,
-                trades_buffer.to_vec().into_boxed_slice(),
+                rounded_depth_update,
+                Vec::<Trade>::new().into_boxed_slice(),
                 depth.clone(),
             ));
-
             return;
-        } else if !self.pause_buffer.is_empty() {
+        }
+
+        if !self.pause_buffer.is_empty() {
             self.pause_buffer.sort_by_key(|(time, _, _)| *time);
 
-            for (time, trades, depth) in std::mem::take(&mut self.pause_buffer) {
-                self.process_datapoint(&trades, time, &depth);
+            for (time, _trades, depth) in std::mem::take(&mut self.pause_buffer) {
+                self.process_depth_at(time, &depth);
             }
         } else {
             self.cleanup_old_data();
         }
 
-        self.process_datapoint(trades_buffer, depth_update_t, depth);
+        self.process_depth_at(rounded_depth_update, depth);
+    }
+
+    fn process_depth_at(&mut self, rounded_update: u64, depth: &Depth) {
+        self.heatmap.insert_latest_depth(depth, rounded_update);
+
+        let chart = &mut self.chart;
+        let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
+        chart.base_price_y = mid_price.round_to_step(chart.tick_size);
+        chart.latest_x = chart.latest_x.max(rounded_update);
     }
 
     fn cleanup_old_data(&mut self) {
@@ -260,40 +278,18 @@ impl HeatmapChart {
         }
     }
 
-    fn process_datapoint(&mut self, trades_buffer: &[Trade], depth_update: u64, depth: &Depth) {
-        let chart = &mut self.chart;
-
-        let aggregate_time: u64 = match chart.basis {
-            Basis::Time(interval) => interval.into(),
-            Basis::Tick(_) => todo!(),
-        };
-
-        let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
-
-        {
-            let entry = self
-                .trades
-                .datapoints
-                .entry(rounded_depth_update)
-                .or_insert_with(|| HeatmapDataPoint {
-                    grouped_trades: Box::new([]),
-                    buy_sell: Default::default(),
-                });
-
-            for trade in trades_buffer {
-                entry.add_trade(trade, chart.tick_size);
+    fn round_to_basis_time(&self, update_t: u64) -> u64 {
+        match self.chart.basis {
+            Basis::Time(interval) => {
+                let aggregate_time: u64 = interval.into();
+                if aggregate_time == 0 {
+                    update_t
+                } else {
+                    (update_t / aggregate_time) * aggregate_time
+                }
             }
+            Basis::Tick(_) => update_t,
         }
-
-        self.heatmap
-            .insert_latest_depth(depth, rounded_depth_update);
-
-        {
-            let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
-            chart.base_price_y = mid_price.round_to_step(chart.tick_size);
-        }
-
-        chart.latest_x = rounded_depth_update;
     }
 
     pub fn visual_config(&self) -> Config {

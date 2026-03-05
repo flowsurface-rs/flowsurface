@@ -3,9 +3,9 @@ use crate::audio::{AudioError, SoundCache, SoundType};
 use crate::style::{self, icon_text};
 use crate::widget::{labeled_slider, tooltip};
 use data::audio::StreamCfg;
-use exchange::adapter::{Exchange, StreamKind, StreamTicksize};
+use exchange::adapter::{Exchange, StreamKind};
 
-use exchange::{PushFrequency, Trade};
+use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
 use iced::widget::{checkbox, slider, space};
 use iced::{Element, padding};
@@ -152,10 +152,7 @@ impl AudioStream {
         None
     }
 
-    pub fn view(
-        &self,
-        active_streams: Vec<(exchange::TickerInfo, StreamTicksize, PushFrequency)>,
-    ) -> Element<'_, Message> {
+    pub fn view(&self, active_streams: Vec<exchange::TickerInfo>) -> Element<'_, Message> {
         let audio_output_error = self.init_error.as_ref().map(|err| {
             container(
                 column![
@@ -192,12 +189,11 @@ impl AudioStream {
             if active_streams.is_empty() {
                 available_streams = available_streams.push(text("No trade streams found"));
             } else {
-                // de-dup by (exchange, ticker), ignoring depth_aggr
+                // de-dup by (exchange, ticker)
                 let mut streams = active_streams;
                 let mut seen = Vec::with_capacity(streams.len());
-                streams.retain(|pair| {
-                    let t = pair.0;
-                    let key = (t.exchange(), t);
+                streams.retain(|ticker_info| {
+                    let key = (ticker_info.exchange(), *ticker_info);
                     if seen.contains(&key) {
                         false
                     } else {
@@ -206,18 +202,14 @@ impl AudioStream {
                     }
                 });
 
-                for (ticker_info, depth_aggr, _) in streams {
+                for ticker_info in streams {
                     let exchange = ticker_info.exchange();
                     let ticker = ticker_info.ticker;
 
                     let mut column = column![].padding(padding::left(4));
 
                     let is_audio_enabled =
-                        self.is_stream_audio_enabled(&StreamKind::DepthAndTrades {
-                            ticker_info,
-                            depth_aggr,
-                            push_freq: PushFrequency::ServerDefault,
-                        });
+                        self.is_stream_audio_enabled(&StreamKind::Trades { ticker_info });
 
                     let stream_checkbox = checkbox(is_audio_enabled)
                         .label(format!("{exchange} - {ticker}"))
@@ -315,7 +307,7 @@ impl AudioStream {
 
     pub fn is_stream_audio_enabled(&self, stream: &StreamKind) -> bool {
         match stream {
-            StreamKind::DepthAndTrades { ticker_info, .. } => self
+            StreamKind::Trades { ticker_info } => self
                 .streams
                 .get(&ticker_info.exchange())
                 .and_then(|streams| streams.get(&ticker_info.ticker))
@@ -329,7 +321,7 @@ impl AudioStream {
             return None;
         }
 
-        let StreamKind::DepthAndTrades { ticker_info, .. } = stream else {
+        let StreamKind::Trades { ticker_info } = stream else {
             return None;
         };
 

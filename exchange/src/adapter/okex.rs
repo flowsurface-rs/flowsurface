@@ -1,16 +1,13 @@
-use crate::{
-    OpenInterest, Price, PushFrequency, Volume,
-    adapter::{StreamKind, StreamTicksize},
-    limiter::{self, RateLimiter},
-};
-
 use super::{
     super::{
-        Exchange, Kline, MarketKind, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, Ticker, TickerInfo,
+        TickerStats, Timeframe, Trade, Volume,
+        adapter::{StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
         connect::{State, channel, connect_ws},
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
+        limiter::{self, RateLimiter},
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -18,6 +15,7 @@ use super::{
 
 use fastwebsockets::{Frame, OpCode};
 use futures::{SinkExt, Stream, channel::mpsc};
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
@@ -86,19 +84,24 @@ struct SonicDepth {
 }
 
 enum StreamData {
-    Trade(Vec<SonicTrade>),
+    Trade(String, Vec<SonicTrade>),
     Depth(SonicDepth, String, u64),
 }
 
-fn feed_de(slice: &[u8], _ticker: Ticker) -> Result<StreamData, AdapterError> {
+fn feed_de(slice: &[u8]) -> Result<StreamData, AdapterError> {
     let v: Value =
         serde_json::from_slice(slice).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
     let mut channel = String::new();
+    let mut inst_id = String::new();
     if let Some(arg) = v.get("arg")
         && let Some(ch) = arg.get("channel").and_then(|c| c.as_str())
     {
         channel = ch.to_string();
+
+        if let Some(symbol) = arg.get("instId").and_then(|c| c.as_str()) {
+            inst_id = symbol.to_string();
+        }
     }
 
     if let Some(action) = v.get("action").and_then(|a| a.as_str())
@@ -154,7 +157,13 @@ fn feed_de(slice: &[u8], _ticker: Ticker) -> Result<StreamData, AdapterError> {
             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
         if matches!(channel.as_str(), "trades" | "trade") {
-            return Ok(StreamData::Trade(trades));
+            if inst_id.is_empty() {
+                return Err(AdapterError::ParseError(
+                    "Missing instId for trade data".to_string(),
+                ));
+            }
+
+            return Ok(StreamData::Trade(inst_id, trades));
         }
     }
 
@@ -202,7 +211,7 @@ async fn try_connect(
     }
 }
 
-pub fn connect_market_stream(
+pub fn connect_depth_stream(
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
 ) -> impl Stream<Item = Event> {
@@ -217,12 +226,10 @@ pub fn connect_market_stream(
         let subscribe_message = serde_json::json!({
             "op": "subscribe",
             "args": [
-                { "channel": "trades", "instId": symbol_str },
                 { "channel": "books",  "instId": symbol_str },
             ],
         });
 
-        let mut trades_buffer: Vec<Trade> = vec![];
         let mut orderbook = LocalDepthCache::default();
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
@@ -240,25 +247,8 @@ pub fn connect_market_stream(
                 State::Connected(ws) => match ws.read_frame().await {
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => {
-                            if let Ok(data) = feed_de(&msg.payload[..], ticker) {
+                            if let Ok(data) = feed_de(&msg.payload[..]) {
                                 match data {
-                                    StreamData::Trade(de_trade_vec) => {
-                                        for de_trade in &de_trade_vec {
-                                            let price = Price::from_f32(de_trade.price)
-                                                .round_to_min_tick(ticker_info.min_ticksize);
-                                            let qty = qty_norm
-                                                .normalize_qty(de_trade.qty, de_trade.price);
-
-                                            let trade = Trade {
-                                                time: de_trade.time,
-                                                is_sell: de_trade.is_sell == "sell"
-                                                    || de_trade.is_sell == "SELL",
-                                                price,
-                                                qty,
-                                            };
-                                            trades_buffer.push(trade);
-                                        }
-                                    }
                                     StreamData::Depth(de_depth, data_type, time) => {
                                         let depth = DepthPayload {
                                             last_update_id: de_depth.update_id,
@@ -297,19 +287,18 @@ pub fn connect_market_stream(
 
                                             let _ = output
                                                 .send(Event::DepthReceived(
-                                                    StreamKind::DepthAndTrades {
+                                                    StreamKind::Depth {
                                                         ticker_info,
                                                         depth_aggr: StreamTicksize::Client,
                                                         push_freq,
                                                     },
                                                     time,
                                                     orderbook.depth.clone(),
-                                                    std::mem::take(&mut trades_buffer)
-                                                        .into_boxed_slice(),
                                                 ))
                                                 .await;
                                         }
                                     }
+                                    StreamData::Trade(_, _) => {}
                                 }
                             }
                         }
@@ -325,6 +314,150 @@ pub fn connect_market_stream(
                         _ => {}
                     },
                     Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                },
+            }
+        }
+    })
+}
+
+pub fn connect_trade_stream(
+    streams: Vec<TickerInfo>,
+    market_type: MarketKind,
+) -> impl Stream<Item = Event> {
+    channel(100, move |mut output| async move {
+        let mut state: State = State::Disconnected;
+
+        let exchange = match market_type {
+            MarketKind::Spot => Exchange::OkexSpot,
+            MarketKind::LinearPerps => Exchange::OkexLinear,
+            MarketKind::InversePerps => Exchange::OkexInverse,
+        };
+
+        let args = streams
+            .iter()
+            .map(|ticker_info| {
+                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+                serde_json::json!({
+                    "channel": "trades",
+                    "instId": symbol_str,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let subscribe_message = serde_json::json!({
+            "op": "subscribe",
+            "args": args,
+        });
+
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let ticker_info_map = streams
+            .iter()
+            .map(|ticker_info| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(market_type),
+                        ),
+                    ),
+                )
+            })
+            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+
+        let symbol_to_ticker = streams
+            .iter()
+            .map(|ticker_info| {
+                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+                (symbol_str, ticker_info.ticker)
+            })
+            .collect::<FxHashMap<String, Ticker>>();
+
+        let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
+        let mut last_flush = tokio::time::Instant::now();
+
+        loop {
+            match &mut state {
+                State::Disconnected => {
+                    state = try_connect(&subscribe_message, exchange, &mut output, "public").await;
+                    last_flush = tokio::time::Instant::now();
+                }
+                State::Connected(ws) => match ws.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
+                                feed_de(&msg.payload[..])
+                            {
+                                if let Some(ticker) = symbol_to_ticker.get(&inst_id)
+                                    && let Some((ticker_info, qty_norm)) =
+                                        ticker_info_map.get(ticker)
+                                {
+                                    let ticker_info = *ticker_info;
+                                    let trades_buffer =
+                                        trades_buffer_map.entry(*ticker).or_default();
+
+                                    for de_trade in &de_trade_vec {
+                                        let price = Price::from_f32(de_trade.price)
+                                            .round_to_min_tick(ticker_info.min_ticksize);
+                                        let qty =
+                                            qty_norm.normalize_qty(de_trade.qty, de_trade.price);
+
+                                        let trade = Trade {
+                                            time: de_trade.time,
+                                            is_sell: de_trade.is_sell == "sell"
+                                                || de_trade.is_sell == "SELL",
+                                            price,
+                                            qty,
+                                        };
+                                        trades_buffer.push(trade);
+                                    }
+                                } else {
+                                    log::error!("Ticker info not found for symbol: {}", inst_id);
+                                }
+                            }
+
+                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
+                                last_flush = tokio::time::Instant::now();
+                            }
+                        }
+                        OpCode::Close => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
+                            .await;
+
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Connection closed".to_string(),
+                                ))
+                                .await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                            .await;
+
                         state = State::Disconnected;
                         let _ = output
                             .send(Event::Disconnected(
