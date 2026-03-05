@@ -761,10 +761,12 @@ impl KlineChart {
                         chart.latest_x = kline.time;
                     }
 
-                    // Set last_price from the newest ClickHouse bar only when
-                    // no forming bar exists yet (no live trades received).
-                    // Once live trades arrive, insert_trades_buffer() takes over.
-                    if !has_forming {
+                    // Set last_price from the CH/SSE bar only when no WS trades
+                    // have arrived yet (startup).  Once live trades flow,
+                    // insert_trades_buffer() owns the price line — overwriting
+                    // it here with the completed bar's close would show a stale
+                    // price (the bar close, not the current market price).
+                    if !has_forming && chart.last_trade_time.is_none() {
                         let reference = prev_close.unwrap_or(kline.close);
                         chart.last_price = Some(PriceInfoLabel::new(kline.close, reference));
                     }
@@ -1295,21 +1297,15 @@ impl KlineChart {
                             }
                         }
 
-                        // Update live price line from forming bar or last trade.
-                        // Color = current price vs previous completed bar's close
-                        // (standard charting convention: green = up from last bar, red = down).
-                        // Price.units and FixedPoint.0 are both i64 × 10^8 — direct copy.
+                        // Update live price line from the raw WS trade (exchange-
+                        // reported price).  Using the trade directly — rather than
+                        // the processor's forming-bar close — keeps the chart in
+                        // sync with the widget regardless of processor resets or
+                        // bar-boundary divergence.
                         if let Some(last_trade) = trades_buffer.last() {
                             self.chart.last_trade_time = Some(last_trade.time);
-                        }
-                        let prev_close = tick_aggr.datapoints.last().map(|dp| dp.kline.close);
-                        if let Some(forming) = processor.get_incomplete_bar() {
-                            let close = Price {
-                                units: forming.close.0,
-                            };
-                            let reference = prev_close.unwrap_or(close);
-                            self.chart.last_price = Some(PriceInfoLabel::new(close, reference));
-                        } else if let Some(last_trade) = trades_buffer.last() {
+                            let prev_close =
+                                tick_aggr.datapoints.last().map(|dp| dp.kline.close);
                             let reference = prev_close.unwrap_or(last_trade.price);
                             self.chart.last_price =
                                 Some(PriceInfoLabel::new(last_trade.price, reference));

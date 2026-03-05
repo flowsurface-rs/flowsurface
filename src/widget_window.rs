@@ -180,18 +180,13 @@ impl WidgetState {
             }
         }
 
+        // Use the exchange-reported trade price directly — keeps the widget
+        // in sync with the main chart regardless of processor state.
         if let Some(last_trade) = trades.last() {
             self.last_trade_time = Some(last_trade.time);
-        }
-
-        if let Some(forming) = self.processor.get_incomplete_bar() {
-            let close = Price {
-                units: forming.close.0,
-            };
-            let open = Price {
-                units: forming.open.0,
-            };
-            self.last_price = Some(PriceInfoLabel::new(close, open));
+            let prev_close = self.bars.last().map(|k| k.close);
+            let reference = prev_close.unwrap_or(last_trade.price);
+            self.last_price = Some(PriceInfoLabel::new(last_trade.price, reference));
         }
 
         self.cache.clear();
