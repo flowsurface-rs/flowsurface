@@ -2,15 +2,99 @@
 # SSH tunnel to bigblack ClickHouse for range bar data
 
 ["tunnel:start"]
-description = "Start SSH tunnel to bigblack (CH:18123→8123, SSE:18081→8081)"
+description = "Start SSH tunnel to bigblack with ZeroTier self-healing"
 run = """
+set -e
+
+# bigblack ZeroTier Node ID (immutable) and IPs
+BIGBLACK_ZT_NODE="8f53f201b7"
+BIGBLACK_ZT_IP="172.25.253.142"
+BIGBLACK_LAN_IP="192.168.0.87"
+
 if lsof -ti:18123 >/dev/null 2>&1; then
   echo "Tunnel already running on port 18123"
   exit 0
 fi
-echo "Starting SSH tunnel to bigblack..."
-ssh -fNL 18123:localhost:8123 -L 18081:localhost:8081 bigblack
-echo "SSH tunnel started: localhost:18123→bigblack:8123 + localhost:18081→bigblack:8081"
+
+# --- ZeroTier health probe ---
+zt_peer_status() {
+  sudo zerotier-cli peers 2>/dev/null | awk -v node="$BIGBLACK_ZT_NODE" '$1 == node { print $5 }'
+}
+
+zt_local_status() {
+  sudo zerotier-cli info 2>/dev/null | awk '{ print $5 }'
+}
+
+try_ssh_tunnel() {
+  local host="$1"
+  local label="$2"
+  echo "  Trying SSH tunnel via ${label} (${host})..."
+  if ssh -o ConnectTimeout=8 -fNL 18123:localhost:8123 -L 18081:localhost:8081 "$host" 2>/dev/null; then
+    echo "SSH tunnel started via ${label}: localhost:18123→${host}:8123 + localhost:18081→${host}:8081"
+    return 0
+  fi
+  return 1
+}
+
+echo "=== ZeroTier Health Probe ==="
+
+# Step 1: Check local ZeroTier service
+LOCAL_STATUS=$(zt_local_status)
+if [ "$LOCAL_STATUS" != "ONLINE" ]; then
+  echo "  Local ZeroTier status: ${LOCAL_STATUS:-UNKNOWN} — restarting service..."
+  sudo launchctl unload /Library/LaunchDaemons/com.zerotier.one.plist 2>/dev/null || true
+  sleep 1
+  sudo launchctl load /Library/LaunchDaemons/com.zerotier.one.plist
+  sleep 3
+  LOCAL_STATUS=$(zt_local_status)
+  echo "  Local ZeroTier status after restart: ${LOCAL_STATUS:-UNKNOWN}"
+fi
+
+# Step 2: Check bigblack peer status
+PEER_LINK=$(zt_peer_status)
+echo "  bigblack peer ($BIGBLACK_ZT_NODE): link=${PEER_LINK:-NOT_FOUND}"
+
+if [ "$PEER_LINK" != "DIRECT" ]; then
+  echo "  Peer not DIRECT — restarting local ZeroTier to force NAT re-punch..."
+  sudo launchctl unload /Library/LaunchDaemons/com.zerotier.one.plist 2>/dev/null || true
+  sleep 1
+  sudo launchctl load /Library/LaunchDaemons/com.zerotier.one.plist
+  # Wait for peer discovery (ZT needs time to re-negotiate paths)
+  echo "  Waiting for peer re-negotiation (up to 15s)..."
+  for i in $(seq 1 5); do
+    sleep 3
+    PEER_LINK=$(zt_peer_status)
+    echo "    attempt $i/5: link=${PEER_LINK:-NOT_FOUND}"
+    if [ "$PEER_LINK" = "DIRECT" ]; then
+      break
+    fi
+  done
+fi
+
+echo ""
+echo "=== SSH Tunnel ==="
+
+# Step 3: Try ZeroTier IP first, then LAN fallback
+if try_ssh_tunnel bigblack "ZeroTier ($BIGBLACK_ZT_IP)"; then
+  exit 0
+fi
+
+echo "  ZeroTier SSH failed — trying LAN fallback ($BIGBLACK_LAN_IP)..."
+if try_ssh_tunnel "$BIGBLACK_LAN_IP" "LAN"; then
+  exit 0
+fi
+
+echo "" >&2
+echo "TUNNEL FAILED: bigblack unreachable via ZeroTier + LAN" >&2
+echo "" >&2
+echo "  ZeroTier: $BIGBLACK_ZT_IP (peer: ${PEER_LINK:-NOT_FOUND})" >&2
+echo "  LAN:      $BIGBLACK_LAN_IP" >&2
+echo "" >&2
+echo "  Check:" >&2
+echo "    - Is bigblack powered on?" >&2
+echo "    - ping $BIGBLACK_ZT_IP" >&2
+echo "    - sudo zerotier-cli peers | grep $BIGBLACK_ZT_NODE" >&2
+exit 1
 """
 
 ["tunnel:stop"]
