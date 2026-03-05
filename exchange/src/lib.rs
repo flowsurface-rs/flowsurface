@@ -1,7 +1,6 @@
 pub mod adapter;
 pub mod connect;
 pub mod depth;
-pub mod fetcher;
 mod limiter;
 pub mod proxy;
 pub mod unit;

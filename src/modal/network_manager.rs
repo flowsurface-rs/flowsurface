@@ -84,7 +84,7 @@ impl NetworkManager {
 
         Self {
             proxy_url,
-            effective_proxy_cfg: exchange::proxy::runtime_proxy_cfg(),
+            effective_proxy_cfg: crate::connector::runtime_proxy_cfg(),
             error: None,
             hide_password: true,
             scheme,

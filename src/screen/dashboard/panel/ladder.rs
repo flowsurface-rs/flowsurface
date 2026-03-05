@@ -85,7 +85,11 @@ impl Ladder {
         }
     }
 
-    pub fn insert_buffers(&mut self, update_t: u64, depth: &Depth, trades_buffer: &[Trade]) {
+    pub fn insert_trades(&mut self, buffer: &[Trade]) {
+        self.trades.insert_trades(buffer, self.tick_size);
+    }
+
+    pub fn insert_depth(&mut self, depth: &Depth, update_t: u64) {
         if let Some(next) = self.pending_tick_size.take() {
             self.tick_size = next;
             self.trades.rebuild_grouped(self.tick_size);
@@ -109,19 +113,15 @@ impl Ladder {
             self.chase_tracker_mut(Side::Ask).reset();
         }
 
-        let step = self.tick_size;
-        self.trades.insert_trades(trades_buffer, step);
-
-        self.regroup_from_depth(depth);
-
-        self.last_exchange_ts_ms = Some(update_t);
-
         if self
             .trades
             .maybe_cleanup(update_t, self.config.trade_retention, self.tick_size)
         {
             self.invalidate(Some(Instant::now()));
         }
+
+        self.regroup_from_depth(depth);
+        self.last_exchange_ts_ms = Some(update_t);
     }
 
     fn trade_qty_at(&self, price: Price) -> (Qty, Qty) {

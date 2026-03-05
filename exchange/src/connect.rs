@@ -27,17 +27,36 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
+// Keep topics per websocket conservative across venues
+// allow up to 100 tickers per websocket stream
+pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
+pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
+
 pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
     let ticker = config.id;
     let push_freq = config.push_freq;
 
     match config.exchange.venue() {
-        Venue::Binance => adapter::binance::connect_market_stream(ticker, push_freq).boxed(),
-        Venue::Bybit => adapter::bybit::connect_market_stream(ticker, push_freq).boxed(),
+        Venue::Binance => adapter::binance::connect_depth_stream(ticker, push_freq).boxed(),
+        Venue::Bybit => adapter::bybit::connect_depth_stream(ticker, push_freq).boxed(),
         Venue::Hyperliquid => {
-            adapter::hyperliquid::connect_market_stream(ticker, config.tick_mltp, push_freq).boxed()
+            adapter::hyperliquid::connect_depth_stream(ticker, config.tick_mltp, push_freq).boxed()
         }
-        Venue::Okex => adapter::okex::connect_market_stream(ticker, push_freq).boxed(),
+        Venue::Okex => adapter::okex::connect_depth_stream(ticker, push_freq).boxed(),
+    }
+}
+
+pub fn trade_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static, Event> {
+    let tickers = config.id.clone();
+    let market_kind = config.exchange.market_type();
+
+    match config.exchange.venue() {
+        Venue::Bybit => adapter::bybit::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Binance => adapter::binance::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Hyperliquid => {
+            adapter::hyperliquid::connect_trade_stream(tickers, market_kind).boxed()
+        }
+        Venue::Okex => adapter::okex::connect_trade_stream(tickers, market_kind).boxed(),
     }
 }
 
