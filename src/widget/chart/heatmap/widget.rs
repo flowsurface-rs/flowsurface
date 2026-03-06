@@ -12,16 +12,16 @@ use iced::widget::{canvas, shader};
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use iced_core::renderer::Quad;
 
-const DEFAULT_Y_AXIS_GUTTER: f32 = 66.0; // px
-const DEFAULT_X_AXIS_HEIGHT: f32 = 24.0; // px
+pub const DEFAULT_Y_AXIS_GUTTER: Length = Length::Fixed(66.0);
+pub const DEFAULT_X_AXIS_HEIGHT: Length = Length::Fixed(24.0);
 
 pub struct HeatmapShaderWidget<'a> {
     scene: &'a Scene,
     x_axis: AxisXLabelCanvas<'a>,
     y_axis: AxisYLabelCanvas<'a>,
     overlay: OverlayCanvas<'a>,
-    y_axis_gutter_px: f32,
-    x_axis_height_px: f32,
+    y_axis_gutter: Length,
+    x_axis_height: Length,
 }
 
 impl<'a> HeatmapShaderWidget<'a> {
@@ -36,18 +36,18 @@ impl<'a> HeatmapShaderWidget<'a> {
             x_axis,
             y_axis,
             overlay,
-            y_axis_gutter_px: DEFAULT_Y_AXIS_GUTTER,
-            x_axis_height_px: DEFAULT_X_AXIS_HEIGHT,
+            y_axis_gutter: DEFAULT_Y_AXIS_GUTTER,
+            x_axis_height: DEFAULT_X_AXIS_HEIGHT,
         }
     }
 
-    pub fn with_y_axis_gutter_px(mut self, px: f32) -> Self {
-        self.y_axis_gutter_px = px.max(0.0);
+    pub fn with_y_axis_gutter(mut self, width: impl Into<Length>) -> Self {
+        self.y_axis_gutter = width.into();
         self
     }
 
-    pub fn with_x_axis_height_px(mut self, px: f32) -> Self {
-        self.x_axis_height_px = px.max(0.0);
+    pub fn with_x_axis_height(mut self, height: impl Into<Length>) -> Self {
+        self.x_axis_height = height.into();
         self
     }
 }
@@ -136,8 +136,18 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     ) -> layout::Node {
         let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
 
-        let gutter_w = self.y_axis_gutter_px.min(size.width).max(0.0);
-        let x_axis_h = self.x_axis_height_px.min(size.height).max(0.0);
+        let gutter_w = layout::Limits::new(Size::ZERO, size)
+            .width(self.y_axis_gutter)
+            .resolve(self.y_axis_gutter, Length::Shrink, Size::ZERO)
+            .width
+            .min(size.width)
+            .max(0.0);
+        let x_axis_h = layout::Limits::new(Size::ZERO, size)
+            .height(self.x_axis_height)
+            .resolve(Length::Shrink, self.x_axis_height, Size::ZERO)
+            .height
+            .min(size.height)
+            .max(0.0);
 
         let plot_w = (size.width - gutter_w).max(0.0);
         let plot_h = (size.height - x_axis_h).max(0.0);

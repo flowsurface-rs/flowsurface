@@ -85,6 +85,13 @@ impl AxisYLabelCanvas<'_> {
         self.camera
             .screen_to_world_y(y_px, bounds.width, bounds.height)
     }
+
+    pub fn width(base_price: Option<Price>, label_precision: MinTicksize) -> Option<iced::Length> {
+        let value = base_price?.to_string(label_precision);
+        let width = (value.len() as f32 * AXIS_TEXT_SIZE * 0.8).max(72.0);
+
+        Some(iced::Length::Fixed(width.ceil()))
+    }
 }
 
 impl canvas::Program<Message> for AxisYLabelCanvas<'_> {

@@ -14,7 +14,7 @@ use ui::axisy::AxisYLabelCanvas;
 use ui::overlay::OverlayCanvas;
 use ui::{CanvasCaches, CanvasInvalidation};
 use view::{ViewConfig, ViewInputs, ViewWindow};
-use widget::HeatmapShaderWidget;
+use widget::{DEFAULT_Y_AXIS_GUTTER, HeatmapShaderWidget};
 
 use crate::{
     chart::Action,
@@ -96,6 +96,7 @@ pub struct HeatmapShader {
     base_price: Option<Price>,
     clock: view::ExchangeClock,
     anchor: view::Anchor,
+    y_axis_gutter: iced::Length,
 
     depth_grid: GridRing,
     depth_norm: view::DepthNormCache,
@@ -142,6 +143,7 @@ impl HeatmapShader {
             latest_time: None,
             base_price: None,
             clock: view::ExchangeClock::Uninit,
+            y_axis_gutter: DEFAULT_Y_AXIS_GUTTER,
             instances: InstanceBuilder::default(),
             canvas_caches: CanvasCaches::default(),
             canvas_invalidation: CanvasInvalidation::default(),
@@ -368,7 +370,8 @@ impl HeatmapShader {
             volume_profile_max_qty: self.instances.volume_profile_scale_max_qty,
         };
 
-        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay);
+        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay)
+            .with_y_axis_gutter(self.y_axis_gutter);
 
         iced::widget::container(chart).padding(1).into()
     }
@@ -464,6 +467,7 @@ impl HeatmapShader {
         }
 
         if self.anchor.effective_base_price(self.base_price) != prev_effective_base {
+            self.refresh_y_axis_gutter();
             self.canvas_invalidation.mark_axis_y();
         }
     }
@@ -940,6 +944,7 @@ impl HeatmapShader {
 
         let resumed = self.anchor.resume_to_live();
         if resumed {
+            self.refresh_y_axis_gutter();
             self.canvas_invalidation.mark_all();
 
             self.rebuild_policy = self
@@ -994,6 +999,7 @@ impl HeatmapShader {
             return;
         }
 
+        self.refresh_y_axis_gutter();
         self.canvas_invalidation.mark_all();
         self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
 
@@ -1006,5 +1012,13 @@ impl HeatmapShader {
             self.rebuild_all(None);
             self.rebuild_policy = view::RebuildPolicy::Idle;
         }
+    }
+
+    fn refresh_y_axis_gutter(&mut self) {
+        self.y_axis_gutter = AxisYLabelCanvas::width(
+            self.anchor.effective_base_price(self.base_price),
+            self.ticker_info.min_ticksize,
+        )
+        .unwrap_or(DEFAULT_Y_AXIS_GUTTER);
     }
 }
