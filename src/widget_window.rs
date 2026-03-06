@@ -7,9 +7,9 @@ use crate::chart::kline::draw_candle_dp;
 use crate::chart::scale::linear::PriceInfoLabel;
 
 use exchange::adapter::clickhouse::{OpenDeviationBarProcessor, odb_to_kline, trade_to_agg_trade};
-use exchange::adapter::{Exchange, StreamConfig, StreamKind};
+use exchange::adapter::{Exchange, StreamKind};
 use exchange::unit::Price;
-use exchange::{Kline, PushFrequency, Ticker, TickerInfo, Trade};
+use exchange::{Kline, Ticker, TickerInfo, Trade};
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -19,8 +19,7 @@ use chrono::{Local, TimeZone, Utc};
 use iced::widget::canvas::{self, Cache, Canvas, Frame, Path, Stroke, Text};
 use iced::widget::mouse_area;
 use iced::{
-    self, Color, Element, Length, Point, Rectangle, Renderer, Size, Subscription, Theme, mouse,
-    window,
+    self, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse, window,
 };
 
 /// The symbol string used to identify the BTCUSDT Binance Linear Perps ticker.
@@ -85,19 +84,14 @@ impl WidgetController {
         let ti = stream.ticker_info();
         if Self::is_btcusdt(&ti.ticker) {
             self.state.insert_trades(trades);
+        } else {
+            // Diagnostic: log non-matching streams to understand routing
+            log::trace!(
+                "[widget] forward_trades: non-BTCUSDT stream, exchange={:?} symbol={}",
+                ti.ticker.exchange,
+                ti.ticker.to_full_symbol_and_type().0,
+            );
         }
-    }
-
-    /// Create the depth subscription for the widget's ticker.
-    pub fn subscription(&self) -> Subscription<exchange::Event> {
-        let ticker_info = self.state.ticker_info;
-        let config = StreamConfig::new(
-            ticker_info,
-            ticker_info.exchange(),
-            None,
-            PushFrequency::ServerDefault,
-        );
-        Subscription::run_with(config, exchange::connect::depth_stream)
     }
 
     /// Render the widget canvas wrapped in a drag-triggering mouse area.
@@ -111,9 +105,9 @@ impl WidgetController {
         .into()
     }
 
-    /// Check whether a ticker is BTCUSDT on BinanceLinear.
+    /// Check whether a ticker is BTCUSDT on any Binance exchange (Spot or Linear).
     pub fn is_btcusdt(ticker: &Ticker) -> bool {
-        ticker.exchange == Exchange::BinanceLinear
+        matches!(ticker.exchange, Exchange::BinanceLinear | Exchange::BinanceSpot)
             && ticker.to_full_symbol_and_type().0.contains(BTCUSDT_SYMBOL)
     }
 
@@ -187,6 +181,12 @@ impl WidgetState {
             let prev_close = self.bars.last().map(|k| k.close);
             let reference = prev_close.unwrap_or(last_trade.price);
             self.last_price = Some(PriceInfoLabel::new(last_trade.price, reference));
+            log::trace!(
+                "[PRICE/widget] trade_time={} price={:.2} trades_in_batch={}",
+                last_trade.time,
+                last_trade.price.to_f32(),
+                trades.len(),
+            );
         }
 
         self.cache.clear();

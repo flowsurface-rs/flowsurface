@@ -830,19 +830,15 @@ impl Flowsurface {
             None
         });
 
-        let widget_sub = if let Some(ref ctrl) = self.widget {
-            ctrl.subscription().map(Message::MarketWsEvent)
-        } else {
-            Subscription::none()
-        };
-
+        // Widget has no own WS subscription — it receives trades via
+        // forward_trades() from the dashboard's stream, ensuring both
+        // chart and widget use the exact same trade data.
         Subscription::batch(vec![
             exchange_streams,
             sidebar,
             window_events,
             tick,
             hotkeys,
-            widget_sub,
         ])
     }
 

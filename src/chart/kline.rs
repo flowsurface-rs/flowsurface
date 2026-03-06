@@ -1309,6 +1309,12 @@ impl KlineChart {
                             let reference = prev_close.unwrap_or(last_trade.price);
                             self.chart.last_price =
                                 Some(PriceInfoLabel::new(last_trade.price, reference));
+                            log::trace!(
+                                "[PRICE/chart] trade_time={} price={:.2} trades_in_batch={}",
+                                last_trade.time,
+                                last_trade.price.to_f32(),
+                                trades_buffer.len(),
+                            );
                         }
 
                         if new_bars > 0 {
