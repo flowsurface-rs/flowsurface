@@ -203,6 +203,10 @@ static CLICKHOUSE_HOST: LazyLock<String> = LazyLock::new(|| {
     std::env::var("FLOWSURFACE_CH_HOST").unwrap_or_else(|_| "bigblack".to_string())
 });
 
+static OUROBOROS_MODE: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("FLOWSURFACE_OUROBOROS_MODE").unwrap_or_else(|_| "day".to_string())
+});
+
 static CLICKHOUSE_PORT: LazyLock<u16> = LazyLock::new(|| {
     std::env::var("FLOWSURFACE_CH_PORT")
         .ok()
@@ -338,19 +342,20 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     // beginning of time, creating gaps when loading historical data.
     let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity";
-    // Filter by ouroboros_mode='month' — month-mode is the sole production mode.
-    // Gaps in month-mode coverage are filled by Ariadne/Kintsugi on the
-    // opendeviationbar-py side (Issue #115), not by mixing year-mode data here.
+    // Filter by ouroboros_mode (default: 'day'). Day-mode is the current production
+    // mode — creates UTC-midnight-bounded sessions. Configurable via
+    // FLOWSURFACE_OUROBOROS_MODE env var for migration flexibility.
     if let Some((start, end)) = range {
         format!(
             "SELECT {cols} \
              FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-               AND ouroboros_mode = 'month' \
+               AND ouroboros_mode = '{}' \
                AND close_time_ms BETWEEN {start} AND {end} \
              ORDER BY close_time_ms DESC \
              LIMIT 2000 \
-             FORMAT JSONEachRow"
+             FORMAT JSONEachRow",
+            *OUROBOROS_MODE
         )
     } else {
         // Scale limit inversely with threshold: BPR25 gets 20,000 bars;
@@ -365,10 +370,11 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
             "SELECT {cols} \
              FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-               AND ouroboros_mode = 'month' \
+               AND ouroboros_mode = '{}' \
              ORDER BY close_time_ms DESC \
              LIMIT {limit} \
-             FORMAT JSONEachRow"
+             FORMAT JSONEachRow",
+            *OUROBOROS_MODE
         )
     }
 }
@@ -461,7 +467,8 @@ pub async fn request_backfill(symbol: &str, threshold_dbps: u32) -> Result<bool,
     let insert_sql = format!(
         "INSERT INTO opendeviationbar_cache.backfill_requests \
          (symbol, threshold_decimal_bps, source, ouroboros_mode) VALUES \
-         ('{symbol}', {threshold_dbps}, 'flowsurface', 'month')"
+         ('{symbol}', {threshold_dbps}, 'flowsurface', '{}')",
+        *OUROBOROS_MODE
     );
 
     query(&insert_sql).await?;
@@ -500,8 +507,8 @@ pub fn connect_kline_stream(
         let max_ts_sql = format!(
             "SELECT max(close_time_ms) AS ts FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{}' AND threshold_decimal_bps = {} \
-               AND ouroboros_mode = 'month' FORMAT JSONEachRow",
-            symbol, threshold_dbps
+               AND ouroboros_mode = '{}' FORMAT JSONEachRow",
+            symbol, threshold_dbps, *OUROBOROS_MODE
         );
         let mut last_ts: u64 = 0;
         for attempt in 1..=3 {
@@ -551,12 +558,12 @@ pub fn connect_kline_stream(
                         individual_trade_count, ofi, trade_intensity \
                  FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
-                   AND ouroboros_mode = 'month' \
+                   AND ouroboros_mode = '{}' \
                    AND close_time_ms > {} \
                  ORDER BY close_time_ms ASC \
                  LIMIT 100 \
                  FORMAT JSONEachRow",
-                symbol, threshold_dbps, last_ts
+                symbol, threshold_dbps, *OUROBOROS_MODE, last_ts
             );
 
             match query(&sql).await {
@@ -776,6 +783,11 @@ pub fn connect_sse_stream(
                     }
                     OdbSseEvent::Bar(bar) => {
                         if bar.symbol != symbol || bar.threshold != threshold_dbps {
+                            continue;
+                        }
+                        // Skip orphan bars — incomplete bars at UTC midnight boundaries
+                        if bar.is_orphan == Some(true) {
+                            log::info!("[SSE] skipping orphan bar: ts={}", bar.close_time_ms);
                             continue;
                         }
                         let (kline, raw_f64, _micro) =
