@@ -200,13 +200,20 @@ impl Flowsurface {
             |_| Message::Tick(std::time::Instant::now()),
         );
 
+        let set_on_top: Task<Message> = if std::env::var("FLOWSURFACE_ALWAYS_ON_TOP").is_ok() {
+            iced::window::set_level(main_window_id, iced::window::Level::AlwaysOnTop)
+        } else {
+            Task::none()
+        };
+
         (
             state,
             open_main_window
                 .discard()
                 .chain(load_layout)
                 .chain(launch_sidebar.map(Message::Sidebar))
-                .chain(init_odb_symbols),
+                .chain(init_odb_symbols)
+                .chain(set_on_top.discard()),
         )
     }
 
