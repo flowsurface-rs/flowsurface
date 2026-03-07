@@ -16,7 +16,7 @@ use iced::Color;
 use iced::widget::center;
 use std::ops::RangeInclusive;
 
-use zigzag::{BarInput, PivotKind, ZigZagConfig, ZigZagState};
+use qta::{BarInput, PivotKind, ZigZagConfig, ZigZagState};
 
 /// Per-pivot rendering data stored after processing.
 #[derive(Clone, Copy)]
