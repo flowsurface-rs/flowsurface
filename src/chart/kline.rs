@@ -5,6 +5,7 @@ use super::{
     request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
+use crate::connector::fetcher::{FetchRange, RequestHandler, is_trade_fetch_enabled};
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::{OdbMicrostructure, TickAggr};
 use data::aggr::time::TimeSeries;
@@ -335,7 +336,7 @@ impl KlineChart {
                     raw_trades,
                     indicators,
                     fetching_trades: (false, None),
-                    request_handler: RequestHandler::new(),
+                    request_handler: RequestHandler::default(),
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
@@ -401,7 +402,7 @@ impl KlineChart {
                     raw_trades,
                     indicators,
                     fetching_trades: (false, None),
-                    request_handler: RequestHandler::new(),
+                    request_handler: RequestHandler::default(),
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
@@ -763,7 +764,7 @@ impl KlineChart {
 
                     // Set last_price from the CH/SSE bar only when no WS trades
                     // have arrived yet (startup).  Once live trades flow,
-                    // insert_trades_buffer() owns the price line — overwriting
+                    // insert_trades() owns the price line — overwriting
                     // it here with the completed bar's close would show a stale
                     // price (the bar close, not the current market price).
                     if !has_forming && chart.last_trade_time.is_none() {
@@ -809,7 +810,7 @@ impl KlineChart {
 
                 // priority 2, trades fetch
                 if !self.fetching_trades.0
-                    && exchange::fetcher::is_trade_fetch_enabled()
+                    && is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
                         timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
                 {
@@ -884,7 +885,7 @@ impl KlineChart {
     }
 
     pub fn reset_request_handler(&mut self) {
-        self.request_handler = RequestHandler::new();
+        self.request_handler = RequestHandler::default();
         self.fetching_trades = (false, None);
     }
 
@@ -1119,11 +1120,11 @@ impl KlineChart {
         super::keyboard_nav::process(event, self.state())
     }
 
-    pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade]) {
-        self.insert_trades_buffer_inner(trades_buffer, false);
+    pub fn insert_trades(&mut self, trades_buffer: &[Trade]) {
+        self.insert_trades_inner(trades_buffer, false);
     }
 
-    fn insert_trades_buffer_inner(&mut self, trades_buffer: &[Trade], is_gap_fill: bool) {
+    fn insert_trades_inner(&mut self, trades_buffer: &[Trade], is_gap_fill: bool) {
         self.raw_trades.extend_from_slice(trades_buffer);
 
         match self.data_source {
@@ -1391,7 +1392,7 @@ impl KlineChart {
             // After that, gap-fill trades build correct bars from the last CH bar.
             //
             // While gap-fill is active (`fetching_trades.0 == true`), WebSocket
-            // trades in `insert_trades_buffer` skip RBP processing to avoid
+            // trades in `insert_trades` skip RBP processing to avoid
             // interleaving current-price trades with historical gap-fill trades.
             if let Some(first_trade) = raw_trades.first() {
                 // Check if the RBP's forming bar has state from WebSocket
@@ -1449,7 +1450,7 @@ impl KlineChart {
             // Use the inner method with is_gap_fill=true so that:
             // 1. The fetching_trades guard is bypassed (gap-fill trades must be processed)
             // 2. Canvas invalidation is suppressed (single redraw at gap-fill end)
-            self.insert_trades_buffer_inner(&raw_trades, true);
+            self.insert_trades_inner(&raw_trades, true);
         } else {
             match self.data_source {
                 PlotData::TickBased(ref mut tick_aggr) => {

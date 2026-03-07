@@ -6,12 +6,12 @@ pub mod kline;
 pub(crate) mod scale;
 pub(crate) mod session;
 
+use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
-use exchange::fetcher::{FetchRange, FetchRequests, FetchSpec, RequestHandler};
 use exchange::unit::{Price, PriceStep};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
@@ -281,7 +281,7 @@ fn canvas_interaction<T: Chart>(
 
 pub enum Action {
     ErrorOccurred(data::InternalError),
-    RequestFetch(FetchRequests),
+    RequestFetch(Vec<FetchSpec>),
 }
 
 pub fn update<T: Chart>(chart: &mut T, message: &Message) {
@@ -1290,8 +1290,7 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Acti
                 fetch: range,
                 stream: None,
             };
-            let fetch = FetchRequests::from([fetch_spec]);
-            Some(Action::RequestFetch(fetch))
+            Some(Action::RequestFetch(vec![fetch_spec]))
         }
         Ok(None) => None,
         Err(reason) => {

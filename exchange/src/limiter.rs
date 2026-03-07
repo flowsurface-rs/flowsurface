@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     let builder = Client::builder();
-    let builder = super::proxy::try_apply_proxy(builder);
+    let runtime_proxy = super::proxy::runtime_proxy_cfg();
+    let builder = super::proxy::try_apply_proxy(builder, runtime_proxy.as_ref());
 
     let builder = builder
         .connect_timeout(Duration::from_secs(10))

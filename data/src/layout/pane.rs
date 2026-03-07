@@ -1,9 +1,9 @@
-use exchange::adapter::PersistStreamKind;
 use exchange::{TickMultiplier, TickerInfo, Timeframe};
 use serde::{Deserialize, Serialize};
 
 use crate::chart::{comparison, heatmap, kline};
 use crate::panel::{ladder, timeandsales};
+use crate::stream::PersistStreamKind;
 use crate::util::ok_or_default;
 
 use crate::chart::{
