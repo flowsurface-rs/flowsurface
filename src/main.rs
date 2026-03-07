@@ -148,6 +148,11 @@ impl Flowsurface {
                 size,
                 position,
                 exit_on_close_request: false,
+                level: if std::env::var("FLOWSURFACE_ALWAYS_ON_TOP").is_ok() {
+                    iced::window::Level::AlwaysOnTop
+                } else {
+                    iced::window::Level::default()
+                },
                 ..window::settings()
             };
             window::open(config)
