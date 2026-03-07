@@ -1,6 +1,6 @@
-# CLAUDE.md - Project Memory
+# CLAUDE.md - Project Hub
 
-**flowsurface**: Native desktop charting app for crypto markets. Rust + iced 0.14 + WGPU. This fork adds **range bar visualization** from precomputed [opendeviationbar-py](https://github.com/terrylica/opendeviationbar-py) cache via ClickHouse.
+**flowsurface**: Native desktop charting app for crypto markets. Rust + iced 0.14 + WGPU. This fork adds **ODB (Open Deviation Bar) visualization** from precomputed [opendeviationbar-py](https://github.com/terrylica/opendeviationbar-py) cache via ClickHouse.
 
 **Upstream**: [flowsurface-rs/flowsurface](https://github.com/flowsurface-rs/flowsurface) | **Fork**: [terrylica/flowsurface](https://github.com/terrylica/flowsurface)
 
@@ -8,18 +8,26 @@
 
 ## Quick Reference
 
-| Task                 | Command / Entry Point                    | Details                                 |
-| -------------------- | ---------------------------------------- | --------------------------------------- |
-| Build & run          | `mise run run`                           | Preflight + cargo run                   |
-| Launch .app bundle   | `mise run run:app`                       | Preflight + open Flowsurface.app        |
-| ClickHouse preflight | `mise run preflight`                     | Tunnel + connectivity + data validation |
-| SSH tunnel           | `mise run tunnel:start`                  | localhost:18123 → bigblack:8123         |
-| Release build        | `mise run build:release`                 | Optimized binary                        |
-| .app bundle          | `mise run release:app-bundle`            | Build + update .app + register icon     |
-| Lint                 | `mise run lint`                          | fmt:check + clippy                      |
-| Sync upstream        | `mise run upstream:diff`                 | Show new upstream commits               |
-| Exchange adapter     | [exchange/CLAUDE.md](exchange/CLAUDE.md) | ClickHouse, Binance, Bybit, etc.        |
-| Data layer           | [data/CLAUDE.md](data/CLAUDE.md)         | Chart types, indicators, aggregation    |
+| Task                 | Command / Entry Point         | Details                                 |
+| -------------------- | ----------------------------- | --------------------------------------- |
+| Build & run          | `mise run run`                | Preflight + cargo run                   |
+| Launch .app bundle   | `mise run run:app`            | Preflight + open Flowsurface.app        |
+| ClickHouse preflight | `mise run preflight`          | Tunnel + connectivity + data validation |
+| SSH tunnel           | `mise run tunnel:start`       | localhost:18123 → bigblack:8123         |
+| Release build        | `mise run build:release`      | Optimized binary                        |
+| .app bundle          | `mise run release:app-bundle` | Build + update .app + register icon     |
+| Lint                 | `mise run lint`               | fmt:check + clippy                      |
+| Sync upstream        | `mise run upstream:diff`      | Show new upstream commits               |
+
+---
+
+## CLAUDE.md Network (Hub-and-Spoke)
+
+| Directory    | CLAUDE.md                                | Scope                                            |
+| ------------ | ---------------------------------------- | ------------------------------------------------ |
+| `/`          | This file                                | Hub — architecture, env vars, patterns, errors   |
+| `/exchange/` | [exchange/CLAUDE.md](exchange/CLAUDE.md) | Exchange adapters, ClickHouse, SSE, stream types |
+| `/data/`     | [data/CLAUDE.md](data/CLAUDE.md)         | Chart types, indicators, aggregation, layout     |
 
 ---
 
@@ -27,87 +35,101 @@
 
 ```
 flowsurface/                 Main crate — GUI, chart rendering, event handling
-├── exchange/                Exchange adapters, WebSocket/REST streams
+├── exchange/                Exchange adapters, WebSocket/REST/HTTP streams
 │   └── adapter/
-│       ├── clickhouse.rs    Range bar adapter (HTTP, reads opendeviationbar-py cache)
+│       ├── clickhouse.rs    ODB adapter (HTTP + SSE, reads opendeviationbar-py cache)
 │       ├── binance.rs       Binance Spot + Perpetuals
 │       ├── bybit.rs         Bybit Perpetuals
 │       ├── hyperliquid.rs   Hyperliquid DEX
 │       └── okex.rs          OKX Multi-product
 ├── data/                    Data aggregation, indicators, layout models
-│   ├── chart.rs             Basis enum (Time, Tick, RangeBar)
+│   ├── chart.rs             Basis enum (Time, Tick, Odb)
 │   ├── chart/indicator.rs   KlineIndicator enum (6 types)
-│   └── aggr/ticks.rs        TickAggr, RangeBarMicrostructure
+│   ├── aggr/ticks.rs        TickAggr, RangeBarMicrostructure
+│   └── session.rs           Trading session boundaries (NY/London/Tokyo)
 └── src/                     GUI application
-    ├── chart/kline.rs       Chart rendering (candles, range bars, footprint)
+    ├── chart/kline.rs       Chart rendering (candles, ODB bars, footprint)
     ├── chart/indicator/     Indicator renderers (volume, delta, OFI, etc.)
-    ├── screen/dashboard/    Pane grid UI
-    └── modal/               Settings & configuration modals
+    ├── chart/session.rs     Session line rendering
+    ├── connector/           Stream connection + data fetching
+    │   ├── stream.rs        ResolvedStream, stream matching
+    │   └── fetcher.rs       FetchedData, RequestHandler, batch fetching
+    ├── screen/dashboard/    Pane grid UI + pane state
+    ├── modal/               Settings & configuration modals
+    └── widget/              BTC widget overlay
 ```
 
 ---
 
-## Range Bar Integration (Fork-Specific)
+## Environment Variables
 
-Range bar panes use **dual-stream architecture**: historical/completed bars from ClickHouse + live trades from Binance WebSocket.
+All set in `.mise.toml`. The app reads them at runtime via `std::env::var()`.
+
+| Variable                     | Default     | Purpose                             |
+| ---------------------------- | ----------- | ----------------------------------- |
+| `FLOWSURFACE_CH_HOST`        | `bigblack`  | ClickHouse HTTP host                |
+| `FLOWSURFACE_CH_PORT`        | `8123`      | ClickHouse HTTP port                |
+| `FLOWSURFACE_SSE_ENABLED`    | `false`     | Enable SSE live bar stream          |
+| `FLOWSURFACE_SSE_HOST`       | `localhost` | SSE sidecar host                    |
+| `FLOWSURFACE_SSE_PORT`       | `8081`      | SSE sidecar port                    |
+| `FLOWSURFACE_OUROBOROS_MODE` | `day`       | ODB session mode (`day` or `month`) |
+| `FLOWSURFACE_ALWAYS_ON_TOP`  | _(unset)_   | Pin window above all others if set  |
+
+---
+
+## ODB Integration (Fork-Specific)
+
+ODB panes use **triple-stream architecture**:
 
 ```
-Stream 1: ClickHouse (completed bars, 5s poll)
+Stream 1: OdbKline — ClickHouse (completed bars, 5s poll)
   → fetch_klines() → ChKline → Kline → TickAggr
   → update_latest_kline() → replace_or_append_kline()
 
-Stream 2: Binance @aggTrade WebSocket (live trades)
-  → DepthAndTrades → insert_trades_buffer()
+Stream 2: Trades — Binance @aggTrade WebSocket (live trades)
+  → TradesReceived → insert_trades_buffer()
   → TickAggr::insert_trades() → is_full_range_bar(threshold_dbps)
   → Forming bar oscillates until threshold breach → bar completes
+
+Stream 3: Depth — Binance depth WebSocket (orderbook)
+  → DepthReceived → heatmap / footprint data
 
 Reconciliation: ClickHouse bar replaces locally-built bar (authoritative)
 ```
 
-**Three-layer data pipeline** (opendeviationbar-py owns all layers, flowsurface polls ClickHouse):
+**CRITICAL**: ODB panes must subscribe to ALL THREE streams (`OdbKline`, `Trades`, `Depth`) in `resolve_content()` at `src/screen/dashboard/pane.rs`. Missing `Trades` causes "Waiting for trades..." forever because `matches_stream()` silently drops unmatched events.
 
-| Layer         | Source                  | Latency | Status  | Tracking                                                                             |
-| ------------- | ----------------------- | ------- | ------- | ------------------------------------------------------------------------------------ |
-| L1 Historical | Binance Vision archives | Batch   | Working | —                                                                                    |
-| L2 Recent     | REST API backfill       | Minutes | Planned | [opendeviationbar-py#92](https://github.com/terrylica/opendeviationbar-py/issues/92) |
-| L3 Live       | WebSocket `@aggTrade`   | ~5s     | Planned | [opendeviationbar-py#91](https://github.com/terrylica/opendeviationbar-py/issues/91) |
+**Key types** (see [data/CLAUDE.md](data/CLAUDE.md) and [exchange/CLAUDE.md](exchange/CLAUDE.md) for details):
 
-flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `opendeviationbar_cache.open_deviation_bars`. See also [opendeviationbar-py#93](https://github.com/terrylica/opendeviationbar-py/issues/93) for crash recovery.
-
-**Key types**:
-
-| Type                       | Location                             | Purpose                                    |
-| -------------------------- | ------------------------------------ | ------------------------------------------ |
-| `Basis::RangeBar(u32)`     | `data/src/chart.rs`                  | Chart basis (threshold in dbps)            |
-| `KlineChartKind::RangeBar` | `data/src/chart/kline.rs`            | Chart type variant                         |
-| `RangeBarMicrostructure`   | `data/src/aggr/ticks.rs`             | Sidecar: trade_count, ofi, trade_intensity |
-| `ChKline`                  | `exchange/src/adapter/clickhouse.rs` | ClickHouse row deserialization             |
-| `RANGE_BAR_THRESHOLDS`     | `data/src/chart.rs`                  | `[250, 500, 750, 1000]` dbps               |
+| Type                     | Location                             | Purpose                                    |
+| ------------------------ | ------------------------------------ | ------------------------------------------ |
+| `Basis::Odb(u32)`        | `data/src/chart.rs`                  | Chart basis (threshold in dbps)            |
+| `KlineChartKind::Odb`    | `data/src/chart/kline.rs`            | Chart type variant                         |
+| `RangeBarMicrostructure` | `data/src/aggr/ticks.rs`             | Sidecar: trade_count, ofi, trade_intensity |
+| `ChKline`                | `exchange/src/adapter/clickhouse.rs` | ClickHouse row deserialization             |
+| `ODB_THRESHOLDS`         | `data/src/chart.rs`                  | `[250, 500, 750, 1000]` dbps               |
+| `ContentKind::OdbChart`  | `data/src/layout/pane.rs`            | Pane serialization variant                 |
 
 **Threshold display**: `BPR{dbps/10}` — BPR25 = 250 dbps = 0.25%, BPR50 = 500 dbps, etc.
-
-**Adaptive rendering**: `cell_width` and SQL `LIMIT` scale with threshold so all BPR levels show similar visual density.
 
 ---
 
 ## ClickHouse Infrastructure
 
-**Architecture**: All range bar data served from **bigblack** via SSH tunnel. No local ClickHouse.
+All range bar data served from **bigblack** via SSH tunnel. No local ClickHouse.
 
-| Setting               | Value                   | Source       |
-| --------------------- | ----------------------- | ------------ |
-| `FLOWSURFACE_CH_HOST` | `localhost`             | `.mise.toml` |
-| `FLOWSURFACE_CH_PORT` | `18123`                 | `.mise.toml` |
-| SSH tunnel            | `18123 → bigblack:8123` | `infra.toml` |
+| Setting    | Value                   | Source       |
+| ---------- | ----------------------- | ------------ |
+| Host       | `localhost`             | `.mise.toml` |
+| Port       | `18123`                 | `.mise.toml` |
+| SSH tunnel | `18123 → bigblack:8123` | `infra.toml` |
 
-**Preflight** (`mise run preflight`): Runs before every `mise run run` and `mise run run:app`:
+**Preflight** (`mise run preflight`): Runs before `mise run run` and `mise run run:app`:
 
 1. Establishes SSH tunnel (idempotent)
 2. Verifies ClickHouse responds (3 retries)
 3. Verifies `opendeviationbar_cache.open_deviation_bars` table exists
 4. Verifies BTCUSDT data present for all thresholds
-
-**Data source**: [opendeviationbar-py](https://github.com/terrylica/opendeviationbar-py) populates the cache on bigblack. See opendeviationbar-py's `populate_cache_resumable()`.
 
 ---
 
@@ -134,8 +156,6 @@ flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `open
 | `release:macos-arm64` | aarch64-only release                         |
 | `release:app-bundle`  | Build + update .app + sign + register icon   |
 | `sign:app`            | Ad-hoc codesign the .app bundle              |
-| `icon:generate`       | Generate 1024x1024 app icon PNG              |
-| `icon:convert`        | PNG → macOS .icns                            |
 
 ### Infrastructure (`.mise/tasks/infra.toml`)
 
@@ -159,9 +179,7 @@ flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `open
 
 ## Release Model
 
-**Not applicable**: semantic-release, crates.io, PyPI, GitHub Releases with version tags.
-
-This is a **native desktop app** (not a library). "Release" means building and bundling:
+**Native desktop app** — no crates.io, no version tags, no changelog.
 
 | Task                           | What It Does                                     |
 | ------------------------------ | ------------------------------------------------ |
@@ -170,10 +188,7 @@ This is a **native desktop app** (not a library). "Release" means building and b
 | `mise run release:macos-arm64` | aarch64-only release binary                      |
 | `mise run release:macos`       | Universal binary (x86_64 + aarch64 via lipo)     |
 
-There is no version tagging, changelog generation, or package publishing pipeline. Commits are pushed directly to `main`.
-
 **Code signing**: Ad-hoc via `codesign --deep --force --sign -` (built into `run:app` and `release:app-bundle`).
-`rcodesign` installed via mise for future Developer ID upgrade: `rcodesign sign --p12-file <cert.p12> --code-signature-flags runtime` + `rcodesign notary-submit --wait --staple`.
 
 ---
 
@@ -188,54 +203,51 @@ There is no version tagging, changelog generation, or package publishing pipelin
 5. Implement `KlineIndicatorImpl` trait
 6. Register in factory `src/chart/indicator/kline.rs`
 
-### Adding a New Exchange Adapter
+### Extending ODB Support
 
-1. Create adapter file in `exchange/src/adapter/`
-2. Add `Exchange` variant in `exchange/src/lib.rs`
-3. Implement stream routing in `exchange/src/adapter.rs`
-4. Add market type handling
+When modifying ODB rendering or behavior, check **all** match arms for `Basis::Odb(_)`, `KlineChartKind::Odb`, and `ContentKind::OdbChart` across:
 
-### Extending Range Bar Support
+- `src/screen/dashboard/pane.rs` — pane streams (must include `OdbKline` + `Depth` + `Trades`)
+- `src/screen/dashboard.rs` — event dispatch, pane switching
+- `src/chart/kline.rs` — rendering, trade insertion
+- `src/chart/heatmap.rs` — depth heatmap
+- `src/modal/pane/stream.rs` — settings UI
+- `src/modal/pane/settings.rs` — chart config
+- `data/src/layout/pane.rs` — serialization
 
-When modifying range bar rendering, check **all** match arms for `Basis::RangeBar(_)`, `KlineChartKind::RangeBar`, and `ContentKind::RangeBarChart` across:
+### Upstream Merge Checklist
 
-- `src/chart/kline.rs` (rendering)
-- `src/screen/dashboard/pane.rs` (pane state)
-- `src/screen/dashboard.rs` (pane switching)
-- `src/modal/pane/stream.rs` (settings UI)
-- `src/modal/pane/settings.rs` (chart config)
-- `data/src/layout/pane.rs` (serialization)
+After merging upstream, check for:
+
+1. New `StreamKind` variants — add match arms in fork-specific code
+2. Changes to `window::Settings` — preserve `level:` field in `main.rs`
+3. Changes to `FetchedData` — preserve fork's `microstructure` field in `connector/fetcher.rs`
+4. New `ContentKind` variants — add to pane setup in `dashboard/pane.rs`
 
 ---
 
 ## Common Errors
 
-| Error                     | Cause                  | Fix                                                 |
-| ------------------------- | ---------------------- | --------------------------------------------------- |
-| "Fetching Klines..." loop | ClickHouse unreachable | `mise run preflight`                                |
-| Tiny dot candlesticks     | Wrong cell_width/limit | Check adaptive scaling in `kline.rs`                |
-| Crosshair panic           | NaN in indicator data  | Add NaN guard before rendering                      |
-| "ClickHouse HTTP 404"     | Wrong table/schema     | Verify `opendeviationbar_cache.open_deviation_bars` |
-| Missing BPR threshold     | No data for that dbps  | Check `mise run tunnel:status`                      |
-
----
-
-## CLAUDE.md Network (Hub-and-Spoke)
-
-| Directory    | CLAUDE.md                                | Purpose                                |
-| ------------ | ---------------------------------------- | -------------------------------------- |
-| `/`          | This file                                | Hub, quick reference                   |
-| `/exchange/` | [exchange/CLAUDE.md](exchange/CLAUDE.md) | Exchange adapters, ClickHouse, streams |
-| `/data/`     | [data/CLAUDE.md](data/CLAUDE.md)         | Chart types, indicators, aggregation   |
+| Error                       | Cause                               | Fix                                                     |
+| --------------------------- | ----------------------------------- | ------------------------------------------------------- |
+| "Waiting for trades..."     | ODB pane missing `Trades` stream    | Add `trades_stream()` to pane's stream vec in `pane.rs` |
+| "Fetching Klines..." loop   | ClickHouse unreachable              | `mise run preflight`                                    |
+| "No chart found for stream" | Widget/pane stream mismatch         | Check `matches_stream()` in `connector/stream.rs`       |
+| Tiny dot candlesticks       | Wrong cell_width/limit              | Check adaptive scaling in `kline.rs`                    |
+| Crosshair panic             | NaN in indicator data               | Add NaN guard before rendering                          |
+| "ClickHouse HTTP 404"       | Wrong table/schema                  | Verify `opendeviationbar_cache.open_deviation_bars`     |
+| "no microstructure data"    | `FetchedData::Klines` missing field | Ensure `microstructure: Some(micro)` in ODB fetch path  |
 
 ---
 
 ## Terminology
 
-| Term           | Definition                                                                |
-| -------------- | ------------------------------------------------------------------------- |
-| **dbps**       | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                  |
-| **BPR**        | Basis Points Range. Display label: BPR25 = 250 dbps threshold.            |
-| **OFI**        | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1, 1]. |
-| **TickAggr**   | Vec-based aggregation (oldest-first). Used for Tick and RangeBar basis.   |
-| **TimeSeries** | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).           |
+| Term           | Definition                                                               |
+| -------------- | ------------------------------------------------------------------------ |
+| **dbps**       | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                 |
+| **BPR**        | Basis Points Range. Display label: BPR25 = 250 dbps threshold.           |
+| **ODB**        | Open Deviation Bar. Range bar that closes on % deviation from open.      |
+| **OFI**        | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1]. |
+| **TickAggr**   | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.       |
+| **TimeSeries** | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).          |
+| **SSE**        | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.    |

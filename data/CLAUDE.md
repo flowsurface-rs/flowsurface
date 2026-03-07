@@ -8,15 +8,16 @@ Data aggregation, chart models, indicator types, layout persistence, and configu
 
 ## Quick Reference
 
-| Module           | File                     | Purpose                                         |
-| ---------------- | ------------------------ | ----------------------------------------------- |
-| Chart basis      | `src/chart.rs`           | `Basis` enum (Time, Tick, RangeBar)             |
-| Chart types      | `src/chart/kline.rs`     | `KlineChartKind` (Candles, RangeBar, Footprint) |
-| Indicators       | `src/chart/indicator.rs` | `KlineIndicator` enum (6 types)                 |
-| Tick aggregation | `src/aggr/ticks.rs`      | `TickAggr`, `RangeBarMicrostructure`            |
-| Time aggregation | `src/aggr/time.rs`       | `TimeSeries`                                    |
-| Pane layout      | `src/layout/pane.rs`     | `ContentKind` (serialization model)             |
-| Timezone labels  | `src/config/timezone.rs` | `format_range_bar_label()` (x-axis)             |
+| Module           | File                     | Purpose                                    |
+| ---------------- | ------------------------ | ------------------------------------------ |
+| Chart basis      | `src/chart.rs`           | `Basis` enum (Time, Tick, Odb)             |
+| Chart types      | `src/chart/kline.rs`     | `KlineChartKind` (Candles, Odb, Footprint) |
+| Indicators       | `src/chart/indicator.rs` | `KlineIndicator` enum (6 types)            |
+| Tick aggregation | `src/aggr/ticks.rs`      | `TickAggr`, `RangeBarMicrostructure`       |
+| Time aggregation | `src/aggr/time.rs`       | `TimeSeries`                               |
+| Sessions         | `src/session.rs`         | NY/London/Tokyo boundaries + DST via jiff  |
+| Pane layout      | `src/layout/pane.rs`     | `ContentKind` (serialization model)        |
+| Timezone labels  | `src/config/timezone.rs` | `format_range_bar_label()` (x-axis)        |
 
 ---
 
@@ -28,19 +29,20 @@ The `Basis` enum determines how data is aggregated and rendered on the x-axis:
 pub enum Basis {
     Time(Timeframe),    // Fixed intervals: 1m, 5m, 1h, 4h, 1d, 1w
     Tick(u16),          // N trades per bar
-    RangeBar(u32),      // Threshold in dbps (e.g., 250 = 0.25%)
+    #[serde(alias = "RangeBar")]
+    Odb(u32),           // Threshold in dbps (e.g., 250 = 0.25%)
 }
 
-pub const RANGE_BAR_THRESHOLDS: [u32; 4] = [250, 500, 750, 1000];
+pub const ODB_THRESHOLDS: [u32; 4] = [250, 500, 750, 1000];
 ```
 
-| Basis      | Storage      | X-Axis      | Data Source              |
-| ---------- | ------------ | ----------- | ------------------------ |
-| `Time`     | `TimeSeries` | Continuous  | Exchange WebSocket       |
-| `Tick`     | `TickAggr`   | Index-based | Exchange WebSocket       |
-| `RangeBar` | `TickAggr`   | Index-based | ClickHouse HTTP (cached) |
+| Basis  | Storage      | X-Axis      | Data Source              |
+| ------ | ------------ | ----------- | ------------------------ |
+| `Time` | `TimeSeries` | Continuous  | Exchange WebSocket       |
+| `Tick` | `TickAggr`   | Index-based | Exchange WebSocket       |
+| `Odb`  | `TickAggr`   | Index-based | ClickHouse HTTP (cached) |
 
-**Key difference**: Time-based charts have uniform spacing. Tick and RangeBar charts have non-uniform spacing (index-based, newest rightmost).
+**Key difference**: Time-based charts have uniform spacing. Tick and ODB charts have non-uniform spacing (index-based, newest rightmost).
 
 ---
 
@@ -48,13 +50,13 @@ pub const RANGE_BAR_THRESHOLDS: [u32; 4] = [250, 500, 750, 1000];
 
 ```rust
 pub enum KlineChartKind {
-    Candles,                              // Traditional OHLC candlesticks
-    RangeBar,                             // Percentage range bars (fork-specific)
-    Footprint { clusters, scaling, studies }, // Price-clustered trade visualization
+    Candles,                                  // Traditional OHLC candlesticks
+    Odb,                                      // Open deviation bars (fork-specific)
+    Footprint { clusters, scaling, studies },  // Price-clustered trade visualization
 }
 ```
 
-The `KlineChartKind` is matched in rendering, scaling, settings, and serialization code. When adding behavior, check all match sites.
+Matched in rendering, scaling, settings, and serialization code. When adding behavior, check all match sites.
 
 ---
 
@@ -67,34 +69,17 @@ pub enum KlineIndicator {
     Volume,          // Buy/sell volume stacked bars
     OpenInterest,    // Perpetuals only (futures open contracts)
     Delta,           // Buy vol - Sell vol (signed bars)
-    TradeCount,      // Trade count histogram (range bars)
-    OFI,             // Order Flow Imbalance line (range bars)
-    TradeIntensity,  // Trades/sec line (range bars)
+    TradeCount,      // Trade count histogram (ODB only)
+    OFI,             // Order Flow Imbalance line (ODB only)
+    TradeIntensity,  // Trades/sec heatmap (ODB only)
 }
 ```
 
-### Market Availability
+The last three (TradeCount, OFI, TradeIntensity) only have data for ODB charts — they come from ClickHouse microstructure fields. See [exchange/CLAUDE.md](../exchange/CLAUDE.md) for field mapping.
 
-| Indicator      | Spot | Perps | Source                     |
-| -------------- | ---- | ----- | -------------------------- |
-| Volume         | Yes  | Yes   | `Kline.volume` (buy, sell) |
-| OpenInterest   | —    | Yes   | Exchange stream            |
-| Delta          | Yes  | Yes   | `buy_volume - sell_volume` |
-| TradeCount     | Yes  | Yes   | `RangeBarMicrostructure`   |
-| OFI            | Yes  | Yes   | `RangeBarMicrostructure`   |
-| TradeIntensity | Yes  | Yes   | `RangeBarMicrostructure`   |
+### Indicator Storage
 
-The last three (TradeCount, OFI, TradeIntensity) only have data for range bar charts — they come from ClickHouse microstructure fields.
-
-### Indicator Trait
-
-```rust
-pub trait Indicator: PartialEq + Display + 'static {
-    fn for_market(market: MarketKind) -> &'static [Self];
-}
-```
-
-`FOR_SPOT` (5 types) and `FOR_PERPS` (6 types, +OpenInterest) arrays control which indicators appear in the UI.
+Both `TradeIntensityHeatmapIndicator` and `OFICumulativeEmaIndicator` use `Vec<T>` (not `BTreeMap`) for O(1) incremental updates. Index = forward storage index matching `TickSeries::datapoints` order. Gap sentinels are used for missing data.
 
 ---
 
@@ -102,7 +87,7 @@ pub trait Indicator: PartialEq + Display + 'static {
 
 ### TickAggr (Vec-based, oldest-first)
 
-Used for **Tick** and **RangeBar** basis. Bars stored in a `Vec<TickAccumulation>` ordered oldest-first.
+Used for **Tick** and **ODB** basis. Bars stored in a `Vec<TickAccumulation>` ordered oldest-first.
 
 ```rust
 pub struct TickAccumulation {
@@ -119,26 +104,12 @@ pub struct RangeBarMicrostructure {
 }
 ```
 
-**Bar completion dispatch**: `TickAggr.range_bar_threshold_dbps: Option<u32>` controls `insert_trades()` behavior:
+**Bar completion dispatch**: `TickAggr.range_bar_threshold_dbps: Option<u32>`:
 
 - `None` → tick-count based: `is_full(tick_count)` (Tick basis)
-- `Some(dbps)` → price-range based: `is_full_range_bar(dbps)` uses integer `Price.units` math (RangeBar basis)
+- `Some(dbps)` → price-range based: `is_full_range_bar(dbps)` uses integer `Price.units` math (ODB basis)
 
 **ClickHouse reconciliation**: `replace_or_append_kline()` replaces the locally-built forming bar with the authoritative ClickHouse completed bar when timestamps match.
-
-**Extraction methods** on `TickAggr`:
-
-| Method                   | Returns                    | Used By        |
-| ------------------------ | -------------------------- | -------------- |
-| `volume_data()`          | `BTreeMap<u64, (f32,f32)>` | Volume         |
-| `delta_data()`           | `BTreeMap<u64, f32>`       | Delta          |
-| `trade_count_data()`     | `BTreeMap<u64, f32>`       | TradeCount     |
-| `ofi_data()`             | `BTreeMap<u64, f32>`       | OFI            |
-| `trade_intensity_data()` | `BTreeMap<u64, f32>`       | TradeIntensity |
-
-### TimeSeries (time-based)
-
-Used for **Time** basis. Bars keyed by timestamp with fixed intervals.
 
 ---
 
@@ -146,36 +117,32 @@ Used for **Time** basis. Bars keyed by timestamp with fixed intervals.
 
 **File**: `src/layout/pane.rs`
 
-Pane state is persisted to JSON for layout save/restore:
-
 ```rust
 pub enum ContentKind {
-    Kline(KlineLayout),
-    RangeBarChart(KlineLayout),  // Fork-specific
-    Heatmap(HeatmapLayout),
-    Footprint(FootprintLayout),
-    TimeAndSales(TimeAndSalesLayout),
+    Starter,
+    HeatmapChart,
+    FootprintChart,
+    CandlestickChart,
+    OdbChart,          // Fork-specific
+    ComparisonChart,
+    TimeAndSales,
+    Ladder,
 }
 ```
 
+Pane state persisted to `~/Library/Application Support/flowsurface/saved-state.json`.
+
 ---
 
-## X-Axis Labels for Range Bars
+## Session Lines
 
-**File**: `src/config/timezone.rs` — `format_range_bar_label()`
+**File**: `src/session.rs`
 
-Two-pass algorithm for non-uniform bar spacing:
-
-1. **Pass 1**: Estimate label density based on visible bar count
-2. **Pass 2**: Place labels with minimum spacing, avoiding overlaps
-
-Labels adapt format based on density: time-only for dense, date+time for sparse.
+Renders NY/London/Tokyo trading session boundaries as dotted lines + colored strips. Automatic DST handling via jiff timezone library. Works on both Time-based and ODB chart bases via binary search coordinate mapping.
 
 ---
 
 ## Related
 
 - [/CLAUDE.md](/CLAUDE.md) — Project hub
-- [/exchange/CLAUDE.md](/exchange/CLAUDE.md) — Exchange adapters, ClickHouse
-- `src/chart/indicator.rs` — Indicator enum source
-- `src/aggr/ticks.rs` — TickAggr + RangeBarMicrostructure source
+- [/exchange/CLAUDE.md](../exchange/CLAUDE.md) — Exchange adapters, ClickHouse
