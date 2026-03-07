@@ -9,7 +9,7 @@
 //!   FLOWSURFACE_CH_PORT (default: 8123)
 
 use super::{
-    super::{Kline, TickerInfo, Trade, Volume},
+    super::{Kline, Price, TickerInfo, Trade, Volume, de_string_to_f32},
     AdapterError, Event, StreamKind,
 };
 use crate::unit::{MinTicksize, Qty};
@@ -45,6 +45,9 @@ pub struct ChMicrostructure {
 /// is a direct copy of the underlying units. Volume uses f32→FixedPoint
 /// via string round-trip for precision.
 pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> opendeviationbar_core::AggTrade {
+    // Use real Binance agg_trade_id when available, falling back to seq_id.
+    // This ensures the processor's last_agg_trade_id() returns real IDs.
+    let real_id = trade.agg_trade_id.map(|id| id as i64).unwrap_or(seq_id);
     // Binance WebSocket trades have millisecond timestamps. opendeviationbar-core uses
     // microseconds and has a same-timestamp gate (prevent_same_timestamp_close)
     // that blocks bar closure when trade.timestamp == bar.open_time.
@@ -53,11 +56,11 @@ pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> opendeviationbar_core::
     let base_us = (trade.time as i64) * 1000;
     let sub_ms_offset = seq_id % 1000; // 0-999 µs within the millisecond
     opendeviationbar_core::AggTrade {
-        agg_trade_id: seq_id,
+        agg_trade_id: real_id,
         price: FixedPoint(trade.price.units),
         volume: FixedPoint(trade.qty.units),
-        first_trade_id: seq_id,
-        last_trade_id: seq_id,
+        first_trade_id: real_id,
+        last_trade_id: real_id,
         timestamp: base_us + sub_ms_offset,
         is_buyer_maker: trade.is_sell,
         is_best_match: None,
@@ -265,7 +268,7 @@ async fn query(sql: &str) -> Result<String, AdapterError> {
 
 /// Extract the bare symbol name from a ticker (e.g. "BTCUSDT" from a BinanceLinear ticker).
 /// ClickHouse stores symbols without exchange suffixes.
-fn bare_symbol(ticker_info: &TickerInfo) -> String {
+pub fn bare_symbol(ticker_info: &TickerInfo) -> String {
     ticker_info.ticker.to_string()
 }
 
@@ -814,6 +817,9 @@ pub fn connect_sse_stream(
                         log::warn!("[SSE] disconnected: {reason}, reconnecting in 5s");
                         break;
                     }
+                    _ => {
+                        // FormingBar, Checkpoint, and future variants — ignored for now
+                    }
                 }
             }
             // Stream ended (with or without Disconnected event)
@@ -821,4 +827,116 @@ pub fn connect_sse_stream(
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     })
+}
+
+// -- ODB sidecar HTTP endpoints (Ariadne + gap-fill) --
+
+/// Query the Ariadne endpoint for the last aggregate trade ID processed by the ODB sidecar.
+/// Uses a 5-source cascade: live processor → checkpoint → CH bars → CH checkpoints → Binance REST.
+pub async fn fetch_ariadne_last_agg_trade_id(
+    symbol: String,
+    threshold_dbps: u32,
+) -> Result<Option<i64>, AdapterError> {
+    let url = format!(
+        "http://{}:{}/ariadne/{symbol}/{threshold_dbps}",
+        *SSE_HOST, *SSE_PORT
+    );
+    let resp: serde_json::Value = reqwest::get(&url).await?.json().await?;
+    let last_id = resp.get("last_agg_trade_id").and_then(|v| v.as_i64());
+    let source = resp
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let degraded = resp
+        .get("degraded")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if degraded {
+        log::warn!("[ariadne] all 5 sources failed for {symbol}@{threshold_dbps}");
+    } else {
+        log::info!("[ariadne] {symbol}@{threshold_dbps}: last_id={last_id:?} source={source}");
+    }
+    Ok(last_id)
+}
+
+/// Binance-compatible gap-fill response from ODB sidecar.
+#[derive(Deserialize)]
+struct GapFillTrade {
+    #[serde(rename = "a")]
+    agg_trade_id: u64,
+    #[serde(rename = "T")]
+    time: u64,
+    #[serde(rename = "p", deserialize_with = "de_string_to_f32")]
+    price: f32,
+    #[serde(rename = "q", deserialize_with = "de_string_to_f32")]
+    qty: f32,
+    #[serde(rename = "m")]
+    is_buyer_maker: bool,
+}
+
+/// Fetch gap-fill trades from the ODB sidecar. Retries up to 3 times on 429.
+async fn fetch_gap_fill_trades(
+    symbol: &str,
+    from_agg_id: u64,
+) -> Result<Vec<Trade>, AdapterError> {
+    let url = format!(
+        "http://{}:{}/trades/gap-fill?symbol={symbol}&from_agg_id={from_agg_id}&limit=1000",
+        *SSE_HOST, *SSE_PORT
+    );
+
+    let mut retries = 0u8;
+    let resp = loop {
+        let r = reqwest::get(&url).await?;
+        if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && retries < 3 {
+            retries += 1;
+            log::info!("[gap-fill] rate limited, retry {retries}/3 in 1.1s");
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            continue;
+        }
+        break r;
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AdapterError::ParseError(format!(
+            "gap-fill HTTP {status}: {body}"
+        )));
+    }
+
+    let trades: Vec<GapFillTrade> = resp.json().await?;
+    Ok(trades
+        .into_iter()
+        .map(|t| Trade {
+            time: t.time,
+            is_sell: t.is_buyer_maker,
+            price: Price::from_f32(t.price),
+            qty: Qty::from(t.qty),
+            agg_trade_id: Some(t.agg_trade_id),
+        })
+        .collect())
+}
+
+/// Paginated gap-fill: fetches up to 100 batches (100K trades max).
+pub async fn fetch_gap_fill_trades_batched(
+    symbol: &str,
+    mut from_agg_id: u64,
+) -> Result<Vec<Trade>, AdapterError> {
+    let mut all = Vec::new();
+    for batch_n in 0..100u32 {
+        let trades = fetch_gap_fill_trades(symbol, from_agg_id).await?;
+        if trades.is_empty() {
+            break;
+        }
+        let count = trades.len();
+        if let Some(last) = trades.last() {
+            from_agg_id = last.agg_trade_id.unwrap_or(from_agg_id) + 1;
+        }
+        all.extend(trades);
+        if count < 1000 {
+            break;
+        }
+        log::info!("[gap-fill] batch {batch_n}: {count} trades, next_from_id={from_agg_id}");
+    }
+    Ok(all)
 }

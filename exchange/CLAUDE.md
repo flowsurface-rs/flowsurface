@@ -115,6 +115,19 @@ Three fields from opendeviationbar-py's microstructure features are surfaced as 
 | `ofi`                    | `Option<f64>` | OFI            |
 | `trade_intensity`        | `Option<f64>` | TradeIntensity |
 
+### ODB Sidecar HTTP Endpoints (Gap-Fill)
+
+Two HTTP endpoints on the same `SSE_HOST:SSE_PORT` sidecar, used for trade continuity gap-fill:
+
+| Endpoint                                           | Purpose                                                | Response                                                      |
+| -------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------- |
+| `GET /ariadne/{symbol}/{threshold}`                | Last processed `agg_trade_id` (5-source cascade)       | `{"last_agg_trade_id": N, "source": "...", "degraded": bool}` |
+| `GET /trades/gap-fill?symbol=&from_agg_id=&limit=` | Binance-compatible gap-fill trades (Parquet fast path) | `[{"a":..,"p":"..","q":"..","T":..,"m":..}, ...]`             |
+
+**Rate limit**: Gap-fill has 1s cooldown (429 → retry after 1.1s). Pagination: max 1000/batch, 100 batches.
+
+**Key types**: `GapFillTrade` (private, Binance-compatible deser struct in `clickhouse.rs`).
+
 ---
 
 ## Core Types

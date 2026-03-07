@@ -1283,18 +1283,19 @@ impl ViewState {
 }
 
 fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Action> {
+    let range_clone = range.clone();
     match handler.add_request(range) {
         Ok(Some(req_id)) => {
             let fetch_spec = FetchSpec {
                 req_id,
-                fetch: range,
+                fetch: range_clone,
                 stream: None,
             };
             Some(Action::RequestFetch(vec![fetch_spec]))
         }
         Ok(None) => None,
         Err(reason) => {
-            log::error!("Failed to request {:?}: {}", range, reason);
+            log::error!("Failed to request: {}", reason);
             // TODO: handle this more explicitly, maybe by returning Action::ErrorOccurred
             None
         }

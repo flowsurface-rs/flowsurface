@@ -105,11 +105,13 @@ impl RequestHandler {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum FetchRange {
     Kline(u64, u64),
     OpenInterest(u64, u64),
     Trades(u64, u64),
+    /// Gap-fill trades from ODB sidecar, keyed by Binance agg_trade_id.
+    TradesFromId { from_agg_id: u64, symbol: String },
 }
 
 #[derive(PartialEq, Debug)]
@@ -167,7 +169,7 @@ impl Clone for FetchSpec {
     fn clone(&self) -> Self {
         FetchSpec {
             req_id: self.req_id,
-            fetch: self.fetch,
+            fetch: self.fetch.clone(),
             stream: self.stream,
         }
     }
@@ -306,9 +308,68 @@ pub fn request_fetch(
                 }
             }
         }
+        FetchRange::TradesFromId {
+            from_agg_id,
+            symbol,
+        } => {
+            let trade_info = ready_streams.iter().find_map(|stream| {
+                if let StreamKind::Trades { ticker_info } = stream {
+                    Some((*ticker_info, pane_id, *stream))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((_ticker_info, pane_id, stream)) = trade_info {
+                let (task, handle) = Task::sip(
+                    gap_fill_sip(symbol, from_agg_id),
+                    move |batch| FetchUpdate::Data {
+                        layout_id,
+                        pane_id,
+                        data: FetchedData::Trades {
+                            batch,
+                            until_time: u64::MAX,
+                        },
+                        stream,
+                    },
+                    move |result| match result {
+                        Ok(()) => FetchUpdate::Status {
+                            pane_id,
+                            status: FetchTaskStatus::Completed,
+                        },
+                        Err(err) => FetchUpdate::Error {
+                            pane_id,
+                            error: err.to_string(),
+                        },
+                    },
+                )
+                .abortable();
+
+                on_trade_handle(handle.abort_on_drop());
+                return task;
+            }
+        }
     }
 
     Task::none()
+}
+
+pub fn gap_fill_sip(
+    symbol: String,
+    from_agg_id: u64,
+) -> impl Straw<(), Vec<exchange::Trade>, adapter::AdapterError> {
+    sipper(async move |mut progress| {
+        let trades =
+            adapter::clickhouse::fetch_gap_fill_trades_batched(&symbol, from_agg_id).await?;
+        if !trades.is_empty() {
+            log::info!(
+                "[gap-fill] ODB sip: {} trades fetched for {symbol}",
+                trades.len()
+            );
+            let () = progress.send(trades).await;
+        }
+        Ok(())
+    })
 }
 
 pub fn request_fetch_many(

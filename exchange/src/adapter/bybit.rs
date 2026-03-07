@@ -540,6 +540,7 @@ pub fn connect_trade_stream(
                                             price,
                                             qty: qty_norm
                                                 .normalize_qty(de_trade.qty, de_trade.price),
+                                            agg_trade_id: None,
                                         };
 
                                         trades_buffer.push(trade);

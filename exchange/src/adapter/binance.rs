@@ -160,6 +160,8 @@ struct SonicKlineWrap {
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
+    #[serde(rename = "a")]
+    agg_trade_id: u64,
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "p", deserialize_with = "de_string_to_f32")]
@@ -693,6 +695,7 @@ pub fn connect_trade_stream(
                                             price,
                                             qty: qty_norm
                                                 .normalize_qty(de_trade.qty, de_trade.price),
+                                            agg_trade_id: Some(de_trade.agg_trade_id),
                                         };
 
                                         trades_buffer_map.entry(ticker).or_default().push(trade);
@@ -1511,6 +1514,7 @@ pub async fn fetch_intraday_trades(
                 is_sell: de_trade.is_sell,
                 price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
                 qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
+                agg_trade_id: Some(de_trade.agg_trade_id),
             })
             .collect()
     };
@@ -1611,6 +1615,7 @@ pub async fn get_hist_trades(
                             is_sell,
                             price,
                             qty,
+                            agg_trade_id: None,
                         })
                     })
                 }));

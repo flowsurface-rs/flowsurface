@@ -241,6 +241,10 @@ pub struct KlineChart {
     /// approximate boundaries and are popped when the authoritative SSE/CH
     /// bar arrives via `update_latest_kline()`.
     pending_local_bars: u32,
+    /// Last agg_trade_id from gap-fill. WS trades with id <= this are skipped.
+    gap_fill_fence_agg_id: Option<u64>,
+    /// CH/SSE bars received during gap-fill, applied after completion.
+    buffered_ch_klines: Vec<Kline>,
     /// Kline chart configuration (e.g. OFI EMA period).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
@@ -345,6 +349,8 @@ impl KlineChart {
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
+                    gap_fill_fence_agg_id: None,
+                    buffered_ch_klines: Vec::new(),
                     kline_config,
                 }
             }
@@ -411,6 +417,8 @@ impl KlineChart {
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
+                    gap_fill_fence_agg_id: None,
+                    buffered_ch_klines: Vec::new(),
                     kline_config,
                 }
             }
@@ -503,6 +511,8 @@ impl KlineChart {
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
+                    gap_fill_fence_agg_id: None,
+                    buffered_ch_klines: Vec::new(),
                     kline_config,
                 }
             }
@@ -661,6 +671,8 @@ impl KlineChart {
             next_agg_id: 0,
             odb_completed_count: 0,
             pending_local_bars: 0,
+            gap_fill_fence_agg_id: None,
+            buffered_ch_klines: Vec::new(),
             kline_config,
         }
     }
@@ -685,6 +697,17 @@ impl KlineChart {
             }
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_odb() {
+                    // Buffer CH/SSE bars during gap-fill to prevent temporal inversions.
+                    // They'll be applied in order after gap-fill completes.
+                    if self.fetching_trades.0 {
+                        self.buffered_ch_klines.push(*kline);
+                        log::debug!(
+                            "[gap-fill] buffered CH bar ts={} during gap-fill",
+                            kline.time
+                        );
+                        return;
+                    }
+
                     // Pop locally-completed bars before reconciling with authoritative
                     // SSE/CH bars. Local bars have approximate boundaries (arbitrary WS
                     // start point) and are replaced by the authoritative version.
@@ -896,8 +919,51 @@ impl KlineChart {
         self.fetching_trades.1 = Some(handle);
     }
 
+    pub fn set_fetching_trades(&mut self, active: bool) {
+        self.fetching_trades.0 = active;
+    }
+
     pub fn clear_fetching_trades(&mut self) {
         self.fetching_trades = (false, None);
+    }
+
+    /// Complete gap-fill lifecycle: set dedup fence, flush buffered CH bars,
+    /// clear fetching_trades flag, and invalidate canvas.
+    ///
+    /// Called from `ChangePaneStatus(Ready)` when the gap-fill sip completes.
+    /// The sip's single batch arrives with `is_batches_done = false` (because
+    /// `until_time: u64::MAX` means `last_trade_time < until_time` is always
+    /// true), so the completion block in `insert_raw_trades` never fires.
+    /// This method fills that gap.
+    pub fn finalize_gap_fill(&mut self) {
+        if !self.fetching_trades.0 {
+            return;
+        }
+
+        // Set dedup fence from the last gap-fill trade's agg_trade_id.
+        if let Some(last_id) = self
+            .raw_trades
+            .iter()
+            .rev()
+            .find_map(|t| t.agg_trade_id)
+        {
+            self.gap_fill_fence_agg_id = Some(last_id);
+            log::info!("[gap-fill] finalize: fence_agg_id={last_id}");
+        }
+
+        // Flush buffered CH/SSE bars that arrived during gap-fill.
+        let buffered = std::mem::take(&mut self.buffered_ch_klines);
+        if !buffered.is_empty() {
+            log::info!(
+                "[gap-fill] finalize: flushing {} buffered CH bars",
+                buffered.len()
+            );
+        }
+        self.fetching_trades = (false, None);
+        for kline in &buffered {
+            self.update_latest_kline(kline);
+        }
+        self.invalidate(None);
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -1144,6 +1210,38 @@ impl KlineChart {
                                 Some(PriceInfoLabel::new(last_trade.price, reference));
                             self.chart.last_trade_time = Some(last_trade.time);
                         }
+                        return;
+                    }
+
+                    // Dedup fence: skip WS trades that overlap with gap-fill data.
+                    // Trades with agg_trade_id <= fence are duplicates. Once we see
+                    // a trade past the fence, clear it (single transition).
+                    if !is_gap_fill
+                        && let Some(fence_id) = self.gap_fill_fence_agg_id
+                    {
+                        let before = trades_buffer.len();
+                        let filtered: Vec<_> = trades_buffer
+                            .iter()
+                            .filter(|t| {
+                                t.agg_trade_id.is_none_or(|id| id > fence_id)
+                            })
+                            .copied()
+                            .collect();
+                        if filtered.len() < before {
+                            log::info!(
+                                "[dedup] skipped {} WS trades <= fence {fence_id}",
+                                before - filtered.len()
+                            );
+                        }
+                        if !filtered.is_empty() {
+                            self.gap_fill_fence_agg_id = None;
+                        }
+                        if filtered.is_empty() {
+                            return;
+                        }
+                        // Continue with filtered trades — re-enter via recursive call
+                        // to avoid duplicating the processor logic below.
+                        self.insert_trades_inner(&filtered, false);
                         return;
                     }
 
@@ -1464,7 +1562,24 @@ impl KlineChart {
         }
 
         if is_batches_done {
+            // Set dedup fence from the last gap-fill trade's agg_trade_id.
+            if let Some(last_id) = self
+                .raw_trades
+                .iter()
+                .rev()
+                .find_map(|t| t.agg_trade_id)
+            {
+                self.gap_fill_fence_agg_id = Some(last_id);
+                log::info!(
+                    "[gap-fill] complete: fence_agg_id={last_id}"
+                );
+            }
+            // Flush buffered CH/SSE bars that arrived during gap-fill.
+            let buffered = std::mem::take(&mut self.buffered_ch_klines);
             self.fetching_trades = (false, None);
+            for kline in &buffered {
+                self.update_latest_kline(kline);
+            }
             // Single canvas redraw now that all gap-fill batches are processed.
             self.invalidate(None);
         }

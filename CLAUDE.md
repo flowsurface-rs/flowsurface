@@ -95,6 +95,12 @@ Stream 3: Depth — Binance depth WebSocket (orderbook)
   → DepthReceived → heatmap / footprint data
 
 Reconciliation: ClickHouse bar replaces locally-built bar (authoritative)
+
+Stream 4: Gap-fill — ODB sidecar Ariadne + /trades/gap-fill
+  → After initial CH klines load, query Ariadne for last_agg_trade_id
+  → Fetch missing trades via /trades/gap-fill (Parquet fast path)
+  → Dedup fence: WS trades with id <= fence are skipped
+  → CH bars buffered during gap-fill, flushed after completion
 ```
 
 **CRITICAL**: ODB panes must subscribe to ALL THREE streams (`OdbKline`, `Trades`, `Depth`) in `resolve_content()` at `src/screen/dashboard/pane.rs`. Missing `Trades` causes "Waiting for trades..." forever because `matches_stream()` silently drops unmatched events.
@@ -223,20 +229,25 @@ After merging upstream, check for:
 2. Changes to `window::Settings` — preserve `level:` field in `main.rs`
 3. Changes to `FetchedData` — preserve fork's `microstructure` field in `connector/fetcher.rs`
 4. New `ContentKind` variants — add to pane setup in `dashboard/pane.rs`
+5. Changes to `FetchRange` — preserve fork's `TradesFromId` variant in `connector/fetcher.rs`
+6. Changes to `Message` in `dashboard.rs` — preserve `TriggerOdbGapFill` variant
+7. Changes to `Trade` struct — preserve `agg_trade_id` field in `exchange/src/lib.rs`
 
 ---
 
 ## Common Errors
 
-| Error                       | Cause                               | Fix                                                     |
-| --------------------------- | ----------------------------------- | ------------------------------------------------------- |
-| "Waiting for trades..."     | ODB pane missing `Trades` stream    | Add `trades_stream()` to pane's stream vec in `pane.rs` |
-| "Fetching Klines..." loop   | ClickHouse unreachable              | `mise run preflight`                                    |
-| "No chart found for stream" | Widget/pane stream mismatch         | Check `matches_stream()` in `connector/stream.rs`       |
-| Tiny dot candlesticks       | Wrong cell_width/limit              | Check adaptive scaling in `kline.rs`                    |
-| Crosshair panic             | NaN in indicator data               | Add NaN guard before rendering                          |
-| "ClickHouse HTTP 404"       | Wrong table/schema                  | Verify `opendeviationbar_cache.open_deviation_bars`     |
-| "no microstructure data"    | `FetchedData::Klines` missing field | Ensure `microstructure: Some(micro)` in ODB fetch path  |
+| Error                       | Cause                               | Fix                                                                  |
+| --------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| "Waiting for trades..."     | ODB pane missing `Trades` stream    | Add `trades_stream()` to pane's stream vec in `pane.rs`              |
+| "Fetching Klines..." loop   | ClickHouse unreachable              | `mise run preflight`                                                 |
+| "No chart found for stream" | Widget/pane stream mismatch         | Check `matches_stream()` in `connector/stream.rs`                    |
+| Tiny dot candlesticks       | Wrong cell_width/limit              | Check adaptive scaling in `kline.rs`                                 |
+| Crosshair panic             | NaN in indicator data               | Add NaN guard before rendering                                       |
+| "ClickHouse HTTP 404"       | Wrong table/schema                  | Verify `opendeviationbar_cache.open_deviation_bars`                  |
+| "no microstructure data"    | `FetchedData::Klines` missing field | Ensure `microstructure: Some(micro)` in ODB fetch path               |
+| "Fetching trades..." stuck  | ODB sidecar unreachable (Ariadne)   | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250` |
+| Gap-fill silently skipped   | Ariadne returned `None` or error    | Check sidecar logs; gap-fill is best-effort                          |
 
 ---
 

@@ -437,6 +437,7 @@ pub fn connect_trade_stream(
                                                 || de_trade.is_sell == "SELL",
                                             price,
                                             qty,
+                                            agg_trade_id: None,
                                         };
                                         trades_buffer.push(trade);
                                     }

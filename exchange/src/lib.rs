@@ -555,6 +555,10 @@ pub struct Trade {
     pub price: Price,
     #[serde(deserialize_with = "de_qty_from_number")]
     pub qty: Qty,
+    /// Binance aggregate trade ID. Used for gap-fill dedup fence.
+    /// `None` for non-Binance exchanges.
+    #[serde(default)]
+    pub agg_trade_id: Option<u64>,
 }
 
 // Serialize: range bar forensic telemetry NDJSON artifacts (--features telemetry)

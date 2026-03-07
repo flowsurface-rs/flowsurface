@@ -291,10 +291,11 @@ impl ComparisonChart {
         out: &mut Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)>,
     ) {
         let handler = self.request_handler.entry(ticker).or_default();
+        let range_clone = range.clone();
         if let Ok(Some(req_id)) = handler.add_request(range) {
             out.push((
                 req_id,
-                range,
+                range_clone,
                 Some(StreamKind::Kline {
                     ticker_info: ticker,
                     timeframe: self.timeframe,
@@ -310,7 +311,7 @@ impl ComparisonChart {
         let mut reqs = Vec::new();
         for (range, tickers) in batches {
             for ticker in tickers {
-                self.queue_kline_fetch(ticker, range, &mut reqs);
+                self.queue_kline_fetch(ticker, range.clone(), &mut reqs);
             }
         }
         reqs

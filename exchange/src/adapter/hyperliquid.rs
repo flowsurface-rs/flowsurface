@@ -1082,6 +1082,7 @@ pub fn connect_trade_stream(
                                             is_sell: hl_trade.side == "A",
                                             price,
                                             qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
+                                            agg_trade_id: None,
                                         };
                                         trades_buffer_map.entry(*ticker).or_default().push(trade);
                                     } else {

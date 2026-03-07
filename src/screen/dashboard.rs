@@ -12,7 +12,7 @@ use crate::{
     chart,
     connector::{
         ResolvedStream,
-        fetcher::{self, FetchRange, FetchedData, InfoKind},
+        fetcher::{self, FetchRange, FetchedData, InfoKind, gap_fill_sip},
     },
     screen::dashboard::tickers_table::TickersTable,
     style,
@@ -60,6 +60,13 @@ pub enum Message {
     /// NOTE(fork): App-level keyboard navigation for chart panning without canvas focus.
     /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
     ChartKeyNav(keyboard::Event),
+    /// NOTE(fork): Ariadne returned last_agg_trade_id — trigger ODB gap-fill.
+    TriggerOdbGapFill {
+        pane_id: uuid::Uuid,
+        layout_id: uuid::Uuid,
+        from_agg_id: u64,
+        symbol: String,
+    },
 }
 
 pub struct Dashboard {
@@ -452,12 +459,12 @@ impl Dashboard {
             },
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
-                    // When gap-fill sip completes, clear the chart's fetching_trades
-                    // flag so WebSocket trades resume flowing through the RBP.
+                    // When gap-fill sip completes, finalize: set dedup fence,
+                    // flush buffered CH bars, clear fetching_trades, invalidate.
                     if matches!(status, pane::Status::Ready)
                         && let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
                     {
-                        c.clear_fetching_trades();
+                        c.finalize_gap_fill();
                     }
                     pane_state.status = status;
                 }
@@ -493,6 +500,36 @@ impl Dashboard {
                     && let Some(state) = self.get_mut_pane(main_window.id, window, pane)
                 {
                     state.apply_keyboard_nav(&event);
+                }
+            }
+            Message::TriggerOdbGapFill {
+                pane_id,
+                layout_id,
+                from_agg_id,
+                symbol,
+            } => {
+                if let Some(pane_state) =
+                    self.get_mut_pane_state_by_uuid(main_window.id, pane_id)
+                {
+                    log::info!(
+                        "[gap-fill] ODB pane={pane_id}: from_agg_id={from_agg_id}"
+                    );
+                    pane_state.status =
+                        pane::Status::Stale("Fetching trades to fill gap...".into());
+                    let req_id = uuid::Uuid::new_v4();
+                    return (
+                        request_fetch(
+                            pane_state,
+                            layout_id,
+                            req_id,
+                            FetchRange::TradesFromId {
+                                from_agg_id,
+                                symbol,
+                            },
+                            None,
+                        ),
+                        None,
+                    );
                 }
             }
         }
@@ -981,7 +1018,7 @@ impl Dashboard {
                         }
                         StreamKind::OdbKline {
                             ticker_info,
-                            threshold_dbps: _,
+                            threshold_dbps,
                         } => {
                             pane_state.insert_odb_klines(
                                 req_id,
@@ -990,60 +1027,54 @@ impl Dashboard {
                                 microstructure.as_deref(),
                             );
 
-                            // Only check staleness once per basis — skip
-                            // scroll-back fetches which return old data by design.
-                            // Also skip if already stale/fetching (another trigger in flight).
+                            // Ariadne-based gap-fill: query the ODB sidecar for
+                            // last_agg_trade_id, then gap-fill from that point.
+                            // Only fire once per pane lifecycle.
                             if !pane_state.staleness_checked
                                 && !matches!(pane_state.status, pane::Status::Stale(_))
                             {
                                 pane_state.staleness_checked = true;
 
-                                if let Some(last_kline) = data.last() {
-                                    let now_ms = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as u64)
-                                        .unwrap_or(0);
-                                    let gap_ms = now_ms.saturating_sub(last_kline.time);
-                                    let gap_minutes = gap_ms as f64 / 60_000.0;
-                                    let gap_hours = gap_minutes / 60.0;
+                                let symbol =
+                                    adapter::clickhouse::bare_symbol(&ticker_info);
+                                log::info!(
+                                    "[gap-fill] ODB pane={pane_id}: querying ariadne for {symbol}@{threshold_dbps}"
+                                );
 
-                                    // Cap gap-fill at 72 hours — beyond that the REST API
-                                    // fetch is impractical (millions of trades at 1000/batch).
-                                    const MAX_GAPFILL_HOURS: f64 = 72.0;
-
-                                    if gap_hours > MAX_GAPFILL_HOURS {
-                                        log::warn!(
-                                            "[staleness] pane={} {:.0}h gap too large for client-side gap-fill (max {MAX_GAPFILL_HOURS}h)",
-                                            pane_id,
-                                            gap_hours,
-                                        );
-                                        pane_state.status = pane::Status::Stale(format!(
-                                            "Data {:.0}h old — gap too large for client gap-fill",
-                                            gap_hours
-                                        ));
-                                    } else if gap_minutes > 5.0 {
-                                        log::info!(
-                                            "[staleness] pane={} {:.1}h gap detected, triggering client-side gap-fill trades",
-                                            pane_id,
-                                            gap_hours,
-                                        );
-                                        pane_state.status = pane::Status::Stale(format!(
-                                            "Data {:.0}h old — fetching trades to fill gap...",
-                                            gap_hours
-                                        ));
-
-                                        let from_time = last_kline.time;
-                                        let to_time = now_ms;
-                                        let req_id = uuid::Uuid::new_v4();
-                                        return request_fetch(
-                                            pane_state,
-                                            layout_id,
-                                            req_id,
-                                            FetchRange::Trades(from_time, to_time),
-                                            None,
-                                        );
-                                    }
-                                }
+                                return Task::perform(
+                                    adapter::clickhouse::fetch_ariadne_last_agg_trade_id(
+                                        symbol.clone(),
+                                        threshold_dbps,
+                                    ),
+                                    move |result| match result {
+                                        Ok(Some(last_id)) if last_id >= 0 => {
+                                            Message::TriggerOdbGapFill {
+                                                pane_id,
+                                                layout_id,
+                                                from_agg_id: (last_id + 1) as u64,
+                                                symbol,
+                                            }
+                                        }
+                                        Ok(_) => {
+                                            log::info!(
+                                                "[gap-fill] ariadne returned no last_id, skipping gap-fill"
+                                            );
+                                            Message::ChangePaneStatus(
+                                                pane_id,
+                                                pane::Status::Ready,
+                                            )
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "[gap-fill] ariadne query failed: {e}, skipping gap-fill"
+                                            );
+                                            Message::ChangePaneStatus(
+                                                pane_id,
+                                                pane::Status::Ready,
+                                            )
+                                        }
+                                    },
+                                );
                             }
                         }
                         _ => {}
@@ -1612,7 +1643,62 @@ fn request_fetch(
                 }
             }
         }
-        // GapFillTrades was merged into FetchRange::Trades (handled above)
+        FetchRange::TradesFromId {
+            from_agg_id,
+            symbol,
+        } => {
+            let trade_info = state.streams.find_ready_map(|stream| {
+                if let StreamKind::Trades { ticker_info } = stream {
+                    Some((*ticker_info, pane_id, *stream))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((_ticker_info, pane_id, stream)) = trade_info {
+                // Set fetching_trades flag so CH bar buffering and WS trade
+                // blocking activate during gap-fill.
+                if let pane::Content::Kline { chart, .. } = &mut state.content
+                    && let Some(c) = chart
+                {
+                    c.set_fetching_trades(true);
+                }
+
+                let (task, handle) = Task::sip(
+                    gap_fill_sip(symbol, from_agg_id),
+                    move |batch| {
+                        let data = FetchedData::Trades {
+                            batch,
+                            // u64::MAX ensures no trades are filtered by the
+                            // `trade.time <= until_time` ceiling in distribute_fetched_data.
+                            until_time: u64::MAX,
+                        };
+                        Message::DistributeFetchedData {
+                            layout_id,
+                            pane_id,
+                            data,
+                            stream,
+                        }
+                    },
+                    move |result| match result {
+                        Ok(()) => Message::ChangePaneStatus(pane_id, pane::Status::Ready),
+                        Err(err) => Message::ErrorOccurred(
+                            Some(pane_id),
+                            DashboardError::Fetch(err.to_string()),
+                        ),
+                    },
+                )
+                .abortable();
+
+                if let pane::Content::Kline { chart, .. } = &mut state.content
+                    && let Some(c) = chart
+                {
+                    c.set_handle(handle.abort_on_drop());
+                }
+
+                return task;
+            }
+        }
     }
 
     Task::none()

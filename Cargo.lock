@@ -3031,9 +3031,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-client"
-version = "12.59.2"
+version = "12.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d3cd38c5695315263838266455d8018a23643d181065dfa8deea082c3481b0b"
+checksum = "8a1413066e0ec4ebd1b2a25b26dcf8cedbc11096575bbe3e89cc54863f1c17f8"
 dependencies = [
  "bytes",
  "eventsource-client",
@@ -3049,9 +3049,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-core"
-version = "12.59.2"
+version = "12.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be3787b8a99dae816dafb8f1025ba33835388c8f4ff4473e66bf97228854b964"
+checksum = "53ad650ecacb9681b52ceaa49d42110a4e9ca79c39aef4dfaf440e9d33556fd5"
 dependencies = [
  "chrono",
  "foldhash 0.2.0",
