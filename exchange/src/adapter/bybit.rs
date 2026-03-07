@@ -425,6 +425,8 @@ pub fn connect_depth_stream(
                                                     .await;
                                             }
                                         }
+                                        // Trade and Kline data arrives on separate streams
+                                        StreamData::Trade(..) | StreamData::Kline(..) => {}
                                     }
                                 }
                             }

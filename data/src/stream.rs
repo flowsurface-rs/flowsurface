@@ -47,6 +47,10 @@ impl From<StreamKind> for PersistStreamKind {
             StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
                 ticker: ticker_info.ticker,
             },
+            StreamKind::OdbKline { ticker_info, .. } => PersistStreamKind::Kline {
+                ticker: ticker_info.ticker,
+                timeframe: exchange::Timeframe::M1,
+            },
         }
     }
 }

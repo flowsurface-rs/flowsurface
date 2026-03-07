@@ -1205,6 +1205,7 @@ dependencies = [
  "log",
  "num-traits",
  "palette",
+ "qta",
  "rodio",
  "rustc-hash 2.1.1",
  "serde",
@@ -1212,7 +1213,6 @@ dependencies = [
  "thiserror 2.0.17",
  "url",
  "uuid",
- "zigzag",
 ]
 
 [[package]]
@@ -3361,6 +3361,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "qta"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -5963,14 +5971,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
-]
-
-[[package]]
-name = "zigzag"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.17",
- "tracing",
 ]
 
 [[package]]
