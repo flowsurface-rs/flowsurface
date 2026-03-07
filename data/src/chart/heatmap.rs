@@ -634,9 +634,10 @@ impl std::fmt::Display for HeatmapStudy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum ProfileKind {
     FixedWindow(usize),
+    #[default]
     VisibleRange,
 }
 

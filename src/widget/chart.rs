@@ -1,4 +1,5 @@
 pub mod comparison;
+pub mod heatmap;
 
 use chrono::{TimeZone, Utc};
 use exchange::TickerInfo;
@@ -68,27 +69,38 @@ impl SeriesLike for Series {
 }
 
 /// Compute a "nice" step close to range/target using 1/2/5*10^k
-fn nice_step(range: f32, target: usize) -> f32 {
-    let target = target.max(2) as f32;
-    let raw = (range / target).max(f32::EPSILON);
-    let power = raw.log10().floor();
-    let base = 10f32.powf(power);
-    let n = raw / base;
-    let nice = if n <= 1.0 {
+fn nice_step_multiplier_125(v: f32) -> f32 {
+    if v <= 1.0 {
         1.0
-    } else if n <= 2.0 {
+    } else if v <= 2.0 {
         2.0
-    } else if n <= 5.0 {
+    } else if v <= 5.0 {
         5.0
     } else {
         10.0
-    };
-    nice * base
+    }
+}
+
+fn nice_step(rough: f32) -> f32 {
+    if !rough.is_finite() || rough <= 0.0 {
+        return 1.0;
+    }
+
+    let base = 10.0f32.powf(rough.log10().floor());
+    let fraction = rough / base;
+
+    nice_step_multiplier_125(fraction) * base
 }
 
 fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
     let span = (max - min).abs().max(1e-6);
-    let step = nice_step(span, target);
+
+    let step = {
+        let target = target.max(2) as f32;
+        let raw = (span / target).max(f32::EPSILON);
+        nice_step(raw)
+    };
+
     let start = (min / step).floor() * step;
     let end = (max / step).ceil() * step;
 
