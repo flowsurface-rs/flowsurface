@@ -241,6 +241,7 @@ impl State {
                         |threshold| {
                             vec![
                                 depth_stream(&derived_plan),
+                                trades_stream(&derived_plan),
                                 StreamKind::OdbKline {
                                     ticker_info: derived_plan.ticker_info,
                                     threshold_dbps: threshold,
@@ -285,6 +286,7 @@ impl State {
                                     threshold_dbps: threshold,
                                 },
                                 depth_stream(&derived_plan),
+                                trades_stream(&derived_plan),
                             ]
                         },
                     );
@@ -310,6 +312,7 @@ impl State {
                             threshold_dbps: threshold,
                         },
                         depth_stream(&derived_plan),
+                        trades_stream(&derived_plan),
                     ];
                     (content, streams)
                 }
