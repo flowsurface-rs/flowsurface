@@ -1353,10 +1353,13 @@ impl State {
                                                     };
                                                     let streams = vec![
                                                         rb_stream,
-                                                        StreamKind::DepthAndTrades {
+                                                        StreamKind::Depth {
                                                             ticker_info: base_ticker,
                                                             depth_aggr,
                                                             push_freq: exchange::PushFrequency::ServerDefault,
+                                                        },
+                                                        StreamKind::Trades {
+                                                            ticker_info: base_ticker,
                                                         },
                                                     ];
 

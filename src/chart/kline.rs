@@ -23,7 +23,6 @@ use exchange::{
         OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, sse_connected,
         sse_enabled, trade_to_agg_trade,
     },
-    fetcher::{FetchRange, RequestHandler},
 };
 
 use iced::task::Handle;
@@ -494,7 +493,7 @@ impl KlineChart {
                     raw_trades,
                     indicators,
                     fetching_trades: (false, None),
-                    request_handler: RequestHandler::new(),
+                    request_handler: RequestHandler::default(),
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
@@ -652,7 +651,7 @@ impl KlineChart {
             raw_trades,
             indicators,
             fetching_trades: (false, None),
-            request_handler: RequestHandler::new(),
+            request_handler: RequestHandler::default(),
             kind: kind.clone(),
             study_configurator: study::Configurator::new(),
             last_tick: Instant::now(),

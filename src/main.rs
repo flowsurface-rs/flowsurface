@@ -211,7 +211,7 @@ impl Flowsurface {
                 let main_window_id = self.main_window.id;
 
                 // Forward BTCUSDT trades to floating widget (before dashboard borrow).
-                if let exchange::Event::DepthReceived(ref stream, _, _, ref trades_buffer) = event
+                if let exchange::Event::TradesReceived(ref stream, _, ref trades_buffer) = event
                     && let Some(ref mut ctrl) = self.widget
                 {
                     ctrl.forward_trades(stream, trades_buffer);

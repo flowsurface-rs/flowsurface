@@ -12,7 +12,7 @@ use crate::{
     chart,
     connector::{
         ResolvedStream,
-        fetcher::{self, FetchedData, InfoKind},
+        fetcher::{self, FetchRange, FetchedData, InfoKind},
     },
     screen::dashboard::tickers_table::TickersTable,
     style,
@@ -29,7 +29,6 @@ use exchange::{
     adapter::{self, AdapterError, Exchange, StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
     connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
     depth::Depth,
-    fetcher::{FetchRange, FetchedData},
     health::ConnectionHealth,
 };
 
@@ -968,7 +967,6 @@ impl Dashboard {
             FetchedData::Klines {
                 data,
                 req_id,
-                microstructure,
             } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
@@ -988,7 +986,7 @@ impl Dashboard {
                                 req_id,
                                 ticker_info,
                                 &data,
-                                microstructure.as_deref(),
+                                None,
                             );
 
                             // Only check staleness once per basis — skip
@@ -1040,7 +1038,7 @@ impl Dashboard {
                                             pane_state,
                                             layout_id,
                                             req_id,
-                                            FetchRange::GapFillTrades(from_time, to_time),
+                                            FetchRange::Trades(from_time, to_time),
                                             None,
                                         );
                                     }
@@ -1481,7 +1479,6 @@ impl From<fetcher::FetchUpdate> for Message {
                     fetcher::FetchedData::Klines { data, req_id } => FetchedData::Klines {
                         data,
                         req_id,
-                        microstructure: None,
                     },
                     fetcher::FetchedData::OI { data, req_id } => {
                         FetchedData::OI { data, req_id }
@@ -1563,7 +1560,7 @@ fn request_fetch(
         }
         FetchRange::Trades(from_time, to_time) => {
             let trade_info = state.streams.find_ready_map(|stream| {
-                if let StreamKind::DepthAndTrades { ticker_info, .. } = stream {
+                if let StreamKind::Trades { ticker_info } = stream {
                     Some((*ticker_info, pane_id, *stream))
                 } else {
                     None
@@ -1613,58 +1610,7 @@ fn request_fetch(
                 }
             }
         }
-        FetchRange::GapFillTrades(from_time, to_time) => {
-            let trade_info = state.streams.find_ready_map(|stream| {
-                if let StreamKind::DepthAndTrades { ticker_info, .. } = stream {
-                    Some((*ticker_info, pane_id, *stream))
-                } else {
-                    None
-                }
-            });
-
-            if let Some((ticker_info, pane_id, stream)) = trade_info {
-                let is_binance = matches!(
-                    ticker_info.exchange(),
-                    Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
-                );
-
-                if is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
-
-                    let (task, handle) = Task::sip(
-                        fetch_gapfill_trades(ticker_info, from_time, to_time, data_path),
-                        move |batch| {
-                            let data = FetchedData::Trades {
-                                batch,
-                                until_time: to_time,
-                            };
-                            Message::DistributeFetchedData {
-                                layout_id,
-                                pane_id,
-                                data,
-                                stream,
-                            }
-                        },
-                        move |result| match result {
-                            Ok(()) => Message::ChangePaneStatus(pane_id, pane::Status::Ready),
-                            Err(err) => Message::ErrorOccurred(
-                                Some(pane_id),
-                                DashboardError::Fetch(err.to_string()),
-                            ),
-                        },
-                    )
-                    .abortable();
-
-                    if let pane::Content::Kline { chart, .. } = &mut state.content
-                        && let Some(c) = chart
-                    {
-                        c.set_handle(handle.abort_on_drop());
-                    }
-
-                    return task;
-                }
-            }
-        }
+        // GapFillTrades was merged into FetchRange::Trades (handled above)
     }
 
     Task::none()
@@ -1691,7 +1637,7 @@ fn oi_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane_id,
-        pane::Status::Loading(exchange::fetcher::InfoKind::FetchingOI),
+        pane::Status::Loading(InfoKind::FetchingOI),
     ));
 
     let fetch_task = match stream {
@@ -1731,7 +1677,7 @@ fn kline_fetch_task(
 ) -> Task<Message> {
     let update_status = Task::done(Message::ChangePaneStatus(
         pane_id,
-        pane::Status::Loading(exchange::fetcher::InfoKind::FetchingKlines),
+        pane::Status::Loading(InfoKind::FetchingKlines),
     ));
 
     let fetch_task = match stream {
@@ -1741,14 +1687,13 @@ fn kline_fetch_task(
         } => Task::perform(
             iced::futures::TryFutureExt::map_err(
                 adapter::fetch_klines(ticker_info, timeframe, range),
-                |err| err.to_user_message(),
+                |err| format!("{err}"),
             ),
             move |result| match result {
                 Ok(klines) => {
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
-                        microstructure: None,
                     };
                     Message::DistributeFetchedData {
                         layout_id,
@@ -1772,14 +1717,13 @@ fn kline_fetch_task(
                     threshold_dbps,
                     range,
                 ),
-                |err: AdapterError| err.to_user_message(),
+                |err: AdapterError| format!("{err}"),
             ),
             move |result| match result {
-                Ok((klines, micro)) => {
+                Ok((klines, _micro)) => {
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
-                        microstructure: Some(micro),
                     };
                     Message::DistributeFetchedData {
                         layout_id,
@@ -1820,47 +1764,6 @@ pub fn fetch_trades_batched(
                     latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
 
                     let () = progress.send(batch).await;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-
-        Ok(())
-    })
-}
-
-/// Gap-fill variant: uses `binance::fetch_trades()` which auto-routes to
-/// daily zip archives for completed days (fast bulk download) and falls back
-/// to REST `/aggTrades?startTime=` for today's data.
-fn fetch_gapfill_trades(
-    ticker_info: TickerInfo,
-    from_time: u64,
-    to_time: u64,
-    data_path: PathBuf,
-) -> impl Straw<(), Vec<Trade>, AdapterError> {
-    sipper(async move |mut progress| {
-        let mut latest_trade_t = from_time;
-
-        while latest_trade_t < to_time {
-            match adapter::binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone())
-                .await
-            {
-                Ok(batch) => {
-                    if batch.is_empty() {
-                        break;
-                    }
-
-                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
-
-                    // Filter out trades beyond our target window
-                    let filtered: Vec<Trade> =
-                        batch.into_iter().filter(|t| t.time <= to_time).collect();
-
-                    if filtered.is_empty() {
-                        break;
-                    }
-
-                    let () = progress.send(filtered).await;
                 }
                 Err(err) => return Err(err),
             }

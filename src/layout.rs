@@ -5,7 +5,7 @@ use data::{
     UserTimezone,
     layout::{WindowSpec, pane::Axis},
 };
-use exchange::adapter::{PersistDepth, PersistOdbKline, PersistStreamKind};
+use data::stream::{PersistDepth, PersistStreamKind};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
@@ -231,9 +231,7 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                     .any(|s| matches!(s, PersistStreamKind::DepthAndTrades(_)));
                 if !has_depth
                     && let Some(ticker) = stream_type.iter().find_map(|s| match s {
-                        PersistStreamKind::OdbKline(PersistOdbKline {
-                            ticker, ..
-                        }) => Some(*ticker),
+                        PersistStreamKind::Kline { ticker, .. } => Some(*ticker),
                         _ => None,
                     })
                 {

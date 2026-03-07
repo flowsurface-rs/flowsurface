@@ -289,7 +289,7 @@ impl HeatmapChart {
                     (update_t / aggregate_time) * aggregate_time
                 }
             }
-            Basis::Tick(_) => update_t,
+            Basis::Tick(_) | Basis::Odb(_) => update_t,
         }
     }
 
