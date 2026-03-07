@@ -28,6 +28,7 @@ pub enum FetchedData {
     Klines {
         data: Vec<Kline>,
         req_id: Option<uuid::Uuid>,
+        microstructure: Option<Vec<Option<exchange::adapter::clickhouse::ChMicrostructure>>>,
     },
     OI {
         data: Vec<OpenInterest>,
@@ -403,6 +404,7 @@ pub fn kline_fetch_task(
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
+                        microstructure: None,
                     };
                     FetchUpdate::Data {
                         layout_id,

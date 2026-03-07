@@ -967,6 +967,7 @@ impl Dashboard {
             FetchedData::Klines {
                 data,
                 req_id,
+                microstructure,
             } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
@@ -986,7 +987,7 @@ impl Dashboard {
                                 req_id,
                                 ticker_info,
                                 &data,
-                                None,
+                                microstructure.as_deref(),
                             );
 
                             // Only check staleness once per basis — skip
@@ -1476,9 +1477,10 @@ impl From<fetcher::FetchUpdate> for Message {
                     fetcher::FetchedData::Trades { batch, until_time } => {
                         FetchedData::Trades { batch, until_time }
                     }
-                    fetcher::FetchedData::Klines { data, req_id } => FetchedData::Klines {
+                    fetcher::FetchedData::Klines { data, req_id, microstructure } => FetchedData::Klines {
                         data,
                         req_id,
+                        microstructure,
                     },
                     fetcher::FetchedData::OI { data, req_id } => {
                         FetchedData::OI { data, req_id }
@@ -1694,6 +1696,7 @@ fn kline_fetch_task(
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
+                        microstructure: None,
                     };
                     Message::DistributeFetchedData {
                         layout_id,
@@ -1720,10 +1723,11 @@ fn kline_fetch_task(
                 |err: AdapterError| format!("{err}"),
             ),
             move |result| match result {
-                Ok((klines, _micro)) => {
+                Ok((klines, micro)) => {
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
+                        microstructure: Some(micro),
                     };
                     Message::DistributeFetchedData {
                         layout_id,
