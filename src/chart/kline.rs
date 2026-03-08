@@ -1425,7 +1425,7 @@ impl KlineChart {
                     // last_agg_trade_id into the fresh processor to eliminate the
                     // forming-bar price gap.
                     if !is_gap_fill {
-                        const RING_CAP: usize = 1000;
+                        const RING_CAP: usize = 5000;
                         for trade in trades_buffer {
                             if self.ws_trade_ring.len() >= RING_CAP {
                                 self.ws_trade_ring.pop_front(); // O(1) eviction

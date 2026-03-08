@@ -897,10 +897,18 @@ pub async fn fetch_catchup(
         *SSE_HOST, *SSE_PORT
     );
 
-    let resp = reqwest::get(&url).await?;
+    let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
+        log::error!(
+            "[catchup] request failed: {e} (is_timeout={}, is_connect={}, url={url})",
+            e.is_timeout(),
+            e.is_connect()
+        );
+        AdapterError::FetchError(e)
+    })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        log::error!("[catchup] {symbol}@{threshold_dbps}: HTTP {status} — {body}");
         return Err(AdapterError::ParseError(format!(
             "catchup HTTP {status}: {body}"
         )));
