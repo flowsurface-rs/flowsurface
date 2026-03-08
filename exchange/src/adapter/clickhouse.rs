@@ -829,10 +829,41 @@ pub fn connect_sse_stream(
     })
 }
 
-// -- ODB sidecar HTTP endpoints (Ariadne + gap-fill) --
+// -- Gap-fill: ClickHouse + ODB sidecar endpoints --
+
+/// Query ClickHouse for the `last_agg_trade_id` of the most recent completed bar.
+/// This is the correct starting point for gap-fill — it represents the last trade
+/// committed to a completed bar, not the processor's forming-bar position.
+pub async fn fetch_last_ch_agg_trade_id(
+    symbol: &str,
+    threshold_dbps: u32,
+) -> Result<Option<i64>, AdapterError> {
+    let sql = format!(
+        "SELECT last_agg_trade_id \
+         FROM opendeviationbar_cache.open_deviation_bars \
+         WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
+           AND ouroboros_mode = '{}' \
+         ORDER BY close_time_ms DESC LIMIT 1 \
+         FORMAT JSONEachRow",
+        *OUROBOROS_MODE
+    );
+    let body = query(&sql).await?;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            return Ok(v.get("last_agg_trade_id").and_then(|v| v.as_i64()));
+        }
+    }
+    Ok(None)
+}
 
 /// Query the Ariadne endpoint for the last aggregate trade ID processed by the ODB sidecar.
 /// Uses a 5-source cascade: live processor → checkpoint → CH bars → CH checkpoints → Binance REST.
+/// NOTE: This returns the processor's position (including forming-bar trades), which is AHEAD
+/// of the last completed CH bar. Use `fetch_last_ch_agg_trade_id()` for gap-fill start point.
 pub async fn fetch_ariadne_last_agg_trade_id(
     symbol: String,
     threshold_dbps: u32,
@@ -903,13 +934,15 @@ struct GapFillBatch {
 }
 
 /// Fetch gap-fill trades from the ODB sidecar. Retries up to 3 times on 429.
-/// Uses limit=5000 (v12.61.3 raised cap from 1000 to support Parquet fast path).
+/// Sidecar caps responses at 1000 trades regardless of requested limit.
+const GAP_FILL_BATCH_SIZE: usize = 1000;
+
 async fn fetch_gap_fill_trades(
     symbol: &str,
     from_agg_id: u64,
 ) -> Result<GapFillBatch, AdapterError> {
     let url = format!(
-        "http://{}:{}/trades/gap-fill?symbol={symbol}&from_agg_id={from_agg_id}&limit=5000",
+        "http://{}:{}/trades/gap-fill?symbol={symbol}&from_agg_id={from_agg_id}&limit={GAP_FILL_BATCH_SIZE}",
         *SSE_HOST, *SSE_PORT
     );
 
@@ -949,8 +982,7 @@ async fn fetch_gap_fill_trades(
     Ok(GapFillBatch { trades, partial })
 }
 
-/// Paginated gap-fill: fetches up to 100 batches.
-/// With limit=5000 per batch, max coverage is 500K trades.
+/// Paginated gap-fill: fetches up to 100 batches of 1000 trades each (100K max).
 pub async fn fetch_gap_fill_trades_batched(
     symbol: &str,
     mut from_agg_id: u64,
@@ -975,7 +1007,7 @@ pub async fn fetch_gap_fill_trades_batched(
             );
             break;
         }
-        if count < 5000 {
+        if count < GAP_FILL_BATCH_SIZE {
             break;
         }
         log::info!("[gap-fill] batch {batch_n}: {count} trades, next_from_id={from_agg_id}");

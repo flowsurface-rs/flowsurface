@@ -1027,8 +1027,11 @@ impl Dashboard {
                                 microstructure.as_deref(),
                             );
 
-                            // Ariadne-based gap-fill: query the ODB sidecar for
+                            // Gap-fill: query ClickHouse for last completed bar's
                             // last_agg_trade_id, then gap-fill from that point.
+                            // Uses CH directly (not Ariadne) because Ariadne tracks
+                            // the processor's forming-bar position, which is AHEAD
+                            // of the last committed bar — causing a hidden gap.
                             // Only fire once per pane lifecycle.
                             if !pane_state.staleness_checked
                                 && !matches!(pane_state.status, pane::Status::Stale(_))
@@ -1038,14 +1041,20 @@ impl Dashboard {
                                 let symbol =
                                     adapter::clickhouse::bare_symbol(&ticker_info);
                                 log::info!(
-                                    "[gap-fill] ODB pane={pane_id}: querying ariadne for {symbol}@{threshold_dbps}"
+                                    "[gap-fill] ODB pane={pane_id}: querying CH for last bar's agg_trade_id ({symbol}@{threshold_dbps})"
                                 );
 
                                 return Task::perform(
-                                    adapter::clickhouse::fetch_ariadne_last_agg_trade_id(
-                                        symbol.clone(),
-                                        threshold_dbps,
-                                    ),
+                                    {
+                                        let s = symbol.clone();
+                                        async move {
+                                            adapter::clickhouse::fetch_last_ch_agg_trade_id(
+                                                &s,
+                                                threshold_dbps,
+                                            )
+                                            .await
+                                        }
+                                    },
                                     move |result| match result {
                                         Ok(Some(last_id)) if last_id >= 0 => {
                                             Message::TriggerOdbGapFill {
@@ -1057,7 +1066,7 @@ impl Dashboard {
                                         }
                                         Ok(_) => {
                                             log::info!(
-                                                "[gap-fill] ariadne returned no last_id, skipping gap-fill"
+                                                "[gap-fill] CH returned no last_agg_trade_id, skipping gap-fill"
                                             );
                                             Message::ChangePaneStatus(
                                                 pane_id,
@@ -1066,7 +1075,7 @@ impl Dashboard {
                                         }
                                         Err(e) => {
                                             log::warn!(
-                                                "[gap-fill] ariadne query failed: {e}, skipping gap-fill"
+                                                "[gap-fill] CH query failed: {e}, skipping gap-fill"
                                             );
                                             Message::ChangePaneStatus(
                                                 pane_id,
