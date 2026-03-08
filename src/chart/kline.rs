@@ -2349,15 +2349,17 @@ impl canvas::Program<Message> for KlineChart {
                     } else {
                         0
                     };
-                    // Divergence detection: heatmap data length vs datapoints length
+                    // Divergence detection: heatmap data length vs datapoints length.
+                    // delta=-1 is normal (forming bar has no completed microstructure yet).
+                    // Only |delta| > 1 indicates a real sync issue.
                     if let Some(h) = heatmap_indi {
                         let heatmap_len = h.data_len();
-                        if heatmap_len != total_len {
+                        let delta = heatmap_len as isize - total_len as isize;
+                        if delta.unsigned_abs() > 1 {
                             log::warn!(
                                 "[intensity-diverge] heatmap_data={} != dp_count={} \
-                                 (delta={}) → colors may map to wrong bars",
+                                 (delta={delta}) → colors may map to wrong bars",
                                 heatmap_len, total_len,
-                                heatmap_len as isize - total_len as isize,
                             );
                         }
                     }
