@@ -139,8 +139,6 @@ fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
 pub async fn fetch_ticker_metadata(
     market_type: MarketKind,
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
-    let exchange = exchange_from_market_type(market_type);
-
     let mut ticker_info_map = HashMap::new();
     let url = match market_type {
         MarketKind::Spot => format!("{FETCH_DOMAIN}/v3/exchangeInfo"),
@@ -155,6 +153,8 @@ pub async fn fetch_ticker_metadata(
 
     match market_type {
         MarketKind::Spot => {
+            let exchange = exchange_from_market_type(market_type);
+
             let symbols = exchange_info["symbols"]
                 .as_array()
                 .ok_or_else(|| AdapterError::ParseError("Missing symbols array".to_string()))?;
@@ -226,14 +226,34 @@ pub async fn fetch_ticker_metadata(
                     .as_str()
                     .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
 
-                if !is_symbol_supported(symbol, exchange, true) {
+                let Some(quote_asset) = item["quoteCoin"].as_str() else {
+                    return Err(AdapterError::ParseError("Missing quoteCoin".to_string()));
+                };
+
+                if quote_asset != "USDT" && quote_asset != "USD" {
                     continue;
                 }
 
-                if let Some(quote_asset) = item["quoteCoin"].as_str()
-                    && quote_asset != "USDT"
-                    && quote_asset != "USD"
-                {
+                let settle_asset = item["settleCoin"]
+                    .as_str()
+                    .ok_or_else(|| AdapterError::ParseError("Missing settleCoin".to_string()))?;
+
+                let base_asset = item["baseCoin"]
+                    .as_str()
+                    .ok_or_else(|| AdapterError::ParseError("Missing baseCoin".to_string()))?;
+
+                let market_kind = if settle_asset == base_asset {
+                    MarketKind::InversePerps
+                } else if settle_asset == quote_asset {
+                    MarketKind::LinearPerps
+                } else {
+                    return Err(AdapterError::ParseError(
+                        "Unknown contract type".to_string(),
+                    ));
+                };
+                let exchange = exchange_from_market_type(market_kind);
+
+                if !is_symbol_supported(symbol, exchange, true) {
                     continue;
                 }
 
