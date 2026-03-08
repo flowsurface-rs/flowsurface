@@ -141,6 +141,8 @@ async fn validate_schema() {
         "individual_trade_count",
         "ofi",
         "trade_intensity",
+        "first_agg_trade_id",
+        "last_agg_trade_id",
     ];
     let col_sql = "SELECT name FROM system.columns \
                    WHERE database = 'opendeviationbar_cache' AND table = 'open_deviation_bars' \

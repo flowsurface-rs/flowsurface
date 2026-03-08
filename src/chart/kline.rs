@@ -1499,13 +1499,17 @@ impl KlineChart {
                                     );
 
                                     tick_aggr.replace_or_append_kline(&kline);
-                                    // Attach microstructure to the newly appended bar
+                                    // Attach microstructure + agg_trade_id range
                                     if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
                                         last_dp.microstructure = Some(OdbMicrostructure {
                                             trade_count: micro.trade_count,
                                             ofi: micro.ofi,
                                             trade_intensity: micro.trade_intensity,
                                         });
+                                        last_dp.agg_trade_id_range = Some((
+                                            completed.first_agg_trade_id as u64,
+                                            completed.last_agg_trade_id as u64,
+                                        ));
                                     }
                                     // Track provisional bars for cleanup on SSE/CH delivery
                                     if sse_enabled() && sse_connected() {
@@ -3239,7 +3243,8 @@ fn draw_crosshair_tooltip(
 
         // Row 4: agg_trade_id range (ODB bars only)
         let agg_id_line: Option<String> = agg_id_range.map(|(first, last)| {
-            format!("ID {first}  →  {last}   (Δ{})", last.saturating_sub(first))
+            let span = last.saturating_sub(first) + 1;
+            format!("ID {first}  →  {last}   (n={span})")
         });
 
         let timing_width = timing_lines
