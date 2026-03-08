@@ -856,10 +856,23 @@ pub async fn fetch_ariadne_last_agg_trade_id(
     } else {
         log::info!("[ariadne] {symbol}@{threshold_dbps}: last_id={last_id:?} source={source}");
     }
+    // v12.61.3+: log sources_tried diagnostics when live_processor wasn't used
+    if source != "live_processor"
+        && let Some(sources) = resp.get("sources_tried").and_then(|v| v.as_array())
+    {
+        for s in sources {
+            let src = s.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let reason = s.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            if status != "hit" {
+                log::info!("[ariadne]   {src}: {status} ({reason})");
+            }
+        }
+    }
     Ok(last_id)
 }
 
-/// Binance-compatible gap-fill response from ODB sidecar.
+/// Binance-compatible gap-fill trade from ODB sidecar.
 #[derive(Deserialize)]
 struct GapFillTrade {
     #[serde(rename = "a")]
@@ -874,13 +887,29 @@ struct GapFillTrade {
     is_buyer_maker: bool,
 }
 
+/// v12.61.3+ dict response: `{"trades": [...], "partial": bool, "count": N}`.
+#[derive(Deserialize)]
+struct GapFillResponse {
+    trades: Vec<GapFillTrade>,
+    #[serde(default)]
+    partial: bool,
+}
+
+/// Result of a single gap-fill batch fetch.
+struct GapFillBatch {
+    trades: Vec<Trade>,
+    /// If true, the sidecar's REST bridge failed — coverage may be incomplete.
+    partial: bool,
+}
+
 /// Fetch gap-fill trades from the ODB sidecar. Retries up to 3 times on 429.
+/// Uses limit=5000 (v12.61.3 raised cap from 1000 to support Parquet fast path).
 async fn fetch_gap_fill_trades(
     symbol: &str,
     from_agg_id: u64,
-) -> Result<Vec<Trade>, AdapterError> {
+) -> Result<GapFillBatch, AdapterError> {
     let url = format!(
-        "http://{}:{}/trades/gap-fill?symbol={symbol}&from_agg_id={from_agg_id}&limit=1000",
+        "http://{}:{}/trades/gap-fill?symbol={symbol}&from_agg_id={from_agg_id}&limit=5000",
         *SSE_HOST, *SSE_PORT
     );
 
@@ -904,8 +933,10 @@ async fn fetch_gap_fill_trades(
         )));
     }
 
-    let trades: Vec<GapFillTrade> = resp.json().await?;
-    Ok(trades
+    let gap_resp: GapFillResponse = resp.json().await?;
+    let partial = gap_resp.partial;
+    let trades = gap_resp
+        .trades
         .into_iter()
         .map(|t| Trade {
             time: t.time,
@@ -914,26 +945,37 @@ async fn fetch_gap_fill_trades(
             qty: Qty::from(t.qty),
             agg_trade_id: Some(t.agg_trade_id),
         })
-        .collect())
+        .collect();
+    Ok(GapFillBatch { trades, partial })
 }
 
-/// Paginated gap-fill: fetches up to 100 batches (100K trades max).
+/// Paginated gap-fill: fetches up to 100 batches.
+/// With limit=5000 per batch, max coverage is 500K trades.
 pub async fn fetch_gap_fill_trades_batched(
     symbol: &str,
     mut from_agg_id: u64,
 ) -> Result<Vec<Trade>, AdapterError> {
     let mut all = Vec::new();
     for batch_n in 0..100u32 {
-        let trades = fetch_gap_fill_trades(symbol, from_agg_id).await?;
-        if trades.is_empty() {
+        let batch = fetch_gap_fill_trades(symbol, from_agg_id).await?;
+        if batch.trades.is_empty() {
             break;
         }
-        let count = trades.len();
-        if let Some(last) = trades.last() {
+        let count = batch.trades.len();
+        if let Some(last) = batch.trades.last() {
             from_agg_id = last.agg_trade_id.unwrap_or(from_agg_id) + 1;
         }
-        all.extend(trades);
-        if count < 1000 {
+        all.extend(batch.trades);
+        // partial=true means the sidecar's REST bridge failed — coverage incomplete
+        // but we still have the Parquet portion, so continue with what we got.
+        if batch.partial {
+            log::warn!(
+                "[gap-fill] batch {batch_n}: {count} trades (partial — REST bridge failed), \
+                 next_from_id={from_agg_id}"
+            );
+            break;
+        }
+        if count < 5000 {
             break;
         }
         log::info!("[gap-fill] batch {batch_n}: {count} trades, next_from_id={from_agg_id}");

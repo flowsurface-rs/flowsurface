@@ -1072,7 +1072,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2204,7 +2204,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3031,9 +3031,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-client"
-version = "12.61.2"
+version = "12.61.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a1413066e0ec4ebd1b2a25b26dcf8cedbc11096575bbe3e89cc54863f1c17f8"
+checksum = "672aa3a31ac5411b65255136db366d8eb8daece5722f2d8f55d7fd43274835db"
 dependencies = [
  "bytes",
  "eventsource-client",
@@ -3049,9 +3049,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-core"
-version = "12.61.2"
+version = "12.61.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53ad650ecacb9681b52ceaa49d42110a4e9ca79c39aef4dfaf440e9d33556fd5"
+checksum = "c40a088d30eea9075671a2fe47f6ae44555d8c1d183800d49a2a9e603b61d624"
 dependencies = [
  "chrono",
  "foldhash 0.2.0",
@@ -3444,7 +3444,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3819,7 +3819,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5346,7 +5346,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
