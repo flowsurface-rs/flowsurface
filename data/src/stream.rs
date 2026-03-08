@@ -7,6 +7,12 @@ pub enum PersistStreamKind {
         ticker: Ticker,
         timeframe: Timeframe,
     },
+    /// ODB kline stream. Stored separately from `Kline` to preserve
+    /// `threshold_dbps` across save/load cycles.
+    RangeBarKline {
+        ticker: Ticker,
+        threshold_dbps: u32,
+    },
     Depth(PersistDepth),
     Trades {
         ticker: Ticker,
@@ -47,9 +53,12 @@ impl From<StreamKind> for PersistStreamKind {
             StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
                 ticker: ticker_info.ticker,
             },
-            StreamKind::OdbKline { ticker_info, .. } => PersistStreamKind::Kline {
+            StreamKind::OdbKline {
+                ticker_info,
+                threshold_dbps,
+            } => PersistStreamKind::RangeBarKline {
                 ticker: ticker_info.ticker,
-                timeframe: exchange::Timeframe::M1,
+                threshold_dbps,
             },
         }
     }
@@ -68,6 +77,17 @@ impl PersistStreamKind {
                     vec![StreamKind::Kline {
                         ticker_info: ti,
                         timeframe,
+                    }]
+                })
+                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
+            PersistStreamKind::RangeBarKline {
+                ticker,
+                threshold_dbps,
+            } => resolver(&ticker)
+                .map(|ti| {
+                    vec![StreamKind::OdbKline {
+                        ticker_info: ti,
+                        threshold_dbps,
                     }]
                 })
                 .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),

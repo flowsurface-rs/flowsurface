@@ -231,7 +231,8 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                     .any(|s| matches!(s, PersistStreamKind::DepthAndTrades(_)));
                 if !has_depth
                     && let Some(ticker) = stream_type.iter().find_map(|s| match s {
-                        PersistStreamKind::Kline { ticker, .. } => Some(*ticker),
+                        PersistStreamKind::Kline { ticker, .. }
+                        | PersistStreamKind::RangeBarKline { ticker, .. } => Some(*ticker),
                         _ => None,
                     })
                 {

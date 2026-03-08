@@ -31,7 +31,7 @@ use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
 use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
@@ -248,6 +248,19 @@ pub struct KlineChart {
     /// Kline chart configuration (e.g. OFI EMA period).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
+    // ── Production telemetry fields ──
+    /// WS trade count since last throughput log (reset every 30s).
+    ws_trade_count_window: u64,
+    /// Timestamp (ms) of last throughput log.
+    ws_throughput_last_log_ms: u64,
+    /// Last seen agg_trade_id from WS trades (for continuity checks).
+    last_ws_agg_trade_id: Option<u64>,
+    /// Count of WS trades deduped by fence since gap-fill.
+    dedup_total_skipped: u64,
+    /// Max observed trade latency (wall_clock - trade_time) in ms, reset each log window.
+    max_trade_latency_ms: i64,
+    /// Count of CH bar reconciliation events since startup.
+    ch_reconcile_count: u32,
 }
 
 impl KlineChart {
@@ -352,6 +365,12 @@ impl KlineChart {
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
                     kline_config,
+                    ws_trade_count_window: 0,
+                    ws_throughput_last_log_ms: 0,
+                    last_ws_agg_trade_id: None,
+                    dedup_total_skipped: 0,
+                    max_trade_latency_ms: 0,
+                    ch_reconcile_count: 0,
                 }
             }
             Basis::Tick(interval) => {
@@ -420,6 +439,12 @@ impl KlineChart {
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
                     kline_config,
+                    ws_trade_count_window: 0,
+                    ws_throughput_last_log_ms: 0,
+                    last_ws_agg_trade_id: None,
+                    dedup_total_skipped: 0,
+                    max_trade_latency_ms: 0,
+                    ch_reconcile_count: 0,
                 }
             }
             Basis::Odb(threshold_dbps) => {
@@ -514,6 +539,12 @@ impl KlineChart {
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
                     kline_config,
+                    ws_trade_count_window: 0,
+                    ws_throughput_last_log_ms: 0,
+                    last_ws_agg_trade_id: None,
+                    dedup_total_skipped: 0,
+                    max_trade_latency_ms: 0,
+                    ch_reconcile_count: 0,
                 }
             }
         }
@@ -674,6 +705,12 @@ impl KlineChart {
             gap_fill_fence_agg_id: None,
             buffered_ch_klines: Vec::new(),
             kline_config,
+            ws_trade_count_window: 0,
+            ws_throughput_last_log_ms: 0,
+            last_ws_agg_trade_id: None,
+            dedup_total_skipped: 0,
+            max_trade_latency_ms: 0,
+            ch_reconcile_count: 0,
         }
     }
 
@@ -747,7 +784,20 @@ impl KlineChart {
 
                     // ODB streaming update — reconcile ClickHouse completed bar
                     // with locally-constructed forming bar. ClickHouse is authoritative.
+                    let was_replace = tick_aggr
+                        .datapoints
+                        .last()
+                        .is_some_and(|dp| dp.kline.time == kline.time);
                     tick_aggr.replace_or_append_kline(kline);
+                    self.ch_reconcile_count += 1;
+                    log::info!(
+                        "[CH-reconcile] #{}: {} bar ts={} close={:.2} dp_count={}",
+                        self.ch_reconcile_count,
+                        if was_replace { "REPLACE" } else { "APPEND" },
+                        kline.time,
+                        kline.close.to_f32(),
+                        tick_aggr.datapoints.len(),
+                    );
 
                     self.indicators
                         .values_mut()
@@ -1200,6 +1250,10 @@ impl KlineChart {
                     // gap-fill data.  Gap-fill batches pass is_gap_fill=true to
                     // bypass this guard.
                     if self.fetching_trades.0 && !is_gap_fill {
+                        log::trace!(
+                            "[gap-fill] blocking {} WS trades during gap-fill",
+                            trades_buffer.len(),
+                        );
                         // Still update the live price line from the latest trade
                         // so the chart stays in sync with the widget during gap-fill.
                         if let Some(last_trade) = trades_buffer.last() {
@@ -1227,10 +1281,13 @@ impl KlineChart {
                             })
                             .copied()
                             .collect();
-                        if filtered.len() < before {
+                        let skipped = before - filtered.len();
+                        if skipped > 0 {
+                            self.dedup_total_skipped += skipped as u64;
                             log::info!(
-                                "[dedup] skipped {} WS trades <= fence {fence_id}",
-                                before - filtered.len()
+                                "[dedup] skipped {skipped} WS trades <= fence {fence_id} \
+                                 (total_skipped={})",
+                                self.dedup_total_skipped,
                             );
                         }
                         if !filtered.is_empty() {
@@ -1243,6 +1300,71 @@ impl KlineChart {
                         // to avoid duplicating the processor logic below.
                         self.insert_trades_inner(&filtered, false);
                         return;
+                    }
+
+                    // ── Production telemetry: throughput, latency, continuity ──
+                    {
+                        let now_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+
+                        // Initialize throughput window on first call
+                        if self.ws_throughput_last_log_ms == 0 {
+                            self.ws_throughput_last_log_ms = now_ms;
+                        }
+
+                        self.ws_trade_count_window += trades_buffer.len() as u64;
+
+                        // Track agg_trade_id continuity + latency (live WS only,
+                        // skip for gap-fill which has stale timestamps by design)
+                        if !is_gap_fill {
+                            for trade in trades_buffer {
+                                if let Some(id) = trade.agg_trade_id {
+                                    if let Some(prev_id) = self.last_ws_agg_trade_id {
+                                        let gap = id.saturating_sub(prev_id);
+                                        if gap > 1 {
+                                            log::warn!(
+                                                "[telemetry] agg_trade_id GAP: prev={prev_id} \
+                                                 curr={id} missing={} trades",
+                                                gap - 1,
+                                            );
+                                        }
+                                    }
+                                    self.last_ws_agg_trade_id = Some(id);
+                                }
+                                // Trade latency: wall_clock - exchange trade_time
+                                let latency = now_ms as i64 - trade.time as i64;
+                                if latency > self.max_trade_latency_ms {
+                                    self.max_trade_latency_ms = latency;
+                                }
+                            }
+                        }
+
+                        // Log throughput + latency summary every 30 seconds
+                        let elapsed = now_ms.saturating_sub(self.ws_throughput_last_log_ms);
+                        if elapsed >= 30_000 {
+                            let tps = if elapsed > 0 {
+                                (self.ws_trade_count_window as f64 / elapsed as f64) * 1000.0
+                            } else {
+                                0.0
+                            };
+                            log::info!(
+                                "[telemetry] WS throughput: {:.1} trades/sec ({} trades in {:.1}s) \
+                                 max_latency={}ms last_agg_id={:?} dedup_skipped={} \
+                                 ch_reconcile={}",
+                                tps,
+                                self.ws_trade_count_window,
+                                elapsed as f64 / 1000.0,
+                                self.max_trade_latency_ms,
+                                self.last_ws_agg_trade_id,
+                                self.dedup_total_skipped,
+                                self.ch_reconcile_count,
+                            );
+                            self.ws_trade_count_window = 0;
+                            self.ws_throughput_last_log_ms = now_ms;
+                            self.max_trade_latency_ms = 0;
+                        }
                     }
 
                     // In-process ODB computation via opendeviationbar-core.

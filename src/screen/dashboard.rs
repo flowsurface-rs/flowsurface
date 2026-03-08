@@ -1190,19 +1190,15 @@ impl Dashboard {
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(depth, depth_update_t);
-                            }
+                        pane::Content::Heatmap {
+                            chart: Some(c), ..
+                        } => {
+                            c.insert_depth(depth, depth_update_t);
                         }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(panel) = panel {
-                                panel.insert_depth(depth, depth_update_t);
-                            }
+                        pane::Content::Ladder(Some(panel)) => {
+                            panel.insert_depth(depth, depth_update_t);
                         }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
-                        }
+                        _ => {}
                     }
                     found_match = true;
                 }
@@ -1228,29 +1224,23 @@ impl Dashboard {
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer, update_t);
-                            }
+                        pane::Content::Heatmap {
+                            chart: Some(c), ..
+                        } => {
+                            c.insert_trades(buffer, update_t);
                         }
-                        pane::Content::Kline { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer);
-                            }
+                        pane::Content::Kline {
+                            chart: Some(c), ..
+                        } => {
+                            c.insert_trades(buffer);
                         }
-                        pane::Content::TimeAndSales(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_buffer(buffer);
-                            }
+                        pane::Content::TimeAndSales(Some(p)) => {
+                            p.insert_buffer(buffer);
                         }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_trades(buffer);
-                            }
+                        pane::Content::Ladder(Some(p)) => {
+                            p.insert_trades(buffer);
                         }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
-                        }
+                        _ => {}
                     }
                     found_match = true;
                 }
