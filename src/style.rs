@@ -35,6 +35,7 @@ pub enum Icon {
     BybitLogo,
     HyperliquidLogo,
     OkexLogo,
+    MexcLogo,
     Search,
     Sort,
     SortDesc,
@@ -71,6 +72,7 @@ impl From<Icon> for char {
             Icon::BinanceLogo => '\u{E809}',
             Icon::HyperliquidLogo => '\u{E813}',
             Icon::OkexLogo => '\u{E81F}',
+            Icon::MexcLogo => '\u{E806}', // TODO : add mexc logo to assets/fonts/icons.ttf
             Icon::Cog => '\u{E810}',
             Icon::Sort => '\u{F0DC}',
             Icon::SortDesc => '\u{F0DD}',
@@ -108,6 +110,7 @@ pub fn exchange_icon(exchange: Exchange) -> Icon {
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Icon::HyperliquidLogo,
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Icon::OkexLogo,
+        Exchange::MexcLinear | Exchange::MexcInverse | Exchange::MexcSpot => Icon::MexcLogo,
     }
 }
 
