@@ -730,6 +730,17 @@ impl KlineChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline, bar_last_agg_id: Option<u64>) {
+        if self.chart.basis.is_odb() {
+            log::debug!(
+                "[SSE-dispatch] update_latest_kline: ts={} bar_last_agg_id={:?} \
+                 basis={:?} fetching_trades={} pending_local_bars={}",
+                kline.time,
+                bar_last_agg_id,
+                self.chart.basis,
+                self.fetching_trades.0,
+                self.pending_local_bars,
+            );
+        }
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[*kline]);

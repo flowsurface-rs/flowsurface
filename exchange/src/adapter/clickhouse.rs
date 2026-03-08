@@ -897,51 +897,89 @@ pub async fn fetch_catchup(
         *SSE_HOST, *SSE_PORT
     );
 
-    let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
-        log::error!(
-            "[catchup] request failed: {e} (is_timeout={}, is_connect={}, url={url})",
-            e.is_timeout(),
-            e.is_connect()
-        );
-        AdapterError::FetchError(e)
-    })?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        log::error!("[catchup] {symbol}@{threshold_dbps}: HTTP {status} — {body}");
-        return Err(AdapterError::ParseError(format!(
-            "catchup HTTP {status}: {body}"
-        )));
+    // Retry loop for transient 429 rate limiting from the sidecar.
+    // Two ODB panes (e.g. BPR25 + BPR50) often fire catchup simultaneously;
+    // the sidecar rate-limits the second request with a 5s retry window.
+    let mut last_error = None;
+    for attempt in 0..3u32 {
+        let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
+            log::error!(
+                "[catchup] request failed: {e} (is_timeout={}, is_connect={}, url={url})",
+                e.is_timeout(),
+                e.is_connect()
+            );
+            AdapterError::FetchError(e)
+        })?;
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let body = resp.text().await.unwrap_or_default();
+            // Parse "retry after Ns" from response body (e.g. {"error": "rate limited, retry after 5s"})
+            let delay_secs = body
+                .find("retry after ")
+                .and_then(|i| {
+                    let rest = &body[i + 12..];
+                    rest.trim_end_matches(|c: char| !c.is_ascii_digit())
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(5)
+                .clamp(1, 30);
+            log::info!(
+                "[catchup] {symbol}@{threshold_dbps}: 429 rate limited, retrying in {delay_secs}s (attempt {}/3)",
+                attempt + 1
+            );
+            last_error = Some(format!("catchup HTTP 429 Too Many Requests: {body}"));
+            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::error!("[catchup] {symbol}@{threshold_dbps}: HTTP {status} — {body}");
+            return Err(AdapterError::ParseError(format!(
+                "catchup HTTP {status}: {body}"
+            )));
+        }
+
+        // Success — parse JSON and return
+        let catchup: CatchupResponse = resp.json().await?;
+        if catchup.partial {
+            log::warn!(
+                "[catchup] {symbol}@{threshold_dbps}: partial coverage ({} trades)",
+                catchup.count
+            );
+        } else {
+            log::info!(
+                "[catchup] {symbol}@{threshold_dbps}: {} trades, through_agg_id={:?}",
+                catchup.count,
+                catchup.through_agg_id
+            );
+        }
+
+        let trades = catchup
+            .trades
+            .into_iter()
+            .map(|t| Trade {
+                time: t.time,
+                is_sell: t.is_buyer_maker,
+                price: Price::from_f32(t.price),
+                qty: Qty::from(t.qty),
+                agg_trade_id: Some(t.agg_trade_id),
+            })
+            .collect();
+
+        return Ok(CatchupResult {
+            trades,
+            through_agg_id: catchup.through_agg_id,
+        });
     }
 
-    let catchup: CatchupResponse = resp.json().await?;
-    if catchup.partial {
-        log::warn!(
-            "[catchup] {symbol}@{threshold_dbps}: partial coverage ({} trades)",
-            catchup.count
-        );
-    } else {
-        log::info!(
-            "[catchup] {symbol}@{threshold_dbps}: {} trades, through_agg_id={:?}",
-            catchup.count,
-            catchup.through_agg_id
-        );
-    }
-
-    let trades = catchup
-        .trades
-        .into_iter()
-        .map(|t| Trade {
-            time: t.time,
-            is_sell: t.is_buyer_maker,
-            price: Price::from_f32(t.price),
-            qty: Qty::from(t.qty),
-            agg_trade_id: Some(t.agg_trade_id),
-        })
-        .collect();
-
-    Ok(CatchupResult {
-        trades,
-        through_agg_id: catchup.through_agg_id,
-    })
+    // All retry attempts exhausted
+    Err(AdapterError::ParseError(
+        last_error.unwrap_or_else(|| "catchup: all retry attempts failed".to_string()),
+    ))
 }

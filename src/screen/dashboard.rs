@@ -1142,6 +1142,22 @@ impl Dashboard {
 
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
+                if matches!(stream, StreamKind::OdbKline { .. }) {
+                    let matched = pane_state.matches_stream(stream);
+                    let content_tag = match &pane_state.content {
+                        pane::Content::Kline { chart: Some(_), .. } => "Kline(Some)",
+                        pane::Content::Kline { chart: None, .. } => "Kline(None)",
+                        pane::Content::Heatmap { .. } => "Heatmap",
+                        pane::Content::Comparison(_) => "Comparison",
+                        pane::Content::TimeAndSales(_) => "TimeAndSales",
+                        pane::Content::Ladder(_) => "Ladder",
+                        pane::Content::Starter => "Starter",
+                    };
+                    log::debug!(
+                        "[kline-dispatch] stream={:?} matched={} content={} pane_streams={:?}",
+                        stream, matched, content_tag, pane_state.streams,
+                    );
+                }
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
