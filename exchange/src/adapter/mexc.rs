@@ -1,4 +1,8 @@
-use crate::{Volume, adapter::{TRADE_BUCKET_INTERVAL, flush_trade_buffers}, unit::qty::{QtyNormalization, RawQtyUnit}};
+use crate::{
+    Volume,
+    adapter::{TRADE_BUCKET_INTERVAL, flush_trade_buffers},
+    unit::qty::{QtyNormalization, RawQtyUnit},
+};
 
 use super::{
     super::{
@@ -9,15 +13,15 @@ use super::{
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self},
-        unit::qty::{volume_size_unit},
+        unit::qty::volume_size_unit,
     },
     AdapterError, Event, StreamTicksize,
 };
 
 use fastwebsockets::{FragmentCollector, Frame, OpCode};
+use futures::{SinkExt, Stream};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use futures::{SinkExt, Stream};
 use rustc_hash::FxHashMap;
 use serde_json::{Value, json};
 use sonic_rs::{Deserialize, JsonValueTrait, to_object_iter_unchecked};
@@ -140,12 +144,14 @@ pub async fn fetch_ticker_metadata(
     let mut ticker_info_map = HashMap::new();
     let url = match market_type {
         MarketKind::Spot => format!("{FETCH_DOMAIN}/v3/exchangeInfo"),
-        MarketKind::InversePerps | MarketKind::LinearPerps => format!("{FETCH_DOMAIN}/v1/contract/detail"),
+        MarketKind::InversePerps | MarketKind::LinearPerps => {
+            format!("{FETCH_DOMAIN}/v1/contract/detail")
+        }
     };
     let response_text = limiter::http_request(&url, None, None).await?;
-    let exchange_info: Value = sonic_rs::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}")))?;
-
+    let exchange_info: Value = sonic_rs::from_str(&response_text).map_err(|e| {
+        AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}"))
+    })?;
 
     match market_type {
         MarketKind::Spot => {
@@ -181,7 +187,9 @@ pub async fn fetch_ticker_metadata(
                 // and quoteAssetPrecision for price precision
                 let min_qty = item["baseSizePrecision"]
                     .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Missing baseSizePrecision".to_string()))?
+                    .ok_or_else(|| {
+                        AdapterError::ParseError("Missing baseSizePrecision".to_string())
+                    })?
                     .parse::<f32>()
                     .map_err(|_| {
                         AdapterError::ParseError("Failed to parse baseSizePrecision".to_string())
@@ -189,9 +197,10 @@ pub async fn fetch_ticker_metadata(
 
                 // Calculate min_ticksize from quoteAssetPrecision
                 // e.g., precision 2 means ticksize 0.01
-                let quote_asset_precision = item["quoteAssetPrecision"]
-                    .as_i64()
-                    .ok_or_else(|| AdapterError::ParseError("Missing quoteAssetPrecision".to_string()))?;
+                let quote_asset_precision =
+                    item["quoteAssetPrecision"].as_i64().ok_or_else(|| {
+                        AdapterError::ParseError("Missing quoteAssetPrecision".to_string())
+                    })?;
 
                 let min_ticksize = 10f32.powi(-quote_asset_precision as i32);
 
@@ -205,10 +214,11 @@ pub async fn fetch_ticker_metadata(
                 AdapterError::ParseError("Result list is not an array".to_string())
             })?;
 
-
             for item in result_list {
                 // Status: 0 enabled, 1 delivery, 2 delivered, 3 offline, 4 paused
-                if let Some(state) = item["state"].as_i64() && state != 0 {
+                if let Some(state) = item["state"].as_i64()
+                    && state != 0
+                {
                     continue;
                 }
 
@@ -227,15 +237,13 @@ pub async fn fetch_ticker_metadata(
                     continue;
                 }
 
-                let min_qty = item["minVol"]
-                    .as_f64()
-                    .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?
-                    as f32;
+                let min_qty = item["minVol"].as_f64().ok_or_else(|| {
+                    AdapterError::ParseError("Missing minVol (min_qty)".to_string())
+                })? as f32;
 
-                let min_ticksize = item["priceUnit"]
-                    .as_f64()
-                    .ok_or_else(|| AdapterError::ParseError("Missing priceUnit (ticksize)".to_string()))?
-                    as f32;
+                let min_ticksize = item["priceUnit"].as_f64().ok_or_else(|| {
+                    AdapterError::ParseError("Missing priceUnit (ticksize)".to_string())
+                })? as f32;
 
                 let contract_size = item["contractSize"].as_f64().map(|v| v as f32);
 
@@ -256,12 +264,14 @@ pub async fn fetch_ticker_prices(
     let mut ticker_prices_map = HashMap::new();
     let url = match market_type {
         MarketKind::Spot => format!("{FETCH_DOMAIN}/v3/ticker/24hr"),
-        MarketKind::InversePerps | MarketKind::LinearPerps => format!("{FETCH_DOMAIN}/v1/contract/ticker"),
+        MarketKind::InversePerps | MarketKind::LinearPerps => {
+            format!("{FETCH_DOMAIN}/v1/contract/ticker")
+        }
     };
     let response_text = limiter::http_request(&url, None, None).await?;
 
-    let parsed_response: Value = sonic_rs::from_str(&response_text)
-        .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    let parsed_response: Value =
+        sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
     match market_type {
         MarketKind::Spot => {
@@ -288,15 +298,21 @@ pub async fn fetch_ticker_prices(
                     .as_str()
                     .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?
                     .parse::<f32>()
-                    .map_err(|e| AdapterError::ParseError(format!("Failed to parse last price: {e}")))?;
+                    .map_err(|e| {
+                        AdapterError::ParseError(format!("Failed to parse last price: {e}"))
+                    })?;
 
                 // Parse priceChangePercent - 24h price change percentage (e.g., "0.00400048" = 0.4%)
                 let price_change_percent = item["priceChangePercent"]
                     .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Price change percent not found".to_string()))?
+                    .ok_or_else(|| {
+                        AdapterError::ParseError("Price change percent not found".to_string())
+                    })?
                     .parse::<f32>()
                     .map_err(|e| {
-                        AdapterError::ParseError(format!("Failed to parse price change percent: {e}"))
+                        AdapterError::ParseError(format!(
+                            "Failed to parse price change percent: {e}"
+                        ))
                     })?;
 
                 let volume = item["volume"]
@@ -354,7 +370,7 @@ pub async fn fetch_ticker_prices(
                     .as_f64()
                     .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?
                     as f32;
-                
+
                 let volume_24 = item["volume24"]
                     .as_f64()
                     .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?
@@ -488,13 +504,12 @@ pub async fn fetch_klines(
         }
     }
     let response_text = limiter::http_request(&url, None, None).await?;
-    
 
     // Parse the klines based on market type
     let klines_result: Result<Vec<Kline>, AdapterError> = match market_type {
         MarketKind::Spot => {
-            let parsed_response: Vec<KlineSpot> =
-                sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
+            let parsed_response: Vec<KlineSpot> = sonic_rs::from_str(&response_text)
+                .map_err(|e| AdapterError::ParseError(e.to_string()))?;
             let klines: Result<Vec<Kline>, AdapterError> = parsed_response
                 .iter()
                 .map(|kline| {
@@ -509,12 +524,13 @@ pub async fn fetch_klines(
                         ticker_info.min_ticksize,
                     );
                     Ok(res)
-                }).collect();
+                })
+                .collect();
             klines
         }
         MarketKind::LinearPerps | MarketKind::InversePerps => {
-            let parsed_response: FuturesApiResponse =
-                sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
+            let parsed_response: FuturesApiResponse = sonic_rs::from_str(&response_text)
+                .map_err(|e| AdapterError::ParseError(e.to_string()))?;
             // Futures returns { "success": true, "code": 0, "data": { "time": [...], "open": [...], ... } }
             let data = &parsed_response.data;
             let times = data["time"]
@@ -564,7 +580,6 @@ pub async fn fetch_klines(
                         AdapterError::ParseError("Vol value not found".to_string())
                     })? as f32;
 
-
                     let normalized_vol = qty_norm.normalize_qty(volume * contract_size, close);
 
                     Ok(Kline::new(
@@ -596,17 +611,13 @@ pub async fn fetch_depth_snapshot(
         AdapterError::ParseError(e.to_string())
     })?;
 
-    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let _size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let contract_size = ticker_info.contract_size.map(f32::from).unwrap_or(1.0);
     let parse_orders = |arr: &Vec<FuturesDepthItem>| -> Vec<DeOrder> {
         arr.iter()
             .map(|x| DeOrder {
                 price: x.price,
-                qty: if size_in_quote_ccy {
-                    x.contract_num * contract_size
-                } else {
-                    x.contract_num * contract_size
-                },
+                qty: x.contract_num * contract_size,
             })
             .collect()
     };
@@ -623,7 +634,6 @@ pub async fn fetch_depth_snapshot(
         asks,
     })
 }
-
 
 pub fn connect_depth_stream(
     ticker_info: TickerInfo,
@@ -851,7 +861,6 @@ pub fn connect_trade_stream(
             })
             .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
-
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
 
@@ -1024,7 +1033,6 @@ pub fn connect_trade_stream(
     })
 }
 
-
 #[derive(Debug)]
 enum StreamName {
     Depth,
@@ -1040,7 +1048,7 @@ impl StreamName {
     fn from_topic(topic: &str) -> Self {
         let parts: Vec<&str> = topic.split('.').collect();
 
-        if parts.get(0) == Some(&"pong") {
+        if parts.first() == Some(&"pong") {
             return StreamName::Pong;
         }
 
@@ -1083,9 +1091,14 @@ fn feed_de(
                     .ok_or_else(|| AdapterError::ParseError("ts not found".to_string()))?,
             );
         } else if k == "symbol" {
-            let ticker_str = v.as_str().ok_or_else(|| AdapterError::ParseError("symbol does not exist".to_string()))?;
-            if topic_ticker == None {
-                topic_ticker = Some(Ticker::new(ticker_str, exchange_from_market_type(market_type)));
+            let ticker_str = v
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("symbol does not exist".to_string()))?;
+            if topic_ticker.is_none() {
+                topic_ticker = Some(Ticker::new(
+                    ticker_str,
+                    exchange_from_market_type(market_type),
+                ));
             }
         }
     }
@@ -1107,7 +1120,11 @@ fn feed_de(
                 let trade_ticker = topic_ticker.ok_or_else(|| {
                     AdapterError::ParseError("Missing ticker for trade data".to_string())
                 })?;
-                return Ok(StreamData::Trade(trade_ticker, deals_data, ts.unwrap_or_default()));
+                return Ok(StreamData::Trade(
+                    trade_ticker,
+                    deals_data,
+                    ts.unwrap_or_default(),
+                ));
             }
             Some(StreamName::Depth) => {
                 let depth = sonic_rs::from_str(&data)
@@ -1173,7 +1190,7 @@ pub fn connect_kline_stream(
 
         let ticker_info_map = streams
             .iter()
-            .map(|(ticker_info, _)|
+            .map(|(ticker_info, _)| {
                 (
                     ticker_info.ticker,
                     (
@@ -1185,7 +1202,7 @@ pub fn connect_kline_stream(
                         ),
                     ),
                 )
-            )
+            })
             .collect::<HashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
         loop {
@@ -1239,13 +1256,20 @@ pub fn connect_kline_stream(
                                 for de_kline in &de_kline_vec {
                                     if let Some(timeframe) = string_to_timeframe(&de_kline.interval)
                                     {
-                                        if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker) {
+                                        if let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(&ticker)
+                                        {
                                             let ticker_info = *ticker_info;
 
-                                            let contract_size = ticker_info.contract_size.map(f32::from).unwrap_or(1.0);
+                                            let contract_size = ticker_info
+                                                .contract_size
+                                                .map(f32::from)
+                                                .unwrap_or(1.0);
 
-                                            let volume = qty_norm
-                                                .normalize_qty(de_kline.quote_volume * contract_size, de_kline.close);
+                                            let volume = qty_norm.normalize_qty(
+                                                de_kline.quote_volume * contract_size,
+                                                de_kline.close,
+                                            );
 
                                             let kline = Kline::new(
                                                 de_kline.time,
