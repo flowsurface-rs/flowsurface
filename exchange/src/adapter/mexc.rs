@@ -1092,7 +1092,8 @@ fn feed_de(
                     .map_err(|e| AdapterError::ParseError(e.to_string()))?;
                 kline_data.time *= 1000;
 
-                let ticker = Ticker::new(&kline_data.symbol, Exchange::MexcLinear);
+                let ticker =
+                    Ticker::new(&kline_data.symbol, exchange_from_market_type(market_type));
                 return Ok(StreamData::Kline(ticker, vec![kline_data]));
             }
             Some(StreamName::Trade) => {
@@ -1217,8 +1218,8 @@ pub fn connect_kline_stream(
                                     continue;
                                 }
                             }
-                            state = State::Connected(websocket);
                             let _ = output.send(Event::Connected(exchange)).await;
+                            state = State::Connected(websocket);
                         }
                         Err(err) => {
                             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
