@@ -655,6 +655,23 @@ pub async fn fetch_depth_snapshot(
     })
 }
 
+async fn send_ping(
+    websocket: &mut FragmentCollector<TokioIo<Upgraded>>,
+) -> Result<(), &'static str> {
+    let ping_msg = json!({"method": "ping"});
+    if websocket
+        .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+            ping_msg.to_string().as_bytes(),
+        )))
+        .await
+        .is_err()
+    {
+        log::error!("Failed to send ping");
+        return Err("Failed to send ping");
+    }
+    Ok(())
+}
+
 pub fn connect_depth_stream(
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
@@ -677,6 +694,8 @@ pub fn connect_depth_stream(
             raw_qty_unit_from_market_type(market_type),
         );
 
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -697,18 +716,6 @@ pub fn connect_depth_stream(
 
                     match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
                         Ok(mut websocket) => {
-                            let ping_msg = json!({"method": "ping"});
-                            if websocket
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    ping_msg.to_string().as_bytes(),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                log::error!("Failed to send ping, reconnecting...");
-                                continue;
-                            }
-
                             let depth_subscription = json!({
                                 "method": "sub.depth",
                                 "param": {
@@ -727,8 +734,8 @@ pub fn connect_depth_stream(
                                 continue;
                             }
 
-                            state = State::Connected(websocket);
                             let _ = output.send(Event::Connected(exchange)).await;
+                            state = State::Connected(websocket);
                         }
                         Err(_) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -738,111 +745,94 @@ pub fn connect_depth_stream(
                                     "Failed to connect to websocket".to_string(),
                                 ))
                                 .await;
+                            continue;
                         }
                     }
                 }
                 State::Connected(websocket) => {
-                    let mut ping_interval =
-                        tokio::time::interval(Duration::from_secs(PING_INTERVAL));
-                    loop {
-                        tokio::select! {
-                            _ = ping_interval.tick() => {
-                                let ping_msg = json!({"method": "ping"});
-                                if websocket
-                                    .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                        ping_msg.to_string().as_bytes(),
-                                    )))
-                                    .await
-                                    .is_err()
-                                {
-                                    log::error!("Failed to send ping");
-                                    let _ = output
-                                        .send(Event::Disconnected(
-                                            exchange,
-                                            "Failed to send ping".to_string(),
-                                        ))
-                                        .await;
-                                    break;
-                                }
+                    tokio::select! {
+                        _ = ping_interval.tick() => {
+                            if send_ping(websocket).await.is_err() {
+                                state = State::Disconnected;
                             }
+                        }
 
-                            msg = websocket.read_frame() => {
-                                match msg {
-                                    Ok(msg) => match msg.opcode {
-                                        OpCode::Text => {
-                                            match feed_de(&msg.payload[..], Some(ticker), market_type) {
-                                                Ok(data) => {
-                                                    match data {
-                                                        StreamData::Pong(_) => {}
-                                                        StreamData::Subscription => {}
-                                                        StreamData::Depth(de_depth, time) => {
-                                                            let depth = DepthPayload {
-                                                                last_update_id: de_depth.version,
+                        msg = websocket.read_frame() => {
+                            match msg {
+                                Ok(msg) => match msg.opcode {
+                                    OpCode::Text => {
+                                        match feed_de(&msg.payload[..], Some(ticker), market_type) {
+                                            Ok(data) => {
+                                                match data {
+                                                    StreamData::Pong(_) => {}
+                                                    StreamData::Subscription => {}
+                                                    StreamData::Depth(de_depth, time) => {
+                                                        let depth = DepthPayload {
+                                                            last_update_id: de_depth.version,
+                                                            time,
+                                                            bids: de_depth
+                                                                .bids
+                                                                .iter()
+                                                                .map(|x| DeOrder {
+                                                                    price: x.price,
+                                                                    qty: x.contract_num * contract_size,
+                                                                })
+                                                                .collect(),
+                                                            asks: de_depth
+                                                                .asks
+                                                                .iter()
+                                                                .map(|x| DeOrder {
+                                                                    price: x.price,
+                                                                    qty: x.contract_num * contract_size,
+                                                                })
+                                                                .collect(),
+                                                        };
+
+                                                        orderbook.update_with_qty_norm(
+                                                            DepthUpdate::Diff(depth),
+                                                            ticker_info.min_ticksize,
+                                                            Some(qty_norm),
+                                                        );
+
+                                                        let _ = output
+                                                            .send(Event::DepthReceived(
+                                                                StreamKind::Depth {
+                                                                    ticker_info,
+                                                                    depth_aggr: StreamTicksize::Client,
+                                                                    push_freq,
+                                                                },
                                                                 time,
-                                                                bids: de_depth
-                                                                    .bids
-                                                                    .iter()
-                                                                    .map(|x| DeOrder {
-                                                                        price: x.price,
-                                                                        qty: x.contract_num * contract_size,
-                                                                    })
-                                                                    .collect(),
-                                                                asks: de_depth
-                                                                    .asks
-                                                                    .iter()
-                                                                    .map(|x| DeOrder {
-                                                                        price: x.price,
-                                                                        qty: x.contract_num * contract_size,
-                                                                    })
-                                                                    .collect(),
-                                                            };
-
-                                                            orderbook.update_with_qty_norm(
-                                                                DepthUpdate::Diff(depth),
-                                                                ticker_info.min_ticksize,
-                                                                Some(qty_norm),
-                                                            );
-
-                                                            let _ = output
-                                                                .send(Event::DepthReceived(
-                                                                    StreamKind::Depth {
-                                                                        ticker_info,
-                                                                        depth_aggr: StreamTicksize::Client,
-                                                                        push_freq,
-                                                                    },
-                                                                    time,
-                                                                    orderbook.depth.clone(),
-                                                                ))
-                                                                .await;
-                                                        }
-                                                        _ => {}
+                                                                orderbook.depth.clone(),
+                                                            ))
+                                                            .await;
                                                     }
-                                                }
-                                                Err(e) => {
-                                                    log::error!("Failed to parse MEXC depth message: {}", e);
+                                                    _ => {}
                                                 }
                                             }
+                                            Err(e) => {
+                                                log::error!("Failed to parse MEXC depth message: {}", e);
+                                            }
                                         }
-                                        OpCode::Close => {
-                                            let _ = output
-                                                .send(Event::Disconnected(
-                                                    exchange,
-                                                    "Connection closed".to_string(),
-                                                ))
-                                                .await;
-                                            break;
-                                        }
-                                        _ => {}
-                                    },
-                                    Err(_) => {
+                                    }
+                                    OpCode::Close => {
                                         let _ = output
                                             .send(Event::Disconnected(
                                                 exchange,
-                                                "Error reading frame".to_string(),
+                                                "Connection closed".to_string(),
                                             ))
                                             .await;
-                                        break;
+                                    state = State::Disconnected;
                                     }
+                                    _ => {}
+                                },
+                                Err(_) => {
+                                    let _ = output
+                                        .send(Event::Disconnected(
+                                            exchange,
+                                            "Error reading frame".to_string(),
+                                        ))
+                                        .await;
+                                    state = State::Disconnected;
                                 }
                             }
                         }
@@ -884,23 +874,13 @@ pub fn connect_trade_stream(
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
 
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+
         loop {
             match &mut state {
                 State::Disconnected => {
                     match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
                         Ok(mut websocket) => {
-                            let ping_msg = json!({"method": "ping"});
-                            if websocket
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    ping_msg.to_string().as_bytes(),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                log::error!("Failed to send ping, reconnecting...");
-                                continue;
-                            }
-
                             for ticker_info in &tickers {
                                 let symbol = ticker_info.ticker.to_full_symbol_and_type().0;
                                 let deal_subscription = json!({
@@ -918,12 +898,12 @@ pub fn connect_trade_stream(
                                     .is_err()
                                 {
                                     log::error!("Failed to subscribe to trade stream");
-                                    break;
+                                    continue;
                                 }
                             }
 
-                            state = State::Connected(websocket);
                             let _ = output.send(Event::Connected(exchange)).await;
+                            state = State::Connected(websocket);
                         }
                         Err(_) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -937,98 +917,64 @@ pub fn connect_trade_stream(
                     }
                 }
                 State::Connected(websocket) => {
-                    let mut ping_interval =
-                        tokio::time::interval(Duration::from_secs(PING_INTERVAL));
-                    loop {
-                        tokio::select! {
-                            _ = ping_interval.tick() => {
-                                let ping_msg = json!({"method": "ping"});
-                                if websocket
-                                    .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                        ping_msg.to_string().as_bytes(),
-                                    )))
-                                    .await
-                                    .is_err()
-                                {
-                                    log::error!("Failed to send ping");
-                                    let _ = output
-                                        .send(Event::Disconnected(
-                                            exchange,
-                                            "Failed to send ping".to_string(),
-                                        ))
-                                        .await;
-                                    break;
-                                }
+                    tokio::select! {
+                        _ = ping_interval.tick() => {
+                            if send_ping(websocket).await.is_err() {
+                                state = State::Disconnected;
                             }
+                        }
 
-                            msg = websocket.read_frame() => {
-                                match msg {
-                                    Ok(msg) => match msg.opcode {
-                                        OpCode::Text => {
-                                            match feed_de(&msg.payload[..], None, market_type) {
-                                                Ok(data) => {
-                                                    match data {
-                                                        StreamData::Pong(_) => {}
-                                                        StreamData::Subscription => {}
-                                                        StreamData::Trade(ticker, de_trades, _) => {
-                                                            if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker) {
-                                                                let ticker_info = *ticker_info;
-                                                                let contract_size = ticker_info.contract_size.map(f32::from).unwrap_or(1.0);
-                                                                for trade in &de_trades {
-                                                                    let price = Price::from_f32(trade.price)
-                                                                        .round_to_min_tick(ticker_info.min_ticksize);
+                        msg = websocket.read_frame() => {
+                            match msg {
+                                Ok(msg) => match msg.opcode {
+                                    OpCode::Text => {
+                                        match feed_de(&msg.payload[..], None, market_type) {
+                                            Ok(data) => {
+                                                match data {
+                                                    StreamData::Pong(_) => {}
+                                                    StreamData::Subscription => {}
+                                                    StreamData::Trade(ticker, de_trades, _) => {
+                                                        if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker) {
+                                                            let ticker_info = *ticker_info;
+                                                            let contract_size = ticker_info.contract_size.map(f32::from).unwrap_or(1.0);
+                                                            for trade in &de_trades {
+                                                                let price = Price::from_f32(trade.price)
+                                                                    .round_to_min_tick(ticker_info.min_ticksize);
 
-                                                                    let trade_entity = Trade {
-                                                                        time: trade.time,
-                                                                        is_sell: trade.direction == 2,
-                                                                        price,
-                                                                        qty: qty_norm
-                                                                            .normalize_qty(trade.qty * contract_size, trade.price),
-                                                                    };
+                                                                let trade_entity = Trade {
+                                                                    time: trade.time,
+                                                                    is_sell: trade.direction == 2,
+                                                                    price,
+                                                                    qty: qty_norm
+                                                                        .normalize_qty(trade.qty * contract_size, trade.price),
+                                                                };
 
-                                                                    let trades_buffer = trades_buffer_map.entry(ticker).or_default();
-                                                                    trades_buffer.push(trade_entity);
-                                                                }
-                                                            } else {
-                                                                log::error!("Ticker info not found for ticker: {}", ticker);
+                                                                let trades_buffer = trades_buffer_map.entry(ticker).or_default();
+                                                                trades_buffer.push(trade_entity);
                                                             }
+                                                        } else {
+                                                            log::error!("Ticker info not found for ticker: {}", ticker);
                                                         }
-                                                        _ => {}
                                                     }
-                                                }
-                                                Err(e) => {
-                                                    log::error!("Failed to parse MEXC trade message: {}", e);
+                                                    _ => {}
                                                 }
                                             }
-
-                                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
-                                                flush_trade_buffers(
-                                                    &mut output,
-                                                    &ticker_info_map,
-                                                    &mut trades_buffer_map,
-                                                )
-                                                .await;
-                                                last_flush = tokio::time::Instant::now();
+                                            Err(e) => {
+                                                log::error!("Failed to parse MEXC trade message: {}", e);
                                             }
                                         }
-                                        OpCode::Close => {
+
+                                        if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
                                             flush_trade_buffers(
                                                 &mut output,
                                                 &ticker_info_map,
                                                 &mut trades_buffer_map,
                                             )
                                             .await;
-                                            let _ = output
-                                                .send(Event::Disconnected(
-                                                    exchange,
-                                                    "Connection closed".to_string(),
-                                                ))
-                                                .await;
-                                            break;
+                                            last_flush = tokio::time::Instant::now();
                                         }
-                                        _ => {}
-                                    },
-                                    Err(_) => {
+                                    }
+                                    OpCode::Close => {
                                         flush_trade_buffers(
                                             &mut output,
                                             &ticker_info_map,
@@ -1038,11 +984,27 @@ pub fn connect_trade_stream(
                                         let _ = output
                                             .send(Event::Disconnected(
                                                 exchange,
-                                                "Error reading frame".to_string(),
+                                                "Connection closed".to_string(),
                                             ))
                                             .await;
-                                        break;
+                                        state = State::Disconnected;
                                     }
+                                    _ => {}
+                                },
+                                Err(_) => {
+                                    flush_trade_buffers(
+                                        &mut output,
+                                        &ticker_info_map,
+                                        &mut trades_buffer_map,
+                                    )
+                                    .await;
+                                    let _ = output
+                                        .send(Event::Disconnected(
+                                            exchange,
+                                            "Error reading frame".to_string(),
+                                        ))
+                                        .await;
+                                    state = State::Disconnected;
                                 }
                             }
                         }
@@ -1225,6 +1187,8 @@ pub fn connect_kline_stream(
             })
             .collect::<HashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -1250,7 +1214,7 @@ pub fn connect_kline_stream(
                                     .await)
                                     .is_err()
                                 {
-                                    break;
+                                    continue;
                                 }
                             }
                             state = State::Connected(websocket);
@@ -1267,86 +1231,97 @@ pub fn connect_kline_stream(
                         }
                     }
                 }
-                State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Kline(ticker, de_kline_vec)) =
-                                feed_de(&msg.payload[..], None, market_type)
-                            {
-                                for de_kline in &de_kline_vec {
-                                    if let Some(timeframe) = string_to_timeframe(&de_kline.interval)
-                                    {
-                                        if let Some((ticker_info, qty_norm)) =
-                                            ticker_info_map.get(&ticker)
+                State::Connected(websocket) => {
+                    tokio::select! {
+                        _ = ping_interval.tick() => {
+                            if send_ping(websocket).await.is_err() {
+                                state = State::Disconnected;
+                            }
+                        }
+                        msg = websocket.read_frame() => {
+                            match msg {
+                                Ok(msg) => match msg.opcode {
+                                    OpCode::Text => {
+                                        if let Ok(StreamData::Kline(ticker, de_kline_vec)) =
+                                            feed_de(&msg.payload[..], None, market_type)
                                         {
-                                            let ticker_info = *ticker_info;
+                                            for de_kline in &de_kline_vec {
+                                                if let Some(timeframe) = string_to_timeframe(&de_kline.interval)
+                                                {
+                                                    if let Some((ticker_info, qty_norm)) =
+                                                        ticker_info_map.get(&ticker)
+                                                    {
+                                                        let ticker_info = *ticker_info;
 
-                                            let contract_size = ticker_info
-                                                .contract_size
-                                                .map(f32::from)
-                                                .unwrap_or(1.0);
+                                                        let contract_size = ticker_info
+                                                            .contract_size
+                                                            .map(f32::from)
+                                                            .unwrap_or(1.0);
 
-                                            let volume = qty_norm.normalize_qty(
-                                                de_kline.quote_volume * contract_size,
-                                                de_kline.close,
-                                            );
+                                                        let volume = qty_norm.normalize_qty(
+                                                            de_kline.quote_volume * contract_size,
+                                                            de_kline.close,
+                                                        );
 
-                                            let kline = Kline::new(
-                                                de_kline.time,
-                                                de_kline.open,
-                                                de_kline.high,
-                                                de_kline.low,
-                                                de_kline.close,
-                                                Volume::TotalOnly(volume),
-                                                ticker_info.min_ticksize,
-                                            );
+                                                        let kline = Kline::new(
+                                                            de_kline.time,
+                                                            de_kline.open,
+                                                            de_kline.high,
+                                                            de_kline.low,
+                                                            de_kline.close,
+                                                            Volume::TotalOnly(volume),
+                                                            ticker_info.min_ticksize,
+                                                        );
 
-                                            let _ = output
-                                                .send(Event::KlineReceived(
-                                                    StreamKind::Kline {
-                                                        ticker_info,
-                                                        timeframe,
-                                                    },
-                                                    kline,
-                                                ))
-                                                .await;
-                                        } else {
-                                            log::error!(
-                                                "Ticker info not found for ticker: {}",
-                                                ticker
-                                            );
+                                                        let _ = output
+                                                            .send(Event::KlineReceived(
+                                                                StreamKind::Kline {
+                                                                    ticker_info,
+                                                                    timeframe,
+                                                                },
+                                                                kline,
+                                                            ))
+                                                            .await;
+                                                    } else {
+                                                        log::error!(
+                                                            "Ticker info not found for ticker: {}",
+                                                            ticker
+                                                        );
+                                                    }
+                                                } else {
+                                                    log::error!(
+                                                        "Failed to find timeframe: {}, {:?}",
+                                                        &de_kline.interval,
+                                                        streams
+                                                    );
+                                                }
+                                            }
                                         }
-                                    } else {
-                                        log::error!(
-                                            "Failed to find timeframe: {}, {:?}",
-                                            &de_kline.interval,
-                                            streams
-                                        );
                                     }
+                                    OpCode::Close => {
+                                        state = State::Disconnected;
+                                        let _ = output
+                                            .send(Event::Disconnected(
+                                                exchange,
+                                                "Connection closed".to_string(),
+                                            ))
+                                            .await;
+                                    }
+                                    _ => {}
+                                },
+                                Err(e) => {
+                                    state = State::Disconnected;
+                                    let _ = output
+                                        .send(Event::Disconnected(
+                                            exchange,
+                                            "Error reading frame: ".to_string() + &e.to_string(),
+                                        ))
+                                        .await;
                                 }
                             }
                         }
-                        OpCode::Close => {
-                            state = State::Disconnected;
-                            let _ = output
-                                .send(Event::Disconnected(
-                                    exchange,
-                                    "Connection closed".to_string(),
-                                ))
-                                .await;
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
                     }
-                },
+                }
             }
         }
     })
