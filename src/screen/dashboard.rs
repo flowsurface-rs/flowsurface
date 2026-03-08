@@ -12,7 +12,7 @@ use crate::{
     chart,
     connector::{
         ResolvedStream,
-        fetcher::{self, FetchRange, FetchedData, InfoKind, gap_fill_sip},
+        fetcher::{self, FetchRange, FetchedData, InfoKind, catchup_sip},
     },
     screen::dashboard::tickers_table::TickersTable,
     style,
@@ -60,12 +60,12 @@ pub enum Message {
     /// NOTE(fork): App-level keyboard navigation for chart panning without canvas focus.
     /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
     ChartKeyNav(keyboard::Event),
-    /// NOTE(fork): Ariadne returned last_agg_trade_id — trigger ODB gap-fill.
+    /// NOTE(fork): Trigger ODB gap-fill via sidecar /catchup endpoint.
     TriggerOdbGapFill {
         pane_id: uuid::Uuid,
         layout_id: uuid::Uuid,
-        from_agg_id: u64,
         symbol: String,
+        threshold_dbps: u32,
     },
 }
 
@@ -505,14 +505,14 @@ impl Dashboard {
             Message::TriggerOdbGapFill {
                 pane_id,
                 layout_id,
-                from_agg_id,
                 symbol,
+                threshold_dbps,
             } => {
                 if let Some(pane_state) =
                     self.get_mut_pane_state_by_uuid(main_window.id, pane_id)
                 {
                     log::info!(
-                        "[gap-fill] ODB pane={pane_id}: from_agg_id={from_agg_id}"
+                        "[catchup] ODB pane={pane_id}: {symbol}@{threshold_dbps}"
                     );
                     pane_state.status =
                         pane::Status::Stale("Fetching trades to fill gap...".into());
@@ -522,9 +522,9 @@ impl Dashboard {
                             pane_state,
                             layout_id,
                             req_id,
-                            FetchRange::TradesFromId {
-                                from_agg_id,
+                            FetchRange::OdbCatchup {
                                 symbol,
+                                threshold_dbps,
                             },
                             None,
                         ),
@@ -1027,11 +1027,8 @@ impl Dashboard {
                                 microstructure.as_deref(),
                             );
 
-                            // Gap-fill: query ClickHouse for last completed bar's
-                            // last_agg_trade_id, then gap-fill from that point.
-                            // Uses CH directly (not Ariadne) because Ariadne tracks
-                            // the processor's forming-bar position, which is AHEAD
-                            // of the last committed bar — causing a hidden gap.
+                            // Gap-fill via ODB sidecar /catchup endpoint (v12.62.0+).
+                            // Sidecar handles CH lookup + paginated Parquet+REST internally.
                             // Only fire once per pane lifecycle.
                             if !pane_state.staleness_checked
                                 && !matches!(pane_state.status, pane::Status::Stale(_))
@@ -1040,48 +1037,13 @@ impl Dashboard {
 
                                 let symbol =
                                     adapter::clickhouse::bare_symbol(&ticker_info);
-                                log::info!(
-                                    "[gap-fill] ODB pane={pane_id}: querying CH for last bar's agg_trade_id ({symbol}@{threshold_dbps})"
-                                );
 
-                                return Task::perform(
-                                    {
-                                        let s = symbol.clone();
-                                        async move {
-                                            adapter::clickhouse::fetch_last_ch_agg_trade_id(
-                                                &s,
-                                                threshold_dbps,
-                                            )
-                                            .await
-                                        }
-                                    },
-                                    move |result| match result {
-                                        Ok(Some(last_id)) if last_id >= 0 => {
-                                            Message::TriggerOdbGapFill {
-                                                pane_id,
-                                                layout_id,
-                                                from_agg_id: (last_id + 1) as u64,
-                                                symbol,
-                                            }
-                                        }
-                                        Ok(_) => {
-                                            log::info!(
-                                                "[gap-fill] CH returned no last_agg_trade_id, skipping gap-fill"
-                                            );
-                                            Message::ChangePaneStatus(
-                                                pane_id,
-                                                pane::Status::Ready,
-                                            )
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "[gap-fill] CH query failed: {e}, skipping gap-fill"
-                                            );
-                                            Message::ChangePaneStatus(
-                                                pane_id,
-                                                pane::Status::Ready,
-                                            )
-                                        }
+                                return Task::done(
+                                    Message::TriggerOdbGapFill {
+                                        pane_id,
+                                        layout_id,
+                                        symbol,
+                                        threshold_dbps,
                                     },
                                 );
                             }
@@ -1652,9 +1614,9 @@ fn request_fetch(
                 }
             }
         }
-        FetchRange::TradesFromId {
-            from_agg_id,
+        FetchRange::OdbCatchup {
             symbol,
+            threshold_dbps,
         } => {
             let trade_info = state.streams.find_ready_map(|stream| {
                 if let StreamKind::Trades { ticker_info } = stream {
@@ -1666,7 +1628,7 @@ fn request_fetch(
 
             if let Some((_ticker_info, pane_id, stream)) = trade_info {
                 // Set fetching_trades flag so CH bar buffering and WS trade
-                // blocking activate during gap-fill.
+                // blocking activate during catchup.
                 if let pane::Content::Kline { chart, .. } = &mut state.content
                     && let Some(c) = chart
                 {
@@ -1674,12 +1636,10 @@ fn request_fetch(
                 }
 
                 let (task, handle) = Task::sip(
-                    gap_fill_sip(symbol, from_agg_id),
+                    catchup_sip(symbol, threshold_dbps),
                     move |batch| {
                         let data = FetchedData::Trades {
                             batch,
-                            // u64::MAX ensures no trades are filtered by the
-                            // `trade.time <= until_time` ceiling in distribute_fetched_data.
                             until_time: u64::MAX,
                         };
                         Message::DistributeFetchedData {

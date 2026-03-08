@@ -110,8 +110,12 @@ pub enum FetchRange {
     Kline(u64, u64),
     OpenInterest(u64, u64),
     Trades(u64, u64),
-    /// Gap-fill trades from ODB sidecar, keyed by Binance agg_trade_id.
-    TradesFromId { from_agg_id: u64, symbol: String },
+    /// ODB gap-fill via sidecar `/catchup` endpoint (v12.62.0+).
+    /// Sidecar handles CH lookup + paginated Parquet+REST internally.
+    OdbCatchup {
+        symbol: String,
+        threshold_dbps: u32,
+    },
 }
 
 #[derive(PartialEq, Debug)]
@@ -308,9 +312,9 @@ pub fn request_fetch(
                 }
             }
         }
-        FetchRange::TradesFromId {
-            from_agg_id,
+        FetchRange::OdbCatchup {
             symbol,
+            threshold_dbps,
         } => {
             let trade_info = ready_streams.iter().find_map(|stream| {
                 if let StreamKind::Trades { ticker_info } = stream {
@@ -322,7 +326,7 @@ pub fn request_fetch(
 
             if let Some((_ticker_info, pane_id, stream)) = trade_info {
                 let (task, handle) = Task::sip(
-                    gap_fill_sip(symbol, from_agg_id),
+                    catchup_sip(symbol, threshold_dbps),
                     move |batch| FetchUpdate::Data {
                         layout_id,
                         pane_id,
@@ -354,19 +358,15 @@ pub fn request_fetch(
     Task::none()
 }
 
-pub fn gap_fill_sip(
+pub fn catchup_sip(
     symbol: String,
-    from_agg_id: u64,
+    threshold_dbps: u32,
 ) -> impl Straw<(), Vec<exchange::Trade>, adapter::AdapterError> {
     sipper(async move |mut progress| {
-        let trades =
-            adapter::clickhouse::fetch_gap_fill_trades_batched(&symbol, from_agg_id).await?;
-        if !trades.is_empty() {
-            log::info!(
-                "[gap-fill] ODB sip: {} trades fetched for {symbol}",
-                trades.len()
-            );
-            let () = progress.send(trades).await;
+        let result =
+            adapter::clickhouse::fetch_catchup(&symbol, threshold_dbps).await?;
+        if !result.trades.is_empty() {
+            let () = progress.send(result.trades).await;
         }
         Ok(())
     })

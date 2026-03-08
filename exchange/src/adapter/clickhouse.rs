@@ -829,79 +829,7 @@ pub fn connect_sse_stream(
     })
 }
 
-// -- Gap-fill: ClickHouse + ODB sidecar endpoints --
-
-/// Query ClickHouse for the `last_agg_trade_id` of the most recent completed bar.
-/// This is the correct starting point for gap-fill — it represents the last trade
-/// committed to a completed bar, not the processor's forming-bar position.
-pub async fn fetch_last_ch_agg_trade_id(
-    symbol: &str,
-    threshold_dbps: u32,
-) -> Result<Option<i64>, AdapterError> {
-    let sql = format!(
-        "SELECT last_agg_trade_id \
-         FROM opendeviationbar_cache.open_deviation_bars \
-         WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-           AND ouroboros_mode = '{}' \
-         ORDER BY close_time_ms DESC LIMIT 1 \
-         FORMAT JSONEachRow",
-        *OUROBOROS_MODE
-    );
-    let body = query(&sql).await?;
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            return Ok(v.get("last_agg_trade_id").and_then(|v| v.as_i64()));
-        }
-    }
-    Ok(None)
-}
-
-/// Query the Ariadne endpoint for the last aggregate trade ID processed by the ODB sidecar.
-/// Uses a 5-source cascade: live processor → checkpoint → CH bars → CH checkpoints → Binance REST.
-/// NOTE: This returns the processor's position (including forming-bar trades), which is AHEAD
-/// of the last completed CH bar. Use `fetch_last_ch_agg_trade_id()` for gap-fill start point.
-pub async fn fetch_ariadne_last_agg_trade_id(
-    symbol: String,
-    threshold_dbps: u32,
-) -> Result<Option<i64>, AdapterError> {
-    let url = format!(
-        "http://{}:{}/ariadne/{symbol}/{threshold_dbps}",
-        *SSE_HOST, *SSE_PORT
-    );
-    let resp: serde_json::Value = reqwest::get(&url).await?.json().await?;
-    let last_id = resp.get("last_agg_trade_id").and_then(|v| v.as_i64());
-    let source = resp
-        .get("source")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let degraded = resp
-        .get("degraded")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if degraded {
-        log::warn!("[ariadne] all 5 sources failed for {symbol}@{threshold_dbps}");
-    } else {
-        log::info!("[ariadne] {symbol}@{threshold_dbps}: last_id={last_id:?} source={source}");
-    }
-    // v12.61.3+: log sources_tried diagnostics when live_processor wasn't used
-    if source != "live_processor"
-        && let Some(sources) = resp.get("sources_tried").and_then(|v| v.as_array())
-    {
-        for s in sources {
-            let src = s.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-            let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-            let reason = s.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-            if status != "hit" {
-                log::info!("[ariadne]   {src}: {status} ({reason})");
-            }
-        }
-    }
-    Ok(last_id)
-}
+// -- Gap-fill: ODB sidecar /catchup endpoint (v12.62.0+) --
 
 /// Binance-compatible gap-fill trade from ODB sidecar.
 #[derive(Deserialize)]
@@ -918,57 +846,64 @@ struct GapFillTrade {
     is_buyer_maker: bool,
 }
 
-/// v12.61.3+ dict response: `{"trades": [...], "partial": bool, "count": N}`.
+/// Response from `GET /catchup/{symbol}/{threshold}`.
+/// Sidecar handles CH lookup + paginated Parquet+REST internally.
 #[derive(Deserialize)]
-struct GapFillResponse {
+struct CatchupResponse {
     trades: Vec<GapFillTrade>,
+    #[serde(default)]
+    through_agg_id: Option<u64>,
+    #[serde(default)]
+    count: usize,
     #[serde(default)]
     partial: bool,
 }
 
-/// Result of a single gap-fill batch fetch.
-struct GapFillBatch {
-    trades: Vec<Trade>,
-    /// If true, the sidecar's REST bridge failed — coverage may be incomplete.
-    partial: bool,
+/// Result of the catchup call — trades + fence ID for WS dedup.
+pub struct CatchupResult {
+    pub trades: Vec<Trade>,
+    /// Last agg_trade_id in the catchup range. WS trades <= this are duplicates.
+    pub through_agg_id: Option<u64>,
 }
 
-/// Fetch gap-fill trades from the ODB sidecar. Retries up to 3 times on 429.
-/// Sidecar caps responses at 1000 trades regardless of requested limit.
-const GAP_FILL_BATCH_SIZE: usize = 1000;
-
-async fn fetch_gap_fill_trades(
+/// Single-call gap-fill from the last committed CH bar to current time.
+/// The sidecar (v12.62.0+) handles:
+///   1. CH query for last committed bar's last_agg_trade_id
+///   2. Paginated Parquet scan (cross-file) + REST bridge
+///   3. Rate limiting internally
+pub async fn fetch_catchup(
     symbol: &str,
-    from_agg_id: u64,
-) -> Result<GapFillBatch, AdapterError> {
+    threshold_dbps: u32,
+) -> Result<CatchupResult, AdapterError> {
     let url = format!(
-        "http://{}:{}/trades/gap-fill?symbol={symbol}&from_agg_id={from_agg_id}&limit={GAP_FILL_BATCH_SIZE}",
+        "http://{}:{}/catchup/{symbol}/{threshold_dbps}",
         *SSE_HOST, *SSE_PORT
     );
 
-    let mut retries = 0u8;
-    let resp = loop {
-        let r = reqwest::get(&url).await?;
-        if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && retries < 3 {
-            retries += 1;
-            log::info!("[gap-fill] rate limited, retry {retries}/3 in 1.1s");
-            tokio::time::sleep(Duration::from_millis(1100)).await;
-            continue;
-        }
-        break r;
-    };
-
+    let resp = reqwest::get(&url).await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         return Err(AdapterError::ParseError(format!(
-            "gap-fill HTTP {status}: {body}"
+            "catchup HTTP {status}: {body}"
         )));
     }
 
-    let gap_resp: GapFillResponse = resp.json().await?;
-    let partial = gap_resp.partial;
-    let trades = gap_resp
+    let catchup: CatchupResponse = resp.json().await?;
+    if catchup.partial {
+        log::warn!(
+            "[catchup] {symbol}@{threshold_dbps}: partial coverage ({} trades)",
+            catchup.count
+        );
+    } else {
+        log::info!(
+            "[catchup] {symbol}@{threshold_dbps}: {} trades, through_agg_id={:?}",
+            catchup.count,
+            catchup.through_agg_id
+        );
+    }
+
+    let trades = catchup
         .trades
         .into_iter()
         .map(|t| Trade {
@@ -979,38 +914,9 @@ async fn fetch_gap_fill_trades(
             agg_trade_id: Some(t.agg_trade_id),
         })
         .collect();
-    Ok(GapFillBatch { trades, partial })
-}
 
-/// Paginated gap-fill: fetches up to 100 batches of 1000 trades each (100K max).
-pub async fn fetch_gap_fill_trades_batched(
-    symbol: &str,
-    mut from_agg_id: u64,
-) -> Result<Vec<Trade>, AdapterError> {
-    let mut all = Vec::new();
-    for batch_n in 0..100u32 {
-        let batch = fetch_gap_fill_trades(symbol, from_agg_id).await?;
-        if batch.trades.is_empty() {
-            break;
-        }
-        let count = batch.trades.len();
-        if let Some(last) = batch.trades.last() {
-            from_agg_id = last.agg_trade_id.unwrap_or(from_agg_id) + 1;
-        }
-        all.extend(batch.trades);
-        // partial=true means the sidecar's REST bridge failed — coverage incomplete
-        // but we still have the Parquet portion, so continue with what we got.
-        if batch.partial {
-            log::warn!(
-                "[gap-fill] batch {batch_n}: {count} trades (partial — REST bridge failed), \
-                 next_from_id={from_agg_id}"
-            );
-            break;
-        }
-        if count < GAP_FILL_BATCH_SIZE {
-            break;
-        }
-        log::info!("[gap-fill] batch {batch_n}: {count} trades, next_from_id={from_agg_id}");
-    }
-    Ok(all)
+    Ok(CatchupResult {
+        trades,
+        through_agg_id: catchup.through_agg_id,
+    })
 }
