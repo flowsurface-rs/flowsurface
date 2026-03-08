@@ -616,7 +616,7 @@ pub fn connect_kline_stream(
                                 ticker_info.min_ticksize,
                             );
                             let _ = output
-                                .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64)))
+                                .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64), ck.last_agg_trade_id))
                                 .await;
                             count += 1;
                         }
@@ -806,16 +806,20 @@ pub fn connect_sse_stream(
                             log::info!("[SSE] skipping orphan bar: ts={}", bar.close_time_ms);
                             continue;
                         }
+                        let bar_last_agg_id = bar.last_agg_trade_id
+                            .filter(|&id| id > 0)
+                            .map(|id| id as u64);
                         let (kline, raw_f64, _micro) =
                             odb_bar_to_kline_tuple(&bar, ticker_info.min_ticksize);
                         log::info!(
-                            "[SSE] {} @{}: bar ts={}",
+                            "[SSE] {} @{}: bar ts={} last_agg_id={:?}",
                             symbol,
                             threshold_dbps,
-                            kline.time
+                            kline.time,
+                            bar_last_agg_id,
                         );
                         let _ = output
-                            .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64)))
+                            .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64), bar_last_agg_id))
                             .await;
                     }
                     OdbSseEvent::Heartbeat => {}

@@ -25,6 +25,8 @@ use exchange::{
     },
 };
 
+use std::collections::VecDeque;
+
 use iced::task::Handle;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
@@ -244,7 +246,13 @@ pub struct KlineChart {
     /// Last agg_trade_id from gap-fill. WS trades with id <= this are skipped.
     gap_fill_fence_agg_id: Option<u64>,
     /// CH/SSE bars received during gap-fill, applied after completion.
-    buffered_ch_klines: Vec<Kline>,
+    /// Stores `(Kline, Option<u64>)` to preserve `bar_last_agg_id` for replay.
+    buffered_ch_klines: Vec<(Kline, Option<u64>)>,
+    /// Ring buffer of recent WS trades for bar-boundary replay.
+    /// When a SSE/CH bar arrives and the processor resets, trades with
+    /// `agg_trade_id > bar.last_agg_trade_id` are replayed into the new processor
+    /// to eliminate the forming-bar price gap. VecDeque for O(1) eviction.
+    ws_trade_ring: VecDeque<Trade>,
     /// Kline chart configuration (e.g. OFI EMA period).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
@@ -364,6 +372,7 @@ impl KlineChart {
                     pending_local_bars: 0,
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
+                    ws_trade_ring: VecDeque::new(),
                     kline_config,
                     ws_trade_count_window: 0,
                     ws_throughput_last_log_ms: 0,
@@ -438,6 +447,7 @@ impl KlineChart {
                     pending_local_bars: 0,
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
+                    ws_trade_ring: VecDeque::new(),
                     kline_config,
                     ws_trade_count_window: 0,
                     ws_throughput_last_log_ms: 0,
@@ -538,6 +548,7 @@ impl KlineChart {
                     pending_local_bars: 0,
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
+                    ws_trade_ring: VecDeque::new(),
                     kline_config,
                     ws_trade_count_window: 0,
                     ws_throughput_last_log_ms: 0,
@@ -707,6 +718,7 @@ impl KlineChart {
             pending_local_bars: 0,
             gap_fill_fence_agg_id: None,
             buffered_ch_klines: Vec::new(),
+            ws_trade_ring: VecDeque::new(),
             kline_config,
             ws_trade_count_window: 0,
             ws_throughput_last_log_ms: 0,
@@ -717,7 +729,7 @@ impl KlineChart {
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline) {
+    pub fn update_latest_kline(&mut self, kline: &Kline, bar_last_agg_id: Option<u64>) {
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[*kline]);
@@ -740,10 +752,10 @@ impl KlineChart {
                     // Buffer CH/SSE bars during gap-fill to prevent temporal inversions.
                     // They'll be applied in order after gap-fill completes.
                     if self.fetching_trades.0 {
-                        self.buffered_ch_klines.push(*kline);
+                        self.buffered_ch_klines.push((*kline, bar_last_agg_id));
                         log::debug!(
-                            "[gap-fill] buffered CH bar ts={} during gap-fill",
-                            kline.time
+                            "[gap-fill] buffered CH bar ts={} bar_last_agg_id={:?} during gap-fill",
+                            kline.time, bar_last_agg_id,
                         );
                         return;
                     }
@@ -807,9 +819,10 @@ impl KlineChart {
                         .filter_map(Option::as_mut)
                         .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
-                    // When SSE delivers a bar, reset the local RBP processor so
-                    // the forming bar starts from the next WS trade (near this
-                    // bar's close) instead of the old misaligned boundary.
+                    // When SSE delivers a bar, reset the local RBP processor and
+                    // replay buffered WS trades past the bar's last_agg_trade_id.
+                    // Without replay, the forming bar opens at whatever trade the WS
+                    // delivers next — potentially $30+ away from the bar's close.
                     if sse_enabled() && sse_connected()
                         && let Basis::Odb(threshold_dbps) = self.chart.basis
                     {
@@ -817,10 +830,47 @@ impl KlineChart {
                             .map_err(|e| log::warn!("failed to reset ODB processor: {e}"))
                             .ok();
                         self.next_agg_id = 0;
+
+                        // Replay buffered trades past the bar boundary into the
+                        // fresh processor so the forming bar starts from the correct
+                        // trade (the one immediately after the completed bar's last).
+                        let replayed = if let (Some(fence_id), Some(proc)) =
+                            (bar_last_agg_id, &mut self.odb_processor)
+                        {
+                            let overflow: Vec<_> = self
+                                .ws_trade_ring
+                                .iter()
+                                .filter(|t| t.agg_trade_id.is_none_or(|id| id > fence_id))
+                                .cloned()
+                                .collect();
+                            let count = overflow.len();
+                            for trade in &overflow {
+                                let agg = trade_to_agg_trade(trade, self.next_agg_id);
+                                self.next_agg_id += 1;
+                                let _ = proc.process_single_trade(&agg);
+                            }
+                            if count > 0 {
+                                let first_price = overflow.first().map(|t| t.price.to_f32());
+                                log::info!(
+                                    "[SSE] replayed {} trades past fence_id={} into new processor \
+                                     (first_price={:?})",
+                                    count,
+                                    fence_id,
+                                    first_price,
+                                );
+                            }
+                            count
+                        } else {
+                            0
+                        };
+
                         log::info!(
-                            "[SSE] reset ODB processor after bar ts={}, close={:?}",
+                            "[SSE] reset ODB processor after bar ts={}, close={:?}, \
+                             bar_last_agg_id={:?}, replayed={}",
                             kline.time,
-                            kline.close
+                            kline.close,
+                            bar_last_agg_id,
+                            replayed,
                         );
                     }
 
@@ -1013,8 +1063,8 @@ impl KlineChart {
             );
         }
         self.fetching_trades = (false, None);
-        for kline in &buffered {
-            self.update_latest_kline(kline);
+        for (kline, bar_last_agg_id) in &buffered {
+            self.update_latest_kline(kline, *bar_last_agg_id);
         }
         self.invalidate(None);
     }
@@ -1370,6 +1420,20 @@ impl KlineChart {
                         }
                     }
 
+                    // Buffer recent WS trades for bar-boundary replay.
+                    // When a SSE/CH bar completes, we replay trades past the bar's
+                    // last_agg_trade_id into the fresh processor to eliminate the
+                    // forming-bar price gap.
+                    if !is_gap_fill {
+                        const RING_CAP: usize = 1000;
+                        for trade in trades_buffer {
+                            if self.ws_trade_ring.len() >= RING_CAP {
+                                self.ws_trade_ring.pop_front(); // O(1) eviction
+                            }
+                            self.ws_trade_ring.push_back(*trade);
+                        }
+                    }
+
                     // In-process ODB computation via opendeviationbar-core.
                     // Feed each WebSocket trade into the processor; completed
                     // bars are appended to the chart, replacing ClickHouse
@@ -1706,8 +1770,8 @@ impl KlineChart {
             // Flush buffered CH/SSE bars that arrived during gap-fill.
             let buffered = std::mem::take(&mut self.buffered_ch_klines);
             self.fetching_trades = (false, None);
-            for kline in &buffered {
-                self.update_latest_kline(kline);
+            for (kline, bar_last_agg_id) in &buffered {
+                self.update_latest_kline(kline, *bar_last_agg_id);
             }
             // Single canvas redraw now that all gap-fill batches are processed.
             self.invalidate(None);

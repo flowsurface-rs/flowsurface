@@ -695,6 +695,7 @@ pub fn connect_kline_stream(
                                                         },
                                                         kline,
                                                         None,
+                                                        None,
                                                     ))
                                                     .await;
                                             } else {

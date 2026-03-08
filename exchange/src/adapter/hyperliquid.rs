@@ -1240,7 +1240,7 @@ pub fn connect_kline_stream(
                                         timeframe: *timeframe,
                                     };
                                     let _ = output
-                                        .send(Event::KlineReceived(stream_kind, kline, None))
+                                        .send(Event::KlineReceived(stream_kind, kline, None, None))
                                         .await;
                                 }
                             }

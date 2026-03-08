@@ -1119,6 +1119,7 @@ impl Dashboard {
         kline: &Kline,
         #[cfg(feature = "telemetry")] raw_f64: Option<[f64; 6]>,
         #[cfg(not(feature = "telemetry"))] _raw_f64: Option<[f64; 6]>,
+        bar_last_agg_id: Option<u64>,
         main_window: window::Id,
     ) -> Task<Message> {
         #[cfg(feature = "telemetry")]
@@ -1144,7 +1145,7 @@ impl Dashboard {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
-                            c.update_latest_kline(kline);
+                            c.update_latest_kline(kline, bar_last_agg_id);
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
