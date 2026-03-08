@@ -38,7 +38,7 @@ use std::time::Instant;
 const MIN_SCALING: f32 = 0.6;
 const MAX_SCALING: f32 = 1.2;
 
-const MAX_CELL_WIDTH: f32 = 12.0;
+const MAX_CELL_WIDTH: f32 = 1024.0;
 const MIN_CELL_WIDTH: f32 = 1.0;
 
 const MAX_CELL_HEIGHT: f32 = 10.0;

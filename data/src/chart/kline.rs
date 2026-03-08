@@ -275,7 +275,7 @@ impl KlineChartKind {
     pub fn max_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 360.0,
-            KlineChartKind::Candles | KlineChartKind::Odb => 128.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 1024.0,
         }
     }
 
