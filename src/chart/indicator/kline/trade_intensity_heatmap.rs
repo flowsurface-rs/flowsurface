@@ -253,6 +253,8 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
+        let prev_data_len = self.data.len();
+        let prev_next_idx = self.next_idx;
         self.reset_state();
         if let PlotData::TickBased(tickseries) = source {
             for (idx, dp) in tickseries.datapoints.iter().enumerate() {
@@ -263,6 +265,17 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                 self.process_one(idx, intensity, bullish);
             }
             self.next_idx = tickseries.datapoints.len();
+            // Sample the last 3 bars' bins for color-shift detection
+            let tail_sample: Vec<_> = self.data.iter().rev().take(3).map(|p| {
+                (p.intensity, p.bin, p.k_actual, p.t())
+            }).collect();
+            log::info!(
+                "[intensity-rebuild] FULL REBUILD: prev_data={} prev_next_idx={} \
+                 new_data={} new_next_idx={} dp_count={} tail_bins={:?}",
+                prev_data_len, prev_next_idx,
+                self.data.len(), self.next_idx,
+                tickseries.datapoints.len(), tail_sample,
+            );
         }
         self.clear_all_caches();
     }
@@ -281,6 +294,7 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                 let new_len = tickseries.datapoints.len();
                 if self.next_idx == old_dp_len {
                     // Incremental path: only process newly completed bars.
+                    let new_bars = new_len.saturating_sub(old_dp_len);
                     for idx in old_dp_len..new_len {
                         let dp = &tickseries.datapoints[idx];
                         let intensity = dp.microstructure.map(|m| m.trade_intensity).unwrap_or(0.0);
@@ -288,8 +302,21 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                         self.process_one(idx, intensity, bullish);
                     }
                     self.next_idx = new_len;
+                    if new_bars > 0 {
+                        let last = self.data.last().map(|p| (p.intensity, p.bin, p.k_actual, p.t()));
+                        log::info!(
+                            "[intensity-incr] +{} bars: old_dp={} new_dp={} data_len={} \
+                             last_bar={:?}",
+                            new_bars, old_dp_len, new_len, self.data.len(), last,
+                        );
+                    }
                 } else {
                     // State mismatch (e.g. after seek/reset): full rebuild.
+                    log::warn!(
+                        "[intensity-mismatch] next_idx={} != old_dp_len={} dp_count={} \
+                         data_len={} → FULL REBUILD",
+                        self.next_idx, old_dp_len, new_len, self.data.len(),
+                    );
                     self.rebuild_from_source(source);
                     return; // rebuild_from_source already cleared caches
                 }
@@ -313,5 +340,9 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
             .get(storage_idx as usize)
             .filter(|p| p.bin != 0) // bin=0 is a sentinel for bars with no microstructure
             .map(|p| thermal_color(p.t()))
+    }
+
+    fn data_len(&self) -> usize {
+        self.data.len()
     }
 }

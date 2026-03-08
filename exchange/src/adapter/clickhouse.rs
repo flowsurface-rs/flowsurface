@@ -897,19 +897,28 @@ pub async fn fetch_catchup(
         *SSE_HOST, *SSE_PORT
     );
 
-    // Retry loop for transient 429 rate limiting from the sidecar.
-    // Two ODB panes (e.g. BPR25 + BPR50) often fire catchup simultaneously;
-    // the sidecar rate-limits the second request with a 5s retry window.
+    // Retry loop for transient errors from the sidecar:
+    // - 429 rate limiting (two panes fire catchup simultaneously)
+    // - Transport errors (sidecar drops connection with empty reply under load)
     let mut last_error = None;
     for attempt in 0..3u32 {
-        let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
-            log::error!(
-                "[catchup] request failed: {e} (is_timeout={}, is_connect={}, url={url})",
-                e.is_timeout(),
-                e.is_connect()
-            );
-            AdapterError::FetchError(e)
-        })?;
+        let resp = match HTTP_CLIENT.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                // Transport error (empty reply, connection reset, etc.)
+                // Treat as transient and retry, same as 429.
+                log::warn!(
+                    "[catchup] {symbol}@{threshold_dbps}: transport error, retrying in 5s \
+                     (attempt {}/3): {e} (is_timeout={}, is_connect={})",
+                    attempt + 1,
+                    e.is_timeout(),
+                    e.is_connect()
+                );
+                last_error = Some(format!("catchup transport error: {e}"));
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
 
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             let body = resp.text().await.unwrap_or_default();

@@ -65,6 +65,12 @@ pub trait KlineIndicatorImpl {
         None
     }
 
+    /// Return the number of processed datapoints in this indicator's internal storage.
+    /// Used for divergence detection between indicator state and data source.
+    fn data_len(&self) -> usize {
+        0
+    }
+
     /// Draw overlay graphics on the main candle pane.
     /// Default: no-op. Overridden by overlay indicators (e.g. ZigZag).
     fn draw_overlay(

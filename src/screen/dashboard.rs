@@ -207,6 +207,11 @@ impl Dashboard {
             Message::ErrorOccurred(pane_id, err) => match pane_id {
                 Some(id) => {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
+                        // Finalize gap-fill on error too — otherwise fetching_trades
+                        // stays true permanently, blocking WS→RBP and buffering SSE bars.
+                        if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content {
+                            c.finalize_gap_fill();
+                        }
                         state.status = pane::Status::Ready;
                         state.notifications.push(Toast::error(err.to_string()));
                     }

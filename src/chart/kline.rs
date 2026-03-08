@@ -830,6 +830,15 @@ impl KlineChart {
                         .filter_map(Option::as_mut)
                         .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
+                    // SSE/CH bars change datapoints but on_insert_klines is a no-op
+                    // for the heatmap indicator. Rebuild to keep data in sync.
+                    // Without this, heatmap.data.len() diverges from datapoints.len()
+                    // and thermal_body_color maps to wrong bars.
+                    self.indicators
+                        .values_mut()
+                        .filter_map(Option::as_mut)
+                        .for_each(|indi| indi.rebuild_from_source(&self.data_source));
+
                     // When SSE delivers a bar, reset the local RBP processor and
                     // replay buffered WS trades past the bar's last_agg_trade_id.
                     // Without replay, the forming bar opens at whatever trade the WS
@@ -1436,7 +1445,7 @@ impl KlineChart {
                     // last_agg_trade_id into the fresh processor to eliminate the
                     // forming-bar price gap.
                     if !is_gap_fill {
-                        const RING_CAP: usize = 5000;
+                        const RING_CAP: usize = 10_000;
                         for trade in trades_buffer {
                             if self.ws_trade_ring.len() >= RING_CAP {
                                 self.ws_trade_ring.pop_front(); // O(1) eviction
@@ -2309,6 +2318,18 @@ impl canvas::Program<Message> for KlineChart {
                     } else {
                         0
                     };
+                    // Divergence detection: heatmap data length vs datapoints length
+                    if let Some(h) = heatmap_indi {
+                        let heatmap_len = h.data_len();
+                        if heatmap_len != total_len {
+                            log::warn!(
+                                "[intensity-diverge] heatmap_data={} != dp_count={} \
+                                 (delta={}) → colors may map to wrong bars",
+                                heatmap_len, total_len,
+                                heatmap_len as isize - total_len as isize,
+                            );
+                        }
+                    }
 
                     let thermal_wicks = self.kline_config.thermal_wicks;
                     render_data_source(
