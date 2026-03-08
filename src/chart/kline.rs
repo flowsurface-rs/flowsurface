@@ -1402,6 +1402,22 @@ impl KlineChart {
                                                  curr={id} missing={} trades",
                                                 gap - 1,
                                             );
+                                            // Level 3 guard: alert on trade ID gap
+                                            if exchange::telegram::is_configured() {
+                                                let detail = format!(
+                                                    "agg_trade_id gap: prev={prev_id} curr={id} \
+                                                     missing={} trades",
+                                                    gap - 1
+                                                );
+                                                tokio::spawn(async move {
+                                                    exchange::telegram::alert(
+                                                        exchange::telegram::Severity::Warning,
+                                                        "trade continuity",
+                                                        &detail,
+                                                    )
+                                                    .await;
+                                                });
+                                            }
                                         }
                                     }
                                     self.last_ws_agg_trade_id = Some(id);
@@ -1434,6 +1450,21 @@ impl KlineChart {
                                 self.dedup_total_skipped,
                                 self.ch_reconcile_count,
                             );
+                            // Level 3 guard: alert on zero-throughput window
+                            // (trade subscription likely lost — issue #104)
+                            if self.ws_trade_count_window == 0
+                                && exchange::telegram::is_configured()
+                            {
+                                tokio::spawn(async {
+                                    exchange::telegram::alert(
+                                        exchange::telegram::Severity::Critical,
+                                        "trade feed",
+                                        "Zero WS trades in 30s window — \
+                                         trade subscription may be lost",
+                                    )
+                                    .await;
+                                });
+                            }
                             self.ws_trade_count_window = 0;
                             self.ws_throughput_last_log_ms = now_ms;
                             self.max_trade_latency_ms = 0;

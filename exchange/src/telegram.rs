@@ -105,6 +105,55 @@ pub fn send_alert_blocking(message: &str) {
         .and_then(|h| h.join().map_err(|_| std::io::Error::other("join failed")));
 }
 
+/// Level 2 startup guard: probe ClickHouse and SSE sidecar, then send
+/// a startup alert with connectivity status. Call once during app init.
+pub async fn startup_health_check() {
+    if !is_configured() {
+        return;
+    }
+
+    let ch_host = std::env::var("FLOWSURFACE_CH_HOST").unwrap_or_else(|_| "localhost".into());
+    let ch_port = std::env::var("FLOWSURFACE_CH_PORT").unwrap_or_else(|_| "18123".into());
+    let sse_host = std::env::var("FLOWSURFACE_SSE_HOST").unwrap_or_else(|_| "localhost".into());
+    let sse_port = std::env::var("FLOWSURFACE_SSE_PORT").unwrap_or_else(|_| "18081".into());
+
+    let probe = Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| HTTP.clone());
+
+    let ch_ok = probe
+        .get(format!("http://{ch_host}:{ch_port}/"))
+        .send()
+        .await
+        .is_ok();
+    let sse_ok = probe
+        .get(format!("http://{sse_host}:{sse_port}/health"))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    let mut lines = vec!["App launched".to_string()];
+    if ch_ok {
+        lines.push("CH: ✓".into());
+    } else {
+        lines.push(format!("CH: ✗ UNREACHABLE ({ch_host}:{ch_port})"));
+    }
+    if sse_ok {
+        lines.push("SSE: ✓".into());
+    } else {
+        lines.push("SSE: ✗ (may be disabled)".into());
+    }
+
+    let severity = if !ch_ok {
+        Severity::Critical
+    } else {
+        Severity::Info
+    };
+    alert(severity, "startup", &lines.join("\n")).await;
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Severity {
     Critical,

@@ -216,17 +216,10 @@ impl Flowsurface {
             Task::none()
         };
 
-        // Telegram startup alert (fire-and-forget)
+        // Level 2 guard: startup health check (CH + SSE probe) + Telegram alert
         let tg_startup: Task<Message> = if exchange::telegram::is_configured() {
             Task::perform(
-                async {
-                    exchange::telegram::alert(
-                        exchange::telegram::Severity::Info,
-                        "startup",
-                        "App launched successfully",
-                    )
-                    .await;
-                },
+                exchange::telegram::startup_health_check(),
                 |_| Message::Tick(std::time::Instant::now()),
             )
         } else {
