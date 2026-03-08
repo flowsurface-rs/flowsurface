@@ -67,6 +67,16 @@ fn main() {
         // Also print a backtrace
         let bt = std::backtrace::Backtrace::force_capture();
         eprintln!("Backtrace:\n{bt}");
+
+        // Fire Telegram alert for panics (critical).
+        // Use send_alert_blocking which creates a one-shot runtime —
+        // safe because the panic handler runs outside the async runtime context.
+        if exchange::telegram::is_configured() {
+            let detail = format!("PANIC at {location}\n<code>{msg}</code>");
+            exchange::telegram::send_alert_blocking(&format!(
+                "🔴 <b>flowsurface — crash</b>\n{detail}"
+            ));
+        }
     }));
 
     std::thread::spawn(data::cleanup_old_market_data);
@@ -206,6 +216,23 @@ impl Flowsurface {
             Task::none()
         };
 
+        // Telegram startup alert (fire-and-forget)
+        let tg_startup: Task<Message> = if exchange::telegram::is_configured() {
+            Task::perform(
+                async {
+                    exchange::telegram::alert(
+                        exchange::telegram::Severity::Info,
+                        "startup",
+                        "App launched successfully",
+                    )
+                    .await;
+                },
+                |_| Message::Tick(std::time::Instant::now()),
+            )
+        } else {
+            Task::none()
+        };
+
         (
             state,
             open_main_window
@@ -213,7 +240,8 @@ impl Flowsurface {
                 .chain(load_layout)
                 .chain(launch_sidebar.map(Message::Sidebar))
                 .chain(init_odb_symbols)
-                .chain(set_on_top.discard()),
+                .chain(set_on_top.discard())
+                .chain(tg_startup),
         )
     }
 

@@ -204,25 +204,53 @@ impl Dashboard {
                     }
                 }
             }
-            Message::ErrorOccurred(pane_id, err) => match pane_id {
-                Some(id) => {
-                    if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
-                        // Finalize gap-fill on error too — otherwise fetching_trades
-                        // stays true permanently, blocking WS→RBP and buffering SSE bars.
-                        if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content {
-                            c.finalize_gap_fill();
+            Message::ErrorOccurred(pane_id, err) => {
+                let err_str = err.to_string();
+
+                // Telegram alert for pane errors (fire-and-forget)
+                let tg_task: Task<Message> = if exchange::telegram::is_configured() {
+                    let detail = err_str.clone();
+                    Task::perform(
+                        async move {
+                            exchange::telegram::alert(
+                                exchange::telegram::Severity::Warning,
+                                "pane error",
+                                &detail,
+                            )
+                            .await;
+                        },
+                        |_| Message::SavePopoutSpecs(HashMap::new()),
+                    )
+                } else {
+                    Task::none()
+                };
+
+                match pane_id {
+                    Some(id) => {
+                        if let Some(state) =
+                            self.get_mut_pane_state_by_uuid(main_window.id, id)
+                        {
+                            // Finalize gap-fill on error too — otherwise fetching_trades
+                            // stays true permanently, blocking WS→RBP and buffering SSE bars.
+                            if let pane::Content::Kline { chart: Some(c), .. } =
+                                &mut state.content
+                            {
+                                c.finalize_gap_fill();
+                            }
+                            state.status = pane::Status::Ready;
+                            state.notifications.push(Toast::error(err_str));
                         }
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
+                        return (tg_task, None);
+                    }
+                    _ => {
+                        return (
+                            Task::done(Message::Notification(Toast::error(err_str)))
+                                .chain(tg_task),
+                            None,
+                        );
                     }
                 }
-                _ => {
-                    return (
-                        Task::done(Message::Notification(Toast::error(err.to_string()))),
-                        None,
-                    );
-                }
-            },
+            }
             Message::Pane(window, message) => match message {
                 pane::Message::PaneClicked(pane) => {
                     self.focus = Some((window, pane));

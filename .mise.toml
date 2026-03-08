@@ -15,6 +15,9 @@ FLOWSURFACE_SSE_HOST = "localhost"
 FLOWSURFACE_SSE_PORT = "18081"
 FLOWSURFACE_OUROBOROS_MODE = "day"
 FLOWSURFACE_ALWAYS_ON_TOP = "1"
+# Telegram telemetry bot — credentials read from secrets files
+FLOWSURFACE_TG_BOT_TOKEN = "{{read_file(path=env.HOME ~ '/.claude/.secrets/flowsurface-tg-bot-token') | trim}}"
+FLOWSURFACE_TG_CHAT_ID = "{{read_file(path=env.HOME ~ '/.claude/.secrets/flowsurface-tg-chat-id') | trim}}"
 MACOSX_DEPLOYMENT_TARGET = "11.0"
 
 [task_config]

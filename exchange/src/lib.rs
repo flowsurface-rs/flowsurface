@@ -5,6 +5,7 @@ pub mod health;
 mod limiter;
 pub mod proxy;
 pub mod resilience;
+pub mod telegram;
 pub mod unit;
 
 pub use adapter::Event;
