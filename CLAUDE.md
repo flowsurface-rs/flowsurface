@@ -229,7 +229,7 @@ After merging upstream, check for:
 2. Changes to `window::Settings` — preserve `level:` field in `main.rs`
 3. Changes to `FetchedData` — preserve fork's `microstructure` field in `connector/fetcher.rs`
 4. New `ContentKind` variants — add to pane setup in `dashboard/pane.rs`
-5. Changes to `FetchRange` — preserve fork's `TradesFromId` variant in `connector/fetcher.rs`
+5. Changes to `FetchRange` — preserve fork's `OdbCatchup` variant in `connector/fetcher.rs`
 6. Changes to `Message` in `dashboard.rs` — preserve `TriggerOdbGapFill` variant
 7. Changes to `Trade` struct — preserve `agg_trade_id` field in `exchange/src/lib.rs`
 
