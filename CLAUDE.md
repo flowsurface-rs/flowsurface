@@ -74,6 +74,8 @@ All set in `.mise.toml`. The app reads them at runtime via `std::env::var()`.
 | `FLOWSURFACE_SSE_PORT`       | `8081`      | SSE sidecar port                    |
 | `FLOWSURFACE_OUROBOROS_MODE` | `day`       | ODB session mode (`day` or `month`) |
 | `FLOWSURFACE_ALWAYS_ON_TOP`  | _(unset)_   | Pin window above all others if set  |
+| `FLOWSURFACE_TG_BOT_TOKEN`   | _(unset)_   | Telegram bot token for alerts       |
+| `FLOWSURFACE_TG_CHAT_ID`     | _(unset)_   | Telegram chat ID for alerts         |
 
 ---
 

@@ -15,6 +15,7 @@ Exchange adapters, WebSocket/REST stream handling, and type definitions. Crate n
 | **Bybit**       | `bybit.rs`       | REST + WebSocket                   | Perpetuals                 |
 | **Hyperliquid** | `hyperliquid.rs` | REST + WebSocket                   | DEX Perpetuals             |
 | **OKX**         | `okex.rs`        | REST + WebSocket                   | Multi-product              |
+| **Telegram**    | `telegram.rs`    | HTTPS (Bot API)                    | Telemetry alerts           |
 
 ---
 
