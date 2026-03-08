@@ -1005,6 +1005,7 @@ impl Dashboard {
                 data,
                 req_id,
                 microstructure,
+                agg_trade_id_ranges,
             } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
@@ -1025,6 +1026,7 @@ impl Dashboard {
                                 ticker_info,
                                 &data,
                                 microstructure.as_deref(),
+                                agg_trade_id_ranges.as_deref(),
                             );
 
                             // Gap-fill via ODB sidecar /catchup endpoint (v12.62.0+).
@@ -1469,10 +1471,11 @@ impl From<fetcher::FetchUpdate> for Message {
                     fetcher::FetchedData::Trades { batch, until_time } => {
                         FetchedData::Trades { batch, until_time }
                     }
-                    fetcher::FetchedData::Klines { data, req_id, microstructure } => FetchedData::Klines {
+                    fetcher::FetchedData::Klines { data, req_id, microstructure, agg_trade_id_ranges } => FetchedData::Klines {
                         data,
                         req_id,
                         microstructure,
+                        agg_trade_id_ranges,
                     },
                     fetcher::FetchedData::OI { data, req_id } => {
                         FetchedData::OI { data, req_id }
@@ -1742,6 +1745,7 @@ fn kline_fetch_task(
                         data: klines,
                         req_id,
                         microstructure: None,
+                        agg_trade_id_ranges: None,
                     };
                     Message::DistributeFetchedData {
                         layout_id,
@@ -1768,11 +1772,12 @@ fn kline_fetch_task(
                 |err: AdapterError| format!("{err}"),
             ),
             move |result| match result {
-                Ok((klines, micro)) => {
+                Ok((klines, micro, agg_ids)) => {
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
                         microstructure: Some(micro),
+                        agg_trade_id_ranges: Some(agg_ids),
                     };
                     Message::DistributeFetchedData {
                         layout_id,

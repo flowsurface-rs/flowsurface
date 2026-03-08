@@ -562,6 +562,7 @@ impl KlineChart {
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
+        agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
         kline_config: data::chart::kline::Config,
     ) -> Self {
@@ -595,7 +596,9 @@ impl KlineChart {
             })
             .collect();
 
-        let mut tick_aggr = TickAggr::from_klines_with_microstructure(step, klines_raw, &micro);
+        let empty_ids: Vec<Option<(u64, u64)>> = vec![None; klines_raw.len()];
+        let ids = agg_trade_id_ranges.unwrap_or(&empty_ids);
+        let mut tick_aggr = TickAggr::from_klines_with_microstructure(step, klines_raw, &micro, ids);
 
         // Scale cell width with threshold (see non-microstructure constructor)
         let threshold_dbps = match basis {
@@ -1736,6 +1739,7 @@ impl KlineChart {
         req_id: uuid::Uuid,
         klines: &[Kline],
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
+        agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
     ) {
         log::info!(
             "[RB-HIST] insert_odb_hist_klines: {} klines, micro={}, datasource=TickBased?{}",
@@ -1762,7 +1766,11 @@ impl KlineChart {
                                 })
                                 .collect()
                         });
-                    tick_aggr.prepend_klines_with_microstructure(klines, micro.as_deref());
+                    tick_aggr.prepend_klines_with_microstructure(
+                        klines,
+                        micro.as_deref(),
+                        agg_trade_id_ranges,
+                    );
                     self.request_handler.mark_completed(req_id);
                 }
                 let after_len = tick_aggr.datapoints.len();
@@ -3103,38 +3111,47 @@ fn draw_crosshair_tooltip(
     timezone: data::UserTimezone,
     forming_kline: Option<&Kline>,
 ) {
-    let kline_opt = match data {
-        PlotData::TimeBased(timeseries) => timeseries
-            .datapoints
-            .iter()
-            .find(|(time, _)| **time == at_interval)
-            .map(|(_, dp)| &dp.kline)
-            .or_else(|| {
-                if timeseries.datapoints.is_empty() {
-                    None
-                } else {
-                    let (last_time, dp) = timeseries.datapoints.last_key_value()?;
-                    if at_interval > *last_time {
-                        Some(&dp.kline)
-                    } else {
+    // Resolve both the kline and (for tick-based) the agg_trade_id_range
+    let (kline_opt, agg_id_range): (Option<&Kline>, Option<(u64, u64)>) = match data {
+        PlotData::TimeBased(timeseries) => {
+            let kline = timeseries
+                .datapoints
+                .iter()
+                .find(|(time, _)| **time == at_interval)
+                .map(|(_, dp)| &dp.kline)
+                .or_else(|| {
+                    if timeseries.datapoints.is_empty() {
                         None
+                    } else {
+                        let (last_time, dp) = timeseries.datapoints.last_key_value()?;
+                        if at_interval > *last_time {
+                            Some(&dp.kline)
+                        } else {
+                            None
+                        }
                     }
-                }
-            }),
+                });
+            (kline, None)
+        }
         PlotData::TickBased(tick_aggr) => {
             if at_interval == u64::MAX {
-                // Sentinel: cursor on forming bar → use the forming kline if available
                 log::trace!(
                     "[TOOLTIP] forming bar sentinel detected, forming_kline={}",
                     forming_kline.is_some()
                 );
-                forming_kline
+                // Forming bar: use last completed bar's agg_trade_id_range
+                let ids = tick_aggr
+                    .datapoints
+                    .last()
+                    .and_then(|dp| dp.agg_trade_id_range);
+                (forming_kline, ids)
             } else {
                 let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
                 if index < tick_aggr.datapoints.len() {
-                    Some(&tick_aggr.datapoints[tick_aggr.datapoints.len() - 1 - index].kline)
+                    let dp = &tick_aggr.datapoints[tick_aggr.datapoints.len() - 1 - index];
+                    (Some(&dp.kline), dp.agg_trade_id_range)
                 } else {
-                    None
+                    (None, None)
                 }
             }
         }
@@ -3220,6 +3237,11 @@ fn draw_crosshair_tooltip(
             _ => None,
         };
 
+        // Row 4: agg_trade_id range (ODB bars only)
+        let agg_id_line: Option<String> = agg_id_range.map(|(first, last)| {
+            format!("ID {first}  →  {last}   (Δ{})", last.saturating_sub(first))
+        });
+
         let timing_width = timing_lines
             .as_ref()
             .map(|(a, b)| {
@@ -3228,8 +3250,19 @@ fn draw_crosshair_tooltip(
                 wa.max(wb)
             })
             .unwrap_or(0.0);
-        let bg_width = ohlc_width.max(timing_width);
-        let bg_height = if timing_lines.is_some() { 48.0 } else { 16.0 };
+        let agg_id_width = agg_id_line
+            .as_ref()
+            .map(|s| s.len() as f32 * 7.5 + 16.0)
+            .unwrap_or(0.0);
+        let bg_width = ohlc_width.max(timing_width).max(agg_id_width);
+        let has_timing = timing_lines.is_some();
+        let has_agg_id = agg_id_line.is_some();
+        let bg_height = match (has_timing, has_agg_id) {
+            (true, true) => 62.0,   // OHLC + 2 timing + agg_id
+            (true, false) => 48.0,  // OHLC + 2 timing
+            (false, true) => 30.0,  // OHLC + agg_id
+            (false, false) => 16.0, // OHLC only
+        };
 
         let position = Point::new(
             frame.width() - bg_width - 8.0,
@@ -3257,19 +3290,35 @@ fn draw_crosshair_tooltip(
             x += if *is_value { 6.0 } else { 2.0 };
         }
 
+        let mut next_y = position.y + 18.0;
+
         // Row 2 + 3: open → close (duration) in both timezones
         if let Some((primary, alt)) = timing_lines {
             frame.fill_text(canvas::Text {
                 content: primary,
-                position: Point::new(position.x, position.y + 18.0),
+                position: Point::new(position.x, next_y),
                 size: iced::Pixels(10.5),
                 color: dim_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
             });
+            next_y += 14.0;
             frame.fill_text(canvas::Text {
                 content: alt,
-                position: Point::new(position.x, position.y + 32.0),
+                position: Point::new(position.x, next_y),
+                size: iced::Pixels(10.5),
+                color: dim_color,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
+            next_y += 14.0;
+        }
+
+        // Row 4: agg_trade_id range
+        if let Some(id_line) = agg_id_line {
+            frame.fill_text(canvas::Text {
+                content: id_line,
+                position: Point::new(position.x, next_y),
                 size: iced::Pixels(10.5),
                 color: dim_color,
                 font: style::AZERET_MONO,

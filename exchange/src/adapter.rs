@@ -576,12 +576,12 @@ pub async fn fetch_odb_klines(
     clickhouse::fetch_klines(ticker_info, threshold_dbps, range).await
 }
 
-/// Fetch klines + microstructure from ClickHouse range bar cache.
+/// Fetch klines + microstructure + agg_trade_id ranges from ClickHouse range bar cache.
 pub async fn fetch_odb_klines_with_microstructure(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
     range: Option<(u64, u64)>,
-) -> Result<(Vec<Kline>, Vec<Option<clickhouse::ChMicrostructure>>), AdapterError> {
+) -> Result<(Vec<Kline>, Vec<Option<clickhouse::ChMicrostructure>>, Vec<Option<(u64, u64)>>), AdapterError> {
     clickhouse::fetch_klines_with_microstructure(ticker_info, threshold_dbps, range).await
 }
 

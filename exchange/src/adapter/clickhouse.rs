@@ -291,6 +291,10 @@ struct ChKline {
     ofi: Option<f64>,
     #[serde(default)]
     trade_intensity: Option<f64>,
+    #[serde(default)]
+    first_agg_trade_id: Option<u64>,
+    #[serde(default)]
+    last_agg_trade_id: Option<u64>,
 }
 
 pub async fn fetch_klines(
@@ -344,7 +348,8 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     // within the requested window. ASC ordering would return bars from the
     // beginning of time, creating gaps when loading historical data.
     let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
-                individual_trade_count, ofi, trade_intensity";
+                individual_trade_count, ofi, trade_intensity, \
+                first_agg_trade_id, last_agg_trade_id";
     // Filter by ouroboros_mode (default: 'day'). Day-mode is the current production
     // mode — creates UTC-midnight-bounded sessions. Configurable via
     // FLOWSURFACE_OUROBOROS_MODE env var for migration flexibility.
@@ -398,7 +403,7 @@ pub async fn fetch_klines_with_microstructure(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
     range: Option<(u64, u64)>,
-) -> Result<(Vec<Kline>, Vec<Option<ChMicrostructure>>), AdapterError> {
+) -> Result<(Vec<Kline>, Vec<Option<ChMicrostructure>>, Vec<Option<(u64, u64)>>), AdapterError> {
     let symbol = bare_symbol(&ticker_info);
     let min_tick = ticker_info.min_ticksize;
     let sql = build_odb_sql(&symbol, threshold_dbps, range);
@@ -406,6 +411,7 @@ pub async fn fetch_klines_with_microstructure(
     let body = query(&sql).await?;
     let mut klines = Vec::new();
     let mut micro = Vec::new();
+    let mut agg_id_ranges = Vec::new();
 
     for line in body.lines() {
         let line = line.trim();
@@ -428,13 +434,18 @@ pub async fn fetch_klines_with_microstructure(
             min_tick,
         ));
         micro.push(parse_microstructure(&ck));
+        agg_id_ranges.push(
+            ck.first_agg_trade_id
+                .zip(ck.last_agg_trade_id)
+        );
     }
 
     // DESC order → reverse to ascending (oldest first)
     klines.reverse();
     micro.reverse();
+    agg_id_ranges.reverse();
 
-    Ok((klines, micro))
+    Ok((klines, micro, agg_id_ranges))
 }
 
 // -- Backfill request (Issue #97: on-demand trigger for opendeviationbar-py) --
