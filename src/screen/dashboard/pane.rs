@@ -401,7 +401,8 @@ impl State {
         match &mut self.content {
             Content::Kline { chart, .. } => {
                 let Some(chart) = chart else {
-                    panic!("Kline chart wasn't initialized when inserting open interest");
+                    log::warn!("insert_hist_oi: chart not yet initialized, dropping OI data");
+                    return;
                 };
                 chart.insert_open_interest(req_id, oi);
             }
@@ -423,7 +424,8 @@ impl State {
                 chart, indicators, ..
             } => {
                 let Some(chart) = chart else {
-                    panic!("chart wasn't initialized when inserting klines");
+                    log::warn!("insert_hist_klines: chart not yet initialized, dropping kline data");
+                    return;
                 };
 
                 if let Some(id) = req_id {
@@ -457,7 +459,8 @@ impl State {
             }
             Content::Comparison(chart) => {
                 let Some(chart) = chart else {
-                    panic!("Comparison chart wasn't initialized when inserting klines");
+                    log::warn!("insert_hist_klines: comparison chart not yet initialized, dropping kline data");
+                    return;
                 };
 
                 if let Some(id) = req_id {
@@ -497,7 +500,8 @@ impl State {
                 chart, indicators, ..
             } => {
                 let Some(chart) = chart else {
-                    panic!("chart wasn't initialized when inserting ODB klines");
+                    log::warn!("insert_odb_klines: chart not yet initialized, dropping ODB data");
+                    return;
                 };
 
                 if let Some(id) = req_id {
@@ -2138,7 +2142,9 @@ impl Content {
                 }
                 chart.toggle_indicator(ind);
             }
-            _ => panic!("indicator toggle on {indicator:?} pane",),
+            _ => {
+                log::warn!("indicator toggle on {indicator:?} pane — ignoring");
+            }
         }
     }
 
@@ -2150,7 +2156,7 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::Comparison(_) => {
-                panic!("indicator reorder on {} pane", self)
+                log::warn!("indicator reorder on {} pane — ignoring", self);
             }
         }
     }
