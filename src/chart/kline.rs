@@ -1140,6 +1140,38 @@ impl KlineChart {
         for (kline, bar_last_agg_id, micro) in buffered {
             self.update_latest_kline(&kline, bar_last_agg_id, micro);
         }
+
+        // Startup anchor: seed the RBP processor with the last CH bar's close
+        // price so the forming bar opens at the correct level instead of jumping
+        // to the first WS trade (which may be $100+ away after a gap).
+        if let PlotData::TickBased(ref tick_aggr) = self.data_source
+            && let Some(ref mut processor) = self.odb_processor
+            && processor.get_incomplete_bar().is_none()
+            && let Some(last_dp) = tick_aggr.datapoints.last()
+        {
+            let anchor_price = last_dp.kline.close;
+            let anchor_trade = Trade {
+                time: last_dp.kline.time,
+                is_sell: false,
+                price: anchor_price,
+                qty: Qty::ZERO,
+                agg_trade_id: None,
+            };
+            let anchor = trade_to_agg_trade(&anchor_trade, -1);
+            match processor.process_single_trade(&anchor) {
+                Ok(_) => {
+                    log::info!(
+                        "[startup-anchor] seeded forming bar at close={:.2} ts={}",
+                        anchor_price.to_f32(),
+                        last_dp.kline.time,
+                    );
+                }
+                Err(e) => {
+                    log::warn!("[startup-anchor] failed to seed: {e}");
+                }
+            }
+        }
+
         self.invalidate(None);
     }
 
@@ -1992,6 +2024,13 @@ impl KlineChart {
                     }
                 }
 
+                // Startup anchor: extract anchor price before indicator rebuild
+                // (tick_aggr borrow must end before rebuild_from_source borrows self.data_source).
+                let anchor_info = tick_aggr
+                    .datapoints
+                    .last()
+                    .map(|dp| (dp.kline.close, dp.kline.time));
+
                 // Rebuild all indicators from updated data source
                 let indicator_count = self.indicators.values().filter(|v| v.is_some()).count();
                 log::info!(
@@ -2002,6 +2041,50 @@ impl KlineChart {
                     .values_mut()
                     .filter_map(Option::as_mut)
                     .for_each(|indi| indi.rebuild_from_source(&self.data_source));
+                if let Some((anchor_price, anchor_time)) = anchor_info {
+                    let had_premature = self
+                        .odb_processor
+                        .as_ref()
+                        .is_some_and(|p| p.get_incomplete_bar().is_some());
+                    if had_premature {
+                        // Reset processor to discard premature forming bar
+                        if let data::chart::Basis::Odb(threshold_dbps) = self.chart.basis {
+                            self.odb_processor =
+                                OpenDeviationBarProcessor::new(threshold_dbps)
+                                    .map_err(|e| {
+                                        log::warn!(
+                                            "[startup-anchor] processor reset failed: {e}"
+                                        )
+                                    })
+                                    .ok();
+                        }
+                    }
+                    // Seed with last CH bar's close price
+                    if let Some(ref mut processor) = self.odb_processor {
+                        let anchor_trade = Trade {
+                            time: anchor_time,
+                            is_sell: false,
+                            price: anchor_price,
+                            qty: Qty::ZERO,
+                            agg_trade_id: None,
+                        };
+                        let anchor = trade_to_agg_trade(&anchor_trade, -1);
+                        match processor.process_single_trade(&anchor) {
+                            Ok(_) => {
+                                log::info!(
+                                    "[startup-anchor] seeded forming bar at close={:.2} \
+                                     ts={} had_premature={}",
+                                    anchor_price.to_f32(),
+                                    anchor_time,
+                                    had_premature,
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!("[startup-anchor] failed to seed: {e}");
+                            }
+                        }
+                    }
+                }
 
                 self.invalidate(None);
             }
