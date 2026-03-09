@@ -253,6 +253,10 @@ pub struct KlineChart {
     /// `agg_trade_id > bar.last_agg_trade_id` are replayed into the new processor
     /// to eliminate the forming-bar price gap. VecDeque for O(1) eviction.
     ws_trade_ring: VecDeque<Trade>,
+    /// Post-reset fence: after SSE/CH bar resets the processor, WS trades with
+    /// `agg_trade_id <= this` are skipped. Prevents stale trades from the
+    /// completed bar leaking into the new forming bar.
+    sse_reset_fence_agg_id: Option<u64>,
     /// Kline chart configuration (e.g. OFI EMA period).
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
@@ -377,6 +381,7 @@ impl KlineChart {
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
                     ws_trade_ring: VecDeque::new(),
+                    sse_reset_fence_agg_id: None,
                     kline_config,
                     ws_trade_count_window: 0,
                     ws_throughput_last_log_ms: 0,
@@ -454,6 +459,7 @@ impl KlineChart {
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
                     ws_trade_ring: VecDeque::new(),
+                    sse_reset_fence_agg_id: None,
                     kline_config,
                     ws_trade_count_window: 0,
                     ws_throughput_last_log_ms: 0,
@@ -560,6 +566,7 @@ impl KlineChart {
                     gap_fill_fence_agg_id: None,
                     buffered_ch_klines: Vec::new(),
                     ws_trade_ring: VecDeque::new(),
+                    sse_reset_fence_agg_id: None,
                     kline_config,
                     ws_trade_count_window: 0,
                     ws_throughput_last_log_ms: 0,
@@ -736,6 +743,7 @@ impl KlineChart {
             gap_fill_fence_agg_id: None,
             buffered_ch_klines: Vec::new(),
             ws_trade_ring: VecDeque::new(),
+            sse_reset_fence_agg_id: None,
             kline_config,
             ws_trade_count_window: 0,
             ws_throughput_last_log_ms: 0,
@@ -926,6 +934,8 @@ impl KlineChart {
                             })
                             .ok();
                         self.next_agg_id = 0;
+                        // Post-reset fence: skip WS trades from the completed bar
+                        self.sse_reset_fence_agg_id = bar_last_agg_id;
 
                         // Replay buffered trades past the bar boundary into the
                         // fresh processor so the forming bar starts from the correct
@@ -1624,6 +1634,23 @@ impl KlineChart {
                         let mut new_bars = 0u32;
 
                         for trade in trades_buffer {
+                            // Post-reset fence: skip stale WS trades that belong
+                            // to the completed bar (delivered after SSE reset).
+                            if let Some(fence) = self.sse_reset_fence_agg_id
+                                && let Some(id) = trade.agg_trade_id
+                            {
+                                if id <= fence {
+                                    continue;
+                                }
+                                // First trade past fence — clear it and log
+                                log::info!(
+                                    "[post-reset-fence] cleared: first trade past fence \
+                                     id={id} > fence={fence}, price={:.2}",
+                                    trade.price.to_f32(),
+                                );
+                                self.sse_reset_fence_agg_id = None;
+                            }
+
                             let agg = trade_to_agg_trade(trade, self.next_agg_id);
 
                             // Telemetry: sample every 500th WebSocket trade
