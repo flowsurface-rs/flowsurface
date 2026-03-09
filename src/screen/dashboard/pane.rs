@@ -35,9 +35,7 @@ use exchange::{
     adapter::{MarketKind, StreamKind, StreamTicksize},
 };
 use iced::{
-    Alignment, Element, Length, Renderer, Theme,
-    alignment::Vertical,
-    padding,
+    Alignment, Element, Length, Renderer, Theme, padding,
     widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
 };
 use std::time::Instant;
@@ -435,7 +433,7 @@ impl State {
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let mut stream_info_element = if Content::Starter == self.content {
+        let mut top_left_buttons = if Content::Starter == self.content {
             row![]
         } else {
             row![link_group_button(id, self.link_group, |id| {
@@ -461,9 +459,15 @@ impl State {
                 label = format!("{label} +{extra}");
             }
 
-            let content = row![exchange_icon, text(label).size(14)]
-                .align_y(Vertical::Center)
-                .spacing(4);
+            let content = row![
+                exchange_icon.align_y(Alignment::Center).line_height(1.4),
+                text(label)
+                    .size(14)
+                    .align_y(Alignment::Center)
+                    .line_height(1.4)
+            ]
+            .align_y(Alignment::Center)
+            .spacing(4);
 
             let tickers_list_btn = button(content)
                 .on_press(Message::PaneEvent(
@@ -477,13 +481,17 @@ impl State {
                         !matches!(self.modal, Some(Modal::MiniTickersList(_))),
                     )
                 })
-                .padding([4, 10]);
+                .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
-            stream_info_element = stream_info_element.push(tickers_list_btn);
+            top_left_buttons = top_left_buttons.push(tickers_list_btn);
         } else if !matches!(self.content, Content::Starter) && !self.has_stream() {
-            let content = row![text("Choose a ticker").size(13)]
-                .align_y(Alignment::Center)
-                .spacing(4);
+            let content = row![
+                text("Choose a ticker")
+                    .size(13)
+                    .align_y(Alignment::Center)
+                    .line_height(1.4)
+            ]
+            .align_y(Alignment::Center);
 
             let tickers_list_btn = button(content)
                 .on_press(Message::PaneEvent(
@@ -497,9 +505,9 @@ impl State {
                         !matches!(self.modal, Some(Modal::MiniTickersList(_))),
                     )
                 })
-                .padding([4, 10]);
+                .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
-            stream_info_element = stream_info_element.push(tickers_list_btn);
+            top_left_buttons = top_left_buttons.push(tickers_list_btn);
         }
 
         let modifier: Option<modal::stream::Modifier> = self.modal.clone().and_then(|m| {
@@ -578,7 +586,7 @@ impl State {
                     let modifiers =
                         row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
 
-                    stream_info_element = stream_info_element.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers);
 
                     let base = c.view(timezone).map(move |message| {
                         Message::PaneEvent(id, Event::ComparisonChartInteraction(message))
@@ -661,7 +669,7 @@ impl State {
                         exchange,
                     );
 
-                    stream_info_element = stream_info_element.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers);
 
                     let base = panel::view(panel, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::PanelInteraction(message))
@@ -721,7 +729,7 @@ impl State {
                     ]
                     .spacing(4);
 
-                    stream_info_element = stream_info_element.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers);
 
                     let base = chart::view(chart, indicators, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::ChartInteraction(message))
@@ -802,7 +810,7 @@ impl State {
                             ]
                             .spacing(4);
 
-                            stream_info_element = stream_info_element.push(modifiers);
+                            top_left_buttons = top_left_buttons.push(modifiers);
                         }
                         data::chart::KlineChartKind::Candles => {
                             let selected_basis = self
@@ -815,7 +823,7 @@ impl State {
                                 row![basis_modifier(id, selected_basis, modifier, kind),]
                                     .spacing(4);
 
-                            stream_info_element = stream_info_element.push(modifiers);
+                            top_left_buttons = top_left_buttons.push(modifiers);
                         }
                     }
 
@@ -875,17 +883,17 @@ impl State {
 
         match &self.status {
             Status::Loading(InfoKind::FetchingKlines) => {
-                stream_info_element = stream_info_element.push(text("Fetching Klines..."));
+                top_left_buttons = top_left_buttons.push(text("Fetching Klines..."));
             }
             Status::Loading(InfoKind::FetchingTrades(count)) => {
-                stream_info_element =
-                    stream_info_element.push(text(format!("Fetching Trades... {count} fetched")));
+                top_left_buttons =
+                    top_left_buttons.push(text(format!("Fetching Trades... {count} fetched")));
             }
             Status::Loading(InfoKind::FetchingOI) => {
-                stream_info_element = stream_info_element.push(text("Fetching Open Interest..."));
+                top_left_buttons = top_left_buttons.push(text("Fetching Open Interest..."));
             }
             Status::Stale(msg) => {
-                stream_info_element = stream_info_element.push(text(msg));
+                top_left_buttons = top_left_buttons.push(text(msg));
             }
             Status::Ready => {}
         }
@@ -893,7 +901,7 @@ impl State {
         let content = pane_grid::Content::new(body)
             .style(move |theme| style::pane_background(theme, is_focused));
 
-        let controls = {
+        let top_right_buttons = {
             let compact_control = container(
                 button(text("...").size(13).align_y(Alignment::End))
                     .on_press(Message::PaneEvent(id, Event::ShowModal(Modal::Controls)))
@@ -907,7 +915,6 @@ impl State {
                     }),
             )
             .align_y(Alignment::Center)
-            .height(Length::Fixed(32.0))
             .padding(4);
 
             if self.modal == Some(Modal::Controls) {
@@ -921,13 +928,13 @@ impl State {
         };
 
         let title_bar = pane_grid::TitleBar::new(
-            stream_info_element
-                .padding(padding::left(4).top(1))
-                .align_y(Vertical::Center)
+            top_left_buttons
+                .padding(padding::left(4))
+                .align_y(Alignment::Center)
                 .spacing(8)
                 .height(Length::Fixed(32.0)),
         )
-        .controls(controls)
+        .controls(top_right_buttons)
         .style(style::pane_title_bar);
 
         content.title_bar(if self.modal.is_none() {
@@ -1371,7 +1378,7 @@ impl State {
 
         buttons
             .padding(padding::right(4).left(4))
-            .align_y(Vertical::Center)
+            .align_y(Alignment::Center)
             .height(Length::Fixed(32.0))
             .into()
     }
@@ -2051,9 +2058,10 @@ fn ticksize_modifier<'a>(
         )
     });
 
-    button(text(multiplier.to_string()))
+    button(text(multiplier.to_string()).align_y(Alignment::Center))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
+        .height(widget::PANE_CONTROL_BTN_HEIGHT)
         .into()
 }
 
@@ -2070,9 +2078,10 @@ fn basis_modifier<'a>(
     let is_active =
         modifier.is_some_and(|m| m.view_mode == modal::stream::ViewMode::BasisSelection);
 
-    button(text(selected_basis.to_string()))
+    button(text(selected_basis.to_string()).align_y(Alignment::Center))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
+        .height(widget::PANE_CONTROL_BTN_HEIGHT)
         .into()
 }
 
