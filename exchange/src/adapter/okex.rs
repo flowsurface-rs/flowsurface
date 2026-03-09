@@ -13,6 +13,7 @@ use super::{
     },
     AdapterError, Event,
 };
+use crate::tg_alert;
 
 use fastwebsockets::{Frame, OpCode};
 use futures::{SinkExt, Stream, channel::mpsc};
@@ -404,15 +405,21 @@ pub fn connect_trade_stream(
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
+        let mut backoff = resilience::reconnect_backoff();
 
         loop {
             match &mut state {
                 State::Disconnected => {
                     state = try_connect(&subscribe_message, exchange, &mut output, "public").await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                     last_flush = tokio::time::Instant::now();
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
                                 feed_de(&msg.payload[..])
@@ -443,6 +450,7 @@ pub fn connect_trade_stream(
                                     }
                                 } else {
                                     log::error!("Ticker info not found for symbol: {}", inst_id);
+                                    tg_alert!(crate::telegram::Severity::Warning, "okx", "Ticker not found: {inst_id}");
                                 }
                             }
 
@@ -474,7 +482,7 @@ pub fn connect_trade_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
                             .await;
 
@@ -483,6 +491,19 @@ pub fn connect_trade_stream(
                             .send(Event::Disconnected(
                                 exchange,
                                 "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                            .await;
+
+                        log::warn!("[OKX] trade stream read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }

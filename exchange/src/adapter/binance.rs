@@ -13,6 +13,7 @@ use super::{
     },
     AdapterError, Event,
 };
+use crate::tg_alert;
 
 use csv::ReaderBuilder;
 use fastwebsockets::OpCode;
@@ -293,6 +294,7 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
                 }
                 _ => {
                     log::error!("Unknown stream type");
+                    tg_alert!(crate::telegram::Severity::Warning, "binance", "Unknown stream type");
                 }
             }
         } else {
@@ -467,6 +469,7 @@ pub fn connect_depth_stream(
                                                 log::warn!(
                                                     "Out of sync at first event. Trying to resync...\n"
                                                 );
+                                                tg_alert!(crate::telegram::Severity::Info, "binance", "Depth out of sync — resyncing");
 
                                                 try_resync(
                                                     exchange,
@@ -637,6 +640,7 @@ pub fn connect_trade_stream(
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
+        let mut backoff = resilience::reconnect_backoff();
 
         loop {
             match &mut state {
@@ -661,11 +665,14 @@ pub fn connect_trade_stream(
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         state = State::Connected(websocket);
+                        backoff = resilience::reconnect_backoff();
                         last_flush = tokio::time::Instant::now();
 
                         let _ = output.send(Event::Connected(exchange)).await;
                     } else {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
 
                         let _ = output
                             .send(Event::Disconnected(
@@ -676,8 +683,8 @@ pub fn connect_trade_stream(
                     }
                 }
                 State::Connected(ws) => {
-                    match ws.read_frame().await {
-                        Ok(msg) => match msg.opcode {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
                             OpCode::Text => {
                                 if let Ok(StreamData::Trade(ticker, de_trade)) =
                                     feed_de(&msg.payload[..], market)
@@ -701,6 +708,7 @@ pub fn connect_trade_stream(
                                         trades_buffer_map.entry(ticker).or_default().push(trade);
                                     } else {
                                         log::error!("Ticker info not found for ticker: {}", ticker);
+                                        tg_alert!(crate::telegram::Severity::Warning, "binance", "Ticker not found: {ticker}");
                                     }
                                 }
 
@@ -732,7 +740,7 @@ pub fn connect_trade_stream(
                             }
                             _ => {}
                         },
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             flush_trade_buffers(
                                 &mut output,
                                 &ticker_info_map,
@@ -745,6 +753,23 @@ pub fn connect_trade_stream(
                                 .send(Event::Disconnected(
                                     exchange,
                                     "Error reading frame: ".to_string() + &e.to_string(),
+                                ))
+                                .await;
+                        }
+                        Err(_elapsed) => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
+                            .await;
+
+                            log::warn!("[Binance] trade stream read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
                                 ))
                                 .await;
                         }
@@ -1476,6 +1501,7 @@ pub async fn fetch_trades(
                 "Historical trades fetch failed: {}, falling back to intraday fetch",
                 e
             );
+            tg_alert!(crate::telegram::Severity::Info, "binance", "Historical trades fallback to intraday");
             fetch_intraday_trades(ticker_info, from_time).await
         }
     }
@@ -1630,6 +1656,7 @@ pub async fn get_hist_trades(
                     }
                     Err(e) => {
                         log::error!("Failed to fetch intraday trades: {}", e);
+                        tg_alert!(crate::telegram::Severity::Warning, "binance", "Intraday trades fetch failed");
                     }
                 }
             }

@@ -257,11 +257,51 @@ impl Flowsurface {
                         log::info!("a stream connected to {exchange} WS");
                         dashboard.connection_health[exchange] =
                             exchange::health::ConnectionHealth::Connected;
+
+                        // Telegram recovery alert
+                        if exchange::telegram::is_configured() {
+                            let exc = format!("{exchange}");
+                            tokio::spawn(async move {
+                                exchange::telegram::alert(
+                                    exchange::telegram::Severity::Recovery,
+                                    "ws-stream",
+                                    &format!("{exc} stream reconnected"),
+                                )
+                                .await;
+                            });
+                        }
+
+                        // Re-validate stream subscriptions after reconnect
+                        return dashboard
+                            .refresh_streams(main_window_id)
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
                     }
                     exchange::Event::Disconnected(exchange, reason) => {
                         log::info!("a stream disconnected from {exchange} WS: {reason:?}");
                         dashboard.connection_health[exchange] =
                             exchange::health::ConnectionHealth::Reconnecting;
+
+                        // Telegram disconnect alert (5-min cooldown per exchange)
+                        if exchange::telegram::is_configured()
+                            && exchange::telegram::should_alert(
+                                &format!("ws-disconnect-{exchange}"),
+                                300,
+                            )
+                        {
+                            let exc = format!("{exchange}");
+                            let rsn = reason.clone();
+                            tokio::spawn(async move {
+                                exchange::telegram::alert(
+                                    exchange::telegram::Severity::Warning,
+                                    "ws-stream",
+                                    &format!("{exc} stream disconnected: {rsn}"),
+                                )
+                                .await;
+                            });
+                        }
                     }
                     exchange::Event::DepthReceived(stream, depth_update_t, depth) => {
                         let task = dashboard
@@ -392,6 +432,7 @@ impl Flowsurface {
             } => {
                 let Some(active_layout) = self.layout_manager.active_layout_id() else {
                     log::error!("No active layout to handle dashboard message");
+                    exchange::tg_alert!(exchange::telegram::Severity::Critical, "layout", "No active layout — UI unresponsive");
                     return Task::none();
                 };
 
@@ -1389,6 +1430,7 @@ impl Flowsurface {
                 let file_name = data::SAVED_STATE_PATH;
                 if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
                     log::error!("Failed to write layout state to file: {}", e);
+                    exchange::tg_alert!(exchange::telegram::Severity::Warning, "layout", "Layout state write failed");
                 } else {
                     log::info!("Persisted state to {file_name}");
                 }

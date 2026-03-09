@@ -12,6 +12,7 @@ use super::{
     },
     AdapterError, Event,
 };
+use crate::tg_alert;
 
 use fastwebsockets::{FragmentCollector, Frame, OpCode};
 use futures::{SinkExt, Stream, future::join_all};
@@ -324,6 +325,7 @@ async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
                     dex_name.as_deref().unwrap_or("default"),
                     e
                 );
+                tg_alert!(crate::telegram::Severity::Warning, "hyperliquid", "Metadata fetch failed");
             }
         }
     }
@@ -1014,6 +1016,7 @@ pub fn connect_trade_stream(
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
+        let mut backoff = resilience::reconnect_backoff();
 
         loop {
             match &mut state {
@@ -1044,16 +1047,21 @@ pub fn connect_trade_stream(
                         }
 
                         if !subscribe_ok {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            if let Some(delay) = backoff.next() {
+                                tokio::time::sleep(delay).await;
+                            }
                             continue;
                         }
 
                         state = State::Connected(websocket);
+                        backoff = resilience::reconnect_backoff();
                         last_flush = tokio::time::Instant::now();
                         let _ = output.send(Event::Connected(exchange)).await;
                     }
                     Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
@@ -1062,8 +1070,8 @@ pub fn connect_trade_stream(
                             .await;
                     }
                 },
-                State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(StreamData::Trade(trades)) =
                                 parse_websocket_message(&msg.payload)
@@ -1090,6 +1098,7 @@ pub fn connect_trade_stream(
                                             "Ticker info not found for Hyperliquid coin: {}",
                                             hl_trade.coin
                                         );
+                                        tg_alert!(crate::telegram::Severity::Warning, "hyperliquid", "Ticker not found");
                                     }
                                 }
                             }
@@ -1125,7 +1134,7 @@ pub fn connect_trade_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
                             .await;
 
@@ -1134,6 +1143,19 @@ pub fn connect_trade_stream(
                             .send(Event::Disconnected(
                                 exchange,
                                 format!("WebSocket error: {}", e),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                            .await;
+
+                        log::warn!("[Hyperliquid] trade stream read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }

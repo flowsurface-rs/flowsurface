@@ -1477,7 +1477,7 @@ impl Dashboard {
         Subscription::batch(unique_streams)
     }
 
-    fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {
+    pub(crate) fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {
         let all_pane_streams = self
             .iter_all_panes(main_window)
             .flat_map(|(_, _, pane_state)| pane_state.streams.ready_iter().into_iter().flatten());

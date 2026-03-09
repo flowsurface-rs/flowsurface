@@ -269,6 +269,10 @@ pub struct KlineChart {
     max_trade_latency_ms: i64,
     /// Count of CH bar reconciliation events since startup.
     ch_reconcile_count: u32,
+    /// Watchdog: millisecond timestamp of last WS trade received.
+    last_trade_received_ms: u64,
+    /// Watchdog: whether we've already sent a dead-feed alert.
+    trade_feed_dead_alerted: bool,
 }
 
 impl KlineChart {
@@ -380,6 +384,8 @@ impl KlineChart {
                     dedup_total_skipped: 0,
                     max_trade_latency_ms: 0,
                     ch_reconcile_count: 0,
+                    last_trade_received_ms: 0,
+                    trade_feed_dead_alerted: false,
                 }
             }
             Basis::Tick(interval) => {
@@ -455,6 +461,8 @@ impl KlineChart {
                     dedup_total_skipped: 0,
                     max_trade_latency_ms: 0,
                     ch_reconcile_count: 0,
+                    last_trade_received_ms: 0,
+                    trade_feed_dead_alerted: false,
                 }
             }
             Basis::Odb(threshold_dbps) => {
@@ -513,7 +521,10 @@ impl KlineChart {
                 }
 
                 let odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
-                    .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
+                    .map_err(|e| {
+                        log::warn!("failed to create OpenDeviationBarProcessor: {e}");
+                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                    })
                     .ok();
 
                 // Fix stale splits: saved states may have more splits than current
@@ -556,6 +567,8 @@ impl KlineChart {
                     dedup_total_skipped: 0,
                     max_trade_latency_ms: 0,
                     ch_reconcile_count: 0,
+                    last_trade_received_ms: 0,
+                    trade_feed_dead_alerted: false,
                 }
             }
         }
@@ -662,7 +675,10 @@ impl KlineChart {
         }
 
         let odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
-            .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
+            .map_err(|e| {
+                log::warn!("failed to create OpenDeviationBarProcessor: {e}");
+                exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+            })
             .ok();
 
         // Fix stale splits (same as in new() Odb path above).
@@ -727,6 +743,8 @@ impl KlineChart {
             dedup_total_skipped: 0,
             max_trade_latency_ms: 0,
             ch_reconcile_count: 0,
+            last_trade_received_ms: 0,
+            trade_feed_dead_alerted: false,
         }
     }
 
@@ -877,6 +895,7 @@ impl KlineChart {
                              This is the original bug — microstructure lost in pipeline.",
                             kline.time,
                         );
+                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: CH sent micro but stored bar has None, bar_ts={}", kline.time);
                     }
 
                     self.indicators
@@ -901,7 +920,10 @@ impl KlineChart {
                         && let Basis::Odb(threshold_dbps) = self.chart.basis
                     {
                         self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
-                            .map_err(|e| log::warn!("failed to reset ODB processor: {e}"))
+                            .map_err(|e| {
+                                log::warn!("failed to reset ODB processor: {e}");
+                                exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                            })
                             .ok();
                         self.next_agg_id = 0;
 
@@ -1168,6 +1190,7 @@ impl KlineChart {
                 }
                 Err(e) => {
                     log::warn!("[startup-anchor] failed to seed: {e}");
+                    exchange::tg_alert!(exchange::telegram::Severity::Warning, "startup-anchor", "Startup anchor failed to seed");
                 }
             }
         }
@@ -1300,7 +1323,10 @@ impl KlineChart {
                 // Recreate the processor for the new threshold so live trades
                 // produce bars at the correct range.
                 self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
-                    .map_err(|e| log::warn!("failed to create OpenDeviationBarProcessor: {e}"))
+                    .map_err(|e| {
+                        log::warn!("failed to create OpenDeviationBarProcessor: {e}");
+                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                    })
                     .ok();
                 self.next_agg_id = 0;
                 self.odb_completed_count = 0;
@@ -1467,6 +1493,23 @@ impl KlineChart {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis() as u64;
+
+                        // Watchdog: record trade arrival + recovery alert
+                        self.last_trade_received_ms = now_ms;
+                        if self.trade_feed_dead_alerted {
+                            self.trade_feed_dead_alerted = false;
+                            log::info!("[watchdog] Trade feed recovered");
+                            if exchange::telegram::is_configured() {
+                                tokio::spawn(async move {
+                                    exchange::telegram::alert(
+                                        exchange::telegram::Severity::Recovery,
+                                        "trade-watchdog",
+                                        "Trade feed recovered — WS trades flowing again",
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
 
                         // Initialize throughput window on first call
                         if self.ws_throughput_last_log_ms == 0 {
@@ -1741,6 +1784,7 @@ impl KlineChart {
                                              but stored bar has None! Manual attachment failed.",
                                             kline.time,
                                         );
+                                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: RBP bar completed with micro but stored None, bar_ts={}", kline.time);
                                     }
                                     // Track provisional bars for cleanup on SSE/CH delivery
                                     if sse_enabled() && sse_connected() {
@@ -2097,6 +2141,7 @@ impl KlineChart {
             }
             PlotData::TimeBased(_) => {
                 log::warn!("[RB-HIST] data_source is TimeBased — ODB klines ignored!");
+                exchange::tg_alert!(exchange::telegram::Severity::Info, "odb", "RB-HIST data_source is TimeBased — ODB klines ignored");
             }
         }
     }
@@ -2263,6 +2308,42 @@ impl KlineChart {
         chart.cache.clear_all();
         for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
             indi.clear_all_caches();
+        }
+
+        // Trade feed liveness watchdog (dead-man's switch).
+        // Fires in invalidate() which runs every frame, unlike the telemetry
+        // window in insert_trades_inner() which never fires when trades stop.
+        if self.last_trade_received_ms > 0 {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let stale_ms = now_ms.saturating_sub(self.last_trade_received_ms);
+            if stale_ms > 90_000 && !self.trade_feed_dead_alerted {
+                self.trade_feed_dead_alerted = true;
+                let stale_secs = stale_ms / 1000;
+                log::error!(
+                    "[watchdog] No WS trades for {stale_secs}s — feed may be dead. \
+                     last_agg_id={:?}, ch_reconcile={}",
+                    self.last_ws_agg_trade_id,
+                    self.ch_reconcile_count,
+                );
+                if exchange::telegram::is_configured() {
+                    let msg = format!(
+                        "No WS trades for {stale_secs}s. last_agg_id={:?}, ch_reconcile={}",
+                        self.last_ws_agg_trade_id,
+                        self.ch_reconcile_count,
+                    );
+                    tokio::spawn(async move {
+                        exchange::telegram::alert(
+                            exchange::telegram::Severity::Critical,
+                            "trade-watchdog",
+                            &msg,
+                        )
+                        .await;
+                    });
+                }
+            }
         }
 
         #[cfg(feature = "telemetry")]
@@ -2538,6 +2619,7 @@ impl canvas::Program<Message> for KlineChart {
                                  (delta={delta}) → colors may map to wrong bars",
                                 heatmap_len, total_len,
                             );
+                            exchange::tg_alert!(exchange::telegram::Severity::Warning, "intensity", "Intensity heatmap divergence");
                         }
                     }
 

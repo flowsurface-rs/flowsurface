@@ -13,6 +13,7 @@ use super::{
     },
     AdapterError, Event,
 };
+use crate::tg_alert;
 
 use fastwebsockets::{Frame, OpCode};
 use futures::{SinkExt, Stream, channel::mpsc};
@@ -197,6 +198,7 @@ fn feed_de(
                     }
                     _ => {
                         log::error!("Unknown stream name");
+                        tg_alert!(crate::telegram::Severity::Warning, "bybit", "Unknown stream name");
                     }
                 }
             }
@@ -243,6 +245,7 @@ fn feed_de(
                 }
                 _ => {
                     log::error!("Unknown stream type");
+                    tg_alert!(crate::telegram::Severity::Warning, "bybit", "Unknown stream type");
                 }
             }
         } else if k == "cts"
@@ -496,6 +499,7 @@ pub fn connect_trade_stream(
 
         let mut last_flush = tokio::time::Instant::now();
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
+        let mut backoff = resilience::reconnect_backoff();
 
         loop {
             match &mut state {
@@ -516,10 +520,15 @@ pub fn connect_trade_stream(
                     });
 
                     state = try_connect(&subscribe_message, market_type, &mut output).await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                     last_flush = tokio::time::Instant::now();
                 }
-                State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(StreamData::Trade(ticker, de_trade_vec)) =
                                 feed_de(&msg.payload[..], None, market_type)
@@ -547,6 +556,7 @@ pub fn connect_trade_stream(
                                     }
                                 } else {
                                     log::error!("Ticker info not found for ticker: {}", ticker);
+                                    tg_alert!(crate::telegram::Severity::Warning, "bybit", "Ticker not found: {ticker}");
                                 }
                             }
 
@@ -578,7 +588,7 @@ pub fn connect_trade_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
                             .await;
 
@@ -587,6 +597,19 @@ pub fn connect_trade_stream(
                             .send(Event::Disconnected(
                                 exchange,
                                 "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                            .await;
+
+                        log::warn!("[Bybit] trade stream read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }
@@ -704,6 +727,7 @@ pub fn connect_kline_stream(
                                                     "Ticker info not found for ticker: {}",
                                                     ticker
                                                 );
+                                                tg_alert!(crate::telegram::Severity::Warning, "bybit", "Ticker not found: {ticker}");
                                             }
                                         } else {
                                             log::error!(
@@ -823,11 +847,13 @@ pub async fn fetch_historical_oi(
             e,
             response_text
         );
+        tg_alert!(crate::telegram::Severity::Warning, "bybit", "JSON parse error");
         AdapterError::ParseError(e.to_string())
     })?;
 
     let result_list = content["result"]["list"].as_array().ok_or_else(|| {
         log::error!("Result list is not an array in response: {}", response_text);
+        tg_alert!(crate::telegram::Severity::Warning, "bybit", "JSON parse error");
         AdapterError::ParseError("Result list is not an array".to_string())
     })?;
 
@@ -838,6 +864,7 @@ pub async fn fetch_historical_oi(
                 e,
                 response_text
             );
+            tg_alert!(crate::telegram::Severity::Warning, "bybit", "JSON parse error");
             AdapterError::ParseError(format!("Failed to parse open interest: {e}"))
         })?;
 
