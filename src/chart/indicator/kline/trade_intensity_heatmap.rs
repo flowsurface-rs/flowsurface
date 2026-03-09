@@ -310,6 +310,7 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                         "[oracle-FAIL] Newest bar has microstructure but bin=0 (sentinel)! \
                          Intensity coloring will be wrong (default blue instead of thermal).",
                     );
+                    exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: bar has micro but bin=0 sentinel");
                 }
             }
         }
@@ -367,6 +368,7 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                                     "[oracle-FAIL] Incremental bar has micro but bin=0! \
                                      Intensity coloring bug on incremental path.",
                                 );
+                                exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: incremental bar micro but bin=0");
                             }
                         }
                     }

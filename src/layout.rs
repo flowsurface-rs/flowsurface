@@ -385,6 +385,7 @@ pub fn load_saved_state() -> SavedState {
                 "Failed to load/find layout state: {}. Starting with a new layout.",
                 e
             );
+            exchange::tg_alert!(exchange::telegram::Severity::Info, "layout", "Layout state load failed — using defaults");
 
             SavedState::default()
         }

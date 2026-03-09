@@ -1,4 +1,5 @@
 use crate::adapter::AdapterError;
+use crate::tg_alert;
 
 use reqwest::{Client, Method, Response};
 use serde_json::Value;
@@ -44,6 +45,9 @@ pub async fn http_request(
     if !response.status().is_success() {
         let status = response.status();
         log::error!("HTTP error {} for: {}", status, url);
+        if crate::telegram::should_alert("http-error", 300) {
+            tg_alert!(crate::telegram::Severity::Warning, "http", "HTTP error {status} for: {url}");
+        }
     }
 
     response.text().await.map_err(AdapterError::FetchError)
@@ -94,6 +98,8 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
             status,
             url
         );
+        tg_alert!(crate::telegram::Severity::Critical, "rate-limit", "FATAL: HTTP {status} — rate limit or geo-block, exiting");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         std::process::exit(1);
     }
 

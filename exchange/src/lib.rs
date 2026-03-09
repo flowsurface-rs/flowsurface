@@ -737,6 +737,7 @@ pub struct OpenInterest {
 fn str_f32_parse(s: &str) -> f32 {
     s.parse::<f32>().unwrap_or_else(|e| {
         log::error!("Failed to parse float: {}, error: {}", s, e);
+        tg_alert!(crate::telegram::Severity::Info, "parse", "Float parse error");
         0.0
     })
 }

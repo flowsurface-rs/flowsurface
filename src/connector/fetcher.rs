@@ -102,6 +102,7 @@ impl RequestHandler {
             request.status = RequestStatus::Failed(error);
         } else {
             log::warn!("Request not found: {:?}", id);
+            exchange::tg_alert!(exchange::telegram::Severity::Info, "fetcher", "Request not found for error");
         }
     }
 }

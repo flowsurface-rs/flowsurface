@@ -3,7 +3,8 @@
 //! Reads `FLOWSURFACE_TG_BOT_TOKEN` and `FLOWSURFACE_TG_CHAT_ID` from env.
 //! If either is unset, all sends silently no-op (guard-by-default).
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 use reqwest::Client;
 
@@ -160,4 +161,39 @@ pub enum Severity {
     Warning,
     Info,
     Recovery,
+}
+
+static COOLDOWNS: LazyLock<Mutex<HashMap<String, std::time::Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Returns true if enough time has passed since last alert for this key.
+/// Use for high-frequency paths (WS timeouts, rate limits) to prevent spam.
+pub fn should_alert(key: &str, cooldown_secs: u64) -> bool {
+    let mut map = COOLDOWNS.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    if let Some(last) = map.get(key)
+        && now.duration_since(*last) < std::time::Duration::from_secs(cooldown_secs)
+    {
+        return false;
+    }
+    map.insert(key.to_string(), now);
+    true
+}
+
+/// Fire-and-forget Telegram alert macro. Use from any async or sync context.
+/// Expands to tokio::spawn + alert(). No-ops if Telegram not configured.
+///
+/// Usage: `tg_alert!(Severity::Warning, "clickhouse", "HTTP {}: {}", status, body)`
+#[macro_export]
+macro_rules! tg_alert {
+    ($sev:expr, $comp:expr, $($arg:tt)*) => {
+        if $crate::telegram::is_configured() {
+            let msg = format!($($arg)*);
+            let sev = $sev;
+            let comp: &'static str = $comp;
+            tokio::spawn(async move {
+                $crate::telegram::alert(sev, comp, &msg).await;
+            });
+        }
+    };
 }

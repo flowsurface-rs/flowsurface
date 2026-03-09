@@ -12,6 +12,7 @@ use super::{
     super::{Kline, Price, TickerInfo, Trade, Volume, de_string_to_f32},
     AdapterError, Event, StreamKind,
 };
+use crate::tg_alert;
 use crate::unit::{MinTicksize, Qty};
 
 use crate::connect;
@@ -169,6 +170,7 @@ async fn validate_schema() {
                 log::warn!(
                     "[CH schema] MISSING columns: {missing:?} — indicators may show no data"
                 );
+                tg_alert!(crate::telegram::Severity::Warning, "ch-schema", "CH schema missing columns: {missing:?}");
             }
         }
         Err(e) => {
@@ -249,6 +251,7 @@ async fn query(sql: &str) -> Result<String, AdapterError> {
                 e.is_timeout(),
                 e.is_connect()
             );
+            tg_alert!(crate::telegram::Severity::Critical, "clickhouse", "CH request failed: {e} (timeout={}, connect={})", e.is_timeout(), e.is_connect());
             AdapterError::FetchError(e)
         })?;
 
@@ -256,6 +259,7 @@ async fn query(sql: &str) -> Result<String, AdapterError> {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         log::error!("[CH] HTTP {status}: {body} — SQL: {sql_preview}…");
+        tg_alert!(crate::telegram::Severity::Critical, "clickhouse", "CH HTTP {status}: {body}");
         return Err(AdapterError::ParseError(format!(
             "ClickHouse HTTP {}: {}",
             status, body
@@ -264,6 +268,7 @@ async fn query(sql: &str) -> Result<String, AdapterError> {
 
     resp.text().await.map_err(|e| {
         log::error!("[CH] response body read failed: {e}");
+        tg_alert!(crate::telegram::Severity::Warning, "clickhouse", "CH response body read failed");
         AdapterError::from(e)
     })
 }
@@ -557,6 +562,8 @@ pub fn connect_kline_stream(
                     );
                     if attempt < 3 {
                         tokio::time::sleep(Duration::from_secs(2)).await;
+                    } else {
+                        tg_alert!(crate::telegram::Severity::Critical, "ch-poll", "CH poll init failed after 3 retries for {symbol}@{threshold_dbps}");
                     }
                 }
             }
@@ -652,6 +659,7 @@ pub fn connect_kline_stream(
                                 threshold_dbps,
                                 last_ts
                             );
+                            tg_alert!(crate::telegram::Severity::Info, "ch-poll", "CH watermark >30 days stale");
                             if let Ok(body) = query(&max_ts_sql).await
                                 && let Some(ts) = body.lines().find_map(|line| {
                                     serde_json::from_str::<serde_json::Value>(line.trim())
@@ -684,6 +692,7 @@ pub fn connect_kline_stream(
                                     symbol,
                                     threshold_dbps
                                 );
+                                tg_alert!(crate::telegram::Severity::Info, "ch-micro", "CH bars missing microstructure");
                             }
                         }
                     }
@@ -695,6 +704,7 @@ pub fn connect_kline_stream(
                         threshold_dbps,
                         e
                     );
+                    tg_alert!(crate::telegram::Severity::Warning, "ch-poll", "CH poll query error for {symbol}@{threshold_dbps}");
                 }
             }
         }
@@ -836,10 +846,12 @@ pub fn connect_sse_stream(
                             "[SSE] deser error: {error}, data: {}",
                             &raw_data[..raw_data.len().min(200)]
                         );
+                        tg_alert!(crate::telegram::Severity::Warning, "sse", "SSE deser error");
                     }
                     OdbSseEvent::Disconnected(reason) => {
                         SSE_CONNECTED.store(false, Ordering::Relaxed);
                         log::warn!("[SSE] disconnected: {reason}, reconnecting in 5s");
+                        tg_alert!(crate::telegram::Severity::Warning, "sse", "SSE disconnected");
                         break;
                     }
                     _ => {
@@ -957,6 +969,7 @@ pub async fn fetch_catchup(
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             log::error!("[catchup] {symbol}@{threshold_dbps}: HTTP {status} — {body}");
+            tg_alert!(crate::telegram::Severity::Critical, "catchup", "Catchup HTTP {status}");
             return Err(AdapterError::ParseError(format!(
                 "catchup HTTP {status}: {body}"
             )));

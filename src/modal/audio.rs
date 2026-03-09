@@ -69,6 +69,7 @@ impl AudioStream {
             Err(err) => {
                 let err_msg = err.to_string();
                 log::error!("Audio initialization error: {err_msg}");
+                exchange::tg_alert!(exchange::telegram::Severity::Info, "audio", "Audio init error");
                 (
                     AudioStream {
                         cache: None,

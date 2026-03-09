@@ -170,7 +170,10 @@ impl WidgetState {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => log::warn!("[widget] OpenDeviationBarProcessor error: {e}"),
+                Err(e) => {
+                    log::warn!("[widget] OpenDeviationBarProcessor error: {e}");
+                    exchange::tg_alert!(exchange::telegram::Severity::Info, "widget", "Widget ODB processor error");
+                }
             }
         }
 
