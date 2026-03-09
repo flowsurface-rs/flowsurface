@@ -167,7 +167,8 @@ fi
 
 # ─── Phase 5: Bin distribution ────────────────────────────────────────────────
 echo ""
-echo "--- Phase 5: Bin distribution (from [oracle-bin] DEBUG lines) ---"
+echo "--- Phase 5: Bin distribution (from [oracle-bin] TRACE lines) ---"
+echo "(Requires TRACE log level; use [oracle-rebuild-tail] for INFO-level verification)"
 BIN_COUNT=$(grep -c '\[oracle-bin\]' "$LOG" 2>/dev/null || echo "0")
 echo "Found $BIN_COUNT bin assignments"
 

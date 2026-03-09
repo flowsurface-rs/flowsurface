@@ -1157,7 +1157,7 @@ impl KlineChart {
                 qty: Qty::ZERO,
                 agg_trade_id: None,
             };
-            let anchor = trade_to_agg_trade(&anchor_trade, -1);
+            let anchor = trade_to_agg_trade(&anchor_trade, 0);
             match processor.process_single_trade(&anchor) {
                 Ok(_) => {
                     log::info!(
@@ -1707,10 +1707,17 @@ impl KlineChart {
                                             ofi: micro.ofi,
                                             trade_intensity: micro.trade_intensity,
                                         });
-                                        last_dp.agg_trade_id_range = Some((
-                                            completed.first_agg_trade_id as u64,
-                                            completed.last_agg_trade_id as u64,
-                                        ));
+                                        // Guard: skip synthetic anchor IDs (0 from startup anchor).
+                                        // Without this, the first bar's tooltip would show
+                                        // "ID 0 → {real}" instead of a valid Binance range.
+                                        if completed.first_agg_trade_id > 0
+                                            && completed.last_agg_trade_id > 0
+                                        {
+                                            last_dp.agg_trade_id_range = Some((
+                                                completed.first_agg_trade_id as u64,
+                                                completed.last_agg_trade_id as u64,
+                                            ));
+                                        }
                                     }
 
                                     // Oracle: verify locally-completed bar has microstructure
@@ -2068,7 +2075,7 @@ impl KlineChart {
                             qty: Qty::ZERO,
                             agg_trade_id: None,
                         };
-                        let anchor = trade_to_agg_trade(&anchor_trade, -1);
+                        let anchor = trade_to_agg_trade(&anchor_trade, 0);
                         match processor.process_single_trade(&anchor) {
                             Ok(_) => {
                                 log::info!(

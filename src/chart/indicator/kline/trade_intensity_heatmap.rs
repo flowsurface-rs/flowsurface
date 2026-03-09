@@ -183,7 +183,9 @@ impl TradeIntensityHeatmapIndicator {
         } else {
             (bin - 1) as f32 / (k_actual - 1) as f32
         };
-        log::debug!(
+        // Per-bar bin assignment (trace level to avoid 2000 log calls per rebuild).
+        // Use [oracle-rebuild-tail] and [oracle-incr-tail] for verification instead.
+        log::trace!(
             "[oracle-bin] idx={} ti={:.4} bin={}/{} t={:.4} window={}",
             idx, intensity, bin, k_actual, t_val, n,
         );
