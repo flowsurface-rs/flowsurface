@@ -139,11 +139,11 @@ RETRY_DELAY=2
 
 echo "=== Flowsurface Preflight ==="
 
-# 0a. Auto-update opendeviationbar-core to latest compatible version
+# 0a. Auto-update opendeviationbar crates to latest compatible version
 echo ""
-echo "[0/5] Updating opendeviationbar-core..."
+echo "[0/5] Updating opendeviationbar crates..."
 BEFORE=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
-cargo update -p opendeviationbar-core --quiet 2>/dev/null || true
+cargo update -p opendeviationbar-core -p opendeviationbar-client --quiet 2>/dev/null || true
 AFTER=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
 if [ "$BEFORE" != "$AFTER" ]; then
   echo "  Updated: $BEFORE -> $AFTER"
