@@ -78,21 +78,7 @@ impl Chart for KlineChart {
             return None;
         }
 
-        match &chart.basis {
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds();
-
-                let (earliest, latest) = (
-                    chart.x_to_interval(region.x) - (interval / 2),
-                    chart.x_to_interval(region.x + region.width) + (interval / 2),
-                );
-
-                Some((earliest, latest))
-            }
-            Basis::Tick(_) => {
-                unimplemented!()
-            }
-        }
+        Some(chart.interval_range(&region))
     }
 
     fn interval_keys(&self) -> Option<Vec<u64>> {
