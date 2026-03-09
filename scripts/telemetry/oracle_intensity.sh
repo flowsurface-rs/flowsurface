@@ -86,6 +86,7 @@ echo "--- Phase 2: Rebuild-tail assertion (newest bar bin != 0) ---"
 
 REBUILD_TAIL=$(grep '\[oracle-rebuild-tail\]' "$LOG" 2>/dev/null || true)
 REBUILD_COUNT=$(echo "$REBUILD_TAIL" | grep -c 'idx=' 2>/dev/null || echo "0")
+REBUILD_COUNT=$(echo "$REBUILD_COUNT" | tr -d '[:space:]')
 echo "Found $REBUILD_COUNT rebuild-tail entries"
 
 if [[ "$REBUILD_COUNT" -gt 0 ]]; then
@@ -128,7 +129,7 @@ else
         FROM opendeviationbar_cache.open_deviation_bars
         WHERE close_time_ms IN ($TS_LIST)
           AND symbol = 'BTCUSDT'
-          AND threshold_dbps = 250
+          AND threshold_decimal_bps = 250
         ORDER BY close_time_ms
         FORMAT TabSeparatedWithNames
     \"" 2>/dev/null || echo "CH_QUERY_FAILED")
@@ -144,7 +145,8 @@ else
             ORACLE_LINE=$(grep "\[oracle-micro\] bar_ts=$ch_ts " "$LOG" 2>/dev/null | tail -1 || true)
             if [[ -n "$ORACLE_LINE" ]]; then
                 log_ch_ti=$(extract "ch_ti" "$ORACLE_LINE")
-                if awk "BEGIN{exit !($ch_ti == $log_ch_ti)}" 2>/dev/null; then
+                # f32 vs f64 precision: allow relative error < 0.001%
+                if awk "BEGIN{d=$ch_ti-$log_ch_ti; if(d<0)d=-d; exit !(d < $ch_ti*0.00001)}" 2>/dev/null; then
                     echo "  bar_ts=$ch_ts: CH_direct=$ch_ti == log_ch=$log_ch_ti → adapter OK"
                 else
                     echo "  bar_ts=$ch_ts: CH_direct=$ch_ti != log_ch=$log_ch_ti → ADAPTER MISMATCH"
@@ -157,7 +159,9 @@ fi
 # ─── Phase 4: Historical baseline ────────────────────────────────────────────
 echo ""
 echo "--- Phase 4: Historical baseline (last 20 bars from load) ---"
-HIST_COUNT=$(grep -c '\[oracle-hist\]' "$LOG" 2>/dev/null || echo "0")
+HIST_COUNT=$(grep -c '\[oracle-hist\]' "$LOG" 2>/dev/null || true)
+HIST_COUNT=${HIST_COUNT:-0}
+HIST_COUNT=$(echo "$HIST_COUNT" | tr -d '[:space:]')
 echo "Found $HIST_COUNT historical oracle entries"
 
 if [[ "$HIST_COUNT" -gt 0 ]]; then
@@ -169,7 +173,9 @@ fi
 echo ""
 echo "--- Phase 5: Bin distribution (from [oracle-bin] TRACE lines) ---"
 echo "(Requires TRACE log level; use [oracle-rebuild-tail] for INFO-level verification)"
-BIN_COUNT=$(grep -c '\[oracle-bin\]' "$LOG" 2>/dev/null || echo "0")
+BIN_COUNT=$(grep -c '\[oracle-bin\]' "$LOG" 2>/dev/null || true)
+BIN_COUNT=${BIN_COUNT:-0}
+BIN_COUNT=$(echo "$BIN_COUNT" | tr -d '[:space:]')
 echo "Found $BIN_COUNT bin assignments"
 
 if [[ "$BIN_COUNT" -gt 0 ]]; then
