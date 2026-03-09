@@ -178,18 +178,40 @@ async fn validate_schema() {
         }
     }
 
-    // Query opendeviationbar_version from most recent bar (silent if column absent)
+    // Query opendeviationbar_version from most recent bar and compare against
+    // the compiled crate version to detect sidecar↔app version skew.
+    let crate_ver = opendeviationbar_core::Checkpoint::library_version();
     let ver_sql = "SELECT opendeviationbar_version FROM opendeviationbar_cache.open_deviation_bars \
                    ORDER BY close_time_ms DESC LIMIT 1 FORMAT TabSeparated";
     match query(ver_sql).await {
         Ok(body) => {
-            if let Some(version) = body
+            if let Some(sidecar_ver) = body
                 .lines()
                 .next()
                 .map(|l| l.trim())
                 .filter(|l| !l.is_empty())
             {
-                log::info!("[CH schema] opendeviationbar version: {version}");
+                log::info!("[CH schema] opendeviationbar version: {sidecar_ver} (crate: {crate_ver})");
+
+                // Compare major.minor: strip "+sidecar" suffix and patch version
+                let sidecar_major_minor = sidecar_ver
+                    .split('+')
+                    .next()
+                    .and_then(|v| v.rsplit_once('.'))
+                    .map(|(mm, _)| mm);
+                let crate_major_minor = crate_ver.rsplit_once('.').map(|(mm, _)| mm);
+
+                if sidecar_major_minor != crate_major_minor {
+                    log::warn!(
+                        "[CH schema] VERSION MISMATCH: sidecar={sidecar_ver} crate={crate_ver} \
+                         — rebuild app or update sidecar"
+                    );
+                    tg_alert!(
+                        crate::telegram::Severity::Warning,
+                        "odb-version",
+                        "ODB version mismatch: sidecar={sidecar_ver} crate={crate_ver} — rebuild app or update sidecar"
+                    );
+                }
             }
         }
         Err(_) => {
