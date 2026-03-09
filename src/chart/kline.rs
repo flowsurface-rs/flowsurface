@@ -113,9 +113,9 @@ impl Chart for KlineChart {
                         return None;
                     }
                     // oldest is at index 0, newest at end
-                    let earliest_ts = tick_aggr.datapoints.first().unwrap().kline.time;
-                    let latest_ts = tick_aggr.datapoints.last().unwrap().kline.time;
-                    Some((earliest_ts, latest_ts))
+                    let earliest = tick_aggr.datapoints.first()?;
+                    let latest = tick_aggr.datapoints.last()?;
+                    Some((earliest.kline.time, latest.kline.time))
                 } else {
                     None
                 }
@@ -247,7 +247,7 @@ pub struct KlineChart {
     gap_fill_fence_agg_id: Option<u64>,
     /// CH/SSE bars received during gap-fill, applied after completion.
     /// Stores `(Kline, Option<u64>)` to preserve `bar_last_agg_id` for replay.
-    buffered_ch_klines: Vec<(Kline, Option<u64>)>,
+    buffered_ch_klines: Vec<(Kline, Option<u64>, Option<exchange::adapter::clickhouse::ChMicrostructure>)>,
     /// Ring buffer of recent WS trades for bar-boundary replay.
     /// When a SSE/CH bar arrives and the processor resets, trades with
     /// `agg_trade_id > bar.last_agg_trade_id` are replayed into the new processor
@@ -592,7 +592,8 @@ impl KlineChart {
             );
         }
 
-        let micro_slice = microstructure.unwrap();
+        // Safety: guarded by is_none() check above, but use expect() to document invariant
+        let micro_slice = microstructure.expect("microstructure checked above");
         let step = PriceStep::from_f32(tick_size);
 
         // Convert ChMicrostructure → OdbMicrostructure
@@ -729,7 +730,7 @@ impl KlineChart {
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline, bar_last_agg_id: Option<u64>) {
+    pub fn update_latest_kline(&mut self, kline: &Kline, bar_last_agg_id: Option<u64>, micro: Option<exchange::adapter::clickhouse::ChMicrostructure>) {
         if self.chart.basis.is_odb() {
             log::debug!(
                 "[SSE-dispatch] update_latest_kline: ts={} bar_last_agg_id={:?} \
@@ -763,13 +764,22 @@ impl KlineChart {
                     // Buffer CH/SSE bars during gap-fill to prevent temporal inversions.
                     // They'll be applied in order after gap-fill completes.
                     if self.fetching_trades.0 {
-                        self.buffered_ch_klines.push((*kline, bar_last_agg_id));
+                        self.buffered_ch_klines.push((*kline, bar_last_agg_id, micro));
                         log::debug!(
                             "[gap-fill] buffered CH bar ts={} bar_last_agg_id={:?} during gap-fill",
                             kline.time, bar_last_agg_id,
                         );
                         return;
                     }
+
+                    // Oracle: capture last bar's microstructure BEFORE pop destroys it.
+                    // When had_provisional=true, this IS the locally-built provisional bar.
+                    // When had_provisional=false, this is the previous completed bar (less useful).
+                    let had_provisional = self.pending_local_bars > 0;
+                    let provisional_micro = tick_aggr
+                        .datapoints
+                        .last()
+                        .and_then(|dp| dp.microstructure);
 
                     // Pop locally-completed bars before reconciling with authoritative
                     // SSE/CH bars. Local bars have approximate boundaries (arbitrary WS
@@ -814,7 +824,13 @@ impl KlineChart {
                         .datapoints
                         .last()
                         .is_some_and(|dp| dp.kline.time == kline.time);
-                    tick_aggr.replace_or_append_kline(kline);
+
+                    let odb_micro = micro.map(|m| OdbMicrostructure {
+                        trade_count: m.trade_count,
+                        ofi: m.ofi,
+                        trade_intensity: m.trade_intensity,
+                    });
+                    tick_aggr.replace_or_append_kline(kline, odb_micro);
                     self.ch_reconcile_count += 1;
                     log::info!(
                         "[CH-reconcile] #{}: {} bar ts={} close={:.2} dp_count={}",
@@ -824,6 +840,44 @@ impl KlineChart {
                         kline.close.to_f32(),
                         tick_aggr.datapoints.len(),
                     );
+
+                    // Oracle: the CORRECT assertion — after store, does the bar have microstructure?
+                    let stored_has_micro = tick_aggr
+                        .datapoints
+                        .last()
+                        .and_then(|dp| dp.microstructure)
+                        .is_some();
+                    let stored_ti = tick_aggr
+                        .datapoints
+                        .last()
+                        .and_then(|dp| dp.microstructure)
+                        .map(|m| m.trade_intensity);
+
+                    log::info!(
+                        "[oracle-micro] bar_ts={} ch_ti={} ch_ofi={} ch_tc={} \
+                         provisional_ti={} provisional_ofi={} provisional_tc={} \
+                         had_provisional={} stored_has_micro={} stored_ti={:?} action={}",
+                        kline.time,
+                        odb_micro.map(|m| m.trade_intensity).unwrap_or(-1.0),
+                        odb_micro.map(|m| m.ofi).unwrap_or(-999.0),
+                        odb_micro.map(|m| m.trade_count).unwrap_or(0),
+                        provisional_micro.map(|m| m.trade_intensity).unwrap_or(-1.0),
+                        provisional_micro.map(|m| m.ofi).unwrap_or(-999.0),
+                        provisional_micro.map(|m| m.trade_count).unwrap_or(0),
+                        had_provisional,
+                        stored_has_micro,
+                        stored_ti,
+                        if was_replace { "REPLACE" } else { "APPEND" },
+                    );
+
+                    // Oracle assertion: if CH sent microstructure, stored bar MUST have it
+                    if odb_micro.is_some() && !stored_has_micro {
+                        log::error!(
+                            "[oracle-FAIL] bar_ts={} CH sent micro but stored bar has None! \
+                             This is the original bug — microstructure lost in pipeline.",
+                            kline.time,
+                        );
+                    }
 
                     self.indicators
                         .values_mut()
@@ -1083,8 +1137,8 @@ impl KlineChart {
             );
         }
         self.fetching_trades = (false, None);
-        for (kline, bar_last_agg_id) in &buffered {
-            self.update_latest_kline(kline, *bar_last_agg_id);
+        for (kline, bar_last_agg_id, micro) in buffered {
+            self.update_latest_kline(&kline, bar_last_agg_id, micro);
         }
         self.invalidate(None);
     }
@@ -1613,7 +1667,7 @@ impl KlineChart {
                                         action,
                                     );
 
-                                    tick_aggr.replace_or_append_kline(&kline);
+                                    tick_aggr.replace_or_append_kline(&kline, None);
                                     // Attach microstructure + agg_trade_id range
                                     if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
                                         last_dp.microstructure = Some(OdbMicrostructure {
@@ -1625,6 +1679,29 @@ impl KlineChart {
                                             completed.first_agg_trade_id as u64,
                                             completed.last_agg_trade_id as u64,
                                         ));
+                                    }
+
+                                    // Oracle: verify locally-completed bar has microstructure
+                                    let rbp_stored_micro = tick_aggr
+                                        .datapoints
+                                        .last()
+                                        .and_then(|dp| dp.microstructure);
+                                    log::info!(
+                                        "[oracle-rbp] bar_ts={} ti={:.4} ofi={:.4} tc={} \
+                                         stored_has_micro={} action={}",
+                                        kline.time,
+                                        micro.trade_intensity,
+                                        micro.ofi,
+                                        micro.trade_count,
+                                        rbp_stored_micro.is_some(),
+                                        action,
+                                    );
+                                    if rbp_stored_micro.is_none() {
+                                        log::error!(
+                                            "[oracle-FAIL] RBP bar_ts={} completed with micro \
+                                             but stored bar has None! Manual attachment failed.",
+                                            kline.time,
+                                        );
                                     }
                                     // Track provisional bars for cleanup on SSE/CH delivery
                                     if sse_enabled() && sse_connected() {
@@ -1821,8 +1898,8 @@ impl KlineChart {
             // Flush buffered CH/SSE bars that arrived during gap-fill.
             let buffered = std::mem::take(&mut self.buffered_ch_klines);
             self.fetching_trades = (false, None);
-            for (kline, bar_last_agg_id) in &buffered {
-                self.update_latest_kline(kline, *bar_last_agg_id);
+            for (kline, bar_last_agg_id, micro) in buffered {
+                self.update_latest_kline(&kline, bar_last_agg_id, micro);
             }
             // Single canvas redraw now that all gap-fill batches are processed.
             self.invalidate(None);
@@ -1904,6 +1981,16 @@ impl KlineChart {
                     after_len,
                     micro_count,
                 );
+
+                // Oracle: dump last 20 bars' microstructure for post-hoc comparison
+                for dp in tick_aggr.datapoints.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+                    if let Some(m) = dp.microstructure {
+                        log::info!(
+                            "[oracle-hist] bar_ts={} ti={:.4} ofi={:.4} tc={}",
+                            dp.kline.time, m.trade_intensity, m.ofi, m.trade_count,
+                        );
+                    }
+                }
 
                 // Rebuild all indicators from updated data source
                 let indicator_count = self.indicators.values().filter(|v| v.is_some()).count();

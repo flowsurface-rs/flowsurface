@@ -615,8 +615,16 @@ pub fn connect_kline_stream(
                                 ),
                                 ticker_info.min_ticksize,
                             );
+                            let micro = match (ck.individual_trade_count, ck.ofi, ck.trade_intensity) {
+                                (Some(tc), Some(ofi), Some(ti)) => Some(ChMicrostructure {
+                                    trade_count: tc,
+                                    ofi: ofi as f32,
+                                    trade_intensity: ti as f32,
+                                }),
+                                _ => None,
+                            };
                             let _ = output
-                                .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64), ck.last_agg_trade_id))
+                                .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64), ck.last_agg_trade_id, micro))
                                 .await;
                             count += 1;
                         }
@@ -809,7 +817,7 @@ pub fn connect_sse_stream(
                         let bar_last_agg_id = bar.last_agg_trade_id
                             .filter(|&id| id > 0)
                             .map(|id| id as u64);
-                        let (kline, raw_f64, _micro) =
+                        let (kline, raw_f64, micro) =
                             odb_bar_to_kline_tuple(&bar, ticker_info.min_ticksize);
                         log::info!(
                             "[SSE] {} @{}: bar ts={} last_agg_id={:?}",
@@ -819,7 +827,7 @@ pub fn connect_sse_stream(
                             bar_last_agg_id,
                         );
                         let _ = output
-                            .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64), bar_last_agg_id))
+                            .send(Event::KlineReceived(stream_kind, kline, Some(raw_f64), bar_last_agg_id, micro))
                             .await;
                     }
                     OdbSseEvent::Heartbeat => {}

@@ -501,7 +501,8 @@ pub enum Event {
     /// The optional `[f64; 6]` carries raw ClickHouse values [o, h, l, c, buy_vol, sell_vol]
     /// before f32 conversion. Only the ClickHouse adapter populates this; others pass `None`.
     /// The optional `u64` is the bar's `last_agg_trade_id` (ODB SSE/CH bars only).
-    KlineReceived(StreamKind, Kline, Option<[f64; 6]>, Option<u64>),
+    /// The optional `ChMicrostructure` carries trade_count/ofi/trade_intensity for ODB bars.
+    KlineReceived(StreamKind, Kline, Option<[f64; 6]>, Option<u64>, Option<clickhouse::ChMicrostructure>),
 }
 
 #[derive(Debug, Clone, Hash)]

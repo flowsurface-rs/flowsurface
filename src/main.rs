@@ -287,9 +287,9 @@ impl Flowsurface {
 
                         return task;
                     }
-                    exchange::Event::KlineReceived(stream, kline, raw_f64, bar_last_agg_id) => {
+                    exchange::Event::KlineReceived(stream, kline, raw_f64, bar_last_agg_id, micro) => {
                         return dashboard
-                            .update_latest_klines(&stream, &kline, raw_f64, bar_last_agg_id, main_window_id)
+                            .update_latest_klines(&stream, &kline, raw_f64, bar_last_agg_id, micro, main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,

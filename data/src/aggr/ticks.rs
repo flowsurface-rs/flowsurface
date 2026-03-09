@@ -389,7 +389,7 @@ impl TickAggr {
     /// - Same timestamp → replace OHLCV with authoritative ClickHouse data
     /// - Newer timestamp → append as new completed bar
     /// - Older timestamp → ignore (stale)
-    pub fn replace_or_append_kline(&mut self, kline: &Kline) {
+    pub fn replace_or_append_kline(&mut self, kline: &Kline, micro: Option<OdbMicrostructure>) {
         #[cfg(feature = "telemetry")]
         {
             use crate::telemetry::{self, KlineSnapshot, ReconcileAction, TelemetryEvent};
@@ -407,12 +407,12 @@ impl TickAggr {
 
             // Emit MicroLoss if we're about to replace a bar that has microstructure
             if matches!(action, ReconcileAction::Replace)
-                && let Some(micro) = micro_before
+                && let Some(m) = micro_before
             {
                 telemetry::emit(TelemetryEvent::MicroLoss {
                     ts_ms: telemetry::now_ms(),
                     bar_time_ms: kline.time,
-                    micro_before: micro,
+                    micro_before: m,
                 });
             }
 
@@ -427,20 +427,18 @@ impl TickAggr {
 
         if let Some(last) = self.datapoints.last_mut() {
             if kline.time == last.kline.time {
-                let preserved_micro = last.microstructure;
+                // Replace: use incoming microstructure if available, else preserve existing
+                let resolved_micro = micro.or(last.microstructure);
                 let preserved_ids = last.agg_trade_id_range;
                 last.kline = *kline;
-                // Preserve locally-built microstructure and agg_trade_id range
-                // when ClickHouse bar replaces the forming bar (CH poll stream
-                // doesn't carry these fields).
-                last.microstructure = preserved_micro;
+                last.microstructure = resolved_micro;
                 last.agg_trade_id_range = preserved_ids;
             } else if kline.time > last.kline.time {
                 self.datapoints.push(TickAccumulation {
                     tick_count: 1,
                     kline: *kline,
                     footprint: KlineTrades::new(),
-                    microstructure: None,
+                    microstructure: micro,
                     agg_trade_id_range: None,
                 });
             }
@@ -449,7 +447,7 @@ impl TickAggr {
                 tick_count: 1,
                 kline: *kline,
                 footprint: KlineTrades::new(),
-                microstructure: None,
+                microstructure: micro,
                 agg_trade_id_range: None,
             });
         }
