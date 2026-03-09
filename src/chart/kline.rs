@@ -1157,6 +1157,9 @@ impl KlineChart {
             .find_map(|t| t.agg_trade_id)
         {
             self.gap_fill_fence_agg_id = Some(last_id);
+            // Advance telemetry tracker so we don't report a false-positive
+            // gap when the first WS trade past the fence arrives.
+            self.last_ws_agg_trade_id = Some(last_id);
             log::info!("[gap-fill] finalize: fence_agg_id={last_id}");
         }
 
@@ -2001,6 +2004,9 @@ impl KlineChart {
                 .find_map(|t| t.agg_trade_id)
             {
                 self.gap_fill_fence_agg_id = Some(last_id);
+                // Advance telemetry tracker so we don't report a false-positive
+                // gap when the first WS trade past the fence arrives.
+                self.last_ws_agg_trade_id = Some(last_id);
                 log::info!(
                     "[gap-fill] complete: fence_agg_id={last_id}"
                 );
