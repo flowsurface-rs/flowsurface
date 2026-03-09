@@ -429,23 +429,14 @@ impl Exchange {
         )
     }
 
-    pub fn allowed_push_freqs(&self) -> &[PushFrequency] {
-        match self {
-            Exchange::BybitLinear | Exchange::BybitInverse => &[
-                PushFrequency::Custom(Timeframe::MS100),
-                PushFrequency::Custom(Timeframe::MS300),
-            ],
-            Exchange::BybitSpot => &[
-                PushFrequency::Custom(Timeframe::MS200),
-                PushFrequency::Custom(Timeframe::MS300),
-            ],
-            _ => &[PushFrequency::ServerDefault],
-        }
-    }
-
     pub fn supports_heatmap_timeframe(&self, tf: Timeframe) -> bool {
         match self {
-            Exchange::BybitSpot => tf != Timeframe::MS100,
+            Exchange::BybitSpot
+            | Exchange::MexcSpot
+            | Exchange::MexcInverse
+            | Exchange::MexcLinear => {
+                tf != Timeframe::MS100 && tf != Timeframe::MS300 && tf != Timeframe::MS500
+            }
             Exchange::BybitLinear | Exchange::BybitInverse => tf != Timeframe::MS200,
             Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => {
                 tf != Timeframe::MS100 && tf != Timeframe::MS200 && tf != Timeframe::MS300
@@ -464,6 +455,8 @@ impl Exchange {
                 | Exchange::HyperliquidLinear
                 | Exchange::OkexLinear
                 | Exchange::OkexInverse
+                | Exchange::MexcLinear
+                | Exchange::MexcInverse
         )
     }
 
