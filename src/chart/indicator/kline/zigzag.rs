@@ -29,7 +29,8 @@ pub struct OverlayPivot {
     /// Storage index of the bar that confirmed this pivot (reversal detection).
     /// The gap `confirmed_at_idx - storage_idx` is the confirmation lag.
     pub confirmed_at_idx: Option<usize>,
-    /// Monotonically increasing confirmation order.
+    /// Monotonically increasing confirmation order (reserved for future filtering/display).
+    #[allow(dead_code)]
     pub generation: Option<u64>,
 }
 
