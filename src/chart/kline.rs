@@ -3614,7 +3614,7 @@ fn draw_crosshair_tooltip(
 
         let ohlc_width: f32 = segments
             .iter()
-            .map(|(s, _, is_val)| s.len() as f32 * 8.0 + if *is_val { 6.0 } else { 2.0 })
+            .map(|(s, _, is_val)| s.len() as f32 * 10.0 + if *is_val { 8.0 } else { 3.0 })
             .sum();
 
         // Timing rows: open time, close time, duration — only for index-based bases.
@@ -3671,23 +3671,23 @@ fn draw_crosshair_tooltip(
         let timing_width = timing_lines
             .as_ref()
             .map(|(a, b)| {
-                let wa = a.len() as f32 * 7.5 + 16.0;
-                let wb = b.len() as f32 * 7.5 + 16.0;
+                let wa = a.len() as f32 * 9.0 + 16.0;
+                let wb = b.len() as f32 * 9.0 + 16.0;
                 wa.max(wb)
             })
             .unwrap_or(0.0);
         let agg_id_width = agg_id_line
             .as_ref()
-            .map(|s| s.len() as f32 * 7.5 + 16.0)
+            .map(|s| s.len() as f32 * 9.0 + 16.0)
             .unwrap_or(0.0);
         let bg_width = ohlc_width.max(timing_width).max(agg_id_width);
         let has_timing = timing_lines.is_some();
         let has_agg_id = agg_id_line.is_some();
         let bg_height = match (has_timing, has_agg_id) {
-            (true, true) => 62.0,   // OHLC + 2 timing + agg_id
-            (true, false) => 48.0,  // OHLC + 2 timing
-            (false, true) => 30.0,  // OHLC + agg_id
-            (false, false) => 16.0, // OHLC only
+            (true, true) => 78.0,   // OHLC + 2 timing + agg_id
+            (true, false) => 60.0,  // OHLC + 2 timing
+            (false, true) => 38.0,  // OHLC + agg_id
+            (false, false) => 20.0, // OHLC only
         };
 
         let position = Point::new(
@@ -3707,37 +3707,37 @@ fn draw_crosshair_tooltip(
             frame.fill_text(canvas::Text {
                 content: text.to_string(),
                 position: Point::new(x, position.y),
-                size: iced::Pixels(12.0),
+                size: iced::Pixels(15.0),
                 color: *seg_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
             });
-            x += text.len() as f32 * 8.0;
-            x += if *is_value { 6.0 } else { 2.0 };
+            x += text.len() as f32 * 10.0;
+            x += if *is_value { 8.0 } else { 3.0 };
         }
 
-        let mut next_y = position.y + 18.0;
+        let mut next_y = position.y + 22.0;
 
         // Row 2 + 3: open → close (duration) in both timezones
         if let Some((primary, alt)) = timing_lines {
             frame.fill_text(canvas::Text {
                 content: primary,
                 position: Point::new(position.x, next_y),
-                size: iced::Pixels(10.5),
+                size: iced::Pixels(13.0),
                 color: dim_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
             });
-            next_y += 14.0;
+            next_y += 17.0;
             frame.fill_text(canvas::Text {
                 content: alt,
                 position: Point::new(position.x, next_y),
-                size: iced::Pixels(10.5),
+                size: iced::Pixels(13.0),
                 color: dim_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
             });
-            next_y += 14.0;
+            next_y += 17.0;
         }
 
         // Row 4: agg_trade_id range
@@ -3745,7 +3745,7 @@ fn draw_crosshair_tooltip(
             frame.fill_text(canvas::Text {
                 content: id_line,
                 position: Point::new(position.x, next_y),
-                size: iced::Pixels(10.5),
+                size: iced::Pixels(13.0),
                 color: dim_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
