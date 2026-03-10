@@ -67,9 +67,7 @@ pub async fn alert(severity: Severity, component: &str, detail: &str) {
         Severity::Recovery => "🟢",
     };
 
-    let msg = format!(
-        "{icon} <b>flowsurface — {component}</b>\n{detail}",
-    );
+    let msg = format!("{icon} <b>flowsurface — {component}</b>\n{detail}",);
     send_alert(&msg).await;
 }
 

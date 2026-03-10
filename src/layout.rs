@@ -1,11 +1,11 @@
 use crate::connector::{runtime_proxy_cfg, set_runtime_proxy_cfg};
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
+use data::stream::{PersistDepth, PersistStreamKind};
 use data::{
     UserTimezone,
     layout::{WindowSpec, pane::Axis},
 };
-use data::stream::{PersistDepth, PersistStreamKind};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
@@ -385,7 +385,11 @@ pub fn load_saved_state() -> SavedState {
                 "Failed to load/find layout state: {}. Starting with a new layout.",
                 e
             );
-            exchange::tg_alert!(exchange::telegram::Severity::Info, "layout", "Layout state load failed — using defaults");
+            exchange::tg_alert!(
+                exchange::telegram::Severity::Info,
+                "layout",
+                "Layout state load failed — using defaults"
+            );
 
             SavedState::default()
         }

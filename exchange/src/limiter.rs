@@ -46,7 +46,11 @@ pub async fn http_request(
         let status = response.status();
         log::error!("HTTP error {} for: {}", status, url);
         if crate::telegram::should_alert("http-error", 300) {
-            tg_alert!(crate::telegram::Severity::Warning, "http", "HTTP error {status} for: {url}");
+            tg_alert!(
+                crate::telegram::Severity::Warning,
+                "http",
+                "HTTP error {status} for: {url}"
+            );
         }
     }
 
@@ -98,7 +102,11 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
             status,
             url
         );
-        tg_alert!(crate::telegram::Severity::Critical, "rate-limit", "FATAL: HTTP {status} — rate limit or geo-block, exiting");
+        tg_alert!(
+            crate::telegram::Severity::Critical,
+            "rate-limit",
+            "FATAL: HTTP {status} — rate limit or geo-block, exiting"
+        );
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         std::process::exit(1);
     }

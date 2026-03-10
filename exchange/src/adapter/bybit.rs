@@ -198,7 +198,11 @@ fn feed_de(
                     }
                     _ => {
                         log::error!("Unknown stream name");
-                        tg_alert!(crate::telegram::Severity::Warning, "bybit", "Unknown stream name");
+                        tg_alert!(
+                            crate::telegram::Severity::Warning,
+                            "bybit",
+                            "Unknown stream name"
+                        );
                     }
                 }
             }
@@ -245,7 +249,11 @@ fn feed_de(
                 }
                 _ => {
                     log::error!("Unknown stream type");
-                    tg_alert!(crate::telegram::Severity::Warning, "bybit", "Unknown stream type");
+                    tg_alert!(
+                        crate::telegram::Severity::Warning,
+                        "bybit",
+                        "Unknown stream type"
+                    );
                 }
             }
         } else if k == "cts"
@@ -527,50 +535,76 @@ pub fn connect_trade_stream(
                     }
                     last_flush = tokio::time::Instant::now();
                 }
-                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Trade(ticker, de_trade_vec)) =
-                                feed_de(&msg.payload[..], None, market_type)
-                            {
-                                if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker)
+                State::Connected(websocket) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame())
+                        .await
+                    {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Trade(ticker, de_trade_vec)) =
+                                    feed_de(&msg.payload[..], None, market_type)
                                 {
-                                    let ticker_info = *ticker_info;
+                                    if let Some((ticker_info, qty_norm)) =
+                                        ticker_info_map.get(&ticker)
+                                    {
+                                        let ticker_info = *ticker_info;
 
-                                    let trades_buffer =
-                                        trades_buffer_map.entry(ticker).or_default();
-                                    for de_trade in &de_trade_vec {
-                                        let price = Price::from_f32(de_trade.price)
-                                            .round_to_min_tick(ticker_info.min_ticksize);
+                                        let trades_buffer =
+                                            trades_buffer_map.entry(ticker).or_default();
+                                        for de_trade in &de_trade_vec {
+                                            let price = Price::from_f32(de_trade.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize);
 
-                                        let trade = Trade {
-                                            time: de_trade.time,
-                                            is_sell: de_trade.is_sell == "Sell",
-                                            price,
-                                            qty: qty_norm
-                                                .normalize_qty(de_trade.qty, de_trade.price),
-                                            agg_trade_id: None,
-                                        };
+                                            let trade = Trade {
+                                                time: de_trade.time,
+                                                is_sell: de_trade.is_sell == "Sell",
+                                                price,
+                                                qty: qty_norm
+                                                    .normalize_qty(de_trade.qty, de_trade.price),
+                                                agg_trade_id: None,
+                                            };
 
-                                        trades_buffer.push(trade);
+                                            trades_buffer.push(trade);
+                                        }
+                                    } else {
+                                        log::error!("Ticker info not found for ticker: {}", ticker);
+                                        tg_alert!(
+                                            crate::telegram::Severity::Warning,
+                                            "bybit",
+                                            "Ticker not found: {ticker}"
+                                        );
                                     }
-                                } else {
-                                    log::error!("Ticker info not found for ticker: {}", ticker);
-                                    tg_alert!(crate::telegram::Severity::Warning, "bybit", "Ticker not found: {ticker}");
+                                }
+
+                                if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                    flush_trade_buffers(
+                                        &mut output,
+                                        &ticker_info_map,
+                                        &mut trades_buffer_map,
+                                    )
+                                    .await;
+                                    last_flush = tokio::time::Instant::now();
                                 }
                             }
-
-                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                            OpCode::Close => {
                                 flush_trade_buffers(
                                     &mut output,
                                     &ticker_info_map,
                                     &mut trades_buffer_map,
                                 )
                                 .await;
-                                last_flush = tokio::time::Instant::now();
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
                             }
-                        }
-                        OpCode::Close => {
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             flush_trade_buffers(
                                 &mut output,
                                 &ticker_info_map,
@@ -582,38 +616,29 @@ pub fn connect_trade_stream(
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                        Err(_elapsed) => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
                             .await;
 
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                            log::warn!("[Bybit] trade stream read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                    Err(_elapsed) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
-                            .await;
-
-                        log::warn!("[Bybit] trade stream read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })
@@ -727,7 +752,11 @@ pub fn connect_kline_stream(
                                                     "Ticker info not found for ticker: {}",
                                                     ticker
                                                 );
-                                                tg_alert!(crate::telegram::Severity::Warning, "bybit", "Ticker not found: {ticker}");
+                                                tg_alert!(
+                                                    crate::telegram::Severity::Warning,
+                                                    "bybit",
+                                                    "Ticker not found: {ticker}"
+                                                );
                                             }
                                         } else {
                                             log::error!(
@@ -847,13 +876,21 @@ pub async fn fetch_historical_oi(
             e,
             response_text
         );
-        tg_alert!(crate::telegram::Severity::Warning, "bybit", "JSON parse error");
+        tg_alert!(
+            crate::telegram::Severity::Warning,
+            "bybit",
+            "JSON parse error"
+        );
         AdapterError::ParseError(e.to_string())
     })?;
 
     let result_list = content["result"]["list"].as_array().ok_or_else(|| {
         log::error!("Result list is not an array in response: {}", response_text);
-        tg_alert!(crate::telegram::Severity::Warning, "bybit", "JSON parse error");
+        tg_alert!(
+            crate::telegram::Severity::Warning,
+            "bybit",
+            "JSON parse error"
+        );
         AdapterError::ParseError("Result list is not an array".to_string())
     })?;
 
@@ -864,7 +901,11 @@ pub async fn fetch_historical_oi(
                 e,
                 response_text
             );
-            tg_alert!(crate::telegram::Severity::Warning, "bybit", "JSON parse error");
+            tg_alert!(
+                crate::telegram::Severity::Warning,
+                "bybit",
+                "JSON parse error"
+            );
             AdapterError::ParseError(format!("Failed to parse open interest: {e}"))
         })?;
 

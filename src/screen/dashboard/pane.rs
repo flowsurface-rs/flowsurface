@@ -406,7 +406,11 @@ impl State {
             }
             _ => {
                 log::error!("pane content not candlestick");
-                exchange::tg_alert!(exchange::telegram::Severity::Warning, "pane", "Pane content mismatch: expected candlestick");
+                exchange::tg_alert!(
+                    exchange::telegram::Severity::Warning,
+                    "pane",
+                    "Pane content mismatch: expected candlestick"
+                );
             }
         }
     }
@@ -423,8 +427,14 @@ impl State {
                 chart, indicators, ..
             } => {
                 let Some(chart) = chart else {
-                    log::warn!("insert_hist_klines: chart not yet initialized, dropping kline data");
-                    exchange::tg_alert!(exchange::telegram::Severity::Info, "pane", "Chart not yet initialized for klines insert");
+                    log::warn!(
+                        "insert_hist_klines: chart not yet initialized, dropping kline data"
+                    );
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Info,
+                        "pane",
+                        "Chart not yet initialized for klines insert"
+                    );
                     return;
                 };
 
@@ -459,7 +469,9 @@ impl State {
             }
             Content::Comparison(chart) => {
                 let Some(chart) = chart else {
-                    log::warn!("insert_hist_klines: comparison chart not yet initialized, dropping kline data");
+                    log::warn!(
+                        "insert_hist_klines: comparison chart not yet initialized, dropping kline data"
+                    );
                     return;
                 };
 
@@ -483,7 +495,11 @@ impl State {
             }
             _ => {
                 log::error!("pane content not candlestick or footprint");
-                exchange::tg_alert!(exchange::telegram::Severity::Warning, "pane", "Pane content mismatch: expected candlestick/footprint");
+                exchange::tg_alert!(
+                    exchange::telegram::Severity::Warning,
+                    "pane",
+                    "Pane content mismatch: expected candlestick/footprint"
+                );
             }
         }
     }
@@ -533,7 +549,11 @@ impl State {
             }
             _ => {
                 log::error!("pane content not candlestick for ODB klines");
-                exchange::tg_alert!(exchange::telegram::Severity::Warning, "pane", "Pane content mismatch: expected candlestick for ODB");
+                exchange::tg_alert!(
+                    exchange::telegram::Severity::Warning,
+                    "pane",
+                    "Pane content mismatch: expected candlestick for ODB"
+                );
             }
         }
     }

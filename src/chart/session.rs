@@ -151,9 +151,7 @@ fn resolve_tick_based(
     interval_to_x: &impl Fn(u64) -> f32,
 ) -> Vec<ResolvedBoundary> {
     let PlotData::TickBased(tick_aggr) = data_source else {
-        log::warn!(
-            "[SESSION/tick] expected TickBased data for Odb/Tick basis — got TimeBased"
-        );
+        log::warn!("[SESSION/tick] expected TickBased data for Odb/Tick basis — got TimeBased");
         return Vec::new();
     };
 

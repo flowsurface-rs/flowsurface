@@ -102,7 +102,11 @@ impl RequestHandler {
             request.status = RequestStatus::Failed(error);
         } else {
             log::warn!("Request not found: {:?}", id);
-            exchange::tg_alert!(exchange::telegram::Severity::Info, "fetcher", "Request not found for error");
+            exchange::tg_alert!(
+                exchange::telegram::Severity::Info,
+                "fetcher",
+                "Request not found for error"
+            );
         }
     }
 }
@@ -365,8 +369,7 @@ pub fn catchup_sip(
     threshold_dbps: u32,
 ) -> impl Straw<(), Vec<exchange::Trade>, adapter::AdapterError> {
     sipper(async move |mut progress| {
-        let result =
-            adapter::clickhouse::fetch_catchup(&symbol, threshold_dbps).await?;
+        let result = adapter::clickhouse::fetch_catchup(&symbol, threshold_dbps).await?;
         if !result.trades.is_empty() {
             let () = progress.send(result.trades).await;
         }

@@ -124,10 +124,7 @@ impl UserTimezone {
     }
 
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-    fn format_odb_dt<Tz: chrono::TimeZone>(
-        datetime: &DateTime<Tz>,
-        label_span_ms: u64,
-    ) -> String
+    fn format_odb_dt<Tz: chrono::TimeZone>(datetime: &DateTime<Tz>, label_span_ms: u64) -> String
     where
         Tz::Offset: std::fmt::Display,
     {

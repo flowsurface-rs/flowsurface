@@ -388,8 +388,7 @@ impl Modifier {
                         if allows_tick_basis {
                             let is_timeframe_selected =
                                 matches!(selected_basis, Some(Basis::Time(_)));
-                            let is_odb_selected =
-                                matches!(selected_basis, Some(Basis::Odb(_)));
+                            let is_odb_selected = matches!(selected_basis, Some(Basis::Odb(_)));
 
                             let tab_button =
                                 |content: iced::widget::text::Text<'a>,

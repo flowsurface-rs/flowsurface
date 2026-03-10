@@ -552,10 +552,8 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                         // Second pass: format and emit labels
                         for (snap_x, timestamp) in visible_labels {
                             let label_text = if is_odb {
-                                self.timezone.format_odb_label(
-                                    (timestamp / 1000) as i64,
-                                    label_span_ms,
-                                )
+                                self.timezone
+                                    .format_odb_label((timestamp / 1000) as i64, label_span_ms)
                             } else {
                                 self.timezone
                                     .format_with_kind(

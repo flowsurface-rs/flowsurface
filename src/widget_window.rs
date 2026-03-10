@@ -18,9 +18,7 @@ use chrono::{Local, TimeZone, Utc};
 
 use iced::widget::canvas::{self, Cache, Canvas, Frame, Path, Stroke, Text};
 use iced::widget::mouse_area;
-use iced::{
-    self, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse, window,
-};
+use iced::{self, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse, window};
 
 /// The symbol string used to identify the BTCUSDT Binance Linear Perps ticker.
 const BTCUSDT_SYMBOL: &str = "BTCUSDT";
@@ -107,8 +105,10 @@ impl WidgetController {
 
     /// Check whether a ticker is BTCUSDT on any Binance exchange (Spot or Linear).
     pub fn is_btcusdt(ticker: &Ticker) -> bool {
-        matches!(ticker.exchange, Exchange::BinanceLinear | Exchange::BinanceSpot)
-            && ticker.to_full_symbol_and_type().0.contains(BTCUSDT_SYMBOL)
+        matches!(
+            ticker.exchange,
+            Exchange::BinanceLinear | Exchange::BinanceSpot
+        ) && ticker.to_full_symbol_and_type().0.contains(BTCUSDT_SYMBOL)
     }
 
     /// Find a BTCUSDT BinanceLinear TickerInfo from the available ticker map.
@@ -172,7 +172,11 @@ impl WidgetState {
                 Ok(None) => {}
                 Err(e) => {
                     log::warn!("[widget] OpenDeviationBarProcessor error: {e}");
-                    exchange::tg_alert!(exchange::telegram::Severity::Info, "widget", "Widget ODB processor error");
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Info,
+                        "widget",
+                        "Widget ODB processor error"
+                    );
                 }
             }
         }

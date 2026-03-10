@@ -294,7 +294,11 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
                 }
                 _ => {
                     log::error!("Unknown stream type");
-                    tg_alert!(crate::telegram::Severity::Warning, "binance", "Unknown stream type");
+                    tg_alert!(
+                        crate::telegram::Severity::Warning,
+                        "binance",
+                        "Unknown stream type"
+                    );
                 }
             }
         } else {
@@ -469,7 +473,11 @@ pub fn connect_depth_stream(
                                                 log::warn!(
                                                     "Out of sync at first event. Trying to resync...\n"
                                                 );
-                                                tg_alert!(crate::telegram::Severity::Info, "binance", "Depth out of sync — resyncing");
+                                                tg_alert!(
+                                                    crate::telegram::Severity::Info,
+                                                    "binance",
+                                                    "Depth out of sync — resyncing"
+                                                );
 
                                                 try_resync(
                                                     exchange,
@@ -708,7 +716,11 @@ pub fn connect_trade_stream(
                                         trades_buffer_map.entry(ticker).or_default().push(trade);
                                     } else {
                                         log::error!("Ticker info not found for ticker: {}", ticker);
-                                        tg_alert!(crate::telegram::Severity::Warning, "binance", "Ticker not found: {ticker}");
+                                        tg_alert!(
+                                            crate::telegram::Severity::Warning,
+                                            "binance",
+                                            "Ticker not found: {ticker}"
+                                        );
                                     }
                                 }
 
@@ -1501,7 +1513,11 @@ pub async fn fetch_trades(
                 "Historical trades fetch failed: {}, falling back to intraday fetch",
                 e
             );
-            tg_alert!(crate::telegram::Severity::Info, "binance", "Historical trades fallback to intraday");
+            tg_alert!(
+                crate::telegram::Severity::Info,
+                "binance",
+                "Historical trades fallback to intraday"
+            );
             fetch_intraday_trades(ticker_info, from_time).await
         }
     }
@@ -1656,7 +1672,11 @@ pub async fn get_hist_trades(
                     }
                     Err(e) => {
                         log::error!("Failed to fetch intraday trades: {}", e);
-                        tg_alert!(crate::telegram::Severity::Warning, "binance", "Intraday trades fetch failed");
+                        tg_alert!(
+                            crate::telegram::Severity::Warning,
+                            "binance",
+                            "Intraday trades fetch failed"
+                        );
                     }
                 }
             }

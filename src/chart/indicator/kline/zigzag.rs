@@ -294,16 +294,19 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
             // thin horizontal whisker.
             if let Some(conf_idx) = pivot.confirmed_at_idx {
                 let conf_vis = storage_to_visual(conf_idx);
-                if conf_vis >= earliest_visual && conf_vis <= latest_visual && conf_idx != pivot.storage_idx {
+                if conf_vis >= earliest_visual
+                    && conf_vis <= latest_visual
+                    && conf_idx != pivot.storage_idx
+                {
                     let conf_x = interval_to_x(conf_vis as u64);
                     let tick_half = 3.0;
 
                     // Thin whisker from pivot to confirmation bar (at pivot's price level).
-                    let whisker = Path::line(
-                        iced::Point::new(x, y),
-                        iced::Point::new(conf_x, y),
-                    );
-                    let whisker_color = Color { a: 0.25, ..pivot_color(pivot.kind) };
+                    let whisker = Path::line(iced::Point::new(x, y), iced::Point::new(conf_x, y));
+                    let whisker_color = Color {
+                        a: 0.25,
+                        ..pivot_color(pivot.kind)
+                    };
                     frame.stroke(
                         &whisker,
                         Stroke {
@@ -322,7 +325,10 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
                         iced::Point::new(conf_x, y - tick_half),
                         iced::Point::new(conf_x, y + tick_half),
                     );
-                    let tick_color = Color { a: 0.5, ..pivot_color(pivot.kind) };
+                    let tick_color = Color {
+                        a: 0.5,
+                        ..pivot_color(pivot.kind)
+                    };
                     frame.stroke(
                         &tick,
                         Stroke {

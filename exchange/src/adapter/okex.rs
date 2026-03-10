@@ -418,53 +418,79 @@ pub fn connect_trade_stream(
                     }
                     last_flush = tokio::time::Instant::now();
                 }
-                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
-                                feed_de(&msg.payload[..])
-                            {
-                                if let Some(ticker) = symbol_to_ticker.get(&inst_id)
-                                    && let Some((ticker_info, qty_norm)) =
-                                        ticker_info_map.get(ticker)
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
+                                    feed_de(&msg.payload[..])
                                 {
-                                    let ticker_info = *ticker_info;
-                                    let trades_buffer =
-                                        trades_buffer_map.entry(*ticker).or_default();
+                                    if let Some(ticker) = symbol_to_ticker.get(&inst_id)
+                                        && let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(ticker)
+                                    {
+                                        let ticker_info = *ticker_info;
+                                        let trades_buffer =
+                                            trades_buffer_map.entry(*ticker).or_default();
 
-                                    for de_trade in &de_trade_vec {
-                                        let price = Price::from_f32(de_trade.price)
-                                            .round_to_min_tick(ticker_info.min_ticksize);
-                                        let qty =
-                                            qty_norm.normalize_qty(de_trade.qty, de_trade.price);
+                                        for de_trade in &de_trade_vec {
+                                            let price = Price::from_f32(de_trade.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize);
+                                            let qty = qty_norm
+                                                .normalize_qty(de_trade.qty, de_trade.price);
 
-                                        let trade = Trade {
-                                            time: de_trade.time,
-                                            is_sell: de_trade.is_sell == "sell"
-                                                || de_trade.is_sell == "SELL",
-                                            price,
-                                            qty,
-                                            agg_trade_id: None,
-                                        };
-                                        trades_buffer.push(trade);
+                                            let trade = Trade {
+                                                time: de_trade.time,
+                                                is_sell: de_trade.is_sell == "sell"
+                                                    || de_trade.is_sell == "SELL",
+                                                price,
+                                                qty,
+                                                agg_trade_id: None,
+                                            };
+                                            trades_buffer.push(trade);
+                                        }
+                                    } else {
+                                        log::error!(
+                                            "Ticker info not found for symbol: {}",
+                                            inst_id
+                                        );
+                                        tg_alert!(
+                                            crate::telegram::Severity::Warning,
+                                            "okx",
+                                            "Ticker not found: {inst_id}"
+                                        );
                                     }
-                                } else {
-                                    log::error!("Ticker info not found for symbol: {}", inst_id);
-                                    tg_alert!(crate::telegram::Severity::Warning, "okx", "Ticker not found: {inst_id}");
+                                }
+
+                                if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                    flush_trade_buffers(
+                                        &mut output,
+                                        &ticker_info_map,
+                                        &mut trades_buffer_map,
+                                    )
+                                    .await;
+                                    last_flush = tokio::time::Instant::now();
                                 }
                             }
-
-                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                            OpCode::Close => {
                                 flush_trade_buffers(
                                     &mut output,
                                     &ticker_info_map,
                                     &mut trades_buffer_map,
                                 )
                                 .await;
-                                last_flush = tokio::time::Instant::now();
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
                             }
-                        }
-                        OpCode::Close => {
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             flush_trade_buffers(
                                 &mut output,
                                 &ticker_info_map,
@@ -476,38 +502,29 @@ pub fn connect_trade_stream(
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                        Err(_elapsed) => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
                             .await;
 
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                            log::warn!("[OKX] trade stream read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                    Err(_elapsed) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
-                            .await;
-
-                        log::warn!("[OKX] trade stream read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })

@@ -187,7 +187,12 @@ impl TradeIntensityHeatmapIndicator {
         // Use [oracle-rebuild-tail] and [oracle-incr-tail] for verification instead.
         log::trace!(
             "[oracle-bin] idx={} ti={:.4} bin={}/{} t={:.4} window={}",
-            idx, intensity, bin, k_actual, t_val, n,
+            idx,
+            intensity,
+            bin,
+            k_actual,
+            t_val,
+            n,
         );
         self.data.push(HeatmapPoint {
             intensity,
@@ -277,21 +282,30 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
             }
             self.next_idx = tickseries.datapoints.len();
             // Sample the last 3 bars' bins for color-shift detection
-            let tail_sample: Vec<_> = self.data.iter().rev().take(3).map(|p| {
-                (p.intensity, p.bin, p.k_actual, p.t())
-            }).collect();
+            let tail_sample: Vec<_> = self
+                .data
+                .iter()
+                .rev()
+                .take(3)
+                .map(|p| (p.intensity, p.bin, p.k_actual, p.t()))
+                .collect();
             log::info!(
                 "[intensity-rebuild] FULL REBUILD: prev_data={} prev_next_idx={} \
                  new_data={} new_next_idx={} dp_count={} tail_bins={:?}",
-                prev_data_len, prev_next_idx,
-                self.data.len(), self.next_idx,
-                tickseries.datapoints.len(), tail_sample,
+                prev_data_len,
+                prev_next_idx,
+                self.data.len(),
+                self.next_idx,
+                tickseries.datapoints.len(),
+                tail_sample,
             );
 
             // Oracle: log the LAST bar's bin (the newly added one) after rebuild.
             // This is the definitive assertion: did the newest bar get a non-zero bin?
             if let Some(last) = self.data.last() {
-                let has_micro = tickseries.datapoints.last()
+                let has_micro = tickseries
+                    .datapoints
+                    .last()
                     .and_then(|dp| dp.microstructure)
                     .is_some();
                 log::info!(
@@ -310,7 +324,11 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                         "[oracle-FAIL] Newest bar has microstructure but bin=0 (sentinel)! \
                          Intensity coloring will be wrong (default blue instead of thermal).",
                     );
-                    exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: bar has micro but bin=0 sentinel");
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Critical,
+                        "oracle",
+                        "Oracle FAIL: bar has micro but bin=0 sentinel"
+                    );
                 }
             }
         }
@@ -340,16 +358,25 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                     }
                     self.next_idx = new_len;
                     if new_bars > 0 {
-                        let last = self.data.last().map(|p| (p.intensity, p.bin, p.k_actual, p.t()));
+                        let last = self
+                            .data
+                            .last()
+                            .map(|p| (p.intensity, p.bin, p.k_actual, p.t()));
                         log::info!(
                             "[intensity-incr] +{} bars: old_dp={} new_dp={} data_len={} \
                              last_bar={:?}",
-                            new_bars, old_dp_len, new_len, self.data.len(), last,
+                            new_bars,
+                            old_dp_len,
+                            new_len,
+                            self.data.len(),
+                            last,
                         );
 
                         // Oracle: verify incrementally-added bar has non-zero bin
                         if let Some(last_p) = self.data.last() {
-                            let has_micro = tickseries.datapoints.last()
+                            let has_micro = tickseries
+                                .datapoints
+                                .last()
                                 .and_then(|dp| dp.microstructure)
                                 .is_some();
                             log::info!(
@@ -368,7 +395,11 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                                     "[oracle-FAIL] Incremental bar has micro but bin=0! \
                                      Intensity coloring bug on incremental path.",
                                 );
-                                exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: incremental bar micro but bin=0");
+                                exchange::tg_alert!(
+                                    exchange::telegram::Severity::Critical,
+                                    "oracle",
+                                    "Oracle FAIL: incremental bar micro but bin=0"
+                                );
                             }
                         }
                     }
@@ -377,7 +408,10 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                     log::warn!(
                         "[intensity-mismatch] next_idx={} != old_dp_len={} dp_count={} \
                          data_len={} → FULL REBUILD",
-                        self.next_idx, old_dp_len, new_len, self.data.len(),
+                        self.next_idx,
+                        old_dp_len,
+                        new_len,
+                        self.data.len(),
                     );
                     self.rebuild_from_source(source);
                     return; // rebuild_from_source already cleared caches

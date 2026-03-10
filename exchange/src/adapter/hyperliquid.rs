@@ -325,7 +325,11 @@ async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
                     dex_name.as_deref().unwrap_or("default"),
                     e
                 );
-                tg_alert!(crate::telegram::Severity::Warning, "hyperliquid", "Metadata fetch failed");
+                tg_alert!(
+                    crate::telegram::Severity::Warning,
+                    "hyperliquid",
+                    "Metadata fetch failed"
+                );
             }
         }
     }
@@ -1070,50 +1074,82 @@ pub fn connect_trade_stream(
                             .await;
                     }
                 },
-                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
-                    Ok(Ok(msg)) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Trade(trades)) =
-                                parse_websocket_message(&msg.payload)
-                            {
-                                for hl_trade in trades {
-                                    if let Some(ticker) = symbol_to_ticker.get(&hl_trade.coin)
-                                        && let Some((ticker_info, qty_norm)) =
-                                            ticker_info_map.get(ticker)
-                                    {
-                                        let ticker_info = *ticker_info;
-                                        let price = Price::from_f32(hl_trade.px)
-                                            .round_to_min_tick(ticker_info.min_ticksize);
+                State::Connected(websocket) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame())
+                        .await
+                    {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Trade(trades)) =
+                                    parse_websocket_message(&msg.payload)
+                                {
+                                    for hl_trade in trades {
+                                        if let Some(ticker) = symbol_to_ticker.get(&hl_trade.coin)
+                                            && let Some((ticker_info, qty_norm)) =
+                                                ticker_info_map.get(ticker)
+                                        {
+                                            let ticker_info = *ticker_info;
+                                            let price = Price::from_f32(hl_trade.px)
+                                                .round_to_min_tick(ticker_info.min_ticksize);
 
-                                        let trade = Trade {
-                                            time: hl_trade.time,
-                                            is_sell: hl_trade.side == "A",
-                                            price,
-                                            qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
-                                            agg_trade_id: None,
-                                        };
-                                        trades_buffer_map.entry(*ticker).or_default().push(trade);
-                                    } else {
-                                        log::error!(
-                                            "Ticker info not found for Hyperliquid coin: {}",
-                                            hl_trade.coin
-                                        );
-                                        tg_alert!(crate::telegram::Severity::Warning, "hyperliquid", "Ticker not found");
+                                            let trade = Trade {
+                                                time: hl_trade.time,
+                                                is_sell: hl_trade.side == "A",
+                                                price,
+                                                qty: qty_norm
+                                                    .normalize_qty(hl_trade.sz, hl_trade.px),
+                                                agg_trade_id: None,
+                                            };
+                                            trades_buffer_map
+                                                .entry(*ticker)
+                                                .or_default()
+                                                .push(trade);
+                                        } else {
+                                            log::error!(
+                                                "Ticker info not found for Hyperliquid coin: {}",
+                                                hl_trade.coin
+                                            );
+                                            tg_alert!(
+                                                crate::telegram::Severity::Warning,
+                                                "hyperliquid",
+                                                "Ticker not found"
+                                            );
+                                        }
                                     }
                                 }
-                            }
 
-                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                    flush_trade_buffers(
+                                        &mut output,
+                                        &ticker_info_map,
+                                        &mut trades_buffer_map,
+                                    )
+                                    .await;
+                                    last_flush = tokio::time::Instant::now();
+                                }
+                            }
+                            OpCode::Close => {
                                 flush_trade_buffers(
                                     &mut output,
                                     &ticker_info_map,
                                     &mut trades_buffer_map,
                                 )
                                 .await;
-                                last_flush = tokio::time::Instant::now();
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "WebSocket closed".to_string(),
+                                    ))
+                                    .await;
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Ping => {
+                                let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             flush_trade_buffers(
                                 &mut output,
                                 &ticker_info_map,
@@ -1125,41 +1161,29 @@ pub fn connect_trade_stream(
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "WebSocket closed".to_string(),
+                                    format!("WebSocket error: {}", e),
                                 ))
                                 .await;
                         }
-                        OpCode::Ping => {
-                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        Err(_elapsed) => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
+                            .await;
+
+                            log::warn!("[Hyperliquid] trade stream read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
                         }
-                        _ => {}
-                    },
-                    Ok(Err(e)) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
-                            .await;
-
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                format!("WebSocket error: {}", e),
-                            ))
-                            .await;
                     }
-                    Err(_elapsed) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
-                            .await;
-
-                        log::warn!("[Hyperliquid] trade stream read timeout — reconnecting");
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Read timeout (connection stale)".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
             }
         }
     })
@@ -1262,7 +1286,13 @@ pub fn connect_kline_stream(
                                         timeframe: *timeframe,
                                     };
                                     let _ = output
-                                        .send(Event::KlineReceived(stream_kind, kline, None, None, None))
+                                        .send(Event::KlineReceived(
+                                            stream_kind,
+                                            kline,
+                                            None,
+                                            None,
+                                            None,
+                                        ))
                                         .await;
                                 }
                             }
