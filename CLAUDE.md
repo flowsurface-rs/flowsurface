@@ -255,12 +255,13 @@ After merging upstream, check for:
 
 ## Terminology
 
-| Term           | Definition                                                               |
-| -------------- | ------------------------------------------------------------------------ |
-| **dbps**       | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                 |
-| **BPR**        | Basis Points Range. Display label: BPR25 = 250 dbps threshold.           |
-| **ODB**        | Open Deviation Bar. Range bar that closes on % deviation from open.      |
-| **OFI**        | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1]. |
-| **TickAggr**   | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.       |
-| **TimeSeries** | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).          |
-| **SSE**        | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.    |
+| Term           | Definition                                                                              |
+| -------------- | --------------------------------------------------------------------------------------- |
+| **dbps**       | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                                |
+| **BPR**        | Basis Points Range. Display label: BPR25 = 250 dbps threshold.                          |
+| **ODB**        | Open Deviation Bar. Range bar that closes on % deviation from open.                     |
+| **OFI**        | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1].                |
+| **TickAggr**   | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.                      |
+| **TimeSeries** | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).                         |
+| **SSE**        | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.                   |
+| **Sentinel**   | Bar-level agg_trade_id continuity auditor. Periodic 60s scan of all displayed ODB bars. |

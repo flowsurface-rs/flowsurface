@@ -43,6 +43,20 @@ pub struct GapFillRequest {
     pub threshold_dbps: u32,
 }
 
+/// A detected agg_trade_id discontinuity between consecutive ODB bars.
+/// Part of the Sentinel subsystem (bar-level continuity auditor).
+#[derive(Debug, Clone)]
+pub struct BarGap {
+    /// last_agg_trade_id of bar[i-1].
+    pub prev_last_id: u64,
+    /// first_agg_trade_id of bar[i].
+    pub curr_first_id: u64,
+    /// Number of missing agg_trade_ids (curr_first - prev_last - 1).
+    pub missing_count: u64,
+    /// Timestamp (ms) of bar[i] (for log correlation).
+    pub bar_time_ms: u64,
+}
+
 /// Buffered CH/SSE bar with metadata, applied after gap-fill completion.
 type BufferedChKline = (
     Kline,
@@ -295,6 +309,12 @@ pub struct KlineChart {
     gap_fill_requested: bool,
     /// Cooldown: ms timestamp of last gap-fill trigger (prevents rapid re-triggering).
     last_gap_fill_trigger_ms: u64,
+    /// Sentinel: timer for periodic bar-level continuity audit.
+    last_sentinel_audit: Instant,
+    /// Sentinel: number of bar-level gaps found in last audit (avoids re-alerting).
+    sentinel_gap_count: usize,
+    /// Sentinel: whether a kline re-fetch has been triggered to heal detected bar gaps.
+    sentinel_refetch_pending: bool,
 }
 
 impl KlineChart {
@@ -411,6 +431,9 @@ impl KlineChart {
                     trade_feed_dead_alerted: false,
                     gap_fill_requested: false,
                     last_gap_fill_trigger_ms: 0,
+                    last_sentinel_audit: Instant::now(),
+                    sentinel_gap_count: 0,
+                    sentinel_refetch_pending: false,
                 }
             }
             Basis::Tick(interval) => {
@@ -491,6 +514,9 @@ impl KlineChart {
                     trade_feed_dead_alerted: false,
                     gap_fill_requested: false,
                     last_gap_fill_trigger_ms: 0,
+                    last_sentinel_audit: Instant::now(),
+                    sentinel_gap_count: 0,
+                    sentinel_refetch_pending: false,
                 }
             }
             Basis::Odb(threshold_dbps) => {
@@ -604,6 +630,9 @@ impl KlineChart {
                     trade_feed_dead_alerted: false,
                     gap_fill_requested: false,
                     last_gap_fill_trigger_ms: 0,
+                    last_sentinel_audit: Instant::now(),
+                    sentinel_gap_count: 0,
+                    sentinel_refetch_pending: false,
                 }
             }
         }
@@ -788,6 +817,9 @@ impl KlineChart {
             trade_feed_dead_alerted: false,
             gap_fill_requested: false,
             last_gap_fill_trigger_ms: 0,
+            last_sentinel_audit: Instant::now(),
+            sentinel_gap_count: 0,
+            sentinel_refetch_pending: false,
         }
     }
 
@@ -1144,6 +1176,15 @@ impl KlineChart {
             }
             PlotData::TickBased(tick_aggr) => {
                 if self.chart.basis.is_odb() {
+                    // Sentinel refetch: re-fetch all klines from CH to pick up kintsugi repairs
+                    if self.sentinel_refetch_pending {
+                        self.sentinel_refetch_pending = false;
+                        self.request_handler = RequestHandler::default();
+                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                        let range = FetchRange::Kline(0, now_ms);
+                        return request_fetch(&mut self.request_handler, range);
+                    }
+
                     if tick_aggr.datapoints.is_empty() {
                         // Initial fetch — get latest 500 bars
                         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -1268,6 +1309,80 @@ impl KlineChart {
         }
 
         self.invalidate(None);
+
+        // Sentinel: verify bar continuity after gap-fill completion
+        let gaps = self.audit_bar_continuity();
+        if gaps.is_empty() {
+            log::info!("[sentinel] post-gap-fill: all bars continuous");
+        } else {
+            log::warn!("[sentinel] post-gap-fill: {} gaps remain", gaps.len());
+            for (i, gap) in gaps.iter().take(3).enumerate() {
+                log::warn!(
+                    "[sentinel]   remaining gap {}: prev_last={} curr_first={} missing={}",
+                    i + 1,
+                    gap.prev_last_id,
+                    gap.curr_first_id,
+                    gap.missing_count,
+                );
+            }
+            if exchange::telegram::is_configured() {
+                let total_missing: u64 = gaps.iter().map(|g| g.missing_count).sum();
+                let msg = format!(
+                    "Post-gap-fill: {} gaps remain ({} missing IDs)\nKintsugi repair needed on bigblack",
+                    gaps.len(),
+                    total_missing,
+                );
+                tokio::spawn(async move {
+                    exchange::telegram::alert(
+                        exchange::telegram::Severity::Warning,
+                        "sentinel",
+                        &msg,
+                    )
+                    .await;
+                });
+            }
+        }
+    }
+
+    /// Sentinel: scan all datapoints for agg_trade_id gaps between consecutive bars.
+    /// Pure sequential ID continuity check — no time-based filtering.
+    fn audit_bar_continuity(&self) -> Vec<BarGap> {
+        let tick_aggr = match &self.data_source {
+            PlotData::TickBased(ta) => ta,
+            _ => return vec![],
+        };
+
+        let mut gaps = Vec::new();
+
+        for window in tick_aggr.datapoints.windows(2) {
+            let (prev, curr) = (&window[0], &window[1]);
+
+            // Both bars must have agg_trade_id_range populated
+            let (Some((_prev_first, prev_last)), Some((curr_first, _curr_last))) =
+                (prev.agg_trade_id_range, curr.agg_trade_id_range)
+            else {
+                continue;
+            };
+
+            // Overlap or equal — skip (could be CH reconciliation artifact)
+            if curr_first <= prev_last {
+                continue;
+            }
+
+            let missing = curr_first - prev_last - 1;
+            if missing == 0 {
+                continue;
+            }
+
+            gaps.push(BarGap {
+                prev_last_id: prev_last,
+                curr_first_id: curr_first,
+                missing_count: missing,
+                bar_time_ms: curr.kline.time,
+            });
+        }
+
+        gaps
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -2469,6 +2584,103 @@ impl KlineChart {
                         exchange::telegram::alert(
                             exchange::telegram::Severity::Critical,
                             "trade-watchdog",
+                            &msg,
+                        )
+                        .await;
+                    });
+                }
+            }
+        }
+
+        // ── Sentinel: bar-level agg_trade_id continuity audit (every 60s, ODB only) ──
+        if self.chart.basis.is_odb()
+            && !self.fetching_trades.0
+            && let Some(t) = now
+            && t.duration_since(self.last_sentinel_audit)
+                >= std::time::Duration::from_secs(60)
+        {
+            self.last_sentinel_audit = t;
+            let gaps = self.audit_bar_continuity();
+
+            if !gaps.is_empty() && gaps.len() != self.sentinel_gap_count {
+                self.sentinel_gap_count = gaps.len();
+                let total_missing: u64 = gaps.iter().map(|g| g.missing_count).sum();
+
+                log::warn!(
+                    "[sentinel] {} inter-bar gaps detected ({} missing agg_trade_ids)",
+                    gaps.len(),
+                    total_missing,
+                );
+                for (i, gap) in gaps.iter().take(5).enumerate() {
+                    log::warn!(
+                        "[sentinel]   gap {}: prev_last={} curr_first={} missing={} bar_time={}",
+                        i + 1,
+                        gap.prev_last_id,
+                        gap.curr_first_id,
+                        gap.missing_count,
+                        gap.bar_time_ms,
+                    );
+                }
+
+                if exchange::telegram::is_configured() {
+                    let mut detail = format!(
+                        "{} inter-bar agg_trade_id gaps detected\nTotal missing: {} IDs\n\nTop gaps:",
+                        gaps.len(),
+                        total_missing,
+                    );
+                    for (i, gap) in gaps.iter().take(5).enumerate() {
+                        let secs = gap.bar_time_ms / 1000;
+                        let nanos = ((gap.bar_time_ms % 1000) * 1_000_000) as u32;
+                        let dt = chrono::DateTime::from_timestamp(secs as i64, nanos)
+                            .map(|d| d.format("%Y-%m-%dT%H:%M UTC").to_string())
+                            .unwrap_or_else(|| gap.bar_time_ms.to_string());
+                        detail.push_str(&format!(
+                            "\n{}. prev={} → curr={}\n   ({} missing, bar_time={})",
+                            i + 1,
+                            gap.prev_last_id,
+                            gap.curr_first_id,
+                            gap.missing_count,
+                            dt,
+                        ));
+                    }
+                    if gaps.len() > 5 {
+                        detail.push_str(&format!("\n... and {} more", gaps.len() - 5));
+                    }
+                    detail.push_str("\n\nTriggering CH kline re-fetch...");
+
+                    tokio::spawn(async move {
+                        exchange::telegram::alert(
+                            exchange::telegram::Severity::Warning,
+                            "sentinel",
+                            &detail,
+                        )
+                        .await;
+                    });
+                }
+
+                if !self.sentinel_refetch_pending {
+                    self.sentinel_refetch_pending = true;
+                    log::info!(
+                        "[sentinel] triggering kline re-fetch to heal {} gaps",
+                        gaps.len()
+                    );
+                }
+            } else if gaps.is_empty() && self.sentinel_gap_count > 0 {
+                let prev_count = self.sentinel_gap_count;
+                self.sentinel_gap_count = 0;
+                self.sentinel_refetch_pending = false;
+
+                log::info!("[sentinel] all {} previous gaps healed", prev_count);
+
+                if exchange::telegram::is_configured() {
+                    let msg = format!(
+                        "All {} inter-bar gaps healed after kline re-fetch (kintsugi repair confirmed)",
+                        prev_count,
+                    );
+                    tokio::spawn(async move {
+                        exchange::telegram::alert(
+                            exchange::telegram::Severity::Recovery,
+                            "sentinel",
                             &msg,
                         )
                         .await;
