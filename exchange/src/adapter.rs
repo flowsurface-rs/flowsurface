@@ -543,7 +543,7 @@ pub async fn fetch_ticker_stats(
         Venue::Bybit => bybit::fetch_ticker_stats(market_type).await,
         Venue::Hyperliquid => hyperliquid::fetch_ticker_stats(market_type).await,
         Venue::Okex => okex::fetch_ticker_stats(market_type).await,
-        Venue::Mexc => mexc::fetch_ticker_prices(market_type).await,
+        Venue::Mexc => mexc::fetch_ticker_stats(market_type, contract_sizes).await,
     }
 }
 

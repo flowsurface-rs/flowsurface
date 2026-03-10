@@ -225,7 +225,9 @@ impl TickersTable {
                     let fetch_tasks = exchanges
                         .into_iter()
                         .map(|exchange| {
-                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
+                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse)
+                                || matches!(exchange.venue(), Venue::Mexc)
+                            {
                                 Some(contract_sizes_for_exchange(
                                     exchange,
                                     self.tickers_info.iter(),

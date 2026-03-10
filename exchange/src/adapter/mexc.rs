@@ -276,8 +276,9 @@ pub async fn fetch_ticker_metadata(
     Ok(ticker_info_map)
 }
 
-pub async fn fetch_ticker_prices(
+pub async fn fetch_ticker_stats(
     market_type: MarketKind,
+    contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let exchange = exchange_from_market_type(market_type);
 
@@ -380,6 +381,8 @@ pub async fn fetch_ticker_prices(
                     continue;
                 }
 
+                let ticker = Ticker::new(symbol, exchange);
+
                 let last_price = item["lastPrice"]
                     .as_f64()
                     .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?
@@ -396,10 +399,19 @@ pub async fn fetch_ticker_prices(
                     .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?
                     as f32;
 
+                let contract_size = contract_sizes
+                    .as_ref()
+                    .and_then(|sizes| sizes.get(&ticker))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        log::warn!("Missing contract size for {ticker}, using raw volume");
+                        1.0
+                    });
+
                 let volume_in_usd = if market_type == MarketKind::InversePerps {
-                    volume_24
+                    volume_24 * contract_size
                 } else {
-                    volume_24 * last_price
+                    volume_24 * contract_size * last_price
                 };
 
                 // riseFallRate is already a percentage (e.g., 0.014 means 1.4%)
@@ -412,7 +424,7 @@ pub async fn fetch_ticker_prices(
                     daily_volume: volume_in_usd,
                 };
 
-                ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
+                ticker_prices_map.insert(ticker, ticker_stats);
             }
         }
     }
