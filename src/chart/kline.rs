@@ -43,15 +43,30 @@ pub struct GapFillRequest {
     pub threshold_dbps: u32,
 }
 
-/// A detected agg_trade_id discontinuity between consecutive ODB bars.
+/// Classification of agg_trade_id anomalies between consecutive ODB bars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarGapKind {
+    /// Sequential gap: curr_first > prev_last + 1. Missing trades between bars.
+    Gap,
+    /// Day-boundary gap: same as Gap but bars span different UTC days.
+    /// These are structural in ouroboros_mode=day (orphaned midnight bars)
+    /// and cannot be healed by CH re-fetch alone — kintsugi must repair first.
+    DayBoundary,
+    /// Overlap: curr_first <= prev_last. Bars share agg_trade_ids (CH reconciliation artifact).
+    Overlap,
+}
+
+/// A detected agg_trade_id anomaly between consecutive ODB bars.
 /// Part of the Sentinel subsystem (bar-level continuity auditor).
 #[derive(Debug, Clone)]
 pub struct BarGap {
+    /// Classification of this anomaly.
+    pub kind: BarGapKind,
     /// last_agg_trade_id of bar[i-1].
     pub prev_last_id: u64,
     /// first_agg_trade_id of bar[i].
     pub curr_first_id: u64,
-    /// Number of missing agg_trade_ids (curr_first - prev_last - 1).
+    /// Number of missing agg_trade_ids (curr_first - prev_last - 1), or overlap count.
     pub missing_count: u64,
     /// Timestamp (ms) of bar[i] (for log correlation).
     pub bar_time_ms: u64,
@@ -1311,12 +1326,30 @@ impl KlineChart {
         self.invalidate(None);
 
         // Sentinel: verify bar continuity after gap-fill completion
-        let gaps = self.audit_bar_continuity();
-        if gaps.is_empty() {
+        let anomalies = self.audit_bar_continuity();
+        let healable: Vec<_> = anomalies
+            .iter()
+            .filter(|g| g.kind == BarGapKind::Gap)
+            .collect();
+        let day_boundary_count = anomalies
+            .iter()
+            .filter(|g| g.kind == BarGapKind::DayBoundary)
+            .count();
+        let overlap_count = anomalies
+            .iter()
+            .filter(|g| g.kind == BarGapKind::Overlap)
+            .count();
+        if anomalies.is_empty() {
             log::info!("[sentinel] post-gap-fill: all bars continuous");
         } else {
-            log::warn!("[sentinel] post-gap-fill: {} gaps remain", gaps.len());
-            for (i, gap) in gaps.iter().take(3).enumerate() {
+            log::warn!(
+                "[sentinel] post-gap-fill: {} anomalies remain ({} healable, {} day-boundary, {} overlaps)",
+                anomalies.len(),
+                healable.len(),
+                day_boundary_count,
+                overlap_count,
+            );
+            for (i, gap) in healable.iter().take(3).enumerate() {
                 log::warn!(
                     "[sentinel]   remaining gap {}: prev_last={} curr_first={} missing={}",
                     i + 1,
@@ -1325,11 +1358,12 @@ impl KlineChart {
                     gap.missing_count,
                 );
             }
-            if exchange::telegram::is_configured() {
-                let total_missing: u64 = gaps.iter().map(|g| g.missing_count).sum();
+            // Only send Telegram for healable gaps (day-boundary are structural)
+            if exchange::telegram::is_configured() && !healable.is_empty() {
+                let total_missing: u64 = healable.iter().map(|g| g.missing_count).sum();
                 let msg = format!(
-                    "Post-gap-fill: {} gaps remain ({} missing IDs)\nKintsugi repair needed on bigblack",
-                    gaps.len(),
+                    "Post-gap-fill: {} healable gaps remain ({} missing IDs)\nKintsugi repair needed on bigblack",
+                    healable.len(),
                     total_missing,
                 );
                 tokio::spawn(async move {
@@ -1344,28 +1378,39 @@ impl KlineChart {
         }
     }
 
-    /// Sentinel: scan all datapoints for agg_trade_id gaps between consecutive bars.
-    /// Pure sequential ID continuity check — no time-based filtering.
+    /// Sentinel: scan all datapoints for agg_trade_id anomalies between consecutive bars.
+    /// Detects gaps (missing IDs), day-boundary gaps (structural), and overlaps.
     fn audit_bar_continuity(&self) -> Vec<BarGap> {
         let tick_aggr = match &self.data_source {
             PlotData::TickBased(ta) => ta,
             _ => return vec![],
         };
 
-        let mut gaps = Vec::new();
+        let mut anomalies = Vec::new();
+        const MS_PER_DAY: u64 = 86_400_000;
 
         for window in tick_aggr.datapoints.windows(2) {
             let (prev, curr) = (&window[0], &window[1]);
 
-            // Both bars must have agg_trade_id_range populated
             let (Some((_prev_first, prev_last)), Some((curr_first, _curr_last))) =
                 (prev.agg_trade_id_range, curr.agg_trade_id_range)
             else {
                 continue;
             };
 
-            // Overlap or equal — skip (could be CH reconciliation artifact)
             if curr_first <= prev_last {
+                // Overlap: bars share agg_trade_ids (or equal boundary)
+                if curr_first == prev_last + 1 {
+                    continue; // Perfect continuity — not an anomaly
+                }
+                let overlap_count = prev_last - curr_first + 1;
+                anomalies.push(BarGap {
+                    kind: BarGapKind::Overlap,
+                    prev_last_id: prev_last,
+                    curr_first_id: curr_first,
+                    missing_count: overlap_count,
+                    bar_time_ms: curr.kline.time,
+                });
                 continue;
             }
 
@@ -1374,7 +1419,17 @@ impl KlineChart {
                 continue;
             }
 
-            gaps.push(BarGap {
+            // Classify: day-boundary if bars are in different UTC days
+            let prev_day = prev.kline.time / MS_PER_DAY;
+            let curr_day = curr.kline.time / MS_PER_DAY;
+            let kind = if prev_day != curr_day {
+                BarGapKind::DayBoundary
+            } else {
+                BarGapKind::Gap
+            };
+
+            anomalies.push(BarGap {
+                kind,
                 prev_last_id: prev_last,
                 curr_first_id: curr_first,
                 missing_count: missing,
@@ -1382,7 +1437,7 @@ impl KlineChart {
             });
         }
 
-        gaps
+        anomalies
     }
 
     pub fn tick_size(&self) -> f32 {
@@ -2596,57 +2651,122 @@ impl KlineChart {
         if self.chart.basis.is_odb()
             && !self.fetching_trades.0
             && let Some(t) = now
-            && t.duration_since(self.last_sentinel_audit)
-                >= std::time::Duration::from_secs(60)
+            && t.duration_since(self.last_sentinel_audit) >= std::time::Duration::from_secs(60)
         {
             self.last_sentinel_audit = t;
-            let gaps = self.audit_bar_continuity();
+            let anomalies = self.audit_bar_continuity();
 
-            if !gaps.is_empty() && gaps.len() != self.sentinel_gap_count {
-                self.sentinel_gap_count = gaps.len();
-                let total_missing: u64 = gaps.iter().map(|g| g.missing_count).sum();
+            // Partition: healable gaps (re-fetch can fix) vs structural (day-boundary, overlaps)
+            let healable: Vec<_> = anomalies
+                .iter()
+                .filter(|g| g.kind == BarGapKind::Gap)
+                .collect();
+            let day_boundary: Vec<_> = anomalies
+                .iter()
+                .filter(|g| g.kind == BarGapKind::DayBoundary)
+                .collect();
+            let overlaps: Vec<_> = anomalies
+                .iter()
+                .filter(|g| g.kind == BarGapKind::Overlap)
+                .collect();
 
-                log::warn!(
-                    "[sentinel] {} inter-bar gaps detected ({} missing agg_trade_ids)",
-                    gaps.len(),
-                    total_missing,
-                );
-                for (i, gap) in gaps.iter().take(5).enumerate() {
+            let total_anomalies = anomalies.len();
+
+            if total_anomalies > 0 && total_anomalies != self.sentinel_gap_count {
+                self.sentinel_gap_count = total_anomalies;
+
+                // Log all anomaly types
+                if !healable.is_empty() {
+                    let missing: u64 = healable.iter().map(|g| g.missing_count).sum();
                     log::warn!(
-                        "[sentinel]   gap {}: prev_last={} curr_first={} missing={} bar_time={}",
-                        i + 1,
-                        gap.prev_last_id,
-                        gap.curr_first_id,
-                        gap.missing_count,
-                        gap.bar_time_ms,
+                        "[sentinel] {} healable gaps ({} missing agg_trade_ids)",
+                        healable.len(),
+                        missing,
                     );
-                }
-
-                if exchange::telegram::is_configured() {
-                    let mut detail = format!(
-                        "{} inter-bar agg_trade_id gaps detected\nTotal missing: {} IDs\n\nTop gaps:",
-                        gaps.len(),
-                        total_missing,
-                    );
-                    for (i, gap) in gaps.iter().take(5).enumerate() {
-                        let secs = gap.bar_time_ms / 1000;
-                        let nanos = ((gap.bar_time_ms % 1000) * 1_000_000) as u32;
-                        let dt = chrono::DateTime::from_timestamp(secs as i64, nanos)
-                            .map(|d| d.format("%Y-%m-%dT%H:%M UTC").to_string())
-                            .unwrap_or_else(|| gap.bar_time_ms.to_string());
-                        detail.push_str(&format!(
-                            "\n{}. prev={} → curr={}\n   ({} missing, bar_time={})",
+                    for (i, gap) in healable.iter().take(3).enumerate() {
+                        log::warn!(
+                            "[sentinel]   gap {}: prev_last={} curr_first={} missing={}",
                             i + 1,
                             gap.prev_last_id,
                             gap.curr_first_id,
                             gap.missing_count,
-                            dt,
+                        );
+                    }
+                }
+                if !day_boundary.is_empty() {
+                    let missing: u64 = day_boundary.iter().map(|g| g.missing_count).sum();
+                    log::info!(
+                        "[sentinel] {} day-boundary gaps ({} missing IDs, structural — kintsugi domain)",
+                        day_boundary.len(),
+                        missing,
+                    );
+                }
+                if !overlaps.is_empty() {
+                    let overlap_total: u64 = overlaps.iter().map(|g| g.missing_count).sum();
+                    log::warn!(
+                        "[sentinel] {} overlapping bar pairs ({} shared agg_trade_ids)",
+                        overlaps.len(),
+                        overlap_total,
+                    );
+                    for (i, gap) in overlaps.iter().take(3).enumerate() {
+                        log::warn!(
+                            "[sentinel]   overlap {}: prev_last={} curr_first={} shared={}",
+                            i + 1,
+                            gap.prev_last_id,
+                            gap.curr_first_id,
+                            gap.missing_count,
+                        );
+                    }
+                }
+
+                // Telegram: only alert for healable gaps or overlaps (not day-boundary)
+                if exchange::telegram::is_configured()
+                    && (!healable.is_empty() || !overlaps.is_empty())
+                {
+                    let mut detail = String::new();
+                    if !healable.is_empty() {
+                        let missing: u64 = healable.iter().map(|g| g.missing_count).sum();
+                        detail.push_str(&format!(
+                            "{} healable gaps ({} missing IDs)\n",
+                            healable.len(),
+                            missing,
+                        ));
+                        for (i, gap) in healable.iter().take(5).enumerate() {
+                            let secs = gap.bar_time_ms / 1000;
+                            let nanos = ((gap.bar_time_ms % 1000) * 1_000_000) as u32;
+                            let dt = chrono::DateTime::from_timestamp(secs as i64, nanos)
+                                .map(|d| d.format("%Y-%m-%dT%H:%M UTC").to_string())
+                                .unwrap_or_else(|| gap.bar_time_ms.to_string());
+                            detail.push_str(&format!(
+                                "\n{}. prev={} → curr={}\n   ({} missing, bar_time={})",
+                                i + 1,
+                                gap.prev_last_id,
+                                gap.curr_first_id,
+                                gap.missing_count,
+                                dt,
+                            ));
+                        }
+                    }
+                    if !overlaps.is_empty() {
+                        if !detail.is_empty() {
+                            detail.push_str("\n\n");
+                        }
+                        let overlap_total: u64 = overlaps.iter().map(|g| g.missing_count).sum();
+                        detail.push_str(&format!(
+                            "{} overlapping bar pairs ({} shared IDs)",
+                            overlaps.len(),
+                            overlap_total,
                         ));
                     }
-                    if gaps.len() > 5 {
-                        detail.push_str(&format!("\n... and {} more", gaps.len() - 5));
+                    if !day_boundary.is_empty() {
+                        detail.push_str(&format!(
+                            "\n\n({} day-boundary gaps omitted — structural)",
+                            day_boundary.len(),
+                        ));
                     }
-                    detail.push_str("\n\nTriggering CH kline re-fetch...");
+                    if !healable.is_empty() {
+                        detail.push_str("\n\nTriggering CH kline re-fetch...");
+                    }
 
                     tokio::spawn(async move {
                         exchange::telegram::alert(
@@ -2658,23 +2778,24 @@ impl KlineChart {
                     });
                 }
 
-                if !self.sentinel_refetch_pending {
+                // Only trigger re-fetch for healable gaps (not day-boundary or overlaps)
+                if !healable.is_empty() && !self.sentinel_refetch_pending {
                     self.sentinel_refetch_pending = true;
                     log::info!(
                         "[sentinel] triggering kline re-fetch to heal {} gaps",
-                        gaps.len()
+                        healable.len()
                     );
                 }
-            } else if gaps.is_empty() && self.sentinel_gap_count > 0 {
+            } else if total_anomalies == 0 && self.sentinel_gap_count > 0 {
                 let prev_count = self.sentinel_gap_count;
                 self.sentinel_gap_count = 0;
                 self.sentinel_refetch_pending = false;
 
-                log::info!("[sentinel] all {} previous gaps healed", prev_count);
+                log::info!("[sentinel] all {} previous anomalies healed", prev_count);
 
                 if exchange::telegram::is_configured() {
                     let msg = format!(
-                        "All {} inter-bar gaps healed after kline re-fetch (kintsugi repair confirmed)",
+                        "All {} inter-bar anomalies healed (kintsugi repair confirmed)",
                         prev_count,
                     );
                     tokio::spawn(async move {

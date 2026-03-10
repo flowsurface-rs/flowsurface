@@ -191,11 +191,10 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
         let storage_to_visual =
             |storage_idx: usize| -> usize { total_len.saturating_sub(1 + storage_idx) };
 
-        let is_visible =
-            |storage_idx: usize| -> bool {
-                let vis = storage_to_visual(storage_idx);
-                vis >= earliest_visual && vis <= latest_visual
-            };
+        let is_visible = |storage_idx: usize| -> bool {
+            let vis = storage_to_visual(storage_idx);
+            vis >= earliest_visual && vis <= latest_visual
+        };
 
         let pivot_xy = |pivot: &OverlayPivot| -> (f32, f32) {
             let visual_idx = storage_to_visual(pivot.storage_idx);
@@ -212,7 +211,10 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
         };
 
         let dimmed = |kind: PivotKind, alpha: f32| -> Color {
-            Color { a: alpha, ..pivot_color(kind) }
+            Color {
+                a: alpha,
+                ..pivot_color(kind)
+            }
         };
 
         // Draw confirmed pivot lines.
