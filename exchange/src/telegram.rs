@@ -178,8 +178,9 @@ pub fn should_alert(key: &str, cooldown_secs: u64) -> bool {
     true
 }
 
-/// Fire-and-forget Telegram alert macro. Use from any async or sync context.
-/// Expands to tokio::spawn + alert(). No-ops if Telegram not configured.
+/// Fire-and-forget Telegram alert macro with built-in 5-minute cooldown per
+/// (component, message) pair. No-ops if Telegram not configured or if an
+/// identical alert was sent within the cooldown window.
 ///
 /// Usage: `tg_alert!(Severity::Warning, "clickhouse", "HTTP {}: {}", status, body)`
 #[macro_export]
@@ -187,11 +188,14 @@ macro_rules! tg_alert {
     ($sev:expr, $comp:expr, $($arg:tt)*) => {
         if $crate::telegram::is_configured() {
             let msg = format!($($arg)*);
-            let sev = $sev;
-            let comp: &'static str = $comp;
-            tokio::spawn(async move {
-                $crate::telegram::alert(sev, comp, &msg).await;
-            });
+            let cooldown_key = format!("{}:{}", $comp, &msg);
+            if $crate::telegram::should_alert(&cooldown_key, 300) {
+                let sev = $sev;
+                let comp: &'static str = $comp;
+                tokio::spawn(async move {
+                    $crate::telegram::alert(sev, comp, &msg).await;
+                });
+            }
         }
     };
 }
