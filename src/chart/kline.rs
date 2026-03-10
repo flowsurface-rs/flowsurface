@@ -43,6 +43,13 @@ pub struct GapFillRequest {
     pub threshold_dbps: u32,
 }
 
+/// Buffered CH/SSE bar with metadata, applied after gap-fill completion.
+type BufferedChKline = (
+    Kline,
+    Option<(u64, u64)>,
+    Option<exchange::adapter::clickhouse::ChMicrostructure>,
+);
+
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
 
@@ -254,12 +261,7 @@ pub struct KlineChart {
     /// Last agg_trade_id from gap-fill. WS trades with id <= this are skipped.
     gap_fill_fence_agg_id: Option<u64>,
     /// CH/SSE bars received during gap-fill, applied after completion.
-    /// Stores `(Kline, Option<(u64, u64)>)` to preserve `bar_agg_id_range` for replay.
-    buffered_ch_klines: Vec<(
-        Kline,
-        Option<(u64, u64)>,
-        Option<exchange::adapter::clickhouse::ChMicrostructure>,
-    )>,
+    buffered_ch_klines: Vec<BufferedChKline>,
     /// Ring buffer of recent WS trades for bar-boundary replay.
     /// When a SSE/CH bar arrives and the processor resets, trades with
     /// `agg_trade_id > bar.last_agg_trade_id` are replayed into the new processor
@@ -898,10 +900,10 @@ impl KlineChart {
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
 
                     // Attach agg_trade_id_range from SSE/CH bar data
-                    if let Some(range) = bar_agg_id_range {
-                        if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
-                            last_dp.agg_trade_id_range = Some(range);
-                        }
+                    if let Some(range) = bar_agg_id_range
+                        && let Some(last_dp) = tick_aggr.datapoints.last_mut()
+                    {
+                        last_dp.agg_trade_id_range = Some(range);
                     }
 
                     self.ch_reconcile_count += 1;
