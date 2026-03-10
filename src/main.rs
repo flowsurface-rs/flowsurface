@@ -205,10 +205,10 @@ impl Flowsurface {
         let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
         // Fetch available ODB symbols from ClickHouse (non-blocking)
-        let init_odb_symbols = Task::perform(
-            exchange::adapter::clickhouse::init_odb_symbols(),
-            |_| Message::Tick(std::time::Instant::now()),
-        );
+        let init_odb_symbols =
+            Task::perform(exchange::adapter::clickhouse::init_odb_symbols(), |_| {
+                Message::Tick(std::time::Instant::now())
+            });
 
         let set_on_top: Task<Message> = if std::env::var("FLOWSURFACE_ALWAYS_ON_TOP").is_ok() {
             iced::window::set_level(main_window_id, iced::window::Level::AlwaysOnTop)
@@ -218,10 +218,9 @@ impl Flowsurface {
 
         // Level 2 guard: startup health check (CH + SSE probe) + Telegram alert
         let tg_startup: Task<Message> = if exchange::telegram::is_configured() {
-            Task::perform(
-                exchange::telegram::startup_health_check(),
-                |_| Message::Tick(std::time::Instant::now()),
-            )
+            Task::perform(exchange::telegram::startup_health_check(), |_| {
+                Message::Tick(std::time::Instant::now())
+            })
         } else {
             Task::none()
         };
@@ -272,12 +271,12 @@ impl Flowsurface {
                         }
 
                         // Re-validate stream subscriptions after reconnect
-                        return dashboard
-                            .refresh_streams(main_window_id)
-                            .map(move |msg| Message::Dashboard {
+                        return dashboard.refresh_streams(main_window_id).map(move |msg| {
+                            Message::Dashboard {
                                 layout_id: None,
                                 event: msg,
-                            });
+                            }
+                        });
                     }
                     exchange::Event::Disconnected(exchange, reason) => {
                         log::info!("a stream disconnected from {exchange} WS: {reason:?}");
@@ -327,9 +326,22 @@ impl Flowsurface {
 
                         return task;
                     }
-                    exchange::Event::KlineReceived(stream, kline, raw_f64, bar_last_agg_id, micro) => {
+                    exchange::Event::KlineReceived(
+                        stream,
+                        kline,
+                        raw_f64,
+                        bar_agg_id_range,
+                        micro,
+                    ) => {
                         return dashboard
-                            .update_latest_klines(&stream, &kline, raw_f64, bar_last_agg_id, micro, main_window_id)
+                            .update_latest_klines(
+                                &stream,
+                                &kline,
+                                raw_f64,
+                                bar_agg_id_range,
+                                micro,
+                                main_window_id,
+                            )
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,
@@ -432,7 +444,11 @@ impl Flowsurface {
             } => {
                 let Some(active_layout) = self.layout_manager.active_layout_id() else {
                     log::error!("No active layout to handle dashboard message");
-                    exchange::tg_alert!(exchange::telegram::Severity::Critical, "layout", "No active layout — UI unresponsive");
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Critical,
+                        "layout",
+                        "No active layout — UI unresponsive"
+                    );
                     return Task::none();
                 };
 
@@ -1430,7 +1446,11 @@ impl Flowsurface {
                 let file_name = data::SAVED_STATE_PATH;
                 if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
                     log::error!("Failed to write layout state to file: {}", e);
-                    exchange::tg_alert!(exchange::telegram::Severity::Warning, "layout", "Layout state write failed");
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Warning,
+                        "layout",
+                        "Layout state write failed"
+                    );
                 } else {
                     log::info!("Persisted state to {file_name}");
                 }

@@ -269,13 +269,8 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_trade_stream())
     }
 
-    pub fn odb_kline_streams(
-        &self,
-        exchange_filter: Option<Exchange>,
-    ) -> Vec<(TickerInfo, u32)> {
-        self.streams(exchange_filter, |_, stream| {
-            stream.as_odb_kline_stream()
-        })
+    pub fn odb_kline_streams(&self, exchange_filter: Option<Exchange>) -> Vec<(TickerInfo, u32)> {
+        self.streams(exchange_filter, |_, stream| stream.as_odb_kline_stream())
     }
 
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
@@ -288,8 +283,6 @@ impl UniqueStreams {
         &self.specs
     }
 }
-
-
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum StreamTicksize {
@@ -500,9 +493,16 @@ pub enum Event {
     TradesReceived(StreamKind, u64, Box<[Trade]>),
     /// The optional `[f64; 6]` carries raw ClickHouse values [o, h, l, c, buy_vol, sell_vol]
     /// before f32 conversion. Only the ClickHouse adapter populates this; others pass `None`.
-    /// The optional `u64` is the bar's `last_agg_trade_id` (ODB SSE/CH bars only).
+    /// The optional `(u64, u64)` is the bar's `(first_agg_trade_id, last_agg_trade_id)` range
+    /// (ODB SSE/CH bars only).
     /// The optional `ChMicrostructure` carries trade_count/ofi/trade_intensity for ODB bars.
-    KlineReceived(StreamKind, Kline, Option<[f64; 6]>, Option<u64>, Option<clickhouse::ChMicrostructure>),
+    KlineReceived(
+        StreamKind,
+        Kline,
+        Option<[f64; 6]>,
+        Option<(u64, u64)>,
+        Option<clickhouse::ChMicrostructure>,
+    ),
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -583,7 +583,14 @@ pub async fn fetch_odb_klines_with_microstructure(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
     range: Option<(u64, u64)>,
-) -> Result<(Vec<Kline>, Vec<Option<clickhouse::ChMicrostructure>>, Vec<Option<(u64, u64)>>), AdapterError> {
+) -> Result<
+    (
+        Vec<Kline>,
+        Vec<Option<clickhouse::ChMicrostructure>>,
+        Vec<Option<(u64, u64)>>,
+    ),
+    AdapterError,
+> {
     clickhouse::fetch_klines_with_microstructure(ticker_info, threshold_dbps, range).await
 }
 

@@ -20,8 +20,8 @@ use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
     adapter::clickhouse::{
-        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, sse_connected,
-        sse_enabled, trade_to_agg_trade,
+        OpenDeviationBarProcessor, odb_to_kline, odb_to_microstructure, sse_connected, sse_enabled,
+        trade_to_agg_trade,
     },
 };
 
@@ -34,6 +34,14 @@ use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, 
 
 use enum_map::EnumMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Request for the dashboard to trigger an ODB gap-fill via the sidecar.
+/// Returned from `insert_trades()` when agg_trade_id continuity gaps are detected.
+#[derive(Debug, Clone)]
+pub struct GapFillRequest {
+    pub symbol: String,
+    pub threshold_dbps: u32,
+}
 
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
@@ -246,8 +254,12 @@ pub struct KlineChart {
     /// Last agg_trade_id from gap-fill. WS trades with id <= this are skipped.
     gap_fill_fence_agg_id: Option<u64>,
     /// CH/SSE bars received during gap-fill, applied after completion.
-    /// Stores `(Kline, Option<u64>)` to preserve `bar_last_agg_id` for replay.
-    buffered_ch_klines: Vec<(Kline, Option<u64>, Option<exchange::adapter::clickhouse::ChMicrostructure>)>,
+    /// Stores `(Kline, Option<(u64, u64)>)` to preserve `bar_agg_id_range` for replay.
+    buffered_ch_klines: Vec<(
+        Kline,
+        Option<(u64, u64)>,
+        Option<exchange::adapter::clickhouse::ChMicrostructure>,
+    )>,
     /// Ring buffer of recent WS trades for bar-boundary replay.
     /// When a SSE/CH bar arrives and the processor resets, trades with
     /// `agg_trade_id > bar.last_agg_trade_id` are replayed into the new processor
@@ -277,6 +289,10 @@ pub struct KlineChart {
     last_trade_received_ms: u64,
     /// Watchdog: whether we've already sent a dead-feed alert.
     trade_feed_dead_alerted: bool,
+    /// Set when gap detection fires; cleared by finalize_gap_fill() + insert_raw_trades(is_batches_done).
+    gap_fill_requested: bool,
+    /// Cooldown: ms timestamp of last gap-fill trigger (prevents rapid re-triggering).
+    last_gap_fill_trigger_ms: u64,
 }
 
 impl KlineChart {
@@ -391,6 +407,8 @@ impl KlineChart {
                     ch_reconcile_count: 0,
                     last_trade_received_ms: 0,
                     trade_feed_dead_alerted: false,
+                    gap_fill_requested: false,
+                    last_gap_fill_trigger_ms: 0,
                 }
             }
             Basis::Tick(interval) => {
@@ -469,6 +487,8 @@ impl KlineChart {
                     ch_reconcile_count: 0,
                     last_trade_received_ms: 0,
                     trade_feed_dead_alerted: false,
+                    gap_fill_requested: false,
+                    last_gap_fill_trigger_ms: 0,
                 }
             }
             Basis::Odb(threshold_dbps) => {
@@ -529,7 +549,11 @@ impl KlineChart {
                 let odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
                     .map_err(|e| {
                         log::warn!("failed to create OpenDeviationBarProcessor: {e}");
-                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                        exchange::tg_alert!(
+                            exchange::telegram::Severity::Critical,
+                            "odb-processor",
+                            "ODB processor creation failed: {e}"
+                        );
                     })
                     .ok();
 
@@ -576,6 +600,8 @@ impl KlineChart {
                     ch_reconcile_count: 0,
                     last_trade_received_ms: 0,
                     trade_feed_dead_alerted: false,
+                    gap_fill_requested: false,
+                    last_gap_fill_trigger_ms: 0,
                 }
             }
         }
@@ -630,7 +656,8 @@ impl KlineChart {
 
         let empty_ids: Vec<Option<(u64, u64)>> = vec![None; klines_raw.len()];
         let ids = agg_trade_id_ranges.unwrap_or(&empty_ids);
-        let mut tick_aggr = TickAggr::from_klines_with_microstructure(step, klines_raw, &micro, ids);
+        let mut tick_aggr =
+            TickAggr::from_klines_with_microstructure(step, klines_raw, &micro, ids);
 
         // Scale cell width with threshold (see non-microstructure constructor)
         let threshold_dbps = match basis {
@@ -684,7 +711,11 @@ impl KlineChart {
         let odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
             .map_err(|e| {
                 log::warn!("failed to create OpenDeviationBarProcessor: {e}");
-                exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                exchange::tg_alert!(
+                    exchange::telegram::Severity::Critical,
+                    "odb-processor",
+                    "ODB processor creation failed: {e}"
+                );
             })
             .ok();
 
@@ -753,16 +784,24 @@ impl KlineChart {
             ch_reconcile_count: 0,
             last_trade_received_ms: 0,
             trade_feed_dead_alerted: false,
+            gap_fill_requested: false,
+            last_gap_fill_trigger_ms: 0,
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline, bar_last_agg_id: Option<u64>, micro: Option<exchange::adapter::clickhouse::ChMicrostructure>) {
+    pub fn update_latest_kline(
+        &mut self,
+        kline: &Kline,
+        bar_agg_id_range: Option<(u64, u64)>,
+        micro: Option<exchange::adapter::clickhouse::ChMicrostructure>,
+    ) {
+        let bar_last_agg_id = bar_agg_id_range.map(|(_, last)| last);
         if self.chart.basis.is_odb() {
             log::debug!(
-                "[SSE-dispatch] update_latest_kline: ts={} bar_last_agg_id={:?} \
+                "[SSE-dispatch] update_latest_kline: ts={} bar_agg_id_range={:?} \
                  basis={:?} fetching_trades={} pending_local_bars={}",
                 kline.time,
-                bar_last_agg_id,
+                bar_agg_id_range,
                 self.chart.basis,
                 self.fetching_trades.0,
                 self.pending_local_bars,
@@ -790,10 +829,12 @@ impl KlineChart {
                     // Buffer CH/SSE bars during gap-fill to prevent temporal inversions.
                     // They'll be applied in order after gap-fill completes.
                     if self.fetching_trades.0 {
-                        self.buffered_ch_klines.push((*kline, bar_last_agg_id, micro));
+                        self.buffered_ch_klines
+                            .push((*kline, bar_agg_id_range, micro));
                         log::debug!(
-                            "[gap-fill] buffered CH bar ts={} bar_last_agg_id={:?} during gap-fill",
-                            kline.time, bar_last_agg_id,
+                            "[gap-fill] buffered CH bar ts={} bar_agg_id_range={:?} during gap-fill",
+                            kline.time,
+                            bar_agg_id_range,
                         );
                         return;
                     }
@@ -802,10 +843,8 @@ impl KlineChart {
                     // When had_provisional=true, this IS the locally-built provisional bar.
                     // When had_provisional=false, this is the previous completed bar (less useful).
                     let had_provisional = self.pending_local_bars > 0;
-                    let provisional_micro = tick_aggr
-                        .datapoints
-                        .last()
-                        .and_then(|dp| dp.microstructure);
+                    let provisional_micro =
+                        tick_aggr.datapoints.last().and_then(|dp| dp.microstructure);
 
                     // Pop locally-completed bars before reconciling with authoritative
                     // SSE/CH bars. Local bars have approximate boundaries (arbitrary WS
@@ -857,6 +896,14 @@ impl KlineChart {
                         trade_intensity: m.trade_intensity,
                     });
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
+
+                    // Attach agg_trade_id_range from SSE/CH bar data
+                    if let Some(range) = bar_agg_id_range {
+                        if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                            last_dp.agg_trade_id_range = Some(range);
+                        }
+                    }
+
                     self.ch_reconcile_count += 1;
                     log::info!(
                         "[CH-reconcile] #{}: {} bar ts={} close={:.2} dp_count={}",
@@ -903,7 +950,12 @@ impl KlineChart {
                              This is the original bug — microstructure lost in pipeline.",
                             kline.time,
                         );
-                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: CH sent micro but stored bar has None, bar_ts={}", kline.time);
+                        exchange::tg_alert!(
+                            exchange::telegram::Severity::Critical,
+                            "oracle",
+                            "Oracle FAIL: CH sent micro but stored bar has None, bar_ts={}",
+                            kline.time
+                        );
                     }
 
                     self.indicators
@@ -924,13 +976,18 @@ impl KlineChart {
                     // replay buffered WS trades past the bar's last_agg_trade_id.
                     // Without replay, the forming bar opens at whatever trade the WS
                     // delivers next — potentially $30+ away from the bar's close.
-                    if sse_enabled() && sse_connected()
+                    if sse_enabled()
+                        && sse_connected()
                         && let Basis::Odb(threshold_dbps) = self.chart.basis
                     {
                         self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
                             .map_err(|e| {
                                 log::warn!("failed to reset ODB processor: {e}");
-                                exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                                exchange::tg_alert!(
+                                    exchange::telegram::Severity::Critical,
+                                    "odb-processor",
+                                    "ODB processor creation failed: {e}"
+                                );
                             })
                             .ok();
                         self.next_agg_id = 0;
@@ -1150,12 +1207,7 @@ impl KlineChart {
         }
 
         // Set dedup fence from the last gap-fill trade's agg_trade_id.
-        if let Some(last_id) = self
-            .raw_trades
-            .iter()
-            .rev()
-            .find_map(|t| t.agg_trade_id)
-        {
+        if let Some(last_id) = self.raw_trades.iter().rev().find_map(|t| t.agg_trade_id) {
             self.gap_fill_fence_agg_id = Some(last_id);
             // Advance telemetry tracker so we don't report a false-positive
             // gap when the first WS trade past the fence arrives.
@@ -1172,8 +1224,9 @@ impl KlineChart {
             );
         }
         self.fetching_trades = (false, None);
-        for (kline, bar_last_agg_id, micro) in buffered {
-            self.update_latest_kline(&kline, bar_last_agg_id, micro);
+        self.gap_fill_requested = false;
+        for (kline, bar_agg_id_range, micro) in buffered {
+            self.update_latest_kline(&kline, bar_agg_id_range, micro);
         }
 
         // Startup anchor: seed the RBP processor with the last CH bar's close
@@ -1203,7 +1256,11 @@ impl KlineChart {
                 }
                 Err(e) => {
                     log::warn!("[startup-anchor] failed to seed: {e}");
-                    exchange::tg_alert!(exchange::telegram::Severity::Warning, "startup-anchor", "Startup anchor failed to seed");
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Warning,
+                        "startup-anchor",
+                        "Startup anchor failed to seed"
+                    );
                 }
             }
         }
@@ -1338,7 +1395,11 @@ impl KlineChart {
                 self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
                     .map_err(|e| {
                         log::warn!("failed to create OpenDeviationBarProcessor: {e}");
-                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "odb-processor", "ODB processor creation failed: {e}");
+                        exchange::tg_alert!(
+                            exchange::telegram::Severity::Critical,
+                            "odb-processor",
+                            "ODB processor creation failed: {e}"
+                        );
                     })
                     .ok();
                 self.next_agg_id = 0;
@@ -1433,11 +1494,15 @@ impl KlineChart {
         super::keyboard_nav::process(event, self.state())
     }
 
-    pub fn insert_trades(&mut self, trades_buffer: &[Trade]) {
-        self.insert_trades_inner(trades_buffer, false);
+    pub fn insert_trades(&mut self, trades_buffer: &[Trade]) -> Option<GapFillRequest> {
+        self.insert_trades_inner(trades_buffer, false)
     }
 
-    fn insert_trades_inner(&mut self, trades_buffer: &[Trade], is_gap_fill: bool) {
+    fn insert_trades_inner(
+        &mut self,
+        trades_buffer: &[Trade],
+        is_gap_fill: bool,
+    ) -> Option<GapFillRequest> {
         self.raw_trades.extend_from_slice(trades_buffer);
 
         match self.data_source {
@@ -1455,28 +1520,23 @@ impl KlineChart {
                         // Still update the live price line from the latest trade
                         // so the chart stays in sync with the widget during gap-fill.
                         if let Some(last_trade) = trades_buffer.last() {
-                            let prev_close =
-                                tick_aggr.datapoints.last().map(|dp| dp.kline.close);
+                            let prev_close = tick_aggr.datapoints.last().map(|dp| dp.kline.close);
                             let reference = prev_close.unwrap_or(last_trade.price);
                             self.chart.last_price =
                                 Some(PriceInfoLabel::new(last_trade.price, reference));
                             self.chart.last_trade_time = Some(last_trade.time);
                         }
-                        return;
+                        return None;
                     }
 
                     // Dedup fence: skip WS trades that overlap with gap-fill data.
                     // Trades with agg_trade_id <= fence are duplicates. Once we see
                     // a trade past the fence, clear it (single transition).
-                    if !is_gap_fill
-                        && let Some(fence_id) = self.gap_fill_fence_agg_id
-                    {
+                    if !is_gap_fill && let Some(fence_id) = self.gap_fill_fence_agg_id {
                         let before = trades_buffer.len();
                         let filtered: Vec<_> = trades_buffer
                             .iter()
-                            .filter(|t| {
-                                t.agg_trade_id.is_none_or(|id| id > fence_id)
-                            })
+                            .filter(|t| t.agg_trade_id.is_none_or(|id| id > fence_id))
                             .copied()
                             .collect();
                         let skipped = before - filtered.len();
@@ -1492,12 +1552,11 @@ impl KlineChart {
                             self.gap_fill_fence_agg_id = None;
                         }
                         if filtered.is_empty() {
-                            return;
+                            return None;
                         }
                         // Continue with filtered trades — re-enter via recursive call
                         // to avoid duplicating the processor logic below.
-                        self.insert_trades_inner(&filtered, false);
-                        return;
+                        return self.insert_trades_inner(&filtered, false);
                     }
 
                     // ── Production telemetry: throughput, latency, continuity ──
@@ -1559,6 +1618,21 @@ impl KlineChart {
                                                     )
                                                     .await;
                                                 });
+                                            }
+                                            // Wire gap → automatic OdbCatchup recovery
+                                            if !self.fetching_trades.0
+                                                && !self.gap_fill_requested
+                                                && self.chart.basis.is_odb()
+                                                && now_ms
+                                                    .saturating_sub(self.last_gap_fill_trigger_ms)
+                                                    > 30_000
+                                            {
+                                                self.gap_fill_requested = true;
+                                                self.last_gap_fill_trigger_ms = now_ms;
+                                                log::info!(
+                                                    "[gap-recovery] triggering: prev={prev_id} curr={id} missing={}",
+                                                    gap - 1
+                                                );
                                             }
                                         }
                                     }
@@ -1727,13 +1801,12 @@ impl KlineChart {
                                         use data::telemetry::{
                                             self, KlineSnapshot, TelemetryEvent,
                                         };
-                                        let telem_dbps = if let data::chart::Basis::Odb(d) =
-                                            self.chart.basis
-                                        {
-                                            d
-                                        } else {
-                                            0
-                                        };
+                                        let telem_dbps =
+                                            if let data::chart::Basis::Odb(d) = self.chart.basis {
+                                                d
+                                            } else {
+                                                0
+                                            };
                                         telemetry::emit(TelemetryEvent::RbpBarComplete {
                                             ts_ms: telemetry::now_ms(),
                                             symbol: self.chart.ticker_info.ticker.to_string(),
@@ -1814,7 +1887,12 @@ impl KlineChart {
                                              but stored bar has None! Manual attachment failed.",
                                             kline.time,
                                         );
-                                        exchange::tg_alert!(exchange::telegram::Severity::Critical, "oracle", "Oracle FAIL: RBP bar completed with micro but stored None, bar_ts={}", kline.time);
+                                        exchange::tg_alert!(
+                                            exchange::telegram::Severity::Critical,
+                                            "oracle",
+                                            "Oracle FAIL: RBP bar completed with micro but stored None, bar_ts={}",
+                                            kline.time
+                                        );
                                     }
                                     // Track provisional bars for cleanup on SSE/CH delivery
                                     if sse_enabled() && sse_connected() {
@@ -1836,8 +1914,7 @@ impl KlineChart {
                         // bar-boundary divergence.
                         if let Some(last_trade) = trades_buffer.last() {
                             self.chart.last_trade_time = Some(last_trade.time);
-                            let prev_close =
-                                tick_aggr.datapoints.last().map(|dp| dp.kline.close);
+                            let prev_close = tick_aggr.datapoints.last().map(|dp| dp.kline.close);
                             let reference = prev_close.unwrap_or(last_trade.price);
                             self.chart.last_price =
                                 Some(PriceInfoLabel::new(last_trade.price, reference));
@@ -1910,6 +1987,19 @@ impl KlineChart {
                 timeseries.insert_trades_existing_buckets(trades_buffer);
             }
         }
+
+        // Return gap-fill request if triggered during this batch
+        if self.gap_fill_requested
+            && !self.fetching_trades.0
+            && let Basis::Odb(threshold_dbps) = self.chart.basis
+        {
+            let symbol = exchange::adapter::clickhouse::bare_symbol(&self.chart.ticker_info);
+            return Some(GapFillRequest {
+                symbol,
+                threshold_dbps,
+            });
+        }
+        None
     }
 
     pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
@@ -1981,7 +2071,9 @@ impl KlineChart {
             // Use the inner method with is_gap_fill=true so that:
             // 1. The fetching_trades guard is bypassed (gap-fill trades must be processed)
             // 2. Canvas invalidation is suppressed (single redraw at gap-fill end)
-            self.insert_trades_inner(&raw_trades, true);
+            // Gap-fill trades use is_gap_fill=true which skips gap detection,
+            // so the return is always None — discard it.
+            let _ = self.insert_trades_inner(&raw_trades, true);
         } else {
             match self.data_source {
                 PlotData::TickBased(ref mut tick_aggr) => {
@@ -1997,25 +2089,19 @@ impl KlineChart {
 
         if is_batches_done {
             // Set dedup fence from the last gap-fill trade's agg_trade_id.
-            if let Some(last_id) = self
-                .raw_trades
-                .iter()
-                .rev()
-                .find_map(|t| t.agg_trade_id)
-            {
+            if let Some(last_id) = self.raw_trades.iter().rev().find_map(|t| t.agg_trade_id) {
                 self.gap_fill_fence_agg_id = Some(last_id);
                 // Advance telemetry tracker so we don't report a false-positive
                 // gap when the first WS trade past the fence arrives.
                 self.last_ws_agg_trade_id = Some(last_id);
-                log::info!(
-                    "[gap-fill] complete: fence_agg_id={last_id}"
-                );
+                log::info!("[gap-fill] complete: fence_agg_id={last_id}");
             }
             // Flush buffered CH/SSE bars that arrived during gap-fill.
             let buffered = std::mem::take(&mut self.buffered_ch_klines);
             self.fetching_trades = (false, None);
-            for (kline, bar_last_agg_id, micro) in buffered {
-                self.update_latest_kline(&kline, bar_last_agg_id, micro);
+            self.gap_fill_requested = false;
+            for (kline, bar_agg_id_range, micro) in buffered {
+                self.update_latest_kline(&kline, bar_agg_id_range, micro);
             }
             // Single canvas redraw now that all gap-fill batches are processed.
             self.invalidate(None);
@@ -2066,18 +2152,17 @@ impl KlineChart {
                     self.request_handler
                         .mark_failed(req_id, "No data received".to_string());
                 } else {
-                    let micro: Option<Vec<Option<OdbMicrostructure>>> =
-                        microstructure.map(|ms| {
-                            ms.iter()
-                                .map(|m| {
-                                    m.map(|cm| OdbMicrostructure {
-                                        trade_count: cm.trade_count,
-                                        ofi: cm.ofi,
-                                        trade_intensity: cm.trade_intensity,
-                                    })
+                    let micro: Option<Vec<Option<OdbMicrostructure>>> = microstructure.map(|ms| {
+                        ms.iter()
+                            .map(|m| {
+                                m.map(|cm| OdbMicrostructure {
+                                    trade_count: cm.trade_count,
+                                    ofi: cm.ofi,
+                                    trade_intensity: cm.trade_intensity,
                                 })
-                                .collect()
-                        });
+                            })
+                            .collect()
+                    });
                     tick_aggr.prepend_klines_with_microstructure(
                         klines,
                         micro.as_deref(),
@@ -2099,11 +2184,22 @@ impl KlineChart {
                 );
 
                 // Oracle: dump last 20 bars' microstructure for post-hoc comparison
-                for dp in tick_aggr.datapoints.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+                for dp in tick_aggr
+                    .datapoints
+                    .iter()
+                    .rev()
+                    .take(20)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                {
                     if let Some(m) = dp.microstructure {
                         log::info!(
                             "[oracle-hist] bar_ts={} ti={:.4} ofi={:.4} tc={}",
-                            dp.kline.time, m.trade_intensity, m.ofi, m.trade_count,
+                            dp.kline.time,
+                            m.trade_intensity,
+                            m.ofi,
+                            m.trade_count,
                         );
                     }
                 }
@@ -2133,14 +2229,11 @@ impl KlineChart {
                     if had_premature {
                         // Reset processor to discard premature forming bar
                         if let data::chart::Basis::Odb(threshold_dbps) = self.chart.basis {
-                            self.odb_processor =
-                                OpenDeviationBarProcessor::new(threshold_dbps)
-                                    .map_err(|e| {
-                                        log::warn!(
-                                            "[startup-anchor] processor reset failed: {e}"
-                                        )
-                                    })
-                                    .ok();
+                            self.odb_processor = OpenDeviationBarProcessor::new(threshold_dbps)
+                                .map_err(|e| {
+                                    log::warn!("[startup-anchor] processor reset failed: {e}")
+                                })
+                                .ok();
                         }
                     }
                     // Seed with last CH bar's close price
@@ -2174,7 +2267,11 @@ impl KlineChart {
             }
             PlotData::TimeBased(_) => {
                 log::warn!("[RB-HIST] data_source is TimeBased — ODB klines ignored!");
-                exchange::tg_alert!(exchange::telegram::Severity::Info, "odb", "RB-HIST data_source is TimeBased — ODB klines ignored");
+                exchange::tg_alert!(
+                    exchange::telegram::Severity::Info,
+                    "odb",
+                    "RB-HIST data_source is TimeBased — ODB klines ignored"
+                );
             }
         }
     }
@@ -2364,8 +2461,7 @@ impl KlineChart {
                 if exchange::telegram::is_configured() {
                     let msg = format!(
                         "No WS trades for {stale_secs}s. last_agg_id={:?}, ch_reconcile={}",
-                        self.last_ws_agg_trade_id,
-                        self.ch_reconcile_count,
+                        self.last_ws_agg_trade_id, self.ch_reconcile_count,
                     );
                     tokio::spawn(async move {
                         exchange::telegram::alert(
@@ -2626,11 +2722,7 @@ impl canvas::Program<Message> for KlineChart {
                     // ODB bars represent continuous price action — use tighter
                     // spacing (95%) so bars visually connect. Candles keep 80%
                     // for temporal separation between time periods.
-                    let candle_fill = if chart.basis.is_odb() {
-                        0.95
-                    } else {
-                        0.8
-                    };
+                    let candle_fill = if chart.basis.is_odb() { 0.95 } else { 0.8 };
                     let candle_width = chart.cell_width * candle_fill;
                     // Look up heatmap indicator once for thermal candle body colouring.
                     let heatmap_indi =
@@ -2650,9 +2742,14 @@ impl canvas::Program<Message> for KlineChart {
                             log::warn!(
                                 "[intensity-diverge] heatmap_data={} != dp_count={} \
                                  (delta={delta}) → colors may map to wrong bars",
-                                heatmap_len, total_len,
+                                heatmap_len,
+                                total_len,
                             );
-                            exchange::tg_alert!(exchange::telegram::Severity::Warning, "intensity", "Intensity heatmap divergence");
+                            exchange::tg_alert!(
+                                exchange::telegram::Severity::Warning,
+                                "intensity",
+                                "Intensity heatmap divergence"
+                            );
                         }
                     }
 
@@ -3831,4 +3928,214 @@ impl BidAskArea {
 #[inline]
 fn should_show_text(cell_height_unscaled: f32, cell_width_unscaled: f32, min_w: f32) -> bool {
     cell_height_unscaled > 8.0 && cell_width_unscaled > min_w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GapFillRequest;
+    use data::chart::Basis;
+    use exchange::Trade;
+    use exchange::unit::{Price, Qty};
+
+    fn make_trade(id: u64, price: f32) -> Trade {
+        Trade {
+            time: 1000,
+            is_sell: false,
+            price: Price::from_f32(price),
+            qty: Qty::from_f32(0.001),
+            agg_trade_id: Some(id),
+        }
+    }
+
+    fn is_gap(prev: u64, curr: u64) -> bool {
+        curr.saturating_sub(prev) > 1
+    }
+
+    #[test]
+    fn gap_of_one_is_not_a_gap() {
+        assert!(!is_gap(100, 101));
+    }
+
+    #[test]
+    fn gap_of_two_is_a_gap() {
+        assert!(is_gap(100, 102));
+    }
+
+    #[test]
+    fn saturating_sub_handles_reorder() {
+        assert!(!is_gap(200, 100));
+    }
+
+    #[test]
+    fn make_trade_has_correct_id() {
+        let t = make_trade(42, 68500.0);
+        assert_eq!(t.agg_trade_id, Some(42));
+    }
+
+    #[test]
+    fn cooldown_arithmetic_blocks_within_30s() {
+        let last: u64 = 1_000_000;
+        let now: u64 = 1_020_000; // 20s later
+        assert!(now.saturating_sub(last) <= 30_000);
+    }
+
+    #[test]
+    fn cooldown_arithmetic_allows_after_30s() {
+        let last: u64 = 1_000_000;
+        let now: u64 = 1_031_000; // 31s later
+        assert!(now.saturating_sub(last) > 30_000);
+    }
+
+    #[test]
+    fn cooldown_arithmetic_exact_boundary() {
+        let last: u64 = 1_000_000;
+        let now: u64 = 1_030_000; // exactly 30s
+        assert!(now.saturating_sub(last) <= 30_000);
+    }
+
+    #[test]
+    fn gap_fill_request_fields() {
+        let req = GapFillRequest {
+            symbol: "BTCUSDT".into(),
+            threshold_dbps: 250,
+        };
+        assert_eq!(req.symbol, "BTCUSDT");
+        assert_eq!(req.threshold_dbps, 250);
+    }
+
+    #[test]
+    fn dedup_fence_filters_stale_trades() {
+        let fence_id: u64 = 100;
+        let trades = [
+            make_trade(99, 68000.0),
+            make_trade(100, 68100.0),
+            make_trade(101, 68200.0),
+            make_trade(102, 68300.0),
+        ];
+        let passed: Vec<_> = trades
+            .iter()
+            .filter(|t| t.agg_trade_id.is_none_or(|id| id > fence_id))
+            .collect();
+        assert_eq!(passed.len(), 2);
+        assert_eq!(passed[0].agg_trade_id, Some(101));
+        assert_eq!(passed[1].agg_trade_id, Some(102));
+    }
+
+    #[test]
+    fn dedup_fence_none_passes_all() {
+        let fence: Option<u64> = None;
+        let trades = [
+            make_trade(1, 68000.0),
+            make_trade(2, 68100.0),
+            make_trade(3, 68200.0),
+        ];
+        let passed: Vec<_> = trades
+            .iter()
+            .filter(|t| match fence {
+                None => true,
+                Some(f) => t.agg_trade_id.is_none_or(|id| id > f),
+            })
+            .collect();
+        assert_eq!(passed.len(), 3);
+    }
+
+    /// Guard logic: `!fetching_trades && !gap_fill_requested && basis.is_odb()
+    ///               && now_ms.saturating_sub(last_trigger) > 30_000`
+    fn guard_allows(
+        fetching_trades: bool,
+        gap_fill_requested: bool,
+        basis: &Basis,
+        now_ms: u64,
+        last_trigger: u64,
+    ) -> bool {
+        !fetching_trades
+            && !gap_fill_requested
+            && basis.is_odb()
+            && now_ms.saturating_sub(last_trigger) > 30_000
+    }
+
+    #[test]
+    fn guard_composition_all_false() {
+        // All guard conditions are "clear" → trigger allowed
+        assert!(guard_allows(
+            false,
+            false,
+            &Basis::Odb(250),
+            100_000,
+            60_000
+        ));
+    }
+
+    #[test]
+    fn guard_fetching_blocks() {
+        assert!(!guard_allows(
+            true,
+            false,
+            &Basis::Odb(250),
+            100_000,
+            60_000
+        ));
+    }
+
+    #[test]
+    fn guard_already_requested_blocks() {
+        assert!(!guard_allows(
+            false,
+            true,
+            &Basis::Odb(250),
+            100_000,
+            60_000
+        ));
+    }
+
+    #[test]
+    fn guard_cooldown_blocks() {
+        // last_trigger 20s ago → within 30s cooldown
+        assert!(!guard_allows(
+            false,
+            false,
+            &Basis::Odb(250),
+            100_000,
+            80_000
+        ));
+    }
+
+    #[test]
+    fn guard_non_odb_blocks() {
+        assert!(!guard_allows(
+            false,
+            false,
+            &Basis::Time(exchange::Timeframe::M1),
+            100_000,
+            60_000
+        ));
+    }
+
+    #[test]
+    fn guard_all_clear_allows() {
+        // All guards pass: not fetching, not requested, ODB basis, cooldown expired
+        assert!(guard_allows(
+            false,
+            false,
+            &Basis::Odb(500),
+            200_000,
+            100_000
+        ));
+    }
+
+    #[test]
+    fn gap_detection_skipped_for_gap_fill_trades() {
+        let is_gap_fill = true;
+        let prev_id: u64 = 100;
+        let curr_id: u64 = 200; // big gap
+
+        // When is_gap_fill is true, gap detection is skipped regardless of gap size
+        let should_detect_gap = !is_gap_fill && is_gap(prev_id, curr_id);
+        assert!(!should_detect_gap);
+
+        // When is_gap_fill is false, the same gap IS detected
+        let is_gap_fill = false;
+        let should_detect_gap = !is_gap_fill && is_gap(prev_id, curr_id);
+        assert!(should_detect_gap);
+    }
 }

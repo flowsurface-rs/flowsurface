@@ -26,7 +26,9 @@ use data::{
 };
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
-    adapter::{self, AdapterError, Exchange, StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
+    adapter::{
+        self, AdapterError, Exchange, StreamConfig, StreamKind, StreamTicksize, UniqueStreams,
+    },
     connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
     depth::Depth,
     health::ConnectionHealth,
@@ -227,13 +229,10 @@ impl Dashboard {
 
                 match pane_id {
                     Some(id) => {
-                        if let Some(state) =
-                            self.get_mut_pane_state_by_uuid(main_window.id, id)
-                        {
+                        if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
                             // Finalize gap-fill on error too — otherwise fetching_trades
                             // stays true permanently, blocking WS→RBP and buffering SSE bars.
-                            if let pane::Content::Kline { chart: Some(c), .. } =
-                                &mut state.content
+                            if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content
                             {
                                 c.finalize_gap_fill();
                             }
@@ -244,8 +243,7 @@ impl Dashboard {
                     }
                     _ => {
                         return (
-                            Task::done(Message::Notification(Toast::error(err_str)))
-                                .chain(tg_task),
+                            Task::done(Message::Notification(Toast::error(err_str))).chain(tg_task),
                             None,
                         );
                     }
@@ -541,12 +539,8 @@ impl Dashboard {
                 symbol,
                 threshold_dbps,
             } => {
-                if let Some(pane_state) =
-                    self.get_mut_pane_state_by_uuid(main_window.id, pane_id)
-                {
-                    log::info!(
-                        "[catchup] ODB pane={pane_id}: {symbol}@{threshold_dbps}"
-                    );
+                if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    log::info!("[catchup] ODB pane={pane_id}: {symbol}@{threshold_dbps}");
                     pane_state.status =
                         pane::Status::Stale("Fetching trades to fill gap...".into());
                     let req_id = uuid::Uuid::new_v4();
@@ -1070,17 +1064,14 @@ impl Dashboard {
                             {
                                 pane_state.staleness_checked = true;
 
-                                let symbol =
-                                    adapter::clickhouse::bare_symbol(&ticker_info);
+                                let symbol = adapter::clickhouse::bare_symbol(&ticker_info);
 
-                                return Task::done(
-                                    Message::TriggerOdbGapFill {
-                                        pane_id,
-                                        layout_id,
-                                        symbol,
-                                        threshold_dbps,
-                                    },
-                                );
+                                return Task::done(Message::TriggerOdbGapFill {
+                                    pane_id,
+                                    layout_id,
+                                    symbol,
+                                    threshold_dbps,
+                                });
                             }
                         }
                         _ => {}
@@ -1152,7 +1143,7 @@ impl Dashboard {
         kline: &Kline,
         #[cfg(feature = "telemetry")] raw_f64: Option<[f64; 6]>,
         #[cfg(not(feature = "telemetry"))] _raw_f64: Option<[f64; 6]>,
-        bar_last_agg_id: Option<u64>,
+        bar_agg_id_range: Option<(u64, u64)>,
         micro: Option<exchange::adapter::clickhouse::ChMicrostructure>,
         main_window: window::Id,
     ) -> Task<Message> {
@@ -1189,13 +1180,16 @@ impl Dashboard {
                     };
                     log::debug!(
                         "[kline-dispatch] stream={:?} matched={} content={} pane_streams={:?}",
-                        stream, matched, content_tag, pane_state.streams,
+                        stream,
+                        matched,
+                        content_tag,
+                        pane_state.streams,
                     );
                 }
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
-                            c.update_latest_kline(kline, bar_last_agg_id, micro);
+                            c.update_latest_kline(kline, bar_agg_id_range, micro);
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
@@ -1243,9 +1237,7 @@ impl Dashboard {
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap {
-                            chart: Some(c), ..
-                        } => {
+                        pane::Content::Heatmap { chart: Some(c), .. } => {
                             c.insert_depth(depth, depth_update_t);
                         }
                         pane::Content::Ladder(Some(panel)) => {
@@ -1272,20 +1264,25 @@ impl Dashboard {
         main_window: window::Id,
     ) -> Task<Message> {
         let mut found_match = false;
+        let layout_id = self.layout_id;
+        let mut gap_fill_tasks: Vec<Task<Message>> = vec![];
 
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap {
-                            chart: Some(c), ..
-                        } => {
+                        pane::Content::Heatmap { chart: Some(c), .. } => {
                             c.insert_trades(buffer, update_t);
                         }
-                        pane::Content::Kline {
-                            chart: Some(c), ..
-                        } => {
-                            c.insert_trades(buffer);
+                        pane::Content::Kline { chart: Some(c), .. } => {
+                            if let Some(gap_req) = c.insert_trades(buffer) {
+                                gap_fill_tasks.push(Task::done(Message::TriggerOdbGapFill {
+                                    pane_id: pane_state.unique_id(),
+                                    layout_id,
+                                    symbol: gap_req.symbol,
+                                    threshold_dbps: gap_req.threshold_dbps,
+                                }));
+                            }
                         }
                         pane::Content::TimeAndSales(Some(p)) => {
                             p.insert_buffer(buffer);
@@ -1299,7 +1296,9 @@ impl Dashboard {
                 }
             });
 
-        if found_match {
+        if !gap_fill_tasks.is_empty() {
+            Task::batch(gap_fill_tasks)
+        } else if found_match {
             Task::none()
         } else {
             log::trace!("No matching pane found for the stream: {stream:?}");
@@ -1522,15 +1521,18 @@ impl From<fetcher::FetchUpdate> for Message {
                     fetcher::FetchedData::Trades { batch, until_time } => {
                         FetchedData::Trades { batch, until_time }
                     }
-                    fetcher::FetchedData::Klines { data, req_id, microstructure, agg_trade_id_ranges } => FetchedData::Klines {
+                    fetcher::FetchedData::Klines {
+                        data,
+                        req_id,
+                        microstructure,
+                        agg_trade_id_ranges,
+                    } => FetchedData::Klines {
                         data,
                         req_id,
                         microstructure,
                         agg_trade_id_ranges,
                     },
-                    fetcher::FetchedData::OI { data, req_id } => {
-                        FetchedData::OI { data, req_id }
-                    }
+                    fetcher::FetchedData::OI { data, req_id } => FetchedData::OI { data, req_id },
                 };
                 Message::DistributeFetchedData {
                     layout_id,
@@ -1815,11 +1817,7 @@ fn kline_fetch_task(
             threshold_dbps,
         } => Task::perform(
             iced::futures::TryFutureExt::map_err(
-                adapter::fetch_odb_klines_with_microstructure(
-                    ticker_info,
-                    threshold_dbps,
-                    range,
-                ),
+                adapter::fetch_odb_klines_with_microstructure(ticker_info, threshold_dbps, range),
                 |err: AdapterError| format!("{err}"),
             ),
             move |result| match result {
