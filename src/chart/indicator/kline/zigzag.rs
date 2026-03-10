@@ -26,12 +26,6 @@ pub struct OverlayPivot {
     /// Price in atomic units (same scale as `Price::units`).
     pub price_units: i64,
     pub kind: PivotKind,
-    /// Storage index of the bar that confirmed this pivot (reversal detection).
-    /// The gap `confirmed_at_idx - storage_idx` is the confirmation lag.
-    pub confirmed_at_idx: Option<usize>,
-    /// Monotonically increasing confirmation order (reserved for future filtering/display).
-    #[allow(dead_code)]
-    pub generation: Option<u64>,
 }
 
 /// ZigZag overlay indicator.
@@ -93,29 +87,18 @@ impl ZigZagOverlayIndicator {
         let output = self.state.process_bar(&bar);
 
         if let Some(pivot) = output.newly_confirmed {
-            let (confirmed_at_idx, generation) = match pivot.status {
-                qta::zigzag::ConfirmationStatus::Confirmed {
-                    confirmed_at_bar,
-                    generation,
-                } => (Some(confirmed_at_bar), Some(generation)),
-                qta::zigzag::ConfirmationStatus::Pending => (None, None),
-            };
             self.confirmed_pivots.push(OverlayPivot {
                 storage_idx: pivot.bar_index,
                 price_units: pivot.price,
                 kind: pivot.kind,
-                confirmed_at_idx,
-                generation,
             });
         }
 
-        // Update pending pivot snapshot (no confirmation data — still repainting).
+        // Update pending pivot snapshot.
         self.pending_pivot = self.state.pending().map(|p| OverlayPivot {
             storage_idx: p.bar_index,
             price_units: p.price,
             kind: p.kind,
-            confirmed_at_idx: None,
-            generation: None,
         });
     }
 }
@@ -208,6 +191,12 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
         let storage_to_visual =
             |storage_idx: usize| -> usize { total_len.saturating_sub(1 + storage_idx) };
 
+        let is_visible =
+            |storage_idx: usize| -> bool {
+                let vis = storage_to_visual(storage_idx);
+                vis >= earliest_visual && vis <= latest_visual
+            };
+
         let pivot_xy = |pivot: &OverlayPivot| -> (f32, f32) {
             let visual_idx = storage_to_visual(pivot.storage_idx);
             let x = interval_to_x(visual_idx as u64);
@@ -215,7 +204,6 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
             (x, y)
         };
 
-        // Pivot colour: swing high = danger (red family), swing low = success (green family).
         let pivot_color = |kind: PivotKind| -> Color {
             match kind {
                 PivotKind::High => palette.danger.base.color,
@@ -223,12 +211,15 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
             }
         };
 
+        let dimmed = |kind: PivotKind, alpha: f32| -> Color {
+            Color { a: alpha, ..pivot_color(kind) }
+        };
+
         // Draw confirmed pivot lines.
         for window in self.confirmed_pivots.windows(2) {
             let a = &window[0];
             let b = &window[1];
 
-            // Cull segments fully outside the visible range.
             let a_vis = storage_to_visual(a.storage_idx);
             let b_vis = storage_to_visual(b.storage_idx);
             let seg_earliest = a_vis.min(b_vis);
@@ -261,13 +252,9 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
             builder.line_to(iced::Point::new(bx, by));
             let dashed_path = builder.build();
 
-            let pending_color = Color {
-                a: 0.5,
-                ..pivot_color(pending.kind)
-            };
             let stroke = Stroke {
                 width: 1.0,
-                style: iced::widget::canvas::stroke::Style::Solid(pending_color),
+                style: iced::widget::canvas::stroke::Style::Solid(dimmed(pending.kind, 0.5)),
                 line_dash: iced::widget::canvas::LineDash {
                     segments: &[4.0, 3.0],
                     offset: 0,
@@ -280,84 +267,26 @@ impl KlineIndicatorImpl for ZigZagOverlayIndicator {
         // Draw circles at confirmed pivots (visible ones only).
         let circle_radius = 3.0;
         for pivot in &self.confirmed_pivots {
-            let vis = storage_to_visual(pivot.storage_idx);
-            if vis < earliest_visual || vis > latest_visual {
+            if !is_visible(pivot.storage_idx) {
                 continue;
             }
             let (x, y) = pivot_xy(pivot);
             let circle = Path::circle(iced::Point::new(x, y), circle_radius);
             frame.fill(&circle, pivot_color(pivot.kind));
-
-            // Draw confirmation marker: small tick at the bar where reversal was detected.
-            // This shows the "confirmation lag" — how many bars after the pivot it took
-            // to confirm the swing. Connects pivot circle to confirmation tick via a
-            // thin horizontal whisker.
-            if let Some(conf_idx) = pivot.confirmed_at_idx {
-                let conf_vis = storage_to_visual(conf_idx);
-                if conf_vis >= earliest_visual
-                    && conf_vis <= latest_visual
-                    && conf_idx != pivot.storage_idx
-                {
-                    let conf_x = interval_to_x(conf_vis as u64);
-                    let tick_half = 3.0;
-
-                    // Thin whisker from pivot to confirmation bar (at pivot's price level).
-                    let whisker = Path::line(iced::Point::new(x, y), iced::Point::new(conf_x, y));
-                    let whisker_color = Color {
-                        a: 0.25,
-                        ..pivot_color(pivot.kind)
-                    };
-                    frame.stroke(
-                        &whisker,
-                        Stroke {
-                            width: 0.5,
-                            style: iced::widget::canvas::stroke::Style::Solid(whisker_color),
-                            line_dash: iced::widget::canvas::LineDash {
-                                segments: &[2.0, 2.0],
-                                offset: 0,
-                            },
-                            ..Default::default()
-                        },
-                    );
-
-                    // Small vertical tick at the confirmation bar.
-                    let tick = Path::line(
-                        iced::Point::new(conf_x, y - tick_half),
-                        iced::Point::new(conf_x, y + tick_half),
-                    );
-                    let tick_color = Color {
-                        a: 0.5,
-                        ..pivot_color(pivot.kind)
-                    };
-                    frame.stroke(
-                        &tick,
-                        Stroke {
-                            width: 1.0,
-                            style: iced::widget::canvas::stroke::Style::Solid(tick_color),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
         }
 
         // Draw pending pivot circle (hollow, dimmed).
-        if let Some(ref pending) = self.pending_pivot {
-            let vis = storage_to_visual(pending.storage_idx);
-            if vis >= earliest_visual && vis <= latest_visual {
-                let (x, y) = pivot_xy(pending);
-                let circle = Path::circle(iced::Point::new(x, y), circle_radius);
-                let pending_color = Color {
-                    a: 0.4,
-                    ..pivot_color(pending.kind)
-                };
-                let stroke = Stroke {
-                    width: 1.0,
-                    style: iced::widget::canvas::stroke::Style::Solid(pending_color),
-                    ..Default::default()
-                };
-                frame.stroke(&circle, stroke);
-            }
+        if let Some(ref pending) = self.pending_pivot
+            && is_visible(pending.storage_idx)
+        {
+            let (x, y) = pivot_xy(pending);
+            let circle = Path::circle(iced::Point::new(x, y), circle_radius);
+            let stroke = Stroke {
+                width: 1.0,
+                style: iced::widget::canvas::stroke::Style::Solid(dimmed(pending.kind, 0.4)),
+                ..Default::default()
+            };
+            frame.stroke(&circle, stroke);
         }
     }
 }
