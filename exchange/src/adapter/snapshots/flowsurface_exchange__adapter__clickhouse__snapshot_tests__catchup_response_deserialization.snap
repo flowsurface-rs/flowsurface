@@ -1,0 +1,12 @@
+---
+source: exchange/src/adapter/clickhouse.rs
+assertion_line: 1279
+expression: "CatchupSnapshot::from(&result)"
+---
+{
+  "trade_count": 1,
+  "through_agg_id": 123456,
+  "partial": false,
+  "warning_count": 0,
+  "first_trade_id": 123456
+}

@@ -31,7 +31,14 @@ zip = "2.3.0"
 csv = "1.3.1"
 tokio-socks = "0.5.2"
 base64 = "0.22.1"
+uuid.workspace = true
 opendeviationbar-core = ">=13"
 opendeviationbar-client = ">=13"
 backon = "1.6"
 futures = "0.3.32"
+
+[dev-dependencies]
+proptest = "1"
+insta = { version = "1", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
