@@ -245,25 +245,42 @@ impl PaneSetup {
             .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
             .unwrap_or(is_client_aggr);
 
-        let basis = match content_kind {
-            ContentKind::HeatmapChart => {
-                let current = current_basis.and_then(|b| match b {
-                    Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
-                    _ => None,
-                });
-                Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
-            }
-            ContentKind::Ladder => Some(
-                current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
-            ),
-            ContentKind::FootprintChart => {
-                Some(current_basis.unwrap_or(Basis::Time(Timeframe::M5)))
-            }
-            ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
-                Some(current_basis.unwrap_or(Basis::Time(Timeframe::M15)))
-            }
-            ContentKind::Starter | ContentKind::TimeAndSales => None,
-        };
+        let basis =
+            match content_kind {
+                ContentKind::HeatmapChart => {
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
+                }
+                ContentKind::Ladder => Some(
+                    current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+                ),
+                ContentKind::FootprintChart => {
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
+                        Basis::Tick(_) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| {
+                        Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
+                    }))
+                }
+                ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| {
+                        Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
+                    }))
+                }
+                ContentKind::Starter | ContentKind::TimeAndSales => None,
+            };
 
         let tick_multiplier = match content_kind {
             ContentKind::HeatmapChart | ContentKind::Ladder => {

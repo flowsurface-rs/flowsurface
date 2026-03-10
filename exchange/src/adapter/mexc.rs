@@ -449,31 +449,29 @@ struct KlineSpot {
     asset_vol: f32,
 }
 
-fn convert_to_mexc_timeframe(timeframe: Timeframe, market: MarketKind) -> String {
+fn convert_to_mexc_timeframe(timeframe: Timeframe, market: MarketKind) -> Option<&'static str> {
     if market == MarketKind::Spot {
         match timeframe {
-            Timeframe::M1 => "1m",
-            Timeframe::M5 => "5m",
-            Timeframe::M15 => "15m",
-            Timeframe::M30 => "30m",
-            Timeframe::H1 => "60m",
-            Timeframe::H4 => "4h",
-            Timeframe::D1 => "1d",
-            _ => "1m",
+            Timeframe::M1 => Some("1m"),
+            Timeframe::M5 => Some("5m"),
+            Timeframe::M15 => Some("15m"),
+            Timeframe::M30 => Some("30m"),
+            Timeframe::H1 => Some("60m"),
+            Timeframe::H4 => Some("4h"),
+            Timeframe::D1 => Some("1d"),
+            _ => None,
         }
-        .to_string()
     } else {
         match timeframe {
-            Timeframe::M1 => "Min1",
-            Timeframe::M5 => "Min5",
-            Timeframe::M15 => "Min15",
-            Timeframe::M30 => "Min30",
-            Timeframe::H1 => "Min60",
-            Timeframe::H4 => "Hour4",
-            Timeframe::D1 => "Day1",
-            _ => "Min1",
+            Timeframe::M1 => Some("Min1"),
+            Timeframe::M5 => Some("Min5"),
+            Timeframe::M15 => Some("Min15"),
+            Timeframe::M30 => Some("Min30"),
+            Timeframe::H1 => Some("Min60"),
+            Timeframe::H4 => Some("Hour4"),
+            Timeframe::D1 => Some("Day1"),
+            _ => None,
         }
-        .to_string()
     }
 }
 
@@ -485,7 +483,11 @@ pub async fn fetch_klines(
     let ticker = ticker_info.ticker;
 
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
-    let timeframe_str = convert_to_mexc_timeframe(timeframe, market_type);
+    let timeframe_str = convert_to_mexc_timeframe(timeframe, market_type).ok_or_else(|| {
+        AdapterError::InvalidRequest(format!(
+            "Unsupported MEXC kline timeframe {timeframe} for {market_type}"
+        ))
+    })?;
 
     let contract_size = ticker_info.contract_size.map(f32::from).unwrap_or(1.0);
 
@@ -1135,14 +1137,11 @@ fn feed_de(
 fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
     match interval {
         "Min1" => Some(Timeframe::M1),
-        "Min3" => Some(Timeframe::M3),
         "Min5" => Some(Timeframe::M5),
         "Min15" => Some(Timeframe::M15),
         "Min30" => Some(Timeframe::M30),
         "Min60" => Some(Timeframe::H1),
-        "Hour2" => Some(Timeframe::H2),
         "Hour4" => Some(Timeframe::H4),
-        "Hour12" => Some(Timeframe::H12),
         "Day1" => Some(Timeframe::D1),
         _ => None,
     }
@@ -1195,10 +1194,21 @@ pub fn connect_kline_stream(
                 State::Disconnected => {
                     match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
                         Ok(mut websocket) => {
+                            let mut subscribed_any = false;
+
                             for (ticker_info, timeframe) in &streams {
                                 let ticker = ticker_info.ticker;
                                 let symbol = ticker.to_full_symbol_and_type().0;
-                                let interval = convert_to_mexc_timeframe(*timeframe, market_type);
+                                let Some(interval) =
+                                    convert_to_mexc_timeframe(*timeframe, market_type)
+                                else {
+                                    log::error!(
+                                        "Unsupported MEXC kline timeframe requested: {} ({})",
+                                        timeframe,
+                                        ticker
+                                    );
+                                    continue;
+                                };
                                 let subscribe_msg = serde_json::json!({
                                     "method": "sub.kline",
                                     "param": {
@@ -1208,16 +1218,30 @@ pub fn connect_kline_stream(
                                     "gzip": false,
                                 });
 
-                                if (websocket
+                                if websocket
                                     .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
                                         subscribe_msg.to_string().as_bytes(),
                                     )))
-                                    .await)
+                                    .await
                                     .is_err()
                                 {
                                     continue;
                                 }
+
+                                subscribed_any = true;
                             }
+
+                            if !subscribed_any {
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "No supported MEXC kline timeframes requested".to_string(),
+                                    ))
+                                    .await;
+                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                continue;
+                            }
+
                             let _ = output.send(Event::Connected(exchange)).await;
                             state = State::Connected(websocket);
                         }

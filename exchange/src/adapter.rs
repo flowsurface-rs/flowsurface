@@ -445,6 +445,18 @@ impl Exchange {
         }
     }
 
+    pub fn supports_kline_timeframe(&self, tf: Timeframe) -> bool {
+        match self.venue() {
+            Venue::Binance | Venue::Bybit | Venue::Hyperliquid | Venue::Okex => {
+                Timeframe::KLINE.contains(&tf)
+            }
+            Venue::Mexc => {
+                Timeframe::KLINE.contains(&tf)
+                    && !matches!(tf, Timeframe::M3 | Timeframe::H2 | Timeframe::H12)
+            }
+        }
+    }
+
     pub fn is_perps(&self) -> bool {
         matches!(
             self,
