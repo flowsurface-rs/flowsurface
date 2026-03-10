@@ -118,7 +118,7 @@ enum StreamData {
     Depth(SonicDepth, u64),
     Kline(Ticker, Vec<SonicKline>),
     Pong(u64),
-    Subscription,
+    Subscription(String),
 }
 
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
@@ -709,25 +709,11 @@ pub fn connect_depth_stream(
         );
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+        let mut snapthot_time: u64 = 0;
 
         loop {
             match &mut state {
                 State::Disconnected => {
-                    match fetch_depth_snapshot(&symbol_str, ticker_info).await {
-                        Ok(snapshot) => {
-                            orderbook.update_with_qty_norm(
-                                DepthUpdate::Snapshot(snapshot),
-                                ticker_info.min_ticksize,
-                                Some(qty_norm),
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("Failed to fetch depth snapshot for {symbol_str}: {}", e);
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            continue;
-                        }
-                    }
-
                     match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
                         Ok(mut websocket) => {
                             let depth_subscription = json!({
@@ -779,8 +765,29 @@ pub fn connect_depth_stream(
                                             Ok(data) => {
                                                 match data {
                                                     StreamData::Pong(_) => {}
-                                                    StreamData::Subscription => {}
+                                                    StreamData::Subscription(stream_name) => {
+                                                        if stream_name == "depth" {
+                                                            match fetch_depth_snapshot(&symbol_str, ticker_info).await {
+                                                                Ok(snapshot) => {
+                                                                    snapthot_time = snapshot.time;
+                                                                    orderbook.update_with_qty_norm(
+                                                                        DepthUpdate::Snapshot(snapshot),
+                                                                        ticker_info.min_ticksize,
+                                                                        Some(qty_norm),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    log::error!("Failed to fetch depth snapshot for {symbol_str}: {}", e);
+                                                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                                                    continue;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                     StreamData::Depth(de_depth, time) => {
+                                                        if time < snapthot_time {
+                                                            continue;
+                                                        }
                                                         let depth = DepthPayload {
                                                             last_update_id: de_depth.version,
                                                             time,
@@ -946,7 +953,7 @@ pub fn connect_trade_stream(
                                             Ok(data) => {
                                                 match data {
                                                     StreamData::Pong(_) => {}
-                                                    StreamData::Subscription => {}
+                                                    StreamData::Subscription(_) => {}
                                                     StreamData::Trade(ticker, de_trades, _) => {
                                                         if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker) {
                                                             let ticker_info = *ticker_info;
@@ -1034,7 +1041,7 @@ enum StreamName {
     Depth,
     Trade,
     Kline,
-    Subscription,
+    Subscription(String),
     Error,
     Pong,
     Unknown,
@@ -1049,7 +1056,9 @@ impl StreamName {
         }
 
         match parts.get(1) {
-            Some(&"sub") => StreamName::Subscription,
+            Some(&"sub") => {
+                StreamName::Subscription(parts.get(2).map(|s| s.to_string()).unwrap_or_default())
+            }
             Some(&"deal") => StreamName::Trade,
             Some(&"depth") => StreamName::Depth,
             Some(&"kline") => StreamName::Kline,
@@ -1131,8 +1140,8 @@ fn feed_de(
             Some(StreamName::Pong) => {
                 return Ok(StreamData::Pong(ts.unwrap_or_default()));
             }
-            Some(StreamName::Subscription) => {
-                return Ok(StreamData::Subscription);
+            Some(StreamName::Subscription(name)) => {
+                return Ok(StreamData::Subscription(name));
             }
             Some(StreamName::Error) => {
                 log::error!("Error: {data}");
