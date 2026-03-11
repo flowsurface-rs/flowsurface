@@ -954,10 +954,11 @@ pub fn connect_trade_stream(
                                                 match data {
                                                     StreamData::Pong(_) => {}
                                                     StreamData::Subscription(_) => {}
-                                                    StreamData::Trade(ticker, de_trades, _) => {
+                                                    StreamData::Trade(ticker, mut de_trades, _) => {
                                                         if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker) {
                                                             let ticker_info = *ticker_info;
                                                             let contract_size = ticker_info.contract_size.map(f32::from).unwrap_or(1.0);
+                                                            de_trades.sort_unstable_by_key(|t| t.time);
                                                             for trade in &de_trades {
                                                                 let price = Price::from_f32(trade.price)
                                                                     .round_to_min_tick(ticker_info.min_ticksize);
