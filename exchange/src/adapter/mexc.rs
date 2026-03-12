@@ -75,9 +75,9 @@ struct FuturesDepthItem {
     #[serde()]
     pub price: f32,
     #[serde()]
-    pub contract_num: f32,
-    #[serde()]
     pub qty: f32,
+    #[serde()]
+    pub order_count: f32,
 }
 
 #[derive(Deserialize)]
@@ -131,8 +131,8 @@ fn exchange_from_market_type(market: MarketKind) -> Exchange {
 
 fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
-        MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
-        MarketKind::InversePerps => RawQtyUnit::Quote,
+        MarketKind::Spot => RawQtyUnit::Base,
+        MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Contracts,
     }
 }
 
@@ -275,7 +275,7 @@ pub async fn fetch_ticker_metadata(
                     continue;
                 }
 
-                let min_qty = item["minVol"].as_f64().ok_or_else(|| {
+                let min_qty_contracts = item["minVol"].as_f64().ok_or_else(|| {
                     AdapterError::ParseError("Missing minVol (min_qty)".to_string())
                 })? as f32;
 
@@ -287,6 +287,8 @@ pub async fn fetch_ticker_metadata(
                     .as_f64()
                     .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?
                     as f32;
+
+                let min_qty = min_qty_contracts * contract_size;
 
                 let ticker = Ticker::new(symbol, exchange);
                 let info = TickerInfo::new(ticker, min_ticksize, min_qty, Some(contract_size));
@@ -404,28 +406,25 @@ pub async fn fetch_ticker_stats(
 
                 let ticker = Ticker::new(symbol, exchange);
 
-                let last_price = item["lastPrice"]
-                    .as_f64()
-                    .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?
-                    as f32;
-
-                // Parse riseFallRate - 24h price change percentage (e.g., 0.014 = 1.4%)
-                let rise_fall_rate = item["riseFallRate"]
-                    .as_f64()
-                    .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?
-                    as f32;
-
-                let volume_24 = item["volume24"]
-                    .as_f64()
-                    .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?
-                    as f32;
-
                 let contract_size = contract_sizes
                     .as_ref()
                     .and_then(|sizes| sizes.get(&ticker))
                     .copied();
 
                 if let Some(cs) = contract_size {
+                    let last_price = item["lastPrice"].as_f64().ok_or_else(|| {
+                        AdapterError::ParseError("Last price not found".to_string())
+                    })? as f32;
+
+                    // Parse riseFallRate - 24h price change percentage (e.g., 0.014 = 1.4%)
+                    let rise_fall_rate = item["riseFallRate"].as_f64().ok_or_else(|| {
+                        AdapterError::ParseError("Missing riseFallRate".to_string())
+                    })? as f32;
+
+                    let volume_24 = item["volume24"].as_f64().ok_or_else(|| {
+                        AdapterError::ParseError("Missing riseFallRate".to_string())
+                    })? as f32;
+
                     let volume_in_usd = if market_type == MarketKind::InversePerps {
                         volume_24 * cs
                     } else {
@@ -519,8 +518,6 @@ pub async fn fetch_klines(
             "Unsupported MEXC kline timeframe {timeframe} for {market_type}"
         ))
     })?;
-
-    let contract_size = contract_size_for_market(ticker_info, market_type, "fetch_klines")?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -633,7 +630,7 @@ pub async fn fetch_klines(
                         AdapterError::ParseError("Vol value not found".to_string())
                     })? as f32;
 
-                    let normalized_vol = qty_norm.normalize_qty(volume * contract_size, close);
+                    let normalized_vol = qty_norm.normalize_qty(volume, close);
 
                     Ok(Kline::new(
                         timestamp,
@@ -653,10 +650,7 @@ pub async fn fetch_klines(
 }
 
 /// Fetch depth snapshot from REST API for initial orderbook state
-pub async fn fetch_depth_snapshot(
-    symbol: &str,
-    ticker_info: TickerInfo,
-) -> Result<DepthPayload, AdapterError> {
+pub async fn fetch_depth_snapshot(symbol: &str) -> Result<DepthPayload, AdapterError> {
     let url = format!("{FETCH_DOMAIN}/v1/contract/depth/{symbol}");
     let response_text = limiter::http_request(&url, None, None).await?;
     let snapshot: DepthSnapshotResponse = sonic_rs::from_str(&response_text).map_err(|e| {
@@ -664,14 +658,11 @@ pub async fn fetch_depth_snapshot(
         AdapterError::ParseError(e.to_string())
     })?;
 
-    let _size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-    let market_type = ticker_info.ticker.to_full_symbol_and_type().1;
-    let contract_size = contract_size_for_market(ticker_info, market_type, "fetch_depth_snapshot")?;
     let parse_orders = |arr: &Vec<FuturesDepthItem>| -> Vec<DeOrder> {
         arr.iter()
             .map(|x| DeOrder {
                 price: x.price,
-                qty: x.contract_num * contract_size,
+                qty: x.qty,
             })
             .collect()
     };
@@ -720,17 +711,6 @@ pub fn connect_depth_stream(
 
         let mut orderbook = LocalDepthCache::default();
 
-        let contract_size =
-            match contract_size_for_market(ticker_info, market_type, "connect_depth_stream") {
-                Ok(contract_size) => contract_size,
-                Err(err) => {
-                    let _ = output
-                        .send(Event::Disconnected(exchange, err.to_string()))
-                        .await;
-                    return;
-                }
-            };
-
         let qty_norm = QtyNormalization::with_raw_qty_unit(
             volume_size_unit() == SizeUnit::Quote,
             ticker_info,
@@ -738,7 +718,7 @@ pub fn connect_depth_stream(
         );
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
-        let mut snapthot_time: u64 = 0;
+        let mut snapshot_time: u64 = 0;
 
         loop {
             match &mut state {
@@ -796,9 +776,9 @@ pub fn connect_depth_stream(
                                                     StreamData::Pong(_) => {}
                                                     StreamData::Subscription(stream_name) => {
                                                         if stream_name == "depth" {
-                                                            match fetch_depth_snapshot(&symbol_str, ticker_info).await {
+                                                            match fetch_depth_snapshot(&symbol_str).await {
                                                                 Ok(snapshot) => {
-                                                                    snapthot_time = snapshot.time;
+                                                                    snapshot_time = snapshot.time;
                                                                     orderbook.update_with_qty_norm(
                                                                         DepthUpdate::Snapshot(snapshot),
                                                                         ticker_info.min_ticksize,
@@ -814,7 +794,7 @@ pub fn connect_depth_stream(
                                                         }
                                                     }
                                                     StreamData::Depth(de_depth, time) => {
-                                                        if time < snapthot_time {
+                                                        if time < snapshot_time {
                                                             continue;
                                                         }
                                                         let depth = DepthPayload {
@@ -825,7 +805,7 @@ pub fn connect_depth_stream(
                                                                 .iter()
                                                                 .map(|x| DeOrder {
                                                                     price: x.price,
-                                                                    qty: x.contract_num * contract_size,
+                                                                    qty: x.qty,
                                                                 })
                                                                 .collect(),
                                                             asks: de_depth
@@ -833,7 +813,7 @@ pub fn connect_depth_stream(
                                                                 .iter()
                                                                 .map(|x| DeOrder {
                                                                     price: x.price,
-                                                                    qty: x.contract_num * contract_size,
+                                                                    qty: x.qty,
                                                                 })
                                                                 .collect(),
                                                         };
@@ -901,8 +881,7 @@ pub fn connect_trade_stream(
         let mut state: State = State::Disconnected;
 
         let exchange = exchange_from_market_type(market_type);
-        let size_in_quote_ccy =
-            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         let ticker_info_map = tickers
             .iter()
@@ -920,23 +899,6 @@ pub fn connect_trade_stream(
                 )
             })
             .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
-
-        let contract_size_map = match tickers
-            .iter()
-            .map(|ticker_info| {
-                contract_size_for_market(*ticker_info, market_type, "connect_trade_stream")
-                    .map(|contract_size| (ticker_info.ticker, contract_size))
-            })
-            .collect::<Result<FxHashMap<Ticker, f32>, AdapterError>>()
-        {
-            Ok(contract_size_map) => contract_size_map,
-            Err(err) => {
-                let _ = output
-                    .send(Event::Disconnected(exchange, err.to_string()))
-                    .await;
-                return;
-            }
-        };
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
@@ -1003,10 +965,7 @@ pub fn connect_trade_stream(
                                                     StreamData::Trade(ticker, mut de_trades, _) => {
                                                         if let Some((ticker_info, qty_norm)) = ticker_info_map.get(&ticker) {
                                                             let ticker_info = *ticker_info;
-                                                            let Some(contract_size) = contract_size_map.get(&ticker).copied() else {
-                                                                log::error!("Missing contract size in map for ticker: {}", ticker);
-                                                                continue;
-                                                            };
+
                                                             de_trades.sort_unstable_by_key(|t| t.time);
                                                             for trade in &de_trades {
                                                                 let price = Price::from_f32(trade.price)
@@ -1017,7 +976,7 @@ pub fn connect_trade_stream(
                                                                     is_sell: trade.direction == 2,
                                                                     price,
                                                                     qty: qty_norm
-                                                                        .normalize_qty(trade.qty * contract_size, trade.price),
+                                                                        .normalize_qty(trade.qty, trade.price),
                                                                 };
 
                                                                 let trades_buffer = trades_buffer_map.entry(ticker).or_default();
@@ -1234,8 +1193,7 @@ pub fn connect_kline_stream(
         let mut state = State::Disconnected;
 
         let exchange = exchange_from_market_type(market_type);
-        let size_in_quote_ccy =
-            volume_size_unit() == SizeUnit::Quote && market_type != MarketKind::InversePerps;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         if market_type == MarketKind::Spot {
             todo!();
@@ -1245,7 +1203,7 @@ pub fn connect_kline_stream(
             .iter()
             .map(|(ticker_info, _)| {
                 contract_size_for_market(*ticker_info, market_type, "connect_kline_stream").map(
-                    |contract_size| {
+                    |_| {
                         (
                             ticker_info.ticker,
                             (
@@ -1255,14 +1213,12 @@ pub fn connect_kline_stream(
                                     *ticker_info,
                                     raw_qty_unit_from_market_type(market_type),
                                 ),
-                                contract_size,
                             ),
                         )
                     },
                 )
             })
-            .collect::<Result<HashMap<Ticker, (TickerInfo, QtyNormalization, f32)>, AdapterError>>(
-            );
+            .collect::<Result<HashMap<Ticker, (TickerInfo, QtyNormalization)>, AdapterError>>();
 
         let ticker_info_map = match ticker_info_map {
             Ok(ticker_info_map) => ticker_info_map,
@@ -1360,13 +1316,13 @@ pub fn connect_kline_stream(
                                             for de_kline in &de_kline_vec {
                                                 if let Some(timeframe) = string_to_timeframe(&de_kline.interval)
                                                 {
-                                                    if let Some((ticker_info, qty_norm, contract_size)) =
+                                                    if let Some((ticker_info, qty_norm)) =
                                                         ticker_info_map.get(&ticker)
                                                     {
                                                         let ticker_info = *ticker_info;
 
                                                         let volume = qty_norm.normalize_qty(
-                                                            de_kline.quote_volume * *contract_size,
+                                                            de_kline.quote_volume,
                                                             de_kline.close,
                                                         );
 
