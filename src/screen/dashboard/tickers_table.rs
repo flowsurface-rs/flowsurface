@@ -1316,6 +1316,7 @@ fn expanded_ticker_card<'a>(
         }),
         column![
             init_content_button(ContentKind::HeatmapChart, *ticker, 180.0),
+            init_content_button(ContentKind::ShaderHeatmap, *ticker, 180.0),
             init_content_button(ContentKind::FootprintChart, *ticker, 180.0),
             init_content_button(ContentKind::CandlestickChart, *ticker, 180.0),
             init_content_button(ContentKind::ComparisonChart, *ticker, 180.0),

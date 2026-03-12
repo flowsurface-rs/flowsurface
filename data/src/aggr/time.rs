@@ -115,6 +115,18 @@ impl<D: DataPoint> TimeSeries<D> {
             .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
+    /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.
+    pub fn ingest_trades_bucket(&mut self, rounded_t: u64, trades: &[Trade], step: PriceStep)
+    where
+        D: Default,
+    {
+        let bucket = self.datapoints.entry(rounded_t).or_default();
+
+        for trade in trades {
+            bucket.add_trade(trade, step);
+        }
+    }
+
     pub fn clear_trades(&mut self) {
         for data_point in self.datapoints.values_mut() {
             data_point.clear_trades();
@@ -416,6 +428,28 @@ impl TimeSeries<HeatmapDataPoint> {
             });
 
         (max_trade_qty, max_aggr_volume)
+    }
+
+    pub fn max_trade_qty_in_range(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: Price,
+        lowest: Price,
+    ) -> Qty {
+        let mut max_trade_qty = Qty::default();
+
+        self.datapoints
+            .range(earliest..=latest)
+            .for_each(|(_, dp)| {
+                dp.grouped_trades.iter().for_each(|trade| {
+                    if trade.price >= lowest && trade.price <= highest {
+                        max_trade_qty = max_trade_qty.max(trade.qty);
+                    }
+                });
+            });
+
+        max_trade_qty
     }
 }
 
