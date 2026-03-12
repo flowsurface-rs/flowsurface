@@ -55,13 +55,168 @@ async fn flush_trade_buffers<V>(
 #[derive(thiserror::Error, Debug)]
 pub enum AdapterError {
     #[error("{0}")]
-    FetchError(#[from] reqwest::Error),
+    FetchError(FetchError),
     #[error("Parsing: {0}")]
     ParseError(String),
     #[error("Stream: {0}")]
     WebsocketError(String),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReqwestErrorKind {
+    Timeout,
+    Connect,
+    Decode,
+    Body,
+    Request,
+    Other,
+}
+
+impl ReqwestErrorKind {
+    fn from_error(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_connect() {
+            Self::Connect
+        } else if error.is_decode() {
+            Self::Decode
+        } else if error.is_body() {
+            Self::Body
+        } else if error.is_request() {
+            Self::Request
+        } else {
+            Self::Other
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::Decode => "decode",
+            Self::Body => "body",
+            Self::Request => "request",
+            Self::Other => "other",
+        }
+    }
+
+    fn ui_message(self) -> &'static str {
+        match self {
+            Self::Timeout => "Request timed out. Check logs for details.",
+            Self::Connect => "Connection failed. Check logs for details.",
+            Self::Decode | Self::Body => "Invalid server response. Check logs for details.",
+            Self::Request | Self::Other => "Request failed. Check logs for details.",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FetchError {
+    detail: String,
+    ui_message: &'static str,
+}
+
+impl FetchError {
+    fn from_reqwest_detail(error: &reqwest::Error, detail: String) -> Self {
+        let ui_message = ReqwestErrorKind::from_error(error).ui_message();
+
+        Self { detail, ui_message }
+    }
+
+    fn from_status_detail(status: reqwest::StatusCode, detail: String) -> Self {
+        let ui_message = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "Rate limited. Check logs for details."
+        } else if status.is_server_error() {
+            "Server error. Check logs for details."
+        } else if status.is_client_error() {
+            "Request was rejected. Check logs for details."
+        } else {
+            "Request failed. Check logs for details."
+        };
+
+        Self { detail, ui_message }
+    }
+
+    pub fn ui_message(&self) -> &'static str {
+        self.ui_message
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let kind = ReqwestErrorKind::from_error(error);
+    let mut details = vec![error.to_string(), format!("kind={}", kind.as_str())];
+
+    if let Some(status) = error.status() {
+        details.push(format!("status={status}"));
+    }
+
+    if let Some(url) = error.url() {
+        details.push(format!("url={url}"));
+    }
+
+    details.join(" | ")
+}
+
+impl From<reqwest::Error> for AdapterError {
+    fn from(error: reqwest::Error) -> Self {
+        let detail = format_reqwest_error(&error);
+        Self::FetchError(FetchError::from_reqwest_detail(&error, detail))
+    }
+}
+
+impl AdapterError {
+    pub(crate) fn request_failed(
+        method: &reqwest::Method,
+        url: &str,
+        error: reqwest::Error,
+    ) -> Self {
+        let detail = format!(
+            "{} {}: request failed | {}",
+            method,
+            url,
+            format_reqwest_error(&error)
+        );
+        Self::FetchError(FetchError::from_reqwest_detail(&error, detail))
+    }
+
+    pub(crate) fn response_body_failed(
+        method: &reqwest::Method,
+        url: &str,
+        status: reqwest::StatusCode,
+        content_type: &str,
+        error: reqwest::Error,
+    ) -> Self {
+        let detail = format!(
+            "{} {}: failed reading response body | status={} | content-type={} | {}",
+            method,
+            url,
+            status,
+            content_type,
+            format_reqwest_error(&error)
+        );
+        Self::FetchError(FetchError::from_reqwest_detail(&error, detail))
+    }
+
+    pub(crate) fn http_status_failed(status: reqwest::StatusCode, detail: String) -> Self {
+        Self::FetchError(FetchError::from_status_detail(status, detail))
+    }
+
+    pub fn ui_message(&self) -> String {
+        match self {
+            Self::FetchError(error) => error.ui_message().to_string(),
+            Self::ParseError(_) => "Invalid server response. Check logs for details.".to_string(),
+            Self::WebsocketError(_) => "Stream error. Check logs for details.".to_string(),
+            Self::InvalidRequest(message) => message.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]

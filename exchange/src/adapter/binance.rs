@@ -1523,7 +1523,7 @@ pub async fn get_hist_trades(
 
         log::info!("Downloading from {}", url);
 
-        let resp = reqwest::get(&url).await.map_err(AdapterError::FetchError)?;
+        let resp = reqwest::get(&url).await.map_err(AdapterError::from)?;
 
         if !resp.status().is_success() {
             return Err(AdapterError::InvalidRequest(format!(
@@ -1533,7 +1533,7 @@ pub async fn get_hist_trades(
             )));
         }
 
-        let body = resp.bytes().await.map_err(AdapterError::FetchError)?;
+        let body = resp.bytes().await.map_err(AdapterError::from)?;
 
         std::fs::write(&base_zip_path, &body).map_err(|e| {
             AdapterError::ParseError(format!("Failed to write zip file: {e}, {base_zip_path:?}"))
