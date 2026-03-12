@@ -326,8 +326,8 @@ pub fn bare_symbol(ticker_info: &TickerInfo) -> String {
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct ChKline {
     close_time_ms: i64,
-    #[serde(default, rename = "open_time_ms")]
-    _open_time_ms: Option<i64>,
+    #[serde(default)]
+    open_time_ms: Option<i64>,
     open: f64,
     high: f64,
     low: f64,
@@ -457,6 +457,7 @@ pub async fn fetch_klines_with_microstructure(
         Vec<Kline>,
         Vec<Option<ChMicrostructure>>,
         Vec<Option<(u64, u64)>>,
+        Vec<Option<u64>>,
     ),
     AdapterError,
 > {
@@ -468,6 +469,7 @@ pub async fn fetch_klines_with_microstructure(
     let mut klines = Vec::new();
     let mut micro = Vec::new();
     let mut agg_id_ranges = Vec::new();
+    let mut open_time_ms_vec: Vec<Option<u64>> = Vec::new();
 
     for line in body.lines() {
         let line = line.trim();
@@ -491,14 +493,16 @@ pub async fn fetch_klines_with_microstructure(
         ));
         micro.push(parse_microstructure(&ck));
         agg_id_ranges.push(ck.first_agg_trade_id.zip(ck.last_agg_trade_id));
+        open_time_ms_vec.push(ck.open_time_ms.map(|ms| ms as u64));
     }
 
     // DESC order → reverse to ascending (oldest first)
     klines.reverse();
     micro.reverse();
     agg_id_ranges.reverse();
+    open_time_ms_vec.reverse();
 
-    Ok((klines, micro, agg_id_ranges))
+    Ok((klines, micro, agg_id_ranges, open_time_ms_vec))
 }
 
 // -- Backfill request (Issue #97: on-demand trigger for opendeviationbar-py) --
@@ -688,6 +692,7 @@ pub fn connect_kline_stream(
                                     Some(raw_f64),
                                     ck.first_agg_trade_id.zip(ck.last_agg_trade_id),
                                     micro,
+                                    ck.open_time_ms.map(|ms| ms as u64),
                                 ))
                                 .await;
                             count += 1;
@@ -913,6 +918,7 @@ pub fn connect_sse_stream(
                                 Some(raw_f64),
                                 bar_agg_id_range,
                                 micro,
+                                Some(bar.open_time_ms as u64),
                             ))
                             .await;
                     }

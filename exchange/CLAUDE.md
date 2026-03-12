@@ -39,6 +39,15 @@ StreamKind::Depth      → exchange WebSocket (orderbook)
 StreamKind::Trades     → exchange WebSocket (@aggTrade)
 ```
 
+**`Event::KlineReceived` has 6 fields** (as of 2026-03-11):
+
+```rust
+KlineReceived(StreamKind, Kline, Option<[f64;6]>, Option<(u64,u64)>, Option<ChMicrostructure>, Option<u64>)
+//                                 raw_f64          agg_id_range        micro                   open_time_ms
+```
+
+The 6th field `open_time_ms: Option<u64>` is `Some` for ODB bars (CH poll + SSE), `None` for all other exchange adapters. Non-ODB adapters must always pass `None` as the 6th arg.
+
 ---
 
 ## ClickHouse Adapter (Fork-Specific)
@@ -151,6 +160,15 @@ pub struct Kline {
 ```
 
 Shared across ALL exchanges and chart types (Time, Tick, ODB).
+
+> ⚠️ **CRITICAL — ODB bar time semantics**: `Kline.time` stores `close_time_ms` (NOT open time). For ODB bars, `prev_bar.close_time_ms ≠ next_bar.open_time_ms`. This is not a data error — it's structural:
+>
+> - `close_time_ms` of bar N = timestamp of the **trigger trade** that breached the threshold
+> - `open_time_ms` of bar N+1 = timestamp of the **first trade in the new bar** (can be 100s of ms later)
+>
+> At UTC midnight day boundaries this gap causes the legend to show the wrong calendar day (e.g., `Mar 11 23:59:59` instead of `Mar 12 00:00:00`). The fix is `TickAccumulation.open_time_ms` — populated from `ChKline.open_time_ms` and threaded through `KlineReceived` (6th field) → `update_latest_kline` → legend renderer.
+>
+> **Never revert to `prev_bar.kline.time` for ODB open time display.** See `src/chart/kline.rs:draw_crosshair_tooltip()`.
 
 ### TickerInfo
 

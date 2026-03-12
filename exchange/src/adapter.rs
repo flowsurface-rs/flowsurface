@@ -496,12 +496,14 @@ pub enum Event {
     /// The optional `(u64, u64)` is the bar's `(first_agg_trade_id, last_agg_trade_id)` range
     /// (ODB SSE/CH bars only).
     /// The optional `ChMicrostructure` carries trade_count/ofi/trade_intensity for ODB bars.
+    /// The optional `u64` (6th field) is the bar's `open_time_ms` from ClickHouse (ODB only).
     KlineReceived(
         StreamKind,
         Kline,
         Option<[f64; 6]>,
         Option<(u64, u64)>,
         Option<clickhouse::ChMicrostructure>,
+        Option<u64>,
     ),
 }
 
@@ -588,6 +590,7 @@ pub async fn fetch_odb_klines_with_microstructure(
         Vec<Kline>,
         Vec<Option<clickhouse::ChMicrostructure>>,
         Vec<Option<(u64, u64)>>,
+        Vec<Option<u64>>,
     ),
     AdapterError,
 > {

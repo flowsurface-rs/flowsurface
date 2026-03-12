@@ -906,6 +906,7 @@ pub fn connect_kline_stream(
                                                     None,
                                                     None,
                                                     None,
+                                                    None,
                                                 ))
                                                 .await;
                                         } else {

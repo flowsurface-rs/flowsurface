@@ -30,6 +30,7 @@ pub enum FetchedData {
         req_id: Option<uuid::Uuid>,
         microstructure: Option<Vec<Option<exchange::adapter::clickhouse::ChMicrostructure>>>,
         agg_trade_id_ranges: Option<Vec<Option<(u64, u64)>>>,
+        open_time_ms_list: Option<Vec<Option<u64>>>,
     },
     OI {
         data: Vec<OpenInterest>,
@@ -472,6 +473,7 @@ pub fn kline_fetch_task(
                         req_id,
                         microstructure: None,
                         agg_trade_id_ranges: None,
+                        open_time_ms_list: None,
                     };
                     FetchUpdate::Data {
                         layout_id,

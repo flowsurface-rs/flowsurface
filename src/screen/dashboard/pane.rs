@@ -511,6 +511,7 @@ impl State {
         klines: &[Kline],
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
         agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
+        open_time_ms_list: Option<&[Option<u64>]>,
     ) {
         match &mut self.content {
             Content::Kline {
@@ -523,7 +524,13 @@ impl State {
 
                 if let Some(id) = req_id {
                     // Historical data load — prepend older klines to TickAggr
-                    chart.insert_odb_hist_klines(id, klines, microstructure, agg_trade_id_ranges);
+                    chart.insert_odb_hist_klines(
+                        id,
+                        klines,
+                        microstructure,
+                        agg_trade_id_ranges,
+                        open_time_ms_list,
+                    );
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
@@ -543,6 +550,7 @@ impl State {
                         &kind,
                         microstructure,
                         agg_trade_id_ranges,
+                        open_time_ms_list,
                         saved_config,
                     );
                 }

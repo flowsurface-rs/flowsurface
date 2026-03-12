@@ -1033,6 +1033,7 @@ impl Dashboard {
                 req_id,
                 microstructure,
                 agg_trade_id_ranges,
+                open_time_ms_list,
             } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
@@ -1054,6 +1055,7 @@ impl Dashboard {
                                 &data,
                                 microstructure.as_deref(),
                                 agg_trade_id_ranges.as_deref(),
+                                open_time_ms_list.as_deref(),
                             );
 
                             // Gap-fill via ODB sidecar /catchup endpoint (v12.62.0+).
@@ -1145,6 +1147,7 @@ impl Dashboard {
         #[cfg(not(feature = "telemetry"))] _raw_f64: Option<[f64; 6]>,
         bar_agg_id_range: Option<(u64, u64)>,
         micro: Option<exchange::adapter::clickhouse::ChMicrostructure>,
+        bar_open_time_ms: Option<u64>,
         main_window: window::Id,
     ) -> Task<Message> {
         #[cfg(feature = "telemetry")]
@@ -1189,7 +1192,7 @@ impl Dashboard {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
-                            c.update_latest_kline(kline, bar_agg_id_range, micro);
+                            c.update_latest_kline(kline, bar_agg_id_range, micro, bar_open_time_ms);
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
@@ -1526,11 +1529,13 @@ impl From<fetcher::FetchUpdate> for Message {
                         req_id,
                         microstructure,
                         agg_trade_id_ranges,
+                        open_time_ms_list,
                     } => FetchedData::Klines {
                         data,
                         req_id,
                         microstructure,
                         agg_trade_id_ranges,
+                        open_time_ms_list,
                     },
                     fetcher::FetchedData::OI { data, req_id } => FetchedData::OI { data, req_id },
                 };
@@ -1799,6 +1804,7 @@ fn kline_fetch_task(
                         req_id,
                         microstructure: None,
                         agg_trade_id_ranges: None,
+                        open_time_ms_list: None,
                     };
                     Message::DistributeFetchedData {
                         layout_id,
@@ -1821,12 +1827,13 @@ fn kline_fetch_task(
                 |err: AdapterError| format!("{err}"),
             ),
             move |result| match result {
-                Ok((klines, micro, agg_ids)) => {
+                Ok((klines, micro, agg_ids, open_time_ms_list)) => {
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
                         microstructure: Some(micro),
                         agg_trade_id_ranges: Some(agg_ids),
+                        open_time_ms_list: Some(open_time_ms_list),
                     };
                     Message::DistributeFetchedData {
                         layout_id,

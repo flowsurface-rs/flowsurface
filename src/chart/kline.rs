@@ -77,6 +77,7 @@ type BufferedChKline = (
     Kline,
     Option<(u64, u64)>,
     Option<exchange::adapter::clickhouse::ChMicrostructure>,
+    Option<u64>, // open_time_ms
 );
 
 impl Chart for KlineChart {
@@ -666,6 +667,7 @@ impl KlineChart {
         kind: &KlineChartKind,
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
         agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
+        open_time_ms_list: Option<&[Option<u64>]>,
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
         kline_config: data::chart::kline::Config,
     ) -> Self {
@@ -702,8 +704,10 @@ impl KlineChart {
 
         let empty_ids: Vec<Option<(u64, u64)>> = vec![None; klines_raw.len()];
         let ids = agg_trade_id_ranges.unwrap_or(&empty_ids);
+        let empty_open_times: Vec<Option<u64>> = vec![None; klines_raw.len()];
+        let open_times = open_time_ms_list.unwrap_or(&empty_open_times);
         let mut tick_aggr =
-            TickAggr::from_klines_with_microstructure(step, klines_raw, &micro, ids);
+            TickAggr::from_klines_with_microstructure(step, klines_raw, &micro, ids, open_times);
 
         // Scale cell width with threshold (see non-microstructure constructor)
         let threshold_dbps = match basis {
@@ -843,6 +847,7 @@ impl KlineChart {
         kline: &Kline,
         bar_agg_id_range: Option<(u64, u64)>,
         micro: Option<exchange::adapter::clickhouse::ChMicrostructure>,
+        bar_open_time_ms: Option<u64>,
     ) {
         let bar_last_agg_id = bar_agg_id_range.map(|(_, last)| last);
         if self.chart.basis.is_odb() {
@@ -879,7 +884,7 @@ impl KlineChart {
                     // They'll be applied in order after gap-fill completes.
                     if self.fetching_trades.0 {
                         self.buffered_ch_klines
-                            .push((*kline, bar_agg_id_range, micro));
+                            .push((*kline, bar_agg_id_range, micro, bar_open_time_ms));
                         log::debug!(
                             "[gap-fill] buffered CH bar ts={} bar_agg_id_range={:?} during gap-fill",
                             kline.time,
@@ -946,11 +951,16 @@ impl KlineChart {
                     });
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
 
-                    // Attach agg_trade_id_range from SSE/CH bar data
-                    if let Some(range) = bar_agg_id_range
-                        && let Some(last_dp) = tick_aggr.datapoints.last_mut()
-                    {
-                        last_dp.agg_trade_id_range = Some(range);
+                    // Attach agg_trade_id_range and open_time_ms from SSE/CH bar data.
+                    // These are set after replace_or_append_kline (two-phase pattern)
+                    // because replace_or_append_kline doesn't carry them.
+                    if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                        if let Some(range) = bar_agg_id_range {
+                            last_dp.agg_trade_id_range = Some(range);
+                        }
+                        if let Some(ts) = bar_open_time_ms {
+                            last_dp.open_time_ms = Some(ts);
+                        }
                     }
 
                     self.ch_reconcile_count += 1;
@@ -1118,6 +1128,21 @@ impl KlineChart {
     }
 
     fn missing_data_task(&mut self) -> Option<Action> {
+        // Sentinel refetch: clear existing bars so the fresh CH fetch fully replaces
+        // the display (not just prepends). Without clearing, prepend_klines skips all
+        // bars that are newer than the current oldest — which is all of them since we
+        // fetch the N most recent bars. Clearing forces a full reload.
+        if self.sentinel_refetch_pending && self.chart.basis.is_odb() {
+            self.sentinel_refetch_pending = false;
+            if let PlotData::TickBased(tick_aggr) = &mut self.data_source {
+                tick_aggr.datapoints.clear();
+            }
+            self.request_handler = RequestHandler::default();
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            let range = FetchRange::Kline(0, now_ms);
+            return request_fetch(&mut self.request_handler, range);
+        }
+
         match &self.data_source {
             PlotData::TimeBased(timeseries) => {
                 let timeframe_ms = timeseries.interval.to_milliseconds();
@@ -1191,15 +1216,6 @@ impl KlineChart {
             }
             PlotData::TickBased(tick_aggr) => {
                 if self.chart.basis.is_odb() {
-                    // Sentinel refetch: re-fetch all klines from CH to pick up kintsugi repairs
-                    if self.sentinel_refetch_pending {
-                        self.sentinel_refetch_pending = false;
-                        self.request_handler = RequestHandler::default();
-                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-                        let range = FetchRange::Kline(0, now_ms);
-                        return request_fetch(&mut self.request_handler, range);
-                    }
-
                     if tick_aggr.datapoints.is_empty() {
                         // Initial fetch — get latest 500 bars
                         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -1283,8 +1299,8 @@ impl KlineChart {
         }
         self.fetching_trades = (false, None);
         self.gap_fill_requested = false;
-        for (kline, bar_agg_id_range, micro) in buffered {
-            self.update_latest_kline(&kline, bar_agg_id_range, micro);
+        for (kline, bar_agg_id_range, micro, open_time_ms) in buffered {
+            self.update_latest_kline(&kline, bar_agg_id_range, micro, open_time_ms);
         }
 
         // Startup anchor: seed the RBP processor with the last CH bar's close
@@ -1419,10 +1435,12 @@ impl KlineChart {
                 continue;
             }
 
-            // Classify: day-boundary if bars are in different UTC days
+            // Classify: single-day-boundary = structural ouroboros midnight orphan (1 day apart).
+            // Multi-day = kintsugi-repairable outage (pipeline was down) — treat as healable Gap.
             let prev_day = prev.kline.time / MS_PER_DAY;
             let curr_day = curr.kline.time / MS_PER_DAY;
-            let kind = if prev_day != curr_day {
+            let days_spanned = curr_day.saturating_sub(prev_day);
+            let kind = if days_spanned == 1 {
                 BarGapKind::DayBoundary
             } else {
                 BarGapKind::Gap
@@ -2272,8 +2290,8 @@ impl KlineChart {
             let buffered = std::mem::take(&mut self.buffered_ch_klines);
             self.fetching_trades = (false, None);
             self.gap_fill_requested = false;
-            for (kline, bar_agg_id_range, micro) in buffered {
-                self.update_latest_kline(&kline, bar_agg_id_range, micro);
+            for (kline, bar_agg_id_range, micro, open_time_ms) in buffered {
+                self.update_latest_kline(&kline, bar_agg_id_range, micro, open_time_ms);
             }
             // Single canvas redraw now that all gap-fill batches are processed.
             self.invalidate(None);
@@ -2310,6 +2328,7 @@ impl KlineChart {
         klines: &[Kline],
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
         agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
+        open_time_ms_list: Option<&[Option<u64>]>,
     ) {
         log::info!(
             "[RB-HIST] insert_odb_hist_klines: {} klines, micro={}, datasource=TickBased?{}",
@@ -2339,6 +2358,7 @@ impl KlineChart {
                         klines,
                         micro.as_deref(),
                         agg_trade_id_ranges,
+                        open_time_ms_list,
                     );
                     self.request_handler.mark_completed(req_id);
                 }
@@ -4067,8 +4087,19 @@ fn draw_crosshair_tooltip(
                     let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
                     let fwd = tick_aggr.datapoints.len().saturating_sub(1 + index);
                     let close = kline.time as i64;
-                    // Open time = previous bar's close time (bars are stored oldest-first).
-                    let open = (fwd > 0).then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
+                    // Open time: use open_time_ms from ClickHouse if available (correct for ODB
+                    // bars — prev_bar.close_time ≠ this_bar.open_time due to gap between the
+                    // trigger trade and the first trade of the new bar).
+                    // Fallback: previous bar's close time (correct for Tick basis).
+                    let open = tick_aggr
+                        .datapoints
+                        .get(fwd)
+                        .and_then(|dp| dp.open_time_ms)
+                        .map(|ms| ms as i64)
+                        .or_else(|| {
+                            (fwd > 0)
+                                .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64)
+                        });
                     (open, close)
                 };
 

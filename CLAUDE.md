@@ -229,39 +229,46 @@ After merging upstream, check for:
 
 1. New `StreamKind` variants — add match arms in fork-specific code
 2. Changes to `window::Settings` — preserve `level:` field in `main.rs`
-3. Changes to `FetchedData` — preserve fork's `microstructure` field in `connector/fetcher.rs`
+3. Changes to `FetchedData` — preserve fork's `microstructure`, `agg_trade_id_ranges`, and `open_time_ms_list` fields in `connector/fetcher.rs`
 4. New `ContentKind` variants — add to pane setup in `dashboard/pane.rs`
 5. Changes to `FetchRange` — preserve fork's `OdbCatchup` variant in `connector/fetcher.rs`
 6. Changes to `Message` in `dashboard.rs` — preserve `TriggerOdbGapFill` variant
 7. Changes to `Trade` struct — preserve `agg_trade_id` field in `exchange/src/lib.rs`
+8. Changes to `Event::KlineReceived` in `adapter.rs` — preserve the 6th field `Option<u64>` (open_time_ms); non-ODB adapters must pass `None`
+9. Changes to `TickAccumulation` in `data/src/aggr/ticks.rs` — preserve `agg_trade_id_range` and `open_time_ms` fields; update all construction sites if struct changes
 
 ---
 
 ## Common Errors
 
-| Error                       | Cause                               | Fix                                                                  |
-| --------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
-| "Waiting for trades..."     | ODB pane missing `Trades` stream    | Add `trades_stream()` to pane's stream vec in `pane.rs`              |
-| "Fetching Klines..." loop   | ClickHouse unreachable              | `mise run preflight`                                                 |
-| "No chart found for stream" | Widget/pane stream mismatch         | Check `matches_stream()` in `connector/stream.rs`                    |
-| Tiny dot candlesticks       | Wrong cell_width/limit              | Check adaptive scaling in `kline.rs`                                 |
-| Crosshair panic             | NaN in indicator data               | Add NaN guard before rendering                                       |
-| "ClickHouse HTTP 404"       | Wrong table/schema                  | Verify `opendeviationbar_cache.open_deviation_bars`                  |
-| "no microstructure data"    | `FetchedData::Klines` missing field | Ensure `microstructure: Some(micro)` in ODB fetch path               |
-| "Fetching trades..." stuck  | ODB sidecar unreachable (Ariadne)   | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250` |
-| Gap-fill silently skipped   | Ariadne returned `None` or error    | Check sidecar logs; gap-fill is best-effort                          |
+| Error                                  | Cause                                   | Fix                                                                                                                |
+| -------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| "Waiting for trades..."                | ODB pane missing `Trades` stream        | Add `trades_stream()` to pane's stream vec in `pane.rs`                                                            |
+| "Fetching Klines..." loop              | ClickHouse unreachable                  | `mise run preflight`                                                                                               |
+| "No chart found for stream"            | Widget/pane stream mismatch             | Check `matches_stream()` in `connector/stream.rs`                                                                  |
+| Tiny dot candlesticks                  | Wrong cell_width/limit                  | Check adaptive scaling in `kline.rs`                                                                               |
+| Crosshair panic                        | NaN in indicator data                   | Add NaN guard before rendering                                                                                     |
+| "ClickHouse HTTP 404"                  | Wrong table/schema                      | Verify `opendeviationbar_cache.open_deviation_bars`                                                                |
+| "no microstructure data"               | `FetchedData::Klines` missing field     | Ensure `microstructure: Some(micro)` in ODB fetch path                                                             |
+| "Fetching trades..." stuck             | ODB sidecar unreachable (Ariadne)       | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250`                                               |
+| Gap-fill silently skipped              | Ariadne returned `None` or error        | Check sidecar logs; gap-fill is best-effort                                                                        |
+| Legend shows wrong day at day boundary | `prev_bar.close_time` used as open time | ODB: `close_time_ms[N] ≠ open_time_ms[N+1]` — trigger trade ≠ first trade. Use `TickAccumulation.open_time_ms`     |
+| Legend open time reverted to wrong day | Upstream merge clobbered threading      | Restore `open_time_ms` field in `TickAccumulation`, 6th field in `KlineReceived`, and `draw_crosshair_tooltip` fix |
 
 ---
 
 ## Terminology
 
-| Term           | Definition                                                                              |
-| -------------- | --------------------------------------------------------------------------------------- |
-| **dbps**       | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                                |
-| **BPR**        | Basis Points Range. Display label: BPR25 = 250 dbps threshold.                          |
-| **ODB**        | Open Deviation Bar. Range bar that closes on % deviation from open.                     |
-| **OFI**        | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1].                |
-| **TickAggr**   | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.                      |
-| **TimeSeries** | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).                         |
-| **SSE**        | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.                   |
-| **Sentinel**   | Bar-level agg_trade_id continuity auditor. Periodic 60s scan of all displayed ODB bars. |
+| Term              | Definition                                                                                                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **dbps**          | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                                                                                                                            |
+| **BPR**           | Basis Points Range. Display label: BPR25 = 250 dbps threshold.                                                                                                                      |
+| **ODB**           | Open Deviation Bar. Range bar that closes on % deviation from open.                                                                                                                 |
+| **OFI**           | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1].                                                                                                            |
+| **TickAggr**      | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.                                                                                                                  |
+| **TimeSeries**    | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).                                                                                                                     |
+| **SSE**           | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.                                                                                                               |
+| **Sentinel**      | Bar-level agg_trade_id continuity auditor. Periodic 60s scan of all displayed ODB bars.                                                                                             |
+| **trigger trade** | The trade whose arrival causes an ODB bar to close (deviation ≥ threshold). This trade's timestamp = `close_time_ms` of bar N and is **not** part of bar N+1.                       |
+| **open_time_ms**  | Timestamp of the first trade in a bar. For ODB: `open_time_ms[N+1] ≠ close_time_ms[N]` — there is always a gap. Stored in `TickAccumulation.open_time_ms`, sourced from ClickHouse. |
+| **Kline.time**    | Always `close_time_ms`. Never the open time. Display code must use `TickAccumulation.open_time_ms` for accurate open time (especially at UTC day boundaries).                       |

@@ -332,6 +332,7 @@ impl Flowsurface {
                         raw_f64,
                         bar_agg_id_range,
                         micro,
+                        bar_open_time_ms,
                     ) => {
                         return dashboard
                             .update_latest_klines(
@@ -340,6 +341,7 @@ impl Flowsurface {
                                 raw_f64,
                                 bar_agg_id_range,
                                 micro,
+                                bar_open_time_ms,
                                 main_window_id,
                             )
                             .map(move |msg| Message::Dashboard {

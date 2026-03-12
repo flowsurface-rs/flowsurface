@@ -92,17 +92,28 @@ Used for **Tick** and **ODB** basis. Bars stored in a `Vec<TickAccumulation>` or
 ```rust
 pub struct TickAccumulation {
     pub tick_count: usize,
-    pub kline: Kline,
+    pub kline: Kline,                                    // kline.time = close_time_ms
     pub footprint: KlineTrades,
-    pub microstructure: Option<RangeBarMicrostructure>,  // Fork-specific
+    pub microstructure: Option<OdbMicrostructure>,       // Fork-specific
+    pub agg_trade_id_range: Option<(u64, u64)>,          // Fork-specific (ODB only)
+    pub open_time_ms: Option<u64>,                       // Fork-specific (ODB only)
 }
 
-pub struct RangeBarMicrostructure {
+pub struct OdbMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
     pub trade_intensity: f32,
 }
 ```
+
+> ⚠️ **`open_time_ms` is NOT the same as `kline.time`** for ODB bars:
+>
+> - `kline.time` = `close_time_ms` (the trigger trade that closed bar N)
+> - `open_time_ms` = `open_time_ms` from ClickHouse (the first trade of bar N)
+>
+> These differ by the gap between the closing trigger trade and the first new-session trade (typically 100–500ms, but can span a UTC day boundary). `open_time_ms` is used exclusively by `draw_crosshair_tooltip()` in `src/chart/kline.rs` to display correct open time. **Do not use `prev_bar.kline.time` as a substitute for `this_bar.open_time_ms`.**
+>
+> **Threading chain**: `ChKline.open_time_ms` → `fetch_klines_with_microstructure()` return tuple (4th element) → `FetchedData::Klines.open_time_ms_list` → `insert_odb_klines()` → `from_klines_with_microstructure()` / `prepend_klines_with_microstructure()`. For streaming bars: `KlineReceived` 6th field → `update_latest_kline(bar_open_time_ms)` → attached to `last_dp.open_time_ms` after `replace_or_append_kline`.
 
 **Bar completion dispatch**: `TickAggr.range_bar_threshold_dbps: Option<u32>`:
 

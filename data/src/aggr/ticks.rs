@@ -27,6 +27,11 @@ pub struct TickAccumulation {
     /// (`first_agg_trade_id`, `last_agg_trade_id` columns) or captured live
     /// from WebSocket trades.
     pub agg_trade_id_range: Option<(u64, u64)>,
+    /// Open timestamp in milliseconds UTC. For ODB bars: set from ClickHouse
+    /// `open_time_ms` column (authoritative) or from first WS trade time.
+    /// For non-ODB bars: None. Used by the crosshair legend to display the
+    /// correct open time instead of approximating from prev_bar.close_time.
+    pub open_time_ms: Option<u64>,
 }
 
 impl TickAccumulation {
@@ -51,6 +56,7 @@ impl TickAccumulation {
             footprint,
             microstructure: None,
             agg_trade_id_range,
+            open_time_ms: Some(trade.time),
         }
     }
 
@@ -248,6 +254,7 @@ impl TickAggr {
                 footprint: KlineTrades::new(),
                 microstructure: None,
                 agg_trade_id_range: None,
+                open_time_ms: None,
             })
             .collect();
 
@@ -266,17 +273,20 @@ impl TickAggr {
         klines: &[Kline],
         micro: &[Option<OdbMicrostructure>],
         agg_id_ranges: &[Option<(u64, u64)>],
+        open_time_ms_list: &[Option<u64>],
     ) -> Self {
         let datapoints: Vec<TickAccumulation> = klines
             .iter()
             .zip(micro.iter())
             .zip(agg_id_ranges.iter())
-            .map(|((kline, m), ids)| TickAccumulation {
+            .zip(open_time_ms_list.iter())
+            .map(|(((kline, m), ids), otms)| TickAccumulation {
                 tick_count: 1,
                 kline: *kline,
                 footprint: KlineTrades::new(),
                 microstructure: *m,
                 agg_trade_id_range: *ids,
+                open_time_ms: *otms,
             })
             .collect();
 
@@ -340,7 +350,7 @@ impl TickAggr {
     /// Older data goes at the beginning (index 0) since datapoints is oldest-first.
     /// Filters out any klines whose timestamp already exists in datapoints.
     pub fn prepend_klines(&mut self, klines: &[Kline]) {
-        self.prepend_klines_with_microstructure(klines, None, None);
+        self.prepend_klines_with_microstructure(klines, None, None, None);
     }
 
     pub fn prepend_klines_with_microstructure(
@@ -348,6 +358,7 @@ impl TickAggr {
         klines: &[Kline],
         micro: Option<&[Option<OdbMicrostructure>]>,
         agg_id_ranges: Option<&[Option<(u64, u64)>]>,
+        open_time_ms_list: Option<&[Option<u64>]>,
     ) {
         // Deduplicate: only prepend klines older than the current oldest bar
         let oldest_existing_ts = self.datapoints.first().map(|dp| dp.kline.time);
@@ -361,6 +372,7 @@ impl TickAggr {
                 footprint: KlineTrades::new(),
                 microstructure: micro.and_then(|m| m.get(i).copied().flatten()),
                 agg_trade_id_range: agg_id_ranges.and_then(|r| r.get(i).copied().flatten()),
+                open_time_ms: open_time_ms_list.and_then(|l| l.get(i).copied().flatten()),
             })
             .collect();
 
@@ -380,6 +392,7 @@ impl TickAggr {
                 footprint: KlineTrades::new(),
                 microstructure: None,
                 agg_trade_id_range: None,
+                open_time_ms: None,
             });
         }
     }
@@ -427,12 +440,16 @@ impl TickAggr {
 
         if let Some(last) = self.datapoints.last_mut() {
             if kline.time == last.kline.time {
-                // Replace: use incoming microstructure if available, else preserve existing
+                // Replace: use incoming microstructure if available, else preserve existing.
+                // Preserve agg_trade_id_range and open_time_ms — they are attached separately
+                // after this call (like a two-phase commit), so must not be cleared here.
                 let resolved_micro = micro.or(last.microstructure);
                 let preserved_ids = last.agg_trade_id_range;
+                let preserved_open_time = last.open_time_ms;
                 last.kline = *kline;
                 last.microstructure = resolved_micro;
                 last.agg_trade_id_range = preserved_ids;
+                last.open_time_ms = preserved_open_time;
             } else if kline.time > last.kline.time {
                 self.datapoints.push(TickAccumulation {
                     tick_count: 1,
@@ -440,6 +457,7 @@ impl TickAggr {
                     footprint: KlineTrades::new(),
                     microstructure: micro,
                     agg_trade_id_range: None,
+                    open_time_ms: None,
                 });
             }
         } else {
@@ -449,6 +467,7 @@ impl TickAggr {
                 footprint: KlineTrades::new(),
                 microstructure: micro,
                 agg_trade_id_range: None,
+                open_time_ms: None,
             });
         }
     }
