@@ -106,19 +106,25 @@ impl TickersTable {
         let fetch_metadata = Exchange::ALL
             .iter()
             .map(|exchange| {
-                Task::perform(
-                    fetch_ticker_metadata(*exchange),
-                    move |result| match result {
-                        Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
-                        Err(err) => {
-                            log::error!("Ticker metadata fetch failed for {exchange:?}: {err}");
-                            Message::ErrorOccurred(InternalError::Fetch(format!(
-                                "{exchange:?}: {}",
-                                err.ui_message()
-                            )))
-                        }
-                    },
-                )
+                if exchange == &Exchange::MexcSpot {
+                    // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
+                    // TODO: Remove this after protobuf implementation and Mexc spot markets ready to stream
+                    Task::none()
+                } else {
+                    Task::perform(
+                        fetch_ticker_metadata(*exchange),
+                        move |result| match result {
+                            Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
+                            Err(err) => {
+                                log::error!("Ticker metadata fetch failed for {exchange:?}: {err}");
+                                Message::ErrorOccurred(InternalError::Fetch(format!(
+                                    "{exchange:?}: {}",
+                                    err.ui_message()
+                                )))
+                            }
+                        },
+                    )
+                }
             })
             .collect::<Vec<_>>();
 
