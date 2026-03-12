@@ -1,6 +1,6 @@
 use crate::adapter::AdapterError;
 
-use reqwest::{Client, Method, Response};
+use reqwest::{Client, Method, Response, header};
 use serde_json::Value;
 
 use std::sync::LazyLock;
@@ -27,6 +27,7 @@ pub async fn http_request(
     json_body: Option<&Value>,
 ) -> Result<String, AdapterError> {
     let method = method.unwrap_or(Method::GET);
+    let request_method = method.clone();
 
     let mut request_builder = HTTP_CLIENT.request(method, url);
 
@@ -37,14 +38,9 @@ pub async fn http_request(
     let response = request_builder
         .send()
         .await
-        .map_err(AdapterError::FetchError)?;
+        .map_err(|error| AdapterError::request_failed(&request_method, url, error))?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        log::error!("HTTP error {} for: {}", status, url);
-    }
-
-    response.text().await.map_err(AdapterError::FetchError)
+    read_response_body(&request_method, url, response).await
 }
 
 pub trait RateLimiter: Send + Sync {
@@ -66,6 +62,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
     json_body: Option<&Value>,
 ) -> Result<String, AdapterError> {
     let method = method.unwrap_or(Method::GET);
+    let request_method = method.clone();
 
     let mut limiter_guard = limiter.lock().await;
 
@@ -83,7 +80,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
     let response = request_builder
         .send()
         .await
-        .map_err(AdapterError::FetchError)?;
+        .map_err(|error| AdapterError::request_failed(&request_method, url, error))?;
 
     if limiter_guard.should_exit_on_response(&response) {
         let status = response.status();
@@ -97,7 +94,7 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
 
     limiter_guard.update_from_response(&response, weight);
 
-    response.text().await.map_err(AdapterError::FetchError)
+    read_response_body(&request_method, url, response).await
 }
 
 pub async fn http_parse_with_limiter<L, V>(
@@ -115,15 +112,6 @@ where
 
     let body = http_request_with_limiter(url, limiter, weight, Some(method), json_body).await?;
     let trimmed = body.trim();
-
-    let body_preview = |body: &str, n: usize| {
-        let trimmed = body.trim();
-        let mut preview = trimmed.chars().take(n).collect::<String>();
-        if trimmed.len() > n {
-            preview.push('…');
-        }
-        preview
-    };
 
     if trimmed.is_empty() {
         let msg = format!("Empty response body | url={url}");
@@ -152,6 +140,53 @@ where
         log::error!("{}", msg);
         AdapterError::ParseError(msg)
     })
+}
+
+fn body_preview(body: &str, limit: usize) -> String {
+    let trimmed = body.trim();
+    let mut preview = trimmed.chars().take(limit).collect::<String>();
+
+    if trimmed.chars().count() > limit {
+        preview.push('…');
+    }
+
+    preview
+}
+
+async fn read_response_body(
+    method: &Method,
+    url: &str,
+    response: Response,
+) -> Result<String, AdapterError> {
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let body = response.bytes().await.map_err(|error| {
+        AdapterError::response_body_failed(method, url, status, &content_type, error)
+    })?;
+
+    let body_text = String::from_utf8_lossy(&body).into_owned();
+
+    if !status.is_success() {
+        let msg = format!(
+            "{} {}: HTTP {} | content-type={} | response_len={} | preview={:?}",
+            method,
+            url,
+            status,
+            content_type,
+            body.len(),
+            body_preview(&body_text, 200)
+        );
+        log::error!("{}", msg);
+        return Err(AdapterError::http_status_failed(status, msg));
+    }
+
+    Ok(body_text)
 }
 
 /// Limiter for a fixed window rate

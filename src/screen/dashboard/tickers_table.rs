@@ -110,9 +110,13 @@ impl TickersTable {
                     fetch_ticker_metadata(*exchange),
                     move |result| match result {
                         Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
-                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(format!(
-                            "{exchange:?}: {err}"
-                        ))),
+                        Err(err) => {
+                            log::error!("Ticker metadata fetch failed for {exchange:?}: {err}");
+                            Message::ErrorOccurred(InternalError::Fetch(format!(
+                                "{exchange:?}: {}",
+                                err.ui_message()
+                            )))
+                        }
                     },
                 )
             })
@@ -1469,7 +1473,13 @@ fn fetch_ticker_stats_task(
         fetch_ticker_stats(exchange, contract_sizes),
         move |result| match result {
             Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
-            Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
+            Err(err) => {
+                log::error!("Ticker stats fetch failed for {exchange:?}: {err}");
+                Message::ErrorOccurred(InternalError::Fetch(format!(
+                    "{exchange:?}: {}",
+                    err.ui_message()
+                )))
+            }
         },
     )
 }
