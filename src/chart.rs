@@ -686,7 +686,7 @@ pub fn draw_watermark(
         frame.fill_text(canvas::Text {
             content,
             position: Point::new(8.0, bounds_size.height - 8.0),
-            size: iced::Pixels(9.0),
+            size: iced::Pixels(13.0),
             color: palette.background.base.text.scale_alpha(0.3),
             font: style::AZERET_MONO,
             align_x: Alignment::Start.into(),

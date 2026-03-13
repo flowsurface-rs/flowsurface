@@ -404,7 +404,7 @@ where
     }
 }
 
-/// Draw the 9-stop colour-scale legend at the bottom-left of a screen-space canvas frame.
+/// Draw the colour-scale legend at the bottom-right of a screen-space canvas frame.
 /// The frame must be in screen space (no prior translate/scale calls).
 fn draw_heatmap_legend(frame: &mut canvas::Frame, k_actual: u8) {
     // One row per bin, hottest (bin K) at top, coldest (bin 1) at bottom.
@@ -419,7 +419,7 @@ fn draw_heatmap_legend(frame: &mut canvas::Frame, k_actual: u8) {
     const LEGEND_W: f32 = PAD + TEXT_OFFSET_X + 7.0 * 5.5 + PAD;
     let legend_h = k_actual as f32 * ROW_H + PAD * 2.0;
 
-    let origin_x = PAD;
+    let origin_x = frame.width() - LEGEND_W - PAD;
     let origin_y = (frame.height() - legend_h - PAD).max(PAD);
 
     // Semi-transparent background
