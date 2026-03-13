@@ -25,6 +25,7 @@ use exchange::{
     },
 };
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use iced::task::Handle;
@@ -72,6 +73,16 @@ pub struct BarGap {
     pub prev_bar_time_ms: u64,
     /// Timestamp (ms) of bar[i] (for log correlation).
     pub bar_time_ms: u64,
+}
+
+/// State for interactive bar-range selection on ODB charts.
+/// Right-click cycles: no selection → anchor set → anchor+end set → cleared.
+#[derive(Default)]
+struct BarSelectionState {
+    /// Visual index of the anchor bar (0 = newest/rightmost).
+    anchor: Option<usize>,
+    /// Visual index of the end bar (set on second right-click).
+    end: Option<usize>,
 }
 
 /// Buffered CH/SSE bar with metadata, applied after gap-fill completion.
@@ -336,6 +347,10 @@ pub struct KlineChart {
     /// Sentinel: earliest bar_time_ms among healable gaps from the last audit.
     /// Used to distinguish live-session gaps (not in CH yet) from historical gaps.
     sentinel_healable_gap_min_time_ms: Option<u64>,
+    /// Bar range selection state (ODB charts only).
+    /// Right-click: 1st = set anchor, 2nd = set end, 3rd = clear.
+    /// RefCell: `canvas::Program::update()` takes `&self`, interior mutability needed.
+    bar_selection: RefCell<BarSelectionState>,
 }
 
 impl KlineChart {
@@ -456,6 +471,7 @@ impl KlineChart {
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
                     sentinel_healable_gap_min_time_ms: None,
+                    bar_selection: Default::default(),
                 }
             }
             Basis::Tick(interval) => {
@@ -540,6 +556,7 @@ impl KlineChart {
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
                     sentinel_healable_gap_min_time_ms: None,
+                    bar_selection: Default::default(),
                 }
             }
             Basis::Odb(threshold_dbps) => {
@@ -657,6 +674,7 @@ impl KlineChart {
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
                     sentinel_healable_gap_min_time_ms: None,
+                    bar_selection: Default::default(),
                 }
             }
         }
@@ -848,6 +866,7 @@ impl KlineChart {
             sentinel_gap_count: 0,
             sentinel_refetch_pending: false,
             sentinel_healable_gap_min_time_ms: None,
+            bar_selection: Default::default(),
         }
     }
 
@@ -2978,6 +2997,30 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        // ODB-only: right-click cycles anchor → end → clear for bar selection.
+        if self.chart.basis.is_odb()
+            && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event
+        {
+            if let Some(cursor_pos) = cursor.position_in(bounds) {
+                    let bounds_size = bounds.size();
+                    let region = self.chart.visible_region(bounds_size);
+                    let (visual_idx, _) =
+                        self.chart.snap_x_to_index(cursor_pos.x, bounds_size, region);
+                    if visual_idx != u64::MAX {
+                        let mut sel = self.bar_selection.borrow_mut();
+                        match (sel.anchor, sel.end) {
+                            (None, _) => sel.anchor = Some(visual_idx as usize),
+                            (Some(_), None) => sel.end = Some(visual_idx as usize),
+                            (Some(_), Some(_)) => {
+                                sel.anchor = None;
+                                sel.end = None;
+                            }
+                        }
+                        self.chart.cache.clear_all();
+                    }
+                }
+            return Some(canvas::Action::request_redraw().and_capture());
+        }
         super::canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
@@ -3126,6 +3169,22 @@ impl canvas::Program<Message> for KlineChart {
                         );
                     }
 
+                    // Bar range selection highlight (ODB only, behind candles).
+                    if chart.basis.is_odb() {
+                        let sel = self.bar_selection.borrow();
+                        if let Some(anchor) = sel.anchor {
+                            let end = sel.end.unwrap_or(anchor);
+                            let (lo, hi) = (anchor.min(end), anchor.max(end));
+                            let x_right = interval_to_x(lo as u64) + chart.cell_width / 2.0;
+                            let x_left = interval_to_x(hi as u64) - chart.cell_width / 2.0;
+                            frame.fill_rectangle(
+                                Point::new(x_left, region.y),
+                                Size::new((x_right - x_left).max(0.0), region.height),
+                                iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.10 },
+                            );
+                        }
+                    }
+
                     // ODB bars represent continuous price action — use tighter
                     // spacing (95%) so bars visually connect. Candles keep 80%
                     // for temporal separation between time periods.
@@ -3260,6 +3319,15 @@ impl canvas::Program<Message> for KlineChart {
             if let Some(heatmap) = self.indicators[KlineIndicator::TradeIntensityHeatmap].as_deref()
             {
                 heatmap.draw_screen_legend(frame);
+            }
+            // Bar selection stats overlay (ODB only, shown when both anchor+end are set).
+            if chart.basis.is_odb() {
+                let sel = self.bar_selection.borrow();
+                if let (Some(anchor), Some(end)) = (sel.anchor, sel.end)
+                    && let PlotData::TickBased(tick_aggr) = &self.data_source
+                {
+                    draw_bar_selection_stats(frame, palette, tick_aggr, anchor, end);
+                }
             }
         });
 
@@ -4036,6 +4104,75 @@ fn format_duration_ms(ms: u64) -> String {
         format!("{:.3}s", ms as f64 / 1000.0)
     } else {
         format!("{ms}ms")
+    }
+}
+
+/// Draws bar selection statistics overlay (screen-space, top-center of chart).
+/// Called in the `legend` cache layer when both anchor and end are confirmed.
+fn draw_bar_selection_stats(
+    frame: &mut canvas::Frame,
+    palette: &Extended,
+    tick_aggr: &data::aggr::ticks::TickAggr,
+    anchor: usize,
+    end: usize,
+) {
+    let len = tick_aggr.datapoints.len();
+    if len == 0 {
+        return;
+    }
+    let (lo, hi) = (anchor.min(end), anchor.max(end));
+    let hi = hi.min(len - 1);
+    let lo = lo.min(len - 1);
+
+    let total = hi - lo + 1;
+    let up = (lo..=hi)
+        .filter(|&vi| {
+            let si = len - 1 - vi;
+            let dp = &tick_aggr.datapoints[si];
+            dp.kline.close >= dp.kline.open
+        })
+        .count();
+    let down = total - up;
+    let up_pct = if total > 0 {
+        up as f32 / total as f32 * 100.0
+    } else {
+        0.0
+    };
+    let down_pct = 100.0 - up_pct;
+
+    let text_size = 13.0_f32;
+    let line_h = text_size + 5.0;
+    let lines: &[(&str, String)] = &[
+        ("neutral", format!("{total} bars")),
+        ("up", format!("↑ {up}  ({up_pct:.0}%)")),
+        ("down", format!("↓ {down}  ({down_pct:.0}%)")),
+    ];
+
+    let box_w = 130.0_f32;
+    let box_h = line_h * lines.len() as f32 + 10.0;
+    let x = frame.width() / 2.0 - box_w / 2.0;
+    let y = 10.0_f32;
+
+    // Background
+    frame.fill_rectangle(
+        Point::new(x - 6.0, y - 4.0),
+        Size::new(box_w + 12.0, box_h),
+        iced::Color { r: 0.08, g: 0.08, b: 0.08, a: 0.88 },
+    );
+
+    for (i, (kind, text)) in lines.iter().enumerate() {
+        let color = match *kind {
+            "up" => palette.success.base.color,
+            "down" => palette.danger.base.color,
+            _ => palette.background.strong.text,
+        };
+        frame.fill_text(canvas::Text {
+            content: text.clone(),
+            position: Point::new(x, y + i as f32 * line_h),
+            size: iced::Pixels(text_size),
+            color,
+            ..Default::default()
+        });
     }
 }
 
