@@ -84,6 +84,12 @@ pub trait KlineIndicatorImpl {
         _palette: &iced::theme::palette::Extended,
     ) {
     }
+
+    /// Draw a screen-space legend onto the main chart canvas.
+    /// Frame is **untransformed** (no translate/scale applied) — coordinates are
+    /// relative to the canvas widget's top-left corner.
+    /// Default: no-op. Overridden by `TradeIntensityHeatmap`.
+    fn draw_screen_legend(&self, _frame: &mut iced::widget::canvas::Frame) {}
 }
 
 pub struct FetchCtx<'a> {

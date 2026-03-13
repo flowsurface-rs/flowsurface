@@ -26,20 +26,21 @@
 use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
-        indicator_row_slice,
+        indicator_row_slice_with_legend,
         kline::KlineIndicatorImpl,
         plot::{
-            PlotTooltip,
+            Plot, PlotTooltip, Series, YScale,
             bar::{BarClass, BarPlot, Baseline},
         },
     },
 };
+use iced::widget::canvas;
 
 use data::chart::{PlotData, kline::KlineDataPoint, kline::adaptive_k};
 use exchange::{Kline, Trade};
 
-use iced::Color;
-use iced::widget::{center, text};
+use iced::{Color, Point, Size};
+use iced::widget::center;
 use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 
@@ -68,30 +69,43 @@ impl HeatmapPoint {
     }
 }
 
-/// 5-stop thermal colour gradient: blue → cyan → green → amber → red.
-/// `t = 0.0` = cold (calm), `t = 1.0` = hot (spike).
+/// 300° HSV hue sweep: blue → cyan → green → yellow → orange → red → magenta.
+///
+/// At K=19 this gives ≈16.7° of hue per bin — about 8× the ~2° just-noticeable
+/// difference threshold — so every adjacent pair is clearly distinct across the full
+/// 1–19 range, including the hot end (bins 13–19) which sweeps orange→red→crimson→magenta.
+///
+/// Turbo was tried first but its orange-to-dark-red hot zone compressed bins 13–19
+/// into only ~30° of hue change (~5°/bin ≈ 2× JND), causing the "stops diversifying
+/// at K≈13" problem. The 300° HSV sweep avoids this by continuing through red into
+/// the highly-saturated pink/magenta region.
+///
+/// Key hue anchors at K=19 (S=0.95, V=0.92 throughout — vivid on dark backgrounds):
+///   K1=blue(240°) K5=cyan(173°) K8=green(123°) K10=lime(90°)
+///   K12=yellow(57°) K14=orange(23°) K16=red(350°) K19=magenta(300°)
 fn thermal_color(t: f32) -> Color {
-    // (stop, r, g, b)
-    const STOPS: [(f32, f32, f32, f32); 5] = [
-        (0.00, 0.129, 0.588, 0.953), // #2196F3 blue
-        (0.25, 0.000, 0.737, 0.831), // #00BCD4 cyan
-        (0.50, 0.298, 0.686, 0.314), // #4CAF50 green
-        (0.75, 1.000, 0.757, 0.027), // #FFC107 amber
-        (1.00, 0.957, 0.263, 0.212), // #F44336 red
-    ];
-    let t = t.clamp(0.0, 1.0);
-    let i = STOPS
-        .partition_point(|&(s, _, _, _)| s < t)
-        .saturating_sub(1);
-    let i = i.min(STOPS.len() - 2);
-    let (t0, r0, g0, b0) = STOPS[i];
-    let (t1, r1, g1, b1) = STOPS[i + 1];
-    let f = if (t1 - t0).abs() < f32::EPSILON {
-        0.0
-    } else {
-        (t - t0) / (t1 - t0)
+    // Hue sweeps backward from 240° (blue) by 300° total → ends at 300° (magenta).
+    // rem_euclid handles the wrap from negative values (e.g. -60° → 300°).
+    let hue_deg = (240.0 - t.clamp(0.0, 1.0) * 300.0).rem_euclid(360.0);
+    let h = hue_deg / 60.0; // sector index in [0, 6)
+    let s = 0.95_f32;
+    let v = 0.92_f32;
+
+    let i = h as u32;
+    let f = h - i as f32;
+    let p = v * (1.0 - s);           // low component (≈0.046 — near-zero for vivid colours)
+    let q = v * (1.0 - s * f);       // falling ramp
+    let u = v * (1.0 - s * (1.0 - f)); // rising ramp
+
+    let (r, g, b) = match i % 6 {
+        0 => (v, u, p),
+        1 => (q, v, p),
+        2 => (p, v, u),
+        3 => (p, q, v),
+        4 => (u, p, v),
+        _ => (v, p, q),
     };
-    Color::from_rgb(r0 + f * (r1 - r0), g0 + f * (g1 - g0), b0 + f * (b1 - b0))
+    Color::from_rgb(r, g, b)
 }
 
 /// Trade intensity heatmap indicator.
@@ -218,13 +232,102 @@ impl TradeIntensityHeatmapIndicator {
         }
     }
 
+    /// Oracle probe: logs the full colour spectrum for the current K and a bin
+    /// distribution histogram for the last 500 bars. Also writes to
+    /// `/tmp/flowsurface-oracle.log` for easy inspection after an .app launch.
+    fn log_oracle_spectrum(&self) {
+        let k = adaptive_k(self.lookback) as usize;
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "=== oracle-spectrum: lookback={} K={} data_len={} ===",
+            self.lookback, k, self.data.len()
+        ));
+
+        // Section 1: colour table — one row per bin with actual hex and hue description
+        lines.push("--- Colour table (bin → t → #RRGGBB) ---".into());
+        for bin in 1..=(k as u8) {
+            let t = if k <= 1 { 0.0 } else { (bin - 1) as f32 / (k - 1) as f32 };
+            let c = thermal_color(t);
+            let (r, g, b) = (
+                (c.r * 255.0) as u8,
+                (c.g * 255.0) as u8,
+                (c.b * 255.0) as u8,
+            );
+            lines.push(format!("  K{bin:2}  t={t:.4}  #{r:02X}{g:02X}{b:02X}"));
+        }
+
+        // Section 2a: all-bars histogram (last 500, all k_actual values mixed)
+        let sample_n = self.data.len().min(500);
+        if sample_n > 0 {
+            let sample = &self.data[self.data.len() - sample_n..];
+
+            lines.push(format!("--- Bin histogram ALL k_actual (last {sample_n} bars) ---"));
+            let mut hist_all = vec![0u32; k + 1];
+            let mut zero_count = 0u32;
+            for p in sample {
+                if p.bin == 0 {
+                    zero_count += 1;
+                } else if p.bin as usize <= k {
+                    hist_all[p.bin as usize] += 1;
+                }
+            }
+            let peak_all = hist_all[1..].iter().copied().max().unwrap_or(1).max(1);
+            for bin in 1..=(k as u8) {
+                let count = hist_all[bin as usize];
+                let bar_len = (count as f32 / peak_all as f32 * 30.0) as usize;
+                lines.push(format!("  K{bin:2}  {count:4} bars  {}", "#".repeat(bar_len)));
+            }
+            if zero_count > 0 {
+                lines.push(format!("  K0 (no-micro sentinel): {zero_count} bars"));
+            }
+
+            // Section 2b: filtered histogram — only bars where k_actual == current K
+            // This shows the true percentile distribution at full lookback capacity.
+            let k_u8 = k as u8;
+            let mut hist_k = vec![0u32; k + 1];
+            let mut current_k_total = 0u32;
+            for p in sample {
+                if p.k_actual == k_u8 {
+                    current_k_total += 1;
+                    if p.bin >= 1 && p.bin as usize <= k {
+                        hist_k[p.bin as usize] += 1;
+                    }
+                }
+            }
+            lines.push(format!(
+                "--- Bin histogram k_actual=={k} ONLY (n={current_k_total}/{sample_n}) ---"
+            ));
+            if current_k_total == 0 {
+                lines.push(format!(
+                    "  (no bars with k_actual={k} in sample — window not yet full; try larger lookback or more data)"
+                ));
+            } else {
+                let peak_k = hist_k[1..].iter().copied().max().unwrap_or(1).max(1);
+                let expected_per_bin = current_k_total as f32 / k as f32;
+                for bin in 1..=(k as u8) {
+                    let count = hist_k[bin as usize];
+                    let bar_len = (count as f32 / peak_k as f32 * 30.0) as usize;
+                    let ratio = count as f32 / expected_per_bin;
+                    lines.push(format!(
+                        "  K{bin:2}  {count:4} bars  {}  ({ratio:.2}x expected)",
+                        "#".repeat(bar_len)
+                    ));
+                }
+            }
+        }
+
+        let report = lines.join("\n");
+        log::warn!("[oracle-spectrum]\n{report}");
+        let _ = std::fs::write("/tmp/flowsurface-oracle.log", &report);
+    }
+
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         if self.data.is_empty() {
-            return center(text("Intensity Heatmap: no microstructure data")).into();
+            return center(iced::widget::text("Intensity Heatmap: no microstructure data")).into();
         }
 
         let tooltip = |p: &HeatmapPoint, _next: Option<&HeatmapPoint>| {
@@ -235,19 +338,134 @@ impl TradeIntensityHeatmapIndicator {
         };
 
         let bar_kind = |p: &HeatmapPoint| BarClass::CandleColored { bullish: p.bullish };
-        // Height = bin level (1..K_actual) — bounded, outlier-immune.
         let value_fn = |p: &HeatmapPoint| p.bin as f32;
 
-        // Pin Y scale to adaptive_k(lookback) so early K=5 bars don't appear
-        // incorrectly short alongside mature K=13 bars when scrolling.
         let k_max = adaptive_k(self.lookback) as f32;
-        let plot = BarPlot::new(value_fn, bar_kind)
+        let k_actual = self.data.last().map(|p| p.k_actual).unwrap_or(5);
+
+        let bar_plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
             .baseline(Baseline::Zero)
             .fixed_max(k_max)
             .with_tooltip(tooltip);
 
-        indicator_row_slice(main_chart, &self.cache, plot, &self.data, visible_range)
+        let plot = HeatmapPlot { inner: bar_plot, k_actual };
+
+        indicator_row_slice_with_legend(
+            main_chart,
+            &self.cache,
+            self.cache.legend_cache(),
+            plot,
+            &self.data,
+            visible_range,
+        )
+    }
+}
+
+/// Wraps a `BarPlot` to add a persistent bottom-left colour-scale legend via
+/// `Plot::draw_panel_legend`. The legend is drawn in screen space (untransformed frame),
+/// so coordinates are relative to the canvas widget's top-left corner.
+struct HeatmapPlot<P> {
+    inner: P,
+    k_actual: u8,
+}
+
+impl<S, P> Plot<S> for HeatmapPlot<P>
+where
+    S: Series,
+    P: Plot<S>,
+{
+    fn y_extents(&self, s: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
+        self.inner.y_extents(s, range)
+    }
+
+    fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
+        self.inner.adjust_extents(min, max)
+    }
+
+    fn draw<'a>(
+        &'a self,
+        frame: &'a mut canvas::Frame,
+        ctx: &'a ViewState,
+        theme: &iced::Theme,
+        s: &S,
+        range: RangeInclusive<u64>,
+        scale: &YScale,
+    ) {
+        self.inner.draw(frame, ctx, theme, s, range, scale);
+    }
+
+    fn tooltip_fn(&self) -> Option<&crate::chart::indicator::plot::TooltipFn<S::Y>> {
+        self.inner.tooltip_fn()
+    }
+
+    fn draw_panel_legend(&self, frame: &mut canvas::Frame) {
+        draw_heatmap_legend(frame, self.k_actual);
+    }
+}
+
+/// Draw the 9-stop colour-scale legend at the bottom-left of a screen-space canvas frame.
+/// The frame must be in screen space (no prior translate/scale calls).
+fn draw_heatmap_legend(frame: &mut canvas::Frame, k_actual: u8) {
+    // One row per bin, hottest (bin K) at top, coldest (bin 1) at bottom.
+    const SWATCH_W: f32 = 10.0;
+    const SWATCH_H: f32 = 9.0;
+    const ROW_H: f32 = 11.0;
+    const PAD: f32 = 4.0;
+    const GAP: f32 = 3.0;
+    const FONT_SIZE: f32 = 9.0;
+    const TEXT_OFFSET_X: f32 = SWATCH_W + GAP;
+    // "K19 Max" = 7 chars × ~5.5 px — longest label (only top/bottom rows get suffix)
+    const LEGEND_W: f32 = PAD + TEXT_OFFSET_X + 7.0 * 5.5 + PAD;
+    let legend_h = k_actual as f32 * ROW_H + PAD * 2.0;
+
+    let origin_x = PAD;
+    let origin_y = (frame.height() - legend_h - PAD).max(PAD);
+
+    // Semi-transparent background
+    frame.fill_rectangle(
+        Point::new(origin_x, origin_y),
+        Size::new(LEGEND_W, legend_h),
+        Color::from_rgba(0.0, 0.0, 0.0, 0.65),
+    );
+
+    for bin in (1..=k_actual).rev() {
+        // row_idx 0 = top (hottest = bin K), row_idx K-1 = bottom (coldest = bin 1)
+        let row_idx = (k_actual - bin) as f32;
+        let row_y = origin_y + PAD + row_idx * ROW_H;
+
+        let t = if k_actual <= 1 {
+            0.0
+        } else {
+            (bin - 1) as f32 / (k_actual - 1) as f32
+        };
+        let color = thermal_color(t);
+
+        // Colour swatch
+        frame.fill_rectangle(
+            Point::new(origin_x + PAD, row_y + (ROW_H - SWATCH_H) * 0.5),
+            Size::new(SWATCH_W, SWATCH_H),
+            color,
+        );
+
+        // Label: top and bottom bins get a suffix; intermediate bins show number only
+        let label_text = if bin == k_actual {
+            format!("K{bin} Max")
+        } else if bin == 1 {
+            format!("K1 Calm")
+        } else {
+            format!("K{bin}")
+        };
+        frame.fill_text(canvas::Text {
+            content: label_text,
+            position: Point::new(
+                origin_x + PAD + TEXT_OFFSET_X,
+                row_y + (ROW_H - FONT_SIZE) * 0.5,
+            ),
+            size: iced::Pixels(FONT_SIZE),
+            color: Color::from_rgb(0.85, 0.85, 0.85),
+            ..canvas::Text::default()
+        });
     }
 }
 
@@ -332,6 +550,7 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                 }
             }
         }
+        self.log_oracle_spectrum();
         self.clear_all_caches();
     }
 
@@ -440,5 +659,14 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
 
     fn data_len(&self) -> usize {
         self.data.len()
+    }
+
+    fn draw_screen_legend(&self, frame: &mut iced::widget::canvas::Frame) {
+        if self.data.is_empty() {
+            return;
+        }
+        // Use the configured max K (asymptotic K for full lookback window) so the
+        // legend always shows the full scale the user set, not the current window fill.
+        draw_heatmap_legend(frame, adaptive_k(self.lookback));
     }
 }

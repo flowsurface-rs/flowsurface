@@ -68,6 +68,8 @@ pub struct BarGap {
     pub curr_first_id: u64,
     /// Number of missing agg_trade_ids (curr_first - prev_last - 1), or overlap count.
     pub missing_count: u64,
+    /// Timestamp (ms) of bar[i-1] — the older side of the gap.
+    pub prev_bar_time_ms: u64,
     /// Timestamp (ms) of bar[i] (for log correlation).
     pub bar_time_ms: u64,
 }
@@ -331,6 +333,9 @@ pub struct KlineChart {
     sentinel_gap_count: usize,
     /// Sentinel: whether a kline re-fetch has been triggered to heal detected bar gaps.
     sentinel_refetch_pending: bool,
+    /// Sentinel: earliest bar_time_ms among healable gaps from the last audit.
+    /// Used to distinguish live-session gaps (not in CH yet) from historical gaps.
+    sentinel_healable_gap_min_time_ms: Option<u64>,
 }
 
 impl KlineChart {
@@ -450,6 +455,7 @@ impl KlineChart {
                     last_sentinel_audit: Instant::now(),
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
+                    sentinel_healable_gap_min_time_ms: None,
                 }
             }
             Basis::Tick(interval) => {
@@ -533,6 +539,7 @@ impl KlineChart {
                     last_sentinel_audit: Instant::now(),
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
+                    sentinel_healable_gap_min_time_ms: None,
                 }
             }
             Basis::Odb(threshold_dbps) => {
@@ -649,6 +656,7 @@ impl KlineChart {
                     last_sentinel_audit: Instant::now(),
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
+                    sentinel_healable_gap_min_time_ms: None,
                 }
             }
         }
@@ -839,6 +847,7 @@ impl KlineChart {
             last_sentinel_audit: Instant::now(),
             sentinel_gap_count: 0,
             sentinel_refetch_pending: false,
+            sentinel_healable_gap_min_time_ms: None,
         }
     }
 
@@ -1132,14 +1141,39 @@ impl KlineChart {
         // the display (not just prepends). Without clearing, prepend_klines skips all
         // bars that are newer than the current oldest — which is all of them since we
         // fetch the N most recent bars. Clearing forces a full reload.
+        //
+        // Guard: live-session gaps (bars built after UTC midnight) are not yet committed
+        // to CH. Clearing datapoints for them would wipe all live bars with no CH
+        // replacement. Detect this by comparing the gap's bar_time against today's UTC
+        // midnight; skip the destructive clear and let OdbCatchup (already triggered by
+        // insert_trades_inner gap detection) handle intra-session gaps instead.
         if self.sentinel_refetch_pending && self.chart.basis.is_odb() {
             self.sentinel_refetch_pending = false;
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            let today_midnight_ms = (now_ms / 86_400_000) * 86_400_000;
+            let gap_is_live_session = self
+                .sentinel_healable_gap_min_time_ms
+                .map(|t| t >= today_midnight_ms)
+                .unwrap_or(false);
+            self.sentinel_healable_gap_min_time_ms = None;
+
+            if gap_is_live_session {
+                // Gap is in the current ouroboros session — CH has no coverage yet.
+                // OdbCatchup (fired by insert_trades_inner) is the correct repair path.
+                log::warn!(
+                    "[sentinel] live-session gap (post-midnight) — skipping CH refetch to \
+                     avoid wiping live bars; OdbCatchup handles this"
+                );
+                return None;
+            }
+
             if let PlotData::TickBased(tick_aggr) = &mut self.data_source {
                 tick_aggr.datapoints.clear();
             }
             self.request_handler = RequestHandler::default();
-            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-            let range = FetchRange::Kline(0, now_ms);
+            // u64::MAX signals "full reload — no time constraint" to build_odb_sql,
+            // which uses the adaptive limit (20K/13K) instead of LIMIT 2000.
+            let range = FetchRange::Kline(0, u64::MAX);
             return request_fetch(&mut self.request_handler, range);
         }
 
@@ -1217,9 +1251,9 @@ impl KlineChart {
             PlotData::TickBased(tick_aggr) => {
                 if self.chart.basis.is_odb() {
                     if tick_aggr.datapoints.is_empty() {
-                        // Initial fetch — get latest 500 bars
-                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-                        let range = FetchRange::Kline(0, now_ms);
+                        // Initial fetch — u64::MAX signals "no time constraint, use adaptive
+                        // limit" in build_odb_sql (20K for BPR25, 13K floor for others).
+                        let range = FetchRange::Kline(0, u64::MAX);
                         return request_fetch(&mut self.request_handler, range);
                     }
 
@@ -1425,6 +1459,7 @@ impl KlineChart {
                     prev_last_id: prev_last,
                     curr_first_id: curr_first,
                     missing_count: overlap_count,
+                    prev_bar_time_ms: prev.kline.time,
                     bar_time_ms: curr.kline.time,
                 });
                 continue;
@@ -1451,6 +1486,7 @@ impl KlineChart {
                 prev_last_id: prev_last,
                 curr_first_id: curr_first,
                 missing_count: missing,
+                prev_bar_time_ms: prev.kline.time,
                 bar_time_ms: curr.kline.time,
             });
         }
@@ -2785,7 +2821,17 @@ impl KlineChart {
                         ));
                     }
                     if !healable.is_empty() {
-                        detail.push_str("\n\nTriggering CH kline re-fetch...");
+                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                        let today_midnight_ms = (now_ms / 86_400_000) * 86_400_000;
+                        let min_gap_time =
+                            healable.iter().map(|g| g.prev_bar_time_ms).min().unwrap_or(0);
+                        if min_gap_time >= today_midnight_ms {
+                            detail.push_str(
+                                "\n\nLive-session gap — OdbCatchup handles (no CH refetch)",
+                            );
+                        } else {
+                            detail.push_str("\n\nTriggering CH kline re-fetch...");
+                        }
                     }
 
                     tokio::spawn(async move {
@@ -2801,6 +2847,11 @@ impl KlineChart {
                 // Only trigger re-fetch for healable gaps (not day-boundary or overlaps)
                 if !healable.is_empty() && !self.sentinel_refetch_pending {
                     self.sentinel_refetch_pending = true;
+                    // Use prev_bar_time_ms (the OLDER side of the gap) to determine if the
+                    // gap has historical CH coverage. bar_time_ms (newer side) can be in
+                    // today's live session even when the gap itself spans historical data.
+                    self.sentinel_healable_gap_min_time_ms =
+                        healable.iter().map(|g| g.prev_bar_time_ms).min();
                     log::info!(
                         "[sentinel] triggering kline re-fetch to heal {} gaps",
                         healable.len()
@@ -2810,6 +2861,7 @@ impl KlineChart {
                 let prev_count = self.sentinel_gap_count;
                 self.sentinel_gap_count = 0;
                 self.sentinel_refetch_pending = false;
+                self.sentinel_healable_gap_min_time_ms = None;
 
                 log::info!("[sentinel] all {} previous anomalies healed", prev_count);
 
@@ -3202,6 +3254,15 @@ impl canvas::Program<Message> for KlineChart {
         let watermark =
             super::draw_watermark(&chart.cache.watermark, renderer, bounds_size, palette);
 
+        // Screen-space legend overlay — drawn after watermark, before crosshair so
+        // the crosshair tooltip always appears on top.
+        let legend = chart.cache.legend.draw(renderer, bounds_size, |frame| {
+            if let Some(heatmap) = self.indicators[KlineIndicator::TradeIntensityHeatmap].as_deref()
+            {
+                heatmap.draw_screen_legend(frame);
+            }
+        });
+
         let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
             if let Some(cursor_position) = cursor.position_in(bounds) {
                 let (_, rounded_aggregation) =
@@ -3233,7 +3294,7 @@ impl canvas::Program<Message> for KlineChart {
             }
         });
 
-        vec![klines, watermark, crosshair]
+        vec![klines, watermark, legend, crosshair]
     }
 
     fn mouse_interaction(

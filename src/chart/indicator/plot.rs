@@ -240,6 +240,11 @@ pub trait Plot<S: Series> {
     fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &Theme) -> Option<PlotTooltip> {
         self.tooltip_fn().map(|tt| tt(y, next))
     }
+
+    /// Draw a persistent screen-space overlay on top of the indicator panel.
+    /// Called in a separate, untransformed frame (screen coordinates, no scaling/translation).
+    /// Default: no-op. Override to draw legends, watermarks, or other fixed-position overlays.
+    fn draw_panel_legend(&self, _frame: &mut canvas::Frame) {}
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -249,6 +254,9 @@ where
 {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
+    /// If `Some`, a third untransformed geometry layer is rendered by calling
+    /// `plot.draw_panel_legend()`. Reuses this cache to avoid redrawing every frame.
+    pub legend_cache: Option<&'a Cache>,
     pub ctx: &'a ViewState,
     pub plot: P,
     pub series: S,
@@ -419,7 +427,14 @@ where
             }
         });
 
-        vec![indicator, crosshair]
+        let mut geoms = vec![indicator, crosshair];
+        if let Some(lc) = self.legend_cache {
+            let legend = lc.draw(renderer, bounds.size(), |frame| {
+                self.plot.draw_panel_legend(frame);
+            });
+            geoms.push(legend);
+        }
+        geoms
     }
 
     fn mouse_interaction(
@@ -437,7 +452,7 @@ where
     }
 }
 
-type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
+pub type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 
 const TOOLTIP_MARGIN: f32 = 4.0; // px from edge of canvas
 const TOOLTIP_PADDING: f32 = 8.0; // px inside tooltip box

@@ -402,7 +402,34 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     // Filter by ouroboros_mode (default: 'day'). Day-mode is the current production
     // mode — creates UTC-midnight-bounded sessions. Configurable via
     // FLOWSURFACE_OUROBOROS_MODE env var for migration flexibility.
-    if let Some((start, end)) = range {
+    // Scale limit inversely with threshold: BPR25 gets 20,000 bars;
+    // all thresholds get a minimum of 13,000 bars to fully populate
+    // a 7,000-bar intensity lookback window from the first render.
+    let reference_dbps = 250u32;
+    let reference_limit = 20_000u32;
+    let adaptive_limit = ((reference_limit as f64) * (reference_dbps as f64)
+        / (threshold_dbps as f64))
+        .round()
+        .max(13_000.0) as u32;
+
+    // `end == u64::MAX` is the sentinel used by the initial load and sentinel-refetch paths
+    // in kline.rs to signal "load the N most recent bars without a time constraint".
+    // Scroll-left pagination uses a real `oldest_ts` for `end` and needs the BETWEEN filter.
+    let is_full_reload = range.map_or(true, |(_, end)| end == u64::MAX);
+
+    if is_full_reload {
+        format!(
+            "SELECT {cols} \
+             FROM opendeviationbar_cache.open_deviation_bars \
+             WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
+               AND ouroboros_mode = '{}' \
+             ORDER BY close_time_ms DESC \
+             LIMIT {adaptive_limit} \
+             FORMAT JSONEachRow",
+            *OUROBOROS_MODE
+        )
+    } else {
+        let (start, end) = range.unwrap();
         format!(
             "SELECT {cols} \
              FROM opendeviationbar_cache.open_deviation_bars \
@@ -411,25 +438,6 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
                AND close_time_ms BETWEEN {start} AND {end} \
              ORDER BY close_time_ms DESC \
              LIMIT 2000 \
-             FORMAT JSONEachRow",
-            *OUROBOROS_MODE
-        )
-    } else {
-        // Scale limit inversely with threshold: BPR25 gets 20,000 bars;
-        // all thresholds get a minimum of 13,000 bars to fully populate
-        // a 7,000-bar intensity lookback window from the first render.
-        let reference_dbps = 250u32;
-        let reference_limit = 20_000u32;
-        let limit = ((reference_limit as f64) * (reference_dbps as f64) / (threshold_dbps as f64))
-            .round()
-            .max(13_000.0) as u32;
-        format!(
-            "SELECT {cols} \
-             FROM opendeviationbar_cache.open_deviation_bars \
-             WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
-               AND ouroboros_mode = '{}' \
-             ORDER BY close_time_ms DESC \
-             LIMIT {limit} \
              FORMAT JSONEachRow",
             *OUROBOROS_MODE
         )

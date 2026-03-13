@@ -83,20 +83,35 @@ fetch_klines() / fetch_klines_with_microstructure()
   → Vec<Kline>               + Optional Vec<ChMicrostructure>
 ```
 
-### SQL Query
+### SQL Query — Two Paths
+
+`build_odb_sql()` in `clickhouse.rs` dispatches to one of two queries based on the `range` parameter:
+
+**Full-reload path** (`range = None` OR `end == u64::MAX`):
 
 ```sql
-SELECT close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume,
-       individual_trade_count, ofi, trade_intensity
+SELECT ...
 FROM opendeviationbar_cache.open_deviation_bars
 WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold}
   AND ouroboros_mode = '{mode}'
 ORDER BY close_time_ms DESC
-LIMIT {limit}
+LIMIT {adaptive_limit}   -- 20K for BPR25, 13K floor for all others
 FORMAT JSONEachRow
 ```
 
-**Adaptive limit**: Scaled inversely with threshold. BPR25 (250 dbps) → 20K bars, floor 13K for all thresholds.
+**Range/pagination path** (`range = Some((start, end))` where `end ≠ u64::MAX`):
+
+```sql
+SELECT ...
+WHERE ... AND close_time_ms BETWEEN {start} AND {end}
+ORDER BY close_time_ms DESC
+LIMIT 2000               -- scroll-left pagination: 2K bars per batch
+FORMAT JSONEachRow
+```
+
+**Adaptive limit formula**: `max(20000 * 250 / threshold_dbps, 13000)`. BPR25→20K, BPR50→13K, BPR75→13K, BPR100→13K.
+
+> ⚠️ **`u64::MAX` sentinel**: `FetchRange::Kline(0, u64::MAX)` is the signal for "full reload — no time constraint". Initial loads and sentinel refetches in `src/chart/kline.rs:missing_data_task()` MUST use `u64::MAX` as `end`, not `chrono::Utc::now()`. Using a real `now_ms` would accidentally hit the `LIMIT 2000` range path, truncating the TickAggr to 2000 bars and capping `adaptive_k` at K≈13 regardless of the lookback slider setting.
 
 ### Streaming (ClickHouse Polling)
 

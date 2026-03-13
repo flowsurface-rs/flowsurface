@@ -642,6 +642,9 @@ pub struct Caches {
     y_labels: Cache,
     crosshair: Cache,
     watermark: Cache,
+    /// Screen-space indicator legend overlay (e.g. thermal colour scale).
+    /// Cleared by `clear_all` only — not invalidated on crosshair moves.
+    pub legend: Cache,
 }
 
 impl Caches {
@@ -651,12 +654,19 @@ impl Caches {
         self.y_labels.clear();
         self.crosshair.clear();
         self.watermark.clear();
+        self.legend.clear();
     }
 
     fn clear_crosshair(&self) {
         self.crosshair.clear();
         self.y_labels.clear();
         self.x_labels.clear();
+    }
+
+    /// Returns the watermark cache for reuse as an indicator subplot legend layer.
+    /// Unused in the indicator subplot pipeline (watermark is only drawn on the main chart).
+    pub fn legend_cache(&self) -> &Cache {
+        &self.watermark
     }
 }
 

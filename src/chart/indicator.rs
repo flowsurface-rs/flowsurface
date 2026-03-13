@@ -35,6 +35,7 @@ where
     indicator_row_impl(
         main_chart,
         cache,
+        None,
         plot,
         AnySeries::for_basis(main_chart.basis, datapoints),
         visible_range,
@@ -57,6 +58,31 @@ where
     indicator_row_impl(
         main_chart,
         cache,
+        None,
+        plot,
+        AnySeries::for_basis_slice(datapoints),
+        visible_range,
+    )
+}
+
+/// Like [`indicator_row_slice`] but activates a persistent legend overlay via
+/// `Plot::draw_panel_legend`. Pass `&cache.watermark` (unused in indicator panels) as
+/// the legend cache — it is cleared by `Caches::clear_all` along with the other caches.
+pub fn indicator_row_slice_with_legend<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    legend_cache: &'a Cache,
+    plot: P,
+    datapoints: &'a [Y],
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
+    indicator_row_impl(
+        main_chart,
+        cache,
+        Some(legend_cache),
         plot,
         AnySeries::for_basis_slice(datapoints),
         visible_range,
@@ -66,6 +92,7 @@ where
 fn indicator_row_impl<'a, P, Y>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
+    legend_cache: Option<&'a Cache>,
     plot: P,
     series: AnySeries<'a, Y>,
     visible_range: RangeInclusive<u64>,
@@ -81,6 +108,7 @@ where
     let canvas = Canvas::new(ChartCanvas::<P, AnySeries<'a, Y>> {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
+        legend_cache,
         ctx: main_chart,
         plot,
         series,
