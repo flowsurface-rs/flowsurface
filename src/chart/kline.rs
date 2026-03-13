@@ -75,8 +75,18 @@ pub struct BarGap {
     pub bar_time_ms: u64,
 }
 
+/// Which brim of the selection range is being dragged.
+#[derive(Clone, Copy)]
+enum BrimSide {
+    /// Right (newer) brim — the lower visual_idx boundary.
+    Lo,
+    /// Left (older) brim — the higher visual_idx boundary.
+    Hi,
+}
+
 /// State for interactive bar-range selection on ODB charts.
 /// Shift+Left Click: 1st = set anchor, 2nd = set end, 3rd = reset anchor.
+/// Left-drag near a brim: relocates that boundary in real-time.
 #[derive(Default)]
 struct BarSelectionState {
     /// Visual index of the anchor bar (0 = newest/rightmost).
@@ -85,6 +95,8 @@ struct BarSelectionState {
     end: Option<usize>,
     /// Whether the Shift key is currently held (tracked via ModifiersChanged).
     shift_held: bool,
+    /// Which brim is currently being dragged (None when idle).
+    dragging_brim: Option<BrimSide>,
 }
 
 /// Buffered CH/SSE bar with metadata, applied after gap-fill completion.
@@ -3004,14 +3016,80 @@ impl canvas::Program<Message> for KlineChart {
             self.bar_selection.borrow_mut().shift_held = mods.shift();
         }
 
-        // ODB-only: Shift+Left Click cycles anchor → end → restart anchor.
         if self.chart.basis.is_odb() {
-            let shift_held = self.bar_selection.borrow().shift_held;
+            let bounds_size = bounds.size();
+            let (shift_held, dragging_brim, sel_anchor, sel_end) = {
+                let sel = self.bar_selection.borrow();
+                (sel.shift_held, sel.dragging_brim.is_some(), sel.anchor, sel.end)
+            };
+
+            // ── Brim drag: release ──────────────────────────────────────────
+            if dragging_brim {
+                if let Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) = event {
+                    self.bar_selection.borrow_mut().dragging_brim = None;
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
+                // Update boundary on cursor move.
+                if let Event::Mouse(mouse::Event::CursorMoved { .. }) = event {
+                    if let Some(cursor_pos) = cursor.position_in(bounds) {
+                        let region = self.chart.visible_region(bounds_size);
+                        let (visual_idx, _) =
+                            self.chart.snap_x_to_index(cursor_pos.x, bounds_size, region);
+                        if visual_idx != u64::MAX {
+                            let new_idx = visual_idx as usize;
+                            let mut sel = self.bar_selection.borrow_mut();
+                            match sel.dragging_brim {
+                                // Lo = right (newer) brim — update whichever of anchor/end is smaller
+                                Some(BrimSide::Lo) => match (sel.anchor, sel.end) {
+                                    (Some(a), Some(e)) if a <= e => sel.anchor = Some(new_idx),
+                                    (Some(_), Some(_)) => sel.end = Some(new_idx),
+                                    _ => {}
+                                },
+                                // Hi = left (older) brim — update whichever is larger
+                                Some(BrimSide::Hi) => match (sel.anchor, sel.end) {
+                                    (Some(a), Some(e)) if a >= e => sel.anchor = Some(new_idx),
+                                    (Some(_), Some(_)) => sel.end = Some(new_idx),
+                                    _ => {}
+                                },
+                                None => {}
+                            }
+                        }
+                    }
+                    // Only clear lightweight caches so candles stay cached.
+                    self.chart.cache.clear_crosshair();
+                    self.chart.cache.legend.clear();
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
+            }
+
+            // ── Brim drag: start (plain left-click near a brim) ────────────
+            if !shift_held
+                && let (Some(anchor), Some(end)) = (sel_anchor, sel_end)
+                && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
+                && let Some(cursor_pos) = cursor.position_in(bounds)
+            {
+                let lo = anchor.min(end);
+                let hi = anchor.max(end);
+                let (left_sx, right_sx) = brim_screen_xs(&self.chart, bounds_size, lo, hi);
+                const HIT: f32 = 12.0;
+                let side = if (cursor_pos.x - right_sx).abs() < HIT {
+                    Some(BrimSide::Lo)
+                } else if (cursor_pos.x - left_sx).abs() < HIT {
+                    Some(BrimSide::Hi)
+                } else {
+                    None
+                };
+                if let Some(side) = side {
+                    self.bar_selection.borrow_mut().dragging_brim = Some(side);
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
+            }
+
+            // ── Shift+Left Click: set anchor / end / restart ───────────────
             if shift_held
                 && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
             {
                 if let Some(cursor_pos) = cursor.position_in(bounds) {
-                    let bounds_size = bounds.size();
                     let region = self.chart.visible_region(bounds_size);
                     let (visual_idx, _) =
                         self.chart.snap_x_to_index(cursor_pos.x, bounds_size, region);
@@ -3180,22 +3258,6 @@ impl canvas::Program<Message> for KlineChart {
                         );
                     }
 
-                    // Bar range selection highlight (ODB only, behind candles).
-                    if chart.basis.is_odb() {
-                        let sel = self.bar_selection.borrow();
-                        if let Some(anchor) = sel.anchor {
-                            let end = sel.end.unwrap_or(anchor);
-                            let (lo, hi) = (anchor.min(end), anchor.max(end));
-                            let x_right = interval_to_x(lo as u64) + chart.cell_width / 2.0;
-                            let x_left = interval_to_x(hi as u64) - chart.cell_width / 2.0;
-                            frame.fill_rectangle(
-                                Point::new(x_left, region.y),
-                                Size::new((x_right - x_left).max(0.0), region.height),
-                                iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.10 },
-                            );
-                        }
-                    }
-
                     // ODB bars represent continuous price action — use tighter
                     // spacing (95%) so bars visually connect. Candles keep 80%
                     // for temporal separation between time periods.
@@ -3343,6 +3405,17 @@ impl canvas::Program<Message> for KlineChart {
         });
 
         let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
+            // Selection highlight drawn in screen-space so it updates cheaply
+            // during brim drag (only crosshair + legend caches cleared, not klines).
+            if chart.basis.is_odb() {
+                let sel = self.bar_selection.borrow();
+                if let Some(anchor) = sel.anchor {
+                    let end = sel.end.unwrap_or(anchor);
+                    let (lo, hi) = (anchor.min(end), anchor.max(end));
+                    draw_selection_highlight(frame, chart, bounds_size, lo, hi);
+                }
+            }
+
             if let Some(cursor_position) = cursor.position_in(bounds) {
                 let (_, rounded_aggregation) =
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
@@ -3382,6 +3455,26 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        // Show resize cursor when dragging a brim or hovering near one.
+        if self.chart.basis.is_odb() {
+            let sel = self.bar_selection.borrow();
+            if sel.dragging_brim.is_some() {
+                return mouse::Interaction::ResizingHorizontally;
+            }
+            if let (Some(anchor), Some(end)) = (sel.anchor, sel.end)
+                && let Some(cursor_pos) = cursor.position_in(bounds)
+            {
+                let lo = anchor.min(end);
+                let hi = anchor.max(end);
+                let (left_sx, right_sx) = brim_screen_xs(&self.chart, bounds.size(), lo, hi);
+                const HIT: f32 = 12.0;
+                if (cursor_pos.x - left_sx).abs() < HIT
+                    || (cursor_pos.x - right_sx).abs() < HIT
+                {
+                    return mouse::Interaction::ResizingHorizontally;
+                }
+            }
+        }
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
@@ -4116,6 +4209,55 @@ fn format_duration_ms(ms: u64) -> String {
     } else {
         format!("{ms}ms")
     }
+}
+
+/// Converts left and right brim bar positions to screen-space x coordinates.
+///
+/// `lo` = right brim (newer, lower visual_idx), `hi` = left brim (older).
+/// Screen formula: `screen_x = (chart_x + translation.x) * scaling + bounds_width / 2`
+fn brim_screen_xs(chart: &ViewState, bounds_size: Size, lo: usize, hi: usize) -> (f32, f32) {
+    let to_screen = |chart_x: f32| {
+        (chart_x + chart.translation.x) * chart.scaling + bounds_size.width / 2.0
+    };
+    // ODB: interval_to_x(idx) = -(idx as f32) * cell_width
+    let right_chart_x = -(lo as f32) * chart.cell_width + chart.cell_width / 2.0;
+    let left_chart_x = -(hi as f32) * chart.cell_width - chart.cell_width / 2.0;
+    (to_screen(left_chart_x), to_screen(right_chart_x))
+}
+
+/// Draws the selection range highlight + brim handles in screen-space.
+/// Called in the `crosshair` cache layer so it redraws on drag without
+/// invalidating the heavy `klines` (candles) cache.
+fn draw_selection_highlight(
+    frame: &mut canvas::Frame,
+    chart: &ViewState,
+    bounds_size: Size,
+    lo: usize,
+    hi: usize,
+) {
+    let (left_sx, right_sx) = brim_screen_xs(chart, bounds_size, lo, hi);
+    let w = (right_sx - left_sx).max(0.0);
+
+    // Very transparent fill so candles remain readable.
+    frame.fill_rectangle(
+        Point::new(left_sx, 0.0),
+        Size::new(w, bounds_size.height),
+        iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.05 },
+    );
+
+    // Brim handle strips — slightly more opaque, draggable.
+    let handle_w = (chart.cell_width * chart.scaling * 0.4).clamp(3.0, 14.0);
+    let handle_color = iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.22 };
+    frame.fill_rectangle(
+        Point::new(left_sx, 0.0),
+        Size::new(handle_w, bounds_size.height),
+        handle_color,
+    );
+    frame.fill_rectangle(
+        Point::new(right_sx - handle_w, 0.0),
+        Size::new(handle_w, bounds_size.height),
+        handle_color,
+    );
 }
 
 /// Draws bar selection statistics overlay (screen-space, top-center of chart).
