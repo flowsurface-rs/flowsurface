@@ -415,7 +415,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     // `end == u64::MAX` is the sentinel used by the initial load and sentinel-refetch paths
     // in kline.rs to signal "load the N most recent bars without a time constraint".
     // Scroll-left pagination uses a real `oldest_ts` for `end` and needs the BETWEEN filter.
-    let is_full_reload = range.map_or(true, |(_, end)| end == u64::MAX);
+    let is_full_reload = range.is_none_or(|(_, end)| end == u64::MAX);
 
     if is_full_reload {
         format!(

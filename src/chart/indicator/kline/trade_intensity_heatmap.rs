@@ -452,7 +452,7 @@ fn draw_heatmap_legend(frame: &mut canvas::Frame, k_actual: u8) {
         let label_text = if bin == k_actual {
             format!("K{bin} Max")
         } else if bin == 1 {
-            format!("K1 Calm")
+            "K1 Calm".to_string()
         } else {
             format!("K{bin}")
         };
