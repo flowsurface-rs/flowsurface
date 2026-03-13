@@ -31,7 +31,7 @@ use std::collections::VecDeque;
 use iced::task::Handle;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse};
 
 use enum_map::EnumMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -76,13 +76,15 @@ pub struct BarGap {
 }
 
 /// State for interactive bar-range selection on ODB charts.
-/// Right-click cycles: no selection → anchor set → anchor+end set → cleared.
+/// Shift+Left Click: 1st = set anchor, 2nd = set end, 3rd = reset anchor.
 #[derive(Default)]
 struct BarSelectionState {
     /// Visual index of the anchor bar (0 = newest/rightmost).
     anchor: Option<usize>,
-    /// Visual index of the end bar (set on second right-click).
+    /// Visual index of the end bar (set on second Shift+Click).
     end: Option<usize>,
+    /// Whether the Shift key is currently held (tracked via ModifiersChanged).
+    shift_held: bool,
 }
 
 /// Buffered CH/SSE bar with metadata, applied after gap-fill completion.
@@ -2997,11 +2999,18 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        // ODB-only: right-click cycles anchor → end → clear for bar selection.
-        if self.chart.basis.is_odb()
-            && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event
-        {
-            if let Some(cursor_pos) = cursor.position_in(bounds) {
+        // Track Shift key state for bar selection (ODB-only).
+        if let Event::Keyboard(keyboard::Event::ModifiersChanged(mods)) = event {
+            self.bar_selection.borrow_mut().shift_held = mods.shift();
+        }
+
+        // ODB-only: Shift+Left Click cycles anchor → end → restart anchor.
+        if self.chart.basis.is_odb() {
+            let shift_held = self.bar_selection.borrow().shift_held;
+            if shift_held
+                && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
+            {
+                if let Some(cursor_pos) = cursor.position_in(bounds) {
                     let bounds_size = bounds.size();
                     let region = self.chart.visible_region(bounds_size);
                     let (visual_idx, _) =
@@ -3011,15 +3020,17 @@ impl canvas::Program<Message> for KlineChart {
                         match (sel.anchor, sel.end) {
                             (None, _) => sel.anchor = Some(visual_idx as usize),
                             (Some(_), None) => sel.end = Some(visual_idx as usize),
+                            // Third Shift+Click: restart from new anchor.
                             (Some(_), Some(_)) => {
-                                sel.anchor = None;
+                                sel.anchor = Some(visual_idx as usize);
                                 sel.end = None;
                             }
                         }
                         self.chart.cache.clear_all();
                     }
                 }
-            return Some(canvas::Action::request_redraw().and_capture());
+                return Some(canvas::Action::request_redraw().and_capture());
+            }
         }
         super::canvas_interaction(self, interaction, event, bounds, cursor)
     }
@@ -4109,6 +4120,10 @@ fn format_duration_ms(ms: u64) -> String {
 
 /// Draws bar selection statistics overlay (screen-space, top-center of chart).
 /// Called in the `legend` cache layer when both anchor and end are confirmed.
+///
+/// Display semantics:
+/// - Distance: |end − anchor| bars (0 = same bar, 1 = adjacent bars)
+/// - Up/Down: inclusive count over [min, max]; ratios from that same count.
 fn draw_bar_selection_stats(
     frame: &mut canvas::Frame,
     palette: &Extended,
@@ -4124,26 +4139,25 @@ fn draw_bar_selection_stats(
     let hi = hi.min(len - 1);
     let lo = lo.min(len - 1);
 
-    let total = hi - lo + 1;
+    // Distance: |end − anchor| (0 for same bar, 1 for adjacent).
+    let distance = hi - lo;
+
+    // Count up/down over the inclusive range [lo, hi].
+    let examined = hi - lo + 1;
     let up = (lo..=hi)
         .filter(|&vi| {
             let si = len - 1 - vi;
-            let dp = &tick_aggr.datapoints[si];
-            dp.kline.close >= dp.kline.open
+            tick_aggr.datapoints[si].kline.close >= tick_aggr.datapoints[si].kline.open
         })
         .count();
-    let down = total - up;
-    let up_pct = if total > 0 {
-        up as f32 / total as f32 * 100.0
-    } else {
-        0.0
-    };
-    let down_pct = 100.0 - up_pct;
+    let down = examined - up;
+    let up_pct = up as f32 / examined as f32 * 100.0;
+    let down_pct = down as f32 / examined as f32 * 100.0;
 
     let text_size = 13.0_f32;
     let line_h = text_size + 5.0;
     let lines: &[(&str, String)] = &[
-        ("neutral", format!("{total} bars")),
+        ("neutral", format!("{distance} bars")),
         ("up", format!("↑ {up}  ({up_pct:.0}%)")),
         ("down", format!("↓ {down}  ({down_pct:.0}%)")),
     ];
@@ -4153,7 +4167,6 @@ fn draw_bar_selection_stats(
     let x = frame.width() / 2.0 - box_w / 2.0;
     let y = 10.0_f32;
 
-    // Background
     frame.fill_rectangle(
         Point::new(x - 6.0, y - 4.0),
         Size::new(box_w + 12.0, box_h),
