@@ -223,6 +223,55 @@ When modifying ODB rendering or behavior, check **all** match arms for `Basis::O
 - `src/modal/pane/settings.rs` — chart config
 - `data/src/layout/pane.rs` — serialization
 
+### iced Canvas Architecture
+
+**Four geometry layers** in `src/chart/kline.rs` (stacked in draw order):
+
+| Layer       | Frame transforms?             | When cleared            |
+| ----------- | ----------------------------- | ----------------------- |
+| `main`      | translate → scale → translate | Panning, zoom, new bars |
+| `watermark` | None (screen-space)           | Rarely                  |
+| `legend`    | None (screen-space)           | Every cursor move       |
+| `crosshair` | None (screen-space)           | Every cursor move       |
+
+**Chart-space → screen-space formula** (canonical, from `keyboard_nav.rs`):
+
+```
+screen_x = (chart_x + translation.x) * scaling + bounds.width / 2
+```
+
+ODB: `chart_x = -(visual_idx * cell_width)`. Lower `visual_idx` = newer bar = higher screen_x.
+
+**Hit detection — anti-pattern vs correct pattern:**
+
+| ❌ Anti-pattern                                                            | ✅ Correct pattern                                                                              |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Compute `screen_x` from formula; check `(cursor.x − screen_x).abs() < HIT` | `snap_x_to_index(cursor_pos.x, bounds_size, region)` → bar index; check `abs_diff(target) <= 1` |
+
+Reason: `cursor.position_in(bounds)` and manual screen math can have subtle discrepancies. `snap_x_to_index` is canonical (same function used for crosshair + Shift+Click) and is guaranteed grid-consistent.
+
+**Visual handle width should match hit zone**: if hit zone is ±1 bar, draw the handle `cell_width * scaling` px wide (one full bar on screen). Mismatched visual ↔ hit zones confuse users.
+
+**Interior mutability**: `canvas::Program::update()` takes `&self`. Wrap mutable canvas state in `RefCell<T>`. Borrow immutably to extract values → drop borrow → `borrow_mut()` to update. Never hold an immutable borrow across a `borrow_mut()` call.
+
+---
+
+### ODB Bar Range Selection
+
+**File**: `src/chart/kline.rs` — `BarSelectionState` (in `RefCell`) + `BrimSide` enum.
+
+**UX**:
+
+- Shift+Left Click: anchor → end → restart (3rd click resets to new anchor)
+- Left Click on outermost bar of selection: drag that brim to relocate boundary
+- `u64::MAX` sentinel from `snap_x_to_index` = forming-bar zone; ignore there
+
+**Cache strategy**: selection highlight drawn in `crosshair` layer; stats in `legend` layer. Neither invalidates the heavy `main` (candles) cache during drag. Only `clear_crosshair()` + `legend.clear()` on `CursorMoved`.
+
+**Stats overlay** (top-center, `legend` layer): `N bars` / `↑ up (%)` / `↓ down (%)`. Distance = `|end − anchor|` (0 = same bar, 1 = adjacent).
+
+---
+
 ### Upstream Merge Checklist
 
 After merging upstream, check for:
@@ -241,20 +290,21 @@ After merging upstream, check for:
 
 ## Common Errors
 
-| Error                                  | Cause                                                                            | Fix                                                                                                                                       |
-| -------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| "Waiting for trades..."                | ODB pane missing `Trades` stream                                                 | Add `trades_stream()` to pane's stream vec in `pane.rs`                                                                                   |
-| "Fetching Klines..." loop              | ClickHouse unreachable                                                           | `mise run preflight`                                                                                                                      |
-| "No chart found for stream"            | Widget/pane stream mismatch                                                      | Check `matches_stream()` in `connector/stream.rs`                                                                                         |
-| Tiny dot candlesticks                  | Wrong cell_width/limit                                                           | Check adaptive scaling in `kline.rs`                                                                                                      |
-| Crosshair panic                        | NaN in indicator data                                                            | Add NaN guard before rendering                                                                                                            |
-| "ClickHouse HTTP 404"                  | Wrong table/schema                                                               | Verify `opendeviationbar_cache.open_deviation_bars`                                                                                       |
-| "no microstructure data"               | `FetchedData::Klines` missing field                                              | Ensure `microstructure: Some(micro)` in ODB fetch path                                                                                    |
-| "Fetching trades..." stuck             | ODB sidecar unreachable (Ariadne)                                                | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250`                                                                      |
-| Gap-fill silently skipped              | Ariadne returned `None` or error                                                 | Check sidecar logs; gap-fill is best-effort                                                                                               |
-| Legend shows wrong day at day boundary | `prev_bar.close_time` used as open time                                          | ODB: `close_time_ms[N] ≠ open_time_ms[N+1]` — trigger trade ≠ first trade. Use `TickAccumulation.open_time_ms`                            |
-| Legend open time reverted to wrong day | Upstream merge clobbered threading                                               | Restore `open_time_ms` field in `TickAccumulation`, 6th field in `KlineReceived`, and `draw_crosshair_tooltip` fix                        |
-| Intensity heatmap colors stop at K≈13  | `FetchRange::Kline(0,now)` hit `LIMIT 2000` range path instead of adaptive limit | `build_odb_sql`: full-reload sentinel is `end == u64::MAX`; `kline.rs` initial/sentinel fetches must use `FetchRange::Kline(0, u64::MAX)` |
+| Error                                               | Cause                                                                                | Fix                                                                                                                                       |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| "Waiting for trades..."                             | ODB pane missing `Trades` stream                                                     | Add `trades_stream()` to pane's stream vec in `pane.rs`                                                                                   |
+| "Fetching Klines..." loop                           | ClickHouse unreachable                                                               | `mise run preflight`                                                                                                                      |
+| "No chart found for stream"                         | Widget/pane stream mismatch                                                          | Check `matches_stream()` in `connector/stream.rs`                                                                                         |
+| Tiny dot candlesticks                               | Wrong cell_width/limit                                                               | Check adaptive scaling in `kline.rs`                                                                                                      |
+| Crosshair panic                                     | NaN in indicator data                                                                | Add NaN guard before rendering                                                                                                            |
+| "ClickHouse HTTP 404"                               | Wrong table/schema                                                                   | Verify `opendeviationbar_cache.open_deviation_bars`                                                                                       |
+| "no microstructure data"                            | `FetchedData::Klines` missing field                                                  | Ensure `microstructure: Some(micro)` in ODB fetch path                                                                                    |
+| "Fetching trades..." stuck                          | ODB sidecar unreachable (Ariadne)                                                    | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250`                                                                      |
+| Gap-fill silently skipped                           | Ariadne returned `None` or error                                                     | Check sidecar logs; gap-fill is best-effort                                                                                               |
+| Legend shows wrong day at day boundary              | `prev_bar.close_time` used as open time                                              | ODB: `close_time_ms[N] ≠ open_time_ms[N+1]` — trigger trade ≠ first trade. Use `TickAccumulation.open_time_ms`                            |
+| Legend open time reverted to wrong day              | Upstream merge clobbered threading                                                   | Restore `open_time_ms` field in `TickAccumulation`, 6th field in `KlineReceived`, and `draw_crosshair_tooltip` fix                        |
+| Intensity heatmap colors stop at K≈13               | `FetchRange::Kline(0,now)` hit `LIMIT 2000` range path instead of adaptive limit     | `build_odb_sql`: full-reload sentinel is `end == u64::MAX`; `kline.rs` initial/sentinel fetches must use `FetchRange::Kline(0, u64::MAX)` |
+| Brim drag / interactive canvas hit detection misses | Screen-space formula (`brim_screen_xs`) used for hit testing — subtle coord mismatch | Use `snap_x_to_index()` ± 1 bar; never compute screen positions manually for hit testing                                                  |
 
 ---
 

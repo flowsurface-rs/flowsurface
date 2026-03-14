@@ -3062,26 +3062,36 @@ impl canvas::Program<Message> for KlineChart {
                 }
             }
 
-            // ── Brim drag: start (plain left-click near a brim) ────────────
+            // ── Brim drag: start (click on outermost selected bar, no Shift) ───
+            // Uses snap_x_to_index (same as Shift+Click) so hit detection is
+            // guaranteed consistent with the actual bar grid.
             if !shift_held
                 && let (Some(anchor), Some(end)) = (sel_anchor, sel_end)
+                && anchor != end
                 && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
                 && let Some(cursor_pos) = cursor.position_in(bounds)
             {
                 let lo = anchor.min(end);
                 let hi = anchor.max(end);
-                let (left_sx, right_sx) = brim_screen_xs(&self.chart, bounds_size, lo, hi);
-                const HIT: f32 = 12.0;
-                let side = if (cursor_pos.x - right_sx).abs() < HIT {
-                    Some(BrimSide::Lo)
-                } else if (cursor_pos.x - left_sx).abs() < HIT {
-                    Some(BrimSide::Hi)
-                } else {
-                    None
-                };
-                if let Some(side) = side {
-                    self.bar_selection.borrow_mut().dragging_brim = Some(side);
-                    return Some(canvas::Action::request_redraw().and_capture());
+                let region = self.chart.visible_region(bounds_size);
+                let (visual_idx, _) =
+                    self.chart.snap_x_to_index(cursor_pos.x, bounds_size, region);
+                if visual_idx != u64::MAX {
+                    let snapped = visual_idx as usize;
+                    let lo_dist = snapped.abs_diff(lo);
+                    let hi_dist = snapped.abs_diff(hi);
+                    // Within ±1 bar of a brim → drag it. Ties go to Lo (right/newer brim).
+                    let side = if lo_dist <= 1 && lo_dist <= hi_dist {
+                        Some(BrimSide::Lo)
+                    } else if hi_dist <= 1 {
+                        Some(BrimSide::Hi)
+                    } else {
+                        None
+                    };
+                    if let Some(side) = side {
+                        self.bar_selection.borrow_mut().dragging_brim = Some(side);
+                        return Some(canvas::Action::request_redraw().and_capture());
+                    }
                 }
             }
 
@@ -3462,16 +3472,19 @@ impl canvas::Program<Message> for KlineChart {
                 return mouse::Interaction::ResizingHorizontally;
             }
             if let (Some(anchor), Some(end)) = (sel.anchor, sel.end)
+                && anchor != end
                 && let Some(cursor_pos) = cursor.position_in(bounds)
             {
                 let lo = anchor.min(end);
                 let hi = anchor.max(end);
-                let (left_sx, right_sx) = brim_screen_xs(&self.chart, bounds.size(), lo, hi);
-                const HIT: f32 = 12.0;
-                if (cursor_pos.x - left_sx).abs() < HIT
-                    || (cursor_pos.x - right_sx).abs() < HIT
-                {
-                    return mouse::Interaction::ResizingHorizontally;
+                let region = self.chart.visible_region(bounds.size());
+                let (visual_idx, _) =
+                    self.chart.snap_x_to_index(cursor_pos.x, bounds.size(), region);
+                if visual_idx != u64::MAX {
+                    let snapped = visual_idx as usize;
+                    if snapped.abs_diff(lo) <= 1 || snapped.abs_diff(hi) <= 1 {
+                        return mouse::Interaction::ResizingHorizontally;
+                    }
                 }
             }
         }
@@ -4245,8 +4258,8 @@ fn draw_selection_highlight(
         iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.05 },
     );
 
-    // Brim handle strips — slightly more opaque, draggable.
-    let handle_w = (chart.cell_width * chart.scaling * 0.4).clamp(3.0, 14.0);
+    // Brim handle strips — one full bar wide so the clickable zone is obvious.
+    let handle_w = (chart.cell_width * chart.scaling).clamp(3.0, 60.0);
     let handle_color = iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.22 };
     frame.fill_rectangle(
         Point::new(left_sx, 0.0),
