@@ -286,7 +286,7 @@ pub async fn query(sql: &str) -> Result<String, AdapterError> {
                 e.is_timeout(),
                 e.is_connect()
             );
-            AdapterError::FetchError(e)
+            AdapterError::request_failed(&reqwest::Method::POST, &url, e)
         })?;
 
     if !resp.status().is_success() {

@@ -305,10 +305,13 @@ pub fn request_fetch(
                                 pane_id,
                                 status: FetchTaskStatus::Completed,
                             },
-                            Err(err) => FetchUpdate::Error {
-                                pane_id,
-                                error: err.to_string(),
-                            },
+                            Err(err) => {
+                                log::error!("Trade fetch failed: {err}");
+                                FetchUpdate::Error {
+                                    pane_id,
+                                    error: err.ui_message(),
+                                }
+                            }
                         },
                     )
                     .abortable();
@@ -421,7 +424,10 @@ pub fn oi_fetch_task(
         } => Task::perform(
             iced::futures::TryFutureExt::map_err(
                 adapter::fetch_open_interest(ticker_info, timeframe, range),
-                |err| format!("{err}"),
+                |err| {
+                    log::error!("Open interest fetch failed: {err}");
+                    err.ui_message()
+                },
             ),
             move |result| match result {
                 Ok(oi) => {
@@ -464,7 +470,10 @@ pub fn kline_fetch_task(
         } => Task::perform(
             iced::futures::TryFutureExt::map_err(
                 adapter::fetch_klines(ticker_info, timeframe, range),
-                |err| format!("{err}"),
+                |err| {
+                    log::error!("Kline fetch failed: {err}");
+                    err.ui_message()
+                },
             ),
             move |result| match result {
                 Ok(klines) => {

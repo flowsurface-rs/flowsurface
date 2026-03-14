@@ -1088,7 +1088,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2243,7 +2243,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3088,9 +3088,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-client"
-version = "13.3.0"
+version = "13.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "217e01a3beaa8b54340de7c1a741c0ecb6f5fdb2d65d58ab5b0352714f98f4cc"
+checksum = "ef09ba944cf5b1f50aea7e4d851a83d064cec344046ada4fd1d717bf3006ae2a"
 dependencies = [
  "bytes",
  "eventsource-client",
@@ -3106,9 +3106,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-core"
-version = "13.3.0"
+version = "13.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75e426f21b019a7ff3475fb3098f706e1f9e92ebe2b07c308a21054c3b07c54e"
+checksum = "8a6cdf50a722202bfc772937d4306e6688f2de7827473b01433c1f59cf145c1b"
 dependencies = [
  "foldhash 0.2.0",
  "libm",
@@ -3127,9 +3127,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-hurst"
-version = "13.2.0"
+version = "13.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a20fa0ceaacd3e0064fa7bb2a6d0d8b2ec83a1bb5de941e5440bd2964fa2357a"
+checksum = "b5523ea02c1e62bda26c1c2f51a4a5675c34c0c5fea5478c77376efe370e1c19"
 dependencies = [
  "linreg",
  "rustfft",
@@ -3535,7 +3535,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3934,7 +3934,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4583,7 +4583,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5523,7 +5523,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
