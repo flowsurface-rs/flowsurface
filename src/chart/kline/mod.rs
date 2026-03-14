@@ -2034,8 +2034,8 @@ impl canvas::Program<Message> for KlineChart {
             if sel.dragging_brim.is_some() {
                 return mouse::Interaction::ResizingHorizontally;
             }
-            if let (Some(anchor), Some(end)) = (sel.anchor, sel.end) {
-                if let Some(cursor_pos) = cursor.position_in(bounds) {
+            if let (Some(anchor), Some(end)) = (sel.anchor, sel.end)
+                && let Some(cursor_pos) = cursor.position_in(bounds) {
                     // Stats box hover (checked before brim — box wins when they overlap).
                     let origin = stats_box_origin(sel.stats_box_pos, bounds.width);
                     if cursor_pos.x >= origin.x && cursor_pos.x <= origin.x + STATS_BOX_W
@@ -2057,7 +2057,6 @@ impl canvas::Program<Message> for KlineChart {
                             }
                         }
                     }
-                }
             }
         }
         match interaction {
