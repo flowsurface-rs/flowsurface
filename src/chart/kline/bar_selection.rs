@@ -311,12 +311,6 @@ pub(super) fn draw_bar_selection_stats(
     let ts = 13.0_f32;
     let sm = 11.0_f32;
     let lines: &[(String, iced::Color, f32)] = &[
-        (format!("{distance} bars"),                                                  neutral,      ts),
-        (format!("↑ {n_up}  ({up_pct:.0}%)"),                                        success,      ts),
-        (format!("↓ {n_dn}  ({dn_pct:.0}%)"),                                        danger,       ts),
-        ("─────────────────────────────".to_string(),                                 dim,          sm),
-        (format!("↑t {}  ↑ {} t/s", t_s(mean_t_up), raw_s(mean_raw_up)),            amber_dim,    sm),
-        (format!("↓t {}  ↓ {} t/s", t_s(mean_t_dn), raw_s(mean_raw_dn)),            amber_dim,    sm),
         (format!("{bar_str}  flow: {:+.2}", iwds),                                    amber,        ts),
         (regime_label.to_string(),                                                    regime_color, ts),
         (caption,                                                                     dim_white,    sm),
@@ -328,13 +322,18 @@ pub(super) fn draw_bar_selection_stats(
     // ── Layout ────────────────────────────────────────────────────────────
     let lh_main = ts + 5.0;
     let lh_sm   = sm + 4.0;
-    let box_w   = 215.0_f32;
+    let box_w   = 255.0_f32;
     let origin  = stats_box_origin(stats_box_pos, frame.width());
     let x = origin.x + 8.0;
     let y = origin.y + 4.0;
-    let total_h: f32 = lines.iter()
-        .map(|(_, _, sz)| if (*sz - ts).abs() < 0.5 { lh_main } else { lh_sm })
-        .sum::<f32>() + 12.0;
+    // total_h: header row + separator (3px) + intensity row + remaining lines + padding
+    let total_h: f32 = lh_main
+        + 3.0
+        + lh_sm   // ↑t/↓t combined row
+        + lines.iter()
+            .map(|(_, _, sz)| if (*sz - ts).abs() < 0.5 { lh_main } else { lh_sm })
+            .sum::<f32>()
+        + 12.0;
 
     // Background
     frame.fill_rectangle(
@@ -359,6 +358,54 @@ pub(super) fn draw_bar_selection_stats(
 
     // Draw lines
     let mut cur_y = y;
+
+    // ── Header row: "{N} bars  ↑ N (%)  ↓ N (%)" on one line ────────────
+    let col_w = box_w / 3.0;
+    let header = [
+        (format!("{distance} bars"),                neutral),
+        (format!("↑ {n_up}  ({up_pct:.0}%)"),       success),
+        (format!("↓ {n_dn}  ({dn_pct:.0}%)"),        danger),
+    ];
+    for (i, (text, color)) in header.iter().enumerate() {
+        frame.fill_text(canvas::Text {
+            content: text.clone(),
+            position: Point::new(x + i as f32 * col_w, cur_y),
+            size: iced::Pixels(ts),
+            color: *color,
+            ..Default::default()
+        });
+    }
+    cur_y += lh_main;
+
+    // Thin separator line replaces the "─────" text row — less vertical waste
+    frame.stroke(
+        &Path::line(
+            Point::new(x - 2.0, cur_y - 2.0),
+            Point::new(x + box_w + 2.0, cur_y - 2.0),
+        ),
+        Stroke::with_color(
+            Stroke { width: 0.5, ..Default::default() },
+            dim,
+        ),
+    );
+    cur_y += 3.0;
+
+    // ── Intensity row: ↑t/↓t side-by-side, green | red ──────────────────
+    let half = box_w / 2.0;
+    for (i, (text, color)) in [
+        (format!("↑t {}  ↑ {} t/s", t_s(mean_t_up), raw_s(mean_raw_up)), success),
+        (format!("↓t {}  ↓ {} t/s", t_s(mean_t_dn), raw_s(mean_raw_dn)), danger),
+    ].iter().enumerate() {
+        frame.fill_text(canvas::Text {
+            content: text.clone(),
+            position: Point::new(x + i as f32 * half, cur_y),
+            size: iced::Pixels(sm),
+            color: *color,
+            ..Default::default()
+        });
+    }
+    cur_y += lh_sm;
+
     for (text, color, sz) in lines {
         frame.fill_text(canvas::Text {
             content: text.clone(),

@@ -9,3 +9,4 @@ Flowsurface.app/
 .gitnexus
 .claude/*
 !.claude/skills/
+!.claude/commands/

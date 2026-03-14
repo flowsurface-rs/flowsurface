@@ -1,0 +1,10 @@
+# .cargo/config.toml — build performance configuration for flowsurface (macOS arm64)
+
+[target.aarch64-apple-darwin]
+# split-debuginfo = "unpacked": locks in the macOS fast-debug default (Rust 1.51+).
+# ld64.sold: sold linker (mold fork for macOS Mach-O), ~40-50% faster than Apple ld64.
+# Binary built from: https://github.com/bluewhalesystems/sold
+rustflags = [
+    "-C", "split-debuginfo=unpacked",
+    "-C", "link-arg=-fuse-ld=/usr/local/bin/ld64.sold",
+]

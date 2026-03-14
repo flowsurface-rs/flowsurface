@@ -41,8 +41,7 @@ iced = { version = "0.14.0", default-features = false, features = [
     "advanced",
     "unconditional-rendering",
     "crisp",
-    "x11",
-    "wayland",
+    # x11/wayland intentionally omitted: Linux display backends, not needed on macOS
 ] }
 iced_core.workspace = true
 chrono.workspace = true
@@ -67,3 +66,21 @@ qta = { path = "../../eon/mql5/crates/qta" }
 [features]
 debug = ["iced/hot"]
 telemetry = ["data/telemetry"]
+
+# ── Build profiles ────────────────────────────────────────────────────────────
+
+[profile.release]
+# incremental: only recompile changed codegen units — biggest win for iterative
+# release builds. Without this, a 1-line change recompiles the entire crate.
+incremental = true
+# lto: keep disabled for incremental builds; thin LTO requires full crate
+# analysis at each link which defeats incremental benefits.
+lto = false
+
+[profile.fast-release]
+# Use for day-to-day iteration: 30-35% faster compile than release,
+# ~2-5% slower runtime (acceptable for dev/testing).
+inherits = "release"
+opt-level = 2
+# line-tables-only: panic backtraces work, no heavy DWARF generated
+debug = "line-tables-only"

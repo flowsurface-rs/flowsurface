@@ -37,8 +37,6 @@ if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
   echo "✓ Tunnel re-established"
 fi
 
-kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
-sleep 0.5
 cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
 codesign --deep --force --sign - Flowsurface.app
 
@@ -47,6 +45,37 @@ if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
   git checkout -- Cargo.lock
 fi
 
+# Kill existing instance as late as possible — new binary is ready to open immediately.
+# Brief sleep required: macOS Launch Services needs time to deregister the killed bundle
+# before accepting a new open() call on the same path (error -600 without it).
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
+sleep 0.5
+open Flowsurface.app
+"""
+
+["build:fast"]
+description = "Build fast-release binary (opt-level=2, incremental) — 30-35% faster than release"
+run = "cargo build --profile fast-release"
+
+["run:fast"]
+description = "Build fast-release and launch .app — for rapid iteration"
+depends = ["preflight", "build:fast"]
+run = """
+set -e
+
+if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+  mise run tunnel:start
+fi
+
+cp target/fast-release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+codesign --deep --force --sign - Flowsurface.app
+
+if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
+  git checkout -- Cargo.lock
+fi
+
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
+sleep 0.5
 open Flowsurface.app
 """
 
@@ -98,9 +127,8 @@ echo "→ Building release for widget testing..."
 cargo build --release 2>&1 | tail -3
 
 echo "→ Launching app with widget support..."
-kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
-sleep 0.5
 cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
 open Flowsurface.app
 
 echo ""
