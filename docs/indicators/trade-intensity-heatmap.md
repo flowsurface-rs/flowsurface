@@ -13,8 +13,8 @@ key_functions:
   - adaptive_k(n: usize) -> u8
   - thermal_color(t: f32) -> Color
   - process_one(idx, intensity, bullish)
-  - rebuild_from_source(source: &PlotData<KlineDataPoint>)
-  - on_insert_trades(_trades: &[Trade], old_dp_len: usize, source: &PlotData<KlineDataPoint>)
+  - "rebuild_from_source(source: &PlotData<KlineDataPoint>)"
+  - "on_insert_trades(_trades: &[Trade], old_dp_len: usize, source: &PlotData<KlineDataPoint>)"
   - thermal_body_color(storage_idx: u64) -> Option<Color>
   - draw_heatmap_legend(frame, k_actual: u8)
   - draw_screen_legend(frame)
