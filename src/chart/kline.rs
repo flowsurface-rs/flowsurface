@@ -4394,8 +4394,10 @@ fn draw_bar_selection_stats(
     let dominant_up = n_up >= n_dn;
     let conviction = if dominant_up {
         if !mean_t_dn.is_nan() && mean_t_dn > 0.0 { mean_t_up / mean_t_dn } else { f32::NAN }
+    } else if !mean_t_up.is_nan() && mean_t_up > 0.0 {
+        mean_t_dn / mean_t_up
     } else {
-        if !mean_t_up.is_nan() && mean_t_up > 0.0 { mean_t_dn / mean_t_up } else { f32::NAN }
+        f32::NAN
     };
     let absorption = if dominant_up { mean_t_dn } else { mean_t_up };
 
