@@ -4255,7 +4255,7 @@ fn draw_selection_highlight(
     frame.fill_rectangle(
         Point::new(left_sx, 0.0),
         Size::new(w, bounds_size.height),
-        iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.05 },
+        iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.02 },
     );
 
     // Brim handle strips — one full bar wide so the clickable zone is obvious.
@@ -4519,8 +4519,10 @@ fn draw_crosshair_tooltip(
             (false, false) => 20.0, // OHLC only
         };
 
+        // Right margin: 72 px reserves space for the intensity heatmap legend
+        // (LEGEND_W≈59.5 + PAD=4 + gap=8) so the two widgets never overlap.
         let position = Point::new(
-            frame.width() - bg_width - 8.0,
+            frame.width() - bg_width - 72.0,
             frame.height() - bg_height - 8.0,
         );
 
