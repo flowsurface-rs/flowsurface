@@ -589,17 +589,17 @@ The ideal distribution is flat across all K bins (each gets ≈ 1/K of bars).
 
 ### Oracle Log Tags
 
-| Tag                     | When                    | Meaning                                   |
-| ----------------------- | ----------------------- | ----------------------------------------- | ----- | ---- |
-| `[oracle-spectrum]`     | Every rebuild           | Full colour table + histograms            |
-| `[oracle-rebuild-tail]` | Every rebuild           | Last bar's bin/k_actual/t                 |
-| `[oracle-incr-tail]`    | Every incremental batch | Last newly-added bar                      |
-| `[oracle-FAIL]`         | Error                   | Bar has microstructure but `bin == 0`     |
-| `[oracle-bin]`          | trace level             | Per-bar bin assignment (verbose)          |
-| `[intensity-rebuild]`   | Every rebuild           | old/new data len + tail sample            |
-| `[intensity-incr]`      | Incremental path        | new bars count + last bar                 |
-| `[intensity-mismatch]`  | State diverge           | next_idx ≠ old_dp_len → rebuild triggered |
-| `[intensity-diverge]`   | kline.rs diverge check  | heatmap_len ≠ dp_count (                  | delta | > 1) |
+| Tag                     | When                    | Meaning                                               |
+| ----------------------- | ----------------------- | ----------------------------------------------------- |
+| `[oracle-spectrum]`     | Every rebuild           | Full colour table + histograms                        |
+| `[oracle-rebuild-tail]` | Every rebuild           | Last bar's bin/k_actual/t                             |
+| `[oracle-incr-tail]`    | Every incremental batch | Last newly-added bar                                  |
+| `[oracle-FAIL]`         | Error                   | Bar has microstructure but `bin == 0`                 |
+| `[oracle-bin]`          | trace level             | Per-bar bin assignment (verbose)                      |
+| `[intensity-rebuild]`   | Every rebuild           | old/new data len + tail sample                        |
+| `[intensity-incr]`      | Incremental path        | new bars count + last bar                             |
+| `[intensity-mismatch]`  | State diverge           | next_idx ≠ old_dp_len → rebuild triggered             |
+| `[intensity-diverge]`   | kline.rs diverge check  | heatmap_len ≠ dp_count (abs(delta) > 1 triggers warn) |
 
 The `bin=0` oracle FAIL triggers a Telegram critical alert via:
 
