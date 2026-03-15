@@ -1,3 +1,4 @@
+use crate::serde_util;
 use crate::{TickerInfo, adapter::MarketKind};
 
 use super::MinQtySize;
@@ -310,4 +311,11 @@ impl QtyNormalization {
     pub fn normalize_qty(self, qty: f32, price: f32) -> Qty {
         Qty::from_f32(self.normalize(qty, price))
     }
+}
+
+pub fn de_qty_from_number<'de, D>(deserializer: D) -> Result<Qty, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_util::de_number_like_or_object(deserializer, "qty", Qty::from_f32)
 }

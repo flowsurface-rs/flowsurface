@@ -1,12 +1,12 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
+        Exchange, Kline, MarketKind, Price, PushFrequency, Qty, StreamKind, TickMultiplier, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::{TRADE_BUCKET_INTERVAL, flush_trade_buffers},
         connect::{State, channel, connect_ws},
-        de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
+        serde_util::de_string_to_number,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -134,16 +134,16 @@ struct HyperliquidSpotMeta {
 // Unified asset context structure for price/volume data
 #[derive(Debug, Deserialize)]
 struct HyperliquidAssetContext {
-    #[serde(rename = "dayNtlVlm", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "dayNtlVlm", deserialize_with = "de_string_to_number")]
     day_notional_volume: f32,
-    #[serde(rename = "markPx", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "markPx", deserialize_with = "de_string_to_number")]
     mark_price: f32,
-    #[serde(rename = "midPx", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "midPx", deserialize_with = "de_string_to_number")]
     mid_price: f32,
-    #[serde(rename = "prevDayPx", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "prevDayPx", deserialize_with = "de_string_to_number")]
     prev_day_price: f32,
     // TODO: Add open interest
-    // #[serde(rename = "openInterest", deserialize_with = "de_string_to_f32", default)]
+    // #[serde(rename = "openInterest", deserialize_with = "de_string_to_number", default)]
     // open_interest: f32, // Only available for perps
 }
 
@@ -168,15 +168,15 @@ struct HyperliquidKline {
     symbol: String,
     #[serde(rename = "i")]
     interval: String,
-    #[serde(rename = "o", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "o", deserialize_with = "de_string_to_number")]
     open: f32,
-    #[serde(rename = "h", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "h", deserialize_with = "de_string_to_number")]
     high: f32,
-    #[serde(rename = "l", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "l", deserialize_with = "de_string_to_number")]
     low: f32,
-    #[serde(rename = "c", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "c", deserialize_with = "de_string_to_number")]
     close: f32,
-    #[serde(rename = "v", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "v", deserialize_with = "de_string_to_number")]
     volume: f32,
     #[serde(rename = "n")]
     trade_count: u64,
@@ -193,9 +193,9 @@ struct HyperliquidDepth {
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct HyperliquidLevel {
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     px: f32,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     sz: f32,
     n: u32,
 }
@@ -205,9 +205,9 @@ struct HyperliquidLevel {
 struct HyperliquidTrade {
     coin: String,
     side: String,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     px: f32,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     sz: f32,
     time: u64,
 }
@@ -363,9 +363,9 @@ fn insert_ticker_from_ctx(
     ticker_stats_map.insert(
         ticker,
         TickerStats {
-            mark_price: ctx.mark_price,
+            mark_price: Price::from_f32(ctx.mark_price),
             daily_price_chg: daily_price_chg_pct(price, ctx.prev_day_price),
-            daily_volume: ctx.day_notional_volume,
+            daily_volume: Qty::from_f32(ctx.day_notional_volume),
         },
     );
 }

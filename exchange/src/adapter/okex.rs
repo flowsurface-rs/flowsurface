@@ -1,13 +1,13 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, Ticker, TickerInfo,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, Qty, Ticker, TickerInfo,
         TickerStats, Timeframe, Trade, Volume,
         adapter::{StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
         connect::{State, channel, connect_ws},
-        de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
-        is_symbol_supported,
         limiter::{self, RateLimiter},
+        serde_util,
+        serde_util::de_string_to_number,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -67,11 +67,11 @@ fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
-    #[serde(rename = "ts", deserialize_with = "de_string_to_u64")]
+    #[serde(rename = "ts", deserialize_with = "de_string_to_number")]
     pub time: u64,
-    #[serde(rename = "px", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "px", deserialize_with = "de_string_to_number")]
     pub price: f32,
-    #[serde(rename = "sz", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "sz", deserialize_with = "de_string_to_number")]
     pub qty: f32,
     #[serde(rename = "side")]
     pub is_sell: String,
@@ -125,8 +125,7 @@ fn feed_de(slice: &[u8]) -> Result<StreamData, AdapterError> {
 
         let time = first
             .get("ts")
-            .and_then(|t| t.as_str())
-            .and_then(|s| s.parse::<u64>().ok())
+            .and_then(serde_util::value_as_u64)
             .unwrap_or(0);
 
         let depth = SonicDepth {
@@ -539,30 +538,12 @@ pub fn connect_kline_stream(
 
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
-                                        let time = row
-                                            .get(0)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<u64>().ok());
-                                        let open = row
-                                            .get(1)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let high = row
-                                            .get(2)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let low = row
-                                            .get(3)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let close = row
-                                            .get(4)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
-                                        let volume = row
-                                            .get(5)
-                                            .and_then(|x| x.as_str())
-                                            .and_then(|s| s.parse::<f32>().ok());
+                                        let time = row.get(0).and_then(serde_util::value_as_u64);
+                                        let open = row.get(1).and_then(serde_util::value_as_f32);
+                                        let high = row.get(2).and_then(serde_util::value_as_f32);
+                                        let low = row.get(3).and_then(serde_util::value_as_f32);
+                                        let close = row.get(4).and_then(serde_util::value_as_f32);
+                                        let volume = row.get(5).and_then(serde_util::value_as_f32);
 
                                         let (ts, open, high, low, close) =
                                             match (time, open, high, low, close) {
@@ -701,22 +682,18 @@ pub async fn fetch_ticker_metadata(
             continue;
         }
 
-        if !is_symbol_supported(symbol, exchange, true) {
+        if !exchange.is_symbol_supported(symbol, true) {
             continue;
         }
 
-        let min_ticksize = item["tickSz"]
-            .as_str()
-            .and_then(|s| s.parse::<f32>().ok())
+        let min_ticksize = serde_util::value_as_f32(&item["tickSz"])
             .ok_or_else(|| AdapterError::ParseError("Tick size not found".to_string()))?;
-        let min_qty = item["lotSz"]
-            .as_str()
-            .and_then(|s| s.parse::<f32>().ok())
+        let min_qty = serde_util::value_as_f32(&item["lotSz"])
             .ok_or_else(|| AdapterError::ParseError("Lot size not found".to_string()))?;
         let contract_size = if market_type == MarketKind::Spot {
             None
         } else {
-            item["ctVal"].as_str().and_then(|s| s.parse::<f32>().ok())
+            serde_util::value_as_f32(&item["ctVal"])
         };
 
         let ticker = Ticker::new(symbol, exchange);
@@ -758,17 +735,14 @@ pub async fn fetch_ticker_stats(
             None => continue,
         };
 
-        if !is_symbol_supported(symbol, exchange, false) {
+        if !exchange.is_symbol_supported(symbol, false) {
             continue;
         }
 
-        let last_trade_price = item["last"].as_str().and_then(|s| s.parse::<f32>().ok());
-        let open24h = item["open24h"].as_str().and_then(|s| s.parse::<f32>().ok());
+        let last_trade_price = serde_util::value_as_f32(&item["last"]);
+        let open24h = serde_util::value_as_f32(&item["open24h"]);
 
-        let Some(vol24h) = item["volCcy24h"]
-            .as_str()
-            .and_then(|s| s.parse::<f32>().ok())
-        else {
+        let Some(vol24h) = serde_util::value_as_f32(&item["volCcy24h"]) else {
             continue;
         };
 
@@ -794,9 +768,9 @@ pub async fn fetch_ticker_stats(
         map.insert(
             Ticker::new(symbol, exchange),
             TickerStats {
-                mark_price: last_price,
+                mark_price: Price::from_f32(last_price),
                 daily_price_chg,
-                daily_volume: volume_usd,
+                daily_volume: Qty::from_f32(volume_usd),
             },
         );
     }
@@ -849,30 +823,12 @@ pub async fn fetch_klines(
     let mut klines: Vec<Kline> = Vec::with_capacity(list.len());
 
     for row in list {
-        let time = row
-            .get(0)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<u64>().ok());
-        let open = row
-            .get(1)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f32>().ok());
-        let high = row
-            .get(2)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f32>().ok());
-        let low = row
-            .get(3)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f32>().ok());
-        let close = row
-            .get(4)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f32>().ok());
-        let volume = row
-            .get(5)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f32>().ok());
+        let time = row.get(0).and_then(serde_util::value_as_u64);
+        let open = row.get(1).and_then(serde_util::value_as_f32);
+        let high = row.get(2).and_then(serde_util::value_as_f32);
+        let low = row.get(3).and_then(serde_util::value_as_f32);
+        let close = row.get(4).and_then(serde_util::value_as_f32);
+        let volume = row.get(5).and_then(serde_util::value_as_f32);
 
         let (ts, open, high, low, close) = match (time, open, high, low, close) {
             (Some(ts), Some(o), Some(h), Some(l), Some(c)) => (ts, o, h, l, c),
@@ -935,8 +891,8 @@ pub async fn fetch_historical_oi(
         .iter()
         .filter_map(|row| {
             let arr = row.as_array()?;
-            let ts = arr.first()?.as_str()?.parse::<u64>().ok()?;
-            let oi_ccy = arr.get(2)?.as_str()?.parse::<f32>().ok()?;
+            let ts = serde_util::value_as_u64(arr.first()?)?;
+            let oi_ccy = serde_util::value_as_f32(arr.get(2)?)?;
             Some(OpenInterest {
                 time: ts,
                 value: oi_ccy,
