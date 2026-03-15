@@ -214,9 +214,13 @@ impl TickersTable {
                     self.display_cache.clear();
                     for row in self.ticker_rows.iter_mut() {
                         row.previous_stats = None;
+                        let precision = self
+                            .tickers_info
+                            .get(&row.ticker)
+                            .and_then(|info| info.as_ref().map(|ti| ti.min_ticksize));
                         self.display_cache.insert(
                             row.ticker,
-                            compute_display_data(&row.ticker, &row.stats, None),
+                            compute_display_data(&row.ticker, &row.stats, None, precision),
                         );
                     }
 
@@ -446,7 +450,7 @@ impl TickersTable {
                 self.ticker_rows.sort_unstable_by(|a, b| {
                     b.stats
                         .daily_volume
-                        .total_cmp(&a.stats.daily_volume)
+                        .cmp(&a.stats.daily_volume)
                         .then_with(|| Ordering::Equal)
                 });
             }
@@ -454,7 +458,7 @@ impl TickersTable {
                 self.ticker_rows.sort_unstable_by(|a, b| {
                     a.stats
                         .daily_volume
-                        .total_cmp(&b.stats.daily_volume)
+                        .cmp(&b.stats.daily_volume)
                         .then_with(|| Ordering::Equal)
                 });
             }
@@ -581,6 +585,11 @@ impl TickersTable {
             .filter(|(t, _)| self.tickers_info.contains_key(t));
 
         for (ticker, new_stats) in iter {
+            let precision = self
+                .tickers_info
+                .get(&ticker)
+                .and_then(|info| info.as_ref().map(|ti| ti.min_ticksize));
+
             if let Some(&idx) = self.row_index.get(&ticker) {
                 let row = &mut self.ticker_rows[idx];
                 let previous_price = Some(row.stats.mark_price);
@@ -589,7 +598,7 @@ impl TickersTable {
 
                 self.display_cache.insert(
                     ticker,
-                    compute_display_data(&ticker, &row.stats, previous_price),
+                    compute_display_data(&ticker, &row.stats, previous_price, precision),
                 );
             } else {
                 let new_row = TickerRowData {
@@ -605,7 +614,7 @@ impl TickersTable {
 
                 self.display_cache.insert(
                     ticker,
-                    compute_display_data(&ticker, &self.ticker_rows[idx].stats, None),
+                    compute_display_data(&ticker, &self.ticker_rows[idx].stats, None, precision),
                 );
             }
         }
@@ -1049,10 +1058,8 @@ impl TickersTable {
             (ra.bucket, ra.pos)
                 .cmp(&(rb.bucket, rb.pos))
                 .then_with(|| match self.selected_sort_option {
-                    SortOptions::VolumeDesc => {
-                        b.stats.daily_volume.total_cmp(&a.stats.daily_volume)
-                    }
-                    SortOptions::VolumeAsc => a.stats.daily_volume.total_cmp(&b.stats.daily_volume),
+                    SortOptions::VolumeDesc => b.stats.daily_volume.cmp(&a.stats.daily_volume),
+                    SortOptions::VolumeAsc => a.stats.daily_volume.cmp(&b.stats.daily_volume),
                     SortOptions::ChangeDesc => {
                         b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
                     }
@@ -1082,10 +1089,8 @@ impl TickersTable {
             (ra.bucket, ra.pos)
                 .cmp(&(rb.bucket, rb.pos))
                 .then_with(|| match self.selected_sort_option {
-                    SortOptions::VolumeDesc => {
-                        b.stats.daily_volume.total_cmp(&a.stats.daily_volume)
-                    }
-                    SortOptions::VolumeAsc => a.stats.daily_volume.total_cmp(&b.stats.daily_volume),
+                    SortOptions::VolumeDesc => b.stats.daily_volume.cmp(&a.stats.daily_volume),
+                    SortOptions::VolumeAsc => a.stats.daily_volume.cmp(&b.stats.daily_volume),
                     SortOptions::ChangeDesc => {
                         b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
                     }
@@ -1207,22 +1212,30 @@ fn ticker_card<'a>(ticker: &Ticker, display_data: &'a TickerDisplayData) -> Elem
         .width(Length::Fixed(2.0))
         .style(move |theme| style::ticker_card_bar(theme, display_data.card_color_alpha));
 
-    let price_display = if display_data.price_changed_part.is_empty() {
-        row![text(&display_data.price_unchanged_part)]
+    let price_display = if let Some(unchanged_part) = display_data.price_unchanged_part.as_deref() {
+        let changed_part = display_data
+            .price_changed_part
+            .as_deref()
+            .unwrap_or_default();
+        if changed_part.is_empty() {
+            row![text(unchanged_part)]
+        } else {
+            row![
+                text(unchanged_part),
+                text(changed_part).style(move |theme: &Theme| {
+                    let palette = theme.extended_palette();
+                    iced::widget::text::Style {
+                        color: Some(match display_data.price_change.as_ref() {
+                            Some(PriceChange::Increased) => palette.success.base.color,
+                            Some(PriceChange::Decreased) => palette.danger.base.color,
+                            _ => palette.background.base.text,
+                        }),
+                    }
+                })
+            ]
+        }
     } else {
-        row![
-            text(&display_data.price_unchanged_part),
-            text(&display_data.price_changed_part).style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
-                iced::widget::text::Style {
-                    color: Some(match display_data.price_change {
-                        PriceChange::Increased => palette.success.base.color,
-                        PriceChange::Decreased => palette.danger.base.color,
-                        PriceChange::Unchanged => palette.background.base.text,
-                    }),
-                }
-            })
-        ]
+        row![text("-")]
     };
 
     let icon = icon_text(style::exchange_icon(ticker.exchange), 12);
@@ -1301,7 +1314,7 @@ fn expanded_ticker_card<'a>(
                 row![
                     text("Last Updated Price: ").size(11),
                     Space::new().width(Length::Fill).height(Length::Shrink),
-                    text(&display_data.mark_price_display)
+                    text(display_data.mark_price_display.as_deref().unwrap_or("-"))
                 ],
                 row![
                     text("Daily Change: ").size(11),

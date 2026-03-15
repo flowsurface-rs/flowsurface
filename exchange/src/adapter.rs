@@ -638,6 +638,19 @@ impl Exchange {
             StreamTicksize::ServerSide(multiplier.unwrap_or(server_fallback))
         }
     }
+
+    pub fn is_symbol_supported(&self, symbol: &str, log: bool) -> bool {
+        let valid_symbol = symbol
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+
+        if valid_symbol {
+            return true;
+        } else if log {
+            log::warn!("Unsupported ticker: '{}': {:?}", self, symbol,);
+        }
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

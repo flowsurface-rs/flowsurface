@@ -6,13 +6,13 @@ use crate::{
 
 use super::{
     super::{
-        Exchange, Kline, MarketKind, Price, PushFrequency, SizeUnit, StreamKind, Ticker,
+        Exchange, Kline, MarketKind, Price, PushFrequency, Qty, SizeUnit, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade,
         connect::{State, channel, connect_ws},
-        de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
-        is_symbol_supported,
         limiter::{self},
+        serde_util,
+        serde_util::de_string_to_number,
         unit::qty::volume_size_unit,
     },
     AdapterError, Event, StreamTicksize,
@@ -190,7 +190,7 @@ pub async fn fetch_ticker_metadata(
                     .as_str()
                     .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
 
-                if !is_symbol_supported(symbol_str, exchange, true) {
+                if !exchange.is_symbol_supported(symbol_str, true) {
                     continue;
                 }
 
@@ -203,14 +203,9 @@ pub async fn fetch_ticker_metadata(
 
                 // MEXC uses baseSizePrecision for quantity step size
                 // and quoteAssetPrecision for price precision
-                let min_qty = item["baseSizePrecision"]
-                    .as_str()
-                    .ok_or_else(|| {
+                let min_qty =
+                    serde_util::value_as_f32(&item["baseSizePrecision"]).ok_or_else(|| {
                         AdapterError::ParseError("Missing baseSizePrecision".to_string())
-                    })?
-                    .parse::<f32>()
-                    .map_err(|_| {
-                        AdapterError::ParseError("Failed to parse baseSizePrecision".to_string())
                     })?;
 
                 // Calculate min_ticksize from quoteAssetPrecision
@@ -271,7 +266,7 @@ pub async fn fetch_ticker_metadata(
                 };
                 let exchange = exchange_from_market_type(market_kind);
 
-                if !is_symbol_supported(symbol, exchange, true) {
+                if !exchange.is_symbol_supported(symbol, true) {
                     continue;
                 }
 
@@ -328,7 +323,7 @@ pub async fn fetch_ticker_stats(
                     .as_str()
                     .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
 
-                if !is_symbol_supported(symbol, exchange, false) {
+                if !exchange.is_symbol_supported(symbol, false) {
                     continue;
                 }
 
@@ -338,41 +333,23 @@ pub async fn fetch_ticker_stats(
                 }
 
                 // Parse lastPrice (can be string or number)
-                let last_price = item["lastPrice"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?
-                    .parse::<f32>()
-                    .map_err(|e| {
-                        AdapterError::ParseError(format!("Failed to parse last price: {e}"))
-                    })?;
+                let last_price = serde_util::value_as_f32(&item["lastPrice"])
+                    .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
                 // Parse priceChangePercent - 24h price change percentage (e.g., "0.00400048" = 0.4%)
-                let price_change_percent = item["priceChangePercent"]
-                    .as_str()
+                let price_change_percent = serde_util::value_as_f32(&item["priceChangePercent"])
                     .ok_or_else(|| {
                         AdapterError::ParseError("Price change percent not found".to_string())
-                    })?
-                    .parse::<f32>()
-                    .map_err(|e| {
-                        AdapterError::ParseError(format!(
-                            "Failed to parse price change percent: {e}"
-                        ))
                     })?;
 
-                let volume = item["volume"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?
-                    .parse::<f32>()
-                    .map_err(|e| {
-                        AdapterError::ParseError(format!("Failed to parse volume: {e}"))
-                    })?;
+                let volume = serde_util::value_as_f32(&item["volume"])
+                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
 
                 // Parse quoteVolume (24h volume in quote currency, e.g., USDT)
                 // If quoteVolume is null or not available, calculate from volume * lastPrice
-                let volume_in_usd = if let Some(qv) = item["quoteVolume"].as_str() {
-                    qv.parse::<f32>().map_err(|e| {
-                        AdapterError::ParseError(format!("Failed to parse quote volume: {e}"))
-                    })?
+                let volume_in_usd = if let Some(qv) = serde_util::value_as_f32(&item["quoteVolume"])
+                {
+                    qv
                 } else {
                     volume * last_price
                 };
@@ -382,9 +359,9 @@ pub async fn fetch_ticker_stats(
                 let daily_price_chg = price_change_percent * 100.0;
 
                 let ticker_stats = TickerStats {
-                    mark_price: last_price,
+                    mark_price: Price::from_f32(last_price),
                     daily_price_chg,
-                    daily_volume: volume_in_usd,
+                    daily_volume: Qty::from_f32(volume_in_usd),
                 };
 
                 ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
@@ -400,7 +377,7 @@ pub async fn fetch_ticker_stats(
                     .as_str()
                     .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
 
-                if !is_symbol_supported(symbol, exchange, false) {
+                if !exchange.is_symbol_supported(symbol, false) {
                     continue;
                 }
 
@@ -436,9 +413,9 @@ pub async fn fetch_ticker_stats(
                     let daily_price_chg = rise_fall_rate * 100.0;
 
                     let ticker_stats = TickerStats {
-                        mark_price: last_price,
+                        mark_price: Price::from_f32(last_price),
                         daily_price_chg,
-                        daily_volume: volume_in_usd,
+                        daily_volume: Qty::from_f32(volume_in_usd),
                     };
 
                     ticker_prices_map.insert(ticker, ticker_stats);
@@ -463,19 +440,19 @@ struct FuturesApiResponse {
 struct KlineSpot {
     #[serde()]
     open_ts: u64,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number ")]
     open: f32,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     high: f32,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     low: f32,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     close: f32,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     vol: f32,
     #[serde()]
     close_ts: u64,
-    #[serde(deserialize_with = "de_string_to_f32")]
+    #[serde(deserialize_with = "de_string_to_number")]
     asset_vol: f32,
 }
 

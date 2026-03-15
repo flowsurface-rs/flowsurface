@@ -1,5 +1,5 @@
 use crate::{
-    MinTicksize, Price,
+    MinTicksize, Price, serde_util,
     unit::qty::{Qty, QtyNormalization},
 };
 
@@ -21,26 +21,18 @@ impl<'de> serde::Deserialize<'de> for DeOrder {
         D: Deserializer<'de>,
     {
         // can be either an array like ["price","qty", ...] or an object with keys "0" and "1"
-        let value = Value::deserialize(deserializer).map_err(SerdeError::custom)?;
-
-        let parse_f = |val: &Value| -> Option<f32> {
-            match val {
-                Value::String(s) => s.parse::<f32>().ok(),
-                Value::Number(n) => n.as_f64().map(|x| x as f32),
-                _ => None,
-            }
-        };
+        let value = Value::deserialize(deserializer)?;
 
         let price = match &value {
-            Value::Array(arr) => arr.first().and_then(parse_f),
-            Value::Object(map) => map.get("0").and_then(parse_f),
+            Value::Array(arr) => arr.first().and_then(serde_util::value_as_f32),
+            Value::Object(map) => map.get("0").and_then(serde_util::value_as_f32),
             _ => None,
         }
         .ok_or_else(|| SerdeError::custom("Order price not found or invalid"))?;
 
         let qty = match &value {
-            Value::Array(arr) => arr.get(1).and_then(parse_f),
-            Value::Object(map) => map.get("1").and_then(parse_f),
+            Value::Array(arr) => arr.get(1).and_then(serde_util::value_as_f32),
+            Value::Object(map) => map.get("1").and_then(serde_util::value_as_f32),
             _ => None,
         }
         .ok_or_else(|| SerdeError::custom("Order qty not found or invalid"))?;

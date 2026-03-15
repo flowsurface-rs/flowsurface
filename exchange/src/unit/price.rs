@@ -1,4 +1,5 @@
 use super::{MinTicksize, Power10};
+use crate::serde_util;
 use serde::{Deserialize, Serialize};
 
 /// Fixed atomic unit scale: 10^-PRICE_SCALE is the smallest stored fraction.
@@ -239,4 +240,11 @@ impl PriceStep {
     pub fn from_f32(step: f32) -> Self {
         Self::from_f32_lossy(step)
     }
+}
+
+pub fn de_price_from_number<'de, D>(deserializer: D) -> Result<Price, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_util::de_number_like_or_object(deserializer, "price", Price::from_f32)
 }

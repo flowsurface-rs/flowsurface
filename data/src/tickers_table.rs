@@ -1,6 +1,7 @@
 use exchange::{
     Ticker, TickerStats,
     adapter::{Exchange, MarketKind, Venue},
+    unit::{MinTicksize, price::Price},
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,11 +35,10 @@ pub enum SortOptions {
     ChangeDesc,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PriceChange {
     Increased,
     Decreased,
-    Unchanged,
 }
 
 #[derive(Clone, Copy)]
@@ -55,37 +55,40 @@ pub struct TickerDisplayData {
     pub display_ticker: String,
     pub daily_change_pct: String,
     pub volume_display: String,
-    pub mark_price_display: String,
-    pub price_unchanged_part: String,
-    pub price_changed_part: String,
-    pub price_change: PriceChange,
+    pub mark_price_display: Option<String>,
+    pub price_unchanged_part: Option<String>,
+    pub price_changed_part: Option<String>,
+    pub price_change: Option<PriceChange>,
     pub card_color_alpha: f32,
 }
 
 pub fn compute_display_data(
     ticker: &Ticker,
     stats: &TickerStats,
-    previous_price: Option<f32>,
+    previous_price: Option<Price>,
+    precision: Option<MinTicksize>,
 ) -> TickerDisplayData {
     let (display_ticker, _market) = ticker.display_symbol_and_type();
 
     let current_price = stats.mark_price;
-    let (price_unchanged_part, price_changed_part, price_change) =
-        if let Some(prev_price) = previous_price {
-            split_price_changes(prev_price, current_price)
-        } else {
-            (
-                current_price.to_string(),
-                String::new(),
-                PriceChange::Unchanged,
-            )
-        };
+    let current_price_display = price_to_display_string(current_price, precision);
+    let price_parts = previous_price
+        .and_then(|prev_price| split_price_changes(prev_price, current_price, precision))
+        .or_else(|| {
+            current_price_display
+                .clone()
+                .map(|price| (price, String::new(), None))
+        });
+
+    let (price_unchanged_part, price_changed_part, price_change) = price_parts
+        .map(|(unchanged, changed, change)| (Some(unchanged), Some(changed), change))
+        .unwrap_or((None, None, None));
 
     TickerDisplayData {
         display_ticker,
         daily_change_pct: super::util::pct_change(stats.daily_price_chg),
-        volume_display: super::util::currency_abbr(stats.daily_volume),
-        mark_price_display: stats.mark_price.to_string(),
+        volume_display: super::util::currency_abbr(stats.daily_volume.to_f32_lossy()),
+        mark_price_display: current_price_display,
         price_unchanged_part,
         price_changed_part,
         price_change,
@@ -93,41 +96,41 @@ pub fn compute_display_data(
     }
 }
 
-fn split_price_changes(previous_price: f32, current_price: f32) -> (String, String, PriceChange) {
+fn split_price_changes(
+    previous_price: Price,
+    current_price: Price,
+    precision: Option<MinTicksize>,
+) -> Option<(String, String, Option<PriceChange>)> {
+    let curr_str = price_to_display_string(current_price, precision)?;
+
     if previous_price == current_price {
-        return (
-            current_price.to_string(),
-            String::new(),
-            PriceChange::Unchanged,
-        );
+        return Some((curr_str, String::new(), None));
     }
 
-    let prev_str = previous_price.to_string();
-    let curr_str = current_price.to_string();
+    let prev_str = price_to_display_string(previous_price, precision)?;
 
-    let direction = if current_price > previous_price {
+    if prev_str == curr_str {
+        return Some((curr_str, String::new(), None));
+    }
+
+    let direction = Some(if current_price > previous_price {
         PriceChange::Increased
     } else {
         PriceChange::Decreased
-    };
+    });
 
-    let mut split_index = 0;
-    let prev_chars: Vec<char> = prev_str.chars().collect();
-    let curr_chars: Vec<char> = curr_str.chars().collect();
-
-    for (i, &curr_char) in curr_chars.iter().enumerate() {
-        if i >= prev_chars.len() || prev_chars[i] != curr_char {
-            split_index = i;
-            break;
-        }
-    }
-
-    if split_index == 0 && curr_chars.len() != prev_chars.len() {
-        split_index = prev_chars.len().min(curr_chars.len());
-    }
+    let split_index = prev_str
+        .bytes()
+        .zip(curr_str.bytes())
+        .position(|(prev, curr)| prev != curr)
+        .unwrap_or_else(|| prev_str.len().min(curr_str.len()));
 
     let unchanged_part = curr_str[..split_index].to_string();
     let changed_part = curr_str[split_index..].to_string();
 
-    (unchanged_part, changed_part, direction)
+    Some((unchanged_part, changed_part, direction))
+}
+
+fn price_to_display_string(price: Price, precision: Option<MinTicksize>) -> Option<String> {
+    precision.map(|precision| price.to_string(precision))
 }
