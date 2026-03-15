@@ -39,6 +39,7 @@ pub enum Icon {
     BybitLogo = 59400,
     HyperliquidLogo = 59411,
     OkexLogo = 59423,
+    MexcLogo = 59425,
     Search = 59394,
     Sort = 61660,
     SortDesc = 61661,
@@ -80,6 +81,7 @@ pub fn exchange_icon(exchange: Exchange) -> Icon {
         }
         Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Icon::HyperliquidLogo,
         Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Icon::OkexLogo,
+        Exchange::MexcLinear | Exchange::MexcInverse | Exchange::MexcSpot => Icon::MexcLogo,
     }
 }
 
