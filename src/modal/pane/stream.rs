@@ -5,7 +5,7 @@ use crate::{
 
 use data::chart::Basis;
 use exchange::{
-    TickMultiplier, TickerInfo, Timeframe,
+    StreamPairKind, TickMultiplier, Timeframe,
     adapter::{Exchange, hyperliquid::allowed_multipliers_for_base_tick},
 };
 use iced::{
@@ -324,7 +324,7 @@ impl Modifier {
         }
     }
 
-    pub fn view<'a>(&self, ticker_info: Option<TickerInfo>) -> Element<'a, Message> {
+    pub fn view<'a>(&self, stream_pair: Option<StreamPairKind>) -> Element<'a, Message> {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
@@ -460,49 +460,17 @@ impl Modifier {
                             _ => None,
                         };
 
-                        if allows_tick_basis {
-                            let kline_timeframe_grid = modifiers_grid(
-                                &Timeframe::KLINE,
+                        if let Some((timeframes, items_per_row)) =
+                            timeframe_grid_config(kind, stream_pair.as_ref())
+                        {
+                            let timeframe_grid = modifiers_grid(
+                                &timeframes,
                                 selected_tf,
                                 |tf| Message::BasisSelected(tf.into()),
                                 &create_button,
-                                3,
+                                items_per_row,
                             );
-                            basis_selection_column =
-                                basis_selection_column.push(kline_timeframe_grid);
-                        } else if let Some(info) = ticker_info {
-                            match kind {
-                                ModifierKind::Comparison(_) => {
-                                    let kline_timeframe_grid = modifiers_grid(
-                                        &Timeframe::KLINE,
-                                        selected_tf,
-                                        |tf| Message::BasisSelected(tf.into()),
-                                        &create_button,
-                                        3,
-                                    );
-                                    basis_selection_column =
-                                        basis_selection_column.push(kline_timeframe_grid);
-                                }
-                                ModifierKind::Heatmap(_, _) => {
-                                    let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
-                                        .iter()
-                                        .copied()
-                                        .filter(|tf| {
-                                            info.exchange().supports_heatmap_timeframe(*tf)
-                                        })
-                                        .collect();
-                                    let heatmap_timeframe_grid = modifiers_grid(
-                                        &heatmap_timeframes,
-                                        selected_tf,
-                                        |tf| Message::BasisSelected(tf.into()),
-                                        &create_button,
-                                        2,
-                                    );
-                                    basis_selection_column =
-                                        basis_selection_column.push(heatmap_timeframe_grid);
-                                }
-                                _ => { /* No other chart types support non-time basis */ }
-                            }
+                            basis_selection_column = basis_selection_column.push(timeframe_grid);
                         }
                     }
                     SelectedTab::TickCount {
@@ -655,6 +623,19 @@ impl Modifier {
     }
 }
 
+fn timeframe_grid_config(
+    kind: ModifierKind,
+    stream_pair: Option<&StreamPairKind>,
+) -> Option<(Vec<Timeframe>, usize)> {
+    match kind {
+        ModifierKind::Candlestick(_)
+        | ModifierKind::Footprint(_, _)
+        | ModifierKind::Comparison(_) => Some((supported_kline_timeframes(stream_pair), 3)),
+        ModifierKind::Heatmap(_, _) => Some((supported_heatmap_timeframes(stream_pair)?, 2)),
+        ModifierKind::Orderbook(_, _) => None,
+    }
+}
+
 /// A `Column` grid of buttons from `items_source`.
 ///
 /// Buttons are arranged in rows of up to `items_per_row`.
@@ -714,6 +695,40 @@ where
     }
 
     grid_column
+}
+
+fn supported_kline_timeframes(stream_pair: Option<&StreamPairKind>) -> Vec<Timeframe> {
+    let is_supported = |tf| match stream_pair {
+        Some(StreamPairKind::SingleSource(ticker_info)) => {
+            ticker_info.exchange().supports_kline_timeframe(tf)
+        }
+        Some(StreamPairKind::MultiSource(ticker_infos)) if !ticker_infos.is_empty() => ticker_infos
+            .iter()
+            .all(|ticker_info| ticker_info.exchange().supports_kline_timeframe(tf)),
+        _ => true,
+    };
+
+    Timeframe::KLINE
+        .iter()
+        .copied()
+        .filter(|tf| is_supported(*tf))
+        .collect()
+}
+
+fn supported_heatmap_timeframes(stream_pair: Option<&StreamPairKind>) -> Option<Vec<Timeframe>> {
+    let ticker = match stream_pair {
+        Some(StreamPairKind::SingleSource(ticker_info)) => Some(*ticker_info),
+        Some(StreamPairKind::MultiSource(ticker_infos)) => ticker_infos.first().copied(),
+        None => None,
+    }?;
+
+    Some(
+        Timeframe::HEATMAP
+            .iter()
+            .copied()
+            .filter(|tf| ticker.exchange().supports_heatmap_timeframe(*tf))
+            .collect(),
+    )
 }
 
 impl From<&ModifierKind> for SelectedTab {

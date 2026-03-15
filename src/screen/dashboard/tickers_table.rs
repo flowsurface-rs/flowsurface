@@ -41,7 +41,7 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
-const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
+const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 5] = [
     (Venue::Bybit, Exchange::BybitLinear, "Bybit"),
     (Venue::Binance, Exchange::BinanceLinear, "Binance"),
     (
@@ -50,6 +50,7 @@ const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
         "Hyperliquid",
     ),
     (Venue::Okex, Exchange::OkexLinear, "OKX"),
+    (Venue::Mexc, Exchange::MexcLinear, "MEXC"),
 ];
 
 pub enum Action {
@@ -104,11 +105,15 @@ impl TickersTable {
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
         let fetch_metadata = Exchange::ALL
             .iter()
+            .copied()
+            // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
+            // TODO: Remove this after protobuf implementation and Mexc spot markets ready to stream
+            .filter(|exchange| *exchange != Exchange::MexcSpot)
             .map(|exchange| {
                 Task::perform(
-                    fetch_ticker_metadata(*exchange),
+                    fetch_ticker_metadata(exchange),
                     move |result| match result {
-                        Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
+                        Ok(ticker_info) => Message::UpdateTickersInfo(exchange, ticker_info),
                         Err(err) => {
                             log::error!("Ticker metadata fetch failed for {exchange:?}: {err}");
                             Message::ErrorOccurred(InternalError::Fetch(format!(
@@ -228,7 +233,9 @@ impl TickersTable {
                     let fetch_tasks = exchanges
                         .into_iter()
                         .map(|exchange| {
-                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
+                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse)
+                                || matches!(exchange.venue(), Venue::Mexc)
+                            {
                                 Some(contract_sizes_for_exchange(
                                     exchange,
                                     self.tickers_info.iter(),
@@ -257,7 +264,9 @@ impl TickersTable {
                 }
             }
             Message::UpdateTickersInfo(exchange, info) => {
-                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
+                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse)
+                    || matches!(exchange.venue(), Venue::Mexc)
+                {
                     Some(contract_sizes_for_exchange(exchange, info.iter()))
                 } else {
                     None

@@ -76,6 +76,27 @@ impl Basis {
         matches!(self, Basis::Time(_))
     }
 
+    pub fn default_kline_time(
+        ticker_info: Option<exchange::TickerInfo>,
+        fallback: Timeframe,
+    ) -> Self {
+        let interval = ticker_info.map_or(fallback, |info| {
+            let exchange = info.exchange();
+
+            if exchange.supports_kline_timeframe(fallback) {
+                fallback
+            } else {
+                Timeframe::KLINE
+                    .iter()
+                    .copied()
+                    .find(|tf| exchange.supports_kline_timeframe(*tf))
+                    .unwrap_or(fallback)
+            }
+        });
+
+        interval.into()
+    }
+
     pub fn default_heatmap_time(ticker_info: Option<exchange::TickerInfo>) -> Self {
         let fallback = Timeframe::MS500;
 

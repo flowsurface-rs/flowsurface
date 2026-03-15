@@ -302,22 +302,44 @@ impl State {
                         .visual_config
                         .clone()
                         .and_then(|cfg| cfg.comparison());
-                    let basis = derived_plan.basis.unwrap_or(Basis::Time(Timeframe::M15));
+
+                    let timeframe = {
+                        let supports = |tf| {
+                            tickers
+                                .iter()
+                                .all(|ti| ti.exchange().supports_kline_timeframe(tf))
+                        };
+
+                        if let Some(tf) = derived_plan.basis.and_then(|basis| match basis {
+                            Basis::Time(tf) => Some(tf),
+                            Basis::Tick(_) => None,
+                        }) && supports(tf)
+                        {
+                            tf
+                        } else {
+                            let fallback = Timeframe::M15;
+                            if supports(fallback) {
+                                fallback
+                            } else {
+                                Timeframe::KLINE
+                                    .iter()
+                                    .copied()
+                                    .find(|tf| supports(*tf))
+                                    .unwrap_or(fallback)
+                            }
+                        }
+                    };
+
+                    let basis = Basis::Time(timeframe);
+                    self.settings.selected_basis = Some(basis);
                     let content =
                         Content::Comparison(Some(ComparisonChart::new(basis, &tickers, config)));
 
-                    let streams = by_basis_default(
-                        derived_plan.basis,
-                        Timeframe::M15,
-                        |tf| {
-                            tickers
-                                .iter()
-                                .copied()
-                                .map(|ti| kline_stream(ti, tf))
-                                .collect()
-                        },
-                        || todo!("WIP: ComparisonChart does not support tick basis"),
-                    );
+                    let streams = tickers
+                        .iter()
+                        .copied()
+                        .map(|ti| kline_stream(ti, timeframe))
+                        .collect();
 
                     (content, streams)
                 }
@@ -577,10 +599,7 @@ impl State {
             }
             Content::Comparison(chart) => {
                 if let Some(c) = chart {
-                    let selected_basis = self
-                        .settings
-                        .selected_basis
-                        .unwrap_or(Timeframe::M15.into());
+                    let selected_basis = Basis::Time(c.timeframe);
                     let kind = ModifierKind::Comparison(selected_basis);
 
                     let modifiers =
@@ -786,8 +805,7 @@ impl State {
                 if let Some(chart) = chart {
                     match chart_kind {
                         data::chart::KlineChartKind::Footprint { .. } => {
-                            let basis =
-                                self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
+                            let basis = chart.basis();
                             let tick_multiply =
                                 self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
 
@@ -813,10 +831,7 @@ impl State {
                             top_left_buttons = top_left_buttons.push(modifiers);
                         }
                         data::chart::KlineChartKind::Candles => {
-                            let selected_basis = self
-                                .settings
-                                .selected_basis
-                                .unwrap_or(Timeframe::M15.into());
+                            let selected_basis = chart.basis();
                             let kind = ModifierKind::Candlestick(selected_basis);
 
                             let modifiers =
@@ -1418,7 +1433,7 @@ impl State {
             }
             Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
-                modifier.view(self.stream_pair()).map(move |message| {
+                modifier.view(self.stream_pair_kind()).map(move |message| {
                     Message::PaneEvent(pane, Event::StreamModifierChanged(message))
                 }),
                 Message::PaneEvent(pane, Event::HideModal),
