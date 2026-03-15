@@ -264,7 +264,9 @@ impl TickersTable {
                 }
             }
             Message::UpdateTickersInfo(exchange, info) => {
-                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
+                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse)
+                    || matches!(exchange.venue(), Venue::Mexc)
+                {
                     Some(contract_sizes_for_exchange(exchange, info.iter()))
                 } else {
                     None
