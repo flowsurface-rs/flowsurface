@@ -13,7 +13,7 @@ use data::chart::{
     },
     indicator::HeatmapIndicator,
 };
-use data::util::{abbr_large_numbers, count_decimals};
+use data::util::abbr_large_numbers;
 use data::{
     aggr::time::{DataPoint, TimeSeries},
     chart::Autoscale,
@@ -106,7 +106,7 @@ impl Chart for HeatmapChart {
     }
 
     fn is_empty(&self) -> bool {
-        self.trades.datapoints.is_empty()
+        self.heatmap.is_empty()
     }
 }
 
@@ -162,14 +162,12 @@ impl HeatmapChart {
     pub fn new(
         layout: ViewConfig,
         basis: Basis,
-        tick_size: f32,
+        step: PriceStep,
         enabled_indicators: &[HeatmapIndicator],
         ticker_info: TickerInfo,
         config: Option<Config>,
         studies: Vec<HeatmapStudy>,
     ) -> Self {
-        let step = PriceStep::from_f32(tick_size);
-
         let mut indicators = EnumMap::default();
         for &indicator in enabled_indicators {
             indicators[indicator] = Some(match indicator {
@@ -182,7 +180,7 @@ impl HeatmapChart {
         let view_state = ViewState::new(
             basis,
             step,
-            count_decimals(tick_size),
+            step.decimal_places(),
             ticker_info,
             ViewConfig {
                 splits: layout.splits,
@@ -357,22 +355,21 @@ impl HeatmapChart {
         self.chart.layout()
     }
 
-    pub fn change_tick_size(&mut self, new_tick_size: f32) {
+    pub fn change_tick_size(&mut self, step: PriceStep) {
         let chart_state = self.mut_state();
 
         let basis = chart_state.basis;
-        let step = PriceStep::from_f32(new_tick_size);
 
         chart_state.cell_height = 4.0;
         chart_state.tick_size = step;
-        chart_state.decimals = count_decimals(new_tick_size);
+        chart_state.decimals = step.decimal_places();
 
         self.trades.datapoints.clear();
         self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty, step, basis);
     }
 
-    pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size.to_f32_lossy()
+    pub fn tick_size(&self) -> PriceStep {
+        self.chart.tick_size
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {

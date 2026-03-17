@@ -13,7 +13,7 @@ use data::chart::kline::{
 };
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
-use data::util::{abbr_large_numbers, count_decimals};
+use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
@@ -166,7 +166,7 @@ impl KlineChart {
     pub fn new(
         layout: ViewConfig,
         basis: Basis,
-        tick_size: f32,
+        step: PriceStep,
         klines_raw: &[Kline],
         raw_trades: Vec<Trade>,
         enabled_indicators: &[KlineIndicator],
@@ -175,8 +175,6 @@ impl KlineChart {
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
-                let step = PriceStep::from_f32(tick_size);
-
                 let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, klines_raw)
                     .with_trades(&raw_trades);
 
@@ -209,7 +207,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -255,8 +253,6 @@ impl KlineChart {
                 }
             }
             Basis::Tick(interval) => {
-                let step = PriceStep::from_f32(tick_size);
-
                 let cell_width = match kind {
                     KlineChartKind::Footprint { .. } => 80.0,
                     KlineChartKind::Candles => 4.0,
@@ -269,7 +265,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -434,8 +430,8 @@ impl KlineChart {
         self.fetching_trades.1 = Some(handle);
     }
 
-    pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size.to_f32_lossy()
+    pub fn tick_size(&self) -> PriceStep {
+        self.chart.tick_size
     }
 
     pub fn study_configurator(&self) -> &study::Configurator<FootprintStudy> {
@@ -502,20 +498,18 @@ impl KlineChart {
         self.chart.basis
     }
 
-    pub fn change_tick_size(&mut self, new_tick_size: f32) {
+    pub fn change_tick_size(&mut self, new_step: PriceStep) {
         let chart = self.mut_state();
 
-        let step = PriceStep::from_f32(new_tick_size);
-
-        chart.cell_height *= new_tick_size / chart.tick_size.to_f32_lossy();
-        chart.tick_size = step;
+        chart.cell_height *= (new_step.units as f32) / (chart.tick_size.units as f32);
+        chart.tick_size = new_step;
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
-                tick_aggr.change_tick_size(new_tick_size, &self.raw_trades);
+                tick_aggr.change_tick_size(new_step, &self.raw_trades);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.change_tick_size(new_tick_size, &self.raw_trades);
+                timeseries.change_tick_size(new_step, &self.raw_trades);
             }
         }
 
@@ -1335,7 +1329,7 @@ fn draw_clusters(
     max_cluster_qty: f32,
     palette: &Extended,
     text_size: f32,
-    tick_size: f32,
+    step: PriceStep,
     show_text: bool,
     imbalance: Option<(usize, Option<usize>, bool)>,
     kline: &Kline,
@@ -1429,9 +1423,8 @@ fn draw_clusters(
                 }
 
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance {
-                    let step = PriceStep::from_f32(tick_size);
                     let higher_price =
-                        Price::from_f32(price.to_f32() + tick_size).round_to_step(step);
+                        Price::from_f32(price.to_f32() + step.to_f32_lossy()).round_to_step(step);
 
                     let rect_w = ((area.imb_marker_width - 1.0) / 2.0).max(1.0);
                     let buyside_x = area.imb_marker_left + area.imb_marker_width - rect_w;
@@ -1544,9 +1537,8 @@ fn draw_clusters(
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance
                     && area.imb_marker_width > 0.0
                 {
-                    let step = PriceStep::from_f32(tick_size);
                     let higher_price =
-                        Price::from_f32(price.to_f32() + tick_size).round_to_step(step);
+                        Price::from_f32(price.to_f32() + step.to_f32_lossy()).round_to_step(step);
 
                     let rect_width = ((area.imb_marker_width - 1.0) / 2.0).max(1.0);
 

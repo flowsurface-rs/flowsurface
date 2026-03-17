@@ -171,6 +171,10 @@ impl HistoricalDepth {
         self.process_side(&depth.asks, time, false);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.price_levels.is_empty()
+    }
+
     fn process_side(&mut self, side: &BTreeMap<Price, Qty>, time: u64, is_bid: bool) {
         let mut current_price = None;
         let mut current_qty = Qty::from_units(0);

@@ -33,6 +33,7 @@ use data::{
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
     adapter::{MarketKind, StreamKind, StreamTicksize},
+    unit::PriceStep,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
@@ -199,7 +200,7 @@ impl State {
                         &self.content,
                         derived_plan.ticker_info,
                         &self.settings,
-                        derived_plan.tick_size,
+                        derived_plan.price_step,
                     );
 
                     let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
@@ -212,7 +213,7 @@ impl State {
                         &self.content,
                         derived_plan.ticker_info,
                         &self.settings,
-                        derived_plan.tick_size,
+                        derived_plan.price_step,
                     );
 
                     let streams = by_basis_default(
@@ -241,21 +242,24 @@ impl State {
                         )
                     };
 
+                    let time_basis_stream = |tf| vec![kline_stream(derived_plan.ticker_info, tf)];
+                    let tick_basis_stream = || {
+                        let depth_aggr = derived_plan
+                            .ticker_info
+                            .exchange()
+                            .stream_ticksize(None, TickMultiplier(50));
+                        let temp = PaneSetup {
+                            depth_aggr,
+                            ..derived_plan
+                        };
+                        vec![trades_stream(&temp)]
+                    };
+
                     let streams = by_basis_default(
                         derived_plan.basis,
                         Timeframe::M15,
-                        |tf| vec![kline_stream(derived_plan.ticker_info, tf)],
-                        || {
-                            let depth_aggr = derived_plan
-                                .ticker_info
-                                .exchange()
-                                .stream_ticksize(None, TickMultiplier(50));
-                            let temp = PaneSetup {
-                                depth_aggr,
-                                ..derived_plan
-                            };
-                            vec![trades_stream(&temp)]
-                        },
+                        time_basis_stream,
+                        tick_basis_stream,
                     );
 
                     (content, streams)
@@ -289,7 +293,7 @@ impl State {
                     let content = Content::Ladder(Some(Ladder::new(
                         config,
                         derived_plan.ticker_info,
-                        derived_plan.tick_size,
+                        derived_plan.price_step,
                     )));
 
                     let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
@@ -674,17 +678,24 @@ impl State {
                         .unwrap_or(Basis::default_heatmap_time(self.stream_pair()));
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
 
-                    let kind = ModifierKind::Orderbook(basis, tick_multiply);
+                    let stream_pair = self.stream_pair();
 
-                    let base_ticksize = tick_multiply.base(panel.tick_size());
-                    let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
+                    let price_step = stream_pair
+                        .map(|ti| {
+                            tick_multiply.unscale_step_or_min_tick(panel.step, ti.min_ticksize)
+                        })
+                        .unwrap_or_else(|| tick_multiply.unscale_step(panel.step));
+
+                    let exchange = stream_pair.map(|ti| ti.ticker.exchange);
+                    let min_ticksize = stream_pair.map(|ti| ti.min_ticksize);
 
                     let modifiers = ticksize_modifier(
                         id,
-                        base_ticksize,
+                        price_step,
+                        min_ticksize,
                         tick_multiply,
                         modifier,
-                        kind,
+                        ModifierKind::Orderbook(basis, tick_multiply),
                         exchange,
                     );
 
@@ -733,13 +744,20 @@ impl State {
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
 
                     let kind = ModifierKind::Heatmap(basis, tick_multiply);
-                    let base_ticksize = tick_multiply.base(chart.tick_size());
+                    let price_step = ticker_info
+                        .map(|ti| {
+                            tick_multiply
+                                .unscale_step_or_min_tick(chart.tick_size(), ti.min_ticksize)
+                        })
+                        .unwrap_or_else(|| tick_multiply.unscale_step(chart.tick_size()));
+                    let min_ticksize = ticker_info.map(|ti| ti.min_ticksize);
 
                     let modifiers = row![
                         basis_modifier(id, basis, modifier, kind),
                         ticksize_modifier(
                             id,
-                            base_ticksize,
+                            price_step,
+                            min_ticksize,
                             tick_multiply,
                             modifier,
                             kind,
@@ -810,16 +828,25 @@ impl State {
                                 self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
 
                             let kind = ModifierKind::Footprint(basis, tick_multiply);
-                            let base_ticksize = tick_multiply.base(chart.tick_size());
+                            let stream_pair = self.stream_pair();
+                            let price_step = stream_pair
+                                .map(|ti| {
+                                    tick_multiply.unscale_step_or_min_tick(
+                                        chart.tick_size(),
+                                        ti.min_ticksize,
+                                    )
+                                })
+                                .unwrap_or_else(|| tick_multiply.unscale_step(chart.tick_size()));
 
-                            let exchange =
-                                self.stream_pair().as_ref().map(|info| info.ticker.exchange);
+                            let exchange = stream_pair.as_ref().map(|info| info.ticker.exchange);
+                            let min_ticksize = stream_pair.map(|ti| ti.min_ticksize);
 
                             let modifiers = row![
                                 basis_modifier(id, basis, modifier, kind),
                                 ticksize_modifier(
                                     id,
-                                    base_ticksize,
+                                    price_step,
+                                    min_ticksize,
                                     tick_multiply,
                                     modifier,
                                     kind,
@@ -1057,17 +1084,17 @@ impl State {
                                     match &mut self.content {
                                         Content::Kline { chart: Some(c), .. } => {
                                             c.change_tick_size(
-                                                tm.multiply_with_min_tick_size(ticker),
+                                                tm.multiply_with_min_tick_step(ticker),
                                             );
                                             c.reset_request_handler();
                                         }
                                         Content::Heatmap { chart: Some(c), .. } => {
                                             c.change_tick_size(
-                                                tm.multiply_with_min_tick_size(ticker),
+                                                tm.multiply_with_min_tick_step(ticker),
                                             );
                                         }
                                         Content::Ladder(Some(p)) => {
-                                            p.set_tick_size(tm.multiply_with_min_tick_size(ticker));
+                                            p.set_tick_size(tm.multiply_with_min_tick_step(ticker));
                                         }
                                         _ => {}
                                     }
@@ -1635,7 +1662,7 @@ impl Content {
         current_content: &Content,
         ticker_info: TickerInfo,
         settings: &Settings,
-        tick_size: f32,
+        price_step: exchange::unit::PriceStep,
     ) -> Self {
         let (enabled_indicators, layout, prev_studies) = if let Content::Heatmap {
             chart,
@@ -1673,7 +1700,7 @@ impl Content {
         let chart = HeatmapChart::new(
             layout.clone(),
             basis,
-            tick_size,
+            price_step,
             &enabled_indicators,
             ticker_info,
             config,
@@ -1693,7 +1720,7 @@ impl Content {
         current_content: &Content,
         ticker_info: TickerInfo,
         settings: &Settings,
-        tick_size: f32,
+        step: exchange::unit::PriceStep,
     ) -> Self {
         let (prev_indis, prev_layout, prev_kind_opt) = if let Content::Kline {
             chart,
@@ -1773,7 +1800,7 @@ impl Content {
         let chart = KlineChart::new(
             layout.clone(),
             basis,
-            tick_size,
+            step,
             &[],
             vec![],
             &enabled_indicators,
@@ -2056,15 +2083,20 @@ fn link_group_modal<'a>(
 
 fn ticksize_modifier<'a>(
     id: pane_grid::Pane,
-    base_ticksize: f32,
+    price_step: PriceStep,
+    min_ticksize: Option<exchange::unit::MinTicksize>,
     multiplier: TickMultiplier,
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
     exchange: Option<exchange::adapter::Exchange>,
 ) -> Element<'a, Message> {
-    let modifier_modal = Modal::StreamModifier(
-        modal::stream::Modifier::new(kind).with_ticksize_view(base_ticksize, multiplier, exchange),
-    );
+    let modifier_modal =
+        Modal::StreamModifier(modal::stream::Modifier::new(kind).with_ticksize_view(
+            price_step,
+            min_ticksize,
+            multiplier,
+            exchange,
+        ));
 
     let is_active = modifier.is_some_and(|m| {
         matches!(

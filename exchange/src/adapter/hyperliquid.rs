@@ -7,6 +7,7 @@ use super::{
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
         serde_util::de_string_to_number,
+        unit::MinTicksize,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -36,17 +37,17 @@ const SIG_FIG_LIMIT: i32 = 5;
 const MULTS_OVERFLOW: &[u16] = &[1, 10, 20, 50, 100, 1000, 10000];
 const MULTS_FRACTIONAL: &[u16] = &[1, 2, 5, 10, 100, 1000];
 
-// safe intersection when base_ticksize == 1.0 but we can't disambiguate
+// safe intersection when base tick is exactly 1 (cannot disambiguate boundary case)
 const MULTS_SAFE: &[u16] = &[1, 10, 100, 1000];
 
-pub fn allowed_multipliers_for_base_tick(base_ticksize: f32) -> &'static [u16] {
-    if base_ticksize < 1.0 {
+pub fn allowed_multipliers_for_min_tick(min_ticksize: MinTicksize) -> &'static [u16] {
+    if min_ticksize.power < 0 {
         // int_digits <= 4 (fractional/boundary region)
         MULTS_FRACTIONAL
-    } else if base_ticksize > 1.0 {
+    } else if min_ticksize.power > 0 {
         MULTS_OVERFLOW
     } else {
-        // base_ticksize == 1.0: could be exactly 5 digits or overflow (>=6).
+        // min tick == 1: could be exactly 5 digits or overflow (>=6).
         MULTS_SAFE
     }
 }
