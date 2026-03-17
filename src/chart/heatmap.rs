@@ -486,9 +486,9 @@ impl canvas::Program<Message> for HeatmapChart {
             let cell_height = chart.cell_height;
             let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
 
-            let max_depth_qty = qty_scales.max_depth_qty;
-            let (max_aggr_volume, max_trade_qty) =
-                (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
+            let max_depth_qty = qty_scales.max_depth_qty.to_f32_lossy();
+            let max_aggr_volume = qty_scales.max_aggr_volume.to_f32_lossy();
+            let max_trade_qty = qty_scales.max_trade_qty.to_f32_lossy();
 
             let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -521,7 +521,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let width = end_x - start_x;
 
                     if width > 0.001 {
-                        let color_alpha = (visual_run.qty() / max_depth_qty).min(1.0);
+                        let color_alpha = (visual_run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
 
                         frame.fill_rectangle(
                             Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -539,7 +539,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         runs.iter()
                             .filter(|run| {
                                 let order_size = market_type.qty_in_quote_value(
-                                    run.qty(),
+                                    run.qty,
                                     *price,
                                     size_in_quote_ccy,
                                 );
@@ -552,7 +552,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 let width = end_x - start_x;
 
-                                let color_alpha = (run.qty() / max_depth_qty).min(1.0);
+                                let color_alpha = (run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
 
                                 frame.fill_rectangle(
                                     Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -567,7 +567,7 @@ impl canvas::Program<Message> for HeatmapChart {
                 let max_qty = self
                     .heatmap
                     .latest_order_runs(highest, lowest, latest_timestamp)
-                    .map(|(_, run)| run.qty())
+                    .map(|(_, run)| run.qty.to_f32_lossy())
                     .fold(f32::MIN, f32::max)
                     .ceil()
                     * 5.0
@@ -578,7 +578,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         .latest_order_runs(highest, lowest, latest_timestamp)
                         .for_each(|(price, run)| {
                             let y_position = chart.price_to_y(*price);
-                            let bar_width = (run.qty() / max_qty) * 50.0;
+                            let bar_width = (run.qty.to_f32_lossy() / max_qty) * 50.0;
 
                             frame.fill_rectangle(
                                 Point::new(0.0, y_position - (cell_height / 2.0)),
@@ -614,7 +614,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         let trade_qty = f32::from(trade.qty);
 
                         let trade_size = market_type.qty_in_quote_value(
-                            trade_qty,
+                            trade.qty,
                             trade.price,
                             size_in_quote_ccy,
                         );
@@ -776,27 +776,24 @@ impl canvas::Program<Message> for HeatmapChart {
                         Basis::Time(interval) => interval.into(),
                         Basis::Tick(_) => return,
                     };
-                    let tick_size = chart.tick_size.to_f32_lossy();
                     let step = chart.tick_size;
 
-                    let base_data_price = Price::from_f32(cursor_at_price)
-                        .round_to_step(step)
-                        .to_f32();
+                    let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
                     let base_data_time = (cursor_at_time / aggr_time) * aggr_time;
 
                     let price_tick_offsets = [1i64, 0, -1];
                     let time_interval_offsets = [-1i64, 0, 1, 2];
 
-                    let prices_for_display_lookup: [f32; 3] = std::array::from_fn(|i| {
+                    let prices_for_display_lookup: [Price; 3] = std::array::from_fn(|i| {
                         let offset = price_tick_offsets[i];
-                        base_data_price + (offset as f32 * tick_size)
+                        base_data_price.add_steps(offset, step)
                     });
                     let times_for_display_lookup: [u64; 4] = std::array::from_fn(|i| {
                         let offset = time_interval_offsets[i];
                         base_data_time.saturating_add_signed(offset * aggr_time as i64)
                     });
 
-                    let display_grid_qtys: FxHashMap<(u64, Price), (f32, bool)> =
+                    let display_grid_qtys: FxHashMap<(u64, Price), (exchange::unit::Qty, bool)> =
                         self.heatmap.query_grid_qtys(
                             base_data_time,
                             base_data_price,
@@ -840,18 +837,16 @@ impl canvas::Program<Message> for HeatmapChart {
                     let cell_height_overlay = TOOLTIP_HEIGHT / 3.0;
 
                     let palette = theme.extended_palette();
-                    for (display_row_idx, &data_price_val) in
+                    for (display_row_idx, &data_price_key) in
                         prices_for_display_lookup.iter().enumerate()
                     {
-                        let data_price_key = Price::from_f32(data_price_val).round_to_step(step);
-
                         for (display_col_idx, &data_time_val) in
                             times_for_display_lookup.iter().enumerate()
                         {
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
-                                let text_content = abbr_large_numbers(*qty);
+                                let text_content = abbr_large_numbers(qty.to_f32_lossy());
                                 let color = if *is_bid {
                                     palette.success.strong.color
                                 } else {

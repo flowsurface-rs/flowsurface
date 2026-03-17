@@ -393,17 +393,17 @@ impl TimeSeries<HeatmapDataPoint> {
         }
     }
 
-    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (f32, f32) {
-        let mut max_trade_qty = 0.0f32;
-        let mut max_aggr_volume = 0.0f32;
+    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (Qty, Qty) {
+        let mut max_trade_qty = Qty::ZERO;
+        let mut max_aggr_volume = Qty::ZERO;
 
         self.datapoints
             .range(earliest..=latest)
             .for_each(|(_, dp)| {
-                let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
+                let (mut buy_volume, mut sell_volume) = (Qty::ZERO, Qty::ZERO);
 
                 dp.grouped_trades.iter().for_each(|trade| {
-                    let trade_qty = f32::from(trade.qty);
+                    let trade_qty = trade.qty;
                     max_trade_qty = max_trade_qty.max(trade_qty);
 
                     if trade.is_sell {

@@ -194,7 +194,7 @@ impl Ladder {
     }
 
     fn format_quantity(&self, qty: Qty) -> String {
-        data::util::abbr_large_numbers(qty.to_f32())
+        data::util::abbr_large_numbers(qty.to_f32_lossy())
     }
 }
 

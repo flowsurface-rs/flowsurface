@@ -69,10 +69,6 @@ impl Qty {
         Self::from_f32_lossy(v)
     }
 
-    pub fn to_f32(self) -> f32 {
-        self.to_f32_lossy()
-    }
-
     pub const fn from_units(units: i64) -> Self {
         Self { units }
     }
