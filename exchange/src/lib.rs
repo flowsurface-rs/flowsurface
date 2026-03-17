@@ -9,8 +9,8 @@ pub mod unit;
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
 
-use unit::price::Price;
 use unit::price::de_price_from_number;
+use unit::price::{Price, PriceStep};
 pub use unit::qty::SizeUnit;
 use unit::qty::de_qty_from_number;
 use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
@@ -682,30 +682,56 @@ impl TickMultiplier {
         !Self::ALL.contains(self)
     }
 
-    pub fn base(&self, scaled_value: f32) -> f32 {
-        let decimals = (-scaled_value.log10()).ceil() as i32 + 2;
-        let multiplier = 10f32.powi(decimals);
-
-        ((scaled_value * multiplier) / f32::from(self.0)).round() / multiplier
+    /// Applies this multiplier to a base step using integer atomic units.
+    pub fn multiply_step(&self, base_step: PriceStep) -> PriceStep {
+        let units = base_step
+            .units
+            .checked_mul(i64::from(self.0.max(1)))
+            .expect("tick multiplier overflowed PriceStep");
+        PriceStep { units }
     }
 
-    /// Returns the final tick size after applying the user selected multiplier
-    ///
-    /// Usually used for price steps in chart scales
-    pub fn multiply_with_min_tick_size(&self, ticker_info: TickerInfo) -> f32 {
-        // MinTicksize is 10^p with p in [-8, 2]
-        let power = ticker_info.min_ticksize.power as i32;
-        let multiply = self.0 as f32;
+    /// Derives unscaled step from a grouped/scaled step. If the value is not exactly divisible,
+    /// rounds to nearest atomic unit.
+    pub fn unscale_step(&self, scaled_step: PriceStep) -> PriceStep {
+        let m = i64::from(self.0.max(1));
+        if m == 1 {
+            return scaled_step;
+        }
 
-        let decimal_places: u32 = if power < 0 { (-power) as u32 } else { 0 };
+        let q = scaled_step.units.div_euclid(m);
+        let r = scaled_step.units.rem_euclid(m);
+        let rounded = if r.saturating_mul(2) >= m { q + 1 } else { q };
 
-        let raw = if power >= 0 {
-            multiply * 10f32.powi(power)
+        PriceStep {
+            units: rounded.max(1),
+        }
+    }
+
+    /// Derives unscaled step from a grouped/scaled step; if it is not exactly divisible,
+    /// falls back to the ticker's declared minimum tick.
+    pub fn unscale_step_or_min_tick(
+        &self,
+        scaled_step: PriceStep,
+        min_tick: MinTicksize,
+    ) -> PriceStep {
+        let m = i64::from(self.0.max(1));
+        if m == 1 {
+            return scaled_step;
+        }
+
+        if scaled_step.units > 0 && scaled_step.units.rem_euclid(m) == 0 {
+            PriceStep {
+                units: scaled_step.units / m,
+            }
         } else {
-            multiply / 10f32.powi(-power)
-        };
+            min_tick.into()
+        }
+    }
 
-        let factor = 10.0f32.powi(decimal_places as i32);
-        (raw * factor).round() / factor
+    /// Returns the final tick step after applying the user selected multiplier.
+    pub fn multiply_with_min_tick_step(&self, ticker_info: TickerInfo) -> PriceStep {
+        let min_step: PriceStep = ticker_info.min_ticksize.into();
+        self.multiply_step(min_step)
     }
 }

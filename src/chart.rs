@@ -689,9 +689,13 @@ impl ViewState {
         }
     }
 
-    #[inline]
-    fn price_unit() -> i64 {
-        10i64.pow(Price::PRICE_SCALE as u32)
+    fn effective_tick_units(&self) -> i64 {
+        if self.tick_size.units > 0 {
+            self.tick_size.units
+        } else {
+            let min_step: PriceStep = self.ticker_info.min_ticksize.into();
+            min_step.units.max(1)
+        }
     }
 
     fn visible_region(&self, size: Size) -> Rectangle {
@@ -770,26 +774,14 @@ impl ViewState {
     }
 
     fn price_to_y(&self, price: Price) -> f32 {
-        if self.tick_size.units == 0 {
-            let one = Self::price_unit() as f32;
-            let delta_units = (self.base_price_y.units - price.units) as f32;
-            return (delta_units / one) * self.cell_height;
-        }
-
         let delta_units = self.base_price_y.units - price.units;
-        let ticks = (delta_units as f32) / (self.tick_size.units as f32);
+        let ticks = (delta_units as f32) / (self.effective_tick_units() as f32);
         ticks * self.cell_height
     }
 
     fn y_to_price(&self, y: f32) -> Price {
-        if self.tick_size.units == 0 {
-            let one = Self::price_unit() as f32;
-            let delta_units = ((y / self.cell_height) * one).round() as i64;
-            return Price::from_units(self.base_price_y.units - delta_units);
-        }
-
-        let ticks: f32 = y / self.cell_height;
-        let delta_units = (ticks * self.tick_size.units as f32).round() as i64;
+        let ticks = y / self.cell_height;
+        let delta_units = (ticks * self.effective_tick_units() as f32).round() as i64;
         Price::from_units(self.base_price_y.units - delta_units)
     }
 
@@ -809,7 +801,11 @@ impl ViewState {
         let highest: f32 = highest_p.to_f32_lossy();
         let lowest: f32 = lowest_p.to_f32_lossy();
 
-        let tick_size = self.tick_size.to_f32_lossy();
+        let effective_step = if self.tick_size.units > 0 {
+            self.tick_size
+        } else {
+            self.ticker_info.min_ticksize.into()
+        };
 
         if let Interaction::Ruler { start: Some(start) } = interaction {
             let p1 = *start;
@@ -819,14 +815,10 @@ impl ViewState {
                 let ratio = y / bounds.height;
                 let price = highest + ratio * (lowest - highest);
 
-                let rounded_price_p = if self.tick_size.units == 0 {
-                    Price::from_f32_lossy((price / tick_size).round() * tick_size)
-                } else {
-                    let p = Price::from_f32_lossy(price);
-                    let tick_units = self.tick_size.units;
-                    let tick_index = p.units.div_euclid(tick_units);
-                    Price::from_units(tick_index * tick_units)
-                };
+                let p = Price::from_f32_lossy(price);
+                let tick_units = effective_step.units;
+                let tick_index = p.units.div_euclid(tick_units);
+                let rounded_price_p = Price::from_units(tick_index * tick_units);
                 let rounded_price = rounded_price_p.to_f32_lossy();
                 let snap_ratio = (rounded_price - highest) / (lowest - highest);
                 snap_ratio * bounds.height
@@ -987,7 +979,9 @@ impl ViewState {
         let crosshair_ratio = cursor_position.y / bounds.height;
         let crosshair_price = highest + crosshair_ratio * (lowest - highest);
 
-        let rounded_price = (crosshair_price / tick_size).round() * tick_size;
+        let rounded_price = Price::from_f32_lossy(crosshair_price)
+            .round_to_step(effective_step)
+            .to_f32_lossy();
         let snap_ratio = (rounded_price - highest) / (lowest - highest);
 
         frame.stroke(

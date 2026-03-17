@@ -225,7 +225,7 @@ pub struct PaneSetup {
     pub ticker_info: exchange::TickerInfo,
     pub basis: Option<Basis>,
     pub tick_multiplier: Option<TickMultiplier>,
-    pub tick_size: f32,
+    pub price_step: exchange::unit::PriceStep,
     pub depth_aggr: exchange::adapter::StreamTicksize,
     pub push_freq: exchange::PushFrequency,
 }
@@ -304,8 +304,8 @@ impl PaneSetup {
             | ContentKind::Starter => current_tick_multiplier,
         };
 
-        let tick_size = match tick_multiplier {
-            Some(tm) => tm.multiply_with_min_tick_size(base_ticker),
+        let price_step = match tick_multiplier {
+            Some(tm) => tm.multiply_with_min_tick_step(base_ticker),
             None => base_ticker.min_ticksize.into(),
         };
 
@@ -325,7 +325,7 @@ impl PaneSetup {
             ticker_info: base_ticker,
             basis,
             tick_multiplier,
-            tick_size,
+            price_step,
             depth_aggr,
             push_freq,
         }

@@ -6,7 +6,8 @@ use crate::{
 use data::chart::Basis;
 use exchange::{
     StreamPairKind, TickMultiplier, Timeframe,
-    adapter::{Exchange, hyperliquid::allowed_multipliers_for_base_tick},
+    adapter::{Exchange, hyperliquid::allowed_multipliers_for_min_tick},
+    unit::{MinTicksize, PriceStep},
 };
 use iced::{
     Element, Length,
@@ -144,7 +145,8 @@ pub struct Modifier {
     pub tab: SelectedTab,
     pub view_mode: ViewMode,
     kind: ModifierKind,
-    base_ticksize: Option<f32>,
+    price_step: Option<PriceStep>,
+    min_ticksize: Option<MinTicksize>,
     exchange: Option<Exchange>,
 }
 
@@ -156,7 +158,8 @@ impl Modifier {
             tab,
             kind,
             view_mode: ViewMode::BasisSelection,
-            base_ticksize: None,
+            price_step: None,
+            min_ticksize: None,
             exchange: None,
         }
     }
@@ -168,7 +171,8 @@ impl Modifier {
 
     pub fn with_ticksize_view(
         mut self,
-        base_ticksize: f32,
+        price_step: PriceStep,
+        min_ticksize: Option<MinTicksize>,
         multiplier: TickMultiplier,
         exchange: Option<Exchange>,
     ) -> Self {
@@ -185,7 +189,8 @@ impl Modifier {
             },
             is_input_valid: true,
         };
-        self.base_ticksize = Some(base_ticksize);
+        self.price_step = Some(price_step);
+        self.min_ticksize = min_ticksize;
         self.exchange = exchange;
         self
     }
@@ -546,14 +551,16 @@ impl Modifier {
 
                     let allowed_tm = if allows_custom_tsizes {
                         exchange::TickMultiplier::ALL.to_vec()
-                    } else {
-                        let base = self.base_ticksize.unwrap_or(0.0);
-                        let allow = allowed_multipliers_for_base_tick(base);
+                    } else if let Some(min_tick) = self.min_ticksize {
+                        let allow = allowed_multipliers_for_min_tick(min_tick);
+
                         exchange::TickMultiplier::ALL
                             .iter()
                             .copied()
                             .filter(|tm| allow.contains(&tm.0))
                             .collect()
+                    } else {
+                        vec![]
                     };
 
                     let tick_multiplier_grid = modifiers_grid(
@@ -584,11 +591,11 @@ impl Modifier {
                     }
                     ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
 
-                    if let Some(base_ticksize) = self.base_ticksize {
+                    if let Some(price_step) = self.price_step {
                         ticksizes_column = ticksizes_column.push(
                             row![
                                 iced::widget::space::horizontal(),
-                                text(format!("Base: {}", base_ticksize)).style(
+                                text(format!("Step: {}", price_step.to_ui_string())).style(
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
                                             color: Some(
