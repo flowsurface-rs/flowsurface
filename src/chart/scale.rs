@@ -15,6 +15,12 @@ use iced::{
 
 const REGULAR_LABEL_WIDTH: f32 = TEXT_SIZE * 6.0;
 
+/// Guard area on the edges of the axis
+/// to prevent conflicts with pane state interactions
+///
+/// (e.g. pane split dragging when trying to interact with labels)
+const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
+
 /// calculates `Rectangle` from given content, clamps it within bounds if needed
 pub fn calc_label_rect(
     y_pos: f32,
@@ -232,6 +238,10 @@ pub struct AxisLabelsX<'a> {
 }
 
 impl AxisLabelsX<'_> {
+    fn drag_bounds(bounds: Rectangle) -> Rectangle {
+        bounds.shrink(AXIS_DRAG_EDGE_GUARD)
+    }
+
     fn calc_crosshair_pos(&self, cursor_pos: Point, region: Rectangle) -> (f32, f32, i32) {
         let crosshair_ratio = f64::from(cursor_pos.x) / f64::from(self.chart_bounds.width);
         let chart_x_min = region.x;
@@ -375,23 +385,28 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        let drag_bounds = Self::drag_bounds(bounds);
+
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             *interaction = Interaction::None;
         }
 
-        let cursor_position = cursor.position_in(bounds)?;
-
         if let Event::Mouse(mouse_event) = event {
             match mouse_event {
                 mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                    *interaction = Interaction::Zoomin {
-                        last_position: cursor_position,
-                    };
+                    if cursor.position_in(drag_bounds).is_some()
+                        && let Some(cursor_position) = cursor.position()
+                    {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                    }
                 }
                 mouse::Event::CursorMoved { .. } => {
                     if let Interaction::Zoomin {
                         ref mut last_position,
                     } = *interaction
+                        && let Some(cursor_position) = cursor.position()
                     {
                         let difference_x = last_position.x - cursor_position.x;
 
@@ -412,6 +427,8 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                 }
                 mouse::Event::WheelScrolled { delta } => match delta {
                     mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        cursor.position_in(drag_bounds)?;
+
                         let message = Message::XScaling(
                             *y,
                             {
@@ -532,7 +549,9 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::None,
             Interaction::Zoomin { .. } => mouse::Interaction::ResizingHorizontally,
-            Interaction::None if cursor.is_over(bounds) => mouse::Interaction::ResizingHorizontally,
+            Interaction::None if cursor.is_over(Self::drag_bounds(bounds)) => {
+                mouse::Interaction::ResizingHorizontally
+            }
             _ => mouse::Interaction::default(),
         }
     }
@@ -553,6 +572,10 @@ pub struct AxisLabelsY<'a> {
 }
 
 impl AxisLabelsY<'_> {
+    fn drag_bounds(bounds: Rectangle) -> Rectangle {
+        bounds.shrink(AXIS_DRAG_EDGE_GUARD)
+    }
+
     fn visible_region(&self, size: Size) -> Rectangle {
         let width = size.width / self.scaling;
         let height = size.height / self.scaling;
@@ -580,23 +603,28 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        let drag_bounds = Self::drag_bounds(bounds);
+
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             *interaction = Interaction::None;
         }
 
-        let cursor_position = cursor.position_in(bounds)?;
-
         if let Event::Mouse(mouse_event) = event {
             match mouse_event {
                 mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                    *interaction = Interaction::Zoomin {
-                        last_position: cursor_position,
-                    };
+                    if cursor.position_in(drag_bounds).is_some()
+                        && let Some(cursor_position) = cursor.position()
+                    {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                    }
                 }
                 mouse::Event::CursorMoved { .. } => {
                     if let Interaction::Zoomin {
                         ref mut last_position,
                     } = *interaction
+                        && let Some(cursor_position) = cursor.position()
                     {
                         let difference_y = last_position.y - cursor_position.y;
 
@@ -611,6 +639,8 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 }
                 mouse::Event::WheelScrolled { delta } => match delta {
                     mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        cursor.position_in(drag_bounds)?;
+
                         let message = Message::YScaling(
                             *y,
                             {
@@ -769,7 +799,9 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         match interaction {
             Interaction::Zoomin { .. } => mouse::Interaction::ResizingVertically,
             Interaction::Panning { .. } => mouse::Interaction::None,
-            Interaction::None if cursor.is_over(bounds) => mouse::Interaction::ResizingVertically,
+            Interaction::None if cursor.is_over(Self::drag_bounds(bounds)) => {
+                mouse::Interaction::ResizingVertically
+            }
             _ => mouse::Interaction::default(),
         }
     }
