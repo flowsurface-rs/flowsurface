@@ -121,7 +121,15 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    pub fn check_kline_integrity(
+    fn align_down_to_phase(time: u64, phase: u64, interval: u64) -> u64 {
+        if time >= phase {
+            time.saturating_sub((time - phase) % interval)
+        } else {
+            phase
+        }
+    }
+
+    fn check_kline_integrity_range(
         &self,
         earliest: u64,
         latest: u64,
@@ -149,7 +157,7 @@ impl<D: DataPoint> TimeSeries<D> {
                 time += interval;
             }
 
-            log::warn!(
+            log::debug!(
                 "Integrity check failed: missing {} klines",
                 missing_keys.len()
             );
@@ -157,6 +165,32 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         None
+    }
+
+    pub fn check_kline_integrity(&self, earliest: u64, latest: u64) -> Option<Vec<u64>> {
+        if self.datapoints.is_empty() {
+            return None;
+        }
+
+        let interval = self.interval.to_milliseconds();
+        if interval == 0 {
+            return None;
+        }
+
+        let (series_earliest, series_latest) = self.timerange();
+        let phase = series_earliest % interval;
+
+        let check_earliest =
+            Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
+                .max(series_earliest);
+        let check_latest = Self::align_down_to_phase(latest.min(series_latest), phase, interval)
+            .min(series_latest);
+
+        if check_earliest < check_latest {
+            self.check_kline_integrity_range(check_earliest, check_latest, interval)
+        } else {
+            None
+        }
     }
 }
 

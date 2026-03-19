@@ -337,7 +337,7 @@ impl KlineChart {
         &self.kind
     }
 
-    fn missing_data_task(&mut self) -> Option<Action> {
+    fn fetch_missing_data(&mut self) -> Option<Action> {
         match &self.data_source {
             PlotData::TimeBased(timeseries) => {
                 let timeframe_ms = timeseries.interval.to_milliseconds();
@@ -354,19 +354,21 @@ impl KlineChart {
 
                 let (visible_earliest, visible_latest) = self.visible_timerange()?;
                 let (kline_earliest, kline_latest) = timeseries.timerange();
-                let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
+                let visible_span = visible_latest.saturating_sub(visible_earliest);
+                let prefetch_earliest = visible_earliest.saturating_sub(visible_span);
 
-                // priority 1, basic kline data fetch
+                // priority 1, initial klines for visible range
                 if visible_earliest < kline_earliest {
-                    let range = FetchRange::Kline(earliest, kline_earliest);
+                    let range = FetchRange::Kline(prefetch_earliest, kline_earliest);
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }
                 }
 
-                // priority 2, trades fetch
-                if !self.fetching_trades.0
+                // priority 2, trades
+                if let KlineChartKind::Footprint { .. } = self.kind
+                    && !self.fetching_trades.0
                     && is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
                         timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
@@ -378,13 +380,14 @@ impl KlineChart {
                     }
                 }
 
-                // priority 3, Open Interest data
+                // priority 3, indicators
+                // (e.g. open interest needs external fetch as it's not derived from klines)
                 let ctx = indicator::kline::FetchCtx {
                     main_chart: &self.chart,
                     timeframe: timeseries.interval,
                     visible_earliest,
                     kline_latest,
-                    prefetch_earliest: earliest,
+                    prefetch_earliest,
                 };
                 for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
                     if let Some(range) = indi.fetch_range(&ctx)
@@ -395,13 +398,22 @@ impl KlineChart {
                 }
 
                 // priority 4, missing klines & integrity check
+                let check_earliest = prefetch_earliest.max(kline_earliest);
+                let check_latest = visible_latest.saturating_add(timeframe_ms);
+
                 if let Some(missing_keys) =
-                    timeseries.check_kline_integrity(kline_earliest, kline_latest, timeframe_ms)
+                    timeseries.check_kline_integrity(check_earliest, check_latest)
                 {
-                    let latest =
-                        missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe_ms;
-                    let earliest =
-                        missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe_ms;
+                    let latest = missing_keys
+                        .iter()
+                        .max()
+                        .unwrap_or(&visible_latest)
+                        .saturating_add(timeframe_ms);
+                    let earliest = missing_keys
+                        .iter()
+                        .min()
+                        .unwrap_or(&visible_earliest)
+                        .saturating_sub(timeframe_ms);
 
                     let range = FetchRange::Kline(earliest, latest);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
@@ -771,7 +783,7 @@ impl KlineChart {
 
         if let Some(t) = now {
             self.last_tick = t;
-            self.missing_data_task()
+            self.fetch_missing_data()
         } else {
             None
         }
