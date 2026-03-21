@@ -683,32 +683,75 @@ impl<I> StreamConfig<I> {
     }
 }
 
+/// Returns a map of tickers to their [`TickerInfo`].
+/// If metadata for a ticker can't be fetched/parsed expectedly, it will still be included in the map as `None`.
+///
+/// `Binance`, `Bybit`, and `Hyperliquid` are fetched per market, while
+/// `Okex` and `Mexc` handle market branching internally due to combined perps endpoints.
 pub async fn fetch_ticker_metadata(
-    exchange: Exchange,
+    venue: Venue,
+    markets: &[MarketKind],
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
-    let market_type = exchange.market_type();
-
-    match exchange.venue() {
-        Venue::Binance => binance::fetch_ticker_metadata(market_type).await,
-        Venue::Bybit => bybit::fetch_ticker_metadata(market_type).await,
-        Venue::Hyperliquid => hyperliquid::fetch_ticker_metadata(market_type).await,
-        Venue::Okex => okex::fetch_ticker_metadata(market_type).await,
-        Venue::Mexc => mexc::fetch_ticker_metadata(market_type).await,
+    match venue {
+        Venue::Binance => {
+            let mut out = HashMap::default();
+            for market in markets {
+                out.extend(binance::fetch_ticker_metadata(*market).await?);
+            }
+            Ok(out)
+        }
+        Venue::Bybit => {
+            let mut out = HashMap::default();
+            for market in markets {
+                out.extend(bybit::fetch_ticker_metadata(*market).await?);
+            }
+            Ok(out)
+        }
+        Venue::Hyperliquid => {
+            let mut out = HashMap::default();
+            for market in markets {
+                out.extend(hyperliquid::fetch_ticker_metadata(*market).await?);
+            }
+            Ok(out)
+        }
+        Venue::Okex => okex::fetch_ticker_metadata(markets).await,
+        Venue::Mexc => mexc::fetch_ticker_metadata(markets).await,
     }
 }
 
+/// Returns a map of tickers to their [`TickerStats`].
+///
+/// `Binance`, `Bybit`, and `Hyperliquid` are fetched per market, while
+/// `Okex` and `Mexc` handle market branching internally due to combined perps endpoints.
 pub async fn fetch_ticker_stats(
-    exchange: Exchange,
+    venue: Venue,
+    markets: &[MarketKind],
     contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
-    let market_type = exchange.market_type();
-
-    match exchange.venue() {
-        Venue::Binance => binance::fetch_ticker_stats(market_type, contract_sizes).await,
-        Venue::Bybit => bybit::fetch_ticker_stats(market_type).await,
-        Venue::Hyperliquid => hyperliquid::fetch_ticker_stats(market_type).await,
-        Venue::Okex => okex::fetch_ticker_stats(market_type).await,
-        Venue::Mexc => mexc::fetch_ticker_stats(market_type, contract_sizes).await,
+    match venue {
+        Venue::Binance => {
+            let mut out = HashMap::default();
+            for market in markets {
+                out.extend(binance::fetch_ticker_stats(*market, contract_sizes.as_ref()).await?);
+            }
+            Ok(out)
+        }
+        Venue::Bybit => {
+            let mut out = HashMap::default();
+            for market in markets {
+                out.extend(bybit::fetch_ticker_stats(*market).await?);
+            }
+            Ok(out)
+        }
+        Venue::Hyperliquid => {
+            let mut out = HashMap::default();
+            for market in markets {
+                out.extend(hyperliquid::fetch_ticker_stats(*market).await?);
+            }
+            Ok(out)
+        }
+        Venue::Okex => okex::fetch_ticker_stats(markets).await,
+        Venue::Mexc => mexc::fetch_ticker_stats(markets, contract_sizes.as_ref()).await,
     }
 }
 

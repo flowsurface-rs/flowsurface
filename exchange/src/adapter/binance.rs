@@ -1211,7 +1211,7 @@ pub async fn fetch_ticker_metadata(
 
 pub async fn fetch_ticker_stats(
     market: MarketKind,
-    contract_sizes: Option<HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let (url, weight) = match market {
         MarketKind::Spot => (SPOT_DOMAIN.to_string() + "/api/v3/ticker/24hr", 80),
@@ -1262,7 +1262,6 @@ pub async fn fetch_ticker_stats(
             MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32(volume),
             MarketKind::InversePerps => {
                 let contract_size = match contract_sizes
-                    .as_ref()
                     .and_then(|sizes| sizes.get(&ticker))
                     .copied()
                 {

@@ -154,273 +154,303 @@ fn contract_size_for_market(
     }
 }
 
+fn mexc_perps_market_from_symbol(
+    symbol: &str,
+    contract_sizes: Option<&HashMap<Ticker, f32>>,
+) -> Option<MarketKind> {
+    if symbol.ends_with("USDT") {
+        return Some(MarketKind::LinearPerps);
+    }
+    if symbol.ends_with("USD") {
+        return Some(MarketKind::InversePerps);
+    }
+
+    let contract_sizes = contract_sizes?;
+
+    let has_linear = contract_sizes.contains_key(&Ticker::new(symbol, Exchange::MexcLinear));
+    let has_inverse = contract_sizes.contains_key(&Ticker::new(symbol, Exchange::MexcInverse));
+
+    match (has_linear, has_inverse) {
+        (true, false) => Some(MarketKind::LinearPerps),
+        (false, true) => Some(MarketKind::InversePerps),
+        _ => None,
+    }
+}
+
 pub async fn fetch_ticker_metadata(
-    market_type: MarketKind,
+    markets: &[MarketKind],
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
     let mut ticker_info_map = HashMap::new();
-    let url = match market_type {
-        MarketKind::Spot => format!("{FETCH_DOMAIN}/v3/exchangeInfo"),
-        MarketKind::InversePerps | MarketKind::LinearPerps => {
-            format!("{FETCH_DOMAIN}/v1/contract/detail")
-        }
-    };
-    let response_text = limiter::http_request(&url, None, None).await?;
-    let exchange_info: Value = sonic_rs::from_str(&response_text).map_err(|e| {
-        AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}"))
-    })?;
 
-    match market_type {
-        MarketKind::Spot => {
-            let exchange = exchange_from_market_type(market_type);
+    let include_spot = markets.contains(&MarketKind::Spot);
+    let include_perps = markets
+        .iter()
+        .any(|m| matches!(m, MarketKind::LinearPerps | MarketKind::InversePerps));
 
-            let symbols = exchange_info["symbols"]
-                .as_array()
-                .ok_or_else(|| AdapterError::ParseError("Missing symbols array".to_string()))?;
+    if include_spot {
+        let url = format!("{FETCH_DOMAIN}/v3/exchangeInfo");
 
-            for item in symbols {
-                // status: 1 - online, 2 - Pause, 3 - offline
-                if let Some(status) = item["status"].as_str()
-                    && status != "1"
-                    && status != "2"
-                {
-                    continue;
-                }
+        let response_text = limiter::http_request(&url, None, None).await?;
+        let exchange_info: Value = sonic_rs::from_str(&response_text).map_err(|e| {
+            AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}"))
+        })?;
 
-                let symbol_str = item["symbol"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
+        let symbols = exchange_info["symbols"]
+            .as_array()
+            .ok_or_else(|| AdapterError::ParseError("Missing symbols array".to_string()))?;
 
-                if !exchange.is_symbol_supported(symbol_str, true) {
-                    continue;
-                }
+        let exchange = exchange_from_market_type(MarketKind::Spot);
 
-                if let Some(quote_asset) = item["quoteAsset"].as_str()
-                    && quote_asset != "USDT"
-                    && quote_asset != "USD"
-                {
-                    continue;
-                }
-
-                // MEXC uses baseSizePrecision for quantity step size
-                // and quoteAssetPrecision for price precision
-                let min_qty =
-                    serde_util::value_as_f32(&item["baseSizePrecision"]).ok_or_else(|| {
-                        AdapterError::ParseError("Missing baseSizePrecision".to_string())
-                    })?;
-
-                // Calculate min_ticksize from quoteAssetPrecision
-                // e.g., precision 2 means ticksize 0.01
-                let quote_asset_precision =
-                    item["quoteAssetPrecision"].as_i64().ok_or_else(|| {
-                        AdapterError::ParseError("Missing quoteAssetPrecision".to_string())
-                    })?;
-
-                let min_ticksize = 10f32.powi(-quote_asset_precision as i32);
-
-                let ticker = Ticker::new(symbol_str, exchange);
-                let info = TickerInfo::new(ticker, min_ticksize, min_qty, None);
-                ticker_info_map.insert(ticker, Some(info));
+        for item in symbols {
+            // status: 1 - online, 2 - Pause, 3 - offline
+            if let Some(status) = item["status"].as_str()
+                && status != "1"
+                && status != "2"
+            {
+                continue;
             }
-        }
-        MarketKind::LinearPerps | MarketKind::InversePerps => {
-            let result_list: &Vec<Value> = exchange_info["data"].as_array().ok_or_else(|| {
-                AdapterError::ParseError("Result list is not an array".to_string())
+
+            let symbol_str = item["symbol"]
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
+
+            if !exchange.is_symbol_supported(symbol_str, true) {
+                continue;
+            }
+
+            if let Some(quote_asset) = item["quoteAsset"].as_str()
+                && quote_asset != "USDT"
+                && quote_asset != "USD"
+            {
+                continue;
+            }
+
+            let min_qty = serde_util::value_as_f32(&item["baseSizePrecision"])
+                .ok_or_else(|| AdapterError::ParseError("Missing baseSizePrecision".to_string()))?;
+
+            let quote_asset_precision = item["quoteAssetPrecision"].as_i64().ok_or_else(|| {
+                AdapterError::ParseError("Missing quoteAssetPrecision".to_string())
             })?;
 
-            for item in result_list {
-                // Status: 0 enabled, 1 delivery, 2 delivered, 3 offline, 4 paused
-                if let Some(state) = item["state"].as_i64()
-                    && state != 0
-                {
-                    continue;
-                }
+            let min_ticksize = 10f32.powi(-quote_asset_precision as i32);
 
-                let symbol = item["symbol"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
-
-                let Some(quote_asset) = item["quoteCoin"].as_str() else {
-                    return Err(AdapterError::ParseError("Missing quoteCoin".to_string()));
-                };
-
-                if quote_asset != "USDT" && quote_asset != "USD" {
-                    continue;
-                }
-
-                let settle_asset = item["settleCoin"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Missing settleCoin".to_string()))?;
-
-                let base_asset = item["baseCoin"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Missing baseCoin".to_string()))?;
-
-                let market_kind = if settle_asset == base_asset {
-                    MarketKind::InversePerps
-                } else if settle_asset == quote_asset {
-                    MarketKind::LinearPerps
-                } else {
-                    return Err(AdapterError::ParseError(
-                        "Unknown contract type".to_string(),
-                    ));
-                };
-                let exchange = exchange_from_market_type(market_kind);
-
-                if !exchange.is_symbol_supported(symbol, true) {
-                    continue;
-                }
-
-                let min_qty_contracts = item["minVol"].as_f64().ok_or_else(|| {
-                    AdapterError::ParseError("Missing minVol (min_qty)".to_string())
-                })? as f32;
-
-                let min_ticksize = item["priceUnit"].as_f64().ok_or_else(|| {
-                    AdapterError::ParseError("Missing priceUnit (ticksize)".to_string())
-                })? as f32;
-
-                let contract_size = item["contractSize"]
-                    .as_f64()
-                    .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?
-                    as f32;
-
-                let min_qty = min_qty_contracts * contract_size;
-
-                let ticker = Ticker::new(symbol, exchange);
-                let info = TickerInfo::new(ticker, min_ticksize, min_qty, Some(contract_size));
-                ticker_info_map.insert(ticker, Some(info));
-            }
+            let ticker = Ticker::new(symbol_str, exchange);
+            let info = TickerInfo::new(ticker, min_ticksize, min_qty, None);
+            ticker_info_map.insert(ticker, Some(info));
         }
-    };
+    }
+
+    if include_perps {
+        let url = format!("{FETCH_DOMAIN}/v1/contract/detail");
+
+        let response_text = limiter::http_request(&url, None, None).await?;
+        let exchange_info: Value = sonic_rs::from_str(&response_text).map_err(|e| {
+            AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}"))
+        })?;
+
+        let result_list: &Vec<Value> = exchange_info["data"]
+            .as_array()
+            .ok_or_else(|| AdapterError::ParseError("Result list is not an array".to_string()))?;
+
+        for item in result_list {
+            // Status: 0 enabled, 1 delivery, 2 delivered, 3 offline, 4 paused
+            if let Some(state) = item["state"].as_i64()
+                && state != 0
+            {
+                continue;
+            }
+
+            let symbol = item["symbol"]
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
+
+            let Some(quote_asset) = item["quoteCoin"].as_str() else {
+                return Err(AdapterError::ParseError("Missing quoteCoin".to_string()));
+            };
+
+            if quote_asset != "USDT" && quote_asset != "USD" {
+                continue;
+            }
+
+            let settle_asset = item["settleCoin"]
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("Missing settleCoin".to_string()))?;
+
+            let base_asset = item["baseCoin"]
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("Missing baseCoin".to_string()))?;
+
+            let perps_market = if settle_asset == base_asset {
+                MarketKind::InversePerps
+            } else if settle_asset == quote_asset {
+                MarketKind::LinearPerps
+            } else {
+                return Err(AdapterError::ParseError(
+                    "Unknown contract type".to_string(),
+                ));
+            };
+
+            if !markets.contains(&perps_market) {
+                continue;
+            }
+
+            let exchange = exchange_from_market_type(perps_market);
+
+            if !exchange.is_symbol_supported(symbol, true) {
+                continue;
+            }
+
+            let min_qty_contracts = item["minVol"]
+                .as_f64()
+                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?
+                as f32;
+
+            let min_ticksize = item["priceUnit"].as_f64().ok_or_else(|| {
+                AdapterError::ParseError("Missing priceUnit (ticksize)".to_string())
+            })? as f32;
+
+            let contract_size = item["contractSize"]
+                .as_f64()
+                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?
+                as f32;
+
+            let min_qty = min_qty_contracts * contract_size;
+
+            let ticker = Ticker::new(symbol, exchange);
+            let info = TickerInfo::new(ticker, min_ticksize, min_qty, Some(contract_size));
+            ticker_info_map.insert(ticker, Some(info));
+        }
+    }
+
     Ok(ticker_info_map)
 }
 
 pub async fn fetch_ticker_stats(
-    market_type: MarketKind,
-    contract_sizes: Option<HashMap<Ticker, f32>>,
+    markets: &[MarketKind],
+    contract_sizes: Option<&HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
-    let exchange = exchange_from_market_type(market_type);
-
     let mut ticker_prices_map = HashMap::new();
-    let url = match market_type {
-        MarketKind::Spot => format!("{FETCH_DOMAIN}/v3/ticker/24hr"),
-        MarketKind::InversePerps | MarketKind::LinearPerps => {
-            format!("{FETCH_DOMAIN}/v1/contract/ticker")
-        }
-    };
-    let response_text = limiter::http_request(&url, None, None).await?;
 
-    let parsed_response: Value =
-        sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
+    let include_spot = markets.contains(&MarketKind::Spot);
+    let include_perps = markets
+        .iter()
+        .any(|m| matches!(m, MarketKind::LinearPerps | MarketKind::InversePerps));
 
-    match market_type {
-        MarketKind::Spot => {
-            let result_list: &Vec<Value> = parsed_response
-                .as_array()
-                .ok_or_else(|| AdapterError::ParseError("Data is not an array".to_string()))?;
+    if include_spot {
+        let exchange = exchange_from_market_type(MarketKind::Spot);
+        let url = format!("{FETCH_DOMAIN}/v3/ticker/24hr");
+        let response_text = limiter::http_request(&url, None, None).await?;
 
-            for item in result_list {
-                let symbol = item["symbol"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
+        let parsed_response: Value = sonic_rs::from_str(&response_text)
+            .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-                if !exchange.is_symbol_supported(symbol, false) {
-                    continue;
-                }
+        let result_list: &Vec<Value> = parsed_response
+            .as_array()
+            .ok_or_else(|| AdapterError::ParseError("Data is not an array".to_string()))?;
 
-                // Filter for USDT pairs only
-                if !symbol.ends_with("USDT") {
-                    continue;
-                }
+        for item in result_list {
+            let symbol = item["symbol"]
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
 
-                // Parse lastPrice (can be string or number)
-                let last_price = serde_util::value_as_f32(&item["lastPrice"])
-                    .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
-
-                // Parse priceChangePercent - 24h price change percentage (e.g., "0.00400048" = 0.4%)
-                let price_change_percent = serde_util::value_as_f32(&item["priceChangePercent"])
-                    .ok_or_else(|| {
-                        AdapterError::ParseError("Price change percent not found".to_string())
-                    })?;
-
-                let volume = serde_util::value_as_f32(&item["volume"])
-                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
-
-                // Parse quoteVolume (24h volume in quote currency, e.g., USDT)
-                // If quoteVolume is null or not available, calculate from volume * lastPrice
-                let volume_in_usd = if let Some(qv) = serde_util::value_as_f32(&item["quoteVolume"])
-                {
-                    qv
-                } else {
-                    volume * last_price
-                };
-
-                // priceChangePercent is already a percentage (e.g., "0.00400048" means 0.4%)
-                // TickerStats expects daily_price_chg as percentage (e.g., 0.4 for 0.4%)
-                let daily_price_chg = price_change_percent * 100.0;
-
-                let ticker_stats = TickerStats {
-                    mark_price: Price::from_f32(last_price),
-                    daily_price_chg,
-                    daily_volume: Qty::from_f32(volume_in_usd),
-                };
-
-                ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
+            if !exchange.is_symbol_supported(symbol, false) {
+                continue;
             }
-        }
-        MarketKind::LinearPerps | MarketKind::InversePerps => {
-            let result_list: &Vec<Value> = parsed_response["data"]
-                .as_array()
-                .ok_or_else(|| AdapterError::ParseError("Data is not an array".to_string()))?;
 
-            for item in result_list {
-                let symbol = item["symbol"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
-
-                if !exchange.is_symbol_supported(symbol, false) {
-                    continue;
-                }
-
-                let ticker = Ticker::new(symbol, exchange);
-
-                let contract_size = contract_sizes
-                    .as_ref()
-                    .and_then(|sizes| sizes.get(&ticker))
-                    .copied();
-
-                if let Some(cs) = contract_size {
-                    let last_price = item["lastPrice"].as_f64().ok_or_else(|| {
-                        AdapterError::ParseError("Last price not found".to_string())
-                    })? as f32;
-
-                    // Parse riseFallRate - 24h price change percentage (e.g., 0.014 = 1.4%)
-                    let rise_fall_rate = item["riseFallRate"].as_f64().ok_or_else(|| {
-                        AdapterError::ParseError("Missing riseFallRate".to_string())
-                    })? as f32;
-
-                    let volume_24 = item["volume24"].as_f64().ok_or_else(|| {
-                        AdapterError::ParseError("Missing riseFallRate".to_string())
-                    })? as f32;
-
-                    let volume_in_usd = if market_type == MarketKind::InversePerps {
-                        volume_24 * cs
-                    } else {
-                        volume_24 * cs * last_price
-                    };
-
-                    // riseFallRate is already a percentage (e.g., 0.014 means 1.4%)
-                    // TickerStats expects daily_price_chg as percentage (e.g., 1.4 for 1.4%)
-                    let daily_price_chg = rise_fall_rate * 100.0;
-
-                    let ticker_stats = TickerStats {
-                        mark_price: Price::from_f32(last_price),
-                        daily_price_chg,
-                        daily_volume: Qty::from_f32(volume_in_usd),
-                    };
-
-                    ticker_prices_map.insert(ticker, ticker_stats);
-                }
+            if !symbol.ends_with("USDT") {
+                continue;
             }
+
+            let last_price = serde_util::value_as_f32(&item["lastPrice"])
+                .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
+
+            let price_change_percent = serde_util::value_as_f32(&item["priceChangePercent"])
+                .ok_or_else(|| {
+                    AdapterError::ParseError("Price change percent not found".to_string())
+                })?;
+
+            let volume = serde_util::value_as_f32(&item["volume"])
+                .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
+
+            let volume_in_usd = if let Some(qv) = serde_util::value_as_f32(&item["quoteVolume"]) {
+                qv
+            } else {
+                volume * last_price
+            };
+
+            let daily_price_chg = price_change_percent * 100.0;
+
+            let ticker_stats = TickerStats {
+                mark_price: Price::from_f32(last_price),
+                daily_price_chg,
+                daily_volume: Qty::from_f32(volume_in_usd),
+            };
+
+            ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
+        }
+    }
+
+    if include_perps {
+        let url = format!("{FETCH_DOMAIN}/v1/contract/ticker");
+        let response_text = limiter::http_request(&url, None, None).await?;
+
+        let parsed_response: Value = sonic_rs::from_str(&response_text)
+            .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+
+        let result_list: &Vec<Value> = parsed_response["data"]
+            .as_array()
+            .ok_or_else(|| AdapterError::ParseError("Data is not an array".to_string()))?;
+
+        for item in result_list {
+            let symbol = item["symbol"]
+                .as_str()
+                .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
+
+            let Some(perps_market) = mexc_perps_market_from_symbol(symbol, contract_sizes) else {
+                continue;
+            };
+
+            if !markets.contains(&perps_market) {
+                continue;
+            }
+
+            let exchange = exchange_from_market_type(perps_market);
+
+            if !exchange.is_symbol_supported(symbol, false) {
+                continue;
+            }
+
+            let ticker = Ticker::new(symbol, exchange);
+            let contract_size = contract_sizes.and_then(|sizes| sizes.get(&ticker)).copied();
+
+            let Some(cs) = contract_size else {
+                continue;
+            };
+
+            let last_price = serde_util::value_as_f32(&item["lastPrice"])
+                .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
+
+            let rise_fall_rate = serde_util::value_as_f32(&item["riseFallRate"])
+                .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?;
+
+            let volume_24 = serde_util::value_as_f32(&item["volume24"])
+                .ok_or_else(|| AdapterError::ParseError("Missing volume24".to_string()))?;
+
+            let volume_in_usd = if perps_market == MarketKind::InversePerps {
+                volume_24 * cs
+            } else {
+                volume_24 * cs * last_price
+            };
+
+            let daily_price_chg = rise_fall_rate * 100.0;
+
+            let ticker_stats = TickerStats {
+                mark_price: Price::from_f32(last_price),
+                daily_price_chg,
+                daily_volume: Qty::from_f32(volume_in_usd),
+            };
+
+            ticker_prices_map.insert(ticker, ticker_stats);
         }
     }
 
