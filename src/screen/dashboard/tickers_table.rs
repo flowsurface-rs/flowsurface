@@ -74,8 +74,8 @@ pub enum Message {
     ToggleTable,
     ToggleFavorites,
     FetchForTickerStats,
-    UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
-    UpdateTickerStats(Exchange, HashMap<Ticker, TickerStats>),
+    UpdateTickersInfo(Venue, HashMap<Ticker, Option<TickerInfo>>),
+    UpdateTickerStats(Venue, HashMap<Ticker, TickerStats>),
     ErrorOccurred(data::InternalError),
 }
 
@@ -103,21 +103,18 @@ impl TickersTable {
     }
 
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
-        let fetch_metadata = Exchange::ALL
+        let fetch_metadata = Venue::ALL
             .iter()
             .copied()
-            // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
-            // TODO: Remove this after protobuf implementation and Mexc spot markets ready to stream
-            .filter(|exchange| *exchange != Exchange::MexcSpot)
-            .map(|exchange| {
+            .map(|venue| {
                 Task::perform(
-                    fetch_ticker_metadata(exchange),
+                    fetch_ticker_metadata(venue, markets_for_venue(venue)),
                     move |result| match result {
-                        Ok(ticker_info) => Message::UpdateTickersInfo(exchange, ticker_info),
+                        Ok(ticker_info) => Message::UpdateTickersInfo(venue, ticker_info),
                         Err(err) => {
-                            log::error!("Ticker metadata fetch failed for {exchange:?}: {err}");
+                            log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
                             Message::ErrorOccurred(InternalError::Fetch(format!(
-                                "{exchange:?}: {}",
+                                "{venue:?}: {}",
                                 err.ui_message()
                             )))
                         }
@@ -229,26 +226,24 @@ impl TickersTable {
             }
             Message::FetchForTickerStats => {
                 let task = {
-                    let exchanges: FxHashSet<Exchange> =
-                        self.tickers_info.keys().map(|t| t.exchange).collect();
+                    let venues: FxHashSet<Venue> = self
+                        .tickers_info
+                        .keys()
+                        .map(|t| t.exchange.venue())
+                        .collect();
 
-                    self.pending_stats_batches = exchanges.len();
+                    self.pending_stats_batches = venues.len();
 
-                    let fetch_tasks = exchanges
+                    let fetch_tasks = venues
                         .into_iter()
-                        .map(|exchange| {
-                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse)
-                                || matches!(exchange.venue(), Venue::Mexc)
-                            {
-                                Some(contract_sizes_for_exchange(
-                                    exchange,
-                                    self.tickers_info.iter(),
-                                ))
+                        .map(|venue| {
+                            let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
+                                Some(contract_sizes_for_venue(venue, self.tickers_info.iter()))
                             } else {
                                 None
                             };
 
-                            fetch_ticker_stats_task(exchange, contract_sizes)
+                            fetch_ticker_stats_task(venue, contract_sizes)
                         })
                         .collect::<Vec<Task<Message>>>();
 
@@ -257,8 +252,8 @@ impl TickersTable {
 
                 return Some(Action::Fetch(task));
             }
-            Message::UpdateTickerStats(exchange, stats) => {
-                self.update_ticker_rows(exchange, stats);
+            Message::UpdateTickerStats(venue, stats) => {
+                self.update_ticker_rows(venue, stats);
 
                 if self.pending_stats_batches > 0 {
                     self.pending_stats_batches -= 1;
@@ -267,11 +262,9 @@ impl TickersTable {
                     self.sort_ticker_rows();
                 }
             }
-            Message::UpdateTickersInfo(exchange, info) => {
-                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse)
-                    || matches!(exchange.venue(), Venue::Mexc)
-                {
-                    Some(contract_sizes_for_exchange(exchange, info.iter()))
+            Message::UpdateTickersInfo(venue, info) => {
+                let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
+                    Some(contract_sizes_for_venue(venue, info.iter()))
                 } else {
                     None
                 };
@@ -281,12 +274,11 @@ impl TickersTable {
                 }
 
                 return Some(Action::Fetch(fetch_ticker_stats_task(
-                    exchange,
+                    venue,
                     contract_sizes,
                 )));
             }
             Message::ErrorOccurred(err) => {
-                log::error!("Error occurred: {err}");
                 return Some(Action::ErrorOccurred(err));
             }
         }
@@ -579,10 +571,10 @@ impl TickersTable {
             .into()
     }
 
-    fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {
+    fn update_ticker_rows(&mut self, venue: Venue, stats: HashMap<Ticker, TickerStats>) {
         let iter = stats
             .into_iter()
-            .filter(|(t, _)| self.tickers_info.contains_key(t));
+            .filter(|(t, _)| self.tickers_info.contains_key(t) && t.exchange.venue() == venue);
 
         for (ticker, new_stats) in iter {
             let precision = self
@@ -602,7 +594,7 @@ impl TickersTable {
                 );
             } else {
                 let new_row = TickerRowData {
-                    exchange,
+                    exchange: ticker.exchange,
                     ticker,
                     stats: new_stats,
                     previous_stats: None,
@@ -1485,17 +1477,17 @@ fn market_suffix(m: MarketKind) -> &'static str {
 }
 
 fn fetch_ticker_stats_task(
-    exchange: Exchange,
+    venue: Venue,
     contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Task<Message> {
     Task::perform(
-        fetch_ticker_stats(exchange, contract_sizes),
+        fetch_ticker_stats(venue, markets_for_venue(venue), contract_sizes),
         move |result| match result {
-            Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
+            Ok(ticker_rows) => Message::UpdateTickerStats(venue, ticker_rows),
             Err(err) => {
-                log::error!("Ticker stats fetch failed for {exchange:?}: {err}");
+                log::error!("Ticker stats fetch failed for {venue:?}: {err}");
                 Message::ErrorOccurred(InternalError::Fetch(format!(
-                    "{exchange:?}: {}",
+                    "{venue:?}: {}",
                     err.ui_message()
                 )))
             }
@@ -1503,13 +1495,23 @@ fn fetch_ticker_stats_task(
     )
 }
 
-fn contract_sizes_for_exchange<'a>(
-    exchange: Exchange,
+fn markets_for_venue(venue: Venue) -> &'static [MarketKind] {
+    match venue {
+        Venue::Binance | Venue::Bybit | Venue::Okex => &MarketKind::ALL,
+        Venue::Hyperliquid => &[MarketKind::Spot, MarketKind::LinearPerps],
+        // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
+        // TODO: Remove this after protobuf implementation and Mexc spot markets ready to stream
+        Venue::Mexc => &[MarketKind::LinearPerps, MarketKind::InversePerps],
+    }
+}
+
+fn contract_sizes_for_venue<'a>(
+    venue: Venue,
     ticker_info_iter: impl Iterator<Item = (&'a Ticker, &'a Option<TickerInfo>)>,
 ) -> HashMap<Ticker, f32> {
     ticker_info_iter
         .filter_map(|(ticker, info)| {
-            if ticker.exchange != exchange {
+            if ticker.exchange.venue() != venue {
                 return None;
             }
 
