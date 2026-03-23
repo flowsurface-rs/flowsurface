@@ -111,13 +111,11 @@ pub struct HeatmapShader {
 impl HeatmapShader {
     pub fn new(
         basis: Basis,
-        tick_size: f32,
+        step: PriceStep,
         ticker_info: TickerInfo,
         studies: Vec<HeatmapStudy>,
         indicators: Vec<HeatmapIndicator>,
     ) -> Self {
-        let step = PriceStep::from_f32(tick_size);
-
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
 
@@ -384,8 +382,8 @@ impl HeatmapShader {
         self.canvas_invalidation.mark_all();
     }
 
-    pub fn tick_size(&self) -> f32 {
-        self.step.to_f32_lossy()
+    pub fn tick_size(&self) -> PriceStep {
+        self.step
     }
 
     /// called periodically on every window frame

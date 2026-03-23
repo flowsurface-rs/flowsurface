@@ -836,8 +836,9 @@ impl DepthNormCache {
             )
         } else {
             hist.max_qty_in_range_raw(w.earliest, latest_incl, w.highest, w.lowest)
-        }
-        .max(1e-6);
+        };
+
+        let max_qty = max_qty.to_scale_or_one();
 
         self.key = Some(key);
         self.value = max_qty;

@@ -1,17 +1,18 @@
 use super::{MinTicksize, Power10};
+use crate::serde_util;
 use serde::{Deserialize, Serialize};
 
-/// Fixed atomic unit scale: 10^-PRICE_SCALE is the smallest stored fraction.
-/// MinTicksize has range [-8, 2], e.g. PRICE_SCALE = 8 to represent 10^-8 atomic units.
+/// Fixed atomic unit scale: 10^-ATOMIC_SCALE is the smallest stored fraction.
+/// MinTicksize has range [-8, 2], e.g. ATOMIC_SCALE = 8 to represent 10^-8 atomic units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
 pub struct Price {
-    /// number of atomic units (atomic unit = 10^-PRICE_SCALE)
+    /// number of atomic units (atomic unit = 10^-ATOMIC_SCALE)
     pub units: i64,
 }
 
 impl Price {
     /// number of decimal places of the atomic unit (10^-8)
-    pub const PRICE_SCALE: i32 = 8;
+    const ATOMIC_SCALE: i32 = 8;
 
     #[inline]
     pub fn to_string<const MIN: i8, const MAX: i8>(self, precision: Power10<MIN, MAX>) -> String {
@@ -26,11 +27,11 @@ impl Price {
         precision: Power10<MIN, MAX>,
         out: &mut W,
     ) -> core::fmt::Result {
-        let scale_u = Self::PRICE_SCALE as u32;
+        let scale_u = Self::ATOMIC_SCALE as u32;
 
-        // number of atomic units for the given decade step: 10^(PRICE_SCALE + power)
-        let exp = (Self::PRICE_SCALE + precision.power as i32) as u32;
-        debug_assert!(Self::PRICE_SCALE + precision.power as i32 >= 0);
+        // number of atomic units for the given decade step: 10^(ATOMIC_SCALE + power)
+        let exp = (Self::ATOMIC_SCALE + precision.power as i32) as u32;
+        debug_assert!(Self::ATOMIC_SCALE + precision.power as i32 >= 0);
         let unit = 10i64
             .checked_pow(exp)
             .expect("Price::to_string unit overflow");
@@ -67,15 +68,15 @@ impl Price {
         write!(out, ".{:0width$}", frac_part, width = decimals as usize)
     }
 
-    /// Lossy: convert price to f32, may lose precision if going beyond `PRICE_SCALE`
+    /// Lossy: convert price to f32, may lose precision if going beyond `ATOMIC_SCALE`
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Self::PRICE_SCALE);
+        let scale = 10f32.powi(Self::ATOMIC_SCALE);
         (self.units as f32) / scale
     }
 
     /// Lossy: create Price from f32 (rounds to nearest atomic unit)
     pub fn from_f32_lossy(v: f32) -> Self {
-        let scale = 10f32.powi(Self::PRICE_SCALE);
+        let scale = 10f32.powi(Self::ATOMIC_SCALE);
         let u = (v * scale).round() as i64;
         Self { units: u }
     }
@@ -142,8 +143,8 @@ impl Price {
 
     /// Returns the atomic-unit count that corresponds to one min tick (min_tick / atomic_unit)
     fn min_tick_units(min_tick: MinTicksize) -> i64 {
-        let exp = Self::PRICE_SCALE + (min_tick.power as i32);
-        assert!(exp >= 0, "PRICE_SCALE must be >= -min_tick.power");
+        let exp = Self::ATOMIC_SCALE + (min_tick.power as i32);
+        assert!(exp >= 0, "ATOMIC_SCALE must be >= -min_tick.power");
         10i64
             .checked_pow(exp as u32)
             .expect("min_tick_units overflowed")
@@ -214,29 +215,94 @@ impl std::ops::Sub for Price {
     }
 }
 
+pub fn de_price_from_number<'de, D>(deserializer: D) -> Result<Price, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_util::de_number_like_or_object(deserializer, "price", Price::from_f32)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PriceStep {
-    /// step size in atomic units (10^-PRICE_SCALE)
+    /// step size in atomic units (10^-ATOMIC_SCALE)
     pub units: i64,
 }
 
 impl PriceStep {
+    /// Decimal places needed to represent this step without trailing zeros.
+    pub fn decimal_places(self) -> usize {
+        let mut units = (self.units as i128).unsigned_abs();
+        if units == 0 {
+            return 0;
+        }
+
+        let mut trailing_zeros = 0u32;
+        let max = Price::ATOMIC_SCALE as u32;
+        while trailing_zeros < max && units.is_multiple_of(10) {
+            units /= 10;
+            trailing_zeros += 1;
+        }
+
+        (max - trailing_zeros) as usize
+    }
+
+    /// String form for UI labels, trimming trailing fractional zeros.
+    pub fn to_ui_string(self) -> String {
+        let mut out = String::with_capacity(24);
+
+        if self.units < 0 {
+            out.push('-');
+        }
+
+        let abs_u = (self.units as i128).unsigned_abs();
+        let scale = 10u128.pow(Price::ATOMIC_SCALE as u32);
+        let int_part = abs_u / scale;
+        out.push_str(&int_part.to_string());
+
+        let frac_raw = abs_u % scale;
+        if frac_raw == 0 {
+            return out;
+        }
+
+        let mut frac = format!("{:0width$}", frac_raw, width = Price::ATOMIC_SCALE as usize);
+        while frac.ends_with('0') {
+            frac.pop();
+        }
+
+        out.push('.');
+        out.push_str(&frac);
+        out
+    }
+
     /// Lossy: f32 step for UI
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Price::PRICE_SCALE);
+        let scale = 10f32.powi(Price::ATOMIC_SCALE);
         (self.units as f32) / scale
     }
 
     /// Lossy: from f32 step (rounds to nearest atomic unit)
     pub fn from_f32_lossy(step: f32) -> Self {
         assert!(step > 0.0, "step must be > 0");
-        let scale = 10f32.powi(Price::PRICE_SCALE);
+        let scale = 10f32.powi(Price::ATOMIC_SCALE);
         let units = (step * scale).round() as i64;
-        assert!(units > 0, "step too small at given PRICE_SCALE");
+        assert!(units > 0, "step too small at given ATOMIC_SCALE");
         Self { units }
     }
 
     pub fn from_f32(step: f32) -> Self {
         Self::from_f32_lossy(step)
+    }
+}
+
+impl<const MIN: i8, const MAX: i8> From<Power10<MIN, MAX>> for PriceStep {
+    fn from(v: Power10<MIN, MAX>) -> Self {
+        let exp = Price::ATOMIC_SCALE + i32::from(v.power);
+        assert!(exp >= 0, "invalid Power10 to PriceStep exponent");
+
+        Self {
+            units: 10i64
+                .checked_pow(exp as u32)
+                .expect("Power10 to PriceStep overflowed"),
+        }
     }
 }

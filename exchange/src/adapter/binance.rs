@@ -1,14 +1,13 @@
 use super::{
     super::{
-        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
+        Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, Qty, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::{StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
         connect::{State, channel, connect_ws},
-        de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
-        is_symbol_supported,
         limiter::{self, RateLimiter},
-        str_f32_parse,
+        serde_util,
+        serde_util::de_string_to_number,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -134,17 +133,17 @@ pub struct FetchedSpotDepth {
 struct SonicKline {
     #[serde(rename = "t")]
     time: u64,
-    #[serde(rename = "o", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "o", deserialize_with = "de_string_to_number")]
     open: f32,
-    #[serde(rename = "h", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "h", deserialize_with = "de_string_to_number")]
     high: f32,
-    #[serde(rename = "l", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "l", deserialize_with = "de_string_to_number")]
     low: f32,
-    #[serde(rename = "c", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "c", deserialize_with = "de_string_to_number")]
     close: f32,
-    #[serde(rename = "v", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "v", deserialize_with = "de_string_to_number")]
     volume: f32,
-    #[serde(rename = "V", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "V", deserialize_with = "de_string_to_number")]
     taker_buy_base_asset_volume: f32,
     #[serde(rename = "i")]
     interval: String,
@@ -162,9 +161,9 @@ struct SonicKlineWrap {
 struct SonicTrade {
     #[serde(rename = "T")]
     time: u64,
-    #[serde(rename = "p", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "p", deserialize_with = "de_string_to_number")]
     price: f32,
-    #[serde(rename = "q", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "q", deserialize_with = "de_string_to_number")]
     qty: f32,
     #[serde(rename = "m")]
     is_sell: bool,
@@ -1006,15 +1005,15 @@ async fn fetch_depth(ticker: &Ticker) -> Result<DepthPayload, AdapterError> {
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKline(
     u64,
-    #[serde(deserialize_with = "de_string_to_f32")] f32,
-    #[serde(deserialize_with = "de_string_to_f32")] f32,
-    #[serde(deserialize_with = "de_string_to_f32")] f32,
-    #[serde(deserialize_with = "de_string_to_f32")] f32,
-    #[serde(deserialize_with = "de_string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f32,
     u64,
     String,
     u32,
-    #[serde(deserialize_with = "de_string_to_f32")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f32,
     String,
     String,
 );
@@ -1150,7 +1149,7 @@ pub async fn fetch_ticker_metadata(
             .as_str()
             .ok_or_else(|| AdapterError::ParseError("Missing symbol".to_string()))?;
 
-        if !is_symbol_supported(symbol_str, exchange, true) {
+        if !exchange.is_symbol_supported(symbol_str, true) {
             continue;
         }
 
@@ -1183,23 +1182,21 @@ pub async fn fetch_ticker_metadata(
         let min_qty = filters
             .iter()
             .find(|x| x["filterType"].as_str().unwrap_or_default() == "LOT_SIZE")
-            .and_then(|x| x["minQty"].as_str())
             .ok_or_else(|| {
                 AdapterError::ParseError("Missing minQty in LOT_SIZE filter".to_string())
-            })?
-            .parse::<f32>()
-            .map_err(|e| AdapterError::ParseError(format!("Failed to parse minQty: {e}")))?;
+            })
+            .and_then(|x| {
+                serde_util::value_as_f32(&x["minQty"])
+                    .ok_or_else(|| AdapterError::ParseError("Failed to parse minQty".to_string()))
+            })?;
 
-        let contract_size = item["contractSize"].as_f64().map(|v| v as f32);
+        let contract_size = serde_util::value_as_f32(&item["contractSize"]);
 
         let ticker = Ticker::new(symbol_str, exchange);
 
         if let Some(price_filter) = price_filter {
-            let min_ticksize = price_filter["tickSize"]
-                .as_str()
-                .ok_or_else(|| AdapterError::ParseError("tickSize not found".to_string()))?
-                .parse::<f32>()
-                .map_err(|e| AdapterError::ParseError(format!("Failed to parse tickSize: {e}")))?;
+            let min_ticksize = serde_util::value_as_f32(&price_filter["tickSize"])
+                .ok_or_else(|| AdapterError::ParseError("tickSize not found".to_string()))?;
 
             let info = TickerInfo::new(ticker, min_ticksize, min_qty, contract_size);
 
@@ -1214,7 +1211,7 @@ pub async fn fetch_ticker_metadata(
 
 pub async fn fetch_ticker_stats(
     market: MarketKind,
-    contract_sizes: Option<HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, f32>>,
 ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
     let (url, weight) = match market {
         MarketKind::Spot => (SPOT_DOMAIN.to_string() + "/api/v3/ticker/24hr", 80),
@@ -1235,63 +1232,54 @@ pub async fn fetch_ticker_stats(
             .as_str()
             .ok_or_else(|| AdapterError::ParseError("Symbol not found".to_string()))?;
 
-        if !is_symbol_supported(symbol, exchange, false) {
+        if !exchange.is_symbol_supported(symbol, false) {
             continue;
         }
 
         let ticker = Ticker::new(symbol, exchange);
 
-        let last_price = item["lastPrice"]
-            .as_str()
-            .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?
-            .parse::<f32>()
-            .map_err(|e| AdapterError::ParseError(format!("Failed to parse last price: {e}")))?;
+        let last_price = serde_util::value_as_f32(&item["lastPrice"])
+            .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
-        let price_change_pt = item["priceChangePercent"]
-            .as_str()
-            .ok_or_else(|| AdapterError::ParseError("Price change percent not found".to_string()))?
-            .parse::<f32>()
-            .map_err(|e| {
-                AdapterError::ParseError(format!("Failed to parse price change percent: {e}"))
+        let price_change_pt =
+            serde_util::value_as_f32(&item["priceChangePercent"]).ok_or_else(|| {
+                AdapterError::ParseError("Price change percent not found".to_string())
             })?;
 
         let volume = {
             match market {
-                MarketKind::Spot | MarketKind::LinearPerps => item["quoteVolume"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Quote volume not found".to_string()))?
-                    .parse::<f32>()
-                    .map_err(|e| {
-                        AdapterError::ParseError(format!("Failed to parse quote volume: {e}"))
-                    })?,
-                MarketKind::InversePerps => item["volume"]
-                    .as_str()
-                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?
-                    .parse::<f32>()
-                    .map_err(|e| {
-                        AdapterError::ParseError(format!("Failed to parse volume: {e}"))
-                    })?,
+                MarketKind::Spot | MarketKind::LinearPerps => {
+                    serde_util::value_as_f32(&item["quoteVolume"]).ok_or_else(|| {
+                        AdapterError::ParseError("Quote volume not found".to_string())
+                    })?
+                }
+                MarketKind::InversePerps => serde_util::value_as_f32(&item["volume"])
+                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?,
+            }
+        };
+
+        let daily_volume = match market {
+            MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32(volume),
+            MarketKind::InversePerps => {
+                let contract_size = match contract_sizes
+                    .and_then(|sizes| sizes.get(&ticker))
+                    .copied()
+                {
+                    Some(size) => size,
+                    None => {
+                        log::debug!("Missing contract size for {ticker}, skipping ticker in stats",);
+                        continue;
+                    }
+                };
+
+                Qty::from_f32(volume * contract_size)
             }
         };
 
         let ticker_stats = TickerStats {
-            mark_price: last_price,
+            mark_price: Price::from_f32(last_price),
             daily_price_chg: price_change_pt,
-            daily_volume: match market {
-                MarketKind::Spot | MarketKind::LinearPerps => volume,
-                MarketKind::InversePerps => {
-                    let contract_size = contract_sizes
-                        .as_ref()
-                        .and_then(|sizes| sizes.get(&ticker))
-                        .copied()
-                        .unwrap_or_else(|| {
-                            log::warn!("Missing contract size for {}, using raw volume", ticker);
-                            1.0
-                        });
-
-                    volume * contract_size
-                }
-            },
+            daily_volume,
         };
 
         ticker_price_map.insert(ticker, ticker_stats);
@@ -1305,7 +1293,7 @@ pub async fn fetch_ticker_stats(
 struct DeOpenInterest {
     #[serde(rename = "timestamp")]
     pub time: u64,
-    #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_number")]
     pub sum: f32,
 }
 
@@ -1523,7 +1511,7 @@ pub async fn get_hist_trades(
 
         log::info!("Downloading from {}", url);
 
-        let resp = reqwest::get(&url).await.map_err(AdapterError::FetchError)?;
+        let resp = reqwest::get(&url).await.map_err(AdapterError::from)?;
 
         if !resp.status().is_success() {
             return Err(AdapterError::InvalidRequest(format!(
@@ -1533,7 +1521,7 @@ pub async fn get_hist_trades(
             )));
         }
 
-        let body = resp.bytes().await.map_err(AdapterError::FetchError)?;
+        let body = resp.bytes().await.map_err(AdapterError::from)?;
 
         std::fs::write(&base_zip_path, &body).map_err(|e| {
             AdapterError::ParseError(format!("Failed to write zip file: {e}, {base_zip_path:?}"))
@@ -1565,12 +1553,12 @@ pub async fn get_hist_trades(
                     record.ok().and_then(|record| {
                         let time = record[5].parse::<u64>().ok()?;
                         let is_sell = record[6].parse::<bool>().ok()?;
-                        let price_f32 = str_f32_parse(&record[1]);
+                        let price_f32 = record[1].parse::<f32>().ok()?;
 
                         let price =
                             Price::from_f32(price_f32).round_to_min_tick(ticker_info.min_ticksize);
 
-                        let qty = qty_norm.normalize_qty(str_f32_parse(&record[2]), price_f32);
+                        let qty = qty_norm.normalize_qty(record[2].parse::<f32>().ok()?, price_f32);
 
                         Some(Trade {
                             time,

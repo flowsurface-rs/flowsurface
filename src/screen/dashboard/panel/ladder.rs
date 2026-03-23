@@ -59,7 +59,7 @@ pub struct Ladder {
     pub config: Config,
     cache: canvas::Cache,
     last_tick: Instant,
-    tick_size: PriceStep,
+    pub step: PriceStep,
     scroll_px: f32,
     last_exchange_ts_ms: Option<u64>,
     orderbook: [GroupedDepth; 2],
@@ -69,14 +69,14 @@ pub struct Ladder {
 }
 
 impl Ladder {
-    pub fn new(config: Option<Config>, ticker_info: TickerInfo, tick_size: f32) -> Self {
+    pub fn new(config: Option<Config>, ticker_info: TickerInfo, step: PriceStep) -> Self {
         Self {
             trades: TradeStore::new(),
             config: config.unwrap_or_default(),
             ticker_info,
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
-            tick_size: PriceStep::from_f32(tick_size),
+            step,
             scroll_px: 0.0,
             last_exchange_ts_ms: None,
             orderbook: [GroupedDepth::new(), GroupedDepth::new()],
@@ -86,13 +86,13 @@ impl Ladder {
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade]) {
-        self.trades.insert_trades(buffer, self.tick_size);
+        self.trades.insert_trades(buffer, self.step);
     }
 
     pub fn insert_depth(&mut self, depth: &Depth, update_t: u64) {
         if let Some(next) = self.pending_tick_size.take() {
-            self.tick_size = next;
-            self.trades.rebuild_grouped(self.tick_size);
+            self.step = next;
+            self.trades.rebuild_grouped(self.step);
         }
 
         let raw_best_bid = depth.bids.last_key_value().map(|(p, _)| *p);
@@ -115,7 +115,7 @@ impl Ladder {
 
         if self
             .trades
-            .maybe_cleanup(update_t, self.config.trade_retention, self.tick_size)
+            .maybe_cleanup(update_t, self.config.trade_retention, self.step)
         {
             self.invalidate(Some(Instant::now()));
         }
@@ -156,8 +156,7 @@ impl Ladder {
         self.ticker_info.min_ticksize.into()
     }
 
-    pub fn set_tick_size(&mut self, tick_size: f32) {
-        let step = PriceStep::from_f32(tick_size);
+    pub fn set_tick_size(&mut self, step: PriceStep) {
         self.pending_tick_size = Some(step);
         self.invalidate(Some(Instant::now()));
     }
@@ -175,7 +174,7 @@ impl Ladder {
     }
 
     fn regroup_from_depth(&mut self, depth: &Depth) {
-        let step = self.tick_size;
+        let step = self.step;
 
         self.orderbook[Side::Ask.idx()].regroup_from_raw(&depth.asks, Side::Ask, step);
         self.orderbook[Side::Bid.idx()].regroup_from_raw(&depth.bids, Side::Bid, step);
@@ -189,17 +188,13 @@ impl Ladder {
         None
     }
 
-    pub fn tick_size(&self) -> f32 {
-        self.tick_size.to_f32_lossy()
-    }
-
     fn format_price(&self, price: Price) -> String {
         let precision = self.ticker_info.min_ticksize;
         price.to_string(precision)
     }
 
     fn format_quantity(&self, qty: Qty) -> String {
-        data::util::abbr_large_numbers(qty.to_f32())
+        data::util::abbr_large_numbers(qty.to_f32_lossy())
     }
 }
 
@@ -766,20 +761,19 @@ impl Ladder {
     fn build_price_grid(&self) -> Option<PriceGrid> {
         let best_bid = match (self.best_price(Side::Bid), self.best_price(Side::Ask)) {
             (Some(bb), _) => bb,
-            (None, Some(ba)) => ba.add_steps(-1, self.tick_size),
+            (None, Some(ba)) => ba.add_steps(-1, self.step),
             (None, None) => {
                 let (min_t, max_t) = self.trades.price_range()?;
-                let steps =
-                    Price::steps_between_inclusive(min_t, max_t, self.tick_size).unwrap_or(1);
-                max_t.add_steps(-(steps as i64 / 2), self.tick_size)
+                let steps = Price::steps_between_inclusive(min_t, max_t, self.step).unwrap_or(1);
+                max_t.add_steps(-(steps as i64 / 2), self.step)
             }
         };
-        let best_ask = best_bid.add_steps(1, self.tick_size);
+        let best_ask = best_bid.add_steps(1, self.step);
 
         Some(PriceGrid {
             best_bid,
             best_ask,
-            tick: self.tick_size,
+            tick: self.step,
         })
     }
 

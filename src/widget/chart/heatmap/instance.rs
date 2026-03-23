@@ -324,9 +324,8 @@ impl InstanceBuilder {
 
                 max_qty = max_qty.max(trade.qty);
 
-                let trade_qty = trade.qty.to_f32_lossy();
                 let trade_size =
-                    market_type.qty_in_quote_value(trade_qty, trade.price, size_in_quote_ccy);
+                    market_type.qty_in_quote_value(trade.qty, trade.price, size_in_quote_ccy);
                 if trade_size <= trade_size_filter {
                     continue;
                 }
@@ -405,7 +404,7 @@ impl InstanceBuilder {
                 &mut self.depth_profile_ask_acc[i]
             };
 
-            *v += run.qty_raw();
+            *v += run.qty;
             max_qty = max_qty.max(*v);
         }
 

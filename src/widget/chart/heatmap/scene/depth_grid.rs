@@ -190,8 +190,8 @@ impl GridRing {
                     continue;
                 }
 
-                let q = run.qty().max(0.0);
-                if !q.is_finite() || q <= 0.0 {
+                let q = run.qty;
+                if q <= Qty::ZERO {
                     continue;
                 }
                 if order_size_filter > 0.0 {
@@ -201,7 +201,9 @@ impl GridRing {
                     }
                 }
 
-                let q_u32 = (q * qty_scale).round().clamp(0.0, u32::MAX as f32) as u32;
+                let q_u32 = (q.to_f32_lossy() * qty_scale)
+                    .round()
+                    .clamp(0.0, u32::MAX as f32) as u32;
                 if q_u32 == 0 {
                     continue;
                 }
@@ -610,18 +612,19 @@ impl GridRing {
         let mut current_qty: Qty = Qty::ZERO;
 
         let mut flush = |rounded_price: Price, qty_sum: Qty| {
-            let q = qty_sum.to_f32_lossy();
-            if q <= 0.0 || !q.is_finite() {
+            if qty_sum <= Qty::ZERO {
                 return;
             }
 
             if order_size_filter > 0.0 {
                 let order_size =
-                    market_type.qty_in_quote_value(q, rounded_price, size_in_quote_ccy);
+                    market_type.qty_in_quote_value(qty_sum, rounded_price, size_in_quote_ccy);
                 if order_size <= order_size_filter {
                     return;
                 }
             }
+
+            let q = qty_sum.to_f32_lossy();
 
             let dy_steps: i64 = (rounded_price.units - anchor.units).div_euclid(step_units);
             let dy_bins: i64 = dy_steps.div_euclid(steps_per_y_bin);

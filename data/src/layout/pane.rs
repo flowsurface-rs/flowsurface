@@ -240,7 +240,7 @@ pub struct PaneSetup {
     pub ticker_info: exchange::TickerInfo,
     pub basis: Option<Basis>,
     pub tick_multiplier: Option<TickMultiplier>,
-    pub tick_size: f32,
+    pub price_step: exchange::unit::PriceStep,
     pub depth_aggr: exchange::adapter::StreamTicksize,
     pub push_freq: exchange::PushFrequency,
 }
@@ -260,28 +260,45 @@ impl PaneSetup {
             .map(|ti| ti.ticker.exchange.is_depth_client_aggr())
             .unwrap_or(is_client_aggr);
 
-        let basis = match content_kind {
-            ContentKind::HeatmapChart => {
-                let current = current_basis.and_then(|b| match b {
-                    Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
-                    _ => None,
-                });
-                Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
-            }
-            ContentKind::Ladder => Some(
-                current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
-            ),
-            ContentKind::ShaderHeatmap => Some(
-                current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
-            ),
-            ContentKind::FootprintChart => {
-                Some(current_basis.unwrap_or(Basis::Time(Timeframe::M5)))
-            }
-            ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
-                Some(current_basis.unwrap_or(Basis::Time(Timeframe::M15)))
-            }
-            ContentKind::Starter | ContentKind::TimeAndSales => None,
-        };
+        let basis =
+            match content_kind {
+                ContentKind::HeatmapChart => {
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
+                }
+                ContentKind::Ladder => Some(
+                    current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+                ),
+                ContentKind::ShaderHeatmap => Some(
+                    current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+                ),
+                ContentKind::FootprintChart => {
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
+                        Basis::Tick(_) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| {
+                        Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
+                    }))
+                }
+                ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| {
+                        Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
+                    }))
+                }
+                ContentKind::Starter | ContentKind::TimeAndSales => None,
+            };
 
         let tick_multiplier = match content_kind {
             ContentKind::HeatmapChart | ContentKind::Ladder | ContentKind::ShaderHeatmap => {
@@ -305,8 +322,8 @@ impl PaneSetup {
             | ContentKind::Starter => current_tick_multiplier,
         };
 
-        let tick_size = match tick_multiplier {
-            Some(tm) => tm.multiply_with_min_tick_size(base_ticker),
+        let price_step = match tick_multiplier {
+            Some(tm) => tm.multiply_with_min_tick_step(base_ticker),
             None => base_ticker.min_ticksize.into(),
         };
 
@@ -326,7 +343,7 @@ impl PaneSetup {
             ticker_info: base_ticker,
             basis,
             tick_multiplier,
-            tick_size,
+            price_step,
             depth_aggr,
             push_freq,
         }

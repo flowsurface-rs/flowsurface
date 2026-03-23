@@ -13,7 +13,7 @@ use data::chart::kline::{
 };
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
-use data::util::{abbr_large_numbers, count_decimals};
+use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
@@ -78,21 +78,7 @@ impl Chart for KlineChart {
             return None;
         }
 
-        match &chart.basis {
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds();
-
-                let (earliest, latest) = (
-                    chart.x_to_interval(region.x) - (interval / 2),
-                    chart.x_to_interval(region.x + region.width) + (interval / 2),
-                );
-
-                Some((earliest, latest))
-            }
-            Basis::Tick(_) => {
-                unimplemented!()
-            }
-        }
+        Some(chart.interval_range(&region))
     }
 
     fn interval_keys(&self) -> Option<Vec<u64>> {
@@ -180,7 +166,7 @@ impl KlineChart {
     pub fn new(
         layout: ViewConfig,
         basis: Basis,
-        tick_size: f32,
+        step: PriceStep,
         klines_raw: &[Kline],
         raw_trades: Vec<Trade>,
         enabled_indicators: &[KlineIndicator],
@@ -189,8 +175,6 @@ impl KlineChart {
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
-                let step = PriceStep::from_f32(tick_size);
-
                 let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, klines_raw)
                     .with_trades(&raw_trades);
 
@@ -223,7 +207,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -269,8 +253,6 @@ impl KlineChart {
                 }
             }
             Basis::Tick(interval) => {
-                let step = PriceStep::from_f32(tick_size);
-
                 let cell_width = match kind {
                     KlineChartKind::Footprint { .. } => 80.0,
                     KlineChartKind::Candles => 4.0,
@@ -283,7 +265,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -355,7 +337,7 @@ impl KlineChart {
         &self.kind
     }
 
-    fn missing_data_task(&mut self) -> Option<Action> {
+    fn fetch_missing_data(&mut self) -> Option<Action> {
         match &self.data_source {
             PlotData::TimeBased(timeseries) => {
                 let timeframe_ms = timeseries.interval.to_milliseconds();
@@ -372,19 +354,21 @@ impl KlineChart {
 
                 let (visible_earliest, visible_latest) = self.visible_timerange()?;
                 let (kline_earliest, kline_latest) = timeseries.timerange();
-                let earliest = visible_earliest.saturating_sub(visible_latest - visible_earliest);
+                let visible_span = visible_latest.saturating_sub(visible_earliest);
+                let prefetch_earliest = visible_earliest.saturating_sub(visible_span);
 
-                // priority 1, basic kline data fetch
+                // priority 1, initial klines for visible range
                 if visible_earliest < kline_earliest {
-                    let range = FetchRange::Kline(earliest, kline_earliest);
+                    let range = FetchRange::Kline(prefetch_earliest, kline_earliest);
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }
                 }
 
-                // priority 2, trades fetch
-                if !self.fetching_trades.0
+                // priority 2, trades
+                if let KlineChartKind::Footprint { .. } = self.kind
+                    && !self.fetching_trades.0
                     && is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
                         timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
@@ -396,13 +380,14 @@ impl KlineChart {
                     }
                 }
 
-                // priority 3, Open Interest data
+                // priority 3, indicators
+                // (e.g. open interest needs external fetch as it's not derived from klines)
                 let ctx = indicator::kline::FetchCtx {
                     main_chart: &self.chart,
                     timeframe: timeseries.interval,
                     visible_earliest,
                     kline_latest,
-                    prefetch_earliest: earliest,
+                    prefetch_earliest,
                 };
                 for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
                     if let Some(range) = indi.fetch_range(&ctx)
@@ -413,13 +398,22 @@ impl KlineChart {
                 }
 
                 // priority 4, missing klines & integrity check
+                let check_earliest = prefetch_earliest.max(kline_earliest);
+                let check_latest = visible_latest.saturating_add(timeframe_ms);
+
                 if let Some(missing_keys) =
-                    timeseries.check_kline_integrity(kline_earliest, kline_latest, timeframe_ms)
+                    timeseries.check_kline_integrity(check_earliest, check_latest)
                 {
-                    let latest =
-                        missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe_ms;
-                    let earliest =
-                        missing_keys.iter().min().unwrap_or(&visible_earliest) - timeframe_ms;
+                    let latest = missing_keys
+                        .iter()
+                        .max()
+                        .unwrap_or(&visible_latest)
+                        .saturating_add(timeframe_ms);
+                    let earliest = missing_keys
+                        .iter()
+                        .min()
+                        .unwrap_or(&visible_earliest)
+                        .saturating_sub(timeframe_ms);
 
                     let range = FetchRange::Kline(earliest, latest);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
@@ -448,8 +442,8 @@ impl KlineChart {
         self.fetching_trades.1 = Some(handle);
     }
 
-    pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size.to_f32_lossy()
+    pub fn tick_size(&self) -> PriceStep {
+        self.chart.tick_size
     }
 
     pub fn study_configurator(&self) -> &study::Configurator<FootprintStudy> {
@@ -516,20 +510,18 @@ impl KlineChart {
         self.chart.basis
     }
 
-    pub fn change_tick_size(&mut self, new_tick_size: f32) {
+    pub fn change_tick_size(&mut self, new_step: PriceStep) {
         let chart = self.mut_state();
 
-        let step = PriceStep::from_f32(new_tick_size);
-
-        chart.cell_height *= new_tick_size / chart.tick_size.to_f32_lossy();
-        chart.tick_size = step;
+        chart.cell_height *= (new_step.units as f32) / (chart.tick_size.units as f32);
+        chart.tick_size = new_step;
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
-                tick_aggr.change_tick_size(new_tick_size, &self.raw_trades);
+                tick_aggr.change_tick_size(new_step, &self.raw_trades);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.change_tick_size(new_tick_size, &self.raw_trades);
+                timeseries.change_tick_size(new_step, &self.raw_trades);
             }
         }
 
@@ -791,7 +783,7 @@ impl KlineChart {
 
         if let Some(t) = now {
             self.last_tick = t;
-            self.missing_data_task()
+            self.fetch_missing_data()
         } else {
             None
         }
@@ -1349,7 +1341,7 @@ fn draw_clusters(
     max_cluster_qty: f32,
     palette: &Extended,
     text_size: f32,
-    tick_size: f32,
+    step: PriceStep,
     show_text: bool,
     imbalance: Option<(usize, Option<usize>, bool)>,
     kline: &Kline,
@@ -1443,9 +1435,8 @@ fn draw_clusters(
                 }
 
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance {
-                    let step = PriceStep::from_f32(tick_size);
                     let higher_price =
-                        Price::from_f32(price.to_f32() + tick_size).round_to_step(step);
+                        Price::from_f32(price.to_f32() + step.to_f32_lossy()).round_to_step(step);
 
                     let rect_w = ((area.imb_marker_width - 1.0) / 2.0).max(1.0);
                     let buyside_x = area.imb_marker_left + area.imb_marker_width - rect_w;
@@ -1558,9 +1549,8 @@ fn draw_clusters(
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance
                     && area.imb_marker_width > 0.0
                 {
-                    let step = PriceStep::from_f32(tick_size);
                     let higher_price =
-                        Price::from_f32(price.to_f32() + tick_size).round_to_step(step);
+                        Price::from_f32(price.to_f32() + step.to_f32_lossy()).round_to_step(step);
 
                     let rect_width = ((area.imb_marker_width - 1.0) / 2.0).max(1.0);
 

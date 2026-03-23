@@ -41,7 +41,7 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
-const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
+const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 5] = [
     (Venue::Bybit, Exchange::BybitLinear, "Bybit"),
     (Venue::Binance, Exchange::BinanceLinear, "Binance"),
     (
@@ -50,6 +50,7 @@ const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
         "Hyperliquid",
     ),
     (Venue::Okex, Exchange::OkexLinear, "OKX"),
+    (Venue::Mexc, Exchange::MexcLinear, "MEXC"),
 ];
 
 pub enum Action {
@@ -73,8 +74,8 @@ pub enum Message {
     ToggleTable,
     ToggleFavorites,
     FetchForTickerStats,
-    UpdateTickersInfo(Exchange, HashMap<Ticker, Option<TickerInfo>>),
-    UpdateTickerStats(Exchange, HashMap<Ticker, TickerStats>),
+    UpdateTickersInfo(Venue, HashMap<Ticker, Option<TickerInfo>>),
+    UpdateTickerStats(Venue, HashMap<Ticker, TickerStats>),
     ErrorOccurred(data::InternalError),
 }
 
@@ -102,16 +103,21 @@ impl TickersTable {
     }
 
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
-        let fetch_metadata = Exchange::ALL
+        let fetch_metadata = Venue::ALL
             .iter()
-            .map(|exchange| {
+            .copied()
+            .map(|venue| {
                 Task::perform(
-                    fetch_ticker_metadata(*exchange),
+                    fetch_ticker_metadata(venue, markets_for_venue(venue)),
                     move |result| match result {
-                        Ok(ticker_info) => Message::UpdateTickersInfo(*exchange, ticker_info),
-                        Err(err) => Message::ErrorOccurred(InternalError::Fetch(format!(
-                            "{exchange:?}: {err}"
-                        ))),
+                        Ok(ticker_info) => Message::UpdateTickersInfo(venue, ticker_info),
+                        Err(err) => {
+                            log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
+                            Message::ErrorOccurred(InternalError::Fetch(format!(
+                                "{venue:?}: {}",
+                                err.ui_message()
+                            )))
+                        }
                     },
                 )
             })
@@ -205,9 +211,13 @@ impl TickersTable {
                     self.display_cache.clear();
                     for row in self.ticker_rows.iter_mut() {
                         row.previous_stats = None;
+                        let precision = self
+                            .tickers_info
+                            .get(&row.ticker)
+                            .and_then(|info| info.as_ref().map(|ti| ti.min_ticksize));
                         self.display_cache.insert(
                             row.ticker,
-                            compute_display_data(&row.ticker, &row.stats, None),
+                            compute_display_data(&row.ticker, &row.stats, None, precision),
                         );
                     }
 
@@ -216,24 +226,24 @@ impl TickersTable {
             }
             Message::FetchForTickerStats => {
                 let task = {
-                    let exchanges: FxHashSet<Exchange> =
-                        self.tickers_info.keys().map(|t| t.exchange).collect();
+                    let venues: FxHashSet<Venue> = self
+                        .tickers_info
+                        .keys()
+                        .map(|t| t.exchange.venue())
+                        .collect();
 
-                    self.pending_stats_batches = exchanges.len();
+                    self.pending_stats_batches = venues.len();
 
-                    let fetch_tasks = exchanges
+                    let fetch_tasks = venues
                         .into_iter()
-                        .map(|exchange| {
-                            let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
-                                Some(contract_sizes_for_exchange(
-                                    exchange,
-                                    self.tickers_info.iter(),
-                                ))
+                        .map(|venue| {
+                            let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
+                                Some(contract_sizes_for_venue(venue, self.tickers_info.iter()))
                             } else {
                                 None
                             };
 
-                            fetch_ticker_stats_task(exchange, contract_sizes)
+                            fetch_ticker_stats_task(venue, contract_sizes)
                         })
                         .collect::<Vec<Task<Message>>>();
 
@@ -242,8 +252,8 @@ impl TickersTable {
 
                 return Some(Action::Fetch(task));
             }
-            Message::UpdateTickerStats(exchange, stats) => {
-                self.update_ticker_rows(exchange, stats);
+            Message::UpdateTickerStats(venue, stats) => {
+                self.update_ticker_rows(venue, stats);
 
                 if self.pending_stats_batches > 0 {
                     self.pending_stats_batches -= 1;
@@ -252,9 +262,9 @@ impl TickersTable {
                     self.sort_ticker_rows();
                 }
             }
-            Message::UpdateTickersInfo(exchange, info) => {
-                let contract_sizes = if matches!(exchange, Exchange::BinanceInverse) {
-                    Some(contract_sizes_for_exchange(exchange, info.iter()))
+            Message::UpdateTickersInfo(venue, info) => {
+                let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
+                    Some(contract_sizes_for_venue(venue, info.iter()))
                 } else {
                     None
                 };
@@ -264,12 +274,11 @@ impl TickersTable {
                 }
 
                 return Some(Action::Fetch(fetch_ticker_stats_task(
-                    exchange,
+                    venue,
                     contract_sizes,
                 )));
             }
             Message::ErrorOccurred(err) => {
-                log::error!("Error occurred: {err}");
                 return Some(Action::ErrorOccurred(err));
             }
         }
@@ -433,7 +442,7 @@ impl TickersTable {
                 self.ticker_rows.sort_unstable_by(|a, b| {
                     b.stats
                         .daily_volume
-                        .total_cmp(&a.stats.daily_volume)
+                        .cmp(&a.stats.daily_volume)
                         .then_with(|| Ordering::Equal)
                 });
             }
@@ -441,7 +450,7 @@ impl TickersTable {
                 self.ticker_rows.sort_unstable_by(|a, b| {
                     a.stats
                         .daily_volume
-                        .total_cmp(&b.stats.daily_volume)
+                        .cmp(&b.stats.daily_volume)
                         .then_with(|| Ordering::Equal)
                 });
             }
@@ -562,12 +571,17 @@ impl TickersTable {
             .into()
     }
 
-    fn update_ticker_rows(&mut self, exchange: Exchange, stats: HashMap<Ticker, TickerStats>) {
+    fn update_ticker_rows(&mut self, venue: Venue, stats: HashMap<Ticker, TickerStats>) {
         let iter = stats
             .into_iter()
-            .filter(|(t, _)| self.tickers_info.contains_key(t));
+            .filter(|(t, _)| self.tickers_info.contains_key(t) && t.exchange.venue() == venue);
 
         for (ticker, new_stats) in iter {
+            let precision = self
+                .tickers_info
+                .get(&ticker)
+                .and_then(|info| info.as_ref().map(|ti| ti.min_ticksize));
+
             if let Some(&idx) = self.row_index.get(&ticker) {
                 let row = &mut self.ticker_rows[idx];
                 let previous_price = Some(row.stats.mark_price);
@@ -576,11 +590,11 @@ impl TickersTable {
 
                 self.display_cache.insert(
                     ticker,
-                    compute_display_data(&ticker, &row.stats, previous_price),
+                    compute_display_data(&ticker, &row.stats, previous_price, precision),
                 );
             } else {
                 let new_row = TickerRowData {
-                    exchange,
+                    exchange: ticker.exchange,
                     ticker,
                     stats: new_stats,
                     previous_stats: None,
@@ -592,7 +606,7 @@ impl TickersTable {
 
                 self.display_cache.insert(
                     ticker,
-                    compute_display_data(&ticker, &self.ticker_rows[idx].stats, None),
+                    compute_display_data(&ticker, &self.ticker_rows[idx].stats, None, precision),
                 );
             }
         }
@@ -1036,10 +1050,8 @@ impl TickersTable {
             (ra.bucket, ra.pos)
                 .cmp(&(rb.bucket, rb.pos))
                 .then_with(|| match self.selected_sort_option {
-                    SortOptions::VolumeDesc => {
-                        b.stats.daily_volume.total_cmp(&a.stats.daily_volume)
-                    }
-                    SortOptions::VolumeAsc => a.stats.daily_volume.total_cmp(&b.stats.daily_volume),
+                    SortOptions::VolumeDesc => b.stats.daily_volume.cmp(&a.stats.daily_volume),
+                    SortOptions::VolumeAsc => a.stats.daily_volume.cmp(&b.stats.daily_volume),
                     SortOptions::ChangeDesc => {
                         b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
                     }
@@ -1069,10 +1081,8 @@ impl TickersTable {
             (ra.bucket, ra.pos)
                 .cmp(&(rb.bucket, rb.pos))
                 .then_with(|| match self.selected_sort_option {
-                    SortOptions::VolumeDesc => {
-                        b.stats.daily_volume.total_cmp(&a.stats.daily_volume)
-                    }
-                    SortOptions::VolumeAsc => a.stats.daily_volume.total_cmp(&b.stats.daily_volume),
+                    SortOptions::VolumeDesc => b.stats.daily_volume.cmp(&a.stats.daily_volume),
+                    SortOptions::VolumeAsc => a.stats.daily_volume.cmp(&b.stats.daily_volume),
                     SortOptions::ChangeDesc => {
                         b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
                     }
@@ -1194,22 +1204,30 @@ fn ticker_card<'a>(ticker: &Ticker, display_data: &'a TickerDisplayData) -> Elem
         .width(Length::Fixed(2.0))
         .style(move |theme| style::ticker_card_bar(theme, display_data.card_color_alpha));
 
-    let price_display = if display_data.price_changed_part.is_empty() {
-        row![text(&display_data.price_unchanged_part)]
+    let price_display = if let Some(unchanged_part) = display_data.price_unchanged_part.as_deref() {
+        let changed_part = display_data
+            .price_changed_part
+            .as_deref()
+            .unwrap_or_default();
+        if changed_part.is_empty() {
+            row![text(unchanged_part)]
+        } else {
+            row![
+                text(unchanged_part),
+                text(changed_part).style(move |theme: &Theme| {
+                    let palette = theme.extended_palette();
+                    iced::widget::text::Style {
+                        color: Some(match display_data.price_change.as_ref() {
+                            Some(PriceChange::Increased) => palette.success.base.color,
+                            Some(PriceChange::Decreased) => palette.danger.base.color,
+                            _ => palette.background.base.text,
+                        }),
+                    }
+                })
+            ]
+        }
     } else {
-        row![
-            text(&display_data.price_unchanged_part),
-            text(&display_data.price_changed_part).style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
-                iced::widget::text::Style {
-                    color: Some(match display_data.price_change {
-                        PriceChange::Increased => palette.success.base.color,
-                        PriceChange::Decreased => palette.danger.base.color,
-                        PriceChange::Unchanged => palette.background.base.text,
-                    }),
-                }
-            })
-        ]
+        row![text("-")]
     };
 
     let icon = icon_text(style::exchange_icon(ticker.exchange), 12);
@@ -1288,7 +1306,7 @@ fn expanded_ticker_card<'a>(
                 row![
                     text("Last Updated Price: ").size(11),
                     Space::new().width(Length::Fill).height(Length::Shrink),
-                    text(&display_data.mark_price_display)
+                    text(display_data.mark_price_display.as_deref().unwrap_or("-"))
                 ],
                 row![
                     text("Daily Change: ").size(11),
@@ -1460,25 +1478,41 @@ fn market_suffix(m: MarketKind) -> &'static str {
 }
 
 fn fetch_ticker_stats_task(
-    exchange: Exchange,
+    venue: Venue,
     contract_sizes: Option<HashMap<Ticker, f32>>,
 ) -> Task<Message> {
     Task::perform(
-        fetch_ticker_stats(exchange, contract_sizes),
+        fetch_ticker_stats(venue, markets_for_venue(venue), contract_sizes),
         move |result| match result {
-            Ok(ticker_rows) => Message::UpdateTickerStats(exchange, ticker_rows),
-            Err(err) => Message::ErrorOccurred(InternalError::Fetch(err.to_string())),
+            Ok(ticker_rows) => Message::UpdateTickerStats(venue, ticker_rows),
+            Err(err) => {
+                log::error!("Ticker stats fetch failed for {venue:?}: {err}");
+                Message::ErrorOccurred(InternalError::Fetch(format!(
+                    "{venue:?}: {}",
+                    err.ui_message()
+                )))
+            }
         },
     )
 }
 
-fn contract_sizes_for_exchange<'a>(
-    exchange: Exchange,
+fn markets_for_venue(venue: Venue) -> &'static [MarketKind] {
+    match venue {
+        Venue::Binance | Venue::Bybit | Venue::Okex => &MarketKind::ALL,
+        Venue::Hyperliquid => &[MarketKind::Spot, MarketKind::LinearPerps],
+        // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
+        // TODO: Remove this after protobuf implementation and Mexc spot markets ready to stream
+        Venue::Mexc => &[MarketKind::LinearPerps, MarketKind::InversePerps],
+    }
+}
+
+fn contract_sizes_for_venue<'a>(
+    venue: Venue,
     ticker_info_iter: impl Iterator<Item = (&'a Ticker, &'a Option<TickerInfo>)>,
 ) -> HashMap<Ticker, f32> {
     ticker_info_iter
         .filter_map(|(ticker, info)| {
-            if ticker.exchange != exchange {
+            if ticker.exchange.venue() != venue {
                 return None;
             }
 

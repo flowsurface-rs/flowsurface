@@ -133,7 +133,15 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    pub fn check_kline_integrity(
+    fn align_down_to_phase(time: u64, phase: u64, interval: u64) -> u64 {
+        if time >= phase {
+            time.saturating_sub((time - phase) % interval)
+        } else {
+            phase
+        }
+    }
+
+    fn check_kline_integrity_range(
         &self,
         earliest: u64,
         latest: u64,
@@ -161,7 +169,7 @@ impl<D: DataPoint> TimeSeries<D> {
                 time += interval;
             }
 
-            log::warn!(
+            log::debug!(
                 "Integrity check failed: missing {} klines",
                 missing_keys.len()
             );
@@ -169,6 +177,32 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         None
+    }
+
+    pub fn check_kline_integrity(&self, earliest: u64, latest: u64) -> Option<Vec<u64>> {
+        if self.datapoints.is_empty() {
+            return None;
+        }
+
+        let interval = self.interval.to_milliseconds();
+        if interval == 0 {
+            return None;
+        }
+
+        let (series_earliest, series_latest) = self.timerange();
+        let phase = series_earliest % interval;
+
+        let check_earliest =
+            Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
+                .max(series_earliest);
+        let check_latest = Self::align_down_to_phase(latest.min(series_latest), phase, interval)
+            .min(series_latest);
+
+        if check_earliest < check_latest {
+            self.check_kline_integrity_range(check_earliest, check_latest, interval)
+        } else {
+            None
+        }
     }
 }
 
@@ -275,8 +309,9 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
-        self.tick_size = PriceStep::from_f32(tick_size);
+    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+        self.tick_size = tick_size;
+
         self.clear_trades();
 
         if !raw_trades.is_empty() {
@@ -404,17 +439,17 @@ impl TimeSeries<HeatmapDataPoint> {
         }
     }
 
-    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (f32, f32) {
-        let mut max_trade_qty = 0.0f32;
-        let mut max_aggr_volume = 0.0f32;
+    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (Qty, Qty) {
+        let mut max_trade_qty = Qty::ZERO;
+        let mut max_aggr_volume = Qty::ZERO;
 
         self.datapoints
             .range(earliest..=latest)
             .for_each(|(_, dp)| {
-                let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
+                let (mut buy_volume, mut sell_volume) = (Qty::ZERO, Qty::ZERO);
 
                 dp.grouped_trades.iter().for_each(|trade| {
-                    let trade_qty = f32::from(trade.qty);
+                    let trade_qty = trade.qty;
                     max_trade_qty = max_trade_qty.max(trade_qty);
 
                     if trade.is_sell {

@@ -18,6 +18,8 @@ pub mod decorate;
 pub mod multi_split;
 pub mod toast;
 
+pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
+
 #[allow(dead_code)]
 pub const DEFAULT_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -244,23 +246,20 @@ where
 
     let icon = if let Some(group) = link_group {
         text(group.to_string())
-            .font(style::AZERET_MONO)
-            .align_x(Alignment::Start)
-            .align_y(Alignment::Center)
     } else {
         text("-")
-            .font(style::AZERET_MONO)
-            .align_x(Alignment::Start)
-            .align_y(Alignment::Center)
     };
 
-    button(icon)
-        .style(move |theme: &Theme, status| {
-            style::button::bordered_toggle(theme, status, is_active)
-        })
-        .on_press(on_press(id))
-        .width(28)
-        .into()
+    button(
+        icon.font(style::AZERET_MONO)
+            .align_x(Alignment::Start)
+            .align_y(Alignment::Center),
+    )
+    .style(move |theme: &Theme, status| style::button::bordered_toggle(theme, status, is_active))
+    .on_press(on_press(id))
+    .height(PANE_CONTROL_BTN_HEIGHT)
+    .width(28)
+    .into()
 }
 
 #[macro_export]

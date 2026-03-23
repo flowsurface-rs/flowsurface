@@ -92,8 +92,8 @@ impl TickAggr {
         tick_aggr
     }
 
-    pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
-        self.tick_size = PriceStep::from_f32(tick_size);
+    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+        self.tick_size = tick_size;
 
         self.datapoints.clear();
 
