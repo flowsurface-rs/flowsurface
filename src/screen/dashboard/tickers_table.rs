@@ -24,10 +24,23 @@ use iced::{
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{cmp::Ordering, collections::HashMap};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
+/// How often to refresh stats while the ticker table is visible (seconds).
 const ACTIVE_UPDATE_INTERVAL: u64 = 13;
+
+/// How often to refresh stats while the ticker table is hidden (seconds).
 const INACTIVE_UPDATE_INTERVAL: u64 = 300;
+
+/// Wait this long after exchange toggles before firing one merged stats fetch (milliseconds).
+const EXCHANGE_TOGGLE_DEBOUNCE_MS: u64 = 1_000;
+
+/// Internal tick for debounce checks and loading-dot animation updates (milliseconds).
+const EXCHANGE_TOGGLE_DEBOUNCE_TICK_MS: u64 = 200;
 
 /// Number of extra cards to render for visibility during scrolling
 const OVERSCAN_BUFFER: isize = 3;
@@ -71,12 +84,150 @@ pub enum Message {
     Scrolled(scrollable::Viewport),
     ToggleMarketFilter(MarketKind),
     ToggleExchangeFilter(Venue),
+    DebounceExchangeFetchTick,
     ToggleTable,
     ToggleFavorites,
     FetchForTickerStats,
     UpdateTickersInfo(Venue, HashMap<Ticker, Option<TickerInfo>>),
     UpdateTickerStats(Venue, HashMap<Ticker, TickerStats>),
+    TickerStatsFetchFailed(Venue, data::InternalError),
     ErrorOccurred(data::InternalError),
+}
+
+/// Small timer state for exchange-toggle debouncing.
+#[derive(Debug)]
+enum DebounceState {
+    /// No debounce pending.
+    Idle,
+    /// Fetch is delayed until deadline.
+    Waiting { deadline: Instant },
+}
+
+/// Keeps ticker-stats fetch behavior predictable and spam-safe.
+///
+/// - `debounce`: wait a short time after exchange toggles before fetching.
+/// - `in_flight_venues`: exchanges currently being fetched (avoid duplicates).
+/// - `last_started_at`: last fetch start times (enforce cooldown/rate-limit).
+/// - `force_refresh_venues`: one-time cooldown bypass for first enable.
+/// - `loading_phase`: simple frame counter for `.`, `..`, `...` indicator.
+#[derive(Debug)]
+struct StatsFetchState {
+    debounce: DebounceState,
+    in_flight_venues: FxHashSet<Venue>,
+    last_started_at: FxHashMap<Venue, Instant>,
+    force_refresh_venues: FxHashSet<Venue>,
+    loading_phase: u8,
+}
+
+impl Default for StatsFetchState {
+    fn default() -> Self {
+        Self {
+            debounce: DebounceState::Idle,
+            in_flight_venues: FxHashSet::default(),
+            last_started_at: FxHashMap::default(),
+            force_refresh_venues: FxHashSet::default(),
+            loading_phase: 0,
+        }
+    }
+}
+
+impl StatsFetchState {
+    /// Called when user enables an exchange filter.
+    /// Starts/restarts debounce and marks first-time venues for one immediate refresh.
+    fn on_exchange_enabled(&mut self, venue: Venue, now: Instant) {
+        // Allow one cooldown bypass when enabling a venue for the first time in-session.
+        if !self.last_started_at.contains_key(&venue) {
+            self.force_refresh_venues.insert(venue);
+        }
+
+        self.debounce = DebounceState::Waiting {
+            deadline: now + Duration::from_millis(EXCHANGE_TOGGLE_DEBOUNCE_MS),
+        };
+    }
+
+    fn on_exchange_disabled(&mut self, venue: Venue) {
+        self.force_refresh_venues.remove(&venue);
+    }
+
+    /// Returns true when the pending debounce delay has elapsed.
+    fn debounce_is_ready(&self, now: Instant) -> bool {
+        matches!(self.debounce, DebounceState::Waiting { deadline } if now >= deadline)
+    }
+
+    /// Clears pending debounce after a debounced fetch attempt.
+    fn clear_debounce(&mut self) {
+        self.debounce = DebounceState::Idle;
+    }
+
+    /// Picks venues that are allowed to fetch now and marks them as started/in-flight.
+    fn schedule_venues(
+        &mut self,
+        venues: FxHashSet<Venue>,
+        now: Instant,
+        min_interval: Duration,
+    ) -> Vec<Venue> {
+        let mut scheduled = Vec::new();
+
+        for venue in venues.into_iter() {
+            if self.in_flight_venues.contains(&venue) {
+                continue;
+            }
+
+            let force_refresh = self.force_refresh_venues.contains(&venue);
+            let within_cooldown = self
+                .last_started_at
+                .get(&venue)
+                .is_some_and(|last| now.duration_since(*last) < min_interval);
+
+            if within_cooldown && !force_refresh {
+                continue;
+            }
+
+            scheduled.push(venue);
+        }
+
+        for venue in scheduled.iter().copied() {
+            self.in_flight_venues.insert(venue);
+            self.last_started_at.insert(venue, now);
+            self.force_refresh_venues.remove(&venue);
+        }
+
+        scheduled
+    }
+
+    /// Marks a venue request as completed and returns true when no fetches are in-flight.
+    fn complete_venue(&mut self, venue: Venue) -> bool {
+        self.in_flight_venues.remove(&venue);
+        let empty = self.in_flight_venues.is_empty();
+        if empty {
+            self.loading_phase = 0;
+        }
+        empty
+    }
+
+    /// Returns true when this venue currently has a running stats fetch.
+    fn is_in_flight(&self, venue: Venue) -> bool {
+        self.in_flight_venues.contains(&venue)
+    }
+
+    /// Advances loading animation while any venue is in-flight.
+    fn tick_loading_phase(&mut self) {
+        if self.in_flight_venues.is_empty() {
+            self.loading_phase = 0;
+            return;
+        }
+
+        self.loading_phase = (self.loading_phase + 1) % 3;
+    }
+
+    /// Returns loading indicator frame: `.`, `..`, `...`.
+    fn loading_dots(&self) -> &'static str {
+        match self.loading_phase {
+            0 => ".",
+            1 => "..",
+            _ => "...",
+        }
+    }
 }
 
 pub struct TickersTable {
@@ -94,7 +245,7 @@ pub struct TickersTable {
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
     row_index: FxHashMap<Ticker, usize>,
-    pending_stats_batches: usize,
+    stats_fetch_state: StatsFetchState,
 }
 
 impl TickersTable {
@@ -139,7 +290,7 @@ impl TickersTable {
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),
-                pending_stats_batches: 0,
+                stats_fetch_state: StatsFetchState::default(),
             },
             Task::batch(fetch_metadata),
         )
@@ -183,10 +334,29 @@ impl TickersTable {
                 }
             }
             Message::ToggleExchangeFilter(exch) => {
-                if self.selected_exchanges.contains(&exch) {
+                let was_selected = self.selected_exchanges.contains(&exch);
+
+                if was_selected {
                     self.selected_exchanges.remove(&exch);
+                    self.stats_fetch_state.on_exchange_disabled(exch);
                 } else {
                     self.selected_exchanges.insert(exch);
+
+                    self.stats_fetch_state
+                        .on_exchange_enabled(exch, Instant::now());
+                }
+            }
+            Message::DebounceExchangeFetchTick => {
+                self.stats_fetch_state.tick_loading_phase();
+
+                if !self.stats_fetch_state.debounce_is_ready(Instant::now()) {
+                    return None;
+                }
+
+                self.stats_fetch_state.clear_debounce();
+
+                if let Some(task) = self.selected_stats_fetch_task() {
+                    return Some(Action::Fetch(task));
                 }
             }
             Message::ToggleFavorites => {
@@ -225,64 +395,87 @@ impl TickersTable {
                 }
             }
             Message::FetchForTickerStats => {
-                let task = {
-                    let venues: FxHashSet<Venue> = self
-                        .tickers_info
-                        .keys()
-                        .map(|t| t.exchange.venue())
-                        .collect();
-
-                    self.pending_stats_batches = venues.len();
-
-                    let fetch_tasks = venues
-                        .into_iter()
-                        .map(|venue| {
-                            let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
-                                Some(contract_sizes_for_venue(venue, self.tickers_info.iter()))
-                            } else {
-                                None
-                            };
-
-                            fetch_ticker_stats_task(venue, contract_sizes)
-                        })
-                        .collect::<Vec<Task<Message>>>();
-
-                    Task::batch(fetch_tasks)
-                };
-
-                return Some(Action::Fetch(task));
+                if let Some(task) = self.selected_stats_fetch_task() {
+                    return Some(Action::Fetch(task));
+                }
             }
             Message::UpdateTickerStats(venue, stats) => {
+                let can_sort = self.stats_fetch_state.complete_venue(venue);
                 self.update_ticker_rows(venue, stats);
 
-                if self.pending_stats_batches > 0 {
-                    self.pending_stats_batches -= 1;
-                }
-                if self.pending_stats_batches == 0 {
+                if can_sort {
                     self.sort_ticker_rows();
                 }
             }
-            Message::UpdateTickersInfo(venue, info) => {
-                let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
-                    Some(contract_sizes_for_venue(venue, info.iter()))
-                } else {
-                    None
-                };
+            Message::TickerStatsFetchFailed(venue, err) => {
+                let can_sort = self.stats_fetch_state.complete_venue(venue);
 
+                if can_sort {
+                    self.sort_ticker_rows();
+                }
+
+                return Some(Action::ErrorOccurred(err));
+            }
+            Message::UpdateTickersInfo(venue, info) => {
                 for (ticker, ticker_info) in info.into_iter() {
                     self.tickers_info.insert(ticker, ticker_info);
                 }
 
-                return Some(Action::Fetch(fetch_ticker_stats_task(
-                    venue,
-                    contract_sizes,
-                )));
+                if self.selected_exchanges.contains(&venue) {
+                    let venues = std::iter::once(venue).collect::<FxHashSet<_>>();
+                    if let Some(task) = self.build_stats_fetch_task(venues) {
+                        return Some(Action::Fetch(task));
+                    }
+                }
             }
             Message::ErrorOccurred(err) => {
                 return Some(Action::ErrorOccurred(err));
             }
         }
         None
+    }
+
+    fn selected_stats_fetch_task(&mut self) -> Option<Task<Message>> {
+        let selected_venues = self
+            .tickers_info
+            .keys()
+            .map(|t| t.exchange.venue())
+            .filter(|venue| self.selected_exchanges.contains(venue))
+            .collect::<FxHashSet<_>>();
+
+        self.build_stats_fetch_task(selected_venues)
+    }
+
+    fn build_stats_fetch_task(&mut self, venues: FxHashSet<Venue>) -> Option<Task<Message>> {
+        if venues.is_empty() {
+            return None;
+        }
+
+        let now = Instant::now();
+        let min_interval = Duration::from_secs(ACTIVE_UPDATE_INTERVAL);
+
+        let scheduled = self
+            .stats_fetch_state
+            .schedule_venues(venues, now, min_interval);
+
+        if scheduled.is_empty() {
+            return None;
+        }
+
+        let fetch_tasks = scheduled
+            .into_iter()
+            .map(|venue| {
+                let contract_sizes = if matches!(venue, Venue::Binance | Venue::Mexc) {
+                    Some(contract_sizes_for_venue(venue, self.tickers_info.iter()))
+                } else {
+                    None
+                };
+
+                fetch_ticker_stats_task(venue, contract_sizes)
+            })
+            .collect::<Vec<Task<Message>>>();
+
+        Some(Task::batch(fetch_tasks))
     }
 
     pub fn view(&self, bounds: Size) -> Element<'_, Message> {
@@ -428,12 +621,18 @@ impl TickersTable {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(std::time::Duration::from_secs(if self.is_shown {
+        let periodic_stats = iced::time::every(Duration::from_secs(if self.is_shown {
             ACTIVE_UPDATE_INTERVAL
         } else {
             INACTIVE_UPDATE_INTERVAL
         }))
-        .map(|_| Message::FetchForTickerStats)
+        .map(|_| Message::FetchForTickerStats);
+
+        let debounce_tick =
+            iced::time::every(Duration::from_millis(EXCHANGE_TOGGLE_DEBOUNCE_TICK_MS))
+                .map(|_| Message::DebounceExchangeFetchTick);
+
+        Subscription::batch([periodic_stats, debounce_tick])
     }
 
     fn sort_ticker_rows(&mut self) {
@@ -545,22 +744,27 @@ impl TickersTable {
         label: &'a str,
     ) -> Element<'a, Message> {
         let selected = self.selected_exchanges.contains(&exch_inc);
+        let loading = self.stats_fetch_state.is_in_flight(exch_inc);
 
-        let content = if selected {
-            row![
-                icon_text(style::exchange_icon(logo_exchange), 12).align_x(Alignment::Center),
-                text(label),
-                space::horizontal(),
-                container(icon_text(Icon::Checkmark, 12)),
-            ]
-        } else {
-            row![
-                icon_text(style::exchange_icon(logo_exchange), 12).align_x(Alignment::Center),
-                text(label)
-            ]
-        };
+        let mut content = row![
+            icon_text(style::exchange_icon(logo_exchange), 12).align_x(Alignment::Center),
+            text(label)
+        ]
+        .spacing(4)
+        .width(Length::Fill)
+        .align_y(Vertical::Center);
 
-        let btn = button(content.spacing(4).width(Length::Fill))
+        if loading {
+            content = content.push(text(self.stats_fetch_state.loading_dots()).size(11));
+        }
+
+        if selected {
+            content = content
+                .push(space::horizontal())
+                .push(container(icon_text(Icon::Checkmark, 12)));
+        }
+
+        let btn = button(content)
             .style(move |theme, status| style::button::modifier(theme, status, selected))
             .on_press(Message::ToggleExchangeFilter(exch_inc))
             .width(Length::Fill);
@@ -1486,10 +1690,10 @@ fn fetch_ticker_stats_task(
             Ok(ticker_rows) => Message::UpdateTickerStats(venue, ticker_rows),
             Err(err) => {
                 log::error!("Ticker stats fetch failed for {venue:?}: {err}");
-                Message::ErrorOccurred(InternalError::Fetch(format!(
-                    "{venue:?}: {}",
-                    err.ui_message()
-                )))
+                Message::TickerStatsFetchFailed(
+                    venue,
+                    InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
+                )
             }
         },
     )
