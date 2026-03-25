@@ -6,6 +6,7 @@ mod connector;
 mod layout;
 mod logger;
 mod modal;
+mod notify;
 mod screen;
 mod style;
 mod widget;
@@ -20,6 +21,7 @@ use modal::{
     network_manager::{self, NetworkManager},
 };
 use modal::{dashboard_modal, main_dialog_modal};
+use notify::Notifications;
 use screen::dashboard::{self, Dashboard};
 use widget::{
     confirm_dialog_container,
@@ -70,7 +72,7 @@ struct Flowsurface {
     ui_scale_factor: data::ScaleFactor,
     timezone: data::UserTimezone,
     theme: data::Theme,
-    notifications: Vec<Toast>,
+    notifications: Notifications,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +134,7 @@ impl Flowsurface {
             ui_scale_factor: saved_state.scale_factor,
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
-            notifications: vec![],
+            notifications: Notifications::new(),
             network: NetworkManager::new(saved_state.proxy_cfg),
         };
 
@@ -364,9 +366,7 @@ impl Flowsurface {
                 }
             }
             Message::RemoveNotification(index) => {
-                if index < self.notifications.len() {
-                    self.notifications.remove(index);
-                }
+                self.notifications.remove(index);
             }
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
@@ -649,7 +649,7 @@ impl Flowsurface {
 
         toast::Manager::new(
             content,
-            &self.notifications,
+            self.notifications.toasts(),
             match sidebar_pos {
                 sidebar::Position::Left => Alignment::Start,
                 sidebar::Position::Right => Alignment::End,

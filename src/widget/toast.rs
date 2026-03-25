@@ -13,13 +13,13 @@ use iced::{Border, mouse, padding, theme, window};
 
 use crate::style;
 
-pub const DEFAULT_TIMEOUT: u64 = 8;
-pub const MAX_TOAST_BODY_HEIGHT: f32 = 120.0;
+const DEFAULT_TIMEOUT: u64 = 8;
+const MAX_TOAST_BODY_HEIGHT: f32 = 120.0;
 
-pub const MIN_VISIBLE_TOAST_HEIGHT: f32 = 40.0;
+const MIN_VISIBLE_TOAST_HEIGHT: f32 = 40.0;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Status {
     #[default]
     Primary,
@@ -29,7 +29,7 @@ pub enum Status {
     Warning,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Toast {
     title: String,
     body: String,
@@ -37,6 +37,14 @@ pub struct Toast {
 }
 
 impl Toast {
+    pub fn custom(title: impl Into<String>, body: impl Into<String>, status: Status) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            status,
+        }
+    }
+
     pub fn error(body: impl Into<String>) -> Self {
         Self {
             title: "Error".to_string(),
@@ -59,6 +67,18 @@ impl Toast {
             body: body.into(),
             status: Status::Primary,
         }
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub fn status(&self) -> Status {
+        self.status
     }
 }
 
