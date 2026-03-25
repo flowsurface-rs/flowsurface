@@ -1,6 +1,7 @@
 use crate::{
     modal::pane::mini_tickers_list::RowSelection,
     style::{self, Icon, icon_text},
+    widget::tooltip_with_delay,
 };
 use data::{
     InternalError,
@@ -54,6 +55,9 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
+const EXCHANGE_UNAVAILABLE_TOOLTIP: &str =
+    "Metadata unavailable for this session.\nRestart app to retry. Check logs for details.";
+
 const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 5] = [
     (Venue::Bybit, Exchange::BybitLinear, "Bybit"),
     (Venue::Binance, Exchange::BinanceLinear, "Binance"),
@@ -88,6 +92,7 @@ pub enum Message {
     ToggleTable,
     ToggleFavorites,
     FetchForTickerStats,
+    TickerMetadataFetchFailed(Venue, data::InternalError),
     UpdateTickersInfo(Venue, HashMap<Ticker, Option<TickerInfo>>),
     UpdateTickerStats(Venue, HashMap<Ticker, TickerStats>),
     TickerStatsFetchFailed(Venue, data::InternalError),
@@ -241,6 +246,7 @@ pub struct TickersTable {
     scroll_offset: AbsoluteOffset,
     pub is_shown: bool,
     pub tickers_info: FxHashMap<Ticker, Option<TickerInfo>>,
+    unavailable_exchanges: FxHashSet<Venue>,
     selected_exchanges: FxHashSet<Venue>,
     selected_markets: FxHashSet<MarketKind>,
     show_favorites: bool,
@@ -264,10 +270,10 @@ impl TickersTable {
                         Ok(ticker_info) => Message::UpdateTickersInfo(venue, ticker_info),
                         Err(err) => {
                             log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
-                            Message::ErrorOccurred(InternalError::Fetch(format!(
-                                "{venue:?}: {}",
-                                err.ui_message()
-                            )))
+                            Message::TickerMetadataFetchFailed(
+                                venue,
+                                InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
+                            )
                         }
                     },
                 )
@@ -286,6 +292,7 @@ impl TickersTable {
                 scroll_offset: AbsoluteOffset::default(),
                 is_shown: false,
                 tickers_info: FxHashMap::default(),
+                unavailable_exchanges: FxHashSet::default(),
                 selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
@@ -334,6 +341,10 @@ impl TickersTable {
                 }
             }
             Message::ToggleExchangeFilter(exch) => {
+                if self.unavailable_exchanges.contains(&exch) {
+                    return None;
+                }
+
                 let was_selected = self.selected_exchanges.contains(&exch);
 
                 if was_selected {
@@ -399,6 +410,12 @@ impl TickersTable {
                     return Some(Action::Fetch(task));
                 }
             }
+            Message::TickerMetadataFetchFailed(venue, err) => {
+                self.unavailable_exchanges.insert(venue);
+                self.selected_exchanges.remove(&venue);
+                self.stats_fetch_state.on_exchange_disabled(venue);
+                return Some(Action::ErrorOccurred(err));
+            }
             Message::UpdateTickerStats(venue, stats) => {
                 let can_sort = self.stats_fetch_state.complete_venue(venue);
                 self.update_ticker_rows(venue, stats);
@@ -417,6 +434,8 @@ impl TickersTable {
                 return Some(Action::ErrorOccurred(err));
             }
             Message::UpdateTickersInfo(venue, info) => {
+                self.unavailable_exchanges.remove(&venue);
+
                 for (ticker, ticker_info) in info.into_iter() {
                     self.tickers_info.insert(ticker, ticker_info);
                 }
@@ -440,7 +459,10 @@ impl TickersTable {
             .tickers_info
             .keys()
             .map(|t| t.exchange.venue())
-            .filter(|venue| self.selected_exchanges.contains(venue))
+            .filter(|venue| {
+                self.selected_exchanges.contains(venue)
+                    && !self.unavailable_exchanges.contains(venue)
+            })
             .collect::<FxHashSet<_>>();
 
         self.build_stats_fetch_task(selected_venues)
@@ -743,6 +765,7 @@ impl TickersTable {
         logo_exchange: Exchange,
         label: &'a str,
     ) -> Element<'a, Message> {
+        let unavailable = self.unavailable_exchanges.contains(&exch_inc);
         let selected = self.selected_exchanges.contains(&exch_inc);
         let loading = self.stats_fetch_state.is_in_flight(exch_inc);
 
@@ -755,10 +778,19 @@ impl TickersTable {
         .align_y(Vertical::Center);
 
         if loading {
-            content = content.push(text(self.stats_fetch_state.loading_dots()).size(11));
+            content = content.push(text(self.stats_fetch_state.loading_dots()));
         }
 
-        if selected {
+        if unavailable {
+            content = content
+                .push(space::horizontal())
+                .push(text("!").size(12).style(move |theme: &Theme| {
+                    let palette = theme.extended_palette();
+                    iced::widget::text::Style {
+                        color: Some(palette.danger.base.color),
+                    }
+                }));
+        } else if selected {
             content = content
                 .push(space::horizontal())
                 .push(container(icon_text(Icon::Checkmark, 12)));
@@ -766,10 +798,26 @@ impl TickersTable {
 
         let btn = button(content)
             .style(move |theme, status| style::button::modifier(theme, status, selected))
-            .on_press(Message::ToggleExchangeFilter(exch_inc))
             .width(Length::Fill);
 
-        container(btn)
+        let btn = if unavailable {
+            btn
+        } else {
+            btn.on_press(Message::ToggleExchangeFilter(exch_inc))
+        };
+
+        let btn_with_tooltip = tooltip_with_delay(
+            btn,
+            if unavailable {
+                Some(EXCHANGE_UNAVAILABLE_TOOLTIP)
+            } else {
+                None
+            },
+            iced::widget::tooltip::Position::Top,
+            Duration::from_millis(300),
+        );
+
+        container(btn_with_tooltip)
             .padding(2)
             .style(style::dragger_row_container)
             .into()
