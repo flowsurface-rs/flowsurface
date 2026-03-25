@@ -222,7 +222,11 @@ pub mod button {
         let palette = theme.extended_palette();
 
         Style {
-            text_color: palette.background.base.text,
+            text_color: if status == Status::Disabled {
+                palette.background.strongest.color
+            } else {
+                palette.background.base.text
+            },
             border: Border {
                 radius: 3.0.into(),
                 ..Default::default()
@@ -241,7 +245,7 @@ pub mod button {
                     if is_clicked {
                         None
                     } else {
-                        Some(palette.secondary.weak.color.into())
+                        Some(palette.background.weakest.color.into())
                     }
                 }
             },
