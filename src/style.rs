@@ -1,5 +1,3 @@
-use exchange::adapter::Exchange;
-
 use iced::font::{Family, Stretch, Weight};
 use iced::theme::palette::Extended;
 use iced::widget::Text;
@@ -73,15 +71,13 @@ pub fn icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
         .size(iced::Pixels(size.into()))
 }
 
-pub fn exchange_icon(exchange: Exchange) -> Icon {
-    match exchange {
-        Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot => Icon::BybitLogo,
-        Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot => {
-            Icon::BinanceLogo
-        }
-        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Icon::HyperliquidLogo,
-        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Icon::OkexLogo,
-        Exchange::MexcLinear | Exchange::MexcInverse | Exchange::MexcSpot => Icon::MexcLogo,
+pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {
+    match venue {
+        exchange::adapter::Venue::Bybit => Icon::BybitLogo,
+        exchange::adapter::Venue::Binance => Icon::BinanceLogo,
+        exchange::adapter::Venue::Hyperliquid => Icon::HyperliquidLogo,
+        exchange::adapter::Venue::Okex => Icon::OkexLogo,
+        exchange::adapter::Venue::Mexc => Icon::MexcLogo,
     }
 }
 
