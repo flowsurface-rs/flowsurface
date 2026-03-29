@@ -9,6 +9,7 @@ mod modal;
 mod notify;
 mod screen;
 mod style;
+mod version;
 mod widget;
 mod window;
 
@@ -91,6 +92,7 @@ enum Message {
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
+    OpenUrlRequested(Cow<'static, str>),
     ThemeSelected(data::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
@@ -483,6 +485,12 @@ impl Flowsurface {
                         .push(Toast::error(format!("Failed to open data folder: {err}")));
                 }
             }
+            Message::OpenUrlRequested(url) => {
+                if let Err(err) = data::open_url(url.as_ref()) {
+                    self.notifications
+                        .push(Toast::error(format!("Failed to open link: {err}")));
+                }
+            }
             Message::ThemeEditor(msg) => {
                 let action = self.theme_editor.update(msg, &self.theme.clone().into());
 
@@ -823,7 +831,7 @@ impl Flowsurface {
                         )
                     };
 
-                    let sidebar_pos = pick_list(
+                    let sidebar_pos_picklist = pick_list(
                         [sidebar::Position::Left, sidebar::Position::Right],
                         Some(sidebar_pos),
                         |pos| {
@@ -897,9 +905,59 @@ impl Flowsurface {
                         )
                     };
 
+                    let version_info = {
+                        let (version_label, commit_label) = version::app_build_version_parts();
+
+                        let github_link_button = button(text(version_label).size(13))
+                            .padding(0)
+                            .style(style::button::text_link)
+                            .on_press(Message::OpenUrlRequested(Cow::Borrowed(
+                                version::GITHUB_REPOSITORY_URL,
+                            )));
+
+                        let github_button: Element<'_, Message> = iced::widget::tooltip(
+                            github_link_button,
+                            container(
+                                row![
+                                    text("GitHub"),
+                                    style::icon_text(style::Icon::ExternalLink, 12),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                            )
+                            .style(style::tooltip)
+                            .padding(8),
+                            TooltipPosition::Top,
+                        )
+                        .into();
+
+                        if let (Some(commit_label), Some(commit_url)) =
+                            (commit_label, version::build_commit_url())
+                        {
+                            let commit_button = button(text(commit_label).size(11))
+                                .padding(0)
+                                .style(style::button::text_link_secondary)
+                                .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
+
+                            column![github_button, commit_button]
+                                .spacing(2)
+                                .align_x(Alignment::End)
+                                .into()
+                        } else {
+                            github_button
+                        }
+                    };
+
+                    let footer = column![
+                        container(version_info)
+                            .width(iced::Length::Fill)
+                            .align_x(Alignment::End),
+                    ]
+                    .spacing(8);
+
                     let column_content = split_column![
                         column![open_data_folder,].spacing(8),
-                        column![text("Sidebar position").size(14), sidebar_pos,].spacing(12),
+                        column![text("Sidebar position").size(14), sidebar_pos_picklist,].spacing(12),
                         column![text("Time zone").size(14), timezone_picklist,].spacing(12),
                         column![text("Market data").size(14), size_in_quote_currency_checkbox,].spacing(12),
                         column![text("Theme").size(14), theme_picklist,].spacing(12),
@@ -909,6 +967,7 @@ impl Flowsurface {
                             column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
+                        footer,
                         ; spacing = 16, align_x = Alignment::Start
                     ];
 

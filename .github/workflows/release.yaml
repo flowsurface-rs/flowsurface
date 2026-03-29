@@ -44,7 +44,17 @@ jobs:
                   GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
               run: |
                   if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-                    echo "Tag $TAG already exists, skipping."
+                    TAG_COMMIT=$(git rev-list -n1 "$TAG")
+                    HEAD_COMMIT=$(git rev-parse HEAD)
+
+                    if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+                      echo "Tag $TAG already exists, but does not point to HEAD."
+                      echo "Tag commit:  $TAG_COMMIT"
+                      echo "Head commit: $HEAD_COMMIT"
+                      exit 1
+                    fi
+
+                    echo "Tag $TAG already exists at HEAD, skipping creation."
                     exit 0
                   fi
                   git tag -s "$TAG" -m "Release $TAG" HEAD
@@ -52,6 +62,7 @@ jobs:
 
     build:
         name: Build
+        needs: create-signed-tag
         strategy:
             matrix:
                 target:
@@ -81,8 +92,13 @@ jobs:
                       artifact_path: |
                           echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path aarch64)" >> "$GITHUB_ENV"
         runs-on: ${{ matrix.target.os }}
+        env:
+            FLOWSURFACE_OFFICIAL_RELEASE: "true"
         steps:
             - uses: actions/checkout@v3
+              with:
+                  fetch-depth: 0
+                  ref: refs/tags/${{ github.event.inputs.tag }}
             - uses: actions-rs/toolchain@v1
               with:
                   profile: minimal

@@ -301,6 +301,50 @@ pub mod button {
         }
     }
 
+    pub fn text_link(theme: &Theme, status: Status) -> Style {
+        let palette = theme.extended_palette();
+
+        let text_color = match status {
+            Status::Active => palette.secondary.base.color,
+            Status::Pressed => palette.secondary.base.color,
+            Status::Hovered => palette.secondary.strong.color,
+            Status::Disabled => palette.background.strong.color,
+        };
+
+        Style {
+            text_color,
+            background: None,
+            border: Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn text_link_secondary(theme: &Theme, status: Status) -> Style {
+        let palette = theme.extended_palette();
+
+        let text_color = match status {
+            Status::Active => palette.secondary.weak.color,
+            Status::Pressed => palette.secondary.weak.color,
+            Status::Hovered => palette.secondary.base.color,
+            Status::Disabled => palette.background.strong.color,
+        };
+
+        Style {
+            text_color,
+            background: None,
+            border: Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn menu_body(theme: &Theme, status: Status, is_selected: bool) -> Style {
         let palette = theme.extended_palette();
 
