@@ -1,6 +1,6 @@
 [package]
 name = "flowsurface"
-version = "0.8.6"
+version = "0.8.7"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 description = "A native desktop charting platform for crypto markets"
