@@ -1,7 +1,7 @@
 [package]
 name = "flowsurface-data"
 description = "Data aggregation, indexing, and configuration utilities for Flowsurface"
-version = "0.1.0"
+version.workspace = true
 license = "GPL-3.0-or-later"
 edition.workspace = true
 repository.workspace = true
@@ -23,4 +23,4 @@ keyring = { version = "3.6.3", default-features = false, features = ["apple-nati
 log = { version = "0.4.22", default-features = true, features = ["std"] }
 thiserror = { version = "2.0.12", default-features = true, features = ["std"] }
 
-exchange = { version = "0.1.0", path = "../exchange", package = "flowsurface-exchange" }
+exchange.workspace = true
