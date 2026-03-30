@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "flowsurface-data"
-version = "0.1.0"
+version = "0.8.7"
 dependencies = [
  "chrono",
  "dirs-next",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "flowsurface-exchange"
-version = "0.1.0"
+version = "0.8.7"
 dependencies = [
  "base64 0.22.1",
  "bytes",
