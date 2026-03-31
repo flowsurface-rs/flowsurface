@@ -118,6 +118,18 @@ pub fn open_data_folder() -> Result<(), InternalError> {
     }
 }
 
+pub fn open_url(url: &str) -> Result<(), InternalError> {
+    if let Err(err) = open::that(url) {
+        Err(InternalError::Layout(format!(
+            "Failed to open URL '{}': {}",
+            url, err
+        )))
+    } else {
+        info!("Opened URL: {url}");
+        Ok(())
+    }
+}
+
 pub fn data_path(path_name: Option<&str>) -> PathBuf {
     if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
         PathBuf::from(path)

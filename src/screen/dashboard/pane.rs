@@ -522,7 +522,7 @@ impl State {
                 StreamPairKind::SingleSource(ti) => (ti, 0),
             };
 
-            let exchange_icon = icon_text(style::exchange_icon(base_ti.ticker.exchange), 14);
+            let exchange_icon = icon_text(style::venue_icon(base_ti.ticker.exchange.venue()), 14);
             let mut label = {
                 let symbol = base_ti.ticker.display_symbol_and_type().0;
                 match base_ti.ticker.market_type() {

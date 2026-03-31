@@ -264,6 +264,22 @@ impl std::fmt::Display for MarketKind {
     }
 }
 
+impl FromStr for MarketKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("spot") {
+            Ok(Self::Spot)
+        } else if s.eq_ignore_ascii_case("linear") {
+            Ok(Self::LinearPerps)
+        } else if s.eq_ignore_ascii_case("inverse") {
+            Ok(Self::InversePerps)
+        } else {
+            Err(format!("Invalid market kind: {}", s))
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum StreamKind {
     Kline {
@@ -451,6 +467,42 @@ impl Venue {
     ];
 }
 
+impl std::fmt::Display for Venue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Venue::Bybit => "Bybit",
+                Venue::Binance => "Binance",
+                Venue::Hyperliquid => "Hyperliquid",
+                Venue::Okex => "OKX",
+                Venue::Mexc => "MEXC",
+            }
+        )
+    }
+}
+
+impl FromStr for Venue {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("bybit") {
+            Ok(Self::Bybit)
+        } else if s.eq_ignore_ascii_case("binance") {
+            Ok(Self::Binance)
+        } else if s.eq_ignore_ascii_case("hyperliquid") {
+            Ok(Self::Hyperliquid)
+        } else if s.eq_ignore_ascii_case("okx") || s.eq_ignore_ascii_case("okex") {
+            Ok(Self::Okex)
+        } else if s.eq_ignore_ascii_case("mexc") {
+            Ok(Self::Mexc)
+        } else {
+            Err(format!("Invalid venue: {}", s))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Enum)]
 pub enum Exchange {
     BinanceLinear,
@@ -471,26 +523,7 @@ pub enum Exchange {
 
 impl std::fmt::Display for Exchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Exchange::BinanceLinear => "Binance Linear",
-                Exchange::BinanceInverse => "Binance Inverse",
-                Exchange::BinanceSpot => "Binance Spot",
-                Exchange::BybitLinear => "Bybit Linear",
-                Exchange::BybitInverse => "Bybit Inverse",
-                Exchange::BybitSpot => "Bybit Spot",
-                Exchange::HyperliquidLinear => "Hyperliquid Linear",
-                Exchange::HyperliquidSpot => "Hyperliquid Spot",
-                Exchange::OkexLinear => "Okex Linear",
-                Exchange::OkexInverse => "Okex Inverse",
-                Exchange::OkexSpot => "Okex Spot",
-                Exchange::MexcLinear => "Mexc Linear",
-                Exchange::MexcInverse => "Mexc Inverse",
-                Exchange::MexcSpot => "Mexc Spot",
-            }
-        )
+        write!(f, "{} {}", self.venue(), self.market_type())
     }
 }
 
@@ -498,23 +531,23 @@ impl FromStr for Exchange {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Binance Linear" => Ok(Exchange::BinanceLinear),
-            "Binance Inverse" => Ok(Exchange::BinanceInverse),
-            "Binance Spot" => Ok(Exchange::BinanceSpot),
-            "Bybit Linear" => Ok(Exchange::BybitLinear),
-            "Bybit Inverse" => Ok(Exchange::BybitInverse),
-            "Bybit Spot" => Ok(Exchange::BybitSpot),
-            "Hyperliquid Linear" => Ok(Exchange::HyperliquidLinear),
-            "Hyperliquid Spot" => Ok(Exchange::HyperliquidSpot),
-            "Okex Linear" => Ok(Exchange::OkexLinear),
-            "Okex Inverse" => Ok(Exchange::OkexInverse),
-            "Okex Spot" => Ok(Exchange::OkexSpot),
-            "Mexc Linear" => Ok(Exchange::MexcLinear),
-            "Mexc Inverse" => Ok(Exchange::MexcInverse),
-            "Mexc Spot" => Ok(Exchange::MexcSpot),
-            _ => Err(format!("Invalid exchange: {}", s)),
+        let mut parts = s.split_whitespace();
+        let Some(venue_part) = parts.next() else {
+            return Err(format!("Invalid exchange: {}", s));
+        };
+        let Some(market_part) = parts.next() else {
+            return Err(format!("Invalid exchange: {}", s));
+        };
+
+        if parts.next().is_some() {
+            return Err(format!("Invalid exchange: {}", s));
         }
+
+        let venue = Venue::from_str(venue_part).map_err(|_| format!("Invalid exchange: {}", s))?;
+        let market =
+            MarketKind::from_str(market_part).map_err(|_| format!("Invalid exchange: {}", s))?;
+
+        Self::from_venue_and_market(venue, market).ok_or_else(|| format!("Invalid exchange: {}", s))
     }
 }
 
@@ -535,6 +568,12 @@ impl Exchange {
         Exchange::MexcInverse,
         Exchange::MexcSpot,
     ];
+
+    pub fn from_venue_and_market(venue: Venue, market: MarketKind) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|exchange| exchange.venue() == venue && exchange.market_type() == market)
+    }
 
     pub fn market_type(&self) -> MarketKind {
         match self {
