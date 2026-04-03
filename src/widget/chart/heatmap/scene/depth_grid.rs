@@ -5,7 +5,6 @@ use exchange::unit::{Price, PriceStep, Qty};
 use std::sync::Arc;
 
 const Y_BLOCK_H: u32 = 16;
-const DEPTH_GRID_GRACE_MS: u64 = 500;
 
 // Margin before forcing a full recenter rebuild (fraction of tex_h)
 const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
@@ -17,8 +16,6 @@ const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
 pub struct GridRing {
     /// how many aggregated buckets to keep in the ring
     horizon_buckets: u32,
-    /// tolerate short gaps
-    grace_ms: u64,
     tex_w: u32,
     tex_h: u32,
     aggr_time_ms: u64,
@@ -45,7 +42,6 @@ impl GridRing {
     pub fn new() -> Self {
         Self {
             horizon_buckets: DEPTH_GRID_HORIZON_BUCKETS,
-            grace_ms: DEPTH_GRID_GRACE_MS,
             tex_w: 0,
             tex_h: DEPTH_GRID_TEX_H,
             aggr_time_ms: 0,
@@ -332,44 +328,13 @@ impl GridRing {
         let bucket: i64 = (rounded_t_ms / self.aggr_time_ms) as i64;
         let w = self.tex_w as i64;
         let x: u32 = (bucket.rem_euclid(w)) as u32;
+        let prev_bucket_opt = self.last_bucket;
 
-        // Late/out-of-order within grace: clear+rewrite that older bucket.
         if let Some(prev) = self.last_bucket
             && bucket < prev
         {
-            let grace_b = self.grace_buckets();
-            let oldest_kept = prev - (self.tex_w as i64) + 1;
-
-            if grace_b > 0 && (prev - bucket) <= grace_b && bucket >= oldest_kept {
-                self.clear_column(x);
-                self.scatter_side(
-                    &depth.bids,
-                    x,
-                    anchor,
-                    step,
-                    step_units,
-                    qty_scale,
-                    true,
-                    market_type,
-                    size_in_quote_ccy,
-                    order_size_filter,
-                );
-                self.scatter_side(
-                    &depth.asks,
-                    x,
-                    anchor,
-                    step,
-                    step_units,
-                    qty_scale,
-                    false,
-                    market_type,
-                    size_in_quote_ccy,
-                    order_size_filter,
-                );
-                return;
-            } else {
-                return;
-            }
+            // Drop late/out-of-order snapshots
+            return;
         }
 
         self.advance_and_fill_columns(bucket);
@@ -399,6 +364,13 @@ impl GridRing {
             size_in_quote_ccy,
             order_size_filter,
         );
+
+        if let Some(prev_bucket) = prev_bucket_opt {
+            let jump = bucket - prev_bucket;
+            if jump > 1 && jump <= self.tex_w as i64 {
+                self.retain_only_current_presence_in_carried_gap(prev_bucket, bucket, x);
+            }
+        }
     }
 
     /// Map an absolute bucket index to the ring texture x coordinate.
@@ -569,12 +541,6 @@ impl GridRing {
         }
     }
 
-    fn grace_buckets(&self) -> i64 {
-        let aggr = self.aggr_time_ms.max(1);
-        let b = self.grace_ms.div_ceil(aggr) as i64;
-        b.max(0)
-    }
-
     fn scatter_side(
         &mut self,
         side: &std::collections::BTreeMap<Price, Qty>,
@@ -716,6 +682,108 @@ impl GridRing {
         self.mark_dirty(to_x);
     }
 
+    fn recompute_column_stats(&mut self, x: u32) {
+        let w = self.tex_w as usize;
+        let h = self.tex_h as usize;
+        let x_usize = x as usize;
+
+        if w == 0 || h == 0 || x_usize >= w {
+            return;
+        }
+
+        let mut col_max_bid = 0u32;
+        let mut col_max_ask = 0u32;
+
+        if x_usize < self.col_max_bid.len() {
+            self.col_max_bid[x_usize] = 0;
+        }
+        if x_usize < self.col_max_ask.len() {
+            self.col_max_ask[x_usize] = 0;
+        }
+
+        let blocks = self.y_block_count();
+        for by in 0..blocks {
+            let i = self.block_idx(x, by);
+            if i < self.block_max_bid.len() {
+                self.block_max_bid[i] = 0;
+                self.block_max_ask[i] = 0;
+            }
+        }
+
+        for y in 0..h {
+            let idx = y * w + x_usize;
+            let bid_v = self.bid[idx];
+            let ask_v = self.ask[idx];
+
+            col_max_bid = col_max_bid.max(bid_v);
+            col_max_ask = col_max_ask.max(ask_v);
+
+            let by = (y as u32) / Y_BLOCK_H;
+            let bidx = self.block_idx(x, by);
+            if bidx < self.block_max_bid.len() {
+                self.block_max_bid[bidx] = self.block_max_bid[bidx].max(bid_v);
+                self.block_max_ask[bidx] = self.block_max_ask[bidx].max(ask_v);
+            }
+        }
+
+        if x_usize < self.col_max_bid.len() {
+            self.col_max_bid[x_usize] = col_max_bid;
+        }
+        if x_usize < self.col_max_ask.len() {
+            self.col_max_ask[x_usize] = col_max_ask;
+        }
+    }
+
+    fn retain_only_current_presence_in_carried_gap(
+        &mut self,
+        prev_bucket: i64,
+        new_bucket: i64,
+        current_x: u32,
+    ) {
+        if new_bucket <= prev_bucket + 1 || self.tex_w == 0 || self.tex_h == 0 {
+            return;
+        }
+
+        let w = self.tex_w as usize;
+        let h = self.tex_h as usize;
+        let current_x_usize = current_x as usize;
+
+        let mut current_has_bid = vec![false; h];
+        let mut current_has_ask = vec![false; h];
+
+        for y in 0..h {
+            let row = y * w;
+            current_has_bid[y] = self.bid[row + current_x_usize] > 0;
+            current_has_ask[y] = self.ask[row + current_x_usize] > 0;
+        }
+
+        for b in (prev_bucket + 1)..new_bucket {
+            let x = (b.rem_euclid(self.tex_w as i64)) as u32;
+            let x_usize = x as usize;
+            let mut changed = false;
+
+            for y in 0..h {
+                let row = y * w;
+                let idx = row + x_usize;
+
+                if !current_has_bid[y] && self.bid[idx] != 0 {
+                    self.bid[idx] = 0;
+                    changed = true;
+                }
+
+                if !current_has_ask[y] && self.ask[idx] != 0 {
+                    self.ask[idx] = 0;
+                    changed = true;
+                }
+            }
+
+            if changed {
+                self.recompute_column_stats(x);
+                self.mark_dirty(x);
+            }
+        }
+    }
+
     fn clear_column(&mut self, x: u32) {
         let w = self.tex_w as usize;
         let x_usize = x as usize;
@@ -798,26 +866,17 @@ impl GridRing {
             return;
         }
 
-        let grace_b = self.grace_buckets();
+        // Missing buckets between two observed updates are carried forward from the
+        // previous observation.
+        // TODO: Stream-level stall/disconnect should be handled above
+        // this layer and force a state reset when continuity is not trustworthy.
+        let mut from_x = (prev.rem_euclid(w)) as u32;
 
-        if grace_b > 0 && jump <= grace_b {
-            // Fill only the *missing* buckets (prev+1 .. new_bucket-1) by copying forward
-            let mut from_x = (prev.rem_euclid(w)) as u32;
-
-            let end_excl = new_bucket; // IMPORTANT: exclude new_bucket itself
-            for b in (prev + 1)..end_excl {
-                let to_x = (b.rem_euclid(w)) as u32;
-                self.copy_column(from_x, to_x);
-                from_x = to_x;
-            }
-        } else {
-            // Clear only the *missing* buckets (prev+1 .. new_bucket-1)
-            let mut b = prev + 1;
-            while b < new_bucket {
-                let x = (b.rem_euclid(w)) as u32;
-                self.clear_column(x);
-                b += 1;
-            }
+        let end_excl = new_bucket; // IMPORTANT: exclude new_bucket itself
+        for b in (prev + 1)..end_excl {
+            let to_x = (b.rem_euclid(w)) as u32;
+            self.copy_column(from_x, to_x);
+            from_x = to_x;
         }
 
         self.last_bucket = Some(new_bucket);
