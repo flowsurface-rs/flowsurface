@@ -5,7 +5,7 @@ use crate::widget::chart::heatmap::scene::pipeline::{DrawItem, DrawLayer, DrawOp
 use crate::widget::chart::heatmap::view::ViewWindow;
 
 use data::aggr::time::TimeSeries;
-use data::chart::heatmap::{Config, HeatmapDataPoint, HistoricalDepth, ProfileKind};
+use data::chart::heatmap::{Config, HeatmapDataPoint, ProfileKind};
 use exchange::SizeUnit;
 use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep, Qty};
@@ -100,7 +100,7 @@ impl InstanceBuilder {
         &mut self,
         w: &ViewWindow,
         trades: &TimeSeries<HeatmapDataPoint>,
-        heatmap: &HistoricalDepth,
+        latest_depth: impl IntoIterator<Item = (Price, Qty, bool)>,
         base_price: Price,
         step: PriceStep,
         latest_time: u64,
@@ -130,15 +130,7 @@ impl InstanceBuilder {
         let mut rects: Vec<RectInstance> = Vec::new();
 
         let prof_start = rects.len() as u32;
-        self.build_depth_profile_rects(
-            w,
-            heatmap,
-            base_price,
-            step,
-            latest_time,
-            palette,
-            &mut rects,
-        );
+        self.build_depth_profile_rects(w, latest_depth, base_price, step, palette, &mut rects);
         let prof_end = rects.len() as u32;
 
         let vol_start = rects.len() as u32;
@@ -360,10 +352,9 @@ impl InstanceBuilder {
     fn build_depth_profile_rects(
         &mut self,
         w: &ViewWindow,
-        heatmap: &HistoricalDepth,
+        latest_depth: impl IntoIterator<Item = (Price, Qty, bool)>,
         base_price: Price,
         step: PriceStep,
-        latest_time: u64,
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
@@ -386,25 +377,25 @@ impl InstanceBuilder {
 
         let mut max_qty = Qty::ZERO;
 
-        for (price, run) in heatmap.latest_order_runs(w.highest, w.lowest, latest_time) {
-            if *price < w.lowest || *price > w.highest {
+        for (price, qty, is_bid) in latest_depth {
+            if price < w.lowest || price > w.highest {
                 continue;
             }
 
-            let rel_y_bin = w.y_bin_for_price(*price, base_price, step);
+            let rel_y_bin = w.y_bin_for_price(price, base_price, step);
             let idx = rel_y_bin - min_rel_y_bin;
             if idx < 0 || idx >= len as i64 {
                 continue;
             }
 
             let i = idx as usize;
-            let v = if run.is_bid {
+            let v = if is_bid {
                 &mut self.depth_profile_bid_acc[i]
             } else {
                 &mut self.depth_profile_ask_acc[i]
             };
 
-            *v += run.qty;
+            *v += qty;
             max_qty = max_qty.max(*v);
         }
 

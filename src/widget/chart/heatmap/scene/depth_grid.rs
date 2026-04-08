@@ -4,17 +4,18 @@ use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep, Qty};
 use std::sync::Arc;
 
-const Y_BLOCK_H: u32 = 16;
+const Y_MAX_BLOCK_HEIGHT_BINS: u32 = 16;
 
-// Margin before forcing a full recenter rebuild (fraction of tex_h)
+/// Margin before forcing a full recenter rebuild (fraction of tex_h)
 const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
 
-const DEPTH_GRID_HORIZON_BUCKETS: u32 = 4800;
-const DEPTH_GRID_TEX_H: u32 = 2048; // steps around anchor
+/// How many aggregated time buckets to keep in the ring buffer horizon.
+const GRID_HORIZON_BUCKETS: u32 = 4800;
+
+const GRID_TEX_H: u32 = 2048; // steps around anchor
 
 #[derive(Debug, Clone)]
 pub struct GridRing {
-    /// how many aggregated buckets to keep in the ring
     horizon_buckets: u32,
     tex_w: u32,
     tex_h: u32,
@@ -41,9 +42,9 @@ impl Default for GridRing {
 impl GridRing {
     pub fn new() -> Self {
         Self {
-            horizon_buckets: DEPTH_GRID_HORIZON_BUCKETS,
+            horizon_buckets: GRID_HORIZON_BUCKETS,
             tex_w: 0,
-            tex_h: DEPTH_GRID_TEX_H,
+            tex_h: GRID_TEX_H,
             aggr_time_ms: 0,
             last_bucket: None,
             y_anchor: None,
@@ -212,7 +213,7 @@ impl GridRing {
                     if run.is_bid {
                         self.bid[idx] = self.bid[idx].max(q_u32);
                         self.col_max_bid[x] = self.col_max_bid[x].max(q_u32);
-                        let by = (y as u32) / Y_BLOCK_H;
+                        let by = (y as u32) / Y_MAX_BLOCK_HEIGHT_BINS;
                         let bidx = (by as usize) * (self.tex_w as usize) + x;
                         if bidx < self.block_max_bid.len() {
                             self.block_max_bid[bidx] = self.block_max_bid[bidx].max(q_u32);
@@ -220,7 +221,7 @@ impl GridRing {
                     } else {
                         self.ask[idx] = self.ask[idx].max(q_u32);
                         self.col_max_ask[x] = self.col_max_ask[x].max(q_u32);
-                        let by = (y as u32) / Y_BLOCK_H;
+                        let by = (y as u32) / Y_MAX_BLOCK_HEIGHT_BINS;
                         let bidx = (by as usize) * (self.tex_w as usize) + x;
                         if bidx < self.block_max_ask.len() {
                             self.block_max_ask[bidx] = self.block_max_ask[bidx].max(q_u32);
@@ -239,8 +240,7 @@ impl GridRing {
     pub fn ensure_layout(&mut self, aggr_time_ms: u64) {
         let aggr_time_ms = aggr_time_ms.max(1);
 
-        let buckets_needed = self.horizon_buckets.max(1);
-        let tex_w = next_pow2_u32(buckets_needed);
+        let tex_w = self.horizon_buckets.max(1).next_power_of_two();
 
         let needs_realloc = self.aggr_time_ms != aggr_time_ms || self.tex_w != tex_w;
         if !needs_realloc {
@@ -272,9 +272,7 @@ impl GridRing {
         self.mark_full_dirty();
     }
 
-    /// Update the ring for a new snapshot at `rounded_t_ms` (must already be bucket-rounded).
-    ///
-    /// - Uses max-reduction per (bucket, y) to match the `accumulate_max` behavior.
+    /// Update the ring for a new snapshot at `rounded_t_ms`.
     pub fn ingest_snapshot(
         &mut self,
         depth: &Depth,
@@ -368,7 +366,7 @@ impl GridRing {
         if let Some(prev_bucket) = prev_bucket_opt {
             let jump = bucket - prev_bucket;
             if jump > 1 && jump <= self.tex_w as i64 {
-                self.retain_only_current_presence_in_carried_gap(prev_bucket, bucket, x);
+                self.retain_current_presence_in_carried_gap(prev_bucket, bucket, x);
             }
         }
     }
@@ -496,7 +494,7 @@ impl GridRing {
         if self.tex_h == 0 {
             0
         } else {
-            self.tex_h.div_ceil(Y_BLOCK_H)
+            self.tex_h.div_ceil(Y_MAX_BLOCK_HEIGHT_BINS)
         }
     }
 
@@ -612,7 +610,7 @@ impl GridRing {
             col_max[x_usize] = col_max[x_usize].max(q_u32);
 
             // update y-block max
-            let by = y / Y_BLOCK_H;
+            let by = y / Y_MAX_BLOCK_HEIGHT_BINS;
             let bidx = (by as usize) * w + x_usize;
             if bidx < block_max.len() {
                 block_max[bidx] = block_max[bidx].max(q_u32);
@@ -718,7 +716,7 @@ impl GridRing {
             col_max_bid = col_max_bid.max(bid_v);
             col_max_ask = col_max_ask.max(ask_v);
 
-            let by = (y as u32) / Y_BLOCK_H;
+            let by = (y as u32) / Y_MAX_BLOCK_HEIGHT_BINS;
             let bidx = self.block_idx(x, by);
             if bidx < self.block_max_bid.len() {
                 self.block_max_bid[bidx] = self.block_max_bid[bidx].max(bid_v);
@@ -734,7 +732,8 @@ impl GridRing {
         }
     }
 
-    fn retain_only_current_presence_in_carried_gap(
+    /// Carries only if the presence in the new column matches the current column, otherwise clears it.
+    fn retain_current_presence_in_carried_gap(
         &mut self,
         prev_bucket: i64,
         new_bucket: i64,
@@ -917,11 +916,6 @@ impl GridRing {
             cols: Arc::from(cols),
         })
     }
-}
-
-#[inline]
-fn next_pow2_u32(x: u32) -> u32 {
-    x.next_power_of_two()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

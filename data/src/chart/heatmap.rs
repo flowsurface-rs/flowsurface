@@ -181,7 +181,7 @@ impl HistoricalDepth {
         has_snapshot_gap: bool,
     ) {
         let mut current_price = None;
-        let mut current_qty = Qty::from_units(0);
+        let mut current_qty = Qty::ZERO;
 
         let step = self.tick_size;
 

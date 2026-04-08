@@ -628,7 +628,7 @@ impl HeatmapShader {
     }
 
     /// Rebuild only CPU overlay instances (profile/volume/trades). This is intended to be
-    /// cheap enough to run during interaction, unlike `rebuild_from_historical`.
+    /// cheap enough to run during interaction, unlike [`GridRing::rebuild_from_historical()`].
     fn rebuild_instances(&mut self, w: &ViewWindow) {
         let Some(palette) = &self.palette else {
             return;
@@ -666,10 +666,21 @@ impl HeatmapShader {
             })
             .next();
 
+        let latest_depth = self
+            .depth_history
+            .latest_order_runs(
+                effective_window.highest,
+                effective_window.lowest,
+                latest_time,
+            )
+            .map(|(price, run)| (*price, run.qty, run.is_bid));
+
+        let show_volume_indicator = self.indicators.contains(&HeatmapIndicator::Volume);
+
         let built = self.instances.build_instances(
             &effective_window,
             &self.trades,
-            &self.depth_history,
+            latest_depth,
             base_price,
             self.step,
             latest_time,
@@ -678,7 +689,7 @@ impl HeatmapShader {
             &self.config,
             &self.ticker_info.market_type(),
             volume_profile,
-            self.indicators.contains(&HeatmapIndicator::Volume),
+            show_volume_indicator,
         );
 
         let draw_list = built.draw_list();
