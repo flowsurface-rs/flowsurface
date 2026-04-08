@@ -52,6 +52,7 @@ pub enum Message {
         data: FetchedData,
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
+    RequestPalette,
 }
 
 pub struct Dashboard {
@@ -87,6 +88,7 @@ pub enum Event {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
     },
+    RequestPalette,
 }
 
 impl Dashboard {
@@ -270,6 +272,7 @@ impl Dashboard {
                                             ) | (
                                                 data::layout::pane::VisualConfig::Heatmap(_),
                                                 pane::Content::Heatmap { .. }
+                                                    | pane::Content::ShaderHeatmap { .. }
                                             ) | (
                                                 data::layout::pane::VisualConfig::TimeAndSales(_),
                                                 pane::Content::TimeAndSales(_)
@@ -400,6 +403,9 @@ impl Dashboard {
                     }
                 }
             },
+            Message::RequestPalette => {
+                return (Task::none(), Some(Event::RequestPalette));
+            }
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
                     pane_state.status = status;
@@ -985,6 +991,11 @@ impl Dashboard {
                                 c.insert_depth(depth, depth_update_t);
                             }
                         }
+                        pane::Content::ShaderHeatmap { chart, .. } => {
+                            if let Some(c) = chart {
+                                c.insert_depth(depth, depth_update_t);
+                            }
+                        }
                         pane::Content::Ladder(panel) => {
                             if let Some(panel) = panel {
                                 panel.insert_depth(depth, depth_update_t);
@@ -1019,6 +1030,11 @@ impl Dashboard {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Heatmap { chart, .. } => {
+                            if let Some(c) = chart {
+                                c.insert_trades(buffer, update_t);
+                            }
+                        }
+                        pane::Content::ShaderHeatmap { chart, .. } => {
                             if let Some(c) = chart {
                                 c.insert_trades(buffer, update_t);
                             }
@@ -1060,61 +1076,83 @@ impl Dashboard {
             });
     }
 
-    pub fn tick(&mut self, now: Instant, main_window: window::Id) -> Task<Message> {
-        let mut tasks = vec![];
-        let layout_id = self.layout_id;
-
+    pub fn park_for_inactive_layout(&mut self, main_window: window::Id) {
         self.iter_all_panes_mut(main_window)
-            .for_each(|(_window_id, _pane, state)| match state.tick(now) {
-                Some(pane::Action::Chart(action)) => match action {
-                    chart::Action::ErrorOccurred(err) => {
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
-                    }
-                    chart::Action::RequestFetch(reqs) => {
-                        let pane_id = state.unique_id();
-                        let ready_streams = state
-                            .streams
-                            .ready_iter()
-                            .map(|iter| iter.copied().collect::<Vec<_>>())
-                            .unwrap_or_default();
+            .for_each(|(_, _, state)| state.park_for_inactive_layout());
+    }
 
-                        let fetch_tasks = fetcher::request_fetch_many(
-                            pane_id,
-                            &ready_streams,
-                            layout_id,
-                            reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
-                            |handle| {
-                                if let pane::Content::Kline { chart, .. } = &mut state.content
-                                    && let Some(c) = chart
-                                {
-                                    c.set_handle(handle);
-                                }
-                            },
-                        )
-                        .map(Message::from);
+    pub fn tick(&mut self, now: Instant, _main_window: window::Id) -> Task<Message> {
+        let mut tasks = vec![];
 
-                        tasks.push(fetch_tasks);
-                    }
-                },
-                Some(pane::Action::Panel(_action)) => {}
-                Some(pane::Action::ResolveStreams(streams)) => {
-                    tasks.push(Task::done(Message::ResolveStreams(
-                        state.unique_id(),
-                        streams,
-                    )));
+        let mut tick_state = |state: &mut pane::State| match state.tick(now) {
+            Some(pane::Action::Chart(action)) => match action {
+                chart::Action::ErrorOccurred(err) => {
+                    state.status = pane::Status::Ready;
+                    state.notifications.push(Toast::error(err.to_string()));
                 }
-                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
-                    Some(StreamPairKind::MultiSource(tickers)) => {
-                        state.set_content_and_streams(tickers, state.content.kind());
-                    }
-                    Some(StreamPairKind::SingleSource(ticker)) => {
-                        state.set_content_and_streams(vec![ticker], state.content.kind());
-                    }
-                    None => {}
-                },
+                chart::Action::RequestFetch(reqs) => {
+                    let pane_id = state.unique_id();
+                    let ready_streams = state
+                        .streams
+                        .ready_iter()
+                        .map(|iter| iter.copied().collect::<Vec<_>>())
+                        .unwrap_or_default();
+
+                    let fetch_tasks = fetcher::request_fetch_many(
+                        pane_id,
+                        &ready_streams,
+                        self.layout_id,
+                        reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                        |handle| {
+                            if let pane::Content::Kline { chart, .. } = &mut state.content
+                                && let Some(c) = chart
+                            {
+                                c.set_handle(handle);
+                            }
+                        },
+                    )
+                    .map(Message::from);
+
+                    tasks.push(fetch_tasks);
+                }
+                chart::Action::RequestPalette => {
+                    tasks.push(Task::done(Message::RequestPalette));
+                }
+            },
+            Some(pane::Action::Panel(_action)) => {}
+            Some(pane::Action::ResolveStreams(streams)) => {
+                tasks.push(Task::done(Message::ResolveStreams(
+                    state.unique_id(),
+                    streams,
+                )));
+            }
+            Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                Some(StreamPairKind::MultiSource(tickers)) => {
+                    state.set_content_and_streams(tickers, state.content.kind());
+                }
+                Some(StreamPairKind::SingleSource(ticker)) => {
+                    state.set_content_and_streams(vec![ticker], state.content.kind());
+                }
                 None => {}
-            });
+            },
+            None => {}
+        };
+
+        // tick only the maximized pane if there is any, otherwise tick all panes
+        let maximized_pane = self.panes.maximized();
+        for (pane_id, state) in self.panes.iter_mut() {
+            if maximized_pane.is_some_and(|maximized| *pane_id != maximized) {
+                continue;
+            }
+
+            tick_state(state);
+        }
+
+        for (popout_state, _) in self.popout.values_mut() {
+            for (_, state) in popout_state.iter_mut() {
+                tick_state(state);
+            }
+        }
 
         Task::batch(tasks)
     }
@@ -1211,6 +1249,13 @@ impl Dashboard {
             .collect::<Vec<Subscription<exchange::Event>>>();
 
         Subscription::batch(unique_streams)
+    }
+
+    pub fn theme_updated(&mut self, main_window: window::Id, theme: &iced_core::Theme) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| {
+                state.content.update_theme(theme);
+            });
     }
 
     fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {
