@@ -93,7 +93,7 @@ enum Message {
     GoBack,
     DataFolderRequested,
     OpenUrlRequested(Cow<'static, str>),
-    ThemeSelected(data::Theme),
+    ThemeSelected(iced_core::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
     ToggleTradeFetch(bool),
@@ -274,7 +274,11 @@ impl Flowsurface {
                 }
             }
             Message::ThemeSelected(theme) => {
-                self.theme = theme.clone();
+                self.theme = data::Theme(theme.clone());
+
+                let main_window = self.main_window.id;
+                self.active_dashboard_mut()
+                    .theme_updated(main_window, &theme);
             }
             Message::Dashboard {
                 layout_id: id,
@@ -355,6 +359,15 @@ impl Flowsurface {
                                     Task::none()
                                 }
                             }
+                        }
+                        Some(dashboard::Event::RequestPalette) => {
+                            let theme = self.theme.0.clone();
+
+                            let main_window = self.main_window.id;
+                            self.active_dashboard_mut()
+                                .theme_updated(main_window, &theme);
+
+                            Task::none()
                         }
                         None => Task::none(),
                     };
@@ -499,12 +512,11 @@ impl Flowsurface {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     Some(modal::theme_editor::Action::UpdateTheme(theme)) => {
-                        self.theme = data::Theme(theme);
+                        self.theme = data::Theme(theme.clone());
 
                         let main_window = self.main_window.id;
-
                         self.active_dashboard_mut()
-                            .invalidate_all_panes(main_window);
+                            .theme_updated(main_window, &theme);
                     }
                     None => {}
                 }
@@ -736,8 +748,17 @@ impl Flowsurface {
     }
 
     fn load_layout(&mut self, layout_uid: uuid::Uuid, main_window: window::Id) -> Task<Message> {
-        match self.layout_manager.set_active_layout(layout_uid) {
-            Ok(layout) => {
+        if let Err(err) = self.layout_manager.set_active_layout(layout_uid) {
+            log::error!("Failed to set active layout: {}", err);
+            return Task::none();
+        }
+
+        self.layout_manager
+            .park_inactive_layouts(layout_uid, main_window);
+
+        self.layout_manager
+            .get_mut(layout_uid)
+            .map(|layout| {
                 layout
                     .dashboard
                     .load_layout(main_window)
@@ -745,12 +766,11 @@ impl Flowsurface {
                         layout_id: Some(layout_uid),
                         event: msg,
                     })
-            }
-            Err(err) => {
-                log::error!("Failed to set active layout: {}", err);
+            })
+            .unwrap_or_else(|| {
+                log::error!("Active layout missing after selection: {}", layout_uid);
                 Task::none()
-            }
-        }
+            })
     }
 
     fn view_with_modal<'a>(
@@ -775,7 +795,7 @@ impl Flowsurface {
                         }
 
                         pick_list(themes, Some(self.theme.0.clone()), |theme| {
-                            Message::ThemeSelected(data::Theme(theme))
+                            Message::ThemeSelected(theme)
                         })
                     };
 

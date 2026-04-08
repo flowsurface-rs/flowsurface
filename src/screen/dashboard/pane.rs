@@ -9,7 +9,9 @@ use crate::{
         pane::{
             Modal,
             mini_tickers_list::MiniPanel,
-            settings::{comparison_cfg_view, heatmap_cfg_view, kline_cfg_view},
+            settings::{
+                comparison_cfg_view, heatmap_cfg_view, heatmap_shader_cfg_view, kline_cfg_view,
+            },
             stack_modal,
         },
     },
@@ -18,13 +20,17 @@ use crate::{
         tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
-    widget::{self, button_with_tooltip, column_drag, link_group_button, toast::Toast},
+    widget::{
+        self, button_with_tooltip, chart::heatmap::HeatmapShader, column_drag, link_group_button,
+        toast::Toast,
+    },
     window::{self, Window},
 };
 use data::{
     UserTimezone,
     chart::{
         Basis, ViewConfig,
+        heatmap::HeatmapStudy,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
@@ -96,6 +102,7 @@ pub enum Event {
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
+    HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
 }
 
@@ -344,6 +351,48 @@ impl State {
                         .copied()
                         .map(|ti| kline_stream(ti, timeframe))
                         .collect();
+
+                    (content, streams)
+                }
+                ContentKind::ShaderHeatmap => {
+                    let basis = derived_plan
+                        .basis
+                        .unwrap_or(Basis::default_heatmap_time(Some(derived_plan.ticker_info)));
+
+                    let (studies, indicators) = if let Content::ShaderHeatmap {
+                        chart,
+                        indicators,
+                        studies,
+                    } = &self.content
+                    {
+                        (
+                            chart
+                                .as_ref()
+                                .map_or(studies.clone(), |c| c.studies.clone()),
+                            indicators.clone(),
+                        )
+                    } else {
+                        (
+                            vec![HeatmapStudy::VolumeProfile(
+                                data::chart::heatmap::ProfileKind::default(),
+                            )],
+                            vec![HeatmapIndicator::Volume],
+                        )
+                    };
+
+                    let content = Content::ShaderHeatmap {
+                        chart: Some(Box::new(HeatmapShader::new(
+                            basis,
+                            derived_plan.price_step,
+                            base_ticker,
+                            studies.clone(),
+                            indicators.clone(),
+                        ))),
+                        studies,
+                        indicators,
+                    };
+
+                    let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
 
                     (content, streams)
                 }
@@ -921,6 +970,92 @@ impl State {
                     )
                 }
             }
+            Content::ShaderHeatmap {
+                chart, indicators, ..
+            } => {
+                if let Some(chart) = chart {
+                    let base = HeatmapShader::view(chart, timezone).map(move |message| {
+                        Message::PaneEvent(id, Event::HeatmapShaderInteraction(message))
+                    });
+
+                    let ticker_info = self.stream_pair();
+                    let exchange = ticker_info.as_ref().map(|info| info.ticker.exchange);
+
+                    let basis = self
+                        .settings
+                        .selected_basis
+                        .unwrap_or(Basis::default_heatmap_time(ticker_info));
+                    let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
+
+                    let kind = ModifierKind::Heatmap(basis, tick_multiply);
+
+                    let price_step = ticker_info
+                        .map(|ti| {
+                            tick_multiply
+                                .unscale_step_or_min_tick(chart.tick_size(), ti.min_ticksize)
+                        })
+                        .unwrap_or_else(|| tick_multiply.unscale_step(chart.tick_size()));
+                    let min_ticksize = ticker_info.map(|ti| ti.min_ticksize);
+
+                    let settings_modal = || {
+                        heatmap_shader_cfg_view(
+                            chart.visual_config(),
+                            id,
+                            chart.study_configurator(),
+                            &chart.studies,
+                            basis,
+                        )
+                    };
+
+                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
+                        Some(modal::indicators::view(
+                            id,
+                            self,
+                            indicators,
+                            self.stream_pair().map(|i| i.ticker.market_type()),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    let modifiers = row![
+                        basis_modifier(id, basis, modifier, kind),
+                        ticksize_modifier(
+                            id,
+                            price_step,
+                            min_ticksize,
+                            tick_multiply,
+                            modifier,
+                            kind,
+                            exchange
+                        ),
+                    ]
+                    .spacing(4);
+
+                    top_left_buttons = top_left_buttons.push(modifiers);
+
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        indicator_modal,
+                        compact_controls,
+                        settings_modal,
+                        None,
+                        tickers_table,
+                    )
+                } else {
+                    let base = uninitialized_base(ContentKind::HeatmapChart);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
+                }
+            }
         };
 
         match &self.status {
@@ -1064,6 +1199,11 @@ impl State {
                     {
                         c.update_study_configurator(m);
                         *studies = c.studies.clone();
+                    } else if let Content::ShaderHeatmap { chart, studies, .. } = &mut self.content
+                        && let Some(c) = chart
+                    {
+                        c.update_study_configurator(m);
+                        *studies = c.studies.clone();
                     }
                 }
             },
@@ -1095,6 +1235,20 @@ impl State {
                                         }
                                         Content::Ladder(Some(p)) => {
                                             p.set_tick_size(tm.multiply_with_min_tick_step(ticker));
+                                        }
+                                        Content::ShaderHeatmap {
+                                            chart: Some(c),
+                                            indicators,
+                                            studies,
+                                            ..
+                                        } => {
+                                            **c = HeatmapShader::new(
+                                                c.basis,
+                                                tm.multiply_with_min_tick_step(ticker),
+                                                c.ticker_info,
+                                                studies.clone(),
+                                                indicators.clone(),
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -1129,6 +1283,43 @@ impl State {
                                 match &mut self.content {
                                     Content::Heatmap { chart: Some(c), .. } => {
                                         c.set_basis(new_basis);
+
+                                        if let Some(stream_type) =
+                                            self.streams.ready_iter_mut().and_then(|mut it| {
+                                                it.find(|s| matches!(s, StreamKind::Depth { .. }))
+                                            })
+                                            && let StreamKind::Depth {
+                                                push_freq,
+                                                ticker_info,
+                                                ..
+                                            } = stream_type
+                                            && ticker_info.exchange().is_custom_push_freq()
+                                        {
+                                            match new_basis {
+                                                Basis::Time(tf) => {
+                                                    *push_freq = exchange::PushFrequency::Custom(tf)
+                                                }
+                                                Basis::Tick(_) => {
+                                                    *push_freq =
+                                                        exchange::PushFrequency::ServerDefault
+                                                }
+                                            }
+                                        }
+
+                                        effect = Some(Effect::RefreshStreams);
+                                    }
+                                    Content::ShaderHeatmap {
+                                        chart: Some(c),
+                                        indicators,
+                                        ..
+                                    } => {
+                                        **c = HeatmapShader::new(
+                                            new_basis,
+                                            c.tick_size(),
+                                            c.ticker_info,
+                                            c.studies.clone(),
+                                            indicators.clone(),
+                                        );
 
                                         if let Some(stream_type) =
                                             self.streams.ready_iter_mut().and_then(|mut it| {
@@ -1288,6 +1479,11 @@ impl State {
                     }
                 }
             }
+            Event::HeatmapShaderInteraction(message) => {
+                if let Content::ShaderHeatmap { chart: Some(c), .. } = &mut self.content {
+                    c.update(message);
+                }
+            }
             Event::MiniTickersListInteraction(message) => {
                 if let Some(Modal::MiniTickersList(ref mut mini_panel)) = self.modal
                     && let Some(action) = mini_panel.update(message)
@@ -1364,7 +1560,7 @@ impl State {
         if !treat_as_starter
             && matches!(
                 &self.content,
-                Content::Heatmap { .. } | Content::Kline { .. }
+                Content::Heatmap { .. } | Content::Kline { .. } | Content::ShaderHeatmap { .. }
             )
         {
             buttons = buttons.push(button_with_tooltip(
@@ -1562,6 +1758,16 @@ impl State {
             Content::Comparison(chart) => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
+            Content::ShaderHeatmap { chart, .. } => chart
+                .as_mut()
+                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
+        }
+    }
+
+    pub fn park_for_inactive_layout(&mut self) {
+        if let Content::ShaderHeatmap { chart, .. } = &mut self.content {
+            *chart = None;
+            self.status = Status::Ready;
         }
     }
 
@@ -1576,6 +1782,7 @@ impl State {
                 }
             }
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
+            Content::ShaderHeatmap { .. } => None,
             Content::Starter => None,
         }
     }
@@ -1610,7 +1817,9 @@ impl State {
                     return self.invalidate(now);
                 }
             }
-            (None, _) => {}
+            (None, _) => {
+                return self.invalidate(now);
+            }
         }
 
         None
@@ -1644,6 +1853,11 @@ pub enum Content {
         chart: Option<HeatmapChart>,
         indicators: Vec<HeatmapIndicator>,
         layout: data::chart::ViewConfig,
+        studies: Vec<data::chart::heatmap::HeatmapStudy>,
+    },
+    ShaderHeatmap {
+        chart: Option<Box<HeatmapShader>>,
+        indicators: Vec<HeatmapIndicator>,
         studies: Vec<data::chart::heatmap::HeatmapStudy>,
     },
     Kline {
@@ -1841,6 +2055,13 @@ impl Content {
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
                 },
             },
+            ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
+                chart: None,
+                indicators: vec![HeatmapIndicator::Volume],
+                studies: vec![data::chart::heatmap::HeatmapStudy::VolumeProfile(
+                    data::chart::heatmap::ProfileKind::default(),
+                )],
+            },
             ContentKind::HeatmapChart => Content::Heatmap {
                 chart: None,
                 indicators: vec![HeatmapIndicator::Volume],
@@ -1864,6 +2085,7 @@ impl Content {
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
             Content::Starter => None,
+            Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
         }
     }
 
@@ -1910,6 +2132,23 @@ impl Content {
                 }
                 chart.toggle_indicator(ind);
             }
+            (
+                Content::ShaderHeatmap {
+                    chart, indicators, ..
+                },
+                UiIndicator::Heatmap(ind),
+            ) => {
+                let Some(chart) = chart else {
+                    return;
+                };
+
+                if indicators.contains(&ind) {
+                    indicators.retain(|i| i != &ind);
+                } else {
+                    indicators.push(ind);
+                }
+                chart.toggle_indicator(ind);
+            }
             _ => panic!("indicator toggle on {indicator:?} pane",),
         }
     }
@@ -1921,7 +2160,8 @@ impl Content {
             Content::TimeAndSales(_)
             | Content::Ladder(_)
             | Content::Starter
-            | Content::Comparison(_) => {
+            | Content::Comparison(_)
+            | Content::ShaderHeatmap { .. } => {
                 panic!("indicator reorder on {} pane", self)
             }
         }
@@ -1930,6 +2170,9 @@ impl Content {
     pub fn change_visual_config(&mut self, config: VisualConfig) {
         match (self, config) {
             (Content::Heatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
+                c.set_visual_config(cfg);
+            }
+            (Content::ShaderHeatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
@@ -1948,6 +2191,9 @@ impl Content {
     pub fn studies(&self) -> Option<data::chart::Study> {
         match &self {
             Content::Heatmap { studies, .. } => Some(data::chart::Study::Heatmap(studies.clone())),
+            Content::ShaderHeatmap { studies, .. } => {
+                Some(data::chart::Study::Heatmap(studies.clone()))
+            }
             Content::Kline { kind, .. } => {
                 if let data::chart::KlineChartKind::Footprint { studies, .. } = kind {
                     Some(data::chart::Study::Footprint(studies.clone()))
@@ -1978,6 +2224,20 @@ impl Content {
                     .studies = studies.clone();
                 *previous = studies;
             }
+            (
+                Content::ShaderHeatmap {
+                    chart,
+                    studies: previous,
+                    ..
+                },
+                data::chart::Study::Heatmap(studies),
+            ) => {
+                chart
+                    .as_mut()
+                    .expect("shader heatmap chart not initialized")
+                    .studies = studies.clone();
+                *previous = studies;
+            }
             (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
                 chart
                     .as_mut()
@@ -2005,12 +2265,20 @@ impl Content {
             Content::Ladder(_) => ContentKind::Ladder,
             Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
+            Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
+        }
+    }
+
+    pub fn update_theme(&mut self, theme: &iced_core::Theme) {
+        if let Content::ShaderHeatmap { chart: Some(c), .. } = self {
+            c.update_theme(theme);
         }
     }
 
     fn initialized(&self) -> bool {
         match self {
             Content::Heatmap { chart, .. } => chart.is_some(),
+            Content::ShaderHeatmap { chart, .. } => chart.is_some(),
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),

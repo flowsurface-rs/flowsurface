@@ -11,10 +11,6 @@ use std::collections::BTreeMap;
 
 pub const CLEANUP_THRESHOLD: usize = 4800;
 
-/// Allow up to 500ms delay in order updates before starting a new order run.
-/// Prevents fragmentation(e.g. network latency) when qty and is_bid remain unchanged.
-const GRACE_PERIOD_MS: u64 = 500;
-
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub trade_size_filter: f32,
@@ -143,6 +139,7 @@ pub struct HistoricalDepth {
     pub aggr_time: u64,
     tick_size: PriceStep,
     min_order_qty: MinQtySize,
+    last_snapshot_time: Option<u64>,
 }
 
 impl HistoricalDepth {
@@ -155,21 +152,36 @@ impl HistoricalDepth {
             },
             tick_size,
             min_order_qty,
+            last_snapshot_time: None,
         }
     }
 
     pub fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
-        self.process_side(&depth.bids, time, true);
-        self.process_side(&depth.asks, time, false);
+        if let Some(prev_time) = self.last_snapshot_time
+            && time < prev_time
+        {
+            return;
+        }
+
+        let aggr_time = self.aggr_time.max(1);
+        let has_snapshot_gap = self
+            .last_snapshot_time
+            .is_some_and(|prev_time| time > prev_time.saturating_add(aggr_time));
+
+        self.process_side(&depth.bids, time, true, has_snapshot_gap);
+        self.process_side(&depth.asks, time, false, has_snapshot_gap);
+        self.last_snapshot_time = Some(time);
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.price_levels.is_empty()
-    }
-
-    fn process_side(&mut self, side: &BTreeMap<Price, Qty>, time: u64, is_bid: bool) {
+    fn process_side(
+        &mut self,
+        side: &BTreeMap<Price, Qty>,
+        time: u64,
+        is_bid: bool,
+        has_snapshot_gap: bool,
+    ) {
         let mut current_price = None;
-        let mut current_qty = Qty::from_units(0);
+        let mut current_qty = Qty::ZERO;
 
         let step = self.tick_size;
 
@@ -179,7 +191,7 @@ impl HistoricalDepth {
                 current_qty += *qty;
             } else {
                 if let Some(price) = current_price {
-                    self.update_price_level(time, price, current_qty, is_bid);
+                    self.update_price_level(time, price, current_qty, is_bid, has_snapshot_gap);
                 }
                 current_price = Some(rounded_price);
                 current_qty = *qty;
@@ -187,27 +199,38 @@ impl HistoricalDepth {
         }
 
         if let Some(price) = current_price {
-            self.update_price_level(time, price, current_qty, is_bid);
+            self.update_price_level(time, price, current_qty, is_bid, has_snapshot_gap);
         }
     }
 
-    fn update_price_level(&mut self, time: u64, price: Price, qty: Qty, is_bid: bool) {
+    fn update_price_level(
+        &mut self,
+        time: u64,
+        price: Price,
+        qty: Qty,
+        is_bid: bool,
+        has_snapshot_gap: bool,
+    ) {
         let aggr_time = self.aggr_time;
-
-        let qty_q = qty.round_to_min_qty(self.min_order_qty);
         let price_level = self.price_levels.entry(price).or_default();
 
         match price_level.last_mut() {
             Some(last_run) if last_run.is_bid == is_bid => {
-                if time > last_run.until_time + GRACE_PERIOD_MS {
-                    price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
+                if time > last_run.until_time {
+                    if has_snapshot_gap {
+                        if qty == last_run.qty {
+                            last_run.until_time = time.saturating_add(aggr_time);
+                            return;
+                        }
+
+                        last_run.until_time = time;
+                    }
+
+                    price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
                     return;
                 }
 
-                let current_lots = qty_q.to_lots(self.min_order_qty);
-                let last_lots = last_run.qty.to_lots(self.min_order_qty);
-
-                if current_lots == last_lots {
+                if qty == last_run.qty {
                     let new_until = time + aggr_time;
                     if new_until > last_run.until_time {
                         last_run.until_time = new_until;
@@ -216,19 +239,23 @@ impl HistoricalDepth {
                     if last_run.until_time > time {
                         last_run.until_time = time;
                     }
-                    price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
+                    price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
                 }
             }
             Some(last_run) => {
                 if last_run.until_time > time {
                     last_run.until_time = time;
                 }
-                price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
+                price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
             }
             None => {
-                price_level.push(OrderRun::new(time, aggr_time, qty_q, is_bid));
+                price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
             }
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.price_levels.is_empty()
     }
 
     pub fn iter_time_filtered(
@@ -642,9 +669,10 @@ impl std::fmt::Display for HeatmapStudy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum ProfileKind {
     FixedWindow(usize),
+    #[default]
     VisibleRange,
 }
 
