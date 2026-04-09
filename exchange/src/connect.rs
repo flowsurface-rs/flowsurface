@@ -5,7 +5,7 @@ use crate::{
 
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
-use futures::{StreamExt, stream::BoxStream};
+use futures::{Stream as FuturesStream, StreamExt, channel::mpsc, stream::BoxStream};
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -13,7 +13,13 @@ use hyper::{
     upgrade::Upgraded,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use std::{future::Future, sync::LazyLock, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::LazyLock,
+    task::{Context, Poll},
+    time::Duration,
+};
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
@@ -103,17 +109,37 @@ pub enum State {
     Connected(FragmentCollector<TokioIo<Upgraded>>),
 }
 
+struct ChannelStream<T> {
+    receiver: mpsc::Receiver<T>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl<T> FuturesStream for ChannelStream<T> {
+    type Item = T;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver).poll_next(cx)
+    }
+}
+
+impl<T> Drop for ChannelStream<T> {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub fn channel<T, Fut, F>(buffer: usize, f: F) -> impl futures::Stream<Item = T>
 where
     T: Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
-    F: FnOnce(futures::channel::mpsc::Sender<T>) -> Fut + Send + 'static,
+    F: FnOnce(mpsc::Sender<T>) -> Fut + Send + 'static,
 {
-    let (sender, receiver) = futures::channel::mpsc::channel(buffer);
-    tokio::spawn(async move {
+    let (sender, receiver) = mpsc::channel(buffer);
+    let task = tokio::spawn(async move {
         f(sender).await;
     });
-    receiver
+
+    ChannelStream { receiver, task }
 }
 
 pub async fn connect_ws(
