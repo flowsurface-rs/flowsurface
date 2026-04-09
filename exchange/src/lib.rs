@@ -1,48 +1,22 @@
 pub mod adapter;
 pub mod connect;
 pub mod depth;
-pub mod fetcher;
 mod limiter;
-pub mod util;
+pub mod proxy;
+mod serde_util;
+pub mod unit;
 
-use crate::util::{ContractSize, MinQtySize, MinTicksize, Price};
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind, StreamKind};
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use unit::price::de_price_from_number;
+use unit::price::{Price, PriceStep};
+pub use unit::qty::SizeUnit;
+use unit::qty::de_qty_from_number;
+use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use serde::{Deserialize, Serialize};
 use std::{fmt, hash::Hash};
-
-/// Unit for displaying volume/quantity size values.
-///
-/// - `Base`: Display in base asset units (e.g., BTC for BTCUSDT)
-/// - `Quote`: Display in quote currency value (e.g., USD/USDT equivalent)
-///
-/// Note: Only applies to linear perpetuals and spot markets.
-/// Inverse perpetuals always display in USD regardless of this setting.
-#[repr(u8)]
-#[derive(Default, Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub enum SizeUnit {
-    Base = 0,
-    #[default]
-    Quote = 1,
-}
-
-static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Base as u8);
-
-pub fn set_preferred_currency(v: SizeUnit) {
-    SIZE_CALC_UNIT.store(v as u8, Ordering::Relaxed);
-}
-
-pub fn volume_size_unit() -> SizeUnit {
-    match SIZE_CALC_UNIT.load(Ordering::Relaxed) {
-        0 => SizeUnit::Base,
-        1 => SizeUnit::Quote,
-        _ => SizeUnit::Base,
-    }
-}
 
 /// Desired frequency for orderbook depth updates.
 ///
@@ -218,37 +192,26 @@ impl SerTicker {
         }
     }
 
-    fn exchange_to_string(exchange: Exchange) -> &'static str {
-        match exchange {
-            Exchange::BinanceLinear => "BinanceLinear",
-            Exchange::BinanceInverse => "BinanceInverse",
-            Exchange::BinanceSpot => "BinanceSpot",
-            Exchange::BybitLinear => "BybitLinear",
-            Exchange::BybitInverse => "BybitInverse",
-            Exchange::BybitSpot => "BybitSpot",
-            Exchange::HyperliquidLinear => "HyperliquidLinear",
-            Exchange::HyperliquidSpot => "HyperliquidSpot",
-            Exchange::OkexLinear => "OkexLinear",
-            Exchange::OkexInverse => "OkexInverse",
-            Exchange::OkexSpot => "OkexSpot",
-        }
+    fn exchange_to_string(exchange: Exchange) -> String {
+        exchange.to_string().replace(' ', "")
     }
 
     fn string_to_exchange(s: &str) -> Result<Exchange, String> {
-        match s {
-            "BinanceLinear" => Ok(Exchange::BinanceLinear),
-            "BinanceInverse" => Ok(Exchange::BinanceInverse),
-            "BinanceSpot" => Ok(Exchange::BinanceSpot),
-            "BybitLinear" => Ok(Exchange::BybitLinear),
-            "BybitInverse" => Ok(Exchange::BybitInverse),
-            "BybitSpot" => Ok(Exchange::BybitSpot),
-            "HyperliquidLinear" => Ok(Exchange::HyperliquidLinear),
-            "HyperliquidSpot" => Ok(Exchange::HyperliquidSpot),
-            "OkexLinear" => Ok(Exchange::OkexLinear),
-            "OkexInverse" => Ok(Exchange::OkexInverse),
-            "OkexSpot" => Ok(Exchange::OkexSpot),
-            _ => Err(format!("Unknown exchange: {}", s)),
+        if let Ok(exchange) = s.parse::<Exchange>() {
+            return Ok(exchange);
         }
+
+        let normalized = ["Linear", "Inverse", "Spot"]
+            .into_iter()
+            .find_map(|suffix| {
+                s.strip_suffix(suffix)
+                    .map(|prefix| format!("{} {}", prefix, suffix))
+            })
+            .unwrap_or_else(|| s.to_owned());
+
+        normalized
+            .parse::<Exchange>()
+            .map_err(|_| format!("Unknown exchange: {}", s))
     }
 }
 
@@ -320,14 +283,8 @@ impl Ticker {
         display_symbol: Option<&str>,
     ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
-        assert!(
-            ticker.is_ascii()
-                && ticker
-                    .as_bytes()
-                    .iter()
-                    .all(|&b| b.is_ascii_graphic() && b != b':' && b != b'|'),
-            "Ticker must be printable ASCII and must not contain ':' or '|': {ticker:?}"
-        );
+        assert!(ticker.is_ascii(), "Ticker must be ASCII");
+        assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
         bytes[..ticker.len()].copy_from_slice(ticker.as_bytes());
@@ -338,14 +295,9 @@ impl Ticker {
                 display.len() <= Self::MAX_LEN as usize,
                 "Display symbol too long"
             );
-            assert!(
-                display.is_ascii()
-                    && display
-                        .as_bytes()
-                        .iter()
-                        .all(|&b| b.is_ascii_graphic() && b != b':' && b != b'|'),
-                "Display symbol must be printable ASCII and must not contain ':' or '|': {display:?}"
-            );
+            assert!(display.is_ascii(), "Display symbol must be ASCII");
+            // Display symbol cannot contain '|' as it's used as delimiter
+            assert!(!display.contains('|'), "Display symbol cannot contain '|'");
             display_bytes[..display.len()].copy_from_slice(display.as_bytes());
             true
         } else {
@@ -558,7 +510,6 @@ pub enum StreamPairKind {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Hash, Eq)]
 pub struct TickerInfo {
     pub ticker: Ticker,
-    #[serde(rename = "tickSize")]
     pub min_ticksize: MinTicksize,
     pub min_qty: MinQtySize,
     pub contract_size: Option<ContractSize>,
@@ -596,10 +547,9 @@ impl TickerInfo {
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Trade {
     pub time: u64,
-    #[serde(deserialize_with = "bool_from_int")]
     pub is_sell: bool,
     pub price: Price,
-    pub qty: f32,
+    pub qty: Qty,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -609,7 +559,7 @@ pub struct Kline {
     pub high: Price,
     pub low: Price,
     pub close: Price,
-    pub volume: (f32, f32),
+    pub volume: Volume,
 }
 
 impl Kline {
@@ -619,79 +569,100 @@ impl Kline {
         high: f32,
         low: f32,
         close: f32,
-        volume: (f32, f32),
+        volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
         Self {
             time,
-            open: Price::from_f32(open).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            high: Price::from_f32(high).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            low: Price::from_f32(low).round_to_min_tick(MinTicksize::from(min_ticksize)),
-            close: Price::from_f32(close).round_to_min_tick(MinTicksize::from(min_ticksize)),
+            open: Price::from_f32(open).round_to_min_tick(min_ticksize),
+            high: Price::from_f32(high).round_to_min_tick(min_ticksize),
+            low: Price::from_f32(low).round_to_min_tick(min_ticksize),
+            close: Price::from_f32(close).round_to_min_tick(min_ticksize),
             volume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Volume {
+    TotalOnly(Qty),
+    BuySell(Qty, Qty),
+}
+
+impl Volume {
+    pub fn total(&self) -> Qty {
+        match self {
+            Volume::TotalOnly(qty) => *qty,
+            Volume::BuySell(buy, sell) => *buy + *sell,
+        }
+    }
+
+    pub fn buy_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(buy, _) => Some(*buy),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn sell_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(_, sell) => Some(*sell),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_sell(&self) -> Option<(Qty, Qty)> {
+        match self {
+            Volume::BuySell(buy, sell) => Some((*buy, *sell)),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_qty_or_zero(&self) -> Qty {
+        self.buy_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub fn sell_qty_or_zero(&self) -> Qty {
+        self.sell_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub const fn empty_total() -> Self {
+        Volume::TotalOnly(Qty::ZERO)
+    }
+
+    pub const fn empty_buy_sell() -> Self {
+        Volume::BuySell(Qty::ZERO, Qty::ZERO)
+    }
+
+    pub fn add_trade_qty(self, is_sell: bool, qty: Qty) -> Self {
+        match self {
+            Volume::BuySell(buy, sell) => {
+                if is_sell {
+                    Volume::BuySell(buy, sell + qty)
+                } else {
+                    Volume::BuySell(buy + qty, sell)
+                }
+            }
+            Volume::TotalOnly(total) => Volume::TotalOnly(total + qty),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct TickerStats {
-    pub mark_price: f32,
+    #[serde(deserialize_with = "de_price_from_number")]
+    pub mark_price: Price,
+    /// 24h price change in percentage (e.g., 0.05 for +5%, -0.02 for -2%)
     pub daily_price_chg: f32,
-    pub daily_volume: f32,
-}
-
-pub fn is_symbol_supported(symbol: &str, exchange: Exchange, log: bool) -> bool {
-    let valid_symbol = symbol
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-
-    if valid_symbol {
-        return true;
-    } else if log {
-        log::warn!("Unsupported ticker: '{}': {:?}", exchange, symbol,);
-    }
-    false
-}
-
-fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    match value.as_i64() {
-        Some(0) => Ok(false),
-        Some(1) => Ok(true),
-        _ => Err(serde::de::Error::custom("expected 0 or 1")),
-    }
-}
-
-fn de_string_to_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: String = serde::Deserialize::deserialize(deserializer)?;
-    s.parse::<f32>().map_err(serde::de::Error::custom)
-}
-
-fn de_string_to_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: String = serde::Deserialize::deserialize(deserializer)?;
-    s.parse::<u64>().map_err(serde::de::Error::custom)
+    /// 24h volume in USD
+    #[serde(deserialize_with = "de_qty_from_number")]
+    pub daily_volume: Qty,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenInterest {
     pub time: u64,
     pub value: f32,
-}
-
-fn str_f32_parse(s: &str) -> f32 {
-    s.parse::<f32>().unwrap_or_else(|e| {
-        log::error!("Failed to parse float: {}, error: {}", s, e);
-        0.0
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Hash)]
@@ -720,34 +691,56 @@ impl TickMultiplier {
         !Self::ALL.contains(self)
     }
 
-    pub fn base(&self, scaled_value: f32) -> f32 {
-        let decimals = (-scaled_value.log10()).ceil() as i32 + 2;
-        let multiplier = 10f32.powi(decimals);
-
-        ((scaled_value * multiplier) / f32::from(self.0)).round() / multiplier
+    /// Applies this multiplier to a base step using integer atomic units.
+    pub fn multiply_step(&self, base_step: PriceStep) -> PriceStep {
+        let units = base_step
+            .units
+            .checked_mul(i64::from(self.0.max(1)))
+            .expect("tick multiplier overflowed PriceStep");
+        PriceStep { units }
     }
 
-    /// Returns the final tick size after applying the user selected multiplier
-    ///
-    /// Usually used for price steps in chart scales
-    pub fn multiply_with_min_tick_size(&self, ticker_info: TickerInfo) -> f32 {
-        // MinTicksize is 10^p with p in [-8, 2]
-        let power = ticker_info.min_ticksize.power as i32;
-        let multiply = self.0 as f32;
+    /// Derives unscaled step from a grouped/scaled step. If the value is not exactly divisible,
+    /// rounds to nearest atomic unit.
+    pub fn unscale_step(&self, scaled_step: PriceStep) -> PriceStep {
+        let m = i64::from(self.0.max(1));
+        if m == 1 {
+            return scaled_step;
+        }
 
-        let decimal_places: u32 = if power < 0 { (-power) as u32 } else { 0 };
+        let q = scaled_step.units.div_euclid(m);
+        let r = scaled_step.units.rem_euclid(m);
+        let rounded = if r.saturating_mul(2) >= m { q + 1 } else { q };
 
-        let raw = if power >= 0 {
-            multiply * 10f32.powi(power)
+        PriceStep {
+            units: rounded.max(1),
+        }
+    }
+
+    /// Derives unscaled step from a grouped/scaled step; if it is not exactly divisible,
+    /// falls back to the ticker's declared minimum tick.
+    pub fn unscale_step_or_min_tick(
+        &self,
+        scaled_step: PriceStep,
+        min_tick: MinTicksize,
+    ) -> PriceStep {
+        let m = i64::from(self.0.max(1));
+        if m == 1 {
+            return scaled_step;
+        }
+
+        if scaled_step.units > 0 && scaled_step.units.rem_euclid(m) == 0 {
+            PriceStep {
+                units: scaled_step.units / m,
+            }
         } else {
-            multiply / 10f32.powi(-power)
-        };
-
-        round_to_decimal_places(raw, decimal_places)
+            min_tick.into()
+        }
     }
-}
 
-fn round_to_decimal_places(value: f32, places: u32) -> f32 {
-    let factor = 10.0f32.powi(places as i32);
-    (value * factor).round() / factor
+    /// Returns the final tick step after applying the user selected multiplier.
+    pub fn multiply_with_min_tick_step(&self, ticker_info: TickerInfo) -> PriceStep {
+        let min_step: PriceStep = ticker_info.min_ticksize.into();
+        self.multiply_step(min_step)
+    }
 }

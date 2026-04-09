@@ -1,3 +1,4 @@
+use crate::connector::{runtime_proxy_cfg, set_runtime_proxy_cfg};
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
 use data::{
@@ -30,6 +31,7 @@ pub struct SavedState {
     pub custom_theme: Option<data::Theme>,
     pub audio_cfg: data::AudioStream,
     pub volume_size_unit: exchange::SizeUnit,
+    pub proxy_cfg: Option<exchange::proxy::Proxy>,
 }
 
 impl SavedState {
@@ -58,6 +60,7 @@ impl Default for SavedState {
             custom_theme: None,
             audio_cfg: data::AudioStream::default(),
             volume_size_unit: exchange::SizeUnit::Base,
+            proxy_cfg: None,
         }
     }
 }
@@ -129,6 +132,17 @@ impl From<&pane::State> for data::Pane {
                     .map_or(studies.clone(), |c| c.studies.clone()),
                 link_group: pane.link_group,
             },
+            pane::Content::ShaderHeatmap {
+                indicators,
+                studies,
+                ..
+            } => data::Pane::ShaderHeatmap {
+                stream_type: streams,
+                studies: studies.clone(),
+                indicators: indicators.clone(),
+                settings: pane.settings.clone(),
+                link_group: pane.link_group,
+            },
             pane::Content::Kline {
                 chart,
                 indicators,
@@ -188,6 +202,26 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             data::layout::pane::Settings::default(),
             link_group,
         )),
+        data::Pane::ShaderHeatmap {
+            stream_type,
+            settings,
+            indicators,
+            studies,
+            link_group,
+        } => {
+            let content = pane::Content::ShaderHeatmap {
+                chart: None,
+                indicators: indicators.clone(),
+                studies,
+            };
+
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
         data::Pane::HeatmapChart {
             layout,
             studies,
@@ -327,8 +361,19 @@ pub fn load_saved_state() -> SavedState {
                 LayoutManager::from_config(layouts, active_layout)
             };
 
-            exchange::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
-            exchange::set_preferred_currency(state.size_in_quote_ccy);
+            crate::connector::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
+            exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
+
+            // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
+            let mut proxy_cfg = state.proxy_cfg;
+            if let Some(proxy) = proxy_cfg.as_mut()
+                && proxy.auth.is_none()
+                && let Some(auth) = data::config::proxy::load_proxy_auth(proxy)
+            {
+                proxy.auth = Some(auth);
+            }
+            set_runtime_proxy_cfg(proxy_cfg.clone());
+            exchange::proxy::set_runtime_proxy_cfg_provider(runtime_proxy_cfg);
 
             SavedState {
                 theme: state.selected_theme,
@@ -340,6 +385,7 @@ pub fn load_saved_state() -> SavedState {
                 scale_factor: state.scale_factor,
                 audio_cfg: state.audio_cfg,
                 volume_size_unit: state.size_in_quote_ccy,
+                proxy_cfg,
             }
         }
         Err(e) => {

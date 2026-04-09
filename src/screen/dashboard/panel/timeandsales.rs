@@ -2,8 +2,9 @@ use super::Message;
 use crate::style;
 use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
-use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
-use exchange::{TickerInfo, Trade, volume_size_unit};
+use data::panel::timeandsales::{HistAgg, HistAggValues, StackedBar, TradeDisplay, TradeEntry};
+use exchange::unit::Qty;
+use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -74,7 +75,7 @@ pub struct TimeAndSales {
     paused_trades_buffer: VecDeque<TradeEntry>,
     hist_agg: HistAgg,
     is_paused: bool,
-    max_filtered_qty: f32,
+    max_filtered_qty: Qty,
     ticker_info: TickerInfo,
     pub config: Config,
     cache: canvas::Cache,
@@ -90,7 +91,7 @@ impl TimeAndSales {
             hist_agg: HistAgg::default(),
             is_paused: false,
             config: config.unwrap_or_default(),
-            max_filtered_qty: 0.0,
+            max_filtered_qty: Qty::ZERO,
             ticker_info,
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
@@ -108,7 +109,7 @@ impl TimeAndSales {
         };
 
         let market_type = self.ticker_info.market_type();
-        let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         for trade in trades_buffer {
             let trade_time_ms = trade.time;
@@ -220,7 +221,7 @@ impl TimeAndSales {
 
         if popped_any {
             let market_type = self.ticker_info.market_type();
-            let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
             self.max_filtered_qty = self
                 .recent_trades
@@ -234,7 +235,7 @@ impl TimeAndSales {
                     trade_size >= size_filter
                 })
                 .map(|e| e.display.qty)
-                .fold(0.0, f32::max);
+                .fold(Qty::ZERO, Qty::max);
 
             let stacked_bar_h = self.stacked_bar_height();
             let total_content_height =
@@ -356,7 +357,7 @@ impl canvas::Program<Message> for TimeAndSales {
                     StackedBar::Compact(r) | StackedBar::Full(r) => *r,
                 };
 
-                if let Some((buy_val, sell_val, buy_ratio)) = self.hist_agg.values_for(ratio_kind) {
+                if let Some(values) = self.hist_agg.values_for(ratio_kind) {
                     let draw_stacked_bar =
                         |frame: &mut canvas::Frame, buy_bar_width: f32, sell_bar_width: f32| {
                             frame.fill_rectangle(
@@ -384,6 +385,26 @@ impl canvas::Program<Message> for TimeAndSales {
                             );
                         };
 
+                    let (buy_ratio, buy_text_content, sell_text_content) = match values {
+                        HistAggValues::Count { buy, sell } => {
+                            let total = buy.saturating_add(sell) as f32;
+                            let buy_ratio = if total > 0.0 { buy as f32 / total } else { 0.5 };
+                            (buy_ratio, buy.to_string(), sell.to_string())
+                        }
+                        HistAggValues::Qty { buy, sell } => {
+                            let buy_val = buy.to_f32_lossy();
+                            let sell_val = sell.to_f32_lossy();
+                            let total = buy_val + sell_val;
+                            let buy_ratio = if total > 0.0 { buy_val / total } else { 0.5 };
+
+                            (
+                                buy_ratio,
+                                data::util::abbr_large_numbers(buy_val),
+                                data::util::abbr_large_numbers(sell_val),
+                            )
+                        }
+                    };
+
                     let buy_bar_width = (bounds.width * buy_ratio).round();
                     let sell_bar_width = bounds.width - buy_bar_width;
 
@@ -392,12 +413,6 @@ impl canvas::Program<Message> for TimeAndSales {
                     if matches!(hist, StackedBar::Full(_)) {
                         let center_y = content_top_y + (stacked_bar_h / 2.0);
 
-                        let buy_text_content = match ratio_kind {
-                            StackedBarRatio::Count => format!("{}", buy_val as i64),
-                            StackedBarRatio::AverageSize | StackedBarRatio::Volume => {
-                                data::util::abbr_large_numbers(buy_val as f32)
-                            }
-                        };
                         let buy_text = Text {
                             content: buy_text_content,
                             position: Point {
@@ -413,12 +428,6 @@ impl canvas::Program<Message> for TimeAndSales {
                         };
                         frame.fill_text(buy_text);
 
-                        let sell_text_content = match ratio_kind {
-                            StackedBarRatio::Count => format!("{}", sell_val as i64),
-                            StackedBarRatio::AverageSize | StackedBarRatio::Volume => {
-                                data::util::abbr_large_numbers(sell_val as f32)
-                            }
-                        };
                         let sell_text = Text {
                             content: sell_text_content,
                             position: Point {
@@ -445,7 +454,8 @@ impl canvas::Program<Message> for TimeAndSales {
             let start_index = (row_scroll_offset / row_height).floor() as usize;
             let visible_rows = (bounds.height / row_height).ceil() as usize;
 
-            let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let max_filtered_qty_f32 = self.max_filtered_qty.to_f32_lossy();
 
             let trades_to_draw = self
                 .recent_trades
@@ -488,8 +498,8 @@ impl canvas::Program<Message> for TimeAndSales {
                     palette.success.weak.color
                 };
 
-                let bg_color_alpha = if self.max_filtered_qty > 0.0 {
-                    (trade.qty / self.max_filtered_qty).clamp(0.02, 1.0)
+                let bg_color_alpha = if max_filtered_qty_f32 > 0.0 {
+                    (trade.qty.to_f32_lossy() / max_filtered_qty_f32).clamp(0.02, 1.0)
                 } else {
                     0.02
                 };
@@ -542,7 +552,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(trade_price);
 
                 let trade_qty = create_text(
-                    data::util::abbr_large_numbers(trade.qty),
+                    data::util::abbr_large_numbers(trade.qty.to_f32_lossy()),
                     Point {
                         x: row_width * 0.9,
                         y: y_position,

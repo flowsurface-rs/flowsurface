@@ -6,11 +6,12 @@ use crate::chart::{
         plot::{PlotTooltip, line::LinePlot},
     },
 };
+use crate::connector::fetcher::FetchRange;
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
+use exchange::adapter::Exchange;
 use exchange::{Kline, Timeframe, Trade};
-use exchange::{adapter::Exchange, fetcher::FetchRange};
 
 use iced::widget::{center, row, text};
 use std::{collections::BTreeMap, ops::RangeInclusive};
@@ -97,7 +98,10 @@ impl OpenInterestIndicator {
     }
 
     pub fn is_supported_exchange(exchange: Exchange) -> bool {
-        exchange.is_perps() && exchange != Exchange::HyperliquidLinear
+        exchange.is_perps()
+            && exchange != Exchange::HyperliquidLinear
+            && exchange != Exchange::MexcLinear
+            && exchange != Exchange::MexcInverse
     }
 
     pub fn is_supported_timeframe(timeframe: Timeframe) -> bool {

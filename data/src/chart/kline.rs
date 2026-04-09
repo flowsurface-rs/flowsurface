@@ -1,11 +1,12 @@
+use crate::aggr::time::DataPoint;
 use exchange::{
     Kline, Trade,
-    util::{Price, PriceStep},
+    unit::price::{Price, PriceStep},
+    unit::qty::Qty,
 };
+
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-
-use crate::aggr::time::DataPoint;
 
 #[derive(Clone)]
 pub struct KlineDataPoint {
@@ -14,17 +15,9 @@ pub struct KlineDataPoint {
 }
 
 impl KlineDataPoint {
-    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
-        match cluster_kind {
-            ClusterKind::BidAsk => self.footprint.max_qty_by(highest, lowest, f32::max),
-            ClusterKind::DeltaProfile => self
-                .footprint
-                .max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs()),
-            ClusterKind::VolumeProfile => {
-                self.footprint
-                    .max_qty_by(highest, lowest, |buy, sell| buy + sell)
-            }
-        }
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> Qty {
+        self.footprint
+            .max_cluster_qty(cluster_kind, highest, lowest)
     }
 
     pub fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
@@ -92,8 +85,8 @@ impl DataPoint for KlineDataPoint {
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupedTrades {
-    pub buy_qty: f32,
-    pub sell_qty: f32,
+    pub buy_qty: Qty,
+    pub sell_qty: Qty,
     pub first_time: u64,
     pub last_time: u64,
     pub buy_count: usize,
@@ -103,8 +96,16 @@ pub struct GroupedTrades {
 impl GroupedTrades {
     fn new(trade: &Trade) -> Self {
         Self {
-            buy_qty: if trade.is_sell { 0.0 } else { trade.qty },
-            sell_qty: if trade.is_sell { trade.qty } else { 0.0 },
+            buy_qty: if trade.is_sell {
+                Qty::default()
+            } else {
+                trade.qty
+            },
+            sell_qty: if trade.is_sell {
+                trade.qty
+            } else {
+                Qty::default()
+            },
             first_time: trade.time,
             last_time: trade.time,
             buy_count: if trade.is_sell { 0 } else { 1 },
@@ -123,12 +124,20 @@ impl GroupedTrades {
         self.last_time = trade.time;
     }
 
-    pub fn total_qty(&self) -> f32 {
+    pub fn total_qty(&self) -> Qty {
         self.buy_qty + self.sell_qty
     }
 
-    pub fn delta_qty(&self) -> f32 {
+    pub fn delta_qty(&self) -> Qty {
         self.buy_qty - self.sell_qty
+    }
+
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind) -> Qty {
+        match cluster_kind {
+            ClusterKind::BidAsk => self.buy_qty.max(self.sell_qty),
+            ClusterKind::DeltaProfile => self.buy_qty.abs_diff(self.sell_qty),
+            ClusterKind::VolumeProfile => self.total_qty(),
+        }
     }
 }
 
@@ -178,17 +187,21 @@ impl KlineTrades {
             .or_insert_with(|| GroupedTrades::new(trade));
     }
 
-    pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> f32
+    pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> Qty
     where
-        F: Fn(f32, f32) -> f32,
+        F: Fn(&GroupedTrades) -> Qty,
     {
-        let mut max_qty: f32 = 0.0;
+        let mut max_qty = Qty::default();
         for (price, group) in &self.trades {
             if *price >= lowest && *price <= highest {
-                max_qty = max_qty.max(f(group.buy_qty, group.sell_qty));
+                max_qty = max_qty.max(f(group));
             }
         }
         max_qty
+    }
+
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> Qty {
+        self.max_qty_by(highest, lowest, |group| group.max_cluster_qty(cluster_kind))
     }
 
     pub fn calculate_poc(&mut self) {
@@ -200,7 +213,7 @@ impl KlineTrades {
         let mut poc_price = Price::from_f32(0.0);
 
         for (price, group) in &self.trades {
-            let total_volume = group.total_qty();
+            let total_volume = f32::from(group.total_qty());
             if total_volume > max_volume {
                 max_volume = total_volume;
                 poc_price = *price;

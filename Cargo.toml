@@ -1,6 +1,6 @@
 [package]
 name = "flowsurface"
-version = "0.8.6"
+version.workspace = true
 readme = "README.md"
 license = "GPL-3.0-or-later"
 description = "A native desktop charting platform for crypto markets"
@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [workspace.package]
+version = "0.8.7"
 edition = "2024"
 repository = "https://github.com/flowsurface-rs/flowsurface"
 homepage = "https://flowsurface.com"
@@ -18,7 +19,6 @@ homepage = "https://flowsurface.com"
 members = [ "data", "exchange"]
 
 [workspace.dependencies]
-iced_futures = { version = "0.14.0" }
 iced_core = { version = "0.14.0", features = ["serde"] }
 chrono = { version = "0.4.40", default-features = false, features = ["serde", "now", "clock"] }
 serde = { version = "1.0.219", default-features = false, features = ["derive"] }
@@ -30,7 +30,10 @@ palette = "0.7.6"
 num-traits = "0.2.19"
 rustc-hash = "2.1.1"
 enum-map = "2.7.3"
+url = "2.5.8"
 uuid = { version = "1.11.0", features = ["v4"] }
+exchange = { version = "0.8.7", path = "exchange", package = "flowsurface-exchange" }
+data = { version = "0.8.7", path = "data", package = "flowsurface-data" }
 
 [dependencies]
 iced = { version = "0.14.0", default-features = false, features = [
@@ -45,7 +48,6 @@ iced = { version = "0.14.0", default-features = false, features = [
     "wayland",
 ] }
 iced_core.workspace = true
-iced_futures.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -56,11 +58,15 @@ palette.workspace = true
 num-traits.workspace = true
 rustc-hash.workspace = true
 enum-map.workspace = true
+url.workspace = true
 fern = "0.7.1"
 rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 
-exchange = { version = "0.1.0", path = "exchange", package = "flowsurface-exchange" }
-data = { version = "0.1.0", path = "data", package = "flowsurface-data" }
+bytemuck = "1.24.0"
+rand = "0.9.2"
+iced_wgpu = "0.14.0"
+exchange.workspace = true
+data.workspace = true
 
 [features]
 debug = ["iced/hot"]

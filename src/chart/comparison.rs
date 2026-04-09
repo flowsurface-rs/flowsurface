@@ -1,3 +1,4 @@
+use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::comparison::{
     DEFAULT_BBO_BAR_WIDTH, DEFAULT_KLINE_BAR_WIDTH, LineComparison, LineComparisonEvent,
 };
@@ -7,7 +8,6 @@ use data::chart::Basis;
 use data::chart::comparison::Config;
 use data::config::theme::color_from_hash;
 use exchange::adapter::StreamKind;
-use exchange::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
 
 use rustc_hash::FxHashMap;
@@ -90,7 +90,7 @@ impl ComparisonChart {
             timeframe,
             request_handler: tickers
                 .iter()
-                .map(|t| (*t, RequestHandler::new()))
+                .map(|t| (*t, RequestHandler::default()))
                 .collect(),
             selected_tickers: tickers.to_vec(),
             pan_ms: DEFAULT_PAN_MS,
@@ -471,8 +471,7 @@ impl ComparisonChart {
                     stream,
                 })
                 .collect();
-            let requests = exchange::fetcher::FetchRequests::from(fetch_specs);
-            Some(super::Action::RequestFetch(requests))
+            Some(super::Action::RequestFetch(fetch_specs))
         }
     }
 
@@ -626,7 +625,7 @@ impl ComparisonChart {
         self.request_handler.clear();
 
         for &t in &self.selected_tickers {
-            self.request_handler.insert(t, RequestHandler::new());
+            self.request_handler.insert(t, RequestHandler::default());
         }
     }
 

@@ -3,10 +3,11 @@
 [![Crates.io](https://img.shields.io/crates/v/flowsurface)](https://crates.io/crates/flowsurface)
 [![Lint](https://github.com/flowsurface-rs/flowsurface/actions/workflows/lint.yml/badge.svg)](https://github.com/flowsurface-rs/flowsurface/actions/workflows/lint.yml)
 [![Format](https://github.com/flowsurface-rs/flowsurface/actions/workflows/format.yml/badge.svg)](https://github.com/flowsurface-rs/flowsurface/actions/workflows/format.yml)
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/RN2XAF7ZuR)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/flowsurface-rs/flowsurface/blob/main/LICENSE)
 [![Made with iced](https://iced.rs/badge.svg)](https://github.com/iced-rs/iced)
 
-An experimental open-source desktop charting application. Supports Binance, Bybit, Hyperliquid and OKX
+An open-source native desktop charting application for crypto markets. Supports Binance, Bybit, Hyperliquid, OKX, and MEXC.
 
 <div align="center">
   <img
@@ -95,8 +96,17 @@ cargo build --release
 cargo run --release
 ```
 
-### Credits and thanks to
+## Credits and thanks to
 
 -   [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
 -   [Halloy](https://github.com/squidowl/halloy), an excellent open-source reference for the foundational code design and the project architecture
 -   And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes all of this possible
+
+## Community
+
+For feedback, questions, or for more casual conversations about the project, join our community on Discord:  
+https://discord.gg/RN2XAF7ZuR
+
+## License
+
+Flowsurface is released under the [GPLv3](./LICENSE) license. Contributions to the project are shared under the same license.  

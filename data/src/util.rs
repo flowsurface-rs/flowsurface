@@ -43,15 +43,6 @@ pub fn abbr_large_numbers(value: f32) -> String {
     }
 }
 
-pub fn count_decimals(value: f32) -> usize {
-    let value_str = value.to_string();
-    if let Some(pos) = value_str.find('.') {
-        value_str.len() - pos - 1
-    } else {
-        0
-    }
-}
-
 pub fn format_with_commas(num: f32) -> String {
     if num == 0.0 {
         return "0".to_string();

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use exchange::util::Price;
+use exchange::unit::{Price, Qty};
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -34,7 +34,7 @@ fn default_buffer_filter() -> Duration {
 pub struct TradeDisplay {
     pub time_str: String,
     pub price: Price,
-    pub qty: f32,
+    pub qty: Qty,
     pub is_sell: bool,
 }
 
@@ -91,17 +91,39 @@ impl StackedBarRatio {
     ];
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum HistAggValues {
+    Count { buy: u64, sell: u64 },
+    Qty { buy: Qty, sell: Qty },
+}
+
 #[derive(Default)]
 pub struct HistAgg {
     buy_count: u64,
     sell_count: u64,
-    buy_sum: f64,
-    sell_sum: f64,
+    buy_sum: Qty,
+    sell_sum: Qty,
 }
 
 impl HistAgg {
+    fn average_qty(sum: Qty, count: u64) -> Qty {
+        if count == 0 {
+            return Qty::ZERO;
+        }
+
+        let c = count.min(i64::MAX as u64) as i64;
+        let half = c / 2;
+        let rounded = if sum.units >= 0 {
+            sum.units.saturating_add(half).div_euclid(c)
+        } else {
+            sum.units.saturating_sub(half).div_euclid(c)
+        };
+
+        Qty::from_units(rounded)
+    }
+
     pub fn add(&mut self, trade: &TradeDisplay) {
-        let qty = trade.qty as f64;
+        let qty = trade.qty;
 
         if trade.is_sell {
             self.sell_count += 1;
@@ -113,62 +135,65 @@ impl HistAgg {
     }
 
     pub fn remove(&mut self, trade: &TradeDisplay) {
-        let qty = trade.qty as f64;
+        let qty = trade.qty;
 
         if trade.is_sell {
             self.sell_count = self.sell_count.saturating_sub(1);
-            self.sell_sum -= qty;
+            self.sell_sum = if self.sell_sum.units >= qty.units {
+                self.sell_sum - qty
+            } else {
+                Qty::ZERO
+            };
         } else {
             self.buy_count = self.buy_count.saturating_sub(1);
-            self.buy_sum -= qty;
+            self.buy_sum = if self.buy_sum.units >= qty.units {
+                self.buy_sum - qty
+            } else {
+                Qty::ZERO
+            };
         }
     }
 
-    pub fn values_for(&self, ratio_kind: StackedBarRatio) -> Option<(f64, f64, f32)> {
+    pub fn values_for(&self, ratio_kind: StackedBarRatio) -> Option<HistAggValues> {
         match ratio_kind {
             StackedBarRatio::Count => {
-                let buy = self.buy_count as f64;
-                let sell = self.sell_count as f64;
-                let total = buy + sell;
+                let buy = self.buy_count;
+                let sell = self.sell_count;
+                let total = buy.saturating_add(sell);
 
-                if total <= 0.0 {
+                if total == 0 {
                     return None;
                 }
-                let buy_ratio = (buy / total) as f32;
 
-                Some((buy, sell, buy_ratio))
+                Some(HistAggValues::Count { buy, sell })
             }
             StackedBarRatio::Volume => {
-                let buy = self.buy_sum;
-                let sell = self.sell_sum;
+                let buy = self.buy_sum.to_f32_lossy();
+                let sell = self.sell_sum.to_f32_lossy();
                 let total = buy + sell;
 
                 if total <= 0.0 {
                     return None;
                 }
-                let buy_ratio = (buy / total) as f32;
 
-                Some((buy, sell, buy_ratio))
+                Some(HistAggValues::Qty {
+                    buy: self.buy_sum,
+                    sell: self.sell_sum,
+                })
             }
             StackedBarRatio::AverageSize => {
-                let buy_avg = if self.buy_count > 0 {
-                    self.buy_sum / self.buy_count as f64
-                } else {
-                    0.0
-                };
-                let sell_avg = if self.sell_count > 0 {
-                    self.sell_sum / self.sell_count as f64
-                } else {
-                    0.0
-                };
+                let buy_avg = Self::average_qty(self.buy_sum, self.buy_count);
+                let sell_avg = Self::average_qty(self.sell_sum, self.sell_count);
 
-                let denom = buy_avg + sell_avg;
-                if denom <= 0.0 {
+                let denom = buy_avg.units.saturating_add(sell_avg.units);
+                if denom <= 0 {
                     return None;
                 }
-                let buy_ratio = (buy_avg / denom) as f32;
 
-                Some((buy_avg, sell_avg, buy_ratio))
+                Some(HistAggValues::Qty {
+                    buy: buy_avg,
+                    sell: sell_avg,
+                })
             }
         }
     }

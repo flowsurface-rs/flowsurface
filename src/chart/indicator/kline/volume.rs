@@ -12,14 +12,14 @@ use crate::chart::{
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
-use exchange::{Kline, Trade};
+use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 pub struct VolumeIndicator {
     cache: Caches,
-    data: BTreeMap<u64, (f32, f32)>,
+    data: BTreeMap<u64, Volume>,
 }
 
 impl VolumeIndicator {
@@ -35,29 +35,30 @@ impl VolumeIndicator {
         main_chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        let tooltip = |&(buy, sell): &(f32, f32), _next: Option<&(f32, f32)>| {
-            if buy == -1.0 {
-                PlotTooltip::new(format!("Volume: {}", format_with_commas(sell)))
-            } else {
-                let buy_t = format!("Buy Volume: {}", format_with_commas(buy));
-                let sell_t = format!("Sell Volume: {}", format_with_commas(sell));
+        let tooltip = |volume: &Volume, _next: Option<&Volume>| {
+            if let Some((buy, sell)) = volume.buy_sell() {
+                let buy_t = format!("Buy Volume: {}", format_with_commas(f32::from(buy)));
+                let sell_t = format!("Sell Volume: {}", format_with_commas(f32::from(sell)));
                 PlotTooltip::new(format!("{buy_t}\n{sell_t}"))
-            }
-        };
-
-        let bar_kind = |&(buy, sell): &(f32, f32)| {
-            if buy == -1.0 {
-                BarClass::Single // bybit workaround: single bar
             } else {
-                BarClass::Overlay {
-                    overlay: buy - sell,
-                } // use the overlay for volume delta, sign determines up/down color
+                PlotTooltip::new(format!(
+                    "Volume: {}",
+                    format_with_commas(f32::from(volume.total()))
+                ))
             }
         };
 
-        let value_fn = |&(buy, sell): &(f32, f32)| {
-            if buy == -1.0 { sell } else { buy + sell }
+        let bar_kind = |volume: &Volume| {
+            if let Some((buy, sell)) = volume.buy_sell() {
+                BarClass::Overlay {
+                    overlay: f32::from(buy) - f32::from(sell),
+                }
+            } else {
+                BarClass::Single
+            }
         };
+
+        let value_fn = |volume: &Volume| f32::from(volume.total());
 
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
@@ -98,8 +99,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
 
     fn on_insert_klines(&mut self, klines: &[Kline]) {
         for kline in klines {
-            self.data
-                .insert(kline.time, (kline.volume.0, kline.volume.1));
+            self.data.insert(kline.time, kline.volume);
         }
         self.clear_all_caches();
     }
@@ -115,8 +115,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
             PlotData::TickBased(tickseries) => {
                 let start_idx = old_dp_len.saturating_sub(1);
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
-                    self.data
-                        .insert(idx as u64, (dp.kline.volume.0, dp.kline.volume.1));
+                    self.data.insert(idx as u64, dp.kline.volume);
                 }
             }
         }

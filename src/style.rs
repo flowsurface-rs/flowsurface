@@ -1,5 +1,3 @@
-use exchange::adapter::Exchange;
-
 use iced::font::{Family, Stretch, Weight};
 use iced::theme::palette::Extended;
 use iced::widget::Text;
@@ -22,75 +20,48 @@ pub const AZERET_MONO: Font = Font {
 
 pub const TITLE_PADDING_TOP: f32 = if cfg!(target_os = "macos") { 20.0 } else { 0.0 };
 
+/// Icon glyph code points for the `icons` font (`assets/fonts/icons.ttf`).
+/// Values represent each glyph's `code` in `assets/fonts/fontello.json`.
+/// Enum variant names may differ from Fontello CSS names.
+#[repr(u32)]
 pub enum Icon {
-    Locked,
-    Unlocked,
-    ResizeFull,
-    ResizeSmall,
-    Close,
-    Layout,
-    Cog,
-    Link,
-    BinanceLogo,
-    BybitLogo,
-    HyperliquidLogo,
-    OkexLogo,
-    Search,
-    Sort,
-    SortDesc,
-    SortAsc,
-    Star,
-    StarFilled,
-    Return,
-    Popout,
-    ChartOutline,
-    TrashBin,
-    Edit,
-    Checkmark,
-    Clone,
-    SpeakerOff,
-    SpeakerLow,
-    SpeakerHigh,
-    DragHandle,
-    Folder,
-    ExternalLink,
+    Locked = 59392,
+    Unlocked = 59393,
+    ResizeFull = 59395,
+    ResizeSmall = 59396,
+    Close = 59397,
+    Layout = 59398,
+    Cog = 59408,
+    Link = 59399,
+    BinanceLogo = 59401,
+    BybitLogo = 59400,
+    HyperliquidLogo = 59411,
+    OkexLogo = 59423,
+    MexcLogo = 59425,
+    Search = 59394,
+    Sort = 61660,
+    SortDesc = 61661,
+    SortAsc = 61662,
+    Star = 59402,
+    StarFilled = 59403,
+    Return = 59404,
+    Popout = 59405,
+    ChartOutline = 59406,
+    TrashBin = 59407,
+    Edit = 59409,
+    Checkmark = 59410,
+    Clone = 61637,
+    SpeakerOff = 59412,
+    SpeakerLow = 59414,
+    SpeakerHigh = 59413,
+    DragHandle = 59415,
+    Folder = 61716,
+    ExternalLink = 61772,
 }
 
 impl From<Icon> for char {
     fn from(icon: Icon) -> Self {
-        match icon {
-            Icon::Locked => '\u{E800}',
-            Icon::Unlocked => '\u{E801}',
-            Icon::Search => '\u{E802}',
-            Icon::ResizeFull => '\u{E803}',
-            Icon::ResizeSmall => '\u{E804}',
-            Icon::Close => '\u{E805}',
-            Icon::Layout => '\u{E806}',
-            Icon::Link => '\u{E807}',
-            Icon::BybitLogo => '\u{E808}',
-            Icon::BinanceLogo => '\u{E809}',
-            Icon::HyperliquidLogo => '\u{E813}',
-            Icon::OkexLogo => '\u{E81F}',
-            Icon::Cog => '\u{E810}',
-            Icon::Sort => '\u{F0DC}',
-            Icon::SortDesc => '\u{F0DD}',
-            Icon::SortAsc => '\u{F0DE}',
-            Icon::Star => '\u{E80A}',
-            Icon::StarFilled => '\u{E80B}',
-            Icon::Return => '\u{E80C}',
-            Icon::Popout => '\u{E80D}',
-            Icon::ChartOutline => '\u{E80E}',
-            Icon::TrashBin => '\u{E80F}',
-            Icon::Edit => '\u{E811}',
-            Icon::Checkmark => '\u{E812}',
-            Icon::Clone => '\u{F0C5}',
-            Icon::SpeakerOff => '\u{E814}',
-            Icon::SpeakerHigh => '\u{E815}',
-            Icon::SpeakerLow => '\u{E816}',
-            Icon::DragHandle => '\u{E817}',
-            Icon::Folder => '\u{F114}',
-            Icon::ExternalLink => '\u{F14C}',
-        }
+        char::from_u32(icon as u32).expect("icon codepoints must be valid Unicode scalar values")
     }
 }
 
@@ -100,14 +71,13 @@ pub fn icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
         .size(iced::Pixels(size.into()))
 }
 
-pub fn exchange_icon(exchange: Exchange) -> Icon {
-    match exchange {
-        Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot => Icon::BybitLogo,
-        Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot => {
-            Icon::BinanceLogo
-        }
-        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Icon::HyperliquidLogo,
-        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Icon::OkexLogo,
+pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {
+    match venue {
+        exchange::adapter::Venue::Bybit => Icon::BybitLogo,
+        exchange::adapter::Venue::Binance => Icon::BinanceLogo,
+        exchange::adapter::Venue::Hyperliquid => Icon::HyperliquidLogo,
+        exchange::adapter::Venue::Okex => Icon::OkexLogo,
+        exchange::adapter::Venue::Mexc => Icon::MexcLogo,
     }
 }
 
@@ -248,7 +218,11 @@ pub mod button {
         let palette = theme.extended_palette();
 
         Style {
-            text_color: palette.background.base.text,
+            text_color: if status == Status::Disabled {
+                palette.background.strongest.color
+            } else {
+                palette.background.base.text
+            },
             border: Border {
                 radius: 3.0.into(),
                 ..Default::default()
@@ -267,7 +241,7 @@ pub mod button {
                     if is_clicked {
                         None
                     } else {
-                        Some(palette.secondary.weak.color.into())
+                        Some(palette.background.weakest.color.into())
                     }
                 }
             },
@@ -323,6 +297,50 @@ pub mod button {
                 ..Default::default()
             },
             background: Some(palette.background.weakest.color.into()),
+            ..Default::default()
+        }
+    }
+
+    pub fn text_link(theme: &Theme, status: Status) -> Style {
+        let palette = theme.extended_palette();
+
+        let text_color = match status {
+            Status::Active => palette.secondary.base.color,
+            Status::Pressed => palette.secondary.base.color,
+            Status::Hovered => palette.secondary.strong.color,
+            Status::Disabled => palette.background.strong.color,
+        };
+
+        Style {
+            text_color,
+            background: None,
+            border: Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn text_link_secondary(theme: &Theme, status: Status) -> Style {
+        let palette = theme.extended_palette();
+
+        let text_color = match status {
+            Status::Active => palette.secondary.weak.color,
+            Status::Pressed => palette.secondary.weak.color,
+            Status::Hovered => palette.secondary.base.color,
+            Status::Disabled => palette.background.strong.color,
+        };
+
+        Style {
+            text_color,
+            background: None,
+            border: Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+            },
             ..Default::default()
         }
     }

@@ -4,8 +4,8 @@ use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
-use exchange::util::{Price, PriceStep};
-use exchange::{Kline, Timeframe, Trade};
+use exchange::unit::{Price, PriceStep, Qty};
+use exchange::{Kline, Timeframe, Trade, Volume};
 
 pub trait DataPoint {
     fn add_trade(&mut self, trade: &Trade, step: PriceStep);
@@ -71,9 +71,9 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, (f32, f32)>
+    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, exchange::Volume>
     where
-        BTreeMap<u64, (f32, f32)>: From<&'a TimeSeries<D>>,
+        BTreeMap<u64, exchange::Volume>: From<&'a TimeSeries<D>>,
     {
         self.into()
     }
@@ -115,13 +115,33 @@ impl<D: DataPoint> TimeSeries<D> {
             .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
+    /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.
+    pub fn ingest_trades_bucket(&mut self, rounded_t: u64, trades: &[Trade], step: PriceStep)
+    where
+        D: Default,
+    {
+        let bucket = self.datapoints.entry(rounded_t).or_default();
+
+        for trade in trades {
+            bucket.add_trade(trade, step);
+        }
+    }
+
     pub fn clear_trades(&mut self) {
         for data_point in self.datapoints.values_mut() {
             data_point.clear_trades();
         }
     }
 
-    pub fn check_kline_integrity(
+    fn align_down_to_phase(time: u64, phase: u64, interval: u64) -> u64 {
+        if time >= phase {
+            time.saturating_sub((time - phase) % interval)
+        } else {
+            phase
+        }
+    }
+
+    fn check_kline_integrity_range(
         &self,
         earliest: u64,
         latest: u64,
@@ -149,7 +169,7 @@ impl<D: DataPoint> TimeSeries<D> {
                 time += interval;
             }
 
-            log::warn!(
+            log::debug!(
                 "Integrity check failed: missing {} klines",
                 missing_keys.len()
             );
@@ -157,6 +177,32 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         None
+    }
+
+    pub fn check_kline_integrity(&self, earliest: u64, latest: u64) -> Option<Vec<u64>> {
+        if self.datapoints.is_empty() {
+            return None;
+        }
+
+        let interval = self.interval.to_milliseconds();
+        if interval == 0 {
+            return None;
+        }
+
+        let (series_earliest, series_latest) = self.timerange();
+        let phase = series_earliest % interval;
+
+        let check_earliest =
+            Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
+                .max(series_earliest);
+        let check_latest = Self::align_down_to_phase(latest.min(series_latest), phase, interval)
+            .min(series_latest);
+
+        if check_earliest < check_latest {
+            self.check_kline_integrity_range(check_earliest, check_latest, interval)
+        } else {
+            None
+        }
     }
 }
 
@@ -223,7 +269,7 @@ impl TimeSeries<KlineDataPoint> {
                         high: trade.price,
                         low: trade.price,
                         close: trade.price,
-                        volume: (0.0, 0.0),
+                        volume: Volume::empty_buy_sell(),
                     },
                     footprint: KlineTrades::new(),
                 });
@@ -263,8 +309,9 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn change_tick_size(&mut self, tick_size: f32, raw_trades: &[Trade]) {
-        self.tick_size = PriceStep::from_f32(tick_size);
+    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+        self.tick_size = tick_size;
+
         self.clear_trades();
 
         if !raw_trades.is_empty() {
@@ -364,8 +411,8 @@ impl TimeSeries<KlineDataPoint> {
         latest: u64,
         highest: Price,
         lowest: Price,
-    ) -> f32 {
-        let mut max_cluster_qty: f32 = 0.0;
+    ) -> Qty {
+        let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints
             .range(earliest..=latest)
@@ -392,22 +439,23 @@ impl TimeSeries<HeatmapDataPoint> {
         }
     }
 
-    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (f32, f32) {
-        let mut max_trade_qty = 0.0f32;
-        let mut max_aggr_volume = 0.0f32;
+    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (Qty, Qty) {
+        let mut max_trade_qty = Qty::ZERO;
+        let mut max_aggr_volume = Qty::ZERO;
 
         self.datapoints
             .range(earliest..=latest)
             .for_each(|(_, dp)| {
-                let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
+                let (mut buy_volume, mut sell_volume) = (Qty::ZERO, Qty::ZERO);
 
                 dp.grouped_trades.iter().for_each(|trade| {
-                    max_trade_qty = max_trade_qty.max(trade.qty);
+                    let trade_qty = trade.qty;
+                    max_trade_qty = max_trade_qty.max(trade_qty);
 
                     if trade.is_sell {
-                        sell_volume += trade.qty;
+                        sell_volume += trade_qty;
                     } else {
-                        buy_volume += trade.qty;
+                        buy_volume += trade_qty;
                     }
                 });
 
@@ -416,15 +464,37 @@ impl TimeSeries<HeatmapDataPoint> {
 
         (max_trade_qty, max_aggr_volume)
     }
+
+    pub fn max_trade_qty_in_range(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: Price,
+        lowest: Price,
+    ) -> Qty {
+        let mut max_trade_qty = Qty::default();
+
+        self.datapoints
+            .range(earliest..=latest)
+            .for_each(|(_, dp)| {
+                dp.grouped_trades.iter().for_each(|trade| {
+                    if trade.price >= lowest && trade.price <= highest {
+                        max_trade_qty = max_trade_qty.max(trade.qty);
+                    }
+                });
+            });
+
+        max_trade_qty
+    }
 }
 
-impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, (f32, f32)> {
+impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, exchange::Volume> {
     /// Converts datapoints into a map of timestamps and volume data
     fn from(timeseries: &TimeSeries<KlineDataPoint>) -> Self {
         timeseries
             .datapoints
             .iter()
-            .map(|(time, dp)| (*time, (dp.kline.volume.0, dp.kline.volume.1)))
+            .map(|(time, dp)| (*time, dp.kline.volume))
             .collect()
     }
 }

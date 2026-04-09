@@ -1,17 +1,15 @@
 use super::Basis;
 use super::aggr::time::DataPoint;
-use exchange::util::{Price, PriceStep};
-use exchange::{adapter::MarketKind, depth::Depth, volume_size_unit};
+use exchange::unit::MinQtySize;
+use exchange::unit::price::{Price, PriceStep};
+use exchange::unit::qty::{Qty, SizeUnit, volume_size_unit};
+use exchange::{adapter::MarketKind, depth::Depth};
 
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const CLEANUP_THRESHOLD: usize = 4800;
-
-/// Allow up to 500ms delay in order updates before starting a new order run.
-/// Prevents fragmentation(e.g. network latency) when qty and is_bid remain unchanged.
-const GRACE_PERIOD_MS: u64 = 500;
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
@@ -32,9 +30,10 @@ impl Default for Config {
     }
 }
 
+#[derive(Default)]
 pub struct HeatmapDataPoint {
     pub grouped_trades: Box<[GroupedTrade]>,
-    pub buy_sell: (f32, f32),
+    pub buy_sell: (Qty, Qty),
 }
 
 impl DataPoint for HeatmapDataPoint {
@@ -43,7 +42,7 @@ impl DataPoint for HeatmapDataPoint {
 
         match self
             .grouped_trades
-            .binary_search_by(|probe| probe.compare_with(trade.price, trade.is_sell))
+            .binary_search_by(|probe| probe.compare_with(grouped_price, trade.is_sell))
         {
             Ok(index) => self.grouped_trades[index].qty += trade.qty,
             Err(index) => {
@@ -69,7 +68,7 @@ impl DataPoint for HeatmapDataPoint {
 
     fn clear_trades(&mut self) {
         self.grouped_trades = Box::new([]);
-        self.buy_sell = (0.0, 0.0);
+        self.buy_sell = (Qty::default(), Qty::default());
     }
 
     fn last_trade_time(&self) -> Option<u64> {
@@ -111,22 +110,18 @@ impl DataPoint for HeatmapDataPoint {
 pub struct OrderRun {
     pub start_time: u64,
     pub until_time: u64,
-    qty: f32,
+    pub qty: Qty,
     pub is_bid: bool,
 }
 
 impl OrderRun {
-    pub fn new(start_time: u64, aggr_time: u64, qty: f32, is_bid: bool) -> Self {
+    pub fn new(start_time: u64, aggr_time: u64, qty: Qty, is_bid: bool) -> Self {
         OrderRun {
             start_time,
             until_time: start_time + aggr_time,
             qty,
             is_bid,
         }
-    }
-
-    pub fn qty(&self) -> f32 {
-        self.qty
     }
 
     pub fn with_range(&self, earliest: u64, latest: u64) -> Option<&OrderRun> {
@@ -138,16 +133,17 @@ impl OrderRun {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HistoricalDepth {
     price_levels: BTreeMap<Price, Vec<OrderRun>>,
-    aggr_time: u64,
+    pub aggr_time: u64,
     tick_size: PriceStep,
-    min_order_qty: f32,
+    min_order_qty: MinQtySize,
+    last_snapshot_time: Option<u64>,
 }
 
 impl HistoricalDepth {
-    pub fn new(min_order_qty: f32, tick_size: PriceStep, basis: Basis) -> Self {
+    pub fn new(min_order_qty: MinQtySize, tick_size: PriceStep, basis: Basis) -> Self {
         Self {
             price_levels: BTreeMap::new(),
             aggr_time: match basis {
@@ -156,27 +152,46 @@ impl HistoricalDepth {
             },
             tick_size,
             min_order_qty,
+            last_snapshot_time: None,
         }
     }
 
     pub fn insert_latest_depth(&mut self, depth: &Depth, time: u64) {
-        self.process_side(&depth.bids, time, true);
-        self.process_side(&depth.asks, time, false);
+        if let Some(prev_time) = self.last_snapshot_time
+            && time < prev_time
+        {
+            return;
+        }
+
+        let aggr_time = self.aggr_time.max(1);
+        let has_snapshot_gap = self
+            .last_snapshot_time
+            .is_some_and(|prev_time| time > prev_time.saturating_add(aggr_time));
+
+        self.process_side(&depth.bids, time, true, has_snapshot_gap);
+        self.process_side(&depth.asks, time, false, has_snapshot_gap);
+        self.last_snapshot_time = Some(time);
     }
 
-    fn process_side(&mut self, side: &BTreeMap<Price, f32>, time: u64, is_bid: bool) {
+    fn process_side(
+        &mut self,
+        side: &BTreeMap<Price, Qty>,
+        time: u64,
+        is_bid: bool,
+        has_snapshot_gap: bool,
+    ) {
         let mut current_price = None;
-        let mut current_qty = 0.0;
+        let mut current_qty = Qty::ZERO;
 
         let step = self.tick_size;
 
         for (price, qty) in side {
             let rounded_price = price.round_to_side_step(is_bid, step);
             if Some(rounded_price) == current_price {
-                current_qty += qty;
+                current_qty += *qty;
             } else {
                 if let Some(price) = current_price {
-                    self.update_price_level(time, price, current_qty, is_bid);
+                    self.update_price_level(time, price, current_qty, is_bid, has_snapshot_gap);
                 }
                 current_price = Some(rounded_price);
                 current_qty = *qty;
@@ -184,29 +199,38 @@ impl HistoricalDepth {
         }
 
         if let Some(price) = current_price {
-            self.update_price_level(time, price, current_qty, is_bid);
+            self.update_price_level(time, price, current_qty, is_bid, has_snapshot_gap);
         }
     }
 
-    fn update_price_level(&mut self, time: u64, price: Price, qty: f32, is_bid: bool) {
-        let price_level = self.price_levels.entry(price).or_default();
+    fn update_price_level(
+        &mut self,
+        time: u64,
+        price: Price,
+        qty: Qty,
+        is_bid: bool,
+        has_snapshot_gap: bool,
+    ) {
         let aggr_time = self.aggr_time;
+        let price_level = self.price_levels.entry(price).or_default();
 
         match price_level.last_mut() {
             Some(last_run) if last_run.is_bid == is_bid => {
-                if time > last_run.until_time + GRACE_PERIOD_MS {
+                if time > last_run.until_time {
+                    if has_snapshot_gap {
+                        if qty == last_run.qty {
+                            last_run.until_time = time.saturating_add(aggr_time);
+                            return;
+                        }
+
+                        last_run.until_time = time;
+                    }
+
                     price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
                     return;
                 }
 
-                let last_qty = last_run.qty;
-                let qty_diff_pct = if last_qty > 0.0 {
-                    (qty - last_qty).abs() / last_qty
-                } else {
-                    f32::INFINITY
-                };
-
-                if qty_diff_pct <= self.min_order_qty || last_run.qty == qty {
+                if qty == last_run.qty {
                     let new_until = time + aggr_time;
                     if new_until > last_run.until_time {
                         last_run.until_time = new_until;
@@ -228,6 +252,10 @@ impl HistoricalDepth {
                 price_level.push(OrderRun::new(time, aggr_time, qty, is_bid));
             }
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.price_levels.is_empty()
     }
 
     pub fn iter_time_filtered(
@@ -280,11 +308,7 @@ impl HistoricalDepth {
     ) -> Vec<(Price, OrderRun)> {
         let mut result_runs = Vec::new();
 
-        let threshold_pct = match coalesce_kind {
-            CoalesceKind::Average(t) | CoalesceKind::First(t) | CoalesceKind::Max(t) => t,
-        };
-
-        let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         for (price_at_level, runs_at_price_level) in
             self.iter_time_filtered(earliest, latest, highest, lowest)
@@ -296,7 +320,7 @@ impl HistoricalDepth {
                         return false;
                     }
                     let order_size = market_type.qty_in_quote_value(
-                        run_ref.qty(),
+                        run_ref.qty,
                         *price_at_level,
                         size_in_quote_ccy,
                     );
@@ -315,18 +339,15 @@ impl HistoricalDepth {
 
                 if let Some(current_accumulator) = current_accumulator_opt.as_mut() {
                     let comparison_base_qty = current_accumulator.comparison_qty(&coalesce_kind);
-
-                    let qty_diff_pct = if comparison_base_qty > FRACTIONAL_THRESHOLD {
-                        (run_to_process.qty() - comparison_base_qty).abs() / comparison_base_qty
-                    } else if run_to_process.qty() > FRACTIONAL_THRESHOLD {
-                        f32::INFINITY
-                    } else {
-                        0.0
-                    };
+                    let qty_within_threshold = coalesce_kind.is_within_lot_similarity(
+                        comparison_base_qty,
+                        run_to_process.qty,
+                        self.min_order_qty,
+                    );
 
                     if run_to_process.start_time <= current_accumulator.until_time
                         && run_to_process.is_bid == current_accumulator.is_bid
-                        && qty_diff_pct <= threshold_pct
+                        && qty_within_threshold
                     {
                         current_accumulator.merge_run(&run_to_process);
                     } else {
@@ -351,17 +372,16 @@ impl HistoricalDepth {
     pub fn query_grid_qtys(
         &self,
         center_time: u64,
-        center_price: f32,
+        center_price: Price,
         time_interval_offsets: &[i64],
         price_tick_offsets: &[i64],
         market_type: MarketKind,
         order_size_filter: f32,
         coalesce_kind: Option<CoalesceKind>,
-    ) -> FxHashMap<(u64, Price), (f32, bool)> {
+    ) -> FxHashMap<(u64, Price), (Qty, bool)> {
         let aggr_time = self.aggr_time;
 
         let step = self.tick_size;
-        let tick_size = step.to_f32_lossy();
 
         let query_earliest_time = time_interval_offsets
             .iter()
@@ -375,19 +395,16 @@ impl HistoricalDepth {
             .max()
             .map_or(center_time, |t| t.saturating_add(aggr_time));
 
-        let query_lowest_price = price_tick_offsets
+        let query_lowest = price_tick_offsets
             .iter()
-            .map(|offset| center_price + (*offset as f32 * tick_size))
-            .fold(f32::INFINITY, f32::min)
-            - 0.1 * tick_size;
-        let query_highest_price = price_tick_offsets
+            .copied()
+            .min()
+            .map_or(center_price, |offset| center_price.add_steps(offset, step));
+        let query_highest = price_tick_offsets
             .iter()
-            .map(|offset| center_price + (*offset as f32 * tick_size))
-            .fold(f32::NEG_INFINITY, f32::max)
-            + 0.1 * tick_size;
-
-        let query_highest = Price::from_f32(query_highest_price).round_to_step(step);
-        let query_lowest = Price::from_f32(query_lowest_price).round_to_step(step);
+            .copied()
+            .max()
+            .map_or(center_price, |offset| center_price.add_steps(offset, step));
 
         let runs_in_vicinity: Vec<(Price, OrderRun)> = if let Some(ck) = coalesce_kind {
             self.coalesced_runs(
@@ -413,11 +430,10 @@ impl HistoricalDepth {
         };
 
         let capacity = time_interval_offsets.len() * price_tick_offsets.len();
-        let mut grid_quantities: FxHashMap<(u64, Price), (f32, bool)> =
+        let mut grid_quantities: FxHashMap<(u64, Price), (Qty, bool)> =
             FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher);
         for price_offset in price_tick_offsets {
-            let target_price_val = center_price + (*price_offset as f32 * tick_size);
-            let target_price_key = Price::from_f32(target_price_val).round_to_step(step);
+            let target_price_key = center_price.add_steps(*price_offset, step);
 
             for time_offset in time_interval_offsets {
                 let target_time_val =
@@ -429,13 +445,34 @@ impl HistoricalDepth {
                         && run_data.start_time <= target_time_val
                         && run_data.until_time > target_time_val
                     {
-                        grid_quantities.insert(current_grid_key, (run_data.qty(), run_data.is_bid));
+                        grid_quantities.insert(current_grid_key, (run_data.qty, run_data.is_bid));
                         break;
                     }
                 }
             }
         }
         grid_quantities
+    }
+
+    pub fn max_qty_in_range_raw(
+        &self,
+        earliest: u64,
+        latest: u64,
+        highest: Price,
+        lowest: Price,
+    ) -> Qty {
+        let mut max_qty = Qty::ZERO;
+
+        for (_price, runs) in self.price_levels.range(lowest..=highest) {
+            for run in runs.iter() {
+                if run.until_time < earliest || run.start_time > latest {
+                    continue;
+                }
+                max_qty = max_qty.max(run.qty);
+            }
+        }
+
+        max_qty
     }
 
     pub fn max_depth_qty_in_range(
@@ -446,39 +483,27 @@ impl HistoricalDepth {
         lowest: Price,
         market_type: MarketKind,
         order_size_filter: f32,
-    ) -> f32 {
-        let mut max_depth_qty = 0.0f32;
+    ) -> Qty {
+        let mut max_depth_qty = Qty::ZERO;
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
-        let size_in_quote_ccy = volume_size_unit() == exchange::SizeUnit::Quote;
+        for (price, runs) in self.price_levels.range(lowest..=highest) {
+            for run in runs.iter() {
+                if run.until_time < earliest || run.start_time > latest {
+                    continue;
+                }
 
-        self.iter_time_filtered(earliest, latest, highest, lowest)
-            .for_each(|(price, runs)| {
-                runs.iter()
-                    .filter_map(|run| {
-                        let visible_run = run.with_range(earliest, latest)?;
+                let order_size = market_type.qty_in_quote_value(run.qty, *price, size_in_quote_ccy);
 
-                        let order_size = market_type.qty_in_quote_value(
-                            visible_run.qty(),
-                            *price,
-                            size_in_quote_ccy,
-                        );
-
-                        if order_size > order_size_filter {
-                            Some(visible_run)
-                        } else {
-                            None
-                        }
-                    })
-                    .for_each(|run| {
-                        max_depth_qty = max_depth_qty.max(run.qty());
-                    });
-            });
+                if order_size > order_size_filter {
+                    max_depth_qty = max_depth_qty.max(run.qty);
+                }
+            }
+        }
 
         max_depth_qty
     }
 }
-
-const FRACTIONAL_THRESHOLD: f32 = 0.00001;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum CoalesceKind {
@@ -501,6 +526,31 @@ impl CoalesceKind {
             CoalesceKind::Max(_) => CoalesceKind::Max(threshold),
         }
     }
+
+    fn is_within_lot_similarity(
+        self,
+        base_qty: Qty,
+        candidate_qty: Qty,
+        min_qty: MinQtySize,
+    ) -> bool {
+        let ratio = self.threshold().max(0.0);
+
+        if !ratio.is_finite() {
+            return false;
+        }
+
+        let base_lots = base_qty.to_lots(min_qty).max(0);
+        let candidate_lots = candidate_qty.to_lots(min_qty).max(0);
+
+        if base_lots == 0 {
+            return candidate_lots == 0;
+        }
+
+        let lots_diff = base_lots.abs_diff(candidate_lots) as f64;
+        let allowed_diff = (base_lots as f64) * (ratio as f64);
+
+        lots_diff <= allowed_diff
+    }
 }
 
 impl PartialEq for CoalesceKind {
@@ -516,15 +566,15 @@ pub struct CoalescingRun {
     pub start_time: u64,
     pub until_time: u64,
     pub is_bid: bool,
-    pub qty_sum: f32,
+    pub qty_sum: Qty,
     pub run_count: u32,
-    first_qty: f32,
-    max_qty: f32,
+    first_qty: Qty,
+    max_qty: Qty,
 }
 
 impl CoalescingRun {
     pub fn new(run: &OrderRun) -> Self {
-        let run_qty = run.qty();
+        let run_qty = run.qty;
         CoalescingRun {
             start_time: run.start_time,
             until_time: run.until_time,
@@ -538,24 +588,26 @@ impl CoalescingRun {
 
     pub fn merge_run(&mut self, run: &OrderRun) {
         self.until_time = self.until_time.max(run.until_time);
-        let run_qty = run.qty();
+        let run_qty = run.qty;
         self.qty_sum += run_qty;
         self.run_count += 1;
         self.max_qty = self.max_qty.max(run_qty);
     }
 
-    pub fn comparison_qty(&self, kind: &CoalesceKind) -> f32 {
+    pub fn comparison_qty(&self, kind: &CoalesceKind) -> Qty {
         match kind {
             CoalesceKind::Average(_) => self.current_average_qty(),
             CoalesceKind::Max(_) | CoalesceKind::First(_) => self.first_qty,
         }
     }
 
-    pub fn current_average_qty(&self) -> f32 {
+    pub fn current_average_qty(&self) -> Qty {
         if self.run_count == 0 {
-            0.0
+            Qty::ZERO
         } else {
-            self.qty_sum / self.run_count as f32
+            let count = i64::from(self.run_count);
+            let rounded_units = (self.qty_sum.units + (count / 2)) / count;
+            Qty::from_units(rounded_units)
         }
     }
 
@@ -576,16 +628,16 @@ impl CoalescingRun {
 
 #[derive(Default)]
 pub struct QtyScale {
-    pub max_trade_qty: f32,
-    pub max_aggr_volume: f32,
-    pub max_depth_qty: f32,
+    pub max_trade_qty: Qty,
+    pub max_aggr_volume: Qty,
+    pub max_depth_qty: Qty,
 }
 
 #[derive(Debug, Clone)]
 pub struct GroupedTrade {
     pub is_sell: bool,
     pub price: Price,
-    pub qty: f32,
+    pub qty: Qty,
 }
 
 impl GroupedTrade {
@@ -617,9 +669,10 @@ impl std::fmt::Display for HeatmapStudy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum ProfileKind {
     FixedWindow(usize),
+    #[default]
     VisibleRange,
 }
 

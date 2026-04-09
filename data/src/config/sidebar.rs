@@ -69,4 +69,5 @@ pub enum Menu {
     Settings,
     Audio,
     ThemeEditor,
+    Network,
 }

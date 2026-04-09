@@ -2,19 +2,27 @@
 
 mod audio;
 mod chart;
+mod connector;
 mod layout;
 mod logger;
 mod modal;
+mod notify;
 mod screen;
 mod style;
+mod version;
 mod widget;
 mod window;
 
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
-use modal::{LayoutManager, ThemeEditor, audio::AudioStream};
+use modal::{
+    LayoutManager, ThemeEditor,
+    audio::AudioStream,
+    network_manager::{self, NetworkManager},
+};
 use modal::{dashboard_modal, main_dialog_modal};
+use notify::Notifications;
 use screen::dashboard::{self, Dashboard};
 use widget::{
     confirm_dialog_container,
@@ -58,13 +66,14 @@ struct Flowsurface {
     sidebar: dashboard::Sidebar,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
+    network: NetworkManager,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
     ui_scale_factor: data::ScaleFactor,
     timezone: data::UserTimezone,
     theme: data::Theme,
-    notifications: Vec<Toast>,
+    notifications: Notifications,
 }
 
 #[derive(Debug, Clone)]
@@ -80,9 +89,11 @@ enum Message {
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(HashMap<window::Id, WindowSpec>),
+    SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
-    ThemeSelected(data::Theme),
+    OpenUrlRequested(Cow<'static, str>),
+    ThemeSelected(iced_core::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
     ToggleTradeFetch(bool),
@@ -90,6 +101,7 @@ enum Message {
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
     ThemeEditor(modal::theme_editor::Message),
+    NetworkManager(modal::network_manager::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
 }
@@ -111,19 +123,28 @@ impl Flowsurface {
 
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state);
 
+        let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
+
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
-            audio_stream: AudioStream::new(saved_state.audio_cfg),
+            audio_stream,
             sidebar,
             confirm_dialog: None,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
-            notifications: vec![],
+            notifications: Notifications::new(),
+            network: NetworkManager::new(saved_state.proxy_cfg),
         };
+
+        if let Some(err) = audio_init_err {
+            state
+                .notifications
+                .push(Toast::error(format!("Audio disabled: {err}")));
+        }
 
         let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
             &state
@@ -165,28 +186,26 @@ impl Flowsurface {
                                 event: msg,
                             });
                     }
-                    exchange::Event::DepthReceived(
-                        stream,
-                        depth_update_t,
-                        depth,
-                        trades_buffer,
-                    ) => {
+                    exchange::Event::DepthReceived(stream, depth_update_t, depth) => {
                         let task = dashboard
-                            .update_depth_and_trades(
-                                &stream,
-                                depth_update_t,
-                                &depth,
-                                &trades_buffer,
-                                main_window_id,
-                            )
+                            .ingest_depth(&stream, depth_update_t, &depth, main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,
                             });
 
-                        if let Err(err) = self.audio_stream.try_play_sound(&stream, &trades_buffer)
-                        {
-                            log::error!("Failed to play sound: {err}");
+                        return task;
+                    }
+                    exchange::Event::TradesReceived(stream, update_t, buffer) => {
+                        let task = dashboard
+                            .ingest_trades(&stream, &buffer, update_t, main_window_id)
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
+
+                        if let Some(msg) = self.audio_stream.try_play_sound(&stream, &buffer) {
+                            self.notifications.push(Toast::error(msg));
                         }
 
                         return task;
@@ -236,6 +255,9 @@ impl Flowsurface {
                 self.save_state_to_disk(&windows);
                 return iced::exit();
             }
+            Message::SaveStateRequested(windows) => {
+                self.save_state_to_disk(&windows);
+            }
             Message::RestartRequested(windows) => {
                 self.save_state_to_disk(&windows);
                 return self.restart();
@@ -260,7 +282,11 @@ impl Flowsurface {
                 }
             }
             Message::ThemeSelected(theme) => {
-                self.theme = theme.clone();
+                self.theme = data::Theme(theme.clone());
+
+                let main_window = self.main_window.id;
+                self.active_dashboard_mut()
+                    .theme_updated(main_window, &theme);
             }
             Message::Dashboard {
                 layout_id: id,
@@ -296,20 +322,28 @@ impl Flowsurface {
                         Some(dashboard::Event::ResolveStreams { pane_id, streams }) => {
                             let tickers_info = self.sidebar.tickers_info();
 
+                            let has_any_ticker_info =
+                                tickers_info.values().any(|opt| opt.is_some());
+                            if !has_any_ticker_info {
+                                log::debug!(
+                                    "Deferring persisted stream resolution for pane {pane_id}: ticker metadata not loaded yet"
+                                );
+                                return Task::none();
+                            }
+
                             let resolved_streams =
                                 streams.into_iter().try_fold(vec![], |mut acc, persist| {
                                     let resolver = |t: &exchange::Ticker| {
                                         tickers_info.get(t).and_then(|opt| *opt)
                                     };
 
-                                    match persist.into_stream_kind(resolver) {
-                                        Ok(stream) => {
-                                            acc.push(stream);
+                                    match persist.into_stream_kinds(resolver) {
+                                        Ok(mut resolved) => {
+                                            acc.append(&mut resolved);
                                             Ok(acc)
                                         }
                                         Err(err) => Err(format!(
-                                            "Failed to resolve persisted stream: {}",
-                                            err
+                                            "Persisted stream still not resolvable: {err}"
                                         )),
                                     }
                                 });
@@ -328,10 +362,20 @@ impl Flowsurface {
                                     }
                                 }
                                 Err(err) => {
-                                    log::warn!("{err}",);
+                                    // This is typically a transient state (e.g. partial metadata, stale symbol)
+                                    log::debug!("{err}");
                                     Task::none()
                                 }
                             }
+                        }
+                        Some(dashboard::Event::RequestPalette) => {
+                            let theme = self.theme.0.clone();
+
+                            let main_window = self.main_window.id;
+                            self.active_dashboard_mut()
+                                .theme_updated(main_window, &theme);
+
+                            Task::none()
                         }
                         None => Task::none(),
                     };
@@ -345,9 +389,7 @@ impl Flowsurface {
                 }
             }
             Message::RemoveNotification(index) => {
-                if index < self.notifications.len() {
-                    self.notifications.remove(index);
-                }
+                self.notifications.remove(index);
             }
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
@@ -443,11 +485,31 @@ impl Flowsurface {
                     None => {}
                 }
             }
-            Message::AudioStream(message) => self.audio_stream.update(message),
+            Message::AudioStream(message) => {
+                if let Some(event) = self.audio_stream.update(message) {
+                    match event {
+                        modal::audio::UpdateEvent::RetryFailed(err) => {
+                            self.notifications
+                                .push(Toast::error(format!("Audio still unavailable: {err}")));
+                        }
+                        modal::audio::UpdateEvent::RetrySucceeded => {
+                            self.notifications.push(Toast::info(
+                                "Audio output re-initialized successfully".to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
             Message::DataFolderRequested => {
                 if let Err(err) = data::open_data_folder() {
                     self.notifications
                         .push(Toast::error(format!("Failed to open data folder: {err}")));
+                }
+            }
+            Message::OpenUrlRequested(url) => {
+                if let Err(err) = data::open_url(url.as_ref()) {
+                    self.notifications
+                        .push(Toast::error(format!("Failed to open link: {err}")));
                 }
             }
             Message::ThemeEditor(msg) => {
@@ -458,12 +520,41 @@ impl Flowsurface {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     Some(modal::theme_editor::Action::UpdateTheme(theme)) => {
-                        self.theme = data::Theme(theme);
+                        self.theme = data::Theme(theme.clone());
 
                         let main_window = self.main_window.id;
-
                         self.active_dashboard_mut()
-                            .invalidate_all_panes(main_window);
+                            .theme_updated(main_window, &theme);
+                    }
+                    None => {}
+                }
+            }
+            Message::NetworkManager(msg) => {
+                let action = self.network.update(msg);
+
+                match action {
+                    Some(network_manager::Action::ApplyProxy) => {
+                        if let Some(proxy) = self.network.proxy_cfg() {
+                            data::config::proxy::save_proxy_auth(&proxy);
+                        }
+
+                        let main_window = self.main_window.id;
+                        let dashboard = self.active_dashboard_mut();
+
+                        let mut active_windows = dashboard
+                            .popout
+                            .keys()
+                            .copied()
+                            .collect::<Vec<window::Id>>();
+                        active_windows.push(main_window);
+
+                        return window::collect_window_specs(
+                            active_windows,
+                            Message::SaveStateRequested,
+                        );
+                    }
+                    Some(network_manager::Action::Exit) => {
+                        self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     None => {}
                 }
@@ -586,7 +677,7 @@ impl Flowsurface {
 
         toast::Manager::new(
             content,
-            &self.notifications,
+            self.notifications.toasts(),
             match sidebar_pos {
                 sidebar::Position::Left => Alignment::Start,
                 sidebar::Position::Right => Alignment::End,
@@ -665,8 +756,17 @@ impl Flowsurface {
     }
 
     fn load_layout(&mut self, layout_uid: uuid::Uuid, main_window: window::Id) -> Task<Message> {
-        match self.layout_manager.set_active_layout(layout_uid) {
-            Ok(layout) => {
+        if let Err(err) = self.layout_manager.set_active_layout(layout_uid) {
+            log::error!("Failed to set active layout: {}", err);
+            return Task::none();
+        }
+
+        self.layout_manager
+            .park_inactive_layouts(layout_uid, main_window);
+
+        self.layout_manager
+            .get_mut(layout_uid)
+            .map(|layout| {
                 layout
                     .dashboard
                     .load_layout(main_window)
@@ -674,12 +774,11 @@ impl Flowsurface {
                         layout_id: Some(layout_uid),
                         event: msg,
                     })
-            }
-            Err(err) => {
-                log::error!("Failed to set active layout: {}", err);
+            })
+            .unwrap_or_else(|| {
+                log::error!("Active layout missing after selection: {}", layout_uid);
                 Task::none()
-            }
-        }
+            })
     }
 
     fn view_with_modal<'a>(
@@ -704,7 +803,7 @@ impl Flowsurface {
                         }
 
                         pick_list(themes, Some(self.theme.0.clone()), |theme| {
-                            Message::ThemeSelected(data::Theme(theme))
+                            Message::ThemeSelected(theme)
                         })
                     };
 
@@ -713,6 +812,12 @@ impl Flowsurface {
                             sidebar::Menu::ThemeEditor,
                         ))),
                     );
+
+                    let toggle_network_editor = button(text("Network")).on_press(Message::Sidebar(
+                        dashboard::sidebar::Message::ToggleSidebarMenu(Some(
+                            sidebar::Menu::Network,
+                        )),
+                    ));
 
                     let timezone_picklist = pick_list(
                         [data::UserTimezone::Utc, data::UserTimezone::Local],
@@ -754,7 +859,7 @@ impl Flowsurface {
                         )
                     };
 
-                    let sidebar_pos = pick_list(
+                    let sidebar_pos_picklist = pick_list(
                         [sidebar::Position::Left, sidebar::Position::Right],
                         Some(sidebar_pos),
                         |pos| {
@@ -793,7 +898,7 @@ impl Flowsurface {
                     };
 
                     let trade_fetch_checkbox = {
-                        let is_active = exchange::fetcher::is_trade_fetch_enabled();
+                        let is_active = connector::fetcher::is_trade_fetch_enabled();
 
                         let checkbox = iced::widget::checkbox(is_active)
                             .label("Fetch trades (Binance)")
@@ -828,18 +933,69 @@ impl Flowsurface {
                         )
                     };
 
+                    let version_info = {
+                        let (version_label, commit_label) = version::app_build_version_parts();
+
+                        let github_link_button = button(text(version_label).size(13))
+                            .padding(0)
+                            .style(style::button::text_link)
+                            .on_press(Message::OpenUrlRequested(Cow::Borrowed(
+                                version::GITHUB_REPOSITORY_URL,
+                            )));
+
+                        let github_button: Element<'_, Message> = iced::widget::tooltip(
+                            github_link_button,
+                            container(
+                                row![
+                                    text("GitHub"),
+                                    style::icon_text(style::Icon::ExternalLink, 12),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                            )
+                            .style(style::tooltip)
+                            .padding(8),
+                            TooltipPosition::Top,
+                        )
+                        .into();
+
+                        if let (Some(commit_label), Some(commit_url)) =
+                            (commit_label, version::build_commit_url())
+                        {
+                            let commit_button = button(text(commit_label).size(11))
+                                .padding(0)
+                                .style(style::button::text_link_secondary)
+                                .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
+
+                            column![github_button, commit_button]
+                                .spacing(2)
+                                .align_x(Alignment::End)
+                                .into()
+                        } else {
+                            github_button
+                        }
+                    };
+
+                    let footer = column![
+                        container(version_info)
+                            .width(iced::Length::Fill)
+                            .align_x(Alignment::End),
+                    ]
+                    .spacing(8);
+
                     let column_content = split_column![
                         column![open_data_folder,].spacing(8),
-                        column![text("Sidebar position").size(14), sidebar_pos,].spacing(12),
+                        column![text("Sidebar position").size(14), sidebar_pos_picklist,].spacing(12),
                         column![text("Time zone").size(14), timezone_picklist,].spacing(12),
                         column![text("Market data").size(14), size_in_quote_currency_checkbox,].spacing(12),
                         column![text("Theme").size(14), theme_picklist,].spacing(12),
                         column![text("Interface scale").size(14), scale_factor,].spacing(12),
                         column![
                             text("Experimental").size(14),
-                            column![trade_fetch_checkbox, toggle_theme_editor,].spacing(8),
+                            column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
+                        footer,
                         ; spacing = 16, align_x = Alignment::Start
                     ];
 
@@ -1001,12 +1157,12 @@ impl Flowsurface {
                     sidebar::Position::Right => (Alignment::End, padding::right(44).top(76)),
                 };
 
-                let depth_streams_list = dashboard.streams.depth_streams(None);
+                let trade_streams_list = dashboard.streams.trade_streams(None);
 
                 dashboard_modal(
                     base,
                     self.audio_stream
-                        .view(depth_streams_list)
+                        .view(trade_streams_list)
                         .map(Message::AudioStream),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
@@ -1025,6 +1181,21 @@ impl Flowsurface {
                     self.theme_editor
                         .view(&self.theme.0)
                         .map(Message::ThemeEditor),
+                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
+                    padding,
+                    Alignment::End,
+                    align_x,
+                )
+            }
+            sidebar::Menu::Network => {
+                let (align_x, padding) = match sidebar_pos {
+                    sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
+                    sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
+                };
+
+                dashboard_modal(
+                    base,
+                    self.network.view().map(Message::NetworkManager),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,
@@ -1073,6 +1244,11 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
+        let proxy_cfg_persisted = self.network.proxy_cfg().map(|mut p| {
+            p.auth = None;
+            p
+        });
+
         let state = data::State::from_parts(
             layouts,
             self.theme.clone(),
@@ -1082,7 +1258,9 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
+            connector::fetcher::is_trade_fetch_enabled(),
             self.volume_size_unit,
+            proxy_cfg_persisted,
         );
 
         match serde_json::to_string(&state) {

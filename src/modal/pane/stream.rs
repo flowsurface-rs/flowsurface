@@ -5,8 +5,9 @@ use crate::{
 
 use data::chart::Basis;
 use exchange::{
-    TickMultiplier, TickerInfo, Timeframe,
-    adapter::{Exchange, hyperliquid::allowed_multipliers_for_base_tick},
+    StreamPairKind, TickMultiplier, Timeframe,
+    adapter::{Exchange, Venue, hyperliquid::allowed_multipliers_for_min_tick},
+    unit::{MinTicksize, PriceStep},
 };
 use iced::{
     Element, Length,
@@ -144,7 +145,8 @@ pub struct Modifier {
     pub tab: SelectedTab,
     pub view_mode: ViewMode,
     kind: ModifierKind,
-    base_ticksize: Option<f32>,
+    price_step: Option<PriceStep>,
+    min_ticksize: Option<MinTicksize>,
     exchange: Option<Exchange>,
 }
 
@@ -156,7 +158,8 @@ impl Modifier {
             tab,
             kind,
             view_mode: ViewMode::BasisSelection,
-            base_ticksize: None,
+            price_step: None,
+            min_ticksize: None,
             exchange: None,
         }
     }
@@ -168,7 +171,8 @@ impl Modifier {
 
     pub fn with_ticksize_view(
         mut self,
-        base_ticksize: f32,
+        price_step: PriceStep,
+        min_ticksize: Option<MinTicksize>,
         multiplier: TickMultiplier,
         exchange: Option<Exchange>,
     ) -> Self {
@@ -185,7 +189,8 @@ impl Modifier {
             },
             is_input_valid: true,
         };
-        self.base_ticksize = Some(base_ticksize);
+        self.price_step = Some(price_step);
+        self.min_ticksize = min_ticksize;
         self.exchange = exchange;
         self
     }
@@ -324,7 +329,7 @@ impl Modifier {
         }
     }
 
-    pub fn view<'a>(&self, ticker_info: Option<TickerInfo>) -> Element<'a, Message> {
+    pub fn view<'a>(&self, stream_pair: Option<StreamPairKind>) -> Element<'a, Message> {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
@@ -460,90 +465,75 @@ impl Modifier {
                             _ => None,
                         };
 
-                        if allows_tick_basis {
-                            let kline_timeframe_grid = modifiers_grid(
-                                &Timeframe::KLINE,
+                        if matches!(kind, ModifierKind::Comparison(_)) {
+                            let kline_timeframes_header = row![
+                                tooltip(
+                                    button("i").style(style::button::info),
+                                    Some("Uses kline close prices\nSupports historical data"),
+                                    iced::widget::tooltip::Position::Top,
+                                ),
+                                text("Kline Timeframes"),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::Alignment::Center);
+                            let bbo_timeframes_header = row![
+                                tooltip(
+                                    button("i").style(style::button::info),
+                                    Some("Uses mid-prices from best bids/offers\nLive data only"),
+                                    iced::widget::tooltip::Position::Top,
+                                ),
+                                text("BBO Timeframes"),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::Alignment::Center);
+
+                            let kline_timeframes = supported_kline_timeframes(stream_pair.as_ref());
+                            let bbo_timeframes = supported_bbo_timeframes(stream_pair.as_ref());
+
+                            if !kline_timeframes.is_empty() {
+                                let kline_timeframe_grid = modifiers_grid(
+                                    &kline_timeframes,
+                                    selected_tf,
+                                    |tf| Message::BasisSelected(tf.into()),
+                                    &create_button,
+                                    3,
+                                );
+
+                                basis_selection_column = basis_selection_column.push(
+                                    column![kline_timeframes_header, kline_timeframe_grid]
+                                        .spacing(8),
+                                );
+                            }
+
+                            if !kline_timeframes.is_empty() && !bbo_timeframes.is_empty() {
+                                basis_selection_column = basis_selection_column
+                                    .push(rule::horizontal(1).style(style::split_ruler));
+                            }
+
+                            if !bbo_timeframes.is_empty() {
+                                let bbo_timeframe_grid = modifiers_grid(
+                                    &bbo_timeframes,
+                                    selected_tf,
+                                    |tf| Message::BasisSelected(tf.into()),
+                                    &create_button,
+                                    4,
+                                );
+
+                                basis_selection_column = basis_selection_column.push(
+                                    column![bbo_timeframes_header, bbo_timeframe_grid].spacing(8),
+                                );
+                            }
+                        } else if let Some((timeframes, items_per_row)) =
+                            timeframe_grid_config(kind, stream_pair.as_ref())
+                        {
+                            let timeframe_grid = modifiers_grid(
+                                &timeframes,
                                 selected_tf,
                                 |tf| Message::BasisSelected(tf.into()),
                                 &create_button,
-                                3,
+                                items_per_row,
                             );
-                            basis_selection_column =
-                                basis_selection_column.push(kline_timeframe_grid);
-                        } else if let Some(info) = ticker_info {
-                            match kind {
-                                ModifierKind::Comparison(_) => {
-                                    let kline_timeframe_grid = modifiers_grid(
-                                        &Timeframe::KLINE,
-                                        selected_tf,
-                                        |tf| Message::BasisSelected(tf.into()),
-                                        &create_button,
-                                        3,
-                                    );
-                                    let bbo_timeframe_grid = modifiers_grid(
-                                        &Timeframe::BBO,
-                                        selected_tf,
-                                        |tf| Message::BasisSelected(tf.into()),
-                                        &create_button,
-                                        4,
-                                    );
-
-                                    let kline_timeframes_header = row![
-                                        tooltip(
-                                            button("i").style(style::button::info),
-                                            Some(
-                                                "Uses kline close prices\nSupports historical data"
-                                            ),
-                                            iced::widget::tooltip::Position::Top,
-                                        ),
-                                        text("Kline Timeframes"),
-                                    ]
-                                    .spacing(4)
-                                    .align_y(iced::Alignment::Center);
-                                    let bbo_timeframes_header = row![
-                                        tooltip(
-                                            button("i").style(style::button::info),
-                                            Some(
-                                                "Uses mid-prices from best bids/offers\nLive data only"
-                                            ),
-                                            iced::widget::tooltip::Position::Top,
-                                        ),
-                                        text("BBO Timeframes"),
-                                    ]
-                                    .spacing(4)
-                                    .align_y(iced::Alignment::Center);
-
-                                    basis_selection_column = basis_selection_column
-                                        .push(
-                                            column![kline_timeframes_header, kline_timeframe_grid,]
-                                                .spacing(8),
-                                        )
-                                        .push(rule::horizontal(1).style(style::split_ruler))
-                                        .push(
-                                            column![bbo_timeframes_header, bbo_timeframe_grid]
-                                                .spacing(8),
-                                        );
-                                }
-                                ModifierKind::Heatmap(_, _) => {
-                                    let heatmap_timeframes: Vec<Timeframe> = Timeframe::HEATMAP
-                                        .iter()
-                                        .copied()
-                                        .filter(|tf| {
-                                            info.exchange().supports_heatmap_timeframe(*tf)
-                                        })
-                                        .collect();
-                                    let heatmap_timeframe_grid = modifiers_grid(
-                                        &heatmap_timeframes,
-                                        selected_tf,
-                                        |tf| Message::BasisSelected(tf.into()),
-                                        &create_button,
-                                        2,
-                                    );
-                                    basis_selection_column =
-                                        basis_selection_column.push(heatmap_timeframe_grid);
-                                }
-                                _ => { /* No other chart types support non-time basis */ }
-                            }
+                            basis_selection_column = basis_selection_column.push(timeframe_grid);
                         }
                     }
                     SelectedTab::TickCount {
@@ -619,14 +609,16 @@ impl Modifier {
 
                     let allowed_tm = if allows_custom_tsizes {
                         exchange::TickMultiplier::ALL.to_vec()
-                    } else {
-                        let base = self.base_ticksize.unwrap_or(0.0);
-                        let allow = allowed_multipliers_for_base_tick(base);
+                    } else if let Some(min_tick) = self.min_ticksize {
+                        let allow = allowed_multipliers_for_min_tick(min_tick);
+
                         exchange::TickMultiplier::ALL
                             .iter()
                             .copied()
                             .filter(|tm| allow.contains(&tm.0))
                             .collect()
+                    } else {
+                        vec![]
                     };
 
                     let tick_multiplier_grid = modifiers_grid(
@@ -657,11 +649,11 @@ impl Modifier {
                     }
                     ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
 
-                    if let Some(base_ticksize) = self.base_ticksize {
+                    if let Some(price_step) = self.price_step {
                         ticksizes_column = ticksizes_column.push(
                             row![
                                 iced::widget::space::horizontal(),
-                                text(format!("Base: {}", base_ticksize)).style(
+                                text(format!("Step: {}", price_step.to_ui_string())).style(
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
                                             color: Some(
@@ -693,6 +685,20 @@ impl Modifier {
                 }
             }
         }
+    }
+}
+
+fn timeframe_grid_config(
+    kind: ModifierKind,
+    stream_pair: Option<&StreamPairKind>,
+) -> Option<(Vec<Timeframe>, usize)> {
+    match kind {
+        ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => {
+            Some((supported_kline_timeframes(stream_pair), 3))
+        }
+        ModifierKind::Comparison(_) => None,
+        ModifierKind::Heatmap(_, _) => Some((supported_heatmap_timeframes(stream_pair)?, 2)),
+        ModifierKind::Orderbook(_, _) => None,
     }
 }
 
@@ -755,6 +761,60 @@ where
     }
 
     grid_column
+}
+
+fn supported_kline_timeframes(stream_pair: Option<&StreamPairKind>) -> Vec<Timeframe> {
+    let is_supported = |tf| match stream_pair {
+        Some(StreamPairKind::SingleSource(ticker_info)) => {
+            ticker_info.exchange().supports_kline_timeframe(tf)
+        }
+        Some(StreamPairKind::MultiSource(ticker_infos)) if !ticker_infos.is_empty() => ticker_infos
+            .iter()
+            .all(|ticker_info| ticker_info.exchange().supports_kline_timeframe(tf)),
+        _ => true,
+    };
+
+    Timeframe::KLINE
+        .iter()
+        .copied()
+        .filter(|tf| is_supported(*tf))
+        .collect()
+}
+
+fn supported_bbo_timeframes(stream_pair: Option<&StreamPairKind>) -> Vec<Timeframe> {
+    let venue_supports_bbo = |venue: Venue| !matches!(venue, Venue::Mexc);
+
+    let is_supported = |_tf| match stream_pair {
+        Some(StreamPairKind::SingleSource(ticker_info)) => {
+            venue_supports_bbo(ticker_info.exchange().venue())
+        }
+        Some(StreamPairKind::MultiSource(ticker_infos)) if !ticker_infos.is_empty() => ticker_infos
+            .iter()
+            .all(|ticker_info| venue_supports_bbo(ticker_info.exchange().venue())),
+        _ => true,
+    };
+
+    Timeframe::BBO
+        .iter()
+        .copied()
+        .filter(|tf| is_supported(*tf))
+        .collect()
+}
+
+fn supported_heatmap_timeframes(stream_pair: Option<&StreamPairKind>) -> Option<Vec<Timeframe>> {
+    let ticker = match stream_pair {
+        Some(StreamPairKind::SingleSource(ticker_info)) => Some(*ticker_info),
+        Some(StreamPairKind::MultiSource(ticker_infos)) => ticker_infos.first().copied(),
+        None => None,
+    }?;
+
+    Some(
+        Timeframe::HEATMAP
+            .iter()
+            .copied()
+            .filter(|tf| ticker.exchange().supports_heatmap_timeframe(*tf))
+            .collect(),
+    )
 }
 
 impl From<&ModifierKind> for SelectedTab {
