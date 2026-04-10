@@ -1,4 +1,4 @@
-use crate::adapter::AdapterError;
+use super::error::AdapterError;
 
 use serde::{Deserialize, Serialize};
 use tokio::{

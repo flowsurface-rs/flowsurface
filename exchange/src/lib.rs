@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod connect;
 pub mod depth;
+mod error;
 mod limiter;
 pub mod proxy;
 mod serde_util;
