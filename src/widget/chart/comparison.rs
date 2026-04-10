@@ -1,4 +1,4 @@
-use data::UserTimezone;
+use data::{UserTimezone, config::timezone::TimeLabelKind};
 use exchange::{TickerInfo, Timeframe};
 
 use crate::style;
@@ -34,6 +34,34 @@ const CHAR_W: f32 = TEXT_SIZE * 0.64;
 const ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const ICON_SPACING: f32 = 4.0;
 const ICON_GAP_AFTER_TEXT: f32 = 8.0;
+
+fn comparison_axis_label_format(step_ms: u64) -> &'static str {
+    const S: u64 = 1_000;
+    const M: u64 = 60 * S;
+    const D: u64 = 24 * 60 * M;
+
+    if step_ms < M {
+        "%H:%M:%S"
+    } else if step_ms < D {
+        "%H:%M"
+    } else if step_ms < 7 * D {
+        "%b %d"
+    } else if step_ms < 365 * D {
+        "%Y-%m"
+    } else {
+        "%Y"
+    }
+}
+
+fn comparison_crosshair_label_kind(interval_ms: u64) -> TimeLabelKind<'static> {
+    if interval_ms < 1_000 {
+        TimeLabelKind::Crosshair { show_millis: true }
+    } else if interval_ms < 60_000 {
+        TimeLabelKind::Custom("%H:%M:%S")
+    } else {
+        TimeLabelKind::Crosshair { show_millis: false }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum LineComparisonEvent {
@@ -1240,8 +1268,13 @@ where
         for t in ticks {
             let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
 
-            let label_ts = self.timezone.adjust_ms_for_display(t);
-            let label = super::format_time_label(label_ts, step_ms);
+            let label = self
+                .timezone
+                .format_with_kind(
+                    t as i64,
+                    TimeLabelKind::Custom(comparison_axis_label_format(step_ms)),
+                )
+                .unwrap_or_default();
 
             let est_w = (label.len() as f32) * CHAR_W + 8.0;
             let left = x_local - est_w * 0.5;
@@ -1508,9 +1541,14 @@ where
         b.line_to(Point::new(plot_rect.x + plot_rect.width, cy));
         frame.stroke(&b.build(), stroke);
 
+        let interval_ms = self.timeframe.to_milliseconds();
         let time_str = self
             .timezone
-            .format_crosshair_timestamp(ci.x_domain, self.timeframe.to_milliseconds());
+            .format_with_kind(
+                ci.x_domain as i64,
+                comparison_crosshair_label_kind(interval_ms),
+            )
+            .unwrap_or_else(|| ci.x_domain.to_string());
 
         let text_col = palette.secondary.base.text;
         let bg_col = palette.secondary.base.color;

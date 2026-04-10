@@ -53,10 +53,12 @@ pub fn bbo_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static, 
     let market_kind = config.exchange.market_type();
 
     match config.exchange.venue() {
-        Venue::Binance => adapter::binance::bbo_stream(tickers, market_kind).boxed(),
-        Venue::Bybit => adapter::bybit::bbo_stream(tickers, market_kind).boxed(),
-        Venue::Hyperliquid => adapter::hyperliquid::bbo_stream(tickers, market_kind).boxed(),
-        Venue::Okex => adapter::okex::bbo_stream(tickers, market_kind).boxed(),
+        Venue::Binance => adapter::binance::connect_bbo_stream(tickers, market_kind).boxed(),
+        Venue::Bybit => adapter::bybit::connect_bbo_stream(tickers, market_kind).boxed(),
+        Venue::Hyperliquid => {
+            adapter::hyperliquid::connect_bbo_stream(tickers, market_kind).boxed()
+        }
+        Venue::Okex => adapter::okex::connect_bbo_stream(tickers, market_kind).boxed(),
         Venue::Mexc => unimplemented!("MEXC does not have a proper API for this"),
     }
 }
