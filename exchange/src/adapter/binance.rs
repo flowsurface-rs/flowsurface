@@ -397,6 +397,24 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
 
         let exchange = exchange_from_market_type(market);
 
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let ticker_info_map = tickers
+            .iter()
+            .map(|ticker_info| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(market),
+                        ),
+                    ),
+                )
+            })
+            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+
         loop {
             match &mut state {
                 State::Disconnected => {
@@ -434,8 +452,8 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                             OpCode::Text => match feed_de(&msg.payload[..], market) {
                                 Ok(data) => {
                                     if let StreamData::Bbo(ticker, book) = data
-                                        && let Some(ticker_info) =
-                                            tickers.iter().find(|ti| ti.ticker == ticker)
+                                        && let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(&ticker)
                                     {
                                         let now = std::time::Instant::now();
                                         let should_send =
@@ -447,11 +465,6 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                                             continue;
                                         }
 
-                                        let qty_norm = QtyNormalization::with_raw_qty_unit(
-                                            volume_size_unit() == SizeUnit::Quote,
-                                            *ticker_info,
-                                            raw_qty_unit_from_market_type(market),
-                                        );
                                         let time = chrono::Utc::now().timestamp_millis() as u64;
 
                                         let bbo = BestBidAsk {
@@ -459,13 +472,13 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                                                 price: Price::from_f32(book.bid_price)
                                                     .round_to_min_tick(ticker_info.min_ticksize),
                                                 qty: qty_norm
-                                                    .normalize(book.bid_qty, book.bid_price),
+                                                    .normalize_qty(book.bid_qty, book.bid_price),
                                             },
                                             ask: Order {
                                                 price: Price::from_f32(book.ask_price)
                                                     .round_to_min_tick(ticker_info.min_ticksize),
                                                 qty: qty_norm
-                                                    .normalize(book.ask_qty, book.ask_price),
+                                                    .normalize_qty(book.ask_qty, book.ask_price),
                                             },
                                         };
 

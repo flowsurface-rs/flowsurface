@@ -813,8 +813,24 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
 
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
         let exchange = exchange_from_market_type(market);
+        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let ticker_info_map = tickers
+            .iter()
+            .map(|ticker_info| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::with_raw_qty_unit(
+                            size_in_quote_ccy,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(market),
+                        ),
+                    ),
+                )
+            })
+            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
         loop {
             match &mut state {
@@ -861,6 +877,8 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                                 parse_websocket_message(&msg.payload)
                                 && let Some(ticker_info) =
                                     tickers.iter().find(|ti| ti.ticker.as_str() == hl_bbo.coin)
+                                && let Some((ticker_info, qty_norm)) =
+                                    ticker_info_map.get(&ticker_info.ticker)
                             {
                                 let best_bid = &hl_bbo.bbo[0];
                                 let best_ask = &hl_bbo.bbo[1];
@@ -869,20 +887,12 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                                     bid: Order {
                                         price: Price::from_f32(best_bid.px)
                                             .round_to_min_tick(ticker_info.min_ticksize),
-                                        qty: if size_in_quote_ccy {
-                                            (best_bid.sz * best_bid.px).round()
-                                        } else {
-                                            best_bid.sz
-                                        },
+                                        qty: qty_norm.normalize_qty(best_bid.sz, best_bid.px),
                                     },
                                     ask: Order {
                                         price: Price::from_f32(best_ask.px)
                                             .round_to_min_tick(ticker_info.min_ticksize),
-                                        qty: if size_in_quote_ccy {
-                                            (best_ask.sz * best_ask.px).round()
-                                        } else {
-                                            best_ask.sz
-                                        },
+                                        qty: qty_norm.normalize_qty(best_ask.sz, best_ask.px),
                                     },
                                 };
 

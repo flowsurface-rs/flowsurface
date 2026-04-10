@@ -41,27 +41,6 @@ impl<'de> serde::Deserialize<'de> for DeOrder {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct BestBidAsk {
-    pub bid: Order,
-    pub ask: Order,
-}
-
-impl BestBidAsk {
-    pub fn mid_price(&self) -> Option<Price> {
-        if self.bid.qty > 0.0 && self.ask.qty > 0.0 {
-            Some((self.bid.price + self.ask.price) / 2)
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Order {
-    pub price: Price,
-    pub qty: f32,
-}
 pub struct DepthPayload {
     pub last_update_id: u64,
     pub time: u64,
@@ -201,4 +180,26 @@ impl LocalDepthCache {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BestBidAsk {
+    pub bid: Order,
+    pub ask: Order,
+}
+
+impl BestBidAsk {
+    pub fn mid_price(&self) -> Option<Price> {
+        if !self.bid.qty.is_zero() && !self.ask.qty.is_zero() {
+            Some((self.bid.price + self.ask.price) / 2)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Order {
+    pub price: Price,
+    pub qty: Qty,
 }
