@@ -20,6 +20,11 @@ pub mod okex;
 /// Buffer trades and flush in this interval
 const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
 
+// Keep topics per websocket conservative across venues
+// allow up to 100 tickers per websocket stream
+pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
+pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
+
 async fn flush_trade_buffers<V>(
     output: &mut futures::channel::mpsc::Sender<Event>,
     ticker_info_map: &FxHashMap<Ticker, (TickerInfo, V)>,
@@ -426,6 +431,73 @@ impl UniqueStreams {
 
     pub fn trade_streams(&self, exchange_filter: Option<Exchange>) -> Vec<TickerInfo> {
         self.streams(exchange_filter, |_, stream| stream.as_trade_stream())
+    }
+
+    pub fn subscription_configs<R, FDepth, FTrade, FBBO, FKline>(
+        &self,
+        mut depth: FDepth,
+        mut trade: FTrade,
+        mut bbo: FBBO,
+        mut kline: FKline,
+    ) -> Vec<R>
+    where
+        FDepth: FnMut(StreamConfig<TickerInfo>) -> R,
+        FTrade: FnMut(StreamConfig<Vec<TickerInfo>>) -> R,
+        FBBO: FnMut(StreamConfig<Vec<TickerInfo>>) -> R,
+        FKline: FnMut(StreamConfig<Vec<(TickerInfo, Timeframe)>>) -> R,
+    {
+        let trade_chunk_size = MAX_TRADE_TICKERS_PER_STREAM.max(1);
+        let kline_chunk_size = MAX_KLINE_STREAMS_PER_STREAM.max(1);
+
+        let mut configs = Vec::new();
+
+        for (exchange, specs) in self.combined_used() {
+            for (ticker, aggr, push_freq) in &specs.depth {
+                let tick_mltp = match aggr {
+                    StreamTicksize::Client => None,
+                    StreamTicksize::ServerSide(tick_mltp) => Some(*tick_mltp),
+                };
+
+                let config = StreamConfig::new(*ticker, exchange, tick_mltp, *push_freq);
+
+                configs.push(depth(config));
+            }
+
+            for tickers in specs.trade.chunks(trade_chunk_size) {
+                let config = StreamConfig::new(
+                    tickers.to_vec(),
+                    exchange,
+                    None,
+                    PushFrequency::ServerDefault,
+                );
+
+                configs.push(trade(config));
+            }
+
+            for tickers in specs.partial_book.chunks(trade_chunk_size) {
+                let config = StreamConfig::new(
+                    tickers.to_vec(),
+                    exchange,
+                    None,
+                    PushFrequency::ServerDefault,
+                );
+
+                configs.push(bbo(config));
+            }
+
+            for streams in specs.kline.chunks(kline_chunk_size) {
+                let config = StreamConfig::new(
+                    streams.to_vec(),
+                    exchange,
+                    None,
+                    PushFrequency::ServerDefault,
+                );
+
+                configs.push(kline(config));
+            }
+        }
+
+        configs
     }
 
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {

@@ -1005,86 +1005,81 @@ pub fn connect_depth_stream(
                         }
                     }
                 }
-                State::Connected(websocket) => {
-                    match websocket.read_frame().await {
-                        Ok(msg) => match msg.opcode {
-                            OpCode::Text => {
-                                if let Ok(stream_data) = parse_websocket_message(&msg.payload) {
-                                    match stream_data {
-                                        StreamData::Depth(depth) => {
-                                            let bids = depth.levels[0]
-                                                .iter()
-                                                .map(|level| DeOrder {
-                                                    price: level.px,
-                                                    qty: level.sz,
-                                                })
-                                                .collect();
-                                            let asks = depth.levels[1]
-                                                .iter()
-                                                .map(|level| DeOrder {
-                                                    price: level.px,
-                                                    qty: level.sz,
-                                                })
-                                                .collect();
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            if let Ok(stream_data) = parse_websocket_message(&msg.payload)
+                                && let StreamData::Depth(depth) = stream_data
+                            {
+                                let bids = depth.levels[0]
+                                    .iter()
+                                    .map(|level| DeOrder {
+                                        price: level.px,
+                                        qty: level.sz,
+                                    })
+                                    .collect();
+                                let asks = depth.levels[1]
+                                    .iter()
+                                    .map(|level| DeOrder {
+                                        price: level.px,
+                                        qty: level.sz,
+                                    })
+                                    .collect();
 
-                                            let depth_payload = DepthPayload {
-                                                last_update_id: depth.time,
-                                                time: depth.time,
-                                                bids,
-                                                asks,
-                                            };
-                                            local_depth_cache.update_with_qty_norm(
-                                                DepthUpdate::Snapshot(depth_payload),
-                                                ticker_info.min_ticksize,
-                                                Some(qty_norm),
-                                            );
+                                let depth_payload = DepthPayload {
+                                    last_update_id: depth.time,
+                                    time: depth.time,
+                                    bids,
+                                    asks,
+                                };
+                                local_depth_cache.update_with_qty_norm(
+                                    DepthUpdate::Snapshot(depth_payload),
+                                    ticker_info.min_ticksize,
+                                    Some(qty_norm),
+                                );
 
-                                            let stream_kind = StreamKind::Depth {
-                                                ticker_info,
-                                                depth_aggr: super::StreamTicksize::ServerSide(
-                                                    TickMultiplier(user_multiplier),
-                                                ),
-                                                push_freq,
-                                            };
-                                            let current_depth = local_depth_cache.depth.clone();
+                                let stream_kind = StreamKind::Depth {
+                                    ticker_info,
+                                    depth_aggr: super::StreamTicksize::ServerSide(TickMultiplier(
+                                        user_multiplier,
+                                    )),
+                                    push_freq,
+                                };
+                                let current_depth = local_depth_cache.depth.clone();
 
-                                            let _ = output
-                                                .send(Event::DepthReceived(
-                                                    stream_kind,
-                                                    depth.time,
-                                                    current_depth,
-                                                ))
-                                                .await;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            OpCode::Close => {
-                                state = State::Disconnected;
                                 let _ = output
-                                    .send(Event::Disconnected(
-                                        exchange,
-                                        "WebSocket closed".to_string(),
+                                    .send(Event::DepthReceived(
+                                        stream_kind,
+                                        depth.time,
+                                        current_depth,
                                     ))
                                     .await;
                             }
-                            OpCode::Ping => {
-                                let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
+                        }
+                        OpCode::Close => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    format!("WebSocket error: {}", e),
+                                    "WebSocket closed".to_string(),
                                 ))
                                 .await;
                         }
+                        OpCode::Ping => {
+                            let _ = websocket.write_frame(Frame::pong(msg.payload)).await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                format!("WebSocket error: {}", e),
+                            ))
+                            .await;
                     }
-                }
+                },
             }
         }
     })

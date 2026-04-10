@@ -23,9 +23,8 @@ use data::{
     stream::PersistStreamKind,
 };
 use exchange::{
-    Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
-    adapter::{self, StreamConfig, StreamKind, StreamTicksize, UniqueStreams, Venue},
-    connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
+    Kline, StreamPairKind, TickerInfo, Trade,
+    adapter::{StreamKind, UniqueStreams},
     depth::Depth,
 };
 
@@ -1199,97 +1198,14 @@ impl Dashboard {
     }
 
     pub fn market_subscriptions(&self) -> Subscription<exchange::Event> {
-        let unique_streams = self
-            .streams
-            .combined_used()
-            .flat_map(|(exchange, specs)| {
-                let mut subs = vec![];
+        let subscriptions = self.streams.subscription_configs(
+            |config| Subscription::run_with(config, exchange::connect::depth_stream),
+            |config| Subscription::run_with(config, exchange::connect::trade_stream),
+            |config| Subscription::run_with(config, exchange::connect::bbo_stream),
+            |config| Subscription::run_with(config, exchange::connect::kline_stream),
+        );
 
-                if !specs.depth.is_empty() {
-                    let depth_subs = specs
-                        .depth
-                        .iter()
-                        .map(|(ticker, aggr, push_freq)| {
-                            let tick_mltp = match aggr {
-                                StreamTicksize::Client => None,
-                                StreamTicksize::ServerSide(tick_mltp) => Some(*tick_mltp),
-                            };
-
-                            let config = StreamConfig::new(
-                                *ticker,
-                                ticker.exchange(),
-                                tick_mltp,
-                                *push_freq,
-                            );
-
-                            Subscription::run_with(config, exchange::connect::depth_stream)
-                        })
-                        .collect::<Vec<_>>();
-
-                    if !depth_subs.is_empty() {
-                        subs.push(Subscription::batch(depth_subs));
-                    }
-                }
-
-                if !specs.trade.is_empty() {
-                    let trade_subs = specs
-                        .trade
-                        .chunks(MAX_TRADE_TICKERS_PER_STREAM)
-                        .map(|tickers| {
-                            let config = StreamConfig::new(
-                                tickers.to_vec(),
-                                exchange,
-                                None,
-                                PushFrequency::ServerDefault,
-                            );
-
-                            Subscription::run_with(config, exchange::connect::trade_stream)
-                        })
-                        .collect::<Vec<_>>();
-
-                    if !trade_subs.is_empty() {
-                        subs.push(Subscription::batch(trade_subs));
-                    }
-                }
-
-                if !specs.partial_book.is_empty() {
-                    let bbo_subs = specs
-                        .partial_book
-                        .chunks(MAX_TRADE_TICKERS_PER_STREAM)
-                        .map(|tickers| bbo_subscription(exchange, tickers.to_vec()))
-                        .collect::<Vec<_>>();
-
-                    if !bbo_subs.is_empty() {
-                        subs.push(Subscription::batch(bbo_subs));
-                    }
-                }
-
-                if !specs.kline.is_empty() {
-                    let kline_subs = specs
-                        .kline
-                        .chunks(MAX_KLINE_STREAMS_PER_STREAM)
-                        .map(|streams| {
-                            let config = StreamConfig::new(
-                                streams.to_vec(),
-                                exchange,
-                                None,
-                                PushFrequency::ServerDefault,
-                            );
-
-                            Subscription::run_with(config, exchange::connect::kline_stream)
-                        })
-                        .collect::<Vec<_>>();
-
-                    if !kline_subs.is_empty() {
-                        subs.push(Subscription::batch(kline_subs));
-                    }
-                }
-
-                subs
-            })
-            .collect::<Vec<Subscription<exchange::Event>>>();
-
-        Subscription::batch(unique_streams)
+        Subscription::batch(subscriptions)
     }
 
     pub fn theme_updated(&mut self, main_window: window::Id, theme: &iced_core::Theme) {
@@ -1335,30 +1251,5 @@ impl From<fetcher::FetchUpdate> for Message {
                 Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error))
             }
         }
-    }
-}
-
-fn bbo_subscription(
-    exchange: adapter::Exchange,
-    tickers: Vec<TickerInfo>,
-) -> Subscription<exchange::Event> {
-    let config = StreamConfig::new(tickers, exchange, None, PushFrequency::ServerDefault);
-
-    match exchange.venue() {
-        Venue::Binance => Subscription::run_with(config, |cfg: &StreamConfig<Vec<TickerInfo>>| {
-            adapter::binance::bbo_stream(cfg.id.clone(), cfg.exchange.market_type())
-        }),
-        Venue::Bybit => Subscription::run_with(config, |cfg: &StreamConfig<Vec<TickerInfo>>| {
-            adapter::bybit::bbo_stream(cfg.id.clone(), cfg.exchange.market_type())
-        }),
-        Venue::Hyperliquid => {
-            Subscription::run_with(config, |cfg: &StreamConfig<Vec<TickerInfo>>| {
-                adapter::hyperliquid::bbo_stream(cfg.id.clone(), cfg.exchange.market_type())
-            })
-        }
-        Venue::Okex => Subscription::run_with(config, |cfg: &StreamConfig<Vec<TickerInfo>>| {
-            adapter::okex::bbo_stream(cfg.id.clone(), cfg.exchange.market_type())
-        }),
-        Venue::Mexc => Subscription::none(),
     }
 }

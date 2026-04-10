@@ -271,14 +271,12 @@ pub fn bbo_stream(tickers: Vec<TickerInfo>, market: MarketKind) -> impl Stream<I
                                         bid: Order {
                                             price: Price::from_f32(best_bid.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize),
-                                            qty: qty_norm
-                                                .normalize(best_bid.qty, best_bid.price),
+                                            qty: qty_norm.normalize(best_bid.qty, best_bid.price),
                                         },
                                         ask: Order {
                                             price: Price::from_f32(best_ask.price)
                                                 .round_to_min_tick(ticker_info.min_ticksize),
-                                            qty: qty_norm
-                                                .normalize(best_ask.qty, best_ask.price),
+                                            qty: qty_norm.normalize(best_ask.qty, best_ask.price),
                                         },
                                     };
 

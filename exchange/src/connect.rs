@@ -33,11 +33,6 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
-// Keep topics per websocket conservative across venues
-// allow up to 100 tickers per websocket stream
-pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
-pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
-
 pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
     let ticker = config.id;
     let push_freq = config.push_freq;
@@ -50,6 +45,19 @@ pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Eve
         }
         Venue::Okex => adapter::okex::connect_depth_stream(ticker, push_freq).boxed(),
         Venue::Mexc => adapter::mexc::connect_depth_stream(ticker, push_freq).boxed(),
+    }
+}
+
+pub fn bbo_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static, Event> {
+    let tickers = config.id.clone();
+    let market_kind = config.exchange.market_type();
+
+    match config.exchange.venue() {
+        Venue::Binance => adapter::binance::bbo_stream(tickers, market_kind).boxed(),
+        Venue::Bybit => adapter::bybit::bbo_stream(tickers, market_kind).boxed(),
+        Venue::Hyperliquid => adapter::hyperliquid::bbo_stream(tickers, market_kind).boxed(),
+        Venue::Okex => adapter::okex::bbo_stream(tickers, market_kind).boxed(),
+        Venue::Mexc => unimplemented!("MEXC does not have a proper API for this"),
     }
 }
 
