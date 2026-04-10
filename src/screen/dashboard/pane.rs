@@ -317,9 +317,15 @@ impl State {
 
                     let timeframe = {
                         let supports = |tf| {
-                            tickers
-                                .iter()
-                                .all(|ti| ti.exchange().supports_kline_timeframe(tf))
+                            if Timeframe::BBO.contains(&tf) {
+                                tickers.iter().all(|ti| {
+                                    !matches!(ti.exchange().venue(), exchange::adapter::Venue::Mexc)
+                                })
+                            } else {
+                                tickers
+                                    .iter()
+                                    .all(|ti| ti.exchange().supports_kline_timeframe(tf))
+                            }
                         };
 
                         if let Some(tf) = derived_plan.basis.and_then(|basis| match basis {

@@ -287,9 +287,25 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
                 }
-                ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
+                ContentKind::CandlestickChart => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
+                        _ => None,
+                    });
+
+                    Some(current.unwrap_or_else(|| {
+                        Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
+                    }))
+                }
+                ContentKind::ComparisonChart => {
+                    let supports_comparison_tf = |tf: Timeframe| {
+                        exchange.supports_kline_timeframe(tf)
+                            || (Timeframe::BBO.contains(&tf)
+                                && !matches!(exchange.venue(), exchange::adapter::Venue::Mexc))
+                    };
+
+                    let current = current_basis.and_then(|b| match b {
+                        Basis::Time(tf) if supports_comparison_tf(tf) => Some(b),
                         _ => None,
                     });
 

@@ -17,6 +17,7 @@ const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
 
 const MIN_X_TICK_PX: f32 = 80.0;
+const X_LABEL_DRAW_MARGIN_EXTRA_PX: f32 = 6.0;
 const TEXT_SIZE: f32 = 12.0;
 
 const ZOOM_STEP_PCT: f32 = 0.10; // 10% per scroll "line"
@@ -970,8 +971,18 @@ where
                 r.draw_geometry(y_geom);
             });
             r.with_translation(Vector::new(x_rect.x, x_rect.y), |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
-                r.draw_geometry(x_geom);
+                r.with_layer(
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: plot_rect.width,
+                        height: x_rect.height,
+                    },
+                    |r| {
+                        use iced::advanced::graphics::geometry::Renderer as _;
+                        r.draw_geometry(x_geom);
+                    },
+                );
             });
 
             r.with_layer(
@@ -1256,8 +1267,16 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
+        // Expand tick generation by ~half-label width so edge labels clip in/out smoothly.
+        let half_label_w_px = 0.5 * (8.0 * CHAR_W + 8.0);
+        let draw_margin_px = half_label_w_px + X_LABEL_DRAW_MARGIN_EXTRA_PX;
+        let draw_margin_ms = (draw_margin_px / ctx.px_per_ms.max(1e-6)).ceil() as u64;
+
+        let min_x_padded = ctx.min_x.saturating_sub(draw_margin_ms);
+        let max_x_padded = ctx.max_x.saturating_add(draw_margin_ms);
+
         let (ticks, step_ms) =
-            super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
+            super::time_ticks(min_x_padded, max_x_padded, ctx.px_per_ms, MIN_X_TICK_PX);
 
         let baseline_to_text = 4.0;
         let y_center_local = baseline_to_text + 2.0 + TEXT_SIZE * 0.5;
@@ -1266,7 +1285,10 @@ where
 
         let mut last_right = f32::NEG_INFINITY;
         for t in ticks {
-            let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
+            let x_local = ((t as f64 - ctx.min_x as f64) * ctx.px_per_ms as f64) as f32;
+            if x_local < -draw_margin_px || x_local > plot_rect.width + draw_margin_px {
+                continue;
+            }
 
             let label = self
                 .timezone
