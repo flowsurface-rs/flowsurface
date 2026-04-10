@@ -1,6 +1,7 @@
 use crate::{
     Event, TickerInfo, Timeframe,
-    adapter::{self, AdapterError, StreamConfig, Venue},
+    adapter::{self, StreamConfig, Venue},
+    error::AdapterError,
 };
 
 use bytes::Bytes;

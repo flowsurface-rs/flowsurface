@@ -1,4 +1,4 @@
-use crate::adapter::AdapterError;
+use super::error::AdapterError;
 
 use reqwest::{Client, Method, Response, header};
 use serde_json::Value;
