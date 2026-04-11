@@ -55,8 +55,7 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
-const EXCHANGE_UNAVAILABLE_TOOLTIP: &str =
-    "Metadata unavailable for this session.\nRestart app to retry. Check logs for details.";
+const EXCHANGE_UNAVAILABLE_TOOLTIP: &str = "Metadata unavailable.\nCheck logs for details.";
 
 fn available_markets(venue: Venue) -> &'static [MarketKind] {
     match venue {
@@ -92,6 +91,7 @@ pub enum Message {
     FetchStats,
     UpdateMetadata(Venue, HashMap<Ticker, Option<TickerInfo>>),
     UpdateStats(Venue, HashMap<Ticker, TickerStats>),
+    RetryMetadataFetch(Venue),
     MetadataFetchFailed(Venue, data::InternalError),
     StatsFetchFailed(Venue, data::InternalError),
 }
@@ -112,6 +112,7 @@ pub struct TickersTable {
     show_favorites: bool,
     show_sort_options: bool,
     row_index: FxHashMap<Ticker, usize>,
+    metadata_fetch_state: MetadataFetchState,
     stats_fetch_state: StatsFetchState,
 }
 
@@ -121,26 +122,11 @@ impl TickersTable {
     }
 
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
-        let fetch_metadata = Venue::ALL
-            .iter()
-            .copied()
-            .map(|venue| {
-                let markets_to_fetch = available_markets(venue);
+        let selected_exchanges = settings.selected_exchanges.to_vec();
 
-                Task::perform(
-                    fetch_ticker_metadata(venue, markets_to_fetch),
-                    move |result| match result {
-                        Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
-                        Err(err) => {
-                            log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
-                            Message::MetadataFetchFailed(
-                                venue,
-                                InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
-                            )
-                        }
-                    },
-                )
-            })
+        let fetch_metadata = selected_exchanges
+            .iter()
+            .map(|venue: &Venue| fetch_metadata_task(*venue))
             .collect::<Vec<_>>();
 
         (
@@ -160,6 +146,7 @@ impl TickersTable {
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),
+                metadata_fetch_state: MetadataFetchState::with_pending(selected_exchanges),
                 stats_fetch_state: StatsFetchState::default(),
             },
             Task::batch(fetch_metadata),
@@ -216,11 +203,20 @@ impl TickersTable {
                 } else {
                     self.selected_exchanges.insert(exch);
 
+                    if !self.metadata_fetch_state.has_fetched(exch) {
+                        if self.metadata_fetch_state.begin_venue(exch) {
+                            return Some(Action::Fetch(fetch_metadata_task(exch)));
+                        }
+
+                        return None;
+                    }
+
                     self.stats_fetch_state
                         .on_exchange_enabled(exch, Instant::now());
                 }
             }
             Message::DebounceExchangeFetchTick => {
+                self.metadata_fetch_state.tick_loading_phase();
                 self.stats_fetch_state.tick_loading_phase();
 
                 if !self.stats_fetch_state.debounce_is_ready(Instant::now()) {
@@ -273,6 +269,14 @@ impl TickersTable {
                     return Some(Action::Fetch(task));
                 }
             }
+            Message::RetryMetadataFetch(venue) => {
+                if self.unavailable_exchanges.contains(&venue)
+                    && self.metadata_fetch_state.begin_venue(venue)
+                {
+                    self.selected_exchanges.insert(venue);
+                    return Some(Action::Fetch(fetch_metadata_task(venue)));
+                }
+            }
             Message::UpdateStats(venue, stats) => {
                 let can_sort = self.stats_fetch_state.complete_venue(venue);
                 self.update_ticker_rows(venue, stats);
@@ -291,6 +295,8 @@ impl TickersTable {
                 return Some(Action::ErrorOccurred(err));
             }
             Message::UpdateMetadata(venue, info) => {
+                self.metadata_fetch_state.complete_venue(venue);
+                self.metadata_fetch_state.mark_fetched(venue);
                 self.unavailable_exchanges.remove(&venue);
 
                 for (ticker, ticker_info) in info.into_iter() {
@@ -305,8 +311,8 @@ impl TickersTable {
                 }
             }
             Message::MetadataFetchFailed(venue, err) => {
+                self.metadata_fetch_state.complete_venue(venue);
                 self.unavailable_exchanges.insert(venue);
-                self.selected_exchanges.remove(&venue);
                 self.stats_fetch_state.on_exchange_disabled(venue);
                 return Some(Action::ErrorOccurred(err));
             }
@@ -569,30 +575,32 @@ impl TickersTable {
     fn exchange_filter_btn<'a>(&'a self, venue: Venue) -> Element<'a, Message> {
         let unavailable = self.unavailable_exchanges.contains(&venue);
         let selected = self.selected_exchanges.contains(&venue);
-        let loading = self.stats_fetch_state.is_in_flight(venue);
+        let stats_loading = self.stats_fetch_state.is_in_flight(venue);
+        let metadata_loading = self.metadata_fetch_state.is_in_flight(venue);
 
         let mut content = row![
             icon_text(style::venue_icon(venue), 12).align_x(Alignment::Center),
-            text(venue.to_string())
+            text(venue.to_string()),
         ]
         .spacing(4)
         .width(Length::Fill)
         .align_y(Vertical::Center);
 
-        if loading {
+        if metadata_loading {
+            content = content.push(text(self.metadata_fetch_state.loading_dots()));
+        } else if stats_loading {
             content = content.push(text(self.stats_fetch_state.loading_dots()));
+        } else if unavailable {
+            let unavailable_mark = text("!").style(move |theme: &Theme| {
+                let palette = theme.extended_palette();
+                iced::widget::text::Style {
+                    color: Some(palette.danger.base.color),
+                }
+            });
+            content = content.push(unavailable_mark);
         }
 
-        if unavailable {
-            content = content
-                .push(space::horizontal())
-                .push(text("!").size(12).style(move |theme: &Theme| {
-                    let palette = theme.extended_palette();
-                    iced::widget::text::Style {
-                        color: Some(palette.danger.base.color),
-                    }
-                }));
-        } else if selected {
+        if selected && !unavailable {
             content = content
                 .push(space::horizontal())
                 .push(container(icon_text(Icon::Checkmark, 12)));
@@ -616,10 +624,33 @@ impl TickersTable {
                 None
             },
             iced::widget::tooltip::Position::Top,
-            Duration::from_millis(300),
+            Duration::from_millis(250),
         );
 
-        container(btn_with_tooltip)
+        let row_content: Element<'a, Message> = if unavailable {
+            let retry_btn = button(text("Retry"))
+                .style(move |theme, status| style::button::bordered_toggle(theme, status, false));
+
+            let retry_btn = if metadata_loading {
+                retry_btn
+            } else {
+                retry_btn.on_press(Message::RetryMetadataFetch(venue))
+            };
+
+            let controls = row![retry_btn]
+                .spacing(2)
+                .align_y(Vertical::Center)
+                .width(Length::Shrink);
+
+            row![container(btn_with_tooltip).width(Length::Fill), controls]
+                .spacing(4)
+                .align_y(Vertical::Center)
+                .into()
+        } else {
+            btn_with_tooltip
+        };
+
+        container(row_content)
             .padding(2)
             .style(style::dragger_row_container)
             .into()
@@ -1541,6 +1572,63 @@ enum DebounceState {
     Waiting { deadline: Instant },
 }
 
+#[derive(Debug, Default)]
+struct MetadataFetchState {
+    in_flight_venues: FxHashSet<Venue>,
+    fetched_venues: FxHashSet<Venue>,
+    loading_phase: u8,
+}
+
+impl MetadataFetchState {
+    fn with_pending(venues: impl IntoIterator<Item = Venue>) -> Self {
+        Self {
+            in_flight_venues: venues.into_iter().collect(),
+            fetched_venues: FxHashSet::default(),
+            loading_phase: 0,
+        }
+    }
+
+    fn begin_venue(&mut self, venue: Venue) -> bool {
+        self.in_flight_venues.insert(venue)
+    }
+
+    fn mark_fetched(&mut self, venue: Venue) {
+        self.fetched_venues.insert(venue);
+    }
+
+    fn has_fetched(&self, venue: Venue) -> bool {
+        self.fetched_venues.contains(&venue)
+    }
+
+    fn complete_venue(&mut self, venue: Venue) {
+        self.in_flight_venues.remove(&venue);
+        if self.in_flight_venues.is_empty() {
+            self.loading_phase = 0;
+        }
+    }
+
+    fn is_in_flight(&self, venue: Venue) -> bool {
+        self.in_flight_venues.contains(&venue)
+    }
+
+    fn tick_loading_phase(&mut self) {
+        if self.in_flight_venues.is_empty() {
+            self.loading_phase = 0;
+            return;
+        }
+
+        self.loading_phase = (self.loading_phase + 1) % 3;
+    }
+
+    fn loading_dots(&self) -> &'static str {
+        match self.loading_phase {
+            0 => ".",
+            1 => "..",
+            _ => "...",
+        }
+    }
+}
+
 fn fetch_ticker_stats_task(
     venue: Venue,
     tickers_info: &FxHashMap<Ticker, Option<TickerInfo>>,
@@ -1566,6 +1654,24 @@ fn fetch_ticker_stats_task(
             Err(err) => {
                 log::error!("Ticker stats fetch failed for {venue:?}: {err}");
                 Message::StatsFetchFailed(
+                    venue,
+                    InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
+                )
+            }
+        },
+    )
+}
+
+fn fetch_metadata_task(venue: Venue) -> Task<Message> {
+    let markets_to_fetch = available_markets(venue);
+
+    Task::perform(
+        fetch_ticker_metadata(venue, markets_to_fetch),
+        move |result| match result {
+            Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
+            Err(err) => {
+                log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
+                Message::MetadataFetchFailed(
                     venue,
                     InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
                 )
