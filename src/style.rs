@@ -219,7 +219,7 @@ pub mod button {
 
         Style {
             text_color: if status == Status::Disabled {
-                palette.background.strongest.color
+                palette.secondary.strong.color
             } else {
                 palette.background.base.text
             },
@@ -253,10 +253,14 @@ pub mod button {
         let palette = theme.extended_palette();
 
         iced::widget::button::Style {
-            text_color: if is_active {
-                palette.secondary.strong.color
-            } else {
-                palette.secondary.base.color
+            text_color: {
+                if status == Status::Disabled {
+                    palette.background.stronger.color
+                } else if is_active {
+                    palette.secondary.strong.color
+                } else {
+                    palette.secondary.base.color
+                }
             },
             border: iced::Border {
                 radius: 3.0.into(),
@@ -276,11 +280,7 @@ pub mod button {
                 }
                 iced::widget::button::Status::Hovered => Some(palette.background.weak.color.into()),
                 iced::widget::button::Status::Disabled => {
-                    if is_active {
-                        None
-                    } else {
-                        Some(palette.secondary.base.color.into())
-                    }
+                    Some(palette.background.weakest.color.into())
                 }
             },
             ..Default::default()
