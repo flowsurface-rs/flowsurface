@@ -103,7 +103,7 @@ fn convert_to_mexc_timeframe(timeframe: Timeframe, market: MarketKind) -> Option
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MexcConfig;
 
-pub type MexcLimiter = super::NoopRateLimiter;
+pub type MexcLimiter = crate::limiter::NoopRateLimiter;
 
 #[derive(Debug, Clone, Default)]
 pub struct MexcMarketScope {
@@ -127,7 +127,7 @@ impl MexcMarketScope {
     }
 }
 
-pub enum MexcCommand {
+enum MexcCommand {
     Fetch(super::FetchCommand<MexcMarketScope>),
     FetchDepthSnapshot {
         ticker: Ticker,
@@ -141,7 +141,7 @@ pub struct MexcHandle {
 }
 
 impl MexcHandle {
-    pub fn new(request_port: RequestPort<MexcCommand>) -> Self {
+    fn new(request_port: RequestPort<MexcCommand>) -> Self {
         Self { request_port }
     }
 
@@ -151,7 +151,7 @@ impl MexcHandle {
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
             .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::FetchTickerMetadata {
+                MexcCommand::Fetch(super::FetchCommand::TickerMetadata {
                     market_scope,
                     reply,
                 })
@@ -165,7 +165,7 @@ impl MexcHandle {
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
             .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::FetchTickerStats {
+                MexcCommand::Fetch(super::FetchCommand::TickerStats {
                     market_scope,
                     reply,
                 })
@@ -181,7 +181,7 @@ impl MexcHandle {
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::FetchKlines {
+                MexcCommand::Fetch(super::FetchCommand::Klines {
                     ticker_info,
                     timeframe,
                     range,
@@ -199,7 +199,7 @@ impl MexcHandle {
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::FetchOpenInterest {
+                MexcCommand::Fetch(super::FetchCommand::OpenInterest {
                     ticker_info,
                     timeframe,
                     range,
@@ -217,7 +217,7 @@ impl MexcHandle {
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::FetchTrades {
+                MexcCommand::Fetch(super::FetchCommand::Trades {
                     ticker_info,
                     from_time,
                     data_path,
@@ -273,10 +273,6 @@ impl MexcHandle {
     ) -> impl futures::Stream<Item = Event> {
         stream::connect_kline_stream(streams, market_type)
     }
-
-    pub fn sender(&self) -> mpsc::Sender<MexcCommand> {
-        self.request_port.sender()
-    }
 }
 
 pub struct Mexc {
@@ -301,7 +297,7 @@ impl Mexc {
         &mut self.hub
     }
 
-    pub async fn run(mut self, mut command_rx: mpsc::Receiver<MexcCommand>) {
+    async fn run(mut self, mut command_rx: mpsc::Receiver<MexcCommand>) {
         while let Some(command) = command_rx.recv().await {
             fetch::handle_command(&mut self, command).await;
         }

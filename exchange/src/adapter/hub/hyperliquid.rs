@@ -2,6 +2,7 @@ use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
     adapter::{Exchange, MarketKind},
     depth::DepthPayload,
+    limiter::FixedWindowRateLimiterConfig,
     unit::{MinTicksize, qty::RawQtyUnit},
 };
 
@@ -73,8 +74,8 @@ impl Default for HyperliquidConfig {
 }
 
 impl HyperliquidConfig {
-    fn limiter_config(self) -> super::FixedWindowRateLimiterConfig {
-        super::FixedWindowRateLimiterConfig::new(
+    fn limiter_config(self) -> FixedWindowRateLimiterConfig {
+        FixedWindowRateLimiterConfig::new(
             self.limit,
             self.refill_rate,
             self.limiter_buffer_pct,
@@ -83,9 +84,9 @@ impl HyperliquidConfig {
     }
 }
 
-pub type HyperliquidLimiter = super::FixedWindowRateLimiter;
+pub type HyperliquidLimiter = crate::limiter::FixedWindowRateLimiter;
 
-pub enum HyperliquidCommand {
+enum HyperliquidCommand {
     Fetch(super::FetchCommand<MarketKind>),
     FetchDepthSnapshot {
         ticker: crate::Ticker,
@@ -99,7 +100,7 @@ pub struct HyperliquidHandle {
 }
 
 impl HyperliquidHandle {
-    pub fn new(request_port: RequestPort<HyperliquidCommand>) -> Self {
+    fn new(request_port: RequestPort<HyperliquidCommand>) -> Self {
         Self { request_port }
     }
 
@@ -109,7 +110,7 @@ impl HyperliquidHandle {
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
             .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::FetchTickerMetadata {
+                HyperliquidCommand::Fetch(super::FetchCommand::TickerMetadata {
                     market_scope: market,
                     reply,
                 })
@@ -123,7 +124,7 @@ impl HyperliquidHandle {
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
             .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::FetchTickerStats {
+                HyperliquidCommand::Fetch(super::FetchCommand::TickerStats {
                     market_scope: market,
                     reply,
                 })
@@ -139,7 +140,7 @@ impl HyperliquidHandle {
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::FetchKlines {
+                HyperliquidCommand::Fetch(super::FetchCommand::Klines {
                     ticker_info,
                     timeframe,
                     range,
@@ -157,7 +158,7 @@ impl HyperliquidHandle {
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::FetchOpenInterest {
+                HyperliquidCommand::Fetch(super::FetchCommand::OpenInterest {
                     ticker_info,
                     timeframe,
                     range,
@@ -175,7 +176,7 @@ impl HyperliquidHandle {
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::FetchTrades {
+                HyperliquidCommand::Fetch(super::FetchCommand::Trades {
                     ticker_info,
                     from_time,
                     data_path,
@@ -218,10 +219,6 @@ impl HyperliquidHandle {
     ) -> impl futures::Stream<Item = Event> {
         stream::connect_kline_stream(streams, market_type)
     }
-
-    pub fn sender(&self) -> mpsc::Sender<HyperliquidCommand> {
-        self.request_port.sender()
-    }
 }
 
 pub struct Hyperliquid {
@@ -248,7 +245,7 @@ impl Hyperliquid {
         &mut self.hub
     }
 
-    pub async fn run(mut self, mut command_rx: mpsc::Receiver<HyperliquidCommand>) {
+    async fn run(mut self, mut command_rx: mpsc::Receiver<HyperliquidCommand>) {
         while let Some(command) = command_rx.recv().await {
             fetch::handle_command(&mut self, command).await;
         }

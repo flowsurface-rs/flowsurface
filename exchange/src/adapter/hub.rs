@@ -1,46 +1,27 @@
-use super::AdapterError;
-use crate::{
-    Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
-    limiter::{DynamicBucket, FixedWindowBucket, RateLimiter},
-};
-
-use futures::future::BoxFuture;
-use serde::de::DeserializeOwned;
-
-use reqwest::{Client, Method, Response, header};
-use tokio::sync::{mpsc, oneshot};
-
-use std::{collections::HashMap, future::Future, path::PathBuf, time::Duration};
-
 pub mod binance;
 pub mod bybit;
 pub mod hyperliquid;
 pub mod mexc;
 pub mod okex;
 
-const DEFAULT_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+use super::AdapterError;
+use crate::{
+    Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, limiter::RateLimiter,
+};
 
-#[derive(Debug, Clone, Copy)]
-pub struct HttpHubConfig {
-    pub connect_timeout: Duration,
-    pub request_timeout: Duration,
-}
+use futures::future::BoxFuture;
+use reqwest::{Client, Method, Response, header};
+use serde::de::DeserializeOwned;
+use tokio::sync::{mpsc, oneshot};
 
-impl Default for HttpHubConfig {
-    fn default() -> Self {
-        Self {
-            connect_timeout: DEFAULT_HTTP_CONNECT_TIMEOUT,
-            request_timeout: DEFAULT_HTTP_REQUEST_TIMEOUT,
-        }
-    }
-}
+use std::{collections::HashMap, future::Future, path::PathBuf, time::Duration};
 
-/// Shared per-handle state that avoids process-wide HTTP and limiter globals.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct HttpHub<L> {
     client: Client,
     limiter: L,
-    config: HttpHubConfig,
 }
 
 impl<L> HttpHub<L> {
@@ -48,30 +29,33 @@ impl<L> HttpHub<L> {
         Self::with_config(limiter, HttpHubConfig::default())
     }
 
-    pub fn with_config(limiter: L, config: HttpHubConfig) -> Result<Self, AdapterError> {
+    fn with_config(limiter: L, config: HttpHubConfig) -> Result<Self, AdapterError> {
         let client = build_http_client(config)?;
 
-        Ok(Self {
-            client,
-            limiter,
-            config,
-        })
+        Ok(Self { client, limiter })
     }
 
-    pub fn client(&self) -> &Client {
+    fn client(&self) -> &Client {
         &self.client
     }
 
-    pub fn limiter(&self) -> &L {
-        &self.limiter
-    }
-
-    pub fn limiter_mut(&mut self) -> &mut L {
+    fn limiter_mut(&mut self) -> &mut L {
         &mut self.limiter
     }
+}
 
-    pub fn config(&self) -> HttpHubConfig {
-        self.config
+#[derive(Debug, Clone, Copy)]
+struct HttpHubConfig {
+    connect_timeout: Duration,
+    request_timeout: Duration,
+}
+
+impl Default for HttpHubConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: HTTP_CONNECT_TIMEOUT,
+            request_timeout: HTTP_REQUEST_TIMEOUT,
+        }
     }
 }
 
@@ -150,7 +134,7 @@ async fn read_response_body(
     Ok(body_text)
 }
 
-pub async fn http_request_with_hub<L>(
+async fn http_request<L>(
     hub: &HttpHub<L>,
     url: &str,
     method: Option<Method>,
@@ -166,7 +150,7 @@ pub async fn http_request_with_hub<L>(
     read_response_body(&request_method, url, response).await
 }
 
-pub async fn http_request_with_hub_limiter<L: RateLimiter>(
+async fn http_request_with_limiter<L: RateLimiter>(
     hub: &mut HttpHub<L>,
     url: &str,
     weight: usize,
@@ -206,7 +190,7 @@ pub async fn http_request_with_hub_limiter<L: RateLimiter>(
     read_response_body(&request_method, url, response).await
 }
 
-pub async fn http_parse_with_hub_limiter<L, V>(
+async fn http_parse_with_limiter<L, V>(
     hub: &mut HttpHub<L>,
     url: &str,
     weight: usize,
@@ -217,7 +201,7 @@ where
     L: RateLimiter,
     V: DeserializeOwned,
 {
-    let body = http_request_with_hub_limiter(hub, url, weight, method, json_body).await?;
+    let body = http_request_with_limiter(hub, url, weight, method, json_body).await?;
     let trimmed = body.trim();
 
     if trimmed.is_empty() {
@@ -249,37 +233,37 @@ where
     })
 }
 
-pub type ResponseTx<T> = oneshot::Sender<Result<T, AdapterError>>;
+type ResponseTx<T> = oneshot::Sender<Result<T, AdapterError>>;
 
-pub fn reply_once<T>(reply: ResponseTx<T>, result: Result<T, AdapterError>) {
+fn reply_once<T>(reply: ResponseTx<T>, result: Result<T, AdapterError>) {
     let _ = reply.send(result);
 }
 
-pub type TickerMetadataMap = HashMap<Ticker, Option<TickerInfo>>;
-pub type TickerStatsMap = HashMap<Ticker, TickerStats>;
+type TickerMetadataMap = HashMap<Ticker, Option<TickerInfo>>;
+type TickerStatsMap = HashMap<Ticker, TickerStats>;
 
-pub enum FetchCommand<M> {
-    FetchTickerMetadata {
+enum FetchCommand<M> {
+    TickerMetadata {
         market_scope: M,
         reply: ResponseTx<TickerMetadataMap>,
     },
-    FetchTickerStats {
+    TickerStats {
         market_scope: M,
         reply: ResponseTx<TickerStatsMap>,
     },
-    FetchKlines {
+    Klines {
         ticker_info: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
         reply: ResponseTx<Vec<Kline>>,
     },
-    FetchOpenInterest {
+    OpenInterest {
         ticker_info: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
         reply: ResponseTx<Vec<OpenInterest>>,
     },
-    FetchTrades {
+    Trades {
         ticker_info: TickerInfo,
         from_time: u64,
         data_path: Option<PathBuf>,
@@ -333,26 +317,26 @@ pub trait FetchCommandHandler<M> {
     }
 }
 
-pub async fn handle_fetch_command<H, M>(handler: &mut H, command: FetchCommand<M>)
+async fn handle_fetch_command<H, M>(handler: &mut H, command: FetchCommand<M>)
 where
     H: FetchCommandHandler<M>,
 {
     match command {
-        FetchCommand::FetchTickerMetadata {
+        FetchCommand::TickerMetadata {
             market_scope,
             reply,
         } => {
             let result = handler.fetch_ticker_metadata(market_scope).await;
             reply_once(reply, result);
         }
-        FetchCommand::FetchTickerStats {
+        FetchCommand::TickerStats {
             market_scope,
             reply,
         } => {
             let result = handler.fetch_ticker_stats(market_scope).await;
             reply_once(reply, result);
         }
-        FetchCommand::FetchKlines {
+        FetchCommand::Klines {
             ticker_info,
             timeframe,
             range,
@@ -361,7 +345,7 @@ where
             let result = handler.fetch_klines(ticker_info, timeframe, range).await;
             reply_once(reply, result);
         }
-        FetchCommand::FetchOpenInterest {
+        FetchCommand::OpenInterest {
             ticker_info,
             timeframe,
             range,
@@ -372,7 +356,7 @@ where
                 .await;
             reply_once(reply, result);
         }
-        FetchCommand::FetchTrades {
+        FetchCommand::Trades {
             ticker_info,
             from_time,
             data_path,
@@ -386,7 +370,7 @@ where
     }
 }
 
-pub async fn run_fetch_loop<H, M>(handler: &mut H, command_rx: &mut mpsc::Receiver<FetchCommand<M>>)
+async fn run_fetch_loop<H, M>(handler: &mut H, command_rx: &mut mpsc::Receiver<FetchCommand<M>>)
 where
     H: FetchCommandHandler<M>,
 {
@@ -395,151 +379,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct FixedWindowRateLimiterConfig {
-    pub limit: usize,
-    pub refill_rate: Duration,
-    pub limiter_buffer_pct: f32,
-    pub exit_status: reqwest::StatusCode,
-}
-
-impl FixedWindowRateLimiterConfig {
-    pub fn new(
-        limit: usize,
-        refill_rate: Duration,
-        limiter_buffer_pct: f32,
-        exit_status: reqwest::StatusCode,
-    ) -> Self {
-        Self {
-            limit,
-            refill_rate,
-            limiter_buffer_pct,
-            exit_status,
-        }
-    }
-}
-
-pub struct FixedWindowRateLimiter {
-    bucket: FixedWindowBucket,
-    exit_status: reqwest::StatusCode,
-}
-
-impl FixedWindowRateLimiter {
-    pub fn new(config: FixedWindowRateLimiterConfig) -> Self {
-        let keep_ratio = (1.0 - config.limiter_buffer_pct).clamp(0.0, 1.0);
-        let effective_limit = (config.limit as f32 * keep_ratio) as usize;
-
-        Self {
-            bucket: FixedWindowBucket::new(effective_limit, config.refill_rate),
-            exit_status: config.exit_status,
-        }
-    }
-}
-
-impl RateLimiter for FixedWindowRateLimiter {
-    fn prepare_request(&mut self, weight: usize) -> Option<Duration> {
-        self.bucket.calculate_wait_time(weight)
-    }
-
-    fn update_from_response(&mut self, _response: &reqwest::Response, weight: usize) {
-        self.bucket.consume_tokens(weight);
-    }
-
-    fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
-        response.status() == self.exit_status
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct DynamicRateLimiterConfig {
-    pub max_weight: usize,
-    pub refill_rate: Duration,
-    pub limiter_buffer_pct: f32,
-    pub used_weight_header: &'static str,
-    pub exit_status: reqwest::StatusCode,
-    pub extra_exit_status: Option<reqwest::StatusCode>,
-}
-
-impl DynamicRateLimiterConfig {
-    pub fn new(
-        max_weight: usize,
-        refill_rate: Duration,
-        limiter_buffer_pct: f32,
-        used_weight_header: &'static str,
-        exit_status: reqwest::StatusCode,
-        extra_exit_status: Option<reqwest::StatusCode>,
-    ) -> Self {
-        Self {
-            max_weight,
-            refill_rate,
-            limiter_buffer_pct,
-            used_weight_header,
-            exit_status,
-            extra_exit_status,
-        }
-    }
-}
-
-pub struct HeaderDynamicRateLimiter {
-    bucket: DynamicBucket,
-    used_weight_header: &'static str,
-    exit_status: reqwest::StatusCode,
-    extra_exit_status: Option<reqwest::StatusCode>,
-}
-
-impl HeaderDynamicRateLimiter {
-    pub fn new(config: DynamicRateLimiterConfig) -> Self {
-        let keep_ratio = (1.0 - config.limiter_buffer_pct).clamp(0.0, 1.0);
-        let effective_limit = (config.max_weight as f32 * keep_ratio) as usize;
-
-        Self {
-            bucket: DynamicBucket::new(effective_limit, config.refill_rate),
-            used_weight_header: config.used_weight_header,
-            exit_status: config.exit_status,
-            extra_exit_status: config.extra_exit_status,
-        }
-    }
-}
-
-impl RateLimiter for HeaderDynamicRateLimiter {
-    fn prepare_request(&mut self, weight: usize) -> Option<Duration> {
-        let (wait_time, _reason) = self.bucket.prepare_request(weight);
-        wait_time
-    }
-
-    fn update_from_response(&mut self, response: &reqwest::Response, _weight: usize) {
-        if let Some(header_value) = response
-            .headers()
-            .get(self.used_weight_header)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.parse::<usize>().ok())
-        {
-            self.bucket.update_weight(header_value);
-        }
-    }
-
-    fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
-        let status = response.status();
-        status == self.exit_status || Some(status) == self.extra_exit_status
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopRateLimiter;
-
-impl RateLimiter for NoopRateLimiter {
-    fn prepare_request(&mut self, _weight: usize) -> Option<Duration> {
-        None
-    }
-
-    fn update_from_response(&mut self, _response: &reqwest::Response, _weight: usize) {}
-
-    fn should_exit_on_response(&self, _response: &reqwest::Response) -> bool {
-        false
-    }
-}
-
-pub struct RequestPort<C> {
+struct RequestPort<C> {
     sender: mpsc::Sender<C>,
 }
 
@@ -552,18 +392,11 @@ impl<C> Clone for RequestPort<C> {
 }
 
 impl<C> RequestPort<C> {
-    pub fn new(sender: mpsc::Sender<C>) -> Self {
+    fn new(sender: mpsc::Sender<C>) -> Self {
         Self { sender }
     }
 
-    pub fn sender(&self) -> mpsc::Sender<C> {
-        self.sender.clone()
-    }
-
-    pub async fn request<T>(
-        &self,
-        build: impl FnOnce(ResponseTx<T>) -> C,
-    ) -> Result<T, AdapterError> {
+    async fn request<T>(&self, build: impl FnOnce(ResponseTx<T>) -> C) -> Result<T, AdapterError> {
         let (reply_tx, reply_rx) = oneshot::channel();
 
         self.sender
@@ -577,7 +410,7 @@ impl<C> RequestPort<C> {
     }
 }
 
-pub fn spawn_request_port<C, F, Fut>(command_buffer_capacity: usize, run: F) -> RequestPort<C>
+fn spawn_request_port<C, F, Fut>(command_buffer_capacity: usize, run: F) -> RequestPort<C>
 where
     C: Send + 'static,
     F: FnOnce(mpsc::Receiver<C>) -> Fut + Send + 'static,

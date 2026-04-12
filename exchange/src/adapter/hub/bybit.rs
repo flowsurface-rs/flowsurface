@@ -1,6 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, Trade,
     adapter::{Exchange, MarketKind},
+    limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -51,8 +52,8 @@ impl Default for BybitConfig {
 }
 
 impl BybitConfig {
-    fn limiter_config(self) -> super::FixedWindowRateLimiterConfig {
-        super::FixedWindowRateLimiterConfig::new(
+    fn limiter_config(self) -> FixedWindowRateLimiterConfig {
+        FixedWindowRateLimiterConfig::new(
             self.limit,
             self.refill_rate,
             self.limiter_buffer_pct,
@@ -61,9 +62,9 @@ impl BybitConfig {
     }
 }
 
-pub type BybitLimiter = super::FixedWindowRateLimiter;
+pub type BybitLimiter = crate::limiter::FixedWindowRateLimiter;
 
-pub type BybitCommand = super::FetchCommand<MarketKind>;
+type BybitCommand = super::FetchCommand<MarketKind>;
 
 #[derive(Clone)]
 pub struct BybitHandle {
@@ -71,7 +72,7 @@ pub struct BybitHandle {
 }
 
 impl BybitHandle {
-    pub fn new(request_port: RequestPort<BybitCommand>) -> Self {
+    fn new(request_port: RequestPort<BybitCommand>) -> Self {
         Self { request_port }
     }
 
@@ -80,7 +81,7 @@ impl BybitHandle {
         market: MarketKind,
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
-            .request(move |reply| BybitCommand::FetchTickerMetadata {
+            .request(move |reply| BybitCommand::TickerMetadata {
                 market_scope: market,
                 reply,
             })
@@ -92,7 +93,7 @@ impl BybitHandle {
         market: MarketKind,
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
-            .request(move |reply| BybitCommand::FetchTickerStats {
+            .request(move |reply| BybitCommand::TickerStats {
                 market_scope: market,
                 reply,
             })
@@ -106,7 +107,7 @@ impl BybitHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
-            .request(move |reply| BybitCommand::FetchKlines {
+            .request(move |reply| BybitCommand::Klines {
                 ticker_info,
                 timeframe,
                 range,
@@ -122,7 +123,7 @@ impl BybitHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
-            .request(move |reply| BybitCommand::FetchOpenInterest {
+            .request(move |reply| BybitCommand::OpenInterest {
                 ticker_info,
                 timeframe,
                 range,
@@ -138,7 +139,7 @@ impl BybitHandle {
         data_path: Option<std::path::PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
-            .request(move |reply| BybitCommand::FetchTrades {
+            .request(move |reply| BybitCommand::Trades {
                 ticker_info,
                 from_time,
                 data_path,
@@ -170,10 +171,6 @@ impl BybitHandle {
     ) -> impl futures::Stream<Item = Event> {
         stream::connect_kline_stream(streams, market)
     }
-
-    pub fn sender(&self) -> mpsc::Sender<BybitCommand> {
-        self.request_port.sender()
-    }
 }
 
 pub struct Bybit {
@@ -200,7 +197,7 @@ impl Bybit {
         &mut self.hub
     }
 
-    pub async fn run(mut self, mut command_rx: mpsc::Receiver<BybitCommand>) {
+    async fn run(mut self, mut command_rx: mpsc::Receiver<BybitCommand>) {
         super::run_fetch_loop(&mut self, &mut command_rx).await;
     }
 }

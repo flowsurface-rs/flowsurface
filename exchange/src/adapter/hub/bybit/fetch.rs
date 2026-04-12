@@ -64,7 +64,7 @@ pub(super) async fn fetch_ticker_metadata_with_hub(
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/instruments-info?category={market}&limit=1000",);
-    let response_text = super::super::http_request_with_hub(hub, &url, None, None).await?;
+    let response_text = super::super::http_request(hub, &url, None, None).await?;
 
     let exchange_info: Value =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -135,7 +135,7 @@ pub(super) async fn fetch_ticker_stats_with_hub(
 
     let url = format!("{FETCH_DOMAIN}/v5/market/tickers?category={market}");
     let parsed_response: Value =
-        super::super::http_parse_with_hub_limiter(hub, &url, 1, None, None).await?;
+        super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
 
     let result_list: &Vec<Value> = parsed_response["result"]["list"]
         .as_array()
@@ -217,7 +217,7 @@ pub(super) async fn fetch_klines_with_hub(
     }
 
     let response: ApiResponse =
-        super::super::http_parse_with_hub_limiter(hub, &url, 1, None, None).await?;
+        super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -294,8 +294,7 @@ pub(super) async fn fetch_historical_oi_with_hub(
         url.push_str("&limit=200");
     }
 
-    let response_text =
-        super::super::http_request_with_hub_limiter(hub, &url, 1, None, None).await?;
+    let response_text = super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
 
     let content: Value = sonic_rs::from_str(&response_text).map_err(|e| {
         log::error!(

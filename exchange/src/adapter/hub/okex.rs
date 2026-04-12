@@ -1,6 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, Trade,
     adapter::{Exchange, MarketKind},
+    limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -67,8 +68,8 @@ impl Default for OkexConfig {
 }
 
 impl OkexConfig {
-    fn limiter_config(self) -> super::FixedWindowRateLimiterConfig {
-        super::FixedWindowRateLimiterConfig::new(
+    fn limiter_config(self) -> FixedWindowRateLimiterConfig {
+        FixedWindowRateLimiterConfig::new(
             self.limit,
             self.refill_rate,
             self.limiter_buffer_pct,
@@ -77,9 +78,9 @@ impl OkexConfig {
     }
 }
 
-pub type OkexLimiter = super::FixedWindowRateLimiter;
+pub type OkexLimiter = crate::limiter::FixedWindowRateLimiter;
 
-pub type OkexCommand = super::FetchCommand<Vec<MarketKind>>;
+type OkexCommand = super::FetchCommand<Vec<MarketKind>>;
 
 #[derive(Clone)]
 pub struct OkexHandle {
@@ -87,7 +88,7 @@ pub struct OkexHandle {
 }
 
 impl OkexHandle {
-    pub fn new(request_port: RequestPort<OkexCommand>) -> Self {
+    fn new(request_port: RequestPort<OkexCommand>) -> Self {
         Self { request_port }
     }
 
@@ -96,7 +97,7 @@ impl OkexHandle {
         market_scope: Vec<MarketKind>,
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
-            .request(move |reply| OkexCommand::FetchTickerMetadata {
+            .request(move |reply| OkexCommand::TickerMetadata {
                 market_scope,
                 reply,
             })
@@ -108,7 +109,7 @@ impl OkexHandle {
         market_scope: Vec<MarketKind>,
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
-            .request(move |reply| OkexCommand::FetchTickerStats {
+            .request(move |reply| OkexCommand::TickerStats {
                 market_scope,
                 reply,
             })
@@ -122,7 +123,7 @@ impl OkexHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
-            .request(move |reply| OkexCommand::FetchKlines {
+            .request(move |reply| OkexCommand::Klines {
                 ticker_info,
                 timeframe,
                 range,
@@ -138,7 +139,7 @@ impl OkexHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
-            .request(move |reply| OkexCommand::FetchOpenInterest {
+            .request(move |reply| OkexCommand::OpenInterest {
                 ticker_info,
                 timeframe,
                 range,
@@ -154,7 +155,7 @@ impl OkexHandle {
         data_path: Option<std::path::PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
-            .request(move |reply| OkexCommand::FetchTrades {
+            .request(move |reply| OkexCommand::Trades {
                 ticker_info,
                 from_time,
                 data_path,
@@ -200,10 +201,6 @@ impl OkexHandle {
     ) -> impl futures::Stream<Item = Event> {
         stream::connect_kline_stream(streams, market_type)
     }
-
-    pub fn sender(&self) -> mpsc::Sender<OkexCommand> {
-        self.request_port.sender()
-    }
 }
 
 pub struct Okex {
@@ -230,7 +227,7 @@ impl Okex {
         &mut self.hub
     }
 
-    pub async fn run(mut self, mut command_rx: mpsc::Receiver<OkexCommand>) {
+    async fn run(mut self, mut command_rx: mpsc::Receiver<OkexCommand>) {
         super::run_fetch_loop(&mut self, &mut command_rx).await;
     }
 }

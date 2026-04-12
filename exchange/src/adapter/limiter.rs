@@ -146,3 +146,147 @@ impl DynamicBucket {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct FixedWindowRateLimiterConfig {
+    pub limit: usize,
+    pub refill_rate: Duration,
+    pub limiter_buffer_pct: f32,
+    pub exit_status: reqwest::StatusCode,
+}
+
+impl FixedWindowRateLimiterConfig {
+    pub fn new(
+        limit: usize,
+        refill_rate: Duration,
+        limiter_buffer_pct: f32,
+        exit_status: reqwest::StatusCode,
+    ) -> Self {
+        Self {
+            limit,
+            refill_rate,
+            limiter_buffer_pct,
+            exit_status,
+        }
+    }
+}
+
+pub struct FixedWindowRateLimiter {
+    bucket: FixedWindowBucket,
+    exit_status: reqwest::StatusCode,
+}
+
+impl FixedWindowRateLimiter {
+    pub fn new(config: FixedWindowRateLimiterConfig) -> Self {
+        let keep_ratio = (1.0 - config.limiter_buffer_pct).clamp(0.0, 1.0);
+        let effective_limit = (config.limit as f32 * keep_ratio) as usize;
+
+        Self {
+            bucket: FixedWindowBucket::new(effective_limit, config.refill_rate),
+            exit_status: config.exit_status,
+        }
+    }
+}
+
+impl RateLimiter for FixedWindowRateLimiter {
+    fn prepare_request(&mut self, weight: usize) -> Option<Duration> {
+        self.bucket.calculate_wait_time(weight)
+    }
+
+    fn update_from_response(&mut self, _response: &reqwest::Response, weight: usize) {
+        self.bucket.consume_tokens(weight);
+    }
+
+    fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
+        response.status() == self.exit_status
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicRateLimiterConfig {
+    pub max_weight: usize,
+    pub refill_rate: Duration,
+    pub limiter_buffer_pct: f32,
+    pub used_weight_header: &'static str,
+    pub exit_status: reqwest::StatusCode,
+    pub extra_exit_status: Option<reqwest::StatusCode>,
+}
+
+impl DynamicRateLimiterConfig {
+    pub fn new(
+        max_weight: usize,
+        refill_rate: Duration,
+        limiter_buffer_pct: f32,
+        used_weight_header: &'static str,
+        exit_status: reqwest::StatusCode,
+        extra_exit_status: Option<reqwest::StatusCode>,
+    ) -> Self {
+        Self {
+            max_weight,
+            refill_rate,
+            limiter_buffer_pct,
+            used_weight_header,
+            exit_status,
+            extra_exit_status,
+        }
+    }
+}
+
+pub struct HeaderDynamicRateLimiter {
+    bucket: DynamicBucket,
+    used_weight_header: &'static str,
+    exit_status: reqwest::StatusCode,
+    extra_exit_status: Option<reqwest::StatusCode>,
+}
+
+impl HeaderDynamicRateLimiter {
+    pub fn new(config: DynamicRateLimiterConfig) -> Self {
+        let keep_ratio = (1.0 - config.limiter_buffer_pct).clamp(0.0, 1.0);
+        let effective_limit = (config.max_weight as f32 * keep_ratio) as usize;
+
+        Self {
+            bucket: DynamicBucket::new(effective_limit, config.refill_rate),
+            used_weight_header: config.used_weight_header,
+            exit_status: config.exit_status,
+            extra_exit_status: config.extra_exit_status,
+        }
+    }
+}
+
+impl RateLimiter for HeaderDynamicRateLimiter {
+    fn prepare_request(&mut self, weight: usize) -> Option<Duration> {
+        let (wait_time, _reason) = self.bucket.prepare_request(weight);
+        wait_time
+    }
+
+    fn update_from_response(&mut self, response: &reqwest::Response, _weight: usize) {
+        if let Some(header_value) = response
+            .headers()
+            .get(self.used_weight_header)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.bucket.update_weight(header_value);
+        }
+    }
+
+    fn should_exit_on_response(&self, response: &reqwest::Response) -> bool {
+        let status = response.status();
+        status == self.exit_status || Some(status) == self.extra_exit_status
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopRateLimiter;
+
+impl RateLimiter for NoopRateLimiter {
+    fn prepare_request(&mut self, _weight: usize) -> Option<Duration> {
+        None
+    }
+
+    fn update_from_response(&mut self, _response: &reqwest::Response, _weight: usize) {}
+
+    fn should_exit_on_response(&self, _response: &reqwest::Response) -> bool {
+        false
+    }
+}

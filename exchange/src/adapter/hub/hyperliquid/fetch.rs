@@ -122,7 +122,7 @@ async fn post_info<T: DeserializeOwned>(
 ) -> Result<T, AdapterError> {
     let url = format!("{}/info", API_DOMAIN);
     let response_text =
-        super::super::http_request_with_hub_limiter(hub, &url, 1, Some(Method::POST), Some(body))
+        super::super::http_request_with_limiter(hub, &url, 1, Some(Method::POST), Some(body))
             .await?;
 
     serde_json::from_str::<T>(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))
@@ -402,7 +402,7 @@ pub(super) async fn fetch_depth_snapshot_with_hub(
     });
 
     let response_text =
-        super::super::http_request_with_hub_limiter(hub, &url, 1, Some(Method::POST), Some(&body))
+        super::super::http_request_with_limiter(hub, &url, 1, Some(Method::POST), Some(&body))
             .await?;
 
     let depth: HyperliquidDepth = serde_json::from_str(&response_text)
@@ -482,7 +482,7 @@ pub(super) async fn fetch_klines_with_hub(
     });
 
     let klines_data: Vec<Value> =
-        super::super::http_parse_with_hub_limiter(hub, &url, 1, Some(Method::POST), Some(&body))
+        super::super::http_parse_with_limiter(hub, &url, 1, Some(Method::POST), Some(&body))
             .await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;

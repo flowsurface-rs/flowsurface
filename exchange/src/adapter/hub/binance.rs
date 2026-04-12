@@ -1,7 +1,8 @@
 use crate::{
-    Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade,
+    Kline, OpenInterest, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{Exchange, MarketKind},
     depth::DepthPayload,
+    limiter::DynamicRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -59,13 +60,13 @@ impl Default for BinanceConfig {
 }
 
 impl BinanceConfig {
-    fn limiter_config_for_market(self, market: MarketKind) -> super::DynamicRateLimiterConfig {
+    fn limiter_config_for_market(self, market: MarketKind) -> DynamicRateLimiterConfig {
         let max_weight = match market {
             MarketKind::Spot => self.spot_limit,
             MarketKind::LinearPerps | MarketKind::InversePerps => self.perps_limit,
         };
 
-        super::DynamicRateLimiterConfig::new(
+        DynamicRateLimiterConfig::new(
             max_weight,
             self.refill_rate,
             self.limiter_buffer_pct,
@@ -76,7 +77,7 @@ impl BinanceConfig {
     }
 }
 
-pub type BinanceLimiter = super::HeaderDynamicRateLimiter;
+pub type BinanceLimiter = crate::limiter::HeaderDynamicRateLimiter;
 
 #[derive(Debug, Clone)]
 pub struct BinanceMarketScope {
@@ -100,7 +101,7 @@ impl BinanceMarketScope {
     }
 }
 
-pub enum BinanceCommand {
+enum BinanceCommand {
     Fetch(super::FetchCommand<BinanceMarketScope>),
     FetchDepthSnapshot {
         ticker: Ticker,
@@ -114,7 +115,7 @@ pub struct BinanceHandle {
 }
 
 impl BinanceHandle {
-    pub fn new(request_port: RequestPort<BinanceCommand>) -> Self {
+    fn new(request_port: RequestPort<BinanceCommand>) -> Self {
         Self { request_port }
     }
 
@@ -124,7 +125,7 @@ impl BinanceHandle {
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
             .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::FetchTickerMetadata {
+                BinanceCommand::Fetch(super::FetchCommand::TickerMetadata {
                     market_scope,
                     reply,
                 })
@@ -138,7 +139,7 @@ impl BinanceHandle {
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
             .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::FetchTickerStats {
+                BinanceCommand::Fetch(super::FetchCommand::TickerStats {
                     market_scope,
                     reply,
                 })
@@ -154,7 +155,7 @@ impl BinanceHandle {
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::FetchKlines {
+                BinanceCommand::Fetch(super::FetchCommand::Klines {
                     ticker_info,
                     timeframe,
                     range,
@@ -172,7 +173,7 @@ impl BinanceHandle {
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::FetchOpenInterest {
+                BinanceCommand::Fetch(super::FetchCommand::OpenInterest {
                     ticker_info,
                     timeframe,
                     range,
@@ -190,7 +191,7 @@ impl BinanceHandle {
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
             .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::FetchTrades {
+                BinanceCommand::Fetch(super::FetchCommand::Trades {
                     ticker_info,
                     from_time,
                     data_path,
@@ -221,18 +222,6 @@ impl BinanceHandle {
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.fetch_ticker_stats(BinanceMarketScope::stats(market, contract_sizes))
             .await
-    }
-
-    pub fn sender(&self) -> mpsc::Sender<BinanceCommand> {
-        self.request_port.sender()
-    }
-
-    pub fn depth_stream(
-        &self,
-        ticker_info: TickerInfo,
-        push_freq: PushFrequency,
-    ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(self.clone(), ticker_info, push_freq)
     }
 }
 
@@ -289,7 +278,7 @@ impl Binance {
         }
     }
 
-    pub async fn run(mut self, mut command_rx: mpsc::Receiver<BinanceCommand>) {
+    async fn run(mut self, mut command_rx: mpsc::Receiver<BinanceCommand>) {
         while let Some(command) = command_rx.recv().await {
             fetch::handle_command(&mut self, command).await;
         }

@@ -131,7 +131,7 @@ async fn fetch_depth_snapshot_with_hub(
         },
     };
 
-    let text = super::super::http_request_with_hub_limiter(hub, &url, weight, None, None).await?;
+    let text = super::super::http_request_with_limiter(hub, &url, weight, None, None).await?;
 
     match market_type {
         MarketKind::Spot => {
@@ -198,7 +198,7 @@ async fn fetch_ticker_metadata_with_hub(
     };
 
     let response_text =
-        super::super::http_request_with_hub_limiter(hub, &url, weight, None, None).await?;
+        super::super::http_request_with_limiter(hub, &url, weight, None, None).await?;
 
     let exchange_info: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(format!("Failed to parse exchange info: {e}")))?;
@@ -286,7 +286,7 @@ async fn fetch_ticker_stats_with_hub(
     };
 
     let parsed_response: Vec<Value> =
-        super::super::http_parse_with_hub_limiter(hub, &url, weight, None, None).await?;
+        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
 
     let exchange = exchange_from_market_type(market);
     let mut ticker_price_map = HashMap::new();
@@ -405,7 +405,7 @@ async fn fetch_klines_with_hub(
     };
 
     let fetched_klines: Vec<FetchedKline> =
-        super::super::http_parse_with_hub_limiter(hub, &url, weight, None, None).await?;
+        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -526,7 +526,7 @@ async fn fetch_historical_oi_with_hub(
     }
 
     let binance_oi: Vec<DeOpenInterest> =
-        super::super::http_parse_with_hub_limiter(hub, &url, weight, None, None).await?;
+        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
 
     let contract_size = ticker_info.contract_size;
     let open_interest = binance_oi
@@ -558,7 +558,7 @@ async fn fetch_intraday_trades_with_hub(
     url.push_str(&format!("&startTime={from}"));
 
     let de_trades: Vec<DeTrade> =
-        super::super::http_parse_with_hub_limiter(hub, &url, weight, None, None).await?;
+        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
 
     let qty_norm = QtyNormalization::with_raw_qty_unit(
         volume_size_unit() == SizeUnit::Quote,
