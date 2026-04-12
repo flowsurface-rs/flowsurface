@@ -1,3 +1,7 @@
+pub mod connect;
+pub mod limiter;
+pub mod proxy;
+
 pub use super::error::AdapterError;
 use super::{Ticker, Timeframe};
 use crate::{

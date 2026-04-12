@@ -1,14 +1,12 @@
 pub mod adapter;
-pub mod connect;
 pub mod depth;
 mod error;
-mod limiter;
-pub mod proxy;
 mod serde_util;
 pub mod unit;
 
 pub use adapter::Event;
 use adapter::{Exchange, MarketKind};
+pub use adapter::{connect, limiter, proxy};
 
 use unit::price::de_price_from_number;
 use unit::price::{Price, PriceStep};

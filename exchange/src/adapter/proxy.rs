@@ -1,5 +1,4 @@
-use super::error::AdapterError;
-
+use crate::error::AdapterError;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
