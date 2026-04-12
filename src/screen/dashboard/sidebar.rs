@@ -35,12 +35,15 @@ pub enum Action {
 }
 
 impl Sidebar {
-    pub fn new(state: &SavedState) -> (Self, Task<Message>) {
+    pub fn new(
+        state: &SavedState,
+        handles: exchange::adapter::AdapterHandles,
+    ) -> (Self, Task<Message>) {
         let (tickers_table, initial_fetch) =
             if let Some(settings) = state.sidebar.tickers_table.as_ref() {
-                TickersTable::new_with_settings(settings)
+                TickersTable::new_with_settings(settings, handles.clone())
             } else {
-                TickersTable::new()
+                TickersTable::new(handles)
             };
 
         (

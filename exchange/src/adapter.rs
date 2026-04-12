@@ -11,11 +11,36 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
-pub mod binance;
-pub mod bybit;
-pub mod hyperliquid;
-pub mod mexc;
-pub mod okex;
+pub mod hub;
+
+pub use hub::{binance, bybit, hyperliquid, mexc, okex};
+
+#[derive(Clone)]
+pub struct AdapterHandles {
+    pub binance: binance::BinanceHandle,
+    pub bybit: bybit::BybitHandle,
+    pub hyperliquid: hyperliquid::HyperliquidHandle,
+    pub okex: okex::OkexHandle,
+    pub mexc: mexc::MexcHandle,
+}
+
+impl AdapterHandles {
+    pub fn spawn_default() -> Result<Self, AdapterError> {
+        Ok(Self {
+            binance: binance::spawn_default_binance()?,
+            bybit: bybit::spawn_default_bybit()?,
+            hyperliquid: hyperliquid::spawn_default_hyperliquid()?,
+            okex: okex::spawn_default_okex()?,
+            mexc: mexc::spawn_default_mexc()?,
+        })
+    }
+}
+
+impl std::hash::Hash for AdapterHandles {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::any::TypeId::of::<Self>().hash(state);
+    }
+}
 
 /// Buffer trades and flush in this interval
 const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
@@ -562,6 +587,7 @@ impl<I> StreamConfig<I> {
 /// `Binance`, `Bybit`, and `Hyperliquid` are fetched per market, while
 /// `Okex` and `Mexc` handle market branching internally due to combined perps endpoints.
 pub async fn fetch_ticker_metadata(
+    handles: &AdapterHandles,
     venue: Venue,
     markets: &[MarketKind],
 ) -> Result<HashMap<Ticker, Option<TickerInfo>>, AdapterError> {
@@ -569,26 +595,41 @@ pub async fn fetch_ticker_metadata(
         Venue::Binance => {
             let mut out = HashMap::default();
             for market in markets {
-                out.extend(binance::fetch_ticker_metadata(*market).await?);
+                out.extend(
+                    handles
+                        .binance
+                        .fetch_ticker_metadata_for_market(*market)
+                        .await?,
+                );
             }
             Ok(out)
         }
         Venue::Bybit => {
             let mut out = HashMap::default();
             for market in markets {
-                out.extend(bybit::fetch_ticker_metadata(*market).await?);
+                out.extend(handles.bybit.fetch_ticker_metadata(*market).await?);
             }
             Ok(out)
         }
         Venue::Hyperliquid => {
             let mut out = HashMap::default();
             for market in markets {
-                out.extend(hyperliquid::fetch_ticker_metadata(*market).await?);
+                out.extend(handles.hyperliquid.fetch_ticker_metadata(*market).await?);
             }
             Ok(out)
         }
-        Venue::Okex => okex::fetch_ticker_metadata(markets).await,
-        Venue::Mexc => mexc::fetch_ticker_metadata(markets).await,
+        Venue::Okex => {
+            handles
+                .okex
+                .fetch_ticker_metadata_for_markets(markets)
+                .await
+        }
+        Venue::Mexc => {
+            handles
+                .mexc
+                .fetch_ticker_metadata_for_markets(markets)
+                .await
+        }
     }
 }
 
@@ -597,6 +638,7 @@ pub async fn fetch_ticker_metadata(
 /// `Binance`, `Bybit`, and `Hyperliquid` are fetched per market, while
 /// `Okex` and `Mexc` handle market branching internally due to combined perps endpoints.
 pub async fn fetch_ticker_stats(
+    handles: &AdapterHandles,
     venue: Venue,
     markets: &[MarketKind],
     contract_sizes: Option<HashMap<Ticker, f32>>,
@@ -605,44 +647,81 @@ pub async fn fetch_ticker_stats(
         Venue::Binance => {
             let mut out = HashMap::default();
             for market in markets {
-                out.extend(binance::fetch_ticker_stats(*market, contract_sizes.as_ref()).await?);
+                out.extend(
+                    handles
+                        .binance
+                        .fetch_ticker_stats_for_market(*market, contract_sizes.clone())
+                        .await?,
+                );
             }
             Ok(out)
         }
         Venue::Bybit => {
             let mut out = HashMap::default();
             for market in markets {
-                out.extend(bybit::fetch_ticker_stats(*market).await?);
+                out.extend(handles.bybit.fetch_ticker_stats(*market).await?);
             }
             Ok(out)
         }
         Venue::Hyperliquid => {
             let mut out = HashMap::default();
             for market in markets {
-                out.extend(hyperliquid::fetch_ticker_stats(*market).await?);
+                out.extend(handles.hyperliquid.fetch_ticker_stats(*market).await?);
             }
             Ok(out)
         }
-        Venue::Okex => okex::fetch_ticker_stats(markets).await,
-        Venue::Mexc => mexc::fetch_ticker_stats(markets, contract_sizes.as_ref()).await,
+        Venue::Okex => handles.okex.fetch_ticker_stats_for_markets(markets).await,
+        Venue::Mexc => {
+            handles
+                .mexc
+                .fetch_ticker_stats_for_markets(markets, contract_sizes)
+                .await
+        }
     }
 }
 
 pub async fn fetch_klines(
+    handles: &AdapterHandles,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     match ticker_info.ticker.exchange.venue() {
-        Venue::Binance => binance::fetch_klines(ticker_info, timeframe, range).await,
-        Venue::Bybit => bybit::fetch_klines(ticker_info, timeframe, range).await,
-        Venue::Hyperliquid => hyperliquid::fetch_klines(ticker_info, timeframe, range).await,
-        Venue::Okex => okex::fetch_klines(ticker_info, timeframe, range).await,
-        Venue::Mexc => mexc::fetch_klines(ticker_info, timeframe, range).await,
+        Venue::Binance => {
+            handles
+                .binance
+                .fetch_klines(ticker_info, timeframe, range)
+                .await
+        }
+        Venue::Bybit => {
+            handles
+                .bybit
+                .fetch_klines(ticker_info, timeframe, range)
+                .await
+        }
+        Venue::Hyperliquid => {
+            handles
+                .hyperliquid
+                .fetch_klines(ticker_info, timeframe, range)
+                .await
+        }
+        Venue::Okex => {
+            handles
+                .okex
+                .fetch_klines(ticker_info, timeframe, range)
+                .await
+        }
+        Venue::Mexc => {
+            handles
+                .mexc
+                .fetch_klines(ticker_info, timeframe, range)
+                .await
+        }
     }
 }
 
 pub async fn fetch_open_interest(
+    handles: &AdapterHandles,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
@@ -651,13 +730,22 @@ pub async fn fetch_open_interest(
 
     match exchange {
         Exchange::BinanceLinear | Exchange::BinanceInverse => {
-            binance::fetch_historical_oi(ticker_info, range, timeframe).await
+            handles
+                .binance
+                .fetch_open_interest(ticker_info, timeframe, range)
+                .await
         }
         Exchange::BybitLinear | Exchange::BybitInverse => {
-            bybit::fetch_historical_oi(ticker_info, range, timeframe).await
+            handles
+                .bybit
+                .fetch_open_interest(ticker_info, timeframe, range)
+                .await
         }
         Exchange::OkexLinear | Exchange::OkexInverse => {
-            okex::fetch_historical_oi(ticker_info, range, timeframe).await
+            handles
+                .okex
+                .fetch_open_interest(ticker_info, timeframe, range)
+                .await
         }
         _ => Err(AdapterError::InvalidRequest(format!(
             "Open interest data not available for {exchange}"

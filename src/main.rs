@@ -64,6 +64,7 @@ fn main() {
 struct Flowsurface {
     main_window: window::Window,
     sidebar: dashboard::Sidebar,
+    handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
     network: NetworkManager,
@@ -109,6 +110,8 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
+        let handles = exchange::adapter::AdapterHandles::spawn_default()
+            .expect("Failed to spawn adapter handles");
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();
@@ -121,7 +124,7 @@ impl Flowsurface {
             window::open(config)
         };
 
-        let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state);
+        let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
@@ -131,6 +134,7 @@ impl Flowsurface {
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
             audio_stream,
             sidebar,
+            handles,
             confirm_dialog: None,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
@@ -214,10 +218,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
+                let handles = self.handles.clone();
 
                 return self
                     .active_dashboard_mut()
-                    .tick(now, main_window_id)
+                    .tick(&handles, now, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -291,9 +296,11 @@ impl Flowsurface {
 
                 let main_window = self.main_window;
                 let layout_id = id.unwrap_or(active_layout.unique);
+                let handles = self.handles.clone();
 
                 if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
-                    let (main_task, event) = dashboard.update(msg, &main_window, &layout_id);
+                    let (main_task, event) =
+                        dashboard.update(&handles, msg, &main_window, &layout_id);
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {
@@ -557,17 +564,22 @@ impl Flowsurface {
                 match action {
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
+                        let handles = self.handles.clone();
 
                         let task = {
                             if let Some(kind) = content {
                                 self.active_dashboard_mut().init_focused_pane(
+                                    &handles,
                                     main_window_id,
                                     ticker_info,
                                     kind,
                                 )
                             } else {
-                                self.active_dashboard_mut()
-                                    .switch_tickers_in_group(main_window_id, ticker_info)
+                                self.active_dashboard_mut().switch_tickers_in_group(
+                                    &handles,
+                                    main_window_id,
+                                    ticker_info,
+                                )
                             }
                         };
 
@@ -701,7 +713,7 @@ impl Flowsurface {
 
         let exchange_streams = self
             .active_dashboard()
-            .market_subscriptions()
+            .market_subscriptions(&self.handles)
             .map(Message::MarketWsEvent);
 
         let tick = iced::window::frames().map(Message::Tick);

@@ -1,4 +1,4 @@
-use exchange::adapter::{self, AdapterError, Exchange, StreamKind};
+use exchange::adapter::{self, AdapterError, AdapterHandles, Exchange, StreamKind};
 use exchange::{Kline, OpenInterest, TickerInfo, Trade};
 use iced::{
     Task,
@@ -204,6 +204,7 @@ pub enum FetchUpdate {
 }
 
 pub fn request_fetch(
+    handles: AdapterHandles,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
     layout_id: Uuid,
@@ -228,6 +229,7 @@ pub fn request_fetch(
 
             if let Some((stream, pane_uid)) = kline_stream {
                 return kline_fetch_task(
+                    handles.clone(),
                     layout_id,
                     pane_uid,
                     stream,
@@ -250,7 +252,14 @@ pub fn request_fetch(
             };
 
             if let Some((stream, pane_uid)) = kline_stream {
-                return oi_fetch_task(layout_id, pane_uid, stream, Some(req_id), Some((from, to)));
+                return oi_fetch_task(
+                    handles.clone(),
+                    layout_id,
+                    pane_uid,
+                    stream,
+                    Some(req_id),
+                    Some((from, to)),
+                );
             }
         }
         FetchRange::Trades(from_time, to_time) => {
@@ -314,6 +323,7 @@ pub fn request_fetch(
 }
 
 pub fn request_fetch_many(
+    handles: AdapterHandles,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
     layout_id: Uuid,
@@ -324,6 +334,7 @@ pub fn request_fetch_many(
 
     for (req_id, fetch, stream) in reqs {
         tasks.push(request_fetch(
+            handles.clone(),
             pane_id,
             ready_streams,
             layout_id,
@@ -338,6 +349,7 @@ pub fn request_fetch_many(
 }
 
 pub fn oi_fetch_task(
+    handles: AdapterHandles,
     layout_id: Uuid,
     pane_id: Uuid,
     stream: StreamKind,
@@ -353,30 +365,33 @@ pub fn oi_fetch_task(
         StreamKind::Kline {
             ticker_info,
             timeframe,
-        } => Task::perform(
-            iced::futures::TryFutureExt::map_err(
-                adapter::fetch_open_interest(ticker_info, timeframe, range),
-                |err| {
+        } => {
+            let fetch = async move {
+                adapter::fetch_open_interest(&handles, ticker_info, timeframe, range).await
+            };
+
+            Task::perform(
+                iced::futures::TryFutureExt::map_err(fetch, |err| {
                     log::error!("Open interest fetch failed: {err}");
                     err.ui_message()
-                },
-            ),
-            move |result| match result {
-                Ok(oi) => {
-                    let data = FetchedData::OI { data: oi, req_id };
-                    FetchUpdate::Data {
-                        layout_id,
-                        pane_id,
-                        data,
-                        stream,
+                }),
+                move |result| match result {
+                    Ok(oi) => {
+                        let data = FetchedData::OI { data: oi, req_id };
+                        FetchUpdate::Data {
+                            layout_id,
+                            pane_id,
+                            data,
+                            stream,
+                        }
                     }
-                }
-                Err(err) => FetchUpdate::Error {
-                    pane_id,
-                    error: err,
+                    Err(err) => FetchUpdate::Error {
+                        pane_id,
+                        error: err,
+                    },
                 },
-            },
-        ),
+            )
+        }
         _ => Task::none(),
     };
 
@@ -384,6 +399,7 @@ pub fn oi_fetch_task(
 }
 
 pub fn kline_fetch_task(
+    handles: AdapterHandles,
     layout_id: Uuid,
     pane_id: Uuid,
     stream: StreamKind,
@@ -399,33 +415,35 @@ pub fn kline_fetch_task(
         StreamKind::Kline {
             ticker_info,
             timeframe,
-        } => Task::perform(
-            iced::futures::TryFutureExt::map_err(
-                adapter::fetch_klines(ticker_info, timeframe, range),
-                |err| {
+        } => {
+            let fetch =
+                async move { adapter::fetch_klines(&handles, ticker_info, timeframe, range).await };
+
+            Task::perform(
+                iced::futures::TryFutureExt::map_err(fetch, |err| {
                     log::error!("Kline fetch failed: {err}");
                     err.ui_message()
-                },
-            ),
-            move |result| match result {
-                Ok(klines) => {
-                    let data = FetchedData::Klines {
-                        data: klines,
-                        req_id,
-                    };
-                    FetchUpdate::Data {
-                        layout_id,
-                        pane_id,
-                        data,
-                        stream,
+                }),
+                move |result| match result {
+                    Ok(klines) => {
+                        let data = FetchedData::Klines {
+                            data: klines,
+                            req_id,
+                        };
+                        FetchUpdate::Data {
+                            layout_id,
+                            pane_id,
+                            data,
+                            stream,
+                        }
                     }
-                }
-                Err(err) => FetchUpdate::Error {
-                    pane_id,
-                    error: err,
+                    Err(err) => FetchUpdate::Error {
+                        pane_id,
+                        error: err,
+                    },
                 },
-            },
-        ),
+            )
+        }
         _ => Task::none(),
     };
 
@@ -440,9 +458,11 @@ pub fn fetch_trades_batched(
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
         let mut latest_trade_t = from_time;
+        let handle = adapter::binance::spawn_default_binance()?;
 
         while latest_trade_t < to_time {
-            match adapter::binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone())
+            match handle
+                .fetch_trades(ticker_info, latest_trade_t, Some(data_path.clone()))
                 .await
             {
                 Ok(batch) => {
