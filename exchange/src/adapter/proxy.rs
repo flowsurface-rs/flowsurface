@@ -8,7 +8,6 @@ use tokio::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use std::{
     pin::Pin,
-    sync::OnceLock,
     task::{Context, Poll},
     time::Duration,
 };
@@ -412,22 +411,6 @@ impl std::fmt::Display for Proxy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.to_log_string())
     }
-}
-
-type ProxyCfgProvider = fn() -> Option<Proxy>;
-static RUNTIME_PROXY_CFG_PROVIDER: OnceLock<ProxyCfgProvider> = OnceLock::new();
-
-pub fn set_runtime_proxy_cfg_provider(provider: ProxyCfgProvider) {
-    let _ = RUNTIME_PROXY_CFG_PROVIDER.set(provider);
-}
-
-pub(crate) fn runtime_proxy_cfg() -> Option<Proxy> {
-    let Some(provider) = RUNTIME_PROXY_CFG_PROVIDER.get() else {
-        log::warn!("Proxy runtime provider not initialized; defaulting to direct (no proxy).");
-        return None;
-    };
-
-    provider()
 }
 
 fn authority_host_port(host: &str, port: u16) -> String {

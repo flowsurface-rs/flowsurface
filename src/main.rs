@@ -89,7 +89,7 @@ enum Message {
     Tick(std::time::Instant),
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
-    RestartRequested(HashMap<window::Id, WindowSpec>),
+    RestartRequested(Option<HashMap<window::Id, WindowSpec>>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
@@ -110,8 +110,12 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
-        let handles = exchange::adapter::AdapterHandles::spawn_default()
-            .expect("Failed to spawn adapter handles");
+        let handles = exchange::adapter::AdapterHandles::spawn_with_network(
+            exchange::adapter::AdapterNetworkConfig {
+                proxy_cfg: saved_state.proxy_cfg.clone(),
+            },
+        )
+        .expect("Failed to spawn adapter handles");
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();
@@ -255,9 +259,24 @@ impl Flowsurface {
             Message::SaveStateRequested(windows) => {
                 self.save_state_to_disk(&windows);
             }
-            Message::RestartRequested(windows) => {
+            Message::RestartRequested(Some(windows)) => {
                 self.save_state_to_disk(&windows);
                 return self.restart();
+            }
+            Message::RestartRequested(None) => {
+                self.confirm_dialog = None;
+
+                let mut active_windows = self
+                    .active_dashboard()
+                    .popout
+                    .keys()
+                    .copied()
+                    .collect::<Vec<window::Id>>();
+                active_windows.push(self.main_window.id);
+
+                return window::collect_window_specs(active_windows, |windows| {
+                    Message::RestartRequested(Some(windows))
+                });
             }
             Message::GoBack => {
                 let main_window = self.main_window.id;
@@ -537,6 +556,14 @@ impl Flowsurface {
                             data::config::proxy::save_proxy_auth(&proxy);
                         }
 
+                        self.confirm_dialog = Some(
+                            screen::ConfirmDialog::new(
+                                "Proxy changes saved. Restart now to apply?".to_string(),
+                                Box::new(Message::RestartRequested(None)),
+                            )
+                            .with_confirm_btn_text("Restart now".to_string()),
+                        );
+
                         let main_window = self.main_window.id;
                         let dashboard = self.active_dashboard_mut();
 
@@ -604,7 +631,9 @@ impl Flowsurface {
                     self.active_dashboard().popout.keys().copied().collect();
                 active_windows.push(self.main_window.id);
 
-                return window::collect_window_specs(active_windows, Message::RestartRequested);
+                return window::collect_window_specs(active_windows, |windows| {
+                    Message::RestartRequested(Some(windows))
+                });
             }
         }
         Task::none()
@@ -1197,14 +1226,27 @@ impl Flowsurface {
                     sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
                 };
 
-                dashboard_modal(
+                let base_content = dashboard_modal(
                     base,
                     self.network.view().map(Message::NetworkManager),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,
                     align_x,
-                )
+                );
+
+                if let Some(dialog) = &self.confirm_dialog {
+                    let dialog_content =
+                        confirm_dialog_container(dialog.clone(), Message::ToggleDialogModal(None));
+
+                    main_dialog_modal(
+                        base_content,
+                        dialog_content,
+                        Message::ToggleDialogModal(None),
+                    )
+                } else {
+                    base_content
+                }
             }
         }
     }

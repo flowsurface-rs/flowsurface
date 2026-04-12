@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
-    adapter::{Exchange, MarketKind},
+    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
     limiter::FixedWindowRateLimiterConfig,
     unit::{MinTicksize, qty::RawQtyUnit},
@@ -97,11 +97,18 @@ enum HyperliquidCommand {
 #[derive(Clone)]
 pub struct HyperliquidHandle {
     request_port: RequestPort<HyperliquidCommand>,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
 impl HyperliquidHandle {
-    fn new(request_port: RequestPort<HyperliquidCommand>) -> Self {
-        Self { request_port }
+    fn new(
+        request_port: RequestPort<HyperliquidCommand>,
+        proxy_cfg: Option<crate::proxy::Proxy>,
+    ) -> Self {
+        Self {
+            request_port,
+            proxy_cfg,
+        }
     }
 
     pub async fn fetch_ticker_metadata(
@@ -201,7 +208,13 @@ impl HyperliquidHandle {
         tick_multiplier: Option<TickMultiplier>,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(self.clone(), ticker_info, tick_multiplier, push_freq)
+        stream::connect_depth_stream(
+            self.clone(),
+            ticker_info,
+            tick_multiplier,
+            push_freq,
+            self.proxy_cfg.clone(),
+        )
     }
 
     pub fn connect_trade_stream(
@@ -209,7 +222,7 @@ impl HyperliquidHandle {
         tickers: Vec<TickerInfo>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_trade_stream(tickers, market_type)
+        stream::connect_trade_stream(tickers, market_type, self.proxy_cfg.clone())
     }
 
     pub fn connect_kline_stream(
@@ -217,7 +230,7 @@ impl HyperliquidHandle {
         streams: Vec<(TickerInfo, Timeframe)>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_kline_stream(streams, market_type)
+        stream::connect_kline_stream(streams, market_type, self.proxy_cfg.clone())
     }
 }
 
@@ -227,12 +240,23 @@ pub struct Hyperliquid {
 
 impl Hyperliquid {
     pub fn new() -> Result<Self, AdapterError> {
-        Self::with_config(HyperliquidConfig::default())
+        Self::new_with_network(AdapterNetworkConfig::default())
+    }
+
+    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+        Self::with_config_and_network(HyperliquidConfig::default(), network)
     }
 
     pub fn with_config(config: HyperliquidConfig) -> Result<Self, AdapterError> {
+        Self::with_config_and_network(config, AdapterNetworkConfig::default())
+    }
+
+    pub fn with_config_and_network(
+        config: HyperliquidConfig,
+        network: AdapterNetworkConfig,
+    ) -> Result<Self, AdapterError> {
         let limiter = HyperliquidLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter)?;
+        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
 
         Ok(Self { hub })
     }
@@ -284,11 +308,18 @@ impl super::FetchCommandHandler<MarketKind> for Hyperliquid {
 }
 
 pub fn spawn_default_hyperliquid() -> Result<HyperliquidHandle, AdapterError> {
-    let worker = Hyperliquid::new()?;
+    spawn_hyperliquid_with_network(AdapterNetworkConfig::default())
+}
+
+pub fn spawn_hyperliquid_with_network(
+    network: AdapterNetworkConfig,
+) -> Result<HyperliquidHandle, AdapterError> {
+    let proxy_cfg = network.proxy_cfg.clone();
+    let worker = Hyperliquid::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
         });
 
-    Ok(HyperliquidHandle::new(request_port))
+    Ok(HyperliquidHandle::new(request_port, proxy_cfg))
 }

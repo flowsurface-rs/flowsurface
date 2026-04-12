@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade,
-    adapter::{Exchange, MarketKind},
+    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
     unit::qty::RawQtyUnit,
 };
@@ -138,11 +138,15 @@ enum MexcCommand {
 #[derive(Clone)]
 pub struct MexcHandle {
     request_port: RequestPort<MexcCommand>,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
 impl MexcHandle {
-    fn new(request_port: RequestPort<MexcCommand>) -> Self {
-        Self { request_port }
+    fn new(request_port: RequestPort<MexcCommand>, proxy_cfg: Option<crate::proxy::Proxy>) -> Self {
+        Self {
+            request_port,
+            proxy_cfg,
+        }
     }
 
     pub async fn fetch_ticker_metadata(
@@ -255,7 +259,7 @@ impl MexcHandle {
         ticker_info: TickerInfo,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(self.clone(), ticker_info, push_freq)
+        stream::connect_depth_stream(self.clone(), ticker_info, push_freq, self.proxy_cfg.clone())
     }
 
     pub fn connect_trade_stream(
@@ -263,7 +267,7 @@ impl MexcHandle {
         tickers: Vec<TickerInfo>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_trade_stream(tickers, market_type)
+        stream::connect_trade_stream(tickers, market_type, self.proxy_cfg.clone())
     }
 
     pub fn connect_kline_stream(
@@ -271,7 +275,7 @@ impl MexcHandle {
         streams: Vec<(TickerInfo, Timeframe)>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_kline_stream(streams, market_type)
+        stream::connect_kline_stream(streams, market_type, self.proxy_cfg.clone())
     }
 }
 
@@ -281,11 +285,22 @@ pub struct Mexc {
 
 impl Mexc {
     pub fn new() -> Result<Self, AdapterError> {
-        Self::with_config(MexcConfig)
+        Self::new_with_network(AdapterNetworkConfig::default())
+    }
+
+    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+        Self::with_config_and_network(MexcConfig, network)
     }
 
     pub fn with_config(_config: MexcConfig) -> Result<Self, AdapterError> {
-        let hub = HttpHub::new(MexcLimiter::default())?;
+        Self::with_config_and_network(MexcConfig, AdapterNetworkConfig::default())
+    }
+
+    pub fn with_config_and_network(
+        _config: MexcConfig,
+        network: AdapterNetworkConfig,
+    ) -> Result<Self, AdapterError> {
+        let hub = HttpHub::new(MexcLimiter::default(), network.proxy_cfg)?;
         Ok(Self { hub })
     }
 
@@ -341,11 +356,16 @@ impl super::FetchCommandHandler<MexcMarketScope> for Mexc {
 }
 
 pub fn spawn_default_mexc() -> Result<MexcHandle, AdapterError> {
-    let worker = Mexc::new()?;
+    spawn_mexc_with_network(AdapterNetworkConfig::default())
+}
+
+pub fn spawn_mexc_with_network(network: AdapterNetworkConfig) -> Result<MexcHandle, AdapterError> {
+    let proxy_cfg = network.proxy_cfg.clone();
+    let worker = Mexc::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
         });
 
-    Ok(MexcHandle::new(request_port))
+    Ok(MexcHandle::new(request_port, proxy_cfg))
 }

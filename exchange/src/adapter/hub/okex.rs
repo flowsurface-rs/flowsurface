@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, Trade,
-    adapter::{Exchange, MarketKind},
+    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
@@ -85,11 +85,15 @@ type OkexCommand = super::FetchCommand<Vec<MarketKind>>;
 #[derive(Clone)]
 pub struct OkexHandle {
     request_port: RequestPort<OkexCommand>,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
 impl OkexHandle {
-    fn new(request_port: RequestPort<OkexCommand>) -> Self {
-        Self { request_port }
+    fn new(request_port: RequestPort<OkexCommand>, proxy_cfg: Option<crate::proxy::Proxy>) -> Self {
+        Self {
+            request_port,
+            proxy_cfg,
+        }
     }
 
     pub async fn fetch_ticker_metadata(
@@ -183,7 +187,7 @@ impl OkexHandle {
         ticker_info: TickerInfo,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(ticker_info, push_freq)
+        stream::connect_depth_stream(ticker_info, push_freq, self.proxy_cfg.clone())
     }
 
     pub fn connect_trade_stream(
@@ -191,7 +195,7 @@ impl OkexHandle {
         streams: Vec<TickerInfo>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_trade_stream(streams, market_type)
+        stream::connect_trade_stream(streams, market_type, self.proxy_cfg.clone())
     }
 
     pub fn connect_kline_stream(
@@ -199,7 +203,7 @@ impl OkexHandle {
         streams: Vec<(TickerInfo, Timeframe)>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_kline_stream(streams, market_type)
+        stream::connect_kline_stream(streams, market_type, self.proxy_cfg.clone())
     }
 }
 
@@ -209,12 +213,23 @@ pub struct Okex {
 
 impl Okex {
     pub fn new() -> Result<Self, AdapterError> {
-        Self::with_config(OkexConfig::default())
+        Self::new_with_network(AdapterNetworkConfig::default())
+    }
+
+    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+        Self::with_config_and_network(OkexConfig::default(), network)
     }
 
     pub fn with_config(config: OkexConfig) -> Result<Self, AdapterError> {
+        Self::with_config_and_network(config, AdapterNetworkConfig::default())
+    }
+
+    pub fn with_config_and_network(
+        config: OkexConfig,
+        network: AdapterNetworkConfig,
+    ) -> Result<Self, AdapterError> {
         let limiter = OkexLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter)?;
+        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
 
         Ok(Self { hub })
     }
@@ -276,11 +291,16 @@ impl super::FetchCommandHandler<Vec<MarketKind>> for Okex {
 }
 
 pub fn spawn_default_okex() -> Result<OkexHandle, AdapterError> {
-    let worker = Okex::new()?;
+    spawn_okex_with_network(AdapterNetworkConfig::default())
+}
+
+pub fn spawn_okex_with_network(network: AdapterNetworkConfig) -> Result<OkexHandle, AdapterError> {
+    let proxy_cfg = network.proxy_cfg.clone();
+    let worker = Okex::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
         });
 
-    Ok(OkexHandle::new(request_port))
+    Ok(OkexHandle::new(request_port, proxy_cfg))
 }

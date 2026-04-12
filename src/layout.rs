@@ -1,4 +1,3 @@
-use crate::connector::{runtime_proxy_cfg, set_runtime_proxy_cfg};
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
 use data::{
@@ -372,8 +371,6 @@ pub fn load_saved_state() -> SavedState {
             {
                 proxy.auth = Some(auth);
             }
-            set_runtime_proxy_cfg(proxy_cfg.clone());
-            exchange::proxy::set_runtime_proxy_cfg_provider(runtime_proxy_cfg);
 
             SavedState {
                 theme: state.selected_theme,

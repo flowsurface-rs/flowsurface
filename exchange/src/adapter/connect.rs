@@ -45,67 +45,93 @@ pub fn depth_stream(
 ) -> BoxStream<'static, Event> {
     let ticker = config.id;
     let push_freq = config.push_freq;
+    let proxy_cfg = handles.proxy_cfg();
 
     match config.exchange.venue() {
         Venue::Binance => adapter::binance::stream::connect_depth_stream(
             handles.binance.clone(),
             ticker,
             push_freq,
+            proxy_cfg,
         )
         .boxed(),
-        Venue::Bybit => adapter::bybit::stream::connect_depth_stream(ticker, push_freq).boxed(),
+        Venue::Bybit => {
+            adapter::bybit::stream::connect_depth_stream(ticker, push_freq, proxy_cfg).boxed()
+        }
         Venue::Hyperliquid => adapter::hyperliquid::stream::connect_depth_stream(
             handles.hyperliquid.clone(),
             ticker,
             config.tick_mltp,
             push_freq,
+            proxy_cfg,
         )
         .boxed(),
-        Venue::Okex => adapter::okex::stream::connect_depth_stream(ticker, push_freq).boxed(),
-        Venue::Mexc => {
-            adapter::mexc::stream::connect_depth_stream(handles.mexc.clone(), ticker, push_freq)
-                .boxed()
+        Venue::Okex => {
+            adapter::okex::stream::connect_depth_stream(ticker, push_freq, proxy_cfg).boxed()
         }
+        Venue::Mexc => adapter::mexc::stream::connect_depth_stream(
+            handles.mexc.clone(),
+            ticker,
+            push_freq,
+            proxy_cfg,
+        )
+        .boxed(),
     }
 }
 
 pub fn trade_stream(
-    _actors: &AdapterHandles,
+    handles: &AdapterHandles,
     config: &StreamConfig<Vec<TickerInfo>>,
 ) -> BoxStream<'static, Event> {
     let tickers = config.id.clone();
     let market_kind = config.exchange.market_type();
+    let proxy_cfg = handles.proxy_cfg();
 
     match config.exchange.venue() {
-        Venue::Bybit => adapter::bybit::stream::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Bybit => {
+            adapter::bybit::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
+        }
         Venue::Binance => {
-            adapter::binance::stream::connect_trade_stream(tickers, market_kind).boxed()
+            adapter::binance::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
         }
         Venue::Hyperliquid => {
-            adapter::hyperliquid::stream::connect_trade_stream(tickers, market_kind).boxed()
+            adapter::hyperliquid::stream::connect_trade_stream(tickers, market_kind, proxy_cfg)
+                .boxed()
         }
-        Venue::Okex => adapter::okex::stream::connect_trade_stream(tickers, market_kind).boxed(),
-        Venue::Mexc => adapter::mexc::stream::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Okex => {
+            adapter::okex::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
+        }
+        Venue::Mexc => {
+            adapter::mexc::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
+        }
     }
 }
 
 pub fn kline_stream(
-    _actors: &AdapterHandles,
+    handles: &AdapterHandles,
     config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>,
 ) -> BoxStream<'static, Event> {
     let streams = config.id.clone();
     let market_kind = config.exchange.market_type();
+    let proxy_cfg = handles.proxy_cfg();
 
     match config.exchange.venue() {
         Venue::Binance => {
-            adapter::binance::stream::connect_kline_stream(streams, market_kind).boxed()
+            adapter::binance::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
         }
-        Venue::Bybit => adapter::bybit::stream::connect_kline_stream(streams, market_kind).boxed(),
+        Venue::Bybit => {
+            adapter::bybit::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
+        }
         Venue::Hyperliquid => {
-            adapter::hyperliquid::stream::connect_kline_stream(streams, market_kind).boxed()
+            adapter::hyperliquid::stream::connect_kline_stream(streams, market_kind, proxy_cfg)
+                .boxed()
         }
-        Venue::Okex => adapter::okex::stream::connect_kline_stream(streams, market_kind).boxed(),
-        Venue::Mexc => adapter::mexc::stream::connect_kline_stream(streams, market_kind).boxed(),
+        Venue::Okex => {
+            adapter::okex::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
+        }
+        Venue::Mexc => {
+            adapter::mexc::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
+        }
     }
 }
 
@@ -169,6 +195,7 @@ where
 pub async fn connect_ws(
     domain: &str,
     url: &str,
+    proxy_cfg: Option<&super::proxy::Proxy>,
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
     let parsed = Url::parse(url).map_err(|e| AdapterError::InvalidRequest(e.to_string()))?;
 
@@ -186,7 +213,7 @@ pub async fn connect_ws(
         AdapterError::InvalidRequest("Missing port for websocket URL".to_string())
     })?;
 
-    let stream = setup_tcp(domain, target_port).await?;
+    let stream = setup_tcp(domain, target_port, proxy_cfg).await?;
 
     match parsed.scheme() {
         "wss" => {
@@ -223,8 +250,9 @@ pub async fn connect_ws(
 async fn setup_tcp(
     domain: &str,
     target_port: u16,
+    proxy_cfg: Option<&super::proxy::Proxy>,
 ) -> Result<super::proxy::ProxyStream, AdapterError> {
-    if let Some(proxy) = super::proxy::runtime_proxy_cfg() {
+    if let Some(proxy) = proxy_cfg {
         log::info!("Using proxy for WS: {}", proxy);
         return proxy.connect_tcp(domain, target_port).await;
     }

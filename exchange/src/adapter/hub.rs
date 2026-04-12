@@ -25,12 +25,16 @@ pub struct HttpHub<L> {
 }
 
 impl<L> HttpHub<L> {
-    pub fn new(limiter: L) -> Result<Self, AdapterError> {
-        Self::with_config(limiter, HttpHubConfig::default())
+    pub fn new(limiter: L, proxy_cfg: Option<crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+        Self::with_config(limiter, HttpHubConfig::default(), proxy_cfg)
     }
 
-    fn with_config(limiter: L, config: HttpHubConfig) -> Result<Self, AdapterError> {
-        let client = build_http_client(config)?;
+    fn with_config(
+        limiter: L,
+        config: HttpHubConfig,
+        proxy_cfg: Option<crate::proxy::Proxy>,
+    ) -> Result<Self, AdapterError> {
+        let client = build_http_client(config, proxy_cfg.as_ref())?;
 
         Ok(Self { client, limiter })
     }
@@ -59,13 +63,15 @@ impl Default for HttpHubConfig {
     }
 }
 
-fn build_http_client(config: HttpHubConfig) -> Result<Client, AdapterError> {
+fn build_http_client(
+    config: HttpHubConfig,
+    proxy_cfg: Option<&crate::proxy::Proxy>,
+) -> Result<Client, AdapterError> {
     let builder = Client::builder()
         .connect_timeout(config.connect_timeout)
         .timeout(config.request_timeout);
 
-    let runtime_proxy = crate::proxy::runtime_proxy_cfg();
-    let builder = crate::proxy::try_apply_proxy(builder, runtime_proxy.as_ref());
+    let builder = crate::proxy::try_apply_proxy(builder, proxy_cfg);
 
     builder.build().map_err(|error| {
         AdapterError::InvalidRequest(format!("Failed to build worker HTTP client: {error}"))

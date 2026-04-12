@@ -216,6 +216,7 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     market: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -259,7 +260,7 @@ pub fn connect_kline_stream(
                     let domain = ws_domain_from_market_type(market);
                     let url = format!("wss://{domain}/stream?streams={stream_str}");
 
-                    if let Ok(websocket) = connect_ws(domain, &url).await {
+                    if let Ok(websocket) = connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                         state = State::Connected(websocket);
                         let _ = output.send(Event::Connected(exchange)).await;
                     } else {
@@ -356,6 +357,7 @@ pub fn connect_kline_stream(
 pub fn connect_trade_stream(
     tickers: Vec<TickerInfo>,
     market: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -403,7 +405,7 @@ pub fn connect_trade_stream(
                     let domain = ws_domain_from_market_type(market);
                     let url = format!("wss://{domain}/stream?streams={stream}");
 
-                    if let Ok(websocket) = connect_ws(domain, &url).await {
+                    if let Ok(websocket) = connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                         state = State::Connected(websocket);
                         last_flush = tokio::time::Instant::now();
 
@@ -502,6 +504,7 @@ pub fn connect_depth_stream(
     handle: BinanceHandle,
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let ticker = ticker_info.ticker;
@@ -525,7 +528,7 @@ pub fn connect_depth_stream(
             let domain = ws_domain_from_market_type(market);
             let url = format!("wss://{domain}/stream?streams={stream}");
 
-            let websocket = match connect_ws(domain, &url).await {
+            let websocket = match connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                 Ok(websocket) => websocket,
                 Err(_) => {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

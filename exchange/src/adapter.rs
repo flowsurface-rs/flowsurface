@@ -19,8 +19,14 @@ pub mod hub;
 
 pub use hub::{binance, bybit, hyperliquid, mexc, okex};
 
+#[derive(Debug, Clone, Default)]
+pub struct AdapterNetworkConfig {
+    pub proxy_cfg: Option<proxy::Proxy>,
+}
+
 #[derive(Clone)]
 pub struct AdapterHandles {
+    proxy_cfg: Option<proxy::Proxy>,
     pub binance: binance::BinanceHandle,
     pub bybit: bybit::BybitHandle,
     pub hyperliquid: hyperliquid::HyperliquidHandle,
@@ -30,13 +36,22 @@ pub struct AdapterHandles {
 
 impl AdapterHandles {
     pub fn spawn_default() -> Result<Self, AdapterError> {
+        Self::spawn_with_network(AdapterNetworkConfig::default())
+    }
+
+    pub fn spawn_with_network(config: AdapterNetworkConfig) -> Result<Self, AdapterError> {
         Ok(Self {
-            binance: binance::spawn_default_binance()?,
-            bybit: bybit::spawn_default_bybit()?,
-            hyperliquid: hyperliquid::spawn_default_hyperliquid()?,
-            okex: okex::spawn_default_okex()?,
-            mexc: mexc::spawn_default_mexc()?,
+            proxy_cfg: config.proxy_cfg.clone(),
+            binance: binance::spawn_binance_with_network(config.clone())?,
+            bybit: bybit::spawn_bybit_with_network(config.clone())?,
+            hyperliquid: hyperliquid::spawn_hyperliquid_with_network(config.clone())?,
+            okex: okex::spawn_okex_with_network(config.clone())?,
+            mexc: mexc::spawn_mexc_with_network(config)?,
         })
+    }
+
+    pub fn proxy_cfg(&self) -> Option<proxy::Proxy> {
+        self.proxy_cfg.clone()
     }
 }
 

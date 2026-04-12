@@ -220,9 +220,10 @@ fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
 async fn connect_websocket(
     domain: &str,
     path: &str,
+    proxy_cfg: Option<&crate::proxy::Proxy>,
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
     let url = format!("wss://{}{}", domain, path);
-    connect_ws(domain, &url).await
+    connect_ws(domain, &url, proxy_cfg).await
 }
 
 async fn send_ping(
@@ -246,6 +247,7 @@ pub fn connect_depth_stream(
     handle: MexcHandle,
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state: State = State::Disconnected;
@@ -270,7 +272,13 @@ pub fn connect_depth_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
+                    match connect_websocket(
+                        MEXC_FUTURES_WS_DOMAIN,
+                        MEXC_FUTURES_WS_PATH,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await
+                    {
                         Ok(mut websocket) => {
                             let depth_subscription = json!({
                                 "method": "sub.depth",
@@ -432,6 +440,7 @@ pub fn connect_depth_stream(
 pub fn connect_trade_stream(
     tickers: Vec<TickerInfo>,
     market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state: State = State::Disconnected;
@@ -464,7 +473,13 @@ pub fn connect_trade_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
+                    match connect_websocket(
+                        MEXC_FUTURES_WS_DOMAIN,
+                        MEXC_FUTURES_WS_PATH,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await
+                    {
                         Ok(mut websocket) => {
                             for ticker_info in &tickers {
                                 let symbol = ticker_info.ticker.to_full_symbol_and_type().0;
@@ -605,6 +620,7 @@ pub fn connect_trade_stream(
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -658,7 +674,13 @@ pub fn connect_kline_stream(
         loop {
             match &mut state {
                 State::Disconnected => {
-                    match connect_websocket(MEXC_FUTURES_WS_DOMAIN, MEXC_FUTURES_WS_PATH).await {
+                    match connect_websocket(
+                        MEXC_FUTURES_WS_DOMAIN,
+                        MEXC_FUTURES_WS_PATH,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await
+                    {
                         Ok(mut websocket) => {
                             let mut subscribed_any = false;
 

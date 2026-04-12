@@ -156,9 +156,10 @@ enum StreamData {
 async fn connect_websocket(
     domain: &str,
     path: &str,
+    proxy_cfg: Option<&crate::proxy::Proxy>,
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
     let url = format!("wss://{}{}", domain, path);
-    connect_ws(domain, &url).await
+    connect_ws(domain, &url, proxy_cfg).await
 }
 
 fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
@@ -198,6 +199,7 @@ pub fn connect_depth_stream(
     ticker_info: TickerInfo,
     tick_multiplier: Option<TickMultiplier>,
     push_freq: PushFrequency,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -252,7 +254,7 @@ pub fn connect_depth_stream(
                         Some(qty_norm),
                     );
 
-                    match connect_websocket(WS_DOMAIN, "/ws").await {
+                    match connect_websocket(WS_DOMAIN, "/ws", proxy_cfg.as_ref()).await {
                         Ok(mut websocket) => {
                             let mut depth_subscription = json!({
                                 "method": "subscribe",
@@ -397,6 +399,7 @@ pub fn connect_depth_stream(
 pub fn connect_trade_stream(
     tickers: Vec<TickerInfo>,
     market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -434,51 +437,53 @@ pub fn connect_trade_stream(
 
         loop {
             match &mut state {
-                State::Disconnected => match connect_websocket(WS_DOMAIN, "/ws").await {
-                    Ok(mut websocket) => {
-                        let mut subscribe_ok = true;
-                        for ticker_info in &tickers {
-                            let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+                State::Disconnected => {
+                    match connect_websocket(WS_DOMAIN, "/ws", proxy_cfg.as_ref()).await {
+                        Ok(mut websocket) => {
+                            let mut subscribe_ok = true;
+                            for ticker_info in &tickers {
+                                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
 
-                            let trades_subscribe_msg = json!({
-                                "method": "subscribe",
-                                "subscription": {
-                                    "type": "trades",
-                                    "coin": symbol_str
+                                let trades_subscribe_msg = json!({
+                                    "method": "subscribe",
+                                    "subscription": {
+                                        "type": "trades",
+                                        "coin": symbol_str
+                                    }
+                                });
+
+                                if websocket
+                                    .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                        trades_subscribe_msg.to_string().as_bytes(),
+                                    )))
+                                    .await
+                                    .is_err()
+                                {
+                                    subscribe_ok = false;
+                                    break;
                                 }
-                            });
-
-                            if websocket
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    trades_subscribe_msg.to_string().as_bytes(),
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                subscribe_ok = false;
-                                break;
                             }
-                        }
 
-                        if !subscribe_ok {
+                            if !subscribe_ok {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
+
+                            state = State::Connected(websocket);
+                            last_flush = tokio::time::Instant::now();
+                            let _ = output.send(Event::Connected(exchange)).await;
+                        }
+                        Err(_) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
-                            continue;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Failed to connect to websocket".to_string(),
+                                ))
+                                .await;
                         }
-
-                        state = State::Connected(websocket);
-                        last_flush = tokio::time::Instant::now();
-                        let _ = output.send(Event::Connected(exchange)).await;
                     }
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Failed to connect to websocket".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
                 State::Connected(websocket) => match websocket.read_frame().await {
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => {
@@ -562,6 +567,7 @@ pub fn connect_trade_stream(
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     _market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -575,46 +581,48 @@ pub fn connect_kline_stream(
 
         loop {
             match &mut state {
-                State::Disconnected => match connect_websocket(WS_DOMAIN, "/ws").await {
-                    Ok(mut websocket) => {
-                        for (ticker_info, timeframe) in &streams {
-                            let ticker = ticker_info.ticker;
-                            let interval = timeframe.to_string();
+                State::Disconnected => {
+                    match connect_websocket(WS_DOMAIN, "/ws", proxy_cfg.as_ref()).await {
+                        Ok(mut websocket) => {
+                            for (ticker_info, timeframe) in &streams {
+                                let ticker = ticker_info.ticker;
+                                let interval = timeframe.to_string();
 
-                            let (symbol_str, _) = ticker.to_full_symbol_and_type();
-                            let subscribe_msg = json!({
-                                "method": "subscribe",
-                                "subscription": {
-                                    "type": "candle",
-                                    "coin": symbol_str,
-                                    "interval": interval
+                                let (symbol_str, _) = ticker.to_full_symbol_and_type();
+                                let subscribe_msg = json!({
+                                    "method": "subscribe",
+                                    "subscription": {
+                                        "type": "candle",
+                                        "coin": symbol_str,
+                                        "interval": interval
+                                    }
+                                });
+
+                                if (websocket
+                                    .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                                        subscribe_msg.to_string().as_bytes(),
+                                    )))
+                                    .await)
+                                    .is_err()
+                                {
+                                    break;
                                 }
-                            });
-
-                            if (websocket
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    subscribe_msg.to_string().as_bytes(),
-                                )))
-                                .await)
-                                .is_err()
-                            {
-                                break;
                             }
-                        }
 
-                        state = State::Connected(websocket);
-                        let _ = output.send(Event::Connected(exchange)).await;
+                            state = State::Connected(websocket);
+                            let _ = output.send(Event::Connected(exchange)).await;
+                        }
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Failed to connect to websocket".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Failed to connect to websocket".to_string(),
-                            ))
-                            .await;
-                    }
-                },
+                }
                 State::Connected(websocket) => match websocket.read_frame().await {
                     Ok(msg) => match msg.opcode {
                         OpCode::Text => {

@@ -203,6 +203,7 @@ async fn try_connect(
     streams: &Value,
     market_type: MarketKind,
     output: &mut mpsc::Sender<Event>,
+    proxy_cfg: Option<&crate::proxy::Proxy>,
 ) -> State {
     let exchange = match market_type {
         MarketKind::Spot => crate::Exchange::BybitSpot,
@@ -219,7 +220,7 @@ async fn try_connect(
         }
     );
 
-    match connect_ws(WS_DOMAIN, &url).await {
+    match connect_ws(WS_DOMAIN, &url, proxy_cfg).await {
         Ok(mut websocket) => {
             if let Err(e) = websocket
                 .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
@@ -256,6 +257,7 @@ async fn try_connect(
 pub fn connect_depth_stream(
     ticker_info: TickerInfo,
     push_freq: PushFrequency,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state: State = State::Disconnected;
@@ -299,7 +301,13 @@ pub fn connect_depth_stream(
                         "op": "subscribe",
                         "args": [stream]
                     });
-                    state = try_connect(&subscribe_message, market_type, &mut output).await;
+                    state = try_connect(
+                        &subscribe_message,
+                        market_type,
+                        &mut output,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await;
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
                     Ok(msg) => match msg.opcode {
@@ -390,6 +398,7 @@ pub fn connect_depth_stream(
 pub fn connect_trade_stream(
     tickers: Vec<TickerInfo>,
     market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state: State = State::Disconnected;
@@ -435,7 +444,13 @@ pub fn connect_trade_stream(
                         "args": stream
                     });
 
-                    state = try_connect(&subscribe_message, market_type, &mut output).await;
+                    state = try_connect(
+                        &subscribe_message,
+                        market_type,
+                        &mut output,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await;
                     last_flush = tokio::time::Instant::now();
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
@@ -518,6 +533,7 @@ pub fn connect_trade_stream(
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
@@ -567,7 +583,13 @@ pub fn connect_kline_stream(
                         "args": stream_str
                     });
 
-                    state = try_connect(&subscribe_message, market_type, &mut output).await;
+                    state = try_connect(
+                        &subscribe_message,
+                        market_type,
+                        &mut output,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await;
                 }
                 State::Connected(websocket) => match websocket.read_frame().await {
                     Ok(msg) => match msg.opcode {

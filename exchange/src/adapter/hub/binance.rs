@@ -1,6 +1,6 @@
 use crate::{
     Kline, OpenInterest, Ticker, TickerInfo, Timeframe, Trade,
-    adapter::{Exchange, MarketKind},
+    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
     limiter::DynamicRateLimiterConfig,
     unit::qty::RawQtyUnit,
@@ -233,19 +233,33 @@ pub struct Binance {
 
 impl Binance {
     pub fn new() -> Result<Self, AdapterError> {
-        Self::with_config(BinanceConfig::default())
+        Self::new_with_network(AdapterNetworkConfig::default())
+    }
+
+    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+        Self::with_config_and_network(BinanceConfig::default(), network)
     }
 
     pub fn with_config(config: BinanceConfig) -> Result<Self, AdapterError> {
-        let spot_hub = HttpHub::new(BinanceLimiter::new(
-            config.limiter_config_for_market(MarketKind::Spot),
-        ))?;
-        let linear_hub = HttpHub::new(BinanceLimiter::new(
-            config.limiter_config_for_market(MarketKind::LinearPerps),
-        ))?;
-        let inverse_hub = HttpHub::new(BinanceLimiter::new(
-            config.limiter_config_for_market(MarketKind::InversePerps),
-        ))?;
+        Self::with_config_and_network(config, AdapterNetworkConfig::default())
+    }
+
+    pub fn with_config_and_network(
+        config: BinanceConfig,
+        network: AdapterNetworkConfig,
+    ) -> Result<Self, AdapterError> {
+        let spot_hub = HttpHub::new(
+            BinanceLimiter::new(config.limiter_config_for_market(MarketKind::Spot)),
+            network.proxy_cfg.clone(),
+        )?;
+        let linear_hub = HttpHub::new(
+            BinanceLimiter::new(config.limiter_config_for_market(MarketKind::LinearPerps)),
+            network.proxy_cfg.clone(),
+        )?;
+        let inverse_hub = HttpHub::new(
+            BinanceLimiter::new(config.limiter_config_for_market(MarketKind::InversePerps)),
+            network.proxy_cfg,
+        )?;
 
         Ok(Self {
             spot_hub,
@@ -286,7 +300,13 @@ impl Binance {
 }
 
 pub fn spawn_default_binance() -> Result<BinanceHandle, AdapterError> {
-    let worker = Binance::new()?;
+    spawn_binance_with_network(AdapterNetworkConfig::default())
+}
+
+pub fn spawn_binance_with_network(
+    network: AdapterNetworkConfig,
+) -> Result<BinanceHandle, AdapterError> {
+    let worker = Binance::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
