@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, Trade,
+    Kline, OpenInterest, TickerInfo, Timeframe,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
@@ -69,18 +69,11 @@ type BybitCommand = super::FetchCommand<MarketKind>;
 #[derive(Clone)]
 pub struct BybitHandle {
     request_port: RequestPort<BybitCommand>,
-    proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
 impl BybitHandle {
-    fn new(
-        request_port: RequestPort<BybitCommand>,
-        proxy_cfg: Option<crate::proxy::Proxy>,
-    ) -> Self {
-        Self {
-            request_port,
-            proxy_cfg,
-        }
+    fn new(request_port: RequestPort<BybitCommand>) -> Self {
+        Self { request_port }
     }
 
     pub async fn fetch_ticker_metadata(
@@ -109,13 +102,13 @@ impl BybitHandle {
 
     pub async fn fetch_klines(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| BybitCommand::Klines {
-                ticker_info,
+                ticker,
                 timeframe,
                 range,
                 reply,
@@ -125,58 +118,18 @@ impl BybitHandle {
 
     pub async fn fetch_open_interest(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| BybitCommand::OpenInterest {
-                ticker_info,
+                ticker,
                 timeframe,
                 range,
                 reply,
             })
             .await
-    }
-
-    pub async fn fetch_trades(
-        &self,
-        ticker_info: TickerInfo,
-        from_time: u64,
-        data_path: Option<std::path::PathBuf>,
-    ) -> Result<Vec<Trade>, AdapterError> {
-        self.request_port
-            .request(move |reply| BybitCommand::Trades {
-                ticker_info,
-                from_time,
-                data_path,
-                reply,
-            })
-            .await
-    }
-
-    pub fn connect_depth_stream(
-        &self,
-        ticker_info: TickerInfo,
-        push_freq: PushFrequency,
-    ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(ticker_info, push_freq, self.proxy_cfg.clone())
-    }
-
-    pub fn connect_trade_stream(
-        &self,
-        tickers: Vec<TickerInfo>,
-        market: MarketKind,
-    ) -> impl futures::Stream<Item = Event> {
-        stream::connect_trade_stream(tickers, market, self.proxy_cfg.clone())
-    }
-
-    pub fn connect_kline_stream(
-        &self,
-        streams: Vec<(TickerInfo, Timeframe)>,
-        market: MarketKind,
-    ) -> impl futures::Stream<Item = Event> {
-        stream::connect_kline_stream(streams, market, self.proxy_cfg.clone())
     }
 }
 
@@ -190,25 +143,12 @@ impl Bybit {
     }
 
     pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(BybitConfig::default(), network)
-    }
+        let config = BybitConfig::default();
 
-    pub fn with_config(config: BybitConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(config, AdapterNetworkConfig::default())
-    }
-
-    pub fn with_config_and_network(
-        config: BybitConfig,
-        network: AdapterNetworkConfig,
-    ) -> Result<Self, AdapterError> {
         let limiter = BybitLimiter::new(config.limiter_config());
         let hub = HttpHub::new(limiter, network.proxy_cfg)?;
 
         Ok(Self { hub })
-    }
-
-    pub fn http_hub(&self) -> &HttpHub<BybitLimiter> {
-        &self.hub
     }
 
     pub fn http_hub_mut(&mut self) -> &mut HttpHub<BybitLimiter> {
@@ -216,7 +156,9 @@ impl Bybit {
     }
 
     async fn run(mut self, mut command_rx: mpsc::Receiver<BybitCommand>) {
-        super::run_fetch_loop(&mut self, &mut command_rx).await;
+        while let Some(command) = command_rx.recv().await {
+            super::handle_fetch_command(&mut self, command).await;
+        }
     }
 }
 
@@ -225,18 +167,16 @@ impl super::FetchCommandHandler<MarketKind> for Bybit {
         &mut self,
         market_scope: MarketKind,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerMetadataMap, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_ticker_metadata_with_hub(self.http_hub_mut(), market_scope).await
-        })
+        Box::pin(
+            async move { fetch::fetch_ticker_metadata(self.http_hub_mut(), market_scope).await },
+        )
     }
 
     fn fetch_ticker_stats(
         &mut self,
         market_scope: MarketKind,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerStatsMap, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_ticker_stats_with_hub(self.http_hub_mut(), market_scope).await
-        })
+        Box::pin(async move { fetch::fetch_ticker_stats(self.http_hub_mut(), market_scope).await })
     }
 
     fn fetch_klines(
@@ -246,7 +186,7 @@ impl super::FetchCommandHandler<MarketKind> for Bybit {
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         Box::pin(async move {
-            fetch::fetch_klines_with_hub(self.http_hub_mut(), ticker_info, timeframe, range).await
+            fetch::fetch_klines(self.http_hub_mut(), ticker_info, timeframe, range).await
         })
     }
 
@@ -257,25 +197,19 @@ impl super::FetchCommandHandler<MarketKind> for Bybit {
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         Box::pin(async move {
-            fetch::fetch_historical_oi_with_hub(self.http_hub_mut(), ticker_info, range, timeframe)
-                .await
+            fetch::fetch_historical_oi(self.http_hub_mut(), ticker_info, range, timeframe).await
         })
     }
-}
-
-pub fn spawn_default_bybit() -> Result<BybitHandle, AdapterError> {
-    spawn_bybit_with_network(AdapterNetworkConfig::default())
 }
 
 pub fn spawn_bybit_with_network(
     network: AdapterNetworkConfig,
 ) -> Result<BybitHandle, AdapterError> {
-    let proxy_cfg = network.proxy_cfg.clone();
     let worker = Bybit::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
         });
 
-    Ok(BybitHandle::new(request_port, proxy_cfg))
+    Ok(BybitHandle::new(request_port))
 }

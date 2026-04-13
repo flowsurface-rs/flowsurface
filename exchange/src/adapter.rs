@@ -1,4 +1,5 @@
 pub mod connect;
+pub mod hub;
 pub mod limiter;
 pub mod proxy;
 
@@ -15,9 +16,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
-pub mod hub;
-
 pub use hub::{binance, bybit, hyperliquid, mexc, okex};
+pub use proxy::Proxy;
 
 #[derive(Debug, Clone, Default)]
 pub struct AdapterNetworkConfig {
@@ -617,7 +617,7 @@ pub async fn fetch_ticker_metadata(
                 out.extend(
                     handles
                         .binance
-                        .fetch_ticker_metadata_for_market(*market)
+                        .fetch_ticker_metadata(binance::BinanceMarketScope::metadata(*market))
                         .await?,
                 );
             }
@@ -637,16 +637,11 @@ pub async fn fetch_ticker_metadata(
             }
             Ok(out)
         }
-        Venue::Okex => {
-            handles
-                .okex
-                .fetch_ticker_metadata_for_markets(markets)
-                .await
-        }
+        Venue::Okex => handles.okex.fetch_ticker_metadata(markets.to_vec()).await,
         Venue::Mexc => {
             handles
                 .mexc
-                .fetch_ticker_metadata_for_markets(markets)
+                .fetch_ticker_metadata(mexc::MexcMarketScope::metadata(markets))
                 .await
         }
     }
@@ -669,7 +664,10 @@ pub async fn fetch_ticker_stats(
                 out.extend(
                     handles
                         .binance
-                        .fetch_ticker_stats_for_market(*market, contract_sizes.clone())
+                        .fetch_ticker_stats(binance::BinanceMarketScope::stats(
+                            *market,
+                            contract_sizes.clone(),
+                        ))
                         .await?,
                 );
             }
@@ -689,11 +687,11 @@ pub async fn fetch_ticker_stats(
             }
             Ok(out)
         }
-        Venue::Okex => handles.okex.fetch_ticker_stats_for_markets(markets).await,
+        Venue::Okex => handles.okex.fetch_ticker_stats(markets.to_vec()).await,
         Venue::Mexc => {
             handles
                 .mexc
-                .fetch_ticker_stats_for_markets(markets, contract_sizes)
+                .fetch_ticker_stats(mexc::MexcMarketScope::stats(markets, contract_sizes))
                 .await
         }
     }

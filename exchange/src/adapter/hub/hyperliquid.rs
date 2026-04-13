@@ -141,14 +141,14 @@ impl HyperliquidHandle {
 
     pub async fn fetch_klines(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| {
                 HyperliquidCommand::Fetch(super::FetchCommand::Klines {
-                    ticker_info,
+                    ticker,
                     timeframe,
                     range,
                     reply,
@@ -159,14 +159,14 @@ impl HyperliquidHandle {
 
     pub async fn fetch_open_interest(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| {
                 HyperliquidCommand::Fetch(super::FetchCommand::OpenInterest {
-                    ticker_info,
+                    ticker,
                     timeframe,
                     range,
                     reply,
@@ -177,14 +177,14 @@ impl HyperliquidHandle {
 
     pub async fn fetch_trades(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         from_time: u64,
         data_path: Option<std::path::PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
             .request(move |reply| {
                 HyperliquidCommand::Fetch(super::FetchCommand::Trades {
-                    ticker_info,
+                    ticker,
                     from_time,
                     data_path,
                     reply,
@@ -244,25 +244,12 @@ impl Hyperliquid {
     }
 
     pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(HyperliquidConfig::default(), network)
-    }
+        let config = HyperliquidConfig::default();
 
-    pub fn with_config(config: HyperliquidConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(config, AdapterNetworkConfig::default())
-    }
-
-    pub fn with_config_and_network(
-        config: HyperliquidConfig,
-        network: AdapterNetworkConfig,
-    ) -> Result<Self, AdapterError> {
         let limiter = HyperliquidLimiter::new(config.limiter_config());
         let hub = HttpHub::new(limiter, network.proxy_cfg)?;
 
         Ok(Self { hub })
-    }
-
-    pub fn http_hub(&self) -> &HttpHub<HyperliquidLimiter> {
-        &self.hub
     }
 
     pub fn http_hub_mut(&mut self) -> &mut HttpHub<HyperliquidLimiter> {
@@ -281,18 +268,16 @@ impl super::FetchCommandHandler<MarketKind> for Hyperliquid {
         &mut self,
         market_scope: MarketKind,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerMetadataMap, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_ticker_metadata_with_hub(self.http_hub_mut(), market_scope).await
-        })
+        Box::pin(
+            async move { fetch::fetch_ticker_metadata(self.http_hub_mut(), market_scope).await },
+        )
     }
 
     fn fetch_ticker_stats(
         &mut self,
         market_scope: MarketKind,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerStatsMap, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_ticker_stats_with_hub(self.http_hub_mut(), market_scope).await
-        })
+        Box::pin(async move { fetch::fetch_ticker_stats(self.http_hub_mut(), market_scope).await })
     }
 
     fn fetch_klines(
@@ -302,13 +287,9 @@ impl super::FetchCommandHandler<MarketKind> for Hyperliquid {
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         Box::pin(async move {
-            fetch::fetch_klines_with_hub(self.http_hub_mut(), ticker_info, timeframe, range).await
+            fetch::fetch_klines(self.http_hub_mut(), ticker_info, timeframe, range).await
         })
     }
-}
-
-pub fn spawn_default_hyperliquid() -> Result<HyperliquidHandle, AdapterError> {
-    spawn_hyperliquid_with_network(AdapterNetworkConfig::default())
 }
 
 pub fn spawn_hyperliquid_with_network(

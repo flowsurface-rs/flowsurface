@@ -187,7 +187,7 @@ async fn fetch_depth_snapshot_with_hub(
     }
 }
 
-async fn fetch_ticker_metadata_with_hub(
+async fn fetch_ticker_metadata(
     hub: &mut HttpHub<BinanceLimiter>,
     market: MarketKind,
 ) -> Result<super::super::TickerMetadataMap, AdapterError> {
@@ -274,7 +274,7 @@ async fn fetch_ticker_metadata_with_hub(
     Ok(ticker_info_map)
 }
 
-async fn fetch_ticker_stats_with_hub(
+async fn fetch_ticker_stats(
     hub: &mut HttpHub<BinanceLimiter>,
     market: MarketKind,
     contract_sizes: Option<&HashMap<Ticker, f32>>,
@@ -349,7 +349,7 @@ async fn fetch_ticker_stats_with_hub(
     Ok(ticker_price_map)
 }
 
-async fn fetch_klines_with_hub(
+async fn fetch_klines(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
@@ -454,7 +454,7 @@ async fn fetch_klines_with_hub(
     Ok(klines)
 }
 
-async fn fetch_historical_oi_with_hub(
+async fn fetch_historical_oi(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     range: Option<(u64, u64)>,
@@ -736,7 +736,7 @@ impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
     ) -> futures::future::BoxFuture<'_, Result<super::super::TickerMetadataMap, AdapterError>> {
         let market = market_scope.market;
         Box::pin(async move {
-            fetch_ticker_metadata_with_hub(self.http_hub_for_market_mut(market), market).await
+            fetch_ticker_metadata(self.http_hub_for_market_mut(market), market).await
         })
     }
 
@@ -746,7 +746,7 @@ impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
     ) -> futures::future::BoxFuture<'_, Result<super::super::TickerStatsMap, AdapterError>> {
         let market = market_scope.market;
         Box::pin(async move {
-            fetch_ticker_stats_with_hub(
+            fetch_ticker_stats(
                 self.http_hub_for_market_mut(market),
                 market,
                 market_scope.contract_sizes.as_ref(),
@@ -763,7 +763,7 @@ impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         let market = ticker_info.market_type();
         Box::pin(async move {
-            fetch_klines_with_hub(
+            fetch_klines(
                 self.http_hub_for_market_mut(market),
                 ticker_info,
                 timeframe,
@@ -781,7 +781,7 @@ impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
     ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         let market = ticker_info.market_type();
         Box::pin(async move {
-            fetch_historical_oi_with_hub(
+            fetch_historical_oi(
                 self.http_hub_for_market_mut(market),
                 ticker_info,
                 range,

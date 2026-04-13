@@ -25,16 +25,20 @@ pub struct HttpHub<L> {
 }
 
 impl<L> HttpHub<L> {
-    pub fn new(limiter: L, proxy_cfg: Option<crate::proxy::Proxy>) -> Result<Self, AdapterError> {
-        Self::with_config(limiter, HttpHubConfig::default(), proxy_cfg)
+    pub fn new(limiter: L, proxy_cfg: Option<super::Proxy>) -> Result<Self, AdapterError> {
+        Self::with_config(limiter, proxy_cfg)
     }
 
-    fn with_config(
-        limiter: L,
-        config: HttpHubConfig,
-        proxy_cfg: Option<crate::proxy::Proxy>,
-    ) -> Result<Self, AdapterError> {
-        let client = build_http_client(config, proxy_cfg.as_ref())?;
+    fn with_config(limiter: L, proxy_cfg: Option<super::Proxy>) -> Result<Self, AdapterError> {
+        let builder = Client::builder()
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .timeout(HTTP_REQUEST_TIMEOUT);
+
+        let builder = super::proxy::try_apply_proxy(builder, proxy_cfg.as_ref());
+
+        let client = builder.build().map_err(|error| {
+            AdapterError::InvalidRequest(format!("Failed to build worker HTTP client: {error}"))
+        })?;
 
         Ok(Self { client, limiter })
     }
@@ -46,36 +50,6 @@ impl<L> HttpHub<L> {
     fn limiter_mut(&mut self) -> &mut L {
         &mut self.limiter
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct HttpHubConfig {
-    connect_timeout: Duration,
-    request_timeout: Duration,
-}
-
-impl Default for HttpHubConfig {
-    fn default() -> Self {
-        Self {
-            connect_timeout: HTTP_CONNECT_TIMEOUT,
-            request_timeout: HTTP_REQUEST_TIMEOUT,
-        }
-    }
-}
-
-fn build_http_client(
-    config: HttpHubConfig,
-    proxy_cfg: Option<&crate::proxy::Proxy>,
-) -> Result<Client, AdapterError> {
-    let builder = Client::builder()
-        .connect_timeout(config.connect_timeout)
-        .timeout(config.request_timeout);
-
-    let builder = crate::proxy::try_apply_proxy(builder, proxy_cfg);
-
-    builder.build().map_err(|error| {
-        AdapterError::InvalidRequest(format!("Failed to build worker HTTP client: {error}"))
-    })
 }
 
 async fn send_request_with_hub_client(
@@ -258,19 +232,19 @@ enum FetchCommand<M> {
         reply: ResponseTx<TickerStatsMap>,
     },
     Klines {
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
         reply: ResponseTx<Vec<Kline>>,
     },
     OpenInterest {
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
         reply: ResponseTx<Vec<OpenInterest>>,
     },
     Trades {
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         from_time: u64,
         data_path: Option<PathBuf>,
         reply: ResponseTx<Vec<Trade>>,
@@ -343,45 +317,32 @@ where
             reply_once(reply, result);
         }
         FetchCommand::Klines {
-            ticker_info,
+            ticker,
             timeframe,
             range,
             reply,
         } => {
-            let result = handler.fetch_klines(ticker_info, timeframe, range).await;
+            let result = handler.fetch_klines(ticker, timeframe, range).await;
             reply_once(reply, result);
         }
         FetchCommand::OpenInterest {
-            ticker_info,
+            ticker,
             timeframe,
             range,
             reply,
         } => {
-            let result = handler
-                .fetch_open_interest(ticker_info, timeframe, range)
-                .await;
+            let result = handler.fetch_open_interest(ticker, timeframe, range).await;
             reply_once(reply, result);
         }
         FetchCommand::Trades {
-            ticker_info,
+            ticker,
             from_time,
             data_path,
             reply,
         } => {
-            let result = handler
-                .fetch_trades(ticker_info, from_time, data_path)
-                .await;
+            let result = handler.fetch_trades(ticker, from_time, data_path).await;
             reply_once(reply, result);
         }
-    }
-}
-
-async fn run_fetch_loop<H, M>(handler: &mut H, command_rx: &mut mpsc::Receiver<FetchCommand<M>>)
-where
-    H: FetchCommandHandler<M>,
-{
-    while let Some(command) = command_rx.recv().await {
-        handle_fetch_command(handler, command).await;
     }
 }
 

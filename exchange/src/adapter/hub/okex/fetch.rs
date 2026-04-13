@@ -11,7 +11,7 @@ use crate::adapter::hub::AdapterError;
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub(super) async fn fetch_ticker_metadata_with_hub(
+pub(super) async fn fetch_ticker_metadata(
     hub: &mut HttpHub<OkexLimiter>,
     markets: &[MarketKind],
 ) -> Result<super::super::TickerMetadataMap, AdapterError> {
@@ -123,7 +123,7 @@ pub(super) async fn fetch_ticker_metadata_with_hub(
     Ok(map)
 }
 
-pub(super) async fn fetch_ticker_stats_with_hub(
+pub(super) async fn fetch_ticker_stats(
     hub: &mut HttpHub<OkexLimiter>,
     markets: &[MarketKind],
 ) -> Result<super::super::TickerStatsMap, AdapterError> {
@@ -256,7 +256,7 @@ pub(super) async fn fetch_ticker_stats_with_hub(
     Ok(map)
 }
 
-pub(super) async fn fetch_klines_with_hub(
+pub(super) async fn fetch_klines(
     hub: &mut HttpHub<OkexLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
@@ -334,7 +334,7 @@ pub(super) async fn fetch_klines_with_hub(
     Ok(klines)
 }
 
-pub(super) async fn fetch_historical_oi_with_hub(
+pub(super) async fn fetch_historical_oi(
     hub: &mut HttpHub<OkexLimiter>,
     ticker_info: TickerInfo,
     range: Option<(u64, u64)>,

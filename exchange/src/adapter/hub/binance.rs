@@ -149,14 +149,14 @@ impl BinanceHandle {
 
     pub async fn fetch_klines(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| {
                 BinanceCommand::Fetch(super::FetchCommand::Klines {
-                    ticker_info,
+                    ticker,
                     timeframe,
                     range,
                     reply,
@@ -167,14 +167,14 @@ impl BinanceHandle {
 
     pub async fn fetch_open_interest(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| {
                 BinanceCommand::Fetch(super::FetchCommand::OpenInterest {
-                    ticker_info,
+                    ticker,
                     timeframe,
                     range,
                     reply,
@@ -185,14 +185,14 @@ impl BinanceHandle {
 
     pub async fn fetch_trades(
         &self,
-        ticker_info: TickerInfo,
+        ticker: TickerInfo,
         from_time: u64,
         data_path: Option<PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
             .request(move |reply| {
                 BinanceCommand::Fetch(super::FetchCommand::Trades {
-                    ticker_info,
+                    ticker,
                     from_time,
                     data_path,
                     reply,
@@ -204,23 +204,6 @@ impl BinanceHandle {
     pub async fn fetch_depth_snapshot(&self, ticker: Ticker) -> Result<DepthPayload, AdapterError> {
         self.request_port
             .request(move |reply| BinanceCommand::FetchDepthSnapshot { ticker, reply })
-            .await
-    }
-
-    pub async fn fetch_ticker_metadata_for_market(
-        &self,
-        market: MarketKind,
-    ) -> Result<super::TickerMetadataMap, AdapterError> {
-        self.fetch_ticker_metadata(BinanceMarketScope::metadata(market))
-            .await
-    }
-
-    pub async fn fetch_ticker_stats_for_market(
-        &self,
-        market: MarketKind,
-        contract_sizes: Option<HashMap<Ticker, f32>>,
-    ) -> Result<super::TickerStatsMap, AdapterError> {
-        self.fetch_ticker_stats(BinanceMarketScope::stats(market, contract_sizes))
             .await
     }
 }
@@ -237,17 +220,8 @@ impl Binance {
     }
 
     pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(BinanceConfig::default(), network)
-    }
+        let config = BinanceConfig::default();
 
-    pub fn with_config(config: BinanceConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(config, AdapterNetworkConfig::default())
-    }
-
-    pub fn with_config_and_network(
-        config: BinanceConfig,
-        network: AdapterNetworkConfig,
-    ) -> Result<Self, AdapterError> {
         let spot_hub = HttpHub::new(
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::Spot)),
             network.proxy_cfg.clone(),
@@ -268,20 +242,8 @@ impl Binance {
         })
     }
 
-    pub fn http_hub(&self) -> &HttpHub<BinanceLimiter> {
-        self.http_hub_for_market(MarketKind::Spot)
-    }
-
     pub fn http_hub_mut(&mut self) -> &mut HttpHub<BinanceLimiter> {
         self.http_hub_for_market_mut(MarketKind::Spot)
-    }
-
-    pub fn http_hub_for_market(&self, market: MarketKind) -> &HttpHub<BinanceLimiter> {
-        match market {
-            MarketKind::Spot => &self.spot_hub,
-            MarketKind::LinearPerps => &self.linear_hub,
-            MarketKind::InversePerps => &self.inverse_hub,
-        }
     }
 
     pub fn http_hub_for_market_mut(&mut self, market: MarketKind) -> &mut HttpHub<BinanceLimiter> {

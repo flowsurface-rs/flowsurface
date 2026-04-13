@@ -115,7 +115,7 @@ pub(super) async fn fetch_depth_snapshot_with_hub(
     })
 }
 
-pub(super) async fn fetch_ticker_metadata_with_hub(
+pub(super) async fn fetch_ticker_metadata(
     hub: &HttpHub<MexcLimiter>,
     markets: &[MarketKind],
 ) -> Result<super::super::TickerMetadataMap, AdapterError> {
@@ -262,7 +262,7 @@ pub(super) async fn fetch_ticker_metadata_with_hub(
     Ok(ticker_info_map)
 }
 
-pub(super) async fn fetch_ticker_stats_with_hub(
+pub(super) async fn fetch_ticker_stats(
     hub: &HttpHub<MexcLimiter>,
     markets: &[MarketKind],
     contract_sizes: Option<&HashMap<Ticker, f32>>,
@@ -395,7 +395,7 @@ pub(super) async fn fetch_ticker_stats_with_hub(
     Ok(ticker_prices_map)
 }
 
-pub(super) async fn fetch_klines_with_hub(
+pub(super) async fn fetch_klines(
     hub: &HttpHub<MexcLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
