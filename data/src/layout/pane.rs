@@ -2,7 +2,7 @@ use exchange::{TickMultiplier, TickerInfo, Timeframe};
 use serde::{Deserialize, Serialize};
 
 use crate::chart::{comparison, heatmap, kline};
-use crate::panel::{ladder, timeandsales};
+use crate::panel::{ladder, timeandsales, tpo};
 use crate::stream::PersistStreamKind;
 use crate::util::ok_or_default;
 
@@ -87,6 +87,13 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
+    TpoPanel {
+        stream_type: Vec<PersistStreamKind>,
+        #[serde(deserialize_with = "ok_or_default")]
+        settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
 }
 
 impl Default for Pane {
@@ -155,6 +162,7 @@ pub enum VisualConfig {
     Kline(kline::Config),
     Ladder(ladder::Config),
     Comparison(comparison::Config),
+    Tpo(tpo::Config),
 }
 
 impl VisualConfig {
@@ -192,6 +200,13 @@ impl VisualConfig {
             _ => None,
         }
     }
+
+    pub fn tpo(&self) -> Option<tpo::Config> {
+        match self {
+            Self::Tpo(cfg) => Some(*cfg),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -204,10 +219,11 @@ pub enum ContentKind {
     ComparisonChart,
     TimeAndSales,
     Ladder,
+    TpoPanel,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 8] = [
+    pub const ALL: [ContentKind; 9] = [
         ContentKind::Starter,
         ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
@@ -216,6 +232,7 @@ impl ContentKind {
         ContentKind::ComparisonChart,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
+        ContentKind::TpoPanel,
     ];
 }
 
@@ -230,6 +247,7 @@ impl std::fmt::Display for ContentKind {
             ContentKind::ComparisonChart => "Comparison Chart",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
+            ContentKind::TpoPanel => "TPO Panel",
         };
         write!(f, "{s}")
     }
@@ -297,7 +315,7 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
                     }))
                 }
-                ContentKind::Starter | ContentKind::TimeAndSales => None,
+                ContentKind::Starter | ContentKind::TimeAndSales | ContentKind::TpoPanel => None,
             };
 
         let tick_multiplier = match content_kind {
@@ -319,6 +337,7 @@ impl PaneSetup {
             ContentKind::CandlestickChart
             | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
+            | ContentKind::TpoPanel
             | ContentKind::Starter => current_tick_multiplier,
         };
 

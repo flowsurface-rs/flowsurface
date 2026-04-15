@@ -16,7 +16,7 @@ use crate::{
         },
     },
     screen::dashboard::{
-        panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
+        panel::{self, ladder::Ladder, timeandsales::TimeAndSales, tpo::TpoPanel},
         tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
@@ -396,6 +396,24 @@ impl State {
 
                     (content, streams)
                 }
+                ContentKind::TpoPanel => {
+                    let config = self
+                        .settings
+                        .visual_config
+                        .clone()
+                        .and_then(|cfg| cfg.tpo());
+                    let content = Content::TpoPanel(Some(TpoPanel::new(
+                        config,
+                        derived_plan.ticker_info,
+                    )));
+
+                    let streams = vec![StreamKind::Kline {
+                        ticker_info: derived_plan.ticker_info,
+                        timeframe: exchange::Timeframe::M30,
+                    }];
+
+                    (content, streams)
+                }
                 ContentKind::Starter => unreachable!(),
             }
         };
@@ -482,6 +500,15 @@ impl State {
                         &[ticker_info],
                         Some(chart.serializable_config()),
                     );
+                }
+            }
+            Content::TpoPanel(Some(panel)) => {
+                if req_id.is_none() {
+                    panel.load_klines(klines);
+                } else {
+                    for k in klines {
+                        panel.insert_kline(k);
+                    }
                 }
             }
             _ => {
@@ -768,6 +795,34 @@ impl State {
                     )
                 } else {
                     let base = uninitialized_base(ContentKind::Ladder);
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
+                }
+            }
+            Content::TpoPanel(panel) => {
+                if let Some(panel) = panel {
+                    let base = panel::view(panel, timezone).map(move |message| {
+                        Message::PaneEvent(id, Event::PanelInteraction(message))
+                    });
+
+                    self.compose_stack_view(
+                        base,
+                        id,
+                        None,
+                        compact_controls,
+                        || column![].into(),
+                        None,
+                        tickers_table,
+                    )
+                } else {
+                    let base = uninitialized_base(ContentKind::TpoPanel);
                     self.compose_stack_view(
                         base,
                         id,
@@ -1153,6 +1208,7 @@ impl State {
             Event::PanelInteraction(msg) => match &mut self.content {
                 Content::Ladder(Some(p)) => super::panel::update(p, msg),
                 Content::TimeAndSales(Some(p)) => super::panel::update(p, msg),
+                Content::TpoPanel(Some(p)) => super::panel::update(p, msg),
                 _ => {}
             },
             Event::ToggleIndicator(ind) => {
@@ -1754,6 +1810,9 @@ impl State {
             Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
+            Content::TpoPanel(panel) => panel
+                .as_mut()
+                .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
             Content::Starter => None,
             Content::Comparison(chart) => chart
                 .as_mut()
@@ -1781,7 +1840,7 @@ impl State {
                     None
                 }
             }
-            Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
+            Content::Ladder(_) | Content::TimeAndSales(_) | Content::TpoPanel(_) => Some(100),
             Content::ShaderHeatmap { .. } => None,
             Content::Starter => None,
         }
@@ -1869,6 +1928,7 @@ pub enum Content {
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
     Comparison(Option<ComparisonChart>),
+    TpoPanel(Option<TpoPanel>),
 }
 
 impl Content {
@@ -2074,6 +2134,7 @@ impl Content {
             ContentKind::ComparisonChart => Content::Comparison(None),
             ContentKind::TimeAndSales => Content::TimeAndSales(None),
             ContentKind::Ladder => Content::Ladder(None),
+            ContentKind::TpoPanel => Content::TpoPanel(None),
         }
     }
 
@@ -2083,6 +2144,7 @@ impl Content {
             Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
+            Content::TpoPanel(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
             Content::Starter => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
@@ -2263,6 +2325,7 @@ impl Content {
             },
             Content::TimeAndSales(_) => ContentKind::TimeAndSales,
             Content::Ladder(_) => ContentKind::Ladder,
+            Content::TpoPanel(_) => ContentKind::TpoPanel,
             Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
             Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
@@ -2282,6 +2345,7 @@ impl Content {
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
+            Content::TpoPanel(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
         }

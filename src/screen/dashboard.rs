@@ -959,6 +959,9 @@ impl Dashboard {
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
                         }
+                        pane::Content::TpoPanel(Some(p)) => {
+                            p.insert_kline(kline);
+                        }
                         _ => {}
                     }
                     found_match = true;
