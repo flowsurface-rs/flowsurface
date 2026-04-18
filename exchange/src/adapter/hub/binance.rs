@@ -8,7 +8,6 @@ use crate::{
 
 use super::{AdapterError, HttpHub, RequestPort};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
-use tokio::sync::mpsc;
 
 pub mod fetch;
 pub mod stream;
@@ -224,18 +223,14 @@ impl BinanceHandle {
     }
 }
 
-pub struct Binance {
+struct Worker {
     spot_hub: HttpHub<BinanceLimiter>,
     linear_hub: HttpHub<BinanceLimiter>,
     inverse_hub: HttpHub<BinanceLimiter>,
 }
 
-impl Binance {
-    pub fn new() -> Result<Self, AdapterError> {
-        Self::new_with_network(AdapterNetworkConfig::default())
-    }
-
-    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+impl Worker {
+    fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
         let config = BinanceConfig::default();
 
         let spot_hub = HttpHub::new(
@@ -258,22 +253,92 @@ impl Binance {
         })
     }
 
-    pub fn http_hub_mut(&mut self) -> &mut HttpHub<BinanceLimiter> {
-        self.http_hub_for_market_mut(MarketKind::Spot)
-    }
-
-    pub fn http_hub_for_market_mut(&mut self, market: MarketKind) -> &mut HttpHub<BinanceLimiter> {
+    fn hub_for_market(&mut self, market: MarketKind) -> &mut HttpHub<BinanceLimiter> {
         match market {
             MarketKind::Spot => &mut self.spot_hub,
             MarketKind::LinearPerps => &mut self.linear_hub,
             MarketKind::InversePerps => &mut self.inverse_hub,
         }
     }
+}
 
-    async fn run(mut self, mut command_rx: mpsc::Receiver<BinanceCommand>) {
-        while let Some(command) = command_rx.recv().await {
-            super::handle_fetch_command(&mut self, command).await;
-        }
+impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
+    fn fetch_ticker_metadata(
+        &mut self,
+        market_scope: BinanceMarketScope,
+    ) -> futures::future::BoxFuture<'_, Result<super::TickerMetadataMap, AdapterError>> {
+        let market = market_scope.market;
+        Box::pin(
+            async move { fetch::fetch_ticker_metadata(self.hub_for_market(market), market).await },
+        )
+    }
+
+    fn fetch_ticker_stats(
+        &mut self,
+        market_scope: BinanceMarketScope,
+    ) -> futures::future::BoxFuture<'_, Result<super::TickerStatsMap, AdapterError>> {
+        let market = market_scope.market;
+        Box::pin(async move {
+            fetch::fetch_ticker_stats(
+                self.hub_for_market(market),
+                market,
+                market_scope.contract_sizes.as_ref(),
+            )
+            .await
+        })
+    }
+
+    fn fetch_klines(
+        &mut self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        range: Option<(u64, u64)>,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
+        let market = ticker_info.market_type();
+        Box::pin(async move {
+            fetch::fetch_klines(self.hub_for_market(market), ticker_info, timeframe, range).await
+        })
+    }
+
+    fn fetch_open_interest(
+        &mut self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        range: Option<(u64, u64)>,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
+        let market = ticker_info.market_type();
+        Box::pin(async move {
+            fetch::fetch_historical_oi(self.hub_for_market(market), ticker_info, range, timeframe)
+                .await
+        })
+    }
+
+    fn fetch_depth_snapshot(
+        &mut self,
+        ticker: Ticker,
+    ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
+        let market = ticker.market_type();
+        Box::pin(
+            async move { fetch::fetch_depth_snapshot(self.hub_for_market(market), ticker).await },
+        )
+    }
+
+    fn fetch_trades(
+        &mut self,
+        ticker_info: TickerInfo,
+        from_time: u64,
+        data_path: Option<PathBuf>,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<Trade>, AdapterError>> {
+        let market = ticker_info.market_type();
+        Box::pin(async move {
+            fetch::fetch_trades(
+                self.hub_for_market(market),
+                ticker_info,
+                from_time,
+                data_path,
+            )
+            .await
+        })
     }
 }
 
@@ -285,11 +350,8 @@ pub fn spawn_binance_with_network(
     network: AdapterNetworkConfig,
 ) -> Result<BinanceHandle, AdapterError> {
     let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Binance::new_with_network(network)?;
-    let request_port =
-        super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
-            worker.run(receiver)
-        });
+    let worker = Worker::new_with_network(network)?;
+    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
 
     Ok(BinanceHandle::new(request_port, proxy_cfg))
 }

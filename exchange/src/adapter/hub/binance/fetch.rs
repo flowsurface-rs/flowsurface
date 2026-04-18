@@ -7,9 +7,8 @@ use crate::{
 };
 
 use super::{
-    Binance, BinanceLimiter, BinanceMarketScope, HttpHub, INVERSE_PERP_DOMAIN, LINEAR_PERP_DOMAIN,
-    MarketKind, SPOT_DOMAIN, THIRTY_DAYS_MS, exchange_from_market_type,
-    raw_qty_unit_from_market_type,
+    BinanceLimiter, HttpHub, INVERSE_PERP_DOMAIN, LINEAR_PERP_DOMAIN, MarketKind, SPOT_DOMAIN,
+    THIRTY_DAYS_MS, exchange_from_market_type, raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
 use csv::ReaderBuilder;
@@ -76,7 +75,7 @@ struct FetchedSpotDepth {
     asks: Vec<DeOrder>,
 }
 
-async fn fetch_depth_snapshot(
+pub(super) async fn fetch_depth_snapshot(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker: Ticker,
 ) -> Result<DepthPayload, AdapterError> {
@@ -173,7 +172,7 @@ async fn fetch_depth_snapshot(
     }
 }
 
-async fn fetch_ticker_metadata(
+pub(super) async fn fetch_ticker_metadata(
     hub: &mut HttpHub<BinanceLimiter>,
     market: MarketKind,
 ) -> Result<super::super::TickerMetadataMap, AdapterError> {
@@ -260,7 +259,7 @@ async fn fetch_ticker_metadata(
     Ok(ticker_info_map)
 }
 
-async fn fetch_ticker_stats(
+pub(super) async fn fetch_ticker_stats(
     hub: &mut HttpHub<BinanceLimiter>,
     market: MarketKind,
     contract_sizes: Option<&HashMap<Ticker, f32>>,
@@ -335,7 +334,7 @@ async fn fetch_ticker_stats(
     Ok(ticker_price_map)
 }
 
-async fn fetch_klines(
+pub(super) async fn fetch_klines(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
@@ -440,7 +439,7 @@ async fn fetch_klines(
     Ok(klines)
 }
 
-async fn fetch_historical_oi(
+pub(super) async fn fetch_historical_oi(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     range: Option<(u64, u64)>,
@@ -662,7 +661,7 @@ async fn get_hist_trades_with_client(
     Ok(trades)
 }
 
-async fn fetch_trades(
+pub(super) async fn fetch_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     from_time: u64,
@@ -712,96 +711,5 @@ async fn fetch_trades(
             );
             fetch_intraday_trades(hub, ticker_info, from_time).await
         }
-    }
-}
-
-impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
-    fn fetch_ticker_metadata(
-        &mut self,
-        market_scope: BinanceMarketScope,
-    ) -> futures::future::BoxFuture<'_, Result<super::super::TickerMetadataMap, AdapterError>> {
-        let market = market_scope.market;
-        Box::pin(async move {
-            fetch_ticker_metadata(self.http_hub_for_market_mut(market), market).await
-        })
-    }
-
-    fn fetch_ticker_stats(
-        &mut self,
-        market_scope: BinanceMarketScope,
-    ) -> futures::future::BoxFuture<'_, Result<super::super::TickerStatsMap, AdapterError>> {
-        let market = market_scope.market;
-        Box::pin(async move {
-            fetch_ticker_stats(
-                self.http_hub_for_market_mut(market),
-                market,
-                market_scope.contract_sizes.as_ref(),
-            )
-            .await
-        })
-    }
-
-    fn fetch_klines(
-        &mut self,
-        ticker_info: TickerInfo,
-        timeframe: Timeframe,
-        range: Option<(u64, u64)>,
-    ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
-        let market = ticker_info.market_type();
-        Box::pin(async move {
-            fetch_klines(
-                self.http_hub_for_market_mut(market),
-                ticker_info,
-                timeframe,
-                range,
-            )
-            .await
-        })
-    }
-
-    fn fetch_open_interest(
-        &mut self,
-        ticker_info: TickerInfo,
-        timeframe: Timeframe,
-        range: Option<(u64, u64)>,
-    ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
-        let market = ticker_info.market_type();
-        Box::pin(async move {
-            fetch_historical_oi(
-                self.http_hub_for_market_mut(market),
-                ticker_info,
-                range,
-                timeframe,
-            )
-            .await
-        })
-    }
-
-    fn fetch_depth_snapshot(
-        &mut self,
-        ticker: Ticker,
-    ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
-        let market = ticker.market_type();
-        Box::pin(
-            async move { fetch_depth_snapshot(self.http_hub_for_market_mut(market), ticker).await },
-        )
-    }
-
-    fn fetch_trades(
-        &mut self,
-        ticker_info: TickerInfo,
-        from_time: u64,
-        data_path: Option<PathBuf>,
-    ) -> futures::future::BoxFuture<'_, Result<Vec<Trade>, AdapterError>> {
-        let market = ticker_info.market_type();
-        Box::pin(async move {
-            fetch_trades(
-                self.http_hub_for_market_mut(market),
-                ticker_info,
-                from_time,
-                data_path,
-            )
-            .await
-        })
     }
 }

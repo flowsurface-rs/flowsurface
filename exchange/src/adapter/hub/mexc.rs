@@ -7,7 +7,6 @@ use crate::{
 
 use super::{AdapterError, HttpHub, RequestPort};
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 
 pub mod fetch;
 pub mod stream;
@@ -215,54 +214,27 @@ impl MexcHandle {
     }
 }
 
-pub struct Mexc {
+struct Worker {
     hub: HttpHub<MexcLimiter>,
 }
 
-impl Mexc {
-    pub fn new() -> Result<Self, AdapterError> {
-        Self::new_with_network(AdapterNetworkConfig::default())
-    }
+impl Worker {
+    fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+        let limiter = MexcLimiter::default();
+        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
 
-    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(MexcConfig, network)
-    }
-
-    pub fn with_config(_config: MexcConfig) -> Result<Self, AdapterError> {
-        Self::with_config_and_network(MexcConfig, AdapterNetworkConfig::default())
-    }
-
-    pub fn with_config_and_network(
-        _config: MexcConfig,
-        network: AdapterNetworkConfig,
-    ) -> Result<Self, AdapterError> {
-        let hub = HttpHub::new(MexcLimiter::default(), network.proxy_cfg)?;
         Ok(Self { hub })
-    }
-
-    pub fn http_hub(&self) -> &HttpHub<MexcLimiter> {
-        &self.hub
-    }
-
-    pub fn http_hub_mut(&mut self) -> &mut HttpHub<MexcLimiter> {
-        &mut self.hub
-    }
-
-    async fn run(mut self, mut command_rx: mpsc::Receiver<MexcCommand>) {
-        while let Some(command) = command_rx.recv().await {
-            super::handle_fetch_command(&mut self, command).await;
-        }
     }
 }
 
-impl super::FetchCommandHandler<MexcMarketScope> for Mexc {
+impl super::FetchCommandHandler<MexcMarketScope> for Worker {
     fn fetch_ticker_metadata(
         &mut self,
         market_scope: MexcMarketScope,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerMetadataMap, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_ticker_metadata(self.http_hub(), &market_scope.markets).await
-        })
+        Box::pin(
+            async move { fetch::fetch_ticker_metadata(&self.hub, &market_scope.markets).await },
+        )
     }
 
     fn fetch_ticker_stats(
@@ -271,7 +243,7 @@ impl super::FetchCommandHandler<MexcMarketScope> for Mexc {
     ) -> futures::future::BoxFuture<'_, Result<super::TickerStatsMap, AdapterError>> {
         Box::pin(async move {
             fetch::fetch_ticker_stats(
-                self.http_hub(),
+                &self.hub,
                 &market_scope.markets,
                 market_scope.contract_sizes.as_ref(),
             )
@@ -285,26 +257,21 @@ impl super::FetchCommandHandler<MexcMarketScope> for Mexc {
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_klines(self.http_hub(), ticker_info, timeframe, range).await
-        })
+        Box::pin(async move { fetch::fetch_klines(&self.hub, ticker_info, timeframe, range).await })
     }
 
     fn fetch_depth_snapshot(
         &mut self,
         ticker: Ticker,
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
-        Box::pin(async move { fetch::fetch_depth_snapshot(self.http_hub(), ticker).await })
+        Box::pin(async move { fetch::fetch_depth_snapshot(&self.hub, ticker).await })
     }
 }
 
 pub fn spawn_mexc_with_network(network: AdapterNetworkConfig) -> Result<MexcHandle, AdapterError> {
     let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Mexc::new_with_network(network)?;
-    let request_port =
-        super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
-            worker.run(receiver)
-        });
+    let worker = Worker::new_with_network(network)?;
+    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
 
     Ok(MexcHandle::new(request_port, proxy_cfg))
 }

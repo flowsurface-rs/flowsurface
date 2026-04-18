@@ -7,7 +7,6 @@ use crate::{
 
 use super::{AdapterError, HttpHub, RequestPort};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 pub mod fetch;
 pub mod stream;
@@ -177,16 +176,12 @@ impl OkexHandle {
     }
 }
 
-pub struct Okex {
+struct Worker {
     hub: HttpHub<OkexLimiter>,
 }
 
-impl Okex {
-    pub fn new() -> Result<Self, AdapterError> {
-        Self::new_with_network(AdapterNetworkConfig::default())
-    }
-
-    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+impl Worker {
+    fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
         let config = OkexConfig::default();
 
         let limiter = OkexLimiter::new(config.limiter_config());
@@ -194,33 +189,21 @@ impl Okex {
 
         Ok(Self { hub })
     }
-
-    pub fn http_hub_mut(&mut self) -> &mut HttpHub<OkexLimiter> {
-        &mut self.hub
-    }
-
-    async fn run(mut self, mut command_rx: mpsc::Receiver<OkexCommand>) {
-        while let Some(command) = command_rx.recv().await {
-            super::handle_fetch_command(&mut self, command).await;
-        }
-    }
 }
 
-impl super::FetchCommandHandler<Vec<MarketKind>> for Okex {
+impl super::FetchCommandHandler<Vec<MarketKind>> for Worker {
     fn fetch_ticker_metadata(
         &mut self,
         market_scope: Vec<MarketKind>,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerMetadataMap, AdapterError>> {
-        Box::pin(
-            async move { fetch::fetch_ticker_metadata(self.http_hub_mut(), &market_scope).await },
-        )
+        Box::pin(async move { fetch::fetch_ticker_metadata(&mut self.hub, &market_scope).await })
     }
 
     fn fetch_ticker_stats(
         &mut self,
         market_scope: Vec<MarketKind>,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerStatsMap, AdapterError>> {
-        Box::pin(async move { fetch::fetch_ticker_stats(self.http_hub_mut(), &market_scope).await })
+        Box::pin(async move { fetch::fetch_ticker_stats(&mut self.hub, &market_scope).await })
     }
 
     fn fetch_klines(
@@ -229,9 +212,9 @@ impl super::FetchCommandHandler<Vec<MarketKind>> for Okex {
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
-        Box::pin(async move {
-            fetch::fetch_klines(self.http_hub_mut(), ticker_info, timeframe, range).await
-        })
+        Box::pin(
+            async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },
+        )
     }
 
     fn fetch_open_interest(
@@ -241,18 +224,15 @@ impl super::FetchCommandHandler<Vec<MarketKind>> for Okex {
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         Box::pin(async move {
-            fetch::fetch_historical_oi(self.http_hub_mut(), ticker_info, range, timeframe).await
+            fetch::fetch_historical_oi(&mut self.hub, ticker_info, range, timeframe).await
         })
     }
 }
 
 pub fn spawn_okex_with_network(network: AdapterNetworkConfig) -> Result<OkexHandle, AdapterError> {
     let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Okex::new_with_network(network)?;
-    let request_port =
-        super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
-            worker.run(receiver)
-        });
+    let worker = Worker::new_with_network(network)?;
+    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
 
     Ok(OkexHandle::new(request_port, proxy_cfg))
 }

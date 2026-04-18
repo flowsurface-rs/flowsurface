@@ -15,7 +15,7 @@ use reqwest::{Client, Method, Response, header};
 use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot};
 
-use std::{collections::HashMap, future::Future, path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -394,14 +394,19 @@ impl<C> RequestPort<C> {
     }
 }
 
-fn spawn_request_port<C, F, Fut>(command_buffer_capacity: usize, run: F) -> RequestPort<C>
+fn spawn_fetch_worker<H, M>(
+    command_buffer_capacity: usize,
+    mut worker: H,
+) -> RequestPort<FetchCommand<M>>
 where
-    C: Send + 'static,
-    F: FnOnce(mpsc::Receiver<C>) -> Fut + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    H: FetchCommandHandler<M> + Send + 'static,
+    M: Send + 'static,
 {
-    let (sender, receiver) = mpsc::channel(command_buffer_capacity);
-    tokio::spawn(run(receiver));
-
+    let (sender, mut receiver) = mpsc::channel(command_buffer_capacity);
+    tokio::spawn(async move {
+        while let Some(command) = receiver.recv().await {
+            handle_fetch_command(&mut worker, command).await;
+        }
+    });
     RequestPort::new(sender)
 }
