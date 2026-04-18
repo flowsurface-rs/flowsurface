@@ -15,10 +15,17 @@ use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use sonic_rs::{JsonValueTrait, to_object_iter_unchecked};
 use std::collections::{HashMap, VecDeque};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
-const DEPTH_CHANNEL_CAPACITY: usize = 4096;
-const MAX_PENDING_DEPTH_EVENTS: usize = 8192;
+const MAX_PENDING_DEPTH_EVENTS: usize = 512;
+
+fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
+    match market {
+        MarketKind::Spot => "stream.binance.com",
+        MarketKind::LinearPerps => "fstream.binance.com",
+        MarketKind::InversePerps => "dstream.binance.com",
+    }
+}
 
 enum DepthReaderMsg {
     Depth(SonicDepth),
@@ -31,11 +38,209 @@ enum ApplyDepthResult {
     NeedsResync(String),
 }
 
-fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
-    match market {
-        MarketKind::Spot => "stream.binance.com",
-        MarketKind::LinearPerps => "fstream.binance.com",
-        MarketKind::InversePerps => "dstream.binance.com",
+enum DepthSyncState {
+    /// Unsynced state where we need snapshots to correctly apply diff. updates.
+    /// Buffers incoming diff. updates until snapshot is applied, then replays them.
+    /// Never emits local orderbook to the caller in this state.
+    WaitingSnapshot(oneshot::Receiver<Result<DepthPayload, AdapterError>>),
+    /// Synced and applying live diff. updates, without needing snapshots.
+    /// Emits local orderbook to the caller only as live diff. updates are applied.
+    Live,
+}
+
+struct DepthSyncMachine {
+    handle: BinanceHandle,
+    ticker: Ticker,
+    state: DepthSyncState,
+    prev_id: u64,
+    pending: VecDeque<SonicDepth>,
+    current: LocalDepthCache,
+}
+
+impl DepthSyncMachine {
+    fn new(handle: BinanceHandle, ticker: Ticker) -> Self {
+        let mut depth_sync = Self {
+            state: DepthSyncState::Live,
+            handle,
+            ticker,
+            prev_id: 0,
+            current: LocalDepthCache::default(),
+            pending: VecDeque::new(),
+        };
+        depth_sync.begin_resync();
+        depth_sync
+    }
+
+    fn begin_resync(&mut self) {
+        let fetch_snapshot = {
+            let handle = self.handle.clone();
+            let ticker = self.ticker;
+            let (tx, rx) = oneshot::channel();
+
+            tokio::spawn(async move {
+                let result = handle.fetch_depth_snapshot(ticker).await;
+                let _ = tx.send(result);
+            });
+
+            rx
+        };
+
+        self.state = DepthSyncState::WaitingSnapshot(fetch_snapshot);
+    }
+
+    fn handle_snapshot_result(
+        &mut self,
+        snapshot_result: Result<Result<DepthPayload, AdapterError>, oneshot::error::RecvError>,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        let snapshot = match snapshot_result {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(e)) => return Err(format!("Depth fetch failed: {e}")),
+            Err(e) => return Err(format!("Depth fetch channel error: {e}")),
+        };
+
+        self.current.update_with_qty_norm(
+            DepthUpdate::Snapshot(snapshot),
+            ticker_info.min_ticksize,
+            Some(qty_norm),
+        );
+        self.prev_id = 0;
+
+        while let Some(depth_type) = self.pending.pop_front() {
+            match depth_type.apply_depth_diff(
+                &mut self.current,
+                ticker_info,
+                qty_norm,
+                &mut self.prev_id,
+            ) {
+                ApplyDepthResult::Applied(_) => {}
+                ApplyDepthResult::Skipped => {}
+                ApplyDepthResult::NeedsResync(reason) => {
+                    log::warn!("{}", reason);
+                    self.begin_resync();
+                    return Ok(None);
+                }
+            }
+        }
+
+        self.state = DepthSyncState::Live;
+        Ok(None)
+    }
+
+    fn on_live_diff(
+        &mut self,
+        diff_update: SonicDepth,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        match diff_update.apply_depth_diff(
+            &mut self.current,
+            ticker_info,
+            qty_norm,
+            &mut self.prev_id,
+        ) {
+            ApplyDepthResult::Applied(time) => Ok(Some(time)),
+            ApplyDepthResult::Skipped => Ok(None),
+            ApplyDepthResult::NeedsResync(reason) => {
+                log::warn!("{}", reason);
+                self.pending.clear();
+                self.pending.push_back(diff_update);
+                self.prev_id = 0;
+                self.begin_resync();
+                Ok(None)
+            }
+        }
+    }
+
+    fn queue_pending_diff(&mut self, diff_update: SonicDepth) {
+        if self.pending.len() == MAX_PENDING_DEPTH_EVENTS {
+            self.pending.pop_front();
+        }
+
+        self.pending.push_back(diff_update);
+    }
+
+    fn handle_depth_message(
+        &mut self,
+        depth_msg: DepthReaderMsg,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        match depth_msg {
+            DepthReaderMsg::Depth(diff_update) => {
+                if matches!(self.state, DepthSyncState::WaitingSnapshot(_)) {
+                    self.queue_pending_diff(diff_update);
+                    Ok(None)
+                } else {
+                    self.on_live_diff(diff_update, ticker_info, qty_norm)
+                }
+            }
+            DepthReaderMsg::Disconnected(reason) => Err(reason),
+        }
+    }
+
+    /// Ticks the state machine with the next diff. update. Returns:
+    /// - `Ok(Some(`time`))` if a diff. update was successfully applied and the local orderbook was updated.
+    /// `time` is the event time of the applied diff.
+    /// - `Ok(None)` if no update was applied and the update was buffered or skipped.
+    /// - `Err(reason)` if the stream should be considered disconnected and reconnected.
+    async fn tick(
+        &mut self,
+        websocket: &mut fastwebsockets::FragmentCollector<
+            hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>,
+        >,
+        market: MarketKind,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        if matches!(self.state, DepthSyncState::WaitingSnapshot(_)) {
+            let depth_msg = {
+                let DepthSyncState::WaitingSnapshot(snapshot_rx) = &mut self.state else {
+                    unreachable!("state must be WaitingSnapshot")
+                };
+
+                tokio::select! {
+                    snapshot_result = snapshot_rx => {
+                        return self.handle_snapshot_result(snapshot_result, ticker_info, qty_norm);
+                    }
+                    depth_msg = read_next_depth_message(websocket, market) => depth_msg,
+                }
+            };
+
+            self.handle_depth_message(depth_msg, ticker_info, qty_norm)
+        } else {
+            let depth_msg = read_next_depth_message(websocket, market).await;
+            self.handle_depth_message(depth_msg, ticker_info, qty_norm)
+        }
+    }
+}
+
+async fn read_next_depth_message(
+    websocket: &mut fastwebsockets::FragmentCollector<
+        hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>,
+    >,
+    market: MarketKind,
+) -> DepthReaderMsg {
+    loop {
+        match websocket.read_frame().await {
+            Ok(msg) => match msg.opcode {
+                OpCode::Text => {
+                    if let Ok(StreamData::Depth(depth_type)) = feed_de(&msg.payload[..], market) {
+                        return DepthReaderMsg::Depth(depth_type);
+                    }
+                }
+                OpCode::Close => {
+                    return DepthReaderMsg::Disconnected("Connection closed".to_string());
+                }
+                _ => {}
+            },
+            Err(e) => {
+                return DepthReaderMsg::Disconnected(
+                    "Error reading frame: ".to_string() + &e.to_string(),
+                );
+            }
+        }
     }
 }
 
@@ -82,6 +287,110 @@ struct SonicTrade {
 enum SonicDepth {
     Spot(SpotDepth),
     Perp(PerpDepth),
+}
+
+impl SonicDepth {
+    fn apply_depth_diff(
+        &self,
+        orderbook: &mut LocalDepthCache,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+        prev_id: &mut u64,
+    ) -> ApplyDepthResult {
+        let last_update_id = orderbook.last_update_id;
+
+        match self {
+            SonicDepth::Perp(de_depth) => {
+                if (de_depth.final_id <= last_update_id) || last_update_id == 0 {
+                    return ApplyDepthResult::Skipped;
+                }
+
+                let next_expected = last_update_id.saturating_add(1);
+                if *prev_id == 0 {
+                    if (de_depth.first_id > next_expected) || (next_expected > de_depth.final_id) {
+                        return ApplyDepthResult::NeedsResync(format!(
+                            "Perp first event out of sync. first_id={}, final_id={}, snapshot_last_id={}",
+                            de_depth.first_id, de_depth.final_id, last_update_id
+                        ));
+                    }
+                } else if *prev_id != de_depth.prev_final_id {
+                    return ApplyDepthResult::NeedsResync(format!(
+                        "Perp out of sync. expected prev_final_id={}, got={}",
+                        *prev_id, de_depth.prev_final_id
+                    ));
+                }
+
+                orderbook.update_with_qty_norm(
+                    DepthUpdate::Diff(self.into()),
+                    ticker_info.min_ticksize,
+                    Some(qty_norm),
+                );
+
+                *prev_id = de_depth.final_id;
+                ApplyDepthResult::Applied(de_depth.time)
+            }
+            SonicDepth::Spot(de_depth) => {
+                if (de_depth.final_id <= last_update_id) || last_update_id == 0 {
+                    return ApplyDepthResult::Skipped;
+                }
+
+                let next_expected = last_update_id.saturating_add(1);
+                if *prev_id == 0 {
+                    if (de_depth.first_id > next_expected) || (next_expected > de_depth.final_id) {
+                        return ApplyDepthResult::NeedsResync(format!(
+                            "Spot first event out of sync. first_id={}, final_id={}, snapshot_last_id={}",
+                            de_depth.first_id, de_depth.final_id, last_update_id
+                        ));
+                    }
+                } else {
+                    let expected_prev = de_depth.first_id.saturating_sub(1);
+                    if *prev_id != expected_prev {
+                        return ApplyDepthResult::NeedsResync(format!(
+                            "Spot out of sync. expected prev_id={}, got={}",
+                            *prev_id, expected_prev
+                        ));
+                    }
+                }
+
+                orderbook.update_with_qty_norm(
+                    DepthUpdate::Diff(self.into()),
+                    ticker_info.min_ticksize,
+                    Some(qty_norm),
+                );
+
+                *prev_id = de_depth.final_id;
+                ApplyDepthResult::Applied(de_depth.time)
+            }
+        }
+    }
+}
+
+impl From<&SonicDepth> for DepthPayload {
+    fn from(value: &SonicDepth) -> Self {
+        let (time, final_id, bids, asks) = match value {
+            SonicDepth::Spot(de) => (de.time, de.final_id, &de.bids, &de.asks),
+            SonicDepth::Perp(de) => (de.time, de.final_id, &de.bids, &de.asks),
+        };
+
+        DepthPayload {
+            last_update_id: final_id,
+            time,
+            bids: bids
+                .iter()
+                .map(|x| DeOrder {
+                    price: x.price,
+                    qty: x.qty,
+                })
+                .collect(),
+            asks: asks
+                .iter()
+                .map(|x| DeOrder {
+                    price: x.price,
+                    qty: x.qty,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -323,7 +632,14 @@ pub fn connect_kline_stream(
                                             ))
                                             .await;
                                     } else {
-                                        log::error!("Ticker info not found for ticker: {}", ticker);
+                                        log::error!("Ticker info not found for ticker: {ticker}");
+                                        state = State::Disconnected;
+                                        let _ = output
+                                            .send(Event::Disconnected(
+                                                exchange,
+                                                "Received kline for unknown ticker".to_string(),
+                                            ))
+                                            .await;
                                     }
                                 }
                             }
@@ -445,7 +761,14 @@ pub fn connect_trade_stream(
 
                                         trades_buffer_map.entry(ticker).or_default().push(trade);
                                     } else {
-                                        log::error!("Ticker info not found for ticker: {}", ticker);
+                                        log::error!("Ticker info not found for ticker: {ticker}");
+                                        state = State::Disconnected;
+                                        let _ = output
+                                            .send(Event::Disconnected(
+                                                exchange,
+                                                "Received trade for unknown ticker".to_string(),
+                                            ))
+                                            .await;
                                     }
                                 }
 
@@ -528,8 +851,8 @@ pub fn connect_depth_stream(
             let domain = ws_domain_from_market_type(market);
             let url = format!("wss://{domain}/stream?streams={stream}");
 
-            let websocket = match connect_ws(domain, &url, proxy_cfg.as_ref()).await {
-                Ok(websocket) => websocket,
+            let mut websocket = match connect_ws(domain, &url, proxy_cfg.as_ref()).await {
+                Ok(ws) => ws,
                 Err(_) => {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     let _ = output
@@ -542,173 +865,30 @@ pub fn connect_depth_stream(
                 }
             };
 
-            let (depth_tx, mut depth_rx) = mpsc::channel::<DepthReaderMsg>(DEPTH_CHANNEL_CAPACITY);
-
-            let reader_task = tokio::spawn(async move {
-                let mut ws = websocket;
-
-                loop {
-                    match ws.read_frame().await {
-                        Ok(msg) => match msg.opcode {
-                            OpCode::Text => {
-                                if let Ok(StreamData::Depth(depth_type)) =
-                                    feed_de(&msg.payload[..], market)
-                                    && depth_tx
-                                        .send(DepthReaderMsg::Depth(depth_type))
-                                        .await
-                                        .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            OpCode::Close => {
-                                let _ = depth_tx
-                                    .send(DepthReaderMsg::Disconnected(
-                                        "Connection closed".to_string(),
-                                    ))
-                                    .await;
-                                break;
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
-                            let _ = depth_tx
-                                .send(DepthReaderMsg::Disconnected(
-                                    "Error reading frame: ".to_string() + &e.to_string(),
-                                ))
-                                .await;
-                            break;
-                        }
-                    }
-                }
-            });
-
-            let mut orderbook = LocalDepthCache::default();
-            let mut prev_id: u64 = 0;
-            let mut pending_depth = VecDeque::new();
-            let mut snapshot_rx = Some(spawn_snapshot_fetch(handle.clone(), ticker));
+            let mut sync_machine = DepthSyncMachine::new(handle.clone(), ticker);
             let mut connected_sent = false;
-            let mut disconnect_reason = "Depth channel closed".to_string();
 
-            'sync_loop: loop {
-                if let Some(rx) = &mut snapshot_rx {
-                    tokio::select! {
-                        snapshot_result = rx => {
-                            snapshot_rx = None;
-
-                            let snapshot = match snapshot_result {
-                                Ok(Ok(snapshot)) => snapshot,
-                                Ok(Err(e)) => {
-                                    disconnect_reason = format!("Depth fetch failed: {e}");
-                                    break 'sync_loop;
-                                }
-                                Err(e) => {
-                                    disconnect_reason = format!("Depth fetch channel error: {e}");
-                                    break 'sync_loop;
-                                }
-                            };
-
-                            let snapshot_time = snapshot.time;
-                            orderbook.update_with_qty_norm(
-                                DepthUpdate::Snapshot(snapshot),
-                                ticker_info.min_ticksize,
-                                Some(qty_norm),
-                            );
-                            prev_id = 0;
-
-                            let mut replay_time = None;
-
-                            while let Some(depth_type) = pending_depth.pop_front() {
-                                match apply_depth_diff(
-                                    &depth_type,
-                                    &mut orderbook,
-                                    ticker_info,
-                                    qty_norm,
-                                    &mut prev_id,
-                                ) {
-                                    ApplyDepthResult::Applied(time) => replay_time = Some(time),
-                                    ApplyDepthResult::Skipped => {}
-                                    ApplyDepthResult::NeedsResync(reason) => {
-                                        log::warn!("{}", reason);
-                                        snapshot_rx = Some(spawn_snapshot_fetch(handle.clone(), ticker));
-                                        continue 'sync_loop;
-                                    }
-                                }
-                            }
-
-                            if !connected_sent {
-                                connected_sent = true;
-                                let _ = output.send(Event::Connected(exchange)).await;
-                            }
-
-                            let event_time = replay_time.unwrap_or(snapshot_time);
-                            let _ = output
-                                .send(Event::DepthReceived(
-                                    stream_kind,
-                                    event_time,
-                                    orderbook.depth.clone(),
-                                ))
-                                .await;
+            let disconnect_reason = loop {
+                match sync_machine
+                    .tick(&mut websocket, market, ticker_info, qty_norm)
+                    .await
+                {
+                    Ok(Some(time)) => {
+                        if !connected_sent {
+                            connected_sent = true;
+                            let _ = output.send(Event::Connected(exchange)).await;
                         }
-                        maybe_msg = depth_rx.recv() => {
-                            match maybe_msg {
-                                Some(DepthReaderMsg::Depth(depth_type)) => {
-                                    if pending_depth.len() == MAX_PENDING_DEPTH_EVENTS {
-                                        pending_depth.pop_front();
-                                    }
-                                    pending_depth.push_back(depth_type);
-                                }
-                                Some(DepthReaderMsg::Disconnected(reason)) => {
-                                    disconnect_reason = reason;
-                                    break 'sync_loop;
-                                }
-                                None => {
-                                    break 'sync_loop;
-                                }
-                            }
-                        }
+
+                        let synced_book = sync_machine.current.depth.clone();
+
+                        let _ = output
+                            .send(Event::DepthReceived(stream_kind, time, synced_book))
+                            .await;
                     }
-                } else {
-                    let maybe_msg = depth_rx.recv().await;
-
-                    let depth_type = match maybe_msg {
-                        Some(DepthReaderMsg::Depth(depth_type)) => depth_type,
-                        Some(DepthReaderMsg::Disconnected(reason)) => {
-                            disconnect_reason = reason;
-                            break;
-                        }
-                        None => break,
-                    };
-
-                    match apply_depth_diff(
-                        &depth_type,
-                        &mut orderbook,
-                        ticker_info,
-                        qty_norm,
-                        &mut prev_id,
-                    ) {
-                        ApplyDepthResult::Applied(time) => {
-                            let _ = output
-                                .send(Event::DepthReceived(
-                                    stream_kind,
-                                    time,
-                                    orderbook.depth.clone(),
-                                ))
-                                .await;
-                        }
-                        ApplyDepthResult::Skipped => {}
-                        ApplyDepthResult::NeedsResync(reason) => {
-                            log::warn!("{}", reason);
-                            pending_depth.clear();
-                            pending_depth.push_back(depth_type);
-                            prev_id = 0;
-                            snapshot_rx = Some(spawn_snapshot_fetch(handle.clone(), ticker));
-                        }
-                    }
+                    Ok(None) => {}
+                    Err(reason) => break reason,
                 }
-            }
-
-            reader_task.abort();
+            };
             let _ = output
                 .send(Event::Disconnected(exchange, disconnect_reason))
                 .await;
@@ -716,118 +896,4 @@ pub fn connect_depth_stream(
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     })
-}
-
-fn new_depth_cache(depth: &SonicDepth) -> DepthPayload {
-    let (time, final_id, bids, asks) = match depth {
-        SonicDepth::Spot(de) => (de.time, de.final_id, &de.bids, &de.asks),
-        SonicDepth::Perp(de) => (de.time, de.final_id, &de.bids, &de.asks),
-    };
-
-    DepthPayload {
-        last_update_id: final_id,
-        time,
-        bids: bids
-            .iter()
-            .map(|x| DeOrder {
-                price: x.price,
-                qty: x.qty,
-            })
-            .collect(),
-        asks: asks
-            .iter()
-            .map(|x| DeOrder {
-                price: x.price,
-                qty: x.qty,
-            })
-            .collect(),
-    }
-}
-
-fn spawn_snapshot_fetch(
-    handle: BinanceHandle,
-    ticker: Ticker,
-) -> oneshot::Receiver<Result<DepthPayload, AdapterError>> {
-    let (tx, rx) = oneshot::channel();
-
-    tokio::spawn(async move {
-        let result = handle.fetch_depth_snapshot(ticker).await;
-        let _ = tx.send(result);
-    });
-
-    rx
-}
-
-fn apply_depth_diff(
-    depth_type: &SonicDepth,
-    orderbook: &mut LocalDepthCache,
-    ticker_info: TickerInfo,
-    qty_norm: QtyNormalization,
-    prev_id: &mut u64,
-) -> ApplyDepthResult {
-    let last_update_id = orderbook.last_update_id;
-
-    match depth_type {
-        SonicDepth::Perp(de_depth) => {
-            if (de_depth.final_id <= last_update_id) || last_update_id == 0 {
-                return ApplyDepthResult::Skipped;
-            }
-
-            let next_expected = last_update_id.saturating_add(1);
-            if *prev_id == 0 {
-                if (de_depth.first_id > next_expected) || (next_expected > de_depth.final_id) {
-                    return ApplyDepthResult::NeedsResync(format!(
-                        "Perp first event out of sync. first_id={}, final_id={}, snapshot_last_id={}",
-                        de_depth.first_id, de_depth.final_id, last_update_id
-                    ));
-                }
-            } else if *prev_id != de_depth.prev_final_id {
-                return ApplyDepthResult::NeedsResync(format!(
-                    "Perp out of sync. expected prev_final_id={}, got={}",
-                    *prev_id, de_depth.prev_final_id
-                ));
-            }
-
-            orderbook.update_with_qty_norm(
-                DepthUpdate::Diff(new_depth_cache(depth_type)),
-                ticker_info.min_ticksize,
-                Some(qty_norm),
-            );
-
-            *prev_id = de_depth.final_id;
-            ApplyDepthResult::Applied(de_depth.time)
-        }
-        SonicDepth::Spot(de_depth) => {
-            if (de_depth.final_id <= last_update_id) || last_update_id == 0 {
-                return ApplyDepthResult::Skipped;
-            }
-
-            let next_expected = last_update_id.saturating_add(1);
-            if *prev_id == 0 {
-                if (de_depth.first_id > next_expected) || (next_expected > de_depth.final_id) {
-                    return ApplyDepthResult::NeedsResync(format!(
-                        "Spot first event out of sync. first_id={}, final_id={}, snapshot_last_id={}",
-                        de_depth.first_id, de_depth.final_id, last_update_id
-                    ));
-                }
-            } else {
-                let expected_prev = de_depth.first_id.saturating_sub(1);
-                if *prev_id != expected_prev {
-                    return ApplyDepthResult::NeedsResync(format!(
-                        "Spot out of sync. expected prev_id={}, got={}",
-                        *prev_id, expected_prev
-                    ));
-                }
-            }
-
-            orderbook.update_with_qty_norm(
-                DepthUpdate::Diff(new_depth_cache(depth_type)),
-                ticker_info.min_ticksize,
-                Some(qty_norm),
-            );
-
-            *prev_id = de_depth.final_id;
-            ApplyDepthResult::Applied(de_depth.time)
-        }
-    }
 }

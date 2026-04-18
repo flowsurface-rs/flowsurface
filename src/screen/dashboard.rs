@@ -23,12 +23,11 @@ use data::{
     stream::PersistStreamKind,
 };
 use exchange::{
-    Kline, PushFrequency, StreamPairKind, TickerInfo, Timeframe, Trade,
+    Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
     adapter::{AdapterHandles, StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
     connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
     depth::Depth,
 };
-use iced::futures::stream::BoxStream;
 
 use iced::{
     Element, Length, Subscription, Task, Vector,
@@ -90,28 +89,6 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
-}
-
-type DepthSubscriptionInput = (AdapterHandles, StreamConfig<TickerInfo>);
-type TradeSubscriptionInput = (AdapterHandles, StreamConfig<Vec<TickerInfo>>);
-type KlineSubscriptionInput = (AdapterHandles, StreamConfig<Vec<(TickerInfo, Timeframe)>>);
-
-fn depth_subscription_stream(
-    input: &DepthSubscriptionInput,
-) -> BoxStream<'static, exchange::Event> {
-    exchange::connect::depth_stream(&input.0, &input.1)
-}
-
-fn trade_subscription_stream(
-    input: &TradeSubscriptionInput,
-) -> BoxStream<'static, exchange::Event> {
-    exchange::connect::trade_stream(&input.0, &input.1)
-}
-
-fn kline_subscription_stream(
-    input: &KlineSubscriptionInput,
-) -> BoxStream<'static, exchange::Event> {
-    exchange::connect::kline_stream(&input.0, &input.1)
 }
 
 impl Dashboard {
@@ -1254,7 +1231,9 @@ impl Dashboard {
                             );
 
                             let data = (handles.clone(), config);
-                            Subscription::run_with(data, depth_subscription_stream)
+                            Subscription::run_with(data, |data| {
+                                exchange::connect::depth_stream(&data.0, &data.1)
+                            })
                         })
                         .collect::<Vec<_>>();
 
@@ -1276,7 +1255,9 @@ impl Dashboard {
                             );
 
                             let data = (handles.clone(), config);
-                            Subscription::run_with(data, trade_subscription_stream)
+                            Subscription::run_with(data, |data| {
+                                exchange::connect::trade_stream(&data.0, &data.1)
+                            })
                         })
                         .collect::<Vec<_>>();
 
@@ -1298,7 +1279,9 @@ impl Dashboard {
                             );
 
                             let data = (handles.clone(), config);
-                            Subscription::run_with(data, kline_subscription_stream)
+                            Subscription::run_with(data, |data| {
+                                exchange::connect::kline_stream(&data.0, &data.1)
+                            })
                         })
                         .collect::<Vec<_>>();
 
