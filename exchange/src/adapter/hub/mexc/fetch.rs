@@ -71,7 +71,7 @@ struct FuturesDepthItem {
 }
 
 pub(super) async fn fetch_depth_snapshot(
-    hub: &HttpHub<MexcLimiter>,
+    hub: &mut HttpHub<MexcLimiter>,
     ticker: Ticker,
 ) -> Result<DepthPayload, AdapterError> {
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
@@ -82,7 +82,7 @@ pub(super) async fn fetch_depth_snapshot(
     }
 
     let url = format!("{FETCH_DOMAIN}/v1/contract/depth/{symbol_str}");
-    let response_text = super::super::http_request(hub, &url, None, None).await?;
+    let response_text = super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
     let snapshot: DepthSnapshotResponse =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
@@ -104,7 +104,7 @@ pub(super) async fn fetch_depth_snapshot(
 }
 
 pub(super) async fn fetch_ticker_metadata(
-    hub: &HttpHub<MexcLimiter>,
+    hub: &mut HttpHub<MexcLimiter>,
     markets: &[MarketKind],
 ) -> Result<super::super::TickerMetadataMap, AdapterError> {
     let mut ticker_info_map = HashMap::new();
@@ -117,7 +117,8 @@ pub(super) async fn fetch_ticker_metadata(
     if include_spot {
         let url = format!("{FETCH_DOMAIN}/v3/exchangeInfo");
 
-        let response_text = super::super::http_request(hub, &url, None, None).await?;
+        let response_text =
+            super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
         let exchange_info: Value = sonic_rs::from_str(&response_text).map_err(|e| {
             AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}"))
         })?;
@@ -169,7 +170,8 @@ pub(super) async fn fetch_ticker_metadata(
     if include_perps {
         let url = format!("{FETCH_DOMAIN}/v1/contract/detail");
 
-        let response_text = super::super::http_request(hub, &url, None, None).await?;
+        let response_text =
+            super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
         let exchange_info: Value = sonic_rs::from_str(&response_text).map_err(|e| {
             AdapterError::ParseError(format!("Failed to parse MEXC exchange info: {e}"))
         })?;
@@ -251,7 +253,7 @@ pub(super) async fn fetch_ticker_metadata(
 }
 
 pub(super) async fn fetch_ticker_stats(
-    hub: &HttpHub<MexcLimiter>,
+    hub: &mut HttpHub<MexcLimiter>,
     markets: &[MarketKind],
     contract_sizes: Option<&HashMap<Ticker, f32>>,
 ) -> Result<super::super::TickerStatsMap, AdapterError> {
@@ -265,7 +267,8 @@ pub(super) async fn fetch_ticker_stats(
     if include_spot {
         let exchange = exchange_from_market_type(MarketKind::Spot);
         let url = format!("{FETCH_DOMAIN}/v3/ticker/24hr");
-        let response_text = super::super::http_request(hub, &url, None, None).await?;
+        let response_text =
+            super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
 
         let parsed_response: Value = sonic_rs::from_str(&response_text)
             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -318,7 +321,8 @@ pub(super) async fn fetch_ticker_stats(
 
     if include_perps {
         let url = format!("{FETCH_DOMAIN}/v1/contract/ticker");
-        let response_text = super::super::http_request(hub, &url, None, None).await?;
+        let response_text =
+            super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
 
         let parsed_response: Value = sonic_rs::from_str(&response_text)
             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -384,7 +388,7 @@ pub(super) async fn fetch_ticker_stats(
 }
 
 pub(super) async fn fetch_klines(
-    hub: &HttpHub<MexcLimiter>,
+    hub: &mut HttpHub<MexcLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
     range: Option<(u64, u64)>,
@@ -431,7 +435,7 @@ pub(super) async fn fetch_klines(
         }
     }
 
-    let response_text = super::super::http_request(hub, &url, None, None).await?;
+    let response_text = super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
 
     let klines_result: Result<Vec<Kline>, AdapterError> = match market_type {
         MarketKind::Spot => {

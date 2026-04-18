@@ -275,18 +275,3 @@ impl RateLimiter for HeaderDynamicRateLimiter {
         status == self.exit_status || Some(status) == self.extra_exit_status
     }
 }
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopRateLimiter;
-
-impl RateLimiter for NoopRateLimiter {
-    fn prepare_request(&mut self, _weight: usize) -> Option<Duration> {
-        None
-    }
-
-    fn update_from_response(&mut self, _response: &reqwest::Response, _weight: usize) {}
-
-    fn should_exit_on_response(&self, _response: &reqwest::Response) -> bool {
-        false
-    }
-}

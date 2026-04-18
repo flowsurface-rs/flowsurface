@@ -2,11 +2,12 @@ use crate::{
     Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
+    limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
 use super::{AdapterError, HttpHub, RequestPort};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 pub mod fetch;
 pub mod stream;
@@ -15,6 +16,9 @@ const FETCH_DOMAIN: &str = "https://api.mexc.com/api";
 const MEXC_FUTURES_WS_DOMAIN: &str = "contract.mexc.com";
 const MEXC_FUTURES_WS_PATH: &str = "/edge";
 const PING_INTERVAL: u64 = 15;
+const LIMIT: usize = 10;
+const REFILL_RATE: Duration = Duration::from_secs(2);
+const LIMITER_BUFFER_PCT: f32 = 0.0;
 const DEFAULT_COMMAND_BUFFER_CAPACITY: usize = 128;
 
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
@@ -99,10 +103,35 @@ fn convert_to_mexc_timeframe(timeframe: Timeframe, market: MarketKind) -> Option
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MexcConfig;
+#[derive(Debug, Clone, Copy)]
+pub struct MexcConfig {
+    pub limit: usize,
+    pub refill_rate: Duration,
+    pub limiter_buffer_pct: f32,
+}
 
-pub type MexcLimiter = crate::limiter::NoopRateLimiter;
+impl Default for MexcConfig {
+    fn default() -> Self {
+        Self {
+            limit: LIMIT,
+            refill_rate: REFILL_RATE,
+            limiter_buffer_pct: LIMITER_BUFFER_PCT,
+        }
+    }
+}
+
+impl MexcConfig {
+    fn limiter_config(self) -> FixedWindowRateLimiterConfig {
+        FixedWindowRateLimiterConfig::new(
+            self.limit,
+            self.refill_rate,
+            self.limiter_buffer_pct,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+        )
+    }
+}
+
+pub type MexcLimiter = crate::limiter::FixedWindowRateLimiter;
 
 #[derive(Debug, Clone, Default)]
 pub struct MexcMarketScope {
@@ -220,7 +249,9 @@ struct Worker {
 
 impl Worker {
     fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        let limiter = MexcLimiter::default();
+        let config = MexcConfig::default();
+
+        let limiter = MexcLimiter::new(config.limiter_config());
         let hub = HttpHub::new(limiter, network.proxy_cfg)?;
 
         Ok(Self { hub })
@@ -233,7 +264,7 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
         market_scope: MexcMarketScope,
     ) -> futures::future::BoxFuture<'_, Result<super::TickerMetadataMap, AdapterError>> {
         Box::pin(
-            async move { fetch::fetch_ticker_metadata(&self.hub, &market_scope.markets).await },
+            async move { fetch::fetch_ticker_metadata(&mut self.hub, &market_scope.markets).await },
         )
     }
 
@@ -243,7 +274,7 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
     ) -> futures::future::BoxFuture<'_, Result<super::TickerStatsMap, AdapterError>> {
         Box::pin(async move {
             fetch::fetch_ticker_stats(
-                &self.hub,
+                &mut self.hub,
                 &market_scope.markets,
                 market_scope.contract_sizes.as_ref(),
             )
@@ -257,14 +288,16 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
         timeframe: Timeframe,
         range: Option<(u64, u64)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
-        Box::pin(async move { fetch::fetch_klines(&self.hub, ticker_info, timeframe, range).await })
+        Box::pin(
+            async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },
+        )
     }
 
     fn fetch_depth_snapshot(
         &mut self,
         ticker: Ticker,
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
-        Box::pin(async move { fetch::fetch_depth_snapshot(&self.hub, ticker).await })
+        Box::pin(async move { fetch::fetch_depth_snapshot(&mut self.hub, ticker).await })
     }
 }
 
