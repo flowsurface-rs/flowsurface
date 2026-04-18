@@ -182,7 +182,7 @@ impl DepthSyncMachine {
 
     /// Ticks the state machine with the next diff. update. Returns:
     /// - `Ok(Some(`time`))` if a diff. update was successfully applied and the local orderbook was updated.
-    /// `time` is the event time of the applied diff.
+    ///   `time` is the event time of the applied diff.
     /// - `Ok(None)` if no update was applied and the update was buffered or skipped.
     /// - `Err(reason)` if the stream should be considered disconnected and reconnected.
     async fn tick(

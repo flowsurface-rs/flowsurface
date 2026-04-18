@@ -1,12 +1,8 @@
-use crate::{
-    Event, TickerInfo, Timeframe,
-    adapter::{self, AdapterHandles, StreamConfig, Venue},
-    error::AdapterError,
-};
+use crate::error::AdapterError;
 
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
-use futures::{Stream as FuturesStream, StreamExt, channel::mpsc, stream::BoxStream};
+use futures::{Stream as FuturesStream, channel::mpsc};
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -38,102 +34,6 @@ pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
 // allow up to 100 tickers per websocket stream
 pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
 pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
-
-pub fn depth_stream(
-    handles: &AdapterHandles,
-    config: &StreamConfig<TickerInfo>,
-) -> BoxStream<'static, Event> {
-    let ticker = config.id;
-    let push_freq = config.push_freq;
-    let proxy_cfg = handles.proxy_cfg();
-
-    match config.exchange.venue() {
-        Venue::Binance => adapter::binance::stream::connect_depth_stream(
-            handles.binance.clone(),
-            ticker,
-            push_freq,
-            proxy_cfg,
-        )
-        .boxed(),
-        Venue::Bybit => {
-            adapter::bybit::stream::connect_depth_stream(ticker, push_freq, proxy_cfg).boxed()
-        }
-        Venue::Hyperliquid => adapter::hyperliquid::stream::connect_depth_stream(
-            handles.hyperliquid.clone(),
-            ticker,
-            config.tick_mltp,
-            push_freq,
-            proxy_cfg,
-        )
-        .boxed(),
-        Venue::Okex => {
-            adapter::okex::stream::connect_depth_stream(ticker, push_freq, proxy_cfg).boxed()
-        }
-        Venue::Mexc => adapter::mexc::stream::connect_depth_stream(
-            handles.mexc.clone(),
-            ticker,
-            push_freq,
-            proxy_cfg,
-        )
-        .boxed(),
-    }
-}
-
-pub fn trade_stream(
-    handles: &AdapterHandles,
-    config: &StreamConfig<Vec<TickerInfo>>,
-) -> BoxStream<'static, Event> {
-    let tickers = config.id.clone();
-    let market_kind = config.exchange.market_type();
-    let proxy_cfg = handles.proxy_cfg();
-
-    match config.exchange.venue() {
-        Venue::Bybit => {
-            adapter::bybit::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
-        }
-        Venue::Binance => {
-            adapter::binance::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
-        }
-        Venue::Hyperliquid => {
-            adapter::hyperliquid::stream::connect_trade_stream(tickers, market_kind, proxy_cfg)
-                .boxed()
-        }
-        Venue::Okex => {
-            adapter::okex::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
-        }
-        Venue::Mexc => {
-            adapter::mexc::stream::connect_trade_stream(tickers, market_kind, proxy_cfg).boxed()
-        }
-    }
-}
-
-pub fn kline_stream(
-    handles: &AdapterHandles,
-    config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>,
-) -> BoxStream<'static, Event> {
-    let streams = config.id.clone();
-    let market_kind = config.exchange.market_type();
-    let proxy_cfg = handles.proxy_cfg();
-
-    match config.exchange.venue() {
-        Venue::Binance => {
-            adapter::binance::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
-        }
-        Venue::Bybit => {
-            adapter::bybit::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
-        }
-        Venue::Hyperliquid => {
-            adapter::hyperliquid::stream::connect_kline_stream(streams, market_kind, proxy_cfg)
-                .boxed()
-        }
-        Venue::Okex => {
-            adapter::okex::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
-        }
-        Venue::Mexc => {
-            adapter::mexc::stream::connect_kline_stream(streams, market_kind, proxy_cfg).boxed()
-        }
-    }
-}
 
 fn tls_connector() -> Result<TlsConnector, AdapterError> {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();

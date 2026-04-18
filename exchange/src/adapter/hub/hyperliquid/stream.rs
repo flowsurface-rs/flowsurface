@@ -234,7 +234,7 @@ pub fn connect_depth_stream(
                         }
                     };
 
-                    let Some(top_price) = snapshot.bids.first().map(|o| o.price) else {
+                    let Some(best_bid_price) = snapshot.bids.first().map(|o| o.price) else {
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
@@ -245,7 +245,7 @@ pub fn connect_depth_stream(
                         continue;
                     };
 
-                    let depth_cfg = config_from_multiplier(top_price, user_multiplier);
+                    let depth_cfg = config_from_multiplier(best_bid_price, user_multiplier);
                     let snapshot_time = snapshot.time;
 
                     local_depth_cache.update_with_qty_norm(

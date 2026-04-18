@@ -1,5 +1,5 @@
 use crate::{
-    Kline, Ticker, TickerInfo, Timeframe,
+    Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
     unit::qty::RawQtyUnit,
@@ -127,22 +127,20 @@ impl MexcMarketScope {
     }
 }
 
-enum MexcCommand {
-    Fetch(super::FetchCommand<MexcMarketScope>),
-    FetchDepthSnapshot {
-        ticker: Ticker,
-        reply: super::ResponseTx<DepthPayload>,
-    },
-}
+type MexcCommand = super::FetchCommand<MexcMarketScope>;
 
 #[derive(Clone)]
 pub struct MexcHandle {
     request_port: RequestPort<MexcCommand>,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
 impl MexcHandle {
-    fn new(request_port: RequestPort<MexcCommand>) -> Self {
-        Self { request_port }
+    fn new(request_port: RequestPort<MexcCommand>, proxy_cfg: Option<crate::proxy::Proxy>) -> Self {
+        Self {
+            request_port,
+            proxy_cfg,
+        }
     }
 
     pub async fn fetch_ticker_metadata(
@@ -150,11 +148,9 @@ impl MexcHandle {
         market_scope: MexcMarketScope,
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::TickerMetadata {
-                    market_scope,
-                    reply,
-                })
+            .request(move |reply| MexcCommand::TickerMetadata {
+                market_scope,
+                reply,
             })
             .await
     }
@@ -164,11 +160,9 @@ impl MexcHandle {
         market_scope: MexcMarketScope,
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::TickerStats {
-                    market_scope,
-                    reply,
-                })
+            .request(move |reply| MexcCommand::TickerStats {
+                market_scope,
+                reply,
             })
             .await
     }
@@ -180,21 +174,44 @@ impl MexcHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                MexcCommand::Fetch(super::FetchCommand::Klines {
-                    ticker,
-                    timeframe,
-                    range,
-                    reply,
-                })
+            .request(move |reply| MexcCommand::Klines {
+                ticker,
+                timeframe,
+                range,
+                reply,
             })
             .await
     }
 
     pub async fn fetch_depth_snapshot(&self, ticker: Ticker) -> Result<DepthPayload, AdapterError> {
         self.request_port
-            .request(move |reply| MexcCommand::FetchDepthSnapshot { ticker, reply })
+            .request(move |reply| MexcCommand::DepthSnapshot { ticker, reply })
             .await
+    }
+
+    pub fn connect_depth_stream(
+        self,
+        ticker_info: TickerInfo,
+        push_freq: PushFrequency,
+    ) -> impl futures::Stream<Item = Event> {
+        let proxy_cfg = self.proxy_cfg.clone();
+        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+    }
+
+    pub fn connect_trade_stream(
+        self,
+        tickers: Vec<TickerInfo>,
+        market_type: MarketKind,
+    ) -> impl futures::Stream<Item = Event> {
+        stream::connect_trade_stream(tickers, market_type, self.proxy_cfg)
+    }
+
+    pub fn connect_kline_stream(
+        self,
+        streams: Vec<(TickerInfo, Timeframe)>,
+        market_type: MarketKind,
+    ) -> impl futures::Stream<Item = Event> {
+        stream::connect_kline_stream(streams, market_type, self.proxy_cfg)
     }
 }
 
@@ -233,7 +250,7 @@ impl Mexc {
 
     async fn run(mut self, mut command_rx: mpsc::Receiver<MexcCommand>) {
         while let Some(command) = command_rx.recv().await {
-            fetch::handle_command(&mut self, command).await;
+            super::handle_fetch_command(&mut self, command).await;
         }
     }
 }
@@ -272,14 +289,22 @@ impl super::FetchCommandHandler<MexcMarketScope> for Mexc {
             fetch::fetch_klines(self.http_hub(), ticker_info, timeframe, range).await
         })
     }
+
+    fn fetch_depth_snapshot(
+        &mut self,
+        ticker: Ticker,
+    ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
+        Box::pin(async move { fetch::fetch_depth_snapshot(self.http_hub(), ticker).await })
+    }
 }
 
 pub fn spawn_mexc_with_network(network: AdapterNetworkConfig) -> Result<MexcHandle, AdapterError> {
+    let proxy_cfg = network.proxy_cfg.clone();
     let worker = Mexc::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
         });
 
-    Ok(MexcHandle::new(request_port))
+    Ok(MexcHandle::new(request_port, proxy_cfg))
 }

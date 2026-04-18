@@ -86,13 +86,7 @@ impl HyperliquidConfig {
 
 pub type HyperliquidLimiter = crate::limiter::FixedWindowRateLimiter;
 
-enum HyperliquidCommand {
-    Fetch(super::FetchCommand<MarketKind>),
-    FetchDepthSnapshot {
-        ticker: crate::Ticker,
-        reply: super::ResponseTx<DepthPayload>,
-    },
-}
+type HyperliquidCommand = super::FetchCommand<MarketKind>;
 
 #[derive(Clone)]
 pub struct HyperliquidHandle {
@@ -116,11 +110,9 @@ impl HyperliquidHandle {
         market: MarketKind,
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::TickerMetadata {
-                    market_scope: market,
-                    reply,
-                })
+            .request(move |reply| HyperliquidCommand::TickerMetadata {
+                market_scope: market,
+                reply,
             })
             .await
     }
@@ -130,11 +122,9 @@ impl HyperliquidHandle {
         market: MarketKind,
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::TickerStats {
-                    market_scope: market,
-                    reply,
-                })
+            .request(move |reply| HyperliquidCommand::TickerStats {
+                market_scope: market,
+                reply,
             })
             .await
     }
@@ -146,13 +136,11 @@ impl HyperliquidHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::Klines {
-                    ticker,
-                    timeframe,
-                    range,
-                    reply,
-                })
+            .request(move |reply| HyperliquidCommand::Klines {
+                ticker,
+                timeframe,
+                range,
+                reply,
             })
             .await
     }
@@ -164,13 +152,11 @@ impl HyperliquidHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::OpenInterest {
-                    ticker,
-                    timeframe,
-                    range,
-                    reply,
-                })
+            .request(move |reply| HyperliquidCommand::OpenInterest {
+                ticker,
+                timeframe,
+                range,
+                reply,
             })
             .await
     }
@@ -182,13 +168,11 @@ impl HyperliquidHandle {
         data_path: Option<std::path::PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                HyperliquidCommand::Fetch(super::FetchCommand::Trades {
-                    ticker,
-                    from_time,
-                    data_path,
-                    reply,
-                })
+            .request(move |reply| HyperliquidCommand::Trades {
+                ticker,
+                from_time,
+                data_path,
+                reply,
             })
             .await
     }
@@ -198,39 +182,34 @@ impl HyperliquidHandle {
         ticker: crate::Ticker,
     ) -> Result<DepthPayload, AdapterError> {
         self.request_port
-            .request(move |reply| HyperliquidCommand::FetchDepthSnapshot { ticker, reply })
+            .request(move |reply| HyperliquidCommand::DepthSnapshot { ticker, reply })
             .await
     }
 
     pub fn connect_depth_stream(
-        &self,
+        self,
         ticker_info: TickerInfo,
         tick_multiplier: Option<TickMultiplier>,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(
-            self.clone(),
-            ticker_info,
-            tick_multiplier,
-            push_freq,
-            self.proxy_cfg.clone(),
-        )
+        let proxy_cfg = self.proxy_cfg.clone();
+        stream::connect_depth_stream(self, ticker_info, tick_multiplier, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(
-        &self,
+        self,
         tickers: Vec<TickerInfo>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_trade_stream(tickers, market_type, self.proxy_cfg.clone())
+        stream::connect_trade_stream(tickers, market_type, self.proxy_cfg)
     }
 
     pub fn connect_kline_stream(
-        &self,
+        self,
         streams: Vec<(TickerInfo, Timeframe)>,
         market_type: MarketKind,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_kline_stream(streams, market_type, self.proxy_cfg.clone())
+        stream::connect_kline_stream(streams, market_type, self.proxy_cfg)
     }
 }
 
@@ -258,7 +237,7 @@ impl Hyperliquid {
 
     async fn run(mut self, mut command_rx: mpsc::Receiver<HyperliquidCommand>) {
         while let Some(command) = command_rx.recv().await {
-            fetch::handle_command(&mut self, command).await;
+            super::handle_fetch_command(&mut self, command).await;
         }
     }
 }
@@ -289,6 +268,13 @@ impl super::FetchCommandHandler<MarketKind> for Hyperliquid {
         Box::pin(async move {
             fetch::fetch_klines(self.http_hub_mut(), ticker_info, timeframe, range).await
         })
+    }
+
+    fn fetch_depth_snapshot(
+        &mut self,
+        ticker: crate::Ticker,
+    ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
+        Box::pin(async move { fetch::fetch_depth_snapshot(self.http_hub_mut(), ticker).await })
     }
 }
 

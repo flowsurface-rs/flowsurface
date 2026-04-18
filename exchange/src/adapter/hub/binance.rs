@@ -1,5 +1,5 @@
 use crate::{
-    Kline, OpenInterest, Ticker, TickerInfo, Timeframe, Trade,
+    Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
     limiter::DynamicRateLimiterConfig,
@@ -101,22 +101,23 @@ impl BinanceMarketScope {
     }
 }
 
-enum BinanceCommand {
-    Fetch(super::FetchCommand<BinanceMarketScope>),
-    FetchDepthSnapshot {
-        ticker: Ticker,
-        reply: super::ResponseTx<DepthPayload>,
-    },
-}
+type BinanceCommand = super::FetchCommand<BinanceMarketScope>;
 
 #[derive(Clone)]
 pub struct BinanceHandle {
     request_port: RequestPort<BinanceCommand>,
+    proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
 impl BinanceHandle {
-    fn new(request_port: RequestPort<BinanceCommand>) -> Self {
-        Self { request_port }
+    fn new(
+        request_port: RequestPort<BinanceCommand>,
+        proxy_cfg: Option<crate::proxy::Proxy>,
+    ) -> Self {
+        Self {
+            request_port,
+            proxy_cfg,
+        }
     }
 
     pub async fn fetch_ticker_metadata(
@@ -124,11 +125,9 @@ impl BinanceHandle {
         market_scope: BinanceMarketScope,
     ) -> Result<super::TickerMetadataMap, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::TickerMetadata {
-                    market_scope,
-                    reply,
-                })
+            .request(move |reply| BinanceCommand::TickerMetadata {
+                market_scope,
+                reply,
             })
             .await
     }
@@ -138,11 +137,9 @@ impl BinanceHandle {
         market_scope: BinanceMarketScope,
     ) -> Result<super::TickerStatsMap, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::TickerStats {
-                    market_scope,
-                    reply,
-                })
+            .request(move |reply| BinanceCommand::TickerStats {
+                market_scope,
+                reply,
             })
             .await
     }
@@ -154,13 +151,11 @@ impl BinanceHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::Klines {
-                    ticker,
-                    timeframe,
-                    range,
-                    reply,
-                })
+            .request(move |reply| BinanceCommand::Klines {
+                ticker,
+                timeframe,
+                range,
+                reply,
             })
             .await
     }
@@ -172,13 +167,11 @@ impl BinanceHandle {
         range: Option<(u64, u64)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::OpenInterest {
-                    ticker,
-                    timeframe,
-                    range,
-                    reply,
-                })
+            .request(move |reply| BinanceCommand::OpenInterest {
+                ticker,
+                timeframe,
+                range,
+                reply,
             })
             .await
     }
@@ -190,21 +183,44 @@ impl BinanceHandle {
         data_path: Option<PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
-            .request(move |reply| {
-                BinanceCommand::Fetch(super::FetchCommand::Trades {
-                    ticker,
-                    from_time,
-                    data_path,
-                    reply,
-                })
+            .request(move |reply| BinanceCommand::Trades {
+                ticker,
+                from_time,
+                data_path,
+                reply,
             })
             .await
     }
 
     pub async fn fetch_depth_snapshot(&self, ticker: Ticker) -> Result<DepthPayload, AdapterError> {
         self.request_port
-            .request(move |reply| BinanceCommand::FetchDepthSnapshot { ticker, reply })
+            .request(move |reply| BinanceCommand::DepthSnapshot { ticker, reply })
             .await
+    }
+
+    pub fn connect_depth_stream(
+        self,
+        ticker_info: TickerInfo,
+        push_freq: PushFrequency,
+    ) -> impl futures::Stream<Item = Event> {
+        let proxy_cfg = self.proxy_cfg.clone();
+        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+    }
+
+    pub fn connect_trade_stream(
+        self,
+        tickers: Vec<TickerInfo>,
+        market_type: MarketKind,
+    ) -> impl futures::Stream<Item = Event> {
+        stream::connect_trade_stream(tickers, market_type, self.proxy_cfg)
+    }
+
+    pub fn connect_kline_stream(
+        self,
+        streams: Vec<(TickerInfo, Timeframe)>,
+        market_type: MarketKind,
+    ) -> impl futures::Stream<Item = Event> {
+        stream::connect_kline_stream(streams, market_type, self.proxy_cfg)
     }
 }
 
@@ -256,7 +272,7 @@ impl Binance {
 
     async fn run(mut self, mut command_rx: mpsc::Receiver<BinanceCommand>) {
         while let Some(command) = command_rx.recv().await {
-            fetch::handle_command(&mut self, command).await;
+            super::handle_fetch_command(&mut self, command).await;
         }
     }
 }
@@ -268,11 +284,12 @@ pub fn spawn_default_binance() -> Result<BinanceHandle, AdapterError> {
 pub fn spawn_binance_with_network(
     network: AdapterNetworkConfig,
 ) -> Result<BinanceHandle, AdapterError> {
+    let proxy_cfg = network.proxy_cfg.clone();
     let worker = Binance::new_with_network(network)?;
     let request_port =
         super::spawn_request_port(DEFAULT_COMMAND_BUFFER_CAPACITY, move |receiver| {
             worker.run(receiver)
         });
 
-    Ok(BinanceHandle::new(request_port))
+    Ok(BinanceHandle::new(request_port, proxy_cfg))
 }

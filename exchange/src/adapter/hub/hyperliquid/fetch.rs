@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::{
-    API_DOMAIN, HttpHub, Hyperliquid, HyperliquidCommand, HyperliquidLimiter, MAX_DECIMALS_PERP,
-    SIG_FIG_LIMIT, raw_qty_unit_from_market_type,
+    API_DOMAIN, HttpHub, HyperliquidLimiter, MAX_DECIMALS_PERP, SIG_FIG_LIMIT,
+    raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
 use reqwest::Method;
@@ -104,18 +104,6 @@ type TickerMetadata = (
     HashMap<Ticker, TickerStats>,
 );
 
-pub(super) async fn handle_command(worker: &mut Hyperliquid, command: HyperliquidCommand) {
-    match command {
-        HyperliquidCommand::Fetch(fetch_command) => {
-            super::super::handle_fetch_command(worker, fetch_command).await;
-        }
-        HyperliquidCommand::FetchDepthSnapshot { ticker, reply } => {
-            let result = fetch_depth_snapshot_with_hub(worker.http_hub_mut(), ticker).await;
-            super::super::reply_once(reply, result);
-        }
-    }
-}
-
 async fn post_info<T: DeserializeOwned>(
     hub: &mut HttpHub<HyperliquidLimiter>,
     body: &Value,
@@ -128,20 +116,20 @@ async fn post_info<T: DeserializeOwned>(
     serde_json::from_str::<T>(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))
 }
 
-async fn fetch_metadata_with_hub(
+async fn fetch_metadata(
     hub: &mut HttpHub<HyperliquidLimiter>,
     market: MarketKind,
 ) -> Result<TickerMetadata, AdapterError> {
     match market {
-        MarketKind::LinearPerps => fetch_perps_metadata_with_hub(hub).await,
-        MarketKind::Spot => fetch_spot_metadata_with_hub(hub).await,
+        MarketKind::LinearPerps => fetch_perps_metadata(hub).await,
+        MarketKind::Spot => fetch_spot_metadata(hub).await,
         _ => Err(AdapterError::InvalidRequest(format!(
             "Hyperliquid metadata fetch not supported for {market:?}"
         ))),
     }
 }
 
-async fn fetch_meta_for_dex_with_hub(
+async fn fetch_meta_for_dex(
     hub: &mut HttpHub<HyperliquidLimiter>,
     dex_name: Option<&str>,
 ) -> Result<TickerMetadata, AdapterError> {
@@ -163,7 +151,7 @@ async fn fetch_meta_for_dex_with_hub(
     process_perp_assets(metadata, asset_contexts, Exchange::HyperliquidLinear)
 }
 
-async fn fetch_perps_metadata_with_hub(
+async fn fetch_perps_metadata(
     hub: &mut HttpHub<HyperliquidLimiter>,
 ) -> Result<TickerMetadata, AdapterError> {
     let dexes_json: Value = post_info(hub, &json!({ "type": "perpDexs" })).await?;
@@ -184,7 +172,7 @@ async fn fetch_perps_metadata_with_hub(
     let mut combined_stats = HashMap::new();
 
     for dex_name in dex_names {
-        match fetch_meta_for_dex_with_hub(hub, dex_name.as_deref()).await {
+        match fetch_meta_for_dex(hub, dex_name.as_deref()).await {
             Ok((info_map, stats_map)) => {
                 combined_info.extend(info_map);
                 combined_stats.extend(stats_map);
@@ -202,7 +190,7 @@ async fn fetch_perps_metadata_with_hub(
     Ok((combined_info, combined_stats))
 }
 
-async fn fetch_spot_metadata_with_hub(
+async fn fetch_spot_metadata(
     hub: &mut HttpHub<HyperliquidLimiter>,
 ) -> Result<TickerMetadata, AdapterError> {
     let body = json!({"type": "spotMetaAndAssetCtxs"});
@@ -384,7 +372,7 @@ fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
     }
 }
 
-pub(super) async fn fetch_depth_snapshot_with_hub(
+pub(super) async fn fetch_depth_snapshot(
     hub: &mut HttpHub<HyperliquidLimiter>,
     ticker: Ticker,
 ) -> Result<DepthPayload, AdapterError> {
@@ -435,7 +423,7 @@ pub(super) async fn fetch_ticker_metadata(
     hub: &mut HttpHub<HyperliquidLimiter>,
     market: MarketKind,
 ) -> Result<super::super::TickerMetadataMap, AdapterError> {
-    let (ticker_info_map, _) = fetch_metadata_with_hub(hub, market).await?;
+    let (ticker_info_map, _) = fetch_metadata(hub, market).await?;
     Ok(ticker_info_map)
 }
 
@@ -443,7 +431,7 @@ pub(super) async fn fetch_ticker_stats(
     hub: &mut HttpHub<HyperliquidLimiter>,
     market: MarketKind,
 ) -> Result<super::super::TickerStatsMap, AdapterError> {
-    let (_, ticker_stats_map) = fetch_metadata_with_hub(hub, market).await?;
+    let (_, ticker_stats_map) = fetch_metadata(hub, market).await?;
     Ok(ticker_stats_map)
 }
 

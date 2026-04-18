@@ -6,7 +6,8 @@ pub mod okex;
 
 use super::AdapterError;
 use crate::{
-    Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, limiter::RateLimiter,
+    Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, depth::DepthPayload,
+    limiter::RateLimiter,
 };
 
 use futures::future::BoxFuture;
@@ -52,7 +53,7 @@ impl<L> HttpHub<L> {
     }
 }
 
-async fn send_request_with_hub_client(
+async fn send_request_client(
     client: &Client,
     method: Method,
     url: &str,
@@ -123,7 +124,7 @@ async fn http_request<L>(
     let method = method.unwrap_or(Method::GET);
     let request_method = method.clone();
 
-    let response = send_request_with_hub_client(hub.client(), method, url, json_body)
+    let response = send_request_client(hub.client(), method, url, json_body)
         .await
         .map_err(|error| AdapterError::request_failed(&request_method, url, error))?;
 
@@ -148,7 +149,7 @@ async fn http_request_with_limiter<L: RateLimiter>(
         }
     }
 
-    let response = send_request_with_hub_client(hub.client(), method, url, json_body)
+    let response = send_request_client(hub.client(), method, url, json_body)
         .await
         .map_err(|error| AdapterError::request_failed(&request_method, url, error))?;
 
@@ -243,6 +244,10 @@ enum FetchCommand<M> {
         range: Option<(u64, u64)>,
         reply: ResponseTx<Vec<OpenInterest>>,
     },
+    DepthSnapshot {
+        ticker: Ticker,
+        reply: ResponseTx<DepthPayload>,
+    },
     Trades {
         ticker: TickerInfo,
         from_time: u64,
@@ -284,6 +289,14 @@ pub trait FetchCommandHandler<M> {
     ) -> BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         let _ = (ticker_info, timeframe, range);
         Box::pin(async { Err(unsupported_fetch("Open interest fetch")) })
+    }
+
+    fn fetch_depth_snapshot(
+        &mut self,
+        ticker: Ticker,
+    ) -> BoxFuture<'_, Result<DepthPayload, AdapterError>> {
+        let _ = ticker;
+        Box::pin(async { Err(unsupported_fetch("Depth snapshot fetch")) })
     }
 
     fn fetch_trades(
@@ -332,6 +345,10 @@ where
             reply,
         } => {
             let result = handler.fetch_open_interest(ticker, timeframe, range).await;
+            reply_once(reply, result);
+        }
+        FetchCommand::DepthSnapshot { ticker, reply } => {
+            let result = handler.fetch_depth_snapshot(ticker).await;
             reply_once(reply, result);
         }
         FetchCommand::Trades {

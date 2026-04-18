@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::{
-    Binance, BinanceCommand, BinanceLimiter, BinanceMarketScope, HttpHub, INVERSE_PERP_DOMAIN,
-    LINEAR_PERP_DOMAIN, MarketKind, SPOT_DOMAIN, THIRTY_DAYS_MS, exchange_from_market_type,
+    Binance, BinanceLimiter, BinanceMarketScope, HttpHub, INVERSE_PERP_DOMAIN, LINEAR_PERP_DOMAIN,
+    MarketKind, SPOT_DOMAIN, THIRTY_DAYS_MS, exchange_from_market_type,
     raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
@@ -76,21 +76,7 @@ struct FetchedSpotDepth {
     asks: Vec<DeOrder>,
 }
 
-pub(super) async fn handle_command(worker: &mut Binance, command: BinanceCommand) {
-    match command {
-        BinanceCommand::Fetch(fetch_command) => {
-            super::super::handle_fetch_command(worker, fetch_command).await;
-        }
-        BinanceCommand::FetchDepthSnapshot { ticker, reply } => {
-            let market = ticker.market_type();
-            let result =
-                fetch_depth_snapshot_with_hub(worker.http_hub_for_market_mut(market), ticker).await;
-            super::super::reply_once(reply, result);
-        }
-    }
-}
-
-async fn fetch_depth_snapshot_with_hub(
+async fn fetch_depth_snapshot(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker: Ticker,
 ) -> Result<DepthPayload, AdapterError> {
@@ -540,7 +526,7 @@ async fn fetch_historical_oi(
     Ok(open_interest)
 }
 
-async fn fetch_intraday_trades_with_hub(
+async fn fetch_intraday_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     from: u64,
@@ -676,7 +662,7 @@ async fn get_hist_trades_with_client(
     Ok(trades)
 }
 
-async fn fetch_trades_with_hub(
+async fn fetch_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     from_time: u64,
@@ -695,7 +681,7 @@ async fn fetch_trades_with_hub(
         .and_utc();
 
     if from_time as i64 >= today_midnight.timestamp_millis() {
-        return fetch_intraday_trades_with_hub(hub, ticker_info, from_time).await;
+        return fetch_intraday_trades(hub, ticker_info, from_time).await;
     }
 
     let from_date = chrono::DateTime::from_timestamp_millis(from_time as i64)
@@ -707,7 +693,7 @@ async fn fetch_trades_with_hub(
     match get_hist_trades_with_client(&client, ticker_info, from_date, data_path).await {
         Ok(mut trades) => {
             if let Some(latest_trade) = trades.last().copied() {
-                match fetch_intraday_trades_with_hub(hub, ticker_info, latest_trade.time).await {
+                match fetch_intraday_trades(hub, ticker_info, latest_trade.time).await {
                     Ok(intraday_trades) => {
                         trades.extend(intraday_trades);
                     }
@@ -724,7 +710,7 @@ async fn fetch_trades_with_hub(
                 "Historical trades fetch failed: {}, falling back to intraday fetch",
                 e
             );
-            fetch_intraday_trades_with_hub(hub, ticker_info, from_time).await
+            fetch_intraday_trades(hub, ticker_info, from_time).await
         }
     }
 }
@@ -791,6 +777,16 @@ impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
         })
     }
 
+    fn fetch_depth_snapshot(
+        &mut self,
+        ticker: Ticker,
+    ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
+        let market = ticker.market_type();
+        Box::pin(
+            async move { fetch_depth_snapshot(self.http_hub_for_market_mut(market), ticker).await },
+        )
+    }
+
     fn fetch_trades(
         &mut self,
         ticker_info: TickerInfo,
@@ -799,7 +795,7 @@ impl super::super::FetchCommandHandler<BinanceMarketScope> for Binance {
     ) -> futures::future::BoxFuture<'_, Result<Vec<Trade>, AdapterError>> {
         let market = ticker_info.market_type();
         Box::pin(async move {
-            fetch_trades_with_hub(
+            fetch_trades(
                 self.http_hub_for_market_mut(market),
                 ticker_info,
                 from_time,

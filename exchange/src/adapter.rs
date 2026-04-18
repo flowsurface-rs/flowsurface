@@ -11,13 +11,16 @@ use crate::{
 };
 
 use enum_map::{Enum, EnumMap};
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt, stream::BoxStream};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 pub use hub::{binance, bybit, hyperliquid, mexc, okex};
 pub use proxy::Proxy;
+
+/// Buffer trades and flush in this interval
+const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
 
 #[derive(Debug, Clone, Default)]
 pub struct AdapterNetworkConfig {
@@ -26,7 +29,6 @@ pub struct AdapterNetworkConfig {
 
 #[derive(Clone)]
 pub struct AdapterHandles {
-    proxy_cfg: Option<proxy::Proxy>,
     pub binance: binance::BinanceHandle,
     pub bybit: bybit::BybitHandle,
     pub hyperliquid: hyperliquid::HyperliquidHandle,
@@ -35,13 +37,8 @@ pub struct AdapterHandles {
 }
 
 impl AdapterHandles {
-    pub fn spawn_default() -> Result<Self, AdapterError> {
-        Self::spawn_with_network(AdapterNetworkConfig::default())
-    }
-
     pub fn spawn_with_network(config: AdapterNetworkConfig) -> Result<Self, AdapterError> {
         Ok(Self {
-            proxy_cfg: config.proxy_cfg.clone(),
             binance: binance::spawn_binance_with_network(config.clone())?,
             bybit: bybit::spawn_bybit_with_network(config.clone())?,
             hyperliquid: hyperliquid::spawn_hyperliquid_with_network(config.clone())?,
@@ -50,8 +47,109 @@ impl AdapterHandles {
         })
     }
 
-    pub fn proxy_cfg(&self) -> Option<proxy::Proxy> {
-        self.proxy_cfg.clone()
+    pub fn kline_stream(
+        &self,
+        config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>,
+    ) -> BoxStream<'static, Event> {
+        let streams = config.id.clone();
+        let market_kind = config.exchange.market_type();
+
+        match config.exchange.venue() {
+            Venue::Binance => self
+                .binance
+                .clone()
+                .connect_kline_stream(streams, market_kind)
+                .boxed(),
+            Venue::Bybit => self
+                .bybit
+                .clone()
+                .connect_kline_stream(streams, market_kind)
+                .boxed(),
+            Venue::Hyperliquid => self
+                .hyperliquid
+                .clone()
+                .connect_kline_stream(streams, market_kind)
+                .boxed(),
+            Venue::Okex => self
+                .okex
+                .clone()
+                .connect_kline_stream(streams, market_kind)
+                .boxed(),
+            Venue::Mexc => self
+                .mexc
+                .clone()
+                .connect_kline_stream(streams, market_kind)
+                .boxed(),
+        }
+    }
+
+    pub fn trade_stream(
+        &self,
+        config: &StreamConfig<Vec<TickerInfo>>,
+    ) -> BoxStream<'static, Event> {
+        let streams = config.id.clone();
+        let market_kind = config.exchange.market_type();
+
+        match config.exchange.venue() {
+            Venue::Binance => self
+                .binance
+                .clone()
+                .connect_trade_stream(streams, market_kind)
+                .boxed(),
+            Venue::Bybit => self
+                .bybit
+                .clone()
+                .connect_trade_stream(streams, market_kind)
+                .boxed(),
+            Venue::Hyperliquid => self
+                .hyperliquid
+                .clone()
+                .connect_trade_stream(streams, market_kind)
+                .boxed(),
+            Venue::Okex => self
+                .okex
+                .clone()
+                .connect_trade_stream(streams, market_kind)
+                .boxed(),
+            Venue::Mexc => self
+                .mexc
+                .clone()
+                .connect_trade_stream(streams, market_kind)
+                .boxed(),
+        }
+    }
+
+    pub fn depth_stream(&self, config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
+        let ticker = config.id;
+        let push_freq = config.push_freq;
+
+        match config.exchange.venue() {
+            Venue::Binance => self
+                .binance
+                .clone()
+                .connect_depth_stream(ticker, push_freq)
+                .boxed(),
+            Venue::Bybit => self
+                .bybit
+                .clone()
+                .connect_depth_stream(ticker, push_freq)
+                .boxed(),
+            Venue::Hyperliquid => self
+                .hyperliquid
+                .clone()
+                .connect_depth_stream(ticker, config.tick_mltp, push_freq)
+                .boxed(),
+            Venue::Okex => self
+                .okex
+                .clone()
+                .connect_depth_stream(ticker, push_freq)
+                .boxed(),
+            Venue::Mexc => self
+                .mexc
+                .clone()
+                .connect_depth_stream(ticker, push_freq)
+                .boxed(),
+        }
     }
 }
 
@@ -60,9 +158,6 @@ impl std::hash::Hash for AdapterHandles {
         std::any::TypeId::of::<Self>().hash(state);
     }
 }
-
-/// Buffer trades and flush in this interval
-const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
 
 async fn flush_trade_buffers<V>(
     output: &mut futures::channel::mpsc::Sender<Event>,

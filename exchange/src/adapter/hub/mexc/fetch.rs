@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::{
-    FETCH_DOMAIN, HttpHub, Mexc, MexcCommand, MexcLimiter, convert_to_mexc_timeframe,
-    exchange_from_market_type, mexc_perps_market_from_symbol, raw_qty_unit_from_market_type,
+    FETCH_DOMAIN, HttpHub, MexcLimiter, convert_to_mexc_timeframe, exchange_from_market_type,
+    mexc_perps_market_from_symbol, raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
 use serde::Deserialize;
@@ -70,19 +70,7 @@ struct FuturesDepthItem {
     pub qty: f32,
 }
 
-pub(super) async fn handle_command(worker: &mut Mexc, command: MexcCommand) {
-    match command {
-        MexcCommand::Fetch(fetch_command) => {
-            super::super::handle_fetch_command(worker, fetch_command).await;
-        }
-        MexcCommand::FetchDepthSnapshot { ticker, reply } => {
-            let result = fetch_depth_snapshot_with_hub(worker.http_hub(), ticker).await;
-            super::super::reply_once(reply, result);
-        }
-    }
-}
-
-pub(super) async fn fetch_depth_snapshot_with_hub(
+pub(super) async fn fetch_depth_snapshot(
     hub: &HttpHub<MexcLimiter>,
     ticker: Ticker,
 ) -> Result<DepthPayload, AdapterError> {

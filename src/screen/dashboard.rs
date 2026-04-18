@@ -1231,9 +1231,7 @@ impl Dashboard {
                             );
 
                             let data = (handles.clone(), config);
-                            Subscription::run_with(data, |data| {
-                                exchange::connect::depth_stream(&data.0, &data.1)
-                            })
+                            Subscription::run_with(data, |data| data.0.depth_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
 
@@ -1255,9 +1253,7 @@ impl Dashboard {
                             );
 
                             let data = (handles.clone(), config);
-                            Subscription::run_with(data, |data| {
-                                exchange::connect::trade_stream(&data.0, &data.1)
-                            })
+                            Subscription::run_with(data, |data| data.0.trade_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
 
@@ -1279,9 +1275,7 @@ impl Dashboard {
                             );
 
                             let data = (handles.clone(), config);
-                            Subscription::run_with(data, |data| {
-                                exchange::connect::kline_stream(&data.0, &data.1)
-                            })
+                            Subscription::run_with(data, |data| data.0.kline_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
 
