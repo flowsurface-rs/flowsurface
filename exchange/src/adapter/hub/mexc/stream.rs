@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
+    adapter::connect::{State, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
-    connect::{State, channel, connect_ws},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
 };
@@ -55,25 +55,25 @@ struct SonicDepth {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct SonicKline {
+struct SonicKline {
     #[serde(rename = "t")]
-    pub time: u64,
+    time: u64,
     #[serde(rename = "o")]
-    pub open: f32,
+    open: f32,
     #[serde(rename = "h")]
-    pub high: f32,
+    high: f32,
     #[serde(rename = "l")]
-    pub low: f32,
+    low: f32,
     #[serde(rename = "c")]
-    pub close: f32,
+    close: f32,
     #[serde(rename = "q")]
-    pub quote_volume: f32,
+    quote_volume: f32,
     #[serde(rename = "a")]
-    pub amount: f32,
+    _amount: f32,
     #[serde(rename = "interval")]
-    pub interval: String,
+    interval: String,
     #[serde(rename = "symbol")]
-    pub symbol: String,
+    symbol: String,
 }
 
 #[allow(dead_code)]

@@ -1,8 +1,8 @@
 use crate::{
     Event, Kline, Price, PushFrequency, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     Volume,
+    adapter::connect::{State, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
-    connect::{State, channel, connect_ws},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},

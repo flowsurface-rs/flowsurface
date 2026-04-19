@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe,
+    adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
-    limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -77,7 +77,7 @@ impl OkexConfig {
     }
 }
 
-pub type OkexLimiter = crate::limiter::FixedWindowRateLimiter;
+pub type OkexLimiter = crate::adapter::limiter::FixedWindowRateLimiter;
 
 type OkexCommand = super::FetchCommand<Vec<MarketKind>>;
 

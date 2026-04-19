@@ -24,8 +24,10 @@ use data::{
 };
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
-    adapter::{AdapterHandles, StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
-    connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
+    adapter::{
+        AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM, StreamConfig,
+        StreamKind, StreamTicksize, UniqueStreams,
+    },
     depth::Depth,
 };
 

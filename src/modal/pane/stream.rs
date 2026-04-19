@@ -6,7 +6,7 @@ use crate::{
 use data::chart::Basis;
 use exchange::{
     StreamPairKind, TickMultiplier, Timeframe,
-    adapter::{Exchange, hyperliquid::allowed_multipliers_for_min_tick},
+    adapter::{Exchange, allowed_multipliers_for_min_tick},
     unit::{MinTicksize, PriceStep},
 };
 use iced::{

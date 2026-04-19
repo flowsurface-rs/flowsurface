@@ -1,8 +1,8 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade,
+    adapter::limiter::DynamicRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
-    limiter::DynamicRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -76,7 +76,7 @@ impl BinanceConfig {
     }
 }
 
-pub type BinanceLimiter = crate::limiter::HeaderDynamicRateLimiter;
+pub type BinanceLimiter = crate::adapter::limiter::HeaderDynamicRateLimiter;
 
 #[derive(Debug, Clone)]
 pub struct BinanceMarketScope {
@@ -340,10 +340,6 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
             .await
         })
     }
-}
-
-pub fn spawn_default_binance() -> Result<BinanceHandle, AdapterError> {
-    spawn_binance_with_network(AdapterNetworkConfig::default())
 }
 
 pub fn spawn_binance_with_network(

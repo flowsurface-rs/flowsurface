@@ -105,14 +105,22 @@ pub(super) async fn fetch_depth_snapshot(
             101_i32..=500_i32 => 25,
             501_i32..=1000_i32 => 50,
             1001_i32..=5000_i32 => 250,
-            _ => panic!("Invalid depth limit for Spot market"),
+            _ => {
+                return Err(AdapterError::InvalidRequest(format!(
+                    "Unsupported depth limit for spot market: {depth_limit}"
+                )));
+            }
         },
         MarketKind::LinearPerps | MarketKind::InversePerps => match depth_limit {
             ..100 => 2,
             100 => 5,
             500 => 10,
             1000 => 20,
-            _ => panic!("Invalid depth limit for Perp market"),
+            _ => {
+                return Err(AdapterError::InvalidRequest(format!(
+                    "Unsupported depth limit for perps market: {depth_limit}"
+                )));
+            }
         },
     };
 
@@ -385,7 +393,11 @@ pub(super) async fn fetch_klines(
             101..=500 => 2,
             501..=1000 => 5,
             1001..=1500 => 10,
-            _ => panic!("Invalid limit for Inverse Perps market"),
+            _ => {
+                return Err(AdapterError::InvalidRequest(format!(
+                    "Unsupported kline limit parameter for perps market: {limit_param}"
+                )));
+            }
         },
     };
 

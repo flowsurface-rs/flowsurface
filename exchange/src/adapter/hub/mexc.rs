@@ -1,8 +1,8 @@
 use crate::{
     Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe,
+    adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
-    limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -131,7 +131,7 @@ impl MexcConfig {
     }
 }
 
-pub type MexcLimiter = crate::limiter::FixedWindowRateLimiter;
+pub type MexcLimiter = crate::adapter::limiter::FixedWindowRateLimiter;
 
 #[derive(Debug, Clone, Default)]
 pub struct MexcMarketScope {

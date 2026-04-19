@@ -276,7 +276,11 @@ pub(super) async fn fetch_historical_oi(
         Timeframe::H1 => "1h",
         Timeframe::H4 => "4h",
         Timeframe::D1 => "1d",
-        _ => panic!("Unsupported timeframe for open interest: {period}"),
+        _ => {
+            return Err(AdapterError::InvalidRequest(format!(
+                "Unsupported timeframe for open interest: {period}"
+            )));
+        }
     };
 
     let mut url = format!(

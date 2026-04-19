@@ -6,8 +6,8 @@ pub mod okex;
 
 use super::AdapterError;
 use crate::{
-    Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, depth::DepthPayload,
-    limiter::RateLimiter,
+    Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
+    adapter::limiter::RateLimiter, depth::DepthPayload,
 };
 
 use futures::future::BoxFuture;

@@ -1,8 +1,8 @@
 use crate::{
-    Event, Kline, OpenInterest, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
+    Event, Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
+    adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
-    limiter::FixedWindowRateLimiterConfig,
     unit::{MinTicksize, qty::RawQtyUnit},
 };
 
@@ -83,7 +83,7 @@ impl HyperliquidConfig {
     }
 }
 
-pub type HyperliquidLimiter = crate::limiter::FixedWindowRateLimiter;
+pub type HyperliquidLimiter = crate::adapter::limiter::FixedWindowRateLimiter;
 
 type HyperliquidCommand = super::FetchCommand<MarketKind>;
 
@@ -136,22 +136,6 @@ impl HyperliquidHandle {
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| HyperliquidCommand::Klines {
-                ticker,
-                timeframe,
-                range,
-                reply,
-            })
-            .await
-    }
-
-    pub async fn fetch_open_interest(
-        &self,
-        ticker: TickerInfo,
-        timeframe: Timeframe,
-        range: Option<(u64, u64)>,
-    ) -> Result<Vec<OpenInterest>, AdapterError> {
-        self.request_port
-            .request(move |reply| HyperliquidCommand::OpenInterest {
                 ticker,
                 timeframe,
                 range,

@@ -12,21 +12,32 @@ pub enum AdapterError {
     InvalidRequest(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdapterErrorKind {
+    Fetch,
+    Parse,
+    Websocket,
+    InvalidRequest,
+}
+
 #[derive(Debug)]
 pub struct FetchError {
     detail: String,
-    ui_message: &'static str,
+    human_message: &'static str,
 }
 
 impl FetchError {
     fn from_reqwest_detail(error: &reqwest::Error, detail: String) -> Self {
-        let ui_message = ReqwestErrorKind::from_error(error).ui_message();
+        let human_message = ReqwestErrorKind::from_error(error).ui_message();
 
-        Self { detail, ui_message }
+        Self {
+            detail,
+            human_message,
+        }
     }
 
     fn from_status_detail(status: reqwest::StatusCode, detail: String) -> Self {
-        let ui_message = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let human_message = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             "Rate limited. Check logs for details."
         } else if status.is_server_error() {
             "Server error. Check logs for details."
@@ -36,11 +47,18 @@ impl FetchError {
             "Request failed. Check logs for details."
         };
 
-        Self { detail, ui_message }
+        Self {
+            detail,
+            human_message,
+        }
+    }
+
+    pub fn human_message(&self) -> &'static str {
+        self.human_message
     }
 
     pub fn ui_message(&self) -> &'static str {
-        self.ui_message
+        self.human_message()
     }
 }
 
@@ -58,6 +76,15 @@ impl From<reqwest::Error> for AdapterError {
 }
 
 impl AdapterError {
+    pub fn kind(&self) -> AdapterErrorKind {
+        match self {
+            Self::FetchError(_) => AdapterErrorKind::Fetch,
+            Self::ParseError(_) => AdapterErrorKind::Parse,
+            Self::WebsocketError(_) => AdapterErrorKind::Websocket,
+            Self::InvalidRequest(_) => AdapterErrorKind::InvalidRequest,
+        }
+    }
+
     pub(crate) fn request_failed(
         method: &reqwest::Method,
         url: &str,
@@ -92,13 +119,17 @@ impl AdapterError {
         Self::FetchError(FetchError::from_status_detail(status, detail))
     }
 
-    pub fn ui_message(&self) -> String {
+    pub fn human_message(&self) -> String {
         match self {
-            Self::FetchError(error) => error.ui_message().to_string(),
+            Self::FetchError(error) => error.human_message().to_string(),
             Self::ParseError(_) => "Invalid server response. Check logs for details.".to_string(),
             Self::WebsocketError(_) => "Stream error. Check logs for details.".to_string(),
             Self::InvalidRequest(message) => message.clone(),
         }
+    }
+
+    pub fn ui_message(&self) -> String {
+        self.human_message()
     }
 }
 

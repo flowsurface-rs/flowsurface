@@ -13,9 +13,7 @@ use data::{
 };
 use exchange::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{
-        AdapterHandles, Exchange, MarketKind, Venue, fetch_ticker_metadata, fetch_ticker_stats,
-    },
+    adapter::{AdapterHandles, Exchange, MarketKind, Venue},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
@@ -1656,8 +1654,11 @@ fn fetch_ticker_stats_task(
     });
 
     let handles = handles.clone();
-    let fetch =
-        async move { fetch_ticker_stats(&handles, venue, markets_to_fetch, contract_sizes).await };
+    let fetch = async move {
+        handles
+            .fetch_ticker_stats(venue, markets_to_fetch, contract_sizes)
+            .await
+    };
 
     Task::perform(fetch, move |result| match result {
         Ok(ticker_rows) => Message::UpdateStats(venue, ticker_rows),
@@ -1674,7 +1675,7 @@ fn fetch_ticker_stats_task(
 fn fetch_metadata_task(handles: &AdapterHandles, venue: Venue) -> Task<Message> {
     let markets_to_fetch = available_markets(venue);
     let handles = handles.clone();
-    let fetch = async move { fetch_ticker_metadata(&handles, venue, markets_to_fetch).await };
+    let fetch = async move { handles.fetch_ticker_metadata(venue, markets_to_fetch).await };
 
     Task::perform(fetch, move |result| match result {
         Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),

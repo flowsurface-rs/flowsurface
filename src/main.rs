@@ -110,12 +110,11 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
-        let handles = exchange::adapter::AdapterHandles::spawn_with_network(
-            exchange::adapter::AdapterNetworkConfig {
+        let handles =
+            exchange::adapter::AdapterHandles::spawn_all(exchange::adapter::AdapterNetworkConfig {
                 proxy_cfg: saved_state.proxy_cfg.clone(),
-            },
-        )
-        .expect("Failed to spawn adapter handles");
+            })
+            .expect("Failed to spawn adapter handles");
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();

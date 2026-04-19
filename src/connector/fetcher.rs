@@ -1,4 +1,4 @@
-use exchange::adapter::{self, AdapterError, AdapterHandles, Exchange, StreamKind};
+use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind};
 use exchange::{Kline, OpenInterest, TickerInfo, Trade};
 use iced::{
     Task,
@@ -281,7 +281,13 @@ pub fn request_fetch(
                     let data_path = data::data_path(Some("market_data/binance/"));
 
                     let (task, handle) = Task::sip(
-                        fetch_trades_batched(ticker_info, from_time, to_time, data_path),
+                        fetch_trades_batched(
+                            handles.clone(),
+                            ticker_info,
+                            from_time,
+                            to_time,
+                            data_path,
+                        ),
                         move |batch| {
                             let data = FetchedData::Trades {
                                 batch,
@@ -367,7 +373,9 @@ pub fn oi_fetch_task(
             timeframe,
         } => {
             let fetch = async move {
-                adapter::fetch_open_interest(&handles, ticker_info, timeframe, range).await
+                handles
+                    .fetch_open_interest(ticker_info, timeframe, range)
+                    .await
             };
 
             Task::perform(
@@ -416,8 +424,7 @@ pub fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => {
-            let fetch =
-                async move { adapter::fetch_klines(&handles, ticker_info, timeframe, range).await };
+            let fetch = async move { handles.fetch_klines(ticker_info, timeframe, range).await };
 
             Task::perform(
                 iced::futures::TryFutureExt::map_err(fetch, |err| {
@@ -451,6 +458,7 @@ pub fn kline_fetch_task(
 }
 
 pub fn fetch_trades_batched(
+    handles: AdapterHandles,
     ticker_info: TickerInfo,
     from_time: u64,
     to_time: u64,
@@ -458,10 +466,9 @@ pub fn fetch_trades_batched(
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
         let mut latest_trade_t = from_time;
-        let handle = adapter::binance::spawn_default_binance()?;
 
         while latest_trade_t < to_time {
-            match handle
+            match handles
                 .fetch_trades(ticker_info, latest_trade_t, Some(data_path.clone()))
                 .await
             {

@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe,
+    adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
-    limiter::FixedWindowRateLimiterConfig,
     unit::qty::RawQtyUnit,
 };
 
@@ -61,7 +61,7 @@ impl BybitConfig {
     }
 }
 
-pub type BybitLimiter = crate::limiter::FixedWindowRateLimiter;
+pub type BybitLimiter = crate::adapter::limiter::FixedWindowRateLimiter;
 
 type BybitCommand = super::FetchCommand<MarketKind>;
 

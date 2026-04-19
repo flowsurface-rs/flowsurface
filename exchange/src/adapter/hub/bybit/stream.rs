@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
+    adapter::connect::{State, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
-    connect::{State, channel, connect_ws},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -141,7 +141,13 @@ fn feed_de(
                 }
             }
         } else if k == "type" {
-            v.as_str().unwrap().clone_into(&mut data_type);
+            if let Some(value) = v.as_str() {
+                value.clone_into(&mut data_type);
+            } else {
+                return Err(AdapterError::ParseError(
+                    "Bybit frame `type` field is not a string".to_string(),
+                ));
+            }
         } else if k == "data" {
             match stream_type {
                 Some(StreamWrapper::Trade) => {

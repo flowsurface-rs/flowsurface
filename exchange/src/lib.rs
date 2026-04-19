@@ -4,9 +4,8 @@ mod error;
 mod serde_util;
 pub mod unit;
 
-pub use adapter::Event;
+pub use adapter::{Event, proxy};
 use adapter::{Exchange, MarketKind};
-pub use adapter::{connect, limiter, proxy};
 
 use unit::price::de_price_from_number;
 use unit::price::{Price, PriceStep};
