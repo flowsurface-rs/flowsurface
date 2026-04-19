@@ -1,12 +1,8 @@
-use crate::{
-    Event, TickerInfo, Timeframe,
-    adapter::{self, StreamConfig, Venue},
-    error::AdapterError,
-};
+use crate::error::AdapterError;
 
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
-use futures::{Stream as FuturesStream, StreamExt, channel::mpsc, stream::BoxStream};
+use futures::{Stream as FuturesStream, channel::mpsc};
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -33,58 +29,6 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
-
-// Keep topics per websocket conservative across venues
-// allow up to 100 tickers per websocket stream
-pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
-pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
-
-pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
-    let ticker = config.id;
-    let push_freq = config.push_freq;
-
-    match config.exchange.venue() {
-        Venue::Binance => adapter::binance::connect_depth_stream(ticker, push_freq).boxed(),
-        Venue::Bybit => adapter::bybit::connect_depth_stream(ticker, push_freq).boxed(),
-        Venue::Hyperliquid => {
-            adapter::hyperliquid::connect_depth_stream(ticker, config.tick_mltp, push_freq).boxed()
-        }
-        Venue::Okex => adapter::okex::connect_depth_stream(ticker, push_freq).boxed(),
-        Venue::Mexc => adapter::mexc::connect_depth_stream(ticker, push_freq).boxed(),
-    }
-}
-
-pub fn trade_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static, Event> {
-    let tickers = config.id.clone();
-    let market_kind = config.exchange.market_type();
-
-    match config.exchange.venue() {
-        Venue::Bybit => adapter::bybit::connect_trade_stream(tickers, market_kind).boxed(),
-        Venue::Binance => adapter::binance::connect_trade_stream(tickers, market_kind).boxed(),
-        Venue::Hyperliquid => {
-            adapter::hyperliquid::connect_trade_stream(tickers, market_kind).boxed()
-        }
-        Venue::Okex => adapter::okex::connect_trade_stream(tickers, market_kind).boxed(),
-        Venue::Mexc => adapter::mexc::connect_trade_stream(tickers, market_kind).boxed(),
-    }
-}
-
-pub fn kline_stream(
-    config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>,
-) -> BoxStream<'static, Event> {
-    let streams = config.id.clone();
-    let market_kind = config.exchange.market_type();
-
-    match config.exchange.venue() {
-        Venue::Binance => adapter::binance::connect_kline_stream(streams, market_kind).boxed(),
-        Venue::Bybit => adapter::bybit::connect_kline_stream(streams, market_kind).boxed(),
-        Venue::Hyperliquid => {
-            adapter::hyperliquid::connect_kline_stream(streams, market_kind).boxed()
-        }
-        Venue::Okex => adapter::okex::connect_kline_stream(streams, market_kind).boxed(),
-        Venue::Mexc => adapter::mexc::connect_kline_stream(streams, market_kind).boxed(),
-    }
-}
 
 fn tls_connector() -> Result<TlsConnector, AdapterError> {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
@@ -146,6 +90,7 @@ where
 pub async fn connect_ws(
     domain: &str,
     url: &str,
+    proxy_cfg: Option<&super::proxy::Proxy>,
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
     let parsed = Url::parse(url).map_err(|e| AdapterError::InvalidRequest(e.to_string()))?;
 
@@ -163,7 +108,7 @@ pub async fn connect_ws(
         AdapterError::InvalidRequest("Missing port for websocket URL".to_string())
     })?;
 
-    let stream = setup_tcp(domain, target_port).await?;
+    let stream = setup_tcp(domain, target_port, proxy_cfg).await?;
 
     match parsed.scheme() {
         "wss" => {
@@ -200,8 +145,9 @@ pub async fn connect_ws(
 async fn setup_tcp(
     domain: &str,
     target_port: u16,
+    proxy_cfg: Option<&super::proxy::Proxy>,
 ) -> Result<super::proxy::ProxyStream, AdapterError> {
-    if let Some(proxy) = super::proxy::runtime_proxy_cfg() {
+    if let Some(proxy) = proxy_cfg {
         log::info!("Using proxy for WS: {}", proxy);
         return proxy.connect_tcp(domain, target_port).await;
     }

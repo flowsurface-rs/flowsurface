@@ -1,5 +1,4 @@
-use super::error::AdapterError;
-
+use crate::error::AdapterError;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -9,7 +8,6 @@ use tokio::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use std::{
     pin::Pin,
-    sync::OnceLock,
     task::{Context, Poll},
     time::Duration,
 };
@@ -97,19 +95,91 @@ impl std::fmt::Display for ProxyScheme {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProxyAuth {
-    pub username: String,
-    pub password: String,
+    username: Username,
+    password: Password,
+}
+
+impl ProxyAuth {
+    pub fn try_new(
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            username: Username::parse(username)?,
+            password: Password::parse(password)?,
+        })
+    }
+
+    pub fn username(&self) -> &str {
+        self.username.as_str()
+    }
+
+    pub fn password(&self) -> &str {
+        self.password.as_str()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Proxy {
-    pub scheme: ProxyScheme,
-    pub host: String,
-    pub port: u16,
-    pub auth: Option<ProxyAuth>,
+    scheme: ProxyScheme,
+    host: String,
+    port: u16,
+    auth: Option<ProxyAuth>,
 }
 
 impl Proxy {
+    pub fn new(
+        scheme: ProxyScheme,
+        host: impl Into<String>,
+        port: u16,
+        auth: Option<ProxyAuth>,
+    ) -> Result<Self, String> {
+        let host_raw = host.into();
+        let host = host_raw.trim();
+
+        if host.is_empty() {
+            return Err("Proxy host missing".to_string());
+        }
+        if port == 0 {
+            return Err("Proxy port must be in range 1-65535".to_string());
+        }
+
+        let proxy = Self {
+            scheme,
+            host: host.to_string(),
+            port,
+            auth,
+        };
+
+        proxy.try_to_url_string()?;
+        Ok(proxy)
+    }
+
+    pub fn scheme(&self) -> ProxyScheme {
+        self.scheme
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn auth(&self) -> Option<&ProxyAuth> {
+        self.auth.as_ref()
+    }
+
+    pub fn set_auth(&mut self, auth: Option<ProxyAuth>) {
+        self.auth = auth;
+    }
+
+    pub fn without_auth(mut self) -> Self {
+        self.auth = None;
+        self
+    }
+
     pub fn try_from_str_strict(s: &str) -> Result<Self, String> {
         let s = s.trim();
 
@@ -154,16 +224,11 @@ impl Proxy {
 
         let auth = match (username, password) {
             (None, None) => None,
-            (Some(username), Some(password)) => Some(ProxyAuth { username, password }),
+            (Some(username), Some(password)) => Some(ProxyAuth::try_new(username, password)?),
             _ => return Err("Proxy auth requires both username and password".to_string()),
         };
 
-        Ok(Self {
-            scheme,
-            host,
-            port,
-            auth,
-        })
+        Self::new(scheme, host, port, auth)
     }
 
     fn host_with_ipv6_brackets(host: &str) -> String {
@@ -200,9 +265,9 @@ impl Proxy {
         .map_err(|e| format!("Invalid proxy components: {e}"))?;
 
         if let Some(auth) = &self.auth {
-            url.set_username(&auth.username)
+            url.set_username(auth.username())
                 .map_err(|_| "Invalid proxy username".to_string())?;
-            url.set_password(Some(&auth.password))
+            url.set_password(Some(auth.password()))
                 .map_err(|_| "Invalid proxy password".to_string())?;
         }
 
@@ -245,7 +310,7 @@ impl Proxy {
             Some(auth) => format!(
                 "{}://{}@{}:{}",
                 self.scheme.as_str(),
-                auth.username,
+                auth.username(),
                 host,
                 self.port
             ),
@@ -272,13 +337,10 @@ impl Proxy {
                 })?
                 .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-                let proxy_auth = match &self.auth {
-                    None => None,
-                    Some(ProxyAuth { username, password }) => {
-                        let token = BASE64.encode(format!("{username}:{password}"));
-                        Some(format!("Basic {token}"))
-                    }
-                };
+                let proxy_auth = self.auth.as_ref().map(|auth| {
+                    let token = BASE64.encode(format!("{}:{}", auth.username(), auth.password()));
+                    format!("Basic {token}")
+                });
 
                 tokio::time::timeout(
                     PROXY_TUNNEL_TIMEOUT,
@@ -317,13 +379,10 @@ impl Proxy {
                     .await
                     .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-                let proxy_auth = match &self.auth {
-                    None => None,
-                    Some(ProxyAuth { username, password }) => {
-                        let token = BASE64.encode(format!("{username}:{password}"));
-                        Some(format!("Basic {token}"))
-                    }
-                };
+                let proxy_auth = self.auth.as_ref().map(|auth| {
+                    let token = BASE64.encode(format!("{}:{}", auth.username(), auth.password()));
+                    format!("Basic {token}")
+                });
 
                 tokio::time::timeout(
                     PROXY_TUNNEL_TIMEOUT,
@@ -350,10 +409,12 @@ impl Proxy {
                 for addr in addrs {
                     let attempt = tokio::time::timeout(PROXY_TCP_CONNECT_TIMEOUT, async {
                         match self.auth.as_ref() {
-                            Some(ProxyAuth { username, password }) => {
+                            Some(auth) => {
                                 tokio_socks::tcp::Socks5Stream::connect_with_password(
-                                    proxy_addr, addr, // IP address => local DNS semantics
-                                    username, password,
+                                    proxy_addr,
+                                    addr, // IP address => local DNS semantics
+                                    auth.username(),
+                                    auth.password(),
                                 )
                                 .await
                                 .map(|s| s.into_inner())
@@ -384,16 +445,14 @@ impl Proxy {
 
                 let stream = tokio::time::timeout(PROXY_TCP_CONNECT_TIMEOUT, async {
                     match self.auth.as_ref() {
-                        Some(ProxyAuth { username, password }) => {
-                            tokio_socks::tcp::Socks5Stream::connect_with_password(
-                                proxy_addr,
-                                target_addr,
-                                username,
-                                password,
-                            )
-                            .await
-                            .map(|s| s.into_inner())
-                        }
+                        Some(auth) => tokio_socks::tcp::Socks5Stream::connect_with_password(
+                            proxy_addr,
+                            target_addr,
+                            auth.username(),
+                            auth.password(),
+                        )
+                        .await
+                        .map(|s| s.into_inner()),
                         None => tokio_socks::tcp::Socks5Stream::connect(proxy_addr, target_addr)
                             .await
                             .map(|s| s.into_inner()),
@@ -415,20 +474,97 @@ impl std::fmt::Display for Proxy {
     }
 }
 
-type ProxyCfgProvider = fn() -> Option<Proxy>;
-static RUNTIME_PROXY_CFG_PROVIDER: OnceLock<ProxyCfgProvider> = OnceLock::new();
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+struct Username(String);
 
-pub fn set_runtime_proxy_cfg_provider(provider: ProxyCfgProvider) {
-    let _ = RUNTIME_PROXY_CFG_PROVIDER.set(provider);
+impl Username {
+    fn parse(value: impl Into<String>) -> Result<Self, String> {
+        value.into().try_into()
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn validate(value: &str) -> Result<(), String> {
+        if value.is_empty() {
+            return Err("Proxy username cannot be empty".to_string());
+        }
+        if value.contains(':') {
+            return Err("Proxy username cannot contain ':'".to_string());
+        }
+        if value.as_bytes().iter().any(|b| *b == b'\r' || *b == b'\n') {
+            return Err("Proxy username cannot contain CR or LF characters".to_string());
+        }
+        Ok(())
+    }
 }
 
-pub(crate) fn runtime_proxy_cfg() -> Option<Proxy> {
-    let Some(provider) = RUNTIME_PROXY_CFG_PROVIDER.get() else {
-        log::warn!("Proxy runtime provider not initialized; defaulting to direct (no proxy).");
-        return None;
-    };
+impl std::fmt::Debug for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Username").field(&self.0).finish()
+    }
+}
 
-    provider()
+impl TryFrom<String> for Username {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::validate(&value)?;
+        Ok(Self(value))
+    }
+}
+
+impl From<Username> for String {
+    fn from(value: Username) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+struct Password(String);
+
+impl Password {
+    fn parse(value: impl Into<String>) -> Result<Self, String> {
+        value.into().try_into()
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn validate(value: &str) -> Result<(), String> {
+        if value.is_empty() {
+            return Err("Proxy password cannot be empty".to_string());
+        }
+        if value.as_bytes().iter().any(|b| *b == b'\r' || *b == b'\n') {
+            return Err("Proxy password cannot contain CR or LF characters".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(**redacted**)")
+    }
+}
+
+impl TryFrom<String> for Password {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::validate(&value)?;
+        Ok(Self(value))
+    }
+}
+
+impl From<Password> for String {
+    fn from(value: Password) -> Self {
+        value.0
+    }
 }
 
 fn authority_host_port(host: &str, port: u16) -> String {
@@ -523,7 +659,7 @@ pub fn try_apply_proxy(
         return builder;
     };
 
-    let (scheme, auth) = (cfg.scheme, cfg.auth.as_ref());
+    let (scheme, auth) = (cfg.scheme(), cfg.auth());
 
     let proxy_url = match (scheme, auth) {
         (ProxyScheme::Socks5 | ProxyScheme::Socks5h, Some(_auth)) => cfg.to_url_string(),
@@ -535,7 +671,7 @@ pub fn try_apply_proxy(
         Err(e) => {
             log::warn!(
                 "Failed to configure proxy (scheme={}): {}",
-                cfg.scheme.as_str(),
+                cfg.scheme().as_str(),
                 e
             );
             return builder;
@@ -543,7 +679,7 @@ pub fn try_apply_proxy(
     };
     let proxy = match (scheme, auth) {
         (ProxyScheme::Http | ProxyScheme::Https, Some(auth)) => {
-            proxy.basic_auth(&auth.username, &auth.password)
+            proxy.basic_auth(auth.username(), auth.password())
         }
         _ => proxy,
     };
