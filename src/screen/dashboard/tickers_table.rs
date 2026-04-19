@@ -13,7 +13,7 @@ use data::{
 };
 use exchange::{
     Ticker, TickerInfo, TickerStats,
-    adapter::{Exchange, MarketKind, Venue, fetch_ticker_metadata, fetch_ticker_stats},
+    adapter::{AdapterHandles, Exchange, MarketKind, Venue},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
@@ -114,19 +114,23 @@ pub struct TickersTable {
     row_index: FxHashMap<Ticker, usize>,
     metadata_fetch_state: MetadataFetchState,
     stats_fetch_state: StatsFetchState,
+    handles: AdapterHandles,
 }
 
 impl TickersTable {
-    pub fn new() -> (Self, Task<Message>) {
-        Self::new_with_settings(&Settings::default())
+    pub fn new(handles: AdapterHandles) -> (Self, Task<Message>) {
+        Self::new_with_settings(&Settings::default(), handles)
     }
 
-    pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
+    pub fn new_with_settings(
+        settings: &Settings,
+        handles: AdapterHandles,
+    ) -> (Self, Task<Message>) {
         let selected_exchanges = settings.selected_exchanges.to_vec();
 
         let fetch_metadata = selected_exchanges
             .iter()
-            .map(|venue: &Venue| fetch_metadata_task(*venue))
+            .map(|venue: &Venue| fetch_metadata_task(&handles, *venue))
             .collect::<Vec<_>>();
 
         (
@@ -148,6 +152,7 @@ impl TickersTable {
                 row_index: FxHashMap::default(),
                 metadata_fetch_state: MetadataFetchState::with_pending(selected_exchanges),
                 stats_fetch_state: StatsFetchState::default(),
+                handles,
             },
             Task::batch(fetch_metadata),
         )
@@ -205,7 +210,7 @@ impl TickersTable {
 
                     if !self.metadata_fetch_state.has_fetched(exch) {
                         if self.metadata_fetch_state.begin_venue(exch) {
-                            return Some(Action::Fetch(fetch_metadata_task(exch)));
+                            return Some(Action::Fetch(fetch_metadata_task(&self.handles, exch)));
                         }
 
                         return None;
@@ -274,7 +279,7 @@ impl TickersTable {
                     && self.metadata_fetch_state.begin_venue(venue)
                 {
                     self.selected_exchanges.insert(venue);
-                    return Some(Action::Fetch(fetch_metadata_task(venue)));
+                    return Some(Action::Fetch(fetch_metadata_task(&self.handles, venue)));
                 }
             }
             Message::UpdateStats(venue, stats) => {
@@ -367,7 +372,7 @@ impl TickersTable {
 
         let fetch_tasks = scheduled
             .into_iter()
-            .map(|venue| fetch_ticker_stats_task(venue, &self.tickers_info))
+            .map(|venue| fetch_ticker_stats_task(&self.handles, venue, &self.tickers_info))
             .collect::<Vec<Task<Message>>>();
 
         Some(Task::batch(fetch_tasks))
@@ -1630,6 +1635,7 @@ impl MetadataFetchState {
 }
 
 fn fetch_ticker_stats_task(
+    handles: &AdapterHandles,
     venue: Venue,
     tickers_info: &FxHashMap<Ticker, Option<TickerInfo>>,
 ) -> Task<Message> {
@@ -1647,37 +1653,40 @@ fn fetch_ticker_stats_task(
             .collect()
     });
 
-    Task::perform(
-        fetch_ticker_stats(venue, markets_to_fetch, contract_sizes),
-        move |result| match result {
-            Ok(ticker_rows) => Message::UpdateStats(venue, ticker_rows),
-            Err(err) => {
-                log::error!("Ticker stats fetch failed for {venue:?}: {err}");
-                Message::StatsFetchFailed(
-                    venue,
-                    InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
-                )
-            }
-        },
-    )
+    let handles = handles.clone();
+    let fetch = async move {
+        handles
+            .fetch_ticker_stats(venue, markets_to_fetch, contract_sizes)
+            .await
+    };
+
+    Task::perform(fetch, move |result| match result {
+        Ok(ticker_rows) => Message::UpdateStats(venue, ticker_rows),
+        Err(err) => {
+            log::error!("Ticker stats fetch failed for {venue:?}: {err}");
+            Message::StatsFetchFailed(
+                venue,
+                InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
+            )
+        }
+    })
 }
 
-fn fetch_metadata_task(venue: Venue) -> Task<Message> {
+fn fetch_metadata_task(handles: &AdapterHandles, venue: Venue) -> Task<Message> {
     let markets_to_fetch = available_markets(venue);
+    let handles = handles.clone();
+    let fetch = async move { handles.fetch_ticker_metadata(venue, markets_to_fetch).await };
 
-    Task::perform(
-        fetch_ticker_metadata(venue, markets_to_fetch),
-        move |result| match result {
-            Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
-            Err(err) => {
-                log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
-                Message::MetadataFetchFailed(
-                    venue,
-                    InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
-                )
-            }
-        },
-    )
+    Task::perform(fetch, move |result| match result {
+        Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
+        Err(err) => {
+            log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
+            Message::MetadataFetchFailed(
+                venue,
+                InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
+            )
+        }
+    })
 }
 
 /// Keeps ticker-stats fetch behavior predictable and spam-safe.

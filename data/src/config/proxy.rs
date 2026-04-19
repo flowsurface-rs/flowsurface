@@ -42,7 +42,7 @@ pub fn load_proxy_auth(proxy: &Proxy) -> Option<ProxyAuth> {
 pub fn save_proxy_auth(proxy: &Proxy) {
     let key = proxy.to_url_string_no_auth();
 
-    let Some(auth) = &proxy.auth else {
+    let Some(auth) = proxy.auth() else {
         log::info!("Not saving proxy auth: auth is None (service={KEYCHAIN_SERVICE} key={key})");
         return;
     };

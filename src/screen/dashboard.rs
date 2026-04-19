@@ -24,8 +24,10 @@ use data::{
 };
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
-    adapter::{StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
-    connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
+    adapter::{
+        AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM, StreamConfig,
+        StreamKind, StreamTicksize, UniqueStreams,
+    },
     depth::Depth,
 };
 
@@ -176,6 +178,7 @@ impl Dashboard {
 
     pub fn update(
         &mut self,
+        handles: &AdapterHandles,
         message: Message,
         main_window: &Window,
         layout_id: &uuid::Uuid,
@@ -343,7 +346,12 @@ impl Dashboard {
                                 if let StreamKind::Kline { .. } = stream {
                                     return (
                                         fetcher::kline_fetch_task(
-                                            *layout_id, pane_id, *stream, None, None,
+                                            handles.clone(),
+                                            *layout_id,
+                                            pane_id,
+                                            *stream,
+                                            None,
+                                            None,
                                         )
                                         .map(Message::from),
                                         None,
@@ -376,6 +384,7 @@ impl Dashboard {
                                     .unwrap_or_default();
 
                                 fetcher::request_fetch_many(
+                                    handles.clone(),
                                     pane_id,
                                     &ready_streams,
                                     *layout_id,
@@ -393,7 +402,7 @@ impl Dashboard {
                                 .chain(self.refresh_streams(main_window.id))
                             }
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
-                                self.switch_tickers_in_group(main_window.id, ticker_info)
+                                self.switch_tickers_in_group(handles, main_window.id, ticker_info)
                             }
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
@@ -704,6 +713,7 @@ impl Dashboard {
 
     fn init_pane(
         &mut self,
+        handles: &AdapterHandles,
         main_window: window::Id,
         window: window::Id,
         selected_pane: pane_grid::Pane,
@@ -718,8 +728,15 @@ impl Dashboard {
 
             for stream in &streams {
                 if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(self.layout_id, pane_id, *stream, None, None)
-                        .map(Message::from);
+                    return fetcher::kline_fetch_task(
+                        handles.clone(),
+                        self.layout_id,
+                        pane_id,
+                        *stream,
+                        None,
+                        None,
+                    )
+                    .map(Message::from);
                 }
             }
         }
@@ -729,6 +746,7 @@ impl Dashboard {
 
     pub fn init_focused_pane(
         &mut self,
+        handles: &AdapterHandles,
         main_window: window::Id,
         ticker_info: TickerInfo,
         content_kind: ContentKind,
@@ -755,8 +773,15 @@ impl Dashboard {
 
             for stream in &streams {
                 if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(self.layout_id, pane_id, *stream, None, None)
-                        .map(Message::from);
+                    return fetcher::kline_fetch_task(
+                        handles.clone(),
+                        self.layout_id,
+                        pane_id,
+                        *stream,
+                        None,
+                        None,
+                    )
+                    .map(Message::from);
                 }
             }
             return Task::none();
@@ -769,6 +794,7 @@ impl Dashboard {
 
     pub fn switch_tickers_in_group(
         &mut self,
+        handles: &AdapterHandles,
         main_window: window::Id,
         ticker_info: TickerInfo,
     ) -> Task<Message> {
@@ -799,7 +825,14 @@ impl Dashboard {
             let tasks: Vec<Task<Message>> = pane_infos
                 .iter()
                 .map(|(window, pane, content_kind)| {
-                    self.init_pane(main_window, *window, *pane, ticker_info, *content_kind)
+                    self.init_pane(
+                        handles,
+                        main_window,
+                        *window,
+                        *pane,
+                        ticker_info,
+                        *content_kind,
+                    )
                 })
                 .collect();
 
@@ -807,7 +840,7 @@ impl Dashboard {
         } else if let Some((window, pane)) = self.focus {
             if let Some(state) = self.get_mut_pane(main_window, window, pane) {
                 let content_kind = state.content.kind();
-                self.init_focused_pane(main_window, ticker_info, content_kind)
+                self.init_focused_pane(handles, main_window, ticker_info, content_kind)
             } else {
                 Task::done(Message::Notification(Toast::warn(
                     "Couldn't get focused pane's content".to_string(),
@@ -1081,7 +1114,12 @@ impl Dashboard {
             .for_each(|(_, _, state)| state.park_for_inactive_layout());
     }
 
-    pub fn tick(&mut self, now: Instant, _main_window: window::Id) -> Task<Message> {
+    pub fn tick(
+        &mut self,
+        handles: &AdapterHandles,
+        now: Instant,
+        _main_window: window::Id,
+    ) -> Task<Message> {
         let mut tasks = vec![];
 
         let mut tick_state = |state: &mut pane::State| match state.tick(now) {
@@ -1099,6 +1137,7 @@ impl Dashboard {
                         .unwrap_or_default();
 
                     let fetch_tasks = fetcher::request_fetch_many(
+                        handles.clone(),
                         pane_id,
                         &ready_streams,
                         self.layout_id,
@@ -1169,7 +1208,7 @@ impl Dashboard {
         self.refresh_streams(main_window)
     }
 
-    pub fn market_subscriptions(&self) -> Subscription<exchange::Event> {
+    pub fn market_subscriptions(&self, handles: &AdapterHandles) -> Subscription<exchange::Event> {
         let unique_streams = self
             .streams
             .combined_used()
@@ -1193,7 +1232,8 @@ impl Dashboard {
                                 *push_freq,
                             );
 
-                            Subscription::run_with(config, exchange::connect::depth_stream)
+                            let data = (handles.clone(), config);
+                            Subscription::run_with(data, |data| data.0.depth_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
 
@@ -1214,7 +1254,8 @@ impl Dashboard {
                                 PushFrequency::ServerDefault,
                             );
 
-                            Subscription::run_with(config, exchange::connect::trade_stream)
+                            let data = (handles.clone(), config);
+                            Subscription::run_with(data, |data| data.0.trade_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
 
@@ -1235,7 +1276,8 @@ impl Dashboard {
                                 PushFrequency::ServerDefault,
                             );
 
-                            Subscription::run_with(config, exchange::connect::kline_stream)
+                            let data = (handles.clone(), config);
+                            Subscription::run_with(data, |data| data.0.kline_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
 

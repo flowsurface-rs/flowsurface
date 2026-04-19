@@ -64,6 +64,7 @@ fn main() {
 struct Flowsurface {
     main_window: window::Window,
     sidebar: dashboard::Sidebar,
+    handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
     network: NetworkManager,
@@ -88,7 +89,7 @@ enum Message {
     Tick(std::time::Instant),
     WindowEvent(window::Event),
     ExitRequested(HashMap<window::Id, WindowSpec>),
-    RestartRequested(HashMap<window::Id, WindowSpec>),
+    RestartRequested(Option<HashMap<window::Id, WindowSpec>>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
     DataFolderRequested,
@@ -109,6 +110,11 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
+        let handles =
+            exchange::adapter::AdapterHandles::spawn_all(exchange::adapter::AdapterNetworkConfig {
+                proxy_cfg: saved_state.proxy_cfg.clone(),
+            })
+            .expect("Failed to spawn adapter handles");
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();
@@ -121,7 +127,7 @@ impl Flowsurface {
             window::open(config)
         };
 
-        let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state);
+        let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
@@ -131,6 +137,7 @@ impl Flowsurface {
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
             audio_stream,
             sidebar,
+            handles,
             confirm_dialog: None,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
@@ -214,10 +221,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
+                let handles = self.handles.clone();
 
                 return self
                     .active_dashboard_mut()
-                    .tick(now, main_window_id)
+                    .tick(&handles, now, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -250,9 +258,24 @@ impl Flowsurface {
             Message::SaveStateRequested(windows) => {
                 self.save_state_to_disk(&windows);
             }
-            Message::RestartRequested(windows) => {
+            Message::RestartRequested(Some(windows)) => {
                 self.save_state_to_disk(&windows);
                 return self.restart();
+            }
+            Message::RestartRequested(None) => {
+                self.confirm_dialog = None;
+
+                let mut active_windows = self
+                    .active_dashboard()
+                    .popout
+                    .keys()
+                    .copied()
+                    .collect::<Vec<window::Id>>();
+                active_windows.push(self.main_window.id);
+
+                return window::collect_window_specs(active_windows, |windows| {
+                    Message::RestartRequested(Some(windows))
+                });
             }
             Message::GoBack => {
                 let main_window = self.main_window.id;
@@ -291,9 +314,11 @@ impl Flowsurface {
 
                 let main_window = self.main_window;
                 let layout_id = id.unwrap_or(active_layout.unique);
+                let handles = self.handles.clone();
 
                 if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
-                    let (main_task, event) = dashboard.update(msg, &main_window, &layout_id);
+                    let (main_task, event) =
+                        dashboard.update(&handles, msg, &main_window, &layout_id);
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {
@@ -530,6 +555,14 @@ impl Flowsurface {
                             data::config::proxy::save_proxy_auth(&proxy);
                         }
 
+                        self.confirm_dialog = Some(
+                            screen::ConfirmDialog::new(
+                                "Proxy changes saved. Restart now to apply?".to_string(),
+                                Box::new(Message::RestartRequested(None)),
+                            )
+                            .with_confirm_btn_text("Restart now".to_string()),
+                        );
+
                         let main_window = self.main_window.id;
                         let dashboard = self.active_dashboard_mut();
 
@@ -557,17 +590,22 @@ impl Flowsurface {
                 match action {
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
+                        let handles = self.handles.clone();
 
                         let task = {
                             if let Some(kind) = content {
                                 self.active_dashboard_mut().init_focused_pane(
+                                    &handles,
                                     main_window_id,
                                     ticker_info,
                                     kind,
                                 )
                             } else {
-                                self.active_dashboard_mut()
-                                    .switch_tickers_in_group(main_window_id, ticker_info)
+                                self.active_dashboard_mut().switch_tickers_in_group(
+                                    &handles,
+                                    main_window_id,
+                                    ticker_info,
+                                )
                             }
                         };
 
@@ -592,7 +630,9 @@ impl Flowsurface {
                     self.active_dashboard().popout.keys().copied().collect();
                 active_windows.push(self.main_window.id);
 
-                return window::collect_window_specs(active_windows, Message::RestartRequested);
+                return window::collect_window_specs(active_windows, |windows| {
+                    Message::RestartRequested(Some(windows))
+                });
             }
         }
         Task::none()
@@ -701,7 +741,7 @@ impl Flowsurface {
 
         let exchange_streams = self
             .active_dashboard()
-            .market_subscriptions()
+            .market_subscriptions(&self.handles)
             .map(Message::MarketWsEvent);
 
         let tick = iced::window::frames().map(Message::Tick);
@@ -1185,14 +1225,27 @@ impl Flowsurface {
                     sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
                 };
 
-                dashboard_modal(
+                let base_content = dashboard_modal(
                     base,
                     self.network.view().map(Message::NetworkManager),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,
                     align_x,
-                )
+                );
+
+                if let Some(dialog) = &self.confirm_dialog {
+                    let dialog_content =
+                        confirm_dialog_container(dialog.clone(), Message::ToggleDialogModal(None));
+
+                    main_dialog_modal(
+                        base_content,
+                        dialog_content,
+                        Message::ToggleDialogModal(None),
+                    )
+                } else {
+                    base_content
+                }
             }
         }
     }
@@ -1236,10 +1289,7 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
-        let proxy_cfg_persisted = self.network.proxy_cfg().map(|mut p| {
-            p.auth = None;
-            p
-        });
+        let proxy_cfg_persisted = self.network.proxy_cfg().map(|p| p.without_auth());
 
         let state = data::State::from_parts(
             layouts,
