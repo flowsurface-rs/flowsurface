@@ -25,7 +25,7 @@ pub(super) async fn fetch_ticker_metadata(
     if include_spot {
         let url = format!("{REST_API_BASE}/public/instruments?instType=SPOT");
 
-        let response_text = super::super::http_request(hub, &url, None, None).await?;
+        let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
         let doc: Value = serde_json::from_str(&response_text)
             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
@@ -68,7 +68,7 @@ pub(super) async fn fetch_ticker_metadata(
     if include_perps {
         let url = format!("{REST_API_BASE}/public/instruments?instType=SWAP");
 
-        let response_text = super::super::http_request(hub, &url, None, None).await?;
+        let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
         let doc: Value = serde_json::from_str(&response_text)
             .map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
@@ -136,8 +136,7 @@ pub(super) async fn fetch_ticker_stats(
     if include_spot {
         let url = format!("{REST_API_BASE}/market/tickers?instType=SPOT");
 
-        let parsed_response: Value =
-            super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
+        let parsed_response: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
 
         let list = parsed_response["data"]
             .as_array()
@@ -188,8 +187,7 @@ pub(super) async fn fetch_ticker_stats(
     if include_perps {
         let url = format!("{REST_API_BASE}/market/tickers?instType=SWAP");
 
-        let parsed_response: Value =
-            super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
+        let parsed_response: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
 
         let list = parsed_response["data"]
             .as_array()
@@ -284,7 +282,7 @@ pub(super) async fn fetch_klines(
         url.push_str(&format!("&before={start}&after={end}"));
     }
 
-    let doc: Value = super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
+    let doc: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
 
     let list = doc["data"]
         .as_array()
@@ -353,7 +351,7 @@ pub(super) async fn fetch_historical_oi(
         url.push_str(&format!("&begin={start}&end={end}"));
     }
 
-    let response_text = super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
+    let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
 
     let doc: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(e.to_string()))?;

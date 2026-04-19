@@ -1,5 +1,7 @@
 use crate::{
-    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, serde_util,
+    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe,
+    adapter::hub::TickerMetadataMap,
+    serde_util,
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
 };
 
@@ -54,7 +56,7 @@ fn parse_kline_field<T: std::str::FromStr>(field: Option<&str>) -> Result<T, Ada
 pub(super) async fn fetch_ticker_metadata(
     hub: &mut HttpHub<BybitLimiter>,
     market_type: MarketKind,
-) -> Result<super::super::TickerMetadataMap, AdapterError> {
+) -> Result<TickerMetadataMap, AdapterError> {
     let exchange = exchange_from_market_type(market_type);
 
     let market = match market_type {
@@ -64,7 +66,7 @@ pub(super) async fn fetch_ticker_metadata(
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/instruments-info?category={market}&limit=1000",);
-    let response_text = super::super::http_request(hub, &url, None, None).await?;
+    let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
 
     let exchange_info: Value =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
@@ -134,8 +136,7 @@ pub(super) async fn fetch_ticker_stats(
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/tickers?category={market}");
-    let parsed_response: Value =
-        super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
+    let parsed_response: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
 
     let result_list: &Vec<Value> = parsed_response["result"]["list"]
         .as_array()
@@ -216,8 +217,7 @@ pub(super) async fn fetch_klines(
         url.push_str(&format!("&start={start}&end={end}&limit={num_intervals}"));
     }
 
-    let response: ApiResponse =
-        super::super::http_parse_with_limiter(hub, &url, 1, None, None).await?;
+    let response: ApiResponse = hub.http_json_with_limiter(&url, 1, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -298,7 +298,7 @@ pub(super) async fn fetch_historical_oi(
         url.push_str("&limit=200");
     }
 
-    let response_text = super::super::http_request_with_limiter(hub, &url, 1, None, None).await?;
+    let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
 
     let content: Value = sonic_rs::from_str(&response_text).map_err(|e| {
         log::error!(

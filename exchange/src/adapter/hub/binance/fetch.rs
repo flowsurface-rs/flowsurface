@@ -124,7 +124,7 @@ pub(super) async fn fetch_depth_snapshot(
         },
     };
 
-    let text = super::super::http_request_with_limiter(hub, &url, weight, None, None).await?;
+    let text = hub.http_text_with_limiter(&url, weight, None, None).await?;
 
     match market_type {
         MarketKind::Spot => {
@@ -190,8 +190,7 @@ pub(super) async fn fetch_ticker_metadata(
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/exchangeInfo"), 1),
     };
 
-    let response_text =
-        super::super::http_request_with_limiter(hub, &url, weight, None, None).await?;
+    let response_text = hub.http_text_with_limiter(&url, weight, None, None).await?;
 
     let exchange_info: Value = serde_json::from_str(&response_text)
         .map_err(|e| AdapterError::ParseError(format!("Failed to parse exchange info: {e}")))?;
@@ -278,8 +277,7 @@ pub(super) async fn fetch_ticker_stats(
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/ticker/24hr"), 40),
     };
 
-    let parsed_response: Vec<Value> =
-        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
+    let parsed_response: Vec<Value> = hub.http_json_with_limiter(&url, weight, None, None).await?;
 
     let exchange = exchange_from_market_type(market);
     let mut ticker_price_map = HashMap::new();
@@ -402,7 +400,7 @@ pub(super) async fn fetch_klines(
     };
 
     let fetched_klines: Vec<FetchedKline> =
-        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
+        hub.http_json_with_limiter(&url, weight, None, None).await?;
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -523,7 +521,7 @@ pub(super) async fn fetch_historical_oi(
     }
 
     let binance_oi: Vec<DeOpenInterest> =
-        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
+        hub.http_json_with_limiter(&url, weight, None, None).await?;
 
     let contract_size = ticker_info.contract_size;
     let open_interest = binance_oi
@@ -554,8 +552,7 @@ async fn fetch_intraday_trades(
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000");
     url.push_str(&format!("&startTime={from}"));
 
-    let de_trades: Vec<DeTrade> =
-        super::super::http_parse_with_limiter(hub, &url, weight, None, None).await?;
+    let de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
 
     let qty_norm = QtyNormalization::with_raw_qty_unit(
         volume_size_unit() == SizeUnit::Quote,
