@@ -29,11 +29,11 @@ pub struct AdapterNetworkConfig {
 
 #[derive(Clone)]
 pub struct AdapterHandles {
-    pub binance: binance::BinanceHandle,
-    pub bybit: bybit::BybitHandle,
-    pub hyperliquid: hyperliquid::HyperliquidHandle,
-    pub okex: okex::OkexHandle,
-    pub mexc: mexc::MexcHandle,
+    binance: binance::BinanceHandle,
+    bybit: bybit::BybitHandle,
+    hyperliquid: hyperliquid::HyperliquidHandle,
+    okex: okex::OkexHandle,
+    mexc: mexc::MexcHandle,
 }
 
 impl AdapterHandles {

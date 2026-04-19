@@ -366,10 +366,10 @@ pub fn load_saved_state() -> SavedState {
             // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
             let mut proxy_cfg = state.proxy_cfg;
             if let Some(proxy) = proxy_cfg.as_mut()
-                && proxy.auth.is_none()
+                && proxy.auth().is_none()
                 && let Some(auth) = data::config::proxy::load_proxy_auth(proxy)
             {
-                proxy.auth = Some(auth);
+                proxy.set_auth(Some(auth));
             }
 
             SavedState {

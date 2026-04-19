@@ -59,16 +59,14 @@ impl NetworkManager {
                 let url = exchange::proxy::Proxy::to_url_string(&cfg);
                 (
                     Some(url),
-                    cfg.scheme,
-                    cfg.host,
-                    cfg.port.to_string(),
-                    cfg.auth
-                        .as_ref()
-                        .map(|a| a.username.clone())
+                    cfg.scheme(),
+                    cfg.host().to_string(),
+                    cfg.port().to_string(),
+                    cfg.auth()
+                        .map(|a| a.username().to_string())
                         .unwrap_or_default(),
-                    cfg.auth
-                        .as_ref()
-                        .map(|a| a.password.clone())
+                    cfg.auth()
+                        .map(|a| a.password().to_string())
                         .unwrap_or_default(),
                 )
             } else {
@@ -462,20 +460,12 @@ impl NetworkManager {
         }
 
         let auth = if has_user && has_pass {
-            Some(ProxyAuth {
-                username: u.to_string(),
-                password: p.to_string(),
-            })
+            Some(ProxyAuth::try_new(u, p)?)
         } else {
             None
         };
 
-        Ok(Some(Proxy {
-            scheme: self.scheme,
-            host: host.to_string(),
-            port,
-            auth,
-        }))
+        Proxy::new(self.scheme, host.to_string(), port, auth).map(Some)
     }
 }
 

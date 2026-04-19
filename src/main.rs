@@ -1290,10 +1290,7 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
-        let proxy_cfg_persisted = self.network.proxy_cfg().map(|mut p| {
-            p.auth = None;
-            p
-        });
+        let proxy_cfg_persisted = self.network.proxy_cfg().map(|p| p.without_auth());
 
         let state = data::State::from_parts(
             layouts,
