@@ -21,10 +21,20 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y build-essential pkg-config libasound2-dev
 
+            - name: Read rust toolchain from rust-toolchain.toml
+              id: rust_toolchain
+              run: |
+                  channel="$(sed -nE 's/^channel\s*=\s*"(.*)"/\1/p' rust-toolchain.toml)"
+                  if [ -z "$channel" ]; then
+                      echo "Failed to read toolchain channel from rust-toolchain.toml" >&2
+                      exit 1
+                  fi
+                  echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
             - name: Install rust toolchain + clippy
               uses: actions-rs/toolchain@v1
               with:
-                  toolchain: stable
+                  toolchain: ${{ steps.rust_toolchain.outputs.channel }}
                   components: clippy
                   override: true
 
