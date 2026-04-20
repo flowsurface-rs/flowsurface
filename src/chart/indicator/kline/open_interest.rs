@@ -171,7 +171,8 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
     fn on_open_interest(&mut self, data: &[exchange::OpenInterest]) {
-        self.data.extend(data.iter().map(|oi| (oi.time, oi.value)));
+        self.data
+            .extend(data.iter().map(|oi| (oi.time.as_u64(), oi.value)));
         self.clear_all_caches();
     }
 }

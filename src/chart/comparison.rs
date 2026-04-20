@@ -146,7 +146,7 @@ impl ComparisonChart {
 
         let mut incoming: Vec<(u64, f32)> = klines
             .iter()
-            .map(|k| (align(k.time), k.close.to_f32()))
+            .map(|k| (align(k.time.as_u64()), k.close.to_f32()))
             .collect();
 
         incoming.sort_by_key(|(x, _)| *x);
@@ -210,7 +210,7 @@ impl ComparisonChart {
 
         // Align to timeframe grid
         let dt = self.timeframe.to_milliseconds().max(1);
-        let t = (kline.time / dt) * dt;
+        let t = (kline.time.as_u64() / dt) * dt;
         let new_point = (t, kline.close.to_f32());
 
         if let Some((last_x, last_y)) = series.points.last_mut() {

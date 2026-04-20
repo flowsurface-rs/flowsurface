@@ -4,6 +4,7 @@ pub mod indicator;
 pub mod kline;
 
 use exchange::Timeframe;
+use exchange::UnixMs;
 use serde::{Deserialize, Serialize};
 
 use super::aggr::{
@@ -36,9 +37,8 @@ impl<D: DataPoint> PlotData<D> {
         end_interval: u64,
     ) -> Option<(f32, f32)> {
         match self {
-            PlotData::TimeBased(timeseries) => {
-                timeseries.min_max_price_in_range(start_interval, end_interval)
-            }
+            PlotData::TimeBased(timeseries) => timeseries
+                .min_max_price_in_range(UnixMs::new(start_interval), UnixMs::new(end_interval)),
             PlotData::TickBased(tick_aggr) => {
                 tick_aggr.min_max_price_in_range(start_interval as usize, end_interval as usize)
             }

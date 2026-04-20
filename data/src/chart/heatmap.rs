@@ -3,7 +3,7 @@ use super::aggr::time::DataPoint;
 use exchange::unit::MinQtySize;
 use exchange::unit::price::{Price, PriceStep};
 use exchange::unit::qty::{Qty, SizeUnit, volume_size_unit};
-use exchange::{adapter::MarketKind, depth::Depth};
+use exchange::{UnixMs, adapter::MarketKind, depth::Depth};
 
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
@@ -71,11 +71,11 @@ impl DataPoint for HeatmapDataPoint {
         self.buy_sell = (Qty::default(), Qty::default());
     }
 
-    fn last_trade_time(&self) -> Option<u64> {
+    fn last_trade_time(&self) -> Option<UnixMs> {
         None
     }
 
-    fn first_trade_time(&self) -> Option<u64> {
+    fn first_trade_time(&self) -> Option<UnixMs> {
         None
     }
 

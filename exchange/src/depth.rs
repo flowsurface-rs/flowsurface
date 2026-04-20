@@ -1,5 +1,5 @@
 use crate::{
-    MinTicksize, Price, serde_util,
+    MinTicksize, Price, UnixMs, serde_util,
     unit::qty::{Qty, QtyNormalization},
 };
 
@@ -43,7 +43,7 @@ impl<'de> serde::Deserialize<'de> for DeOrder {
 
 pub struct DepthPayload {
     pub last_update_id: u64,
-    pub time: u64,
+    pub time: UnixMs,
     pub bids: Vec<DeOrder>,
     pub asks: Vec<DeOrder>,
 }
@@ -148,7 +148,7 @@ impl Depth {
 #[derive(Default)]
 pub struct LocalDepthCache {
     pub last_update_id: u64,
-    pub time: u64,
+    pub time: UnixMs,
     pub depth: Arc<Depth>,
 }
 

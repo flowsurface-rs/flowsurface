@@ -15,7 +15,7 @@ use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
+use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -88,7 +88,7 @@ impl Chart for KlineChart {
                 tick_aggr
                     .datapoints
                     .iter()
-                    .map(|dp| dp.kline.time)
+                    .map(|dp| dp.kline.time.as_u64())
                     .collect(),
             ),
         }
@@ -179,7 +179,9 @@ impl KlineChart {
                     .with_trades(&raw_trades);
 
                 let base_price_y = timeseries.base_price();
-                let latest_x = timeseries.latest_timestamp().unwrap_or(0);
+                let latest_x = timeseries
+                    .latest_timestamp()
+                    .map_or(0, |timestamp| timestamp.as_u64());
                 let (scale_high, scale_low) = timeseries.price_scale({
                     match kind {
                         KlineChartKind::Footprint { .. } => 12,
@@ -323,8 +325,8 @@ impl KlineChart {
 
                 let chart = self.mut_state();
 
-                if (kline.time) > chart.latest_x {
-                    chart.latest_x = kline.time;
+                if kline.time.as_u64() > chart.latest_x {
+                    chart.latest_x = kline.time.as_u64();
                 }
 
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
@@ -354,12 +356,14 @@ impl KlineChart {
 
                 let (visible_earliest, visible_latest) = self.visible_timerange()?;
                 let (kline_earliest, kline_latest) = timeseries.timerange();
+                let visible_earliest_ms = UnixMs::new(visible_earliest);
+                let visible_latest_ms = UnixMs::new(visible_latest);
                 let visible_span = visible_latest.saturating_sub(visible_earliest);
                 let prefetch_earliest = visible_earliest.saturating_sub(visible_span);
 
                 // priority 1, initial klines for visible range
-                if visible_earliest < kline_earliest {
-                    let range = FetchRange::Kline(prefetch_earliest, kline_earliest);
+                if visible_earliest_ms < kline_earliest {
+                    let range = FetchRange::Kline(prefetch_earliest, kline_earliest.as_u64());
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
@@ -371,9 +375,9 @@ impl KlineChart {
                     && !self.fetching_trades.0
                     && is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
-                        timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
+                        timeseries.suggest_trade_fetch_range(visible_earliest_ms, visible_latest_ms)
                 {
-                    let range = FetchRange::Trades(fetch_from, fetch_to);
+                    let range = FetchRange::Trades(fetch_from.as_u64(), fetch_to.as_u64());
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         self.fetching_trades = (true, None);
                         return Some(action);
@@ -386,7 +390,7 @@ impl KlineChart {
                     main_chart: &self.chart,
                     timeframe: timeseries.interval,
                     visible_earliest,
-                    kline_latest,
+                    kline_latest: kline_latest.as_u64(),
                     prefetch_earliest,
                 };
                 for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
@@ -398,8 +402,8 @@ impl KlineChart {
                 }
 
                 // priority 4, missing klines & integrity check
-                let check_earliest = prefetch_earliest.max(kline_earliest);
-                let check_latest = visible_latest.saturating_add(timeframe_ms);
+                let check_earliest = UnixMs::new(prefetch_earliest).max(kline_earliest);
+                let check_latest = visible_latest_ms.saturating_add(timeframe_ms);
 
                 if let Some(missing_keys) =
                     timeseries.check_kline_integrity(check_earliest, check_latest)
@@ -407,15 +411,15 @@ impl KlineChart {
                     let latest = missing_keys
                         .iter()
                         .max()
-                        .unwrap_or(&visible_latest)
+                        .unwrap_or(&visible_latest_ms)
                         .saturating_add(timeframe_ms);
                     let earliest = missing_keys
                         .iter()
                         .min()
-                        .unwrap_or(&visible_earliest)
+                        .unwrap_or(&visible_earliest_ms)
                         .saturating_sub(timeframe_ms);
 
-                    let range = FetchRange::Kline(earliest, latest);
+                    let range = FetchRange::Kline(earliest.as_u64(), latest.as_u64());
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }
@@ -676,8 +680,8 @@ impl KlineChart {
             PlotData::TimeBased(timeseries) => timeseries
                 .max_qty_ts_range(
                     cluster_kind,
-                    earliest,
-                    latest,
+                    UnixMs::new(earliest),
+                    UnixMs::new(latest),
                     rounded_highest,
                     rounded_lowest,
                 )
@@ -1133,9 +1137,9 @@ fn render_data_source<F>(
 
             timeseries
                 .datapoints
-                .range(earliest..=latest)
+                .range(UnixMs::new(earliest)..=UnixMs::new(latest))
                 .for_each(|(timestamp, dp)| {
-                    let x_position = interval_to_x(*timestamp);
+                    let x_position = interval_to_x(timestamp.as_u64());
 
                     draw_fn(frame, x_position, &dp.kline, &dp.footprint);
                 });
@@ -1286,7 +1290,10 @@ fn draw_all_npocs(
                 .rev()
                 .take(lookback)
                 .filter_map(|(timestamp, dp)| {
-                    dp.footprint.poc.as_ref().map(|poc| (*timestamp, poc))
+                    dp.footprint
+                        .poc
+                        .as_ref()
+                        .map(|poc| (timestamp.as_u64(), poc))
                 })
                 .for_each(|(interval, poc)| draw_the_line(interval, poc));
         }
@@ -1710,14 +1717,14 @@ fn draw_crosshair_tooltip(
         PlotData::TimeBased(timeseries) => timeseries
             .datapoints
             .iter()
-            .find(|(time, _)| **time == at_interval)
+            .find(|(time, _)| **time == UnixMs::new(at_interval))
             .map(|(_, dp)| &dp.kline)
             .or_else(|| {
                 if timeseries.datapoints.is_empty() {
                     None
                 } else {
                     let (last_time, dp) = timeseries.datapoints.last_key_value()?;
-                    if at_interval > *last_time {
+                    if at_interval > last_time.as_u64() {
                         Some(&dp.kline)
                     } else {
                         None

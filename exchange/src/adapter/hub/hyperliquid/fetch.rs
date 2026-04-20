@@ -1,5 +1,5 @@
 use crate::{
-    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Volume,
+    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, UnixMs, Volume,
     adapter::{Exchange, MarketKind},
     depth::{DeOrder, DepthPayload},
     serde_util::de_string_to_number,
@@ -413,7 +413,7 @@ pub(super) async fn fetch_depth_snapshot(
 
     Ok(DepthPayload {
         last_update_id: depth.time,
-        time: depth.time,
+        time: depth.time.into(),
         bids,
         asks,
     })
@@ -439,7 +439,7 @@ pub(super) async fn fetch_klines(
     hub: &mut HttpHub<HyperliquidLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
     let interval = timeframe.to_string();
@@ -448,7 +448,7 @@ pub(super) async fn fetch_klines(
     let (symbol_str, _) = ticker.to_full_symbol_and_type();
 
     let (start_time, end_time) = if let Some((start, end)) = range {
-        (start, end)
+        (start.as_u64(), end.as_u64())
     } else {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -112,7 +112,7 @@ impl TimeAndSales {
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         for trade in trades_buffer {
-            let trade_time_ms = trade.time;
+            let trade_time_ms = trade.time.as_u64();
 
             if let Some(trade_time) = chrono::DateTime::from_timestamp(
                 trade_time_ms as i64 / 1000,

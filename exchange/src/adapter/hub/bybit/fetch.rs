@@ -1,5 +1,5 @@
 use crate::{
-    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe,
+    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, UnixMs,
     adapter::hub::TickerMetadataMap,
     serde_util,
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -184,7 +184,7 @@ pub(super) async fn fetch_klines(
     hub: &mut HttpHub<BybitLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
@@ -211,6 +211,8 @@ pub(super) async fn fetch_klines(
     );
 
     if let Some((start, end)) = range {
+        let start = start.as_u64();
+        let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
         let num_intervals = ((end - start) / interval_ms).min(1000);
 
@@ -261,7 +263,7 @@ pub(super) async fn fetch_klines(
 pub(super) async fn fetch_historical_oi(
     hub: &mut HttpHub<BybitLimiter>,
     ticker_info: TickerInfo,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
     let ticker_str = ticker_info
@@ -288,6 +290,8 @@ pub(super) async fn fetch_historical_oi(
     );
 
     if let Some((start, end)) = range {
+        let start = start.as_u64();
+        let end = end.as_u64();
         let interval_ms = period.to_milliseconds();
         let num_intervals = ((end - start) / interval_ms).min(200);
 
@@ -328,7 +332,7 @@ pub(super) async fn fetch_historical_oi(
     let open_interest: Vec<OpenInterest> = bybit_oi
         .into_iter()
         .map(|x| OpenInterest {
-            time: x.timestamp,
+            time: x.timestamp.into(),
             value: x.value,
         })
         .collect();

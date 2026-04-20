@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe,
+    Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
@@ -199,7 +199,7 @@ impl MexcHandle {
         &self,
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| MexcCommand::Klines {
@@ -286,7 +286,7 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         Box::pin(
             async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },

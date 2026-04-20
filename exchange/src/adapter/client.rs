@@ -2,7 +2,7 @@ use super::{
     AdapterError, Event, Exchange, MarketKind, StreamConfig, Venue,
     hub::{binance, bybit, hyperliquid, mexc, okex},
 };
-use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade};
+use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
 
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::{collections::HashMap, collections::HashSet, path::PathBuf};
@@ -334,7 +334,7 @@ impl AdapterHandles {
         &self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         let venue = ticker_info.ticker.exchange.venue();
 
@@ -376,7 +376,7 @@ impl AdapterHandles {
         &self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         let exchange = ticker_info.ticker.exchange;
 
@@ -414,7 +414,7 @@ impl AdapterHandles {
     pub async fn fetch_trades(
         &self,
         ticker_info: TickerInfo,
-        from_time: u64,
+        from_time: UnixMs,
         data_path: Option<PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         let exchange = ticker_info.ticker.exchange;

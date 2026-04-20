@@ -880,7 +880,7 @@ impl Dashboard {
     ) -> Task<Message> {
         match data {
             FetchedData::Trades { batch, until_time } => {
-                let last_trade_time = batch.last().map_or(0, |trade| trade.time);
+                let last_trade_time = batch.last().map_or(0, |trade| trade.time.as_u64());
 
                 if last_trade_time < until_time {
                     if let Err(reason) =
@@ -891,7 +891,7 @@ impl Dashboard {
                 } else {
                     let filtered_batch = batch
                         .iter()
-                        .filter(|trade| trade.time <= until_time)
+                        .filter(|trade| trade.time.as_u64() <= until_time)
                         .copied()
                         .collect::<Vec<_>>();
 

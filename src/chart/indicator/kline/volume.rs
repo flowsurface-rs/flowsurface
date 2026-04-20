@@ -88,7 +88,11 @@ impl KlineIndicatorImpl for VolumeIndicator {
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         match source {
             PlotData::TimeBased(timeseries) => {
-                self.data = timeseries.volume_data();
+                self.data = timeseries
+                    .volume_data()
+                    .into_iter()
+                    .map(|(time, volume)| (time.as_u64(), volume))
+                    .collect();
             }
             PlotData::TickBased(tickseries) => {
                 self.data = tickseries.volume_data();
@@ -99,7 +103,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
 
     fn on_insert_klines(&mut self, klines: &[Kline]) {
         for kline in klines {
-            self.data.insert(kline.time, kline.volume);
+            self.data.insert(kline.time.as_u64(), kline.volume);
         }
         self.clear_all_caches();
     }

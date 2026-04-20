@@ -11,6 +11,7 @@ use unit::price::de_price_from_number;
 use unit::price::{Price, PriceStep};
 pub use unit::qty::SizeUnit;
 use unit::qty::de_qty_from_number;
+pub use unit::time::{UnixMs, UnixMsRangeError};
 use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
 
 use serde::{Deserialize, Serialize};
@@ -535,7 +536,7 @@ impl TickerInfo {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Trade {
-    pub time: u64,
+    pub time: UnixMs,
     pub is_sell: bool,
     pub price: Price,
     pub qty: Qty,
@@ -543,7 +544,7 @@ pub struct Trade {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kline {
-    pub time: u64,
+    pub time: UnixMs,
     pub open: Price,
     pub high: Price,
     pub low: Price,
@@ -553,7 +554,7 @@ pub struct Kline {
 
 impl Kline {
     pub fn new(
-        time: u64,
+        time: impl Into<UnixMs>,
         open: f32,
         high: f32,
         low: f32,
@@ -561,6 +562,8 @@ impl Kline {
         volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
+        let time = time.into();
+
         Self {
             time,
             open: Price::from_f32(open).round_to_min_tick(min_ticksize),
@@ -650,7 +653,7 @@ pub struct TickerStats {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenInterest {
-    pub time: u64,
+    pub time: UnixMs,
     pub value: f32,
 }
 

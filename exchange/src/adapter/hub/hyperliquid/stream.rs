@@ -336,7 +336,7 @@ pub fn connect_depth_stream(
 
                                         let depth_payload = DepthPayload {
                                             last_update_id: depth.time,
-                                            time: depth.time,
+                                            time: depth.time.into(),
                                             bids,
                                             asks,
                                         };
@@ -357,7 +357,7 @@ pub fn connect_depth_stream(
                                         let _ = output
                                             .send(Event::DepthReceived(
                                                 stream_kind,
-                                                depth.time,
+                                                depth.time.into(),
                                                 local_depth_cache.depth.clone(),
                                             ))
                                             .await;
@@ -500,7 +500,7 @@ pub fn connect_trade_stream(
                                             .round_to_min_tick(ticker_info.min_ticksize);
 
                                         let trade = Trade {
-                                            time: hl_trade.time,
+                                            time: hl_trade.time.into(),
                                             is_sell: hl_trade.side == "A",
                                             price,
                                             qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),

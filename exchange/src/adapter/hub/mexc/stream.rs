@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
+    Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::connect::{State, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -259,7 +259,7 @@ pub fn connect_depth_stream(
 
         let mut orderbook = LocalDepthCache::default();
         let mut snapshot_ready = false;
-        let mut snapshot_time: u64 = 0;
+        let mut snapshot_time = UnixMs::ZERO;
 
         let qty_norm = QtyNormalization::with_raw_qty_unit(
             volume_size_unit() == SizeUnit::Quote,
@@ -299,7 +299,7 @@ pub fn connect_depth_stream(
                             }
 
                             snapshot_ready = false;
-                            snapshot_time = 0;
+                            snapshot_time = UnixMs::ZERO;
                             let _ = output.send(Event::Connected(exchange)).await;
                             state = State::Connected(websocket);
                         }
@@ -356,13 +356,13 @@ pub fn connect_depth_stream(
                                                         }
                                                     }
                                                     StreamData::Depth(de_depth, time) => {
-                                                        if !snapshot_ready || time < snapshot_time {
+                                                        if !snapshot_ready || time < snapshot_time.as_u64() {
                                                             continue;
                                                         }
 
                                                         let depth = DepthPayload {
                                                             last_update_id: de_depth.version,
-                                                            time,
+                                                            time: time.into(),
                                                             bids: de_depth
                                                                 .bids
                                                                 .iter()
@@ -394,7 +394,7 @@ pub fn connect_depth_stream(
                                                                     depth_aggr: StreamTicksize::Client,
                                                                     push_freq,
                                                                 },
-                                                                time,
+                                                                time.into(),
                                                                 orderbook.depth.clone(),
                                                             ))
                                                             .await;
@@ -543,7 +543,7 @@ pub fn connect_trade_stream(
                                                                     .round_to_min_tick(ticker_info.min_ticksize);
 
                                                                 let trade_entity = Trade {
-                                                                    time: trade.time,
+                                                                    time: trade.time.into(),
                                                                     is_sell: trade.direction == 2,
                                                                     price,
                                                                     qty: qty_norm
