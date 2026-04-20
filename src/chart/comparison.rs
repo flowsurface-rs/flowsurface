@@ -141,7 +141,7 @@ impl ComparisonChart {
         let timeframe = self.timeframe;
         let mut incoming: Vec<(u64, f32)> = klines
             .iter()
-            .map(|k| (timeframe.floor_unix_ms(k.time).as_u64(), k.close.to_f32()))
+            .map(|k| (k.time.floor_to(timeframe).as_u64(), k.close.to_f32()))
             .collect();
 
         let idx = self.get_or_create_series_idx(&ticker_info);
@@ -203,7 +203,7 @@ impl ComparisonChart {
     }
 
     pub fn update_latest_kline(&mut self, ticker_info: &TickerInfo, kline: &Kline) {
-        let t = self.timeframe.floor_unix_ms(kline.time).as_u64();
+        let t = kline.time.floor_to(self.timeframe).as_u64();
 
         let idx = self.get_or_create_series_idx(ticker_info);
         let series = &mut self.series[idx];
@@ -481,26 +481,16 @@ impl ComparisonChart {
         }
     }
 
-    fn now() -> UnixMs {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        UnixMs::from_millis(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-        )
-    }
-
-    fn dt_ms_est(&self) -> UnixMs {
-        self.timeframe.as_unix_ms()
+    fn dt_ms_est(&self) -> u64 {
+        self.timeframe.to_milliseconds().max(1)
     }
 
     fn align_floor(&self, ts: UnixMs) -> UnixMs {
-        self.timeframe.floor_unix_ms(ts)
+        ts.floor_to(self.timeframe)
     }
 
     fn compute_visible_window(&self, pan_points: f32) -> Option<(UnixMs, UnixMs)> {
-        let dt = self.dt_ms_est().as_u64().max(1);
+        let dt = self.dt_ms_est();
         let points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points.as_slice()).collect();
 
         domain::window(&points, self.zoom, pan_points, dt)
@@ -508,9 +498,9 @@ impl ComparisonChart {
     }
 
     fn desired_fetch_batches(&self, pan_points: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
-        let dt = self.dt_ms_est().as_u64().max(1);
+        let dt = self.dt_ms_est();
         let span = 500u64.saturating_mul(dt);
-        let last_closed = self.align_floor(Self::now());
+        let last_closed = self.align_floor(UnixMs::now());
 
         let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
 

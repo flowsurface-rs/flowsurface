@@ -137,20 +137,6 @@ impl Timeframe {
             }
         }
     }
-
-    #[inline]
-    /// Returns the timeframe width as a millisecond duration.
-    pub fn as_unix_ms(self) -> UnixMs {
-        UnixMs::from_millis(self.to_milliseconds())
-    }
-
-    #[inline]
-    /// Floors an absolute timestamp to this timeframe's bucket start.
-    pub fn floor_unix_ms(self, time: UnixMs) -> UnixMs {
-        let bucket_ms = self.to_milliseconds().max(1);
-        let rounded = (time.as_u64() / bucket_ms) * bucket_ms;
-        UnixMs::from_millis(rounded)
-    }
 }
 
 impl From<Timeframe> for f32 {
@@ -162,12 +148,6 @@ impl From<Timeframe> for f32 {
 impl From<Timeframe> for u64 {
     fn from(timeframe: Timeframe) -> u64 {
         timeframe.to_milliseconds()
-    }
-}
-
-impl From<Timeframe> for UnixMs {
-    fn from(timeframe: Timeframe) -> Self {
-        timeframe.as_unix_ms()
     }
 }
 
@@ -193,15 +173,6 @@ impl TryFrom<u64> for Timeframe {
             86_400_000 => Ok(Timeframe::D1),
             _ => Err(InvalidTimeframe(value)),
         }
-    }
-}
-
-impl TryFrom<UnixMs> for Timeframe {
-    type Error = InvalidTimeframe;
-
-    /// Interprets the given UnixMs value as a duration in milliseconds.
-    fn try_from(value: UnixMs) -> Result<Self, Self::Error> {
-        Timeframe::try_from(value.as_u64())
     }
 }
 

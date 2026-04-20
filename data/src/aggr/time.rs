@@ -265,7 +265,7 @@ impl TimeSeries<KlineDataPoint> {
         let mut updated_times = Vec::new();
 
         buffer.iter().for_each(|trade| {
-            let rounded_time = self.interval.floor_unix_ms(trade.time);
+            let rounded_time = trade.time.floor_to(self.interval);
 
             if !updated_times.contains(&rounded_time) {
                 updated_times.push(rounded_time);
@@ -303,7 +303,7 @@ impl TimeSeries<KlineDataPoint> {
         let mut updated_times: Vec<UnixMs> = Vec::new();
 
         for trade in buffer {
-            let rounded_time = self.interval.floor_unix_ms(trade.time);
+            let rounded_time = trade.time.floor_to(self.interval);
 
             if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
                 if !updated_times.contains(&rounded_time) {

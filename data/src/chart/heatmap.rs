@@ -161,11 +161,6 @@ impl HistoricalDepth {
         self.aggr_time.to_milliseconds()
     }
 
-    #[inline]
-    pub fn aggr_time_unix_ms(&self) -> UnixMs {
-        self.aggr_time.as_unix_ms()
-    }
-
     pub fn insert_latest_depth(&mut self, depth: &Depth, time: UnixMs) {
         if let Some(prev_time) = self.last_snapshot_time
             && time < prev_time
