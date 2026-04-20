@@ -1,5 +1,5 @@
 use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind};
-use exchange::{Kline, OpenInterest, TickerInfo, Trade};
+use exchange::{Kline, OpenInterest, TickerInfo, Trade, UnixMs};
 use iced::{
     Task,
     task::{Handle, Straw, sipper},
@@ -373,6 +373,7 @@ pub fn oi_fetch_task(
             timeframe,
         } => {
             let fetch = async move {
+                let range = range.map(|(from, to)| (UnixMs::new(from), UnixMs::new(to)));
                 handles
                     .fetch_open_interest(ticker_info, timeframe, range)
                     .await
@@ -424,7 +425,10 @@ pub fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => {
-            let fetch = async move { handles.fetch_klines(ticker_info, timeframe, range).await };
+            let fetch = async move {
+                let range = range.map(|(from, to)| (UnixMs::new(from), UnixMs::new(to)));
+                handles.fetch_klines(ticker_info, timeframe, range).await
+            };
 
             Task::perform(
                 iced::futures::TryFutureExt::map_err(fetch, |err| {
@@ -469,7 +473,11 @@ pub fn fetch_trades_batched(
 
         while latest_trade_t < to_time {
             match handles
-                .fetch_trades(ticker_info, latest_trade_t, Some(data_path.clone()))
+                .fetch_trades(
+                    ticker_info,
+                    UnixMs::new(latest_trade_t),
+                    Some(data_path.clone()),
+                )
                 .await
             {
                 Ok(batch) => {
@@ -477,7 +485,9 @@ pub fn fetch_trades_batched(
                         break;
                     }
 
-                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
+                    latest_trade_t = batch
+                        .last()
+                        .map_or(latest_trade_t, |trade| trade.time.as_u64());
 
                     let () = progress.send(batch).await;
                 }

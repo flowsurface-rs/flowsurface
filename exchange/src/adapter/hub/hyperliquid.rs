@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade,
+    Event, Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
@@ -132,7 +132,7 @@ impl HyperliquidHandle {
         &self,
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| HyperliquidCommand::Klines {
@@ -147,7 +147,7 @@ impl HyperliquidHandle {
     pub async fn fetch_trades(
         &self,
         ticker: TickerInfo,
-        from_time: u64,
+        from_time: UnixMs,
         data_path: Option<std::path::PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
@@ -230,7 +230,7 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         Box::pin(
             async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },

@@ -1,6 +1,6 @@
 use crate::aggr::time::DataPoint;
 use exchange::{
-    Kline, Trade,
+    Kline, Trade, UnixMs,
     unit::price::{Price, PriceStep},
     unit::qty::Qty,
 };
@@ -40,11 +40,11 @@ impl KlineDataPoint {
         self.footprint.calculate_poc();
     }
 
-    pub fn last_trade_time(&self) -> Option<u64> {
+    pub fn last_trade_time(&self) -> Option<UnixMs> {
         self.footprint.last_trade_t()
     }
 
-    pub fn first_trade_time(&self) -> Option<u64> {
+    pub fn first_trade_time(&self) -> Option<UnixMs> {
         self.footprint.first_trade_t()
     }
 }
@@ -58,11 +58,11 @@ impl DataPoint for KlineDataPoint {
         self.clear_trades();
     }
 
-    fn last_trade_time(&self) -> Option<u64> {
+    fn last_trade_time(&self) -> Option<UnixMs> {
         self.last_trade_time()
     }
 
-    fn first_trade_time(&self) -> Option<u64> {
+    fn first_trade_time(&self) -> Option<UnixMs> {
         self.first_trade_time()
     }
 
@@ -87,8 +87,8 @@ impl DataPoint for KlineDataPoint {
 pub struct GroupedTrades {
     pub buy_qty: Qty,
     pub sell_qty: Qty,
-    pub first_time: u64,
-    pub last_time: u64,
+    pub first_time: UnixMs,
+    pub last_time: UnixMs,
     pub buy_count: usize,
     pub sell_count: usize,
 }
@@ -155,11 +155,11 @@ impl KlineTrades {
         }
     }
 
-    pub fn first_trade_t(&self) -> Option<u64> {
+    pub fn first_trade_t(&self) -> Option<UnixMs> {
         self.trades.values().map(|group| group.first_time).min()
     }
 
-    pub fn last_trade_t(&self) -> Option<u64> {
+    pub fn last_trade_t(&self) -> Option<UnixMs> {
         self.trades.values().map(|group| group.last_time).max()
     }
 

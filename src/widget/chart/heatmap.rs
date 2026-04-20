@@ -28,7 +28,7 @@ use data::chart::{
 };
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
-use exchange::{TickerInfo, Trade};
+use exchange::{TickerInfo, Trade, UnixMs};
 
 use std::time::{Duration, Instant};
 
@@ -479,7 +479,7 @@ impl HeatmapShader {
         let rounded_t = view::round_time_to_bucket(update_t, aggr_time);
 
         self.trades
-            .ingest_trades_bucket(rounded_t, buffer, self.step);
+            .ingest_trades_bucket(UnixMs::new(rounded_t), buffer, self.step);
 
         self.canvas_invalidation.mark_overlay_tooltip();
         self.canvas_invalidation.mark_overlay_scale_labels();
@@ -585,13 +585,17 @@ impl HeatmapShader {
         let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
 
         // Prune trades (TimeSeries datapoints are bucket timestamps)
-        let keep = self.trades.datapoints.split_off(&cutoff_rounded);
+        let keep = self
+            .trades
+            .datapoints
+            .split_off(&UnixMs::new(cutoff_rounded));
         self.trades.datapoints = keep;
 
         // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
         // otherwise prune by cutoff directly
         if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
-            self.depth_history.cleanup_old_price_levels(oldest_time);
+            self.depth_history
+                .cleanup_old_price_levels(oldest_time.as_u64());
         } else {
             self.depth_history.cleanup_old_price_levels(cutoff_rounded);
         }

@@ -1,5 +1,6 @@
 use crate::{
-    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, serde_util,
+    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, UnixMs,
+    serde_util,
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
 };
 
@@ -258,7 +259,7 @@ pub(super) async fn fetch_klines(
     hub: &mut HttpHub<OkexLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
@@ -273,13 +274,19 @@ pub(super) async fn fetch_klines(
         symbol_str,
         bar,
         match range {
-            Some((start, end)) => ((end - start) / timeframe.to_milliseconds()).clamp(1, 300),
+            Some((start, end)) => {
+                ((end.as_u64() - start.as_u64()) / timeframe.to_milliseconds()).clamp(1, 300)
+            }
             None => 300,
         }
     );
 
     if let Some((start, end)) = range {
-        url.push_str(&format!("&before={start}&after={end}"));
+        url.push_str(&format!(
+            "&before={}&after={}",
+            start.as_u64(),
+            end.as_u64()
+        ));
     }
 
     let doc: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
@@ -335,7 +342,7 @@ pub(super) async fn fetch_klines(
 pub(super) async fn fetch_historical_oi(
     hub: &mut HttpHub<OkexLimiter>,
     ticker_info: TickerInfo,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
     let (ticker_str, _market) = ticker_info.ticker.to_full_symbol_and_type();
@@ -348,7 +355,7 @@ pub(super) async fn fetch_historical_oi(
     );
 
     if let Some((start, end)) = range {
-        url.push_str(&format!("&begin={start}&end={end}"));
+        url.push_str(&format!("&begin={}&end={}", start.as_u64(), end.as_u64()));
     }
 
     let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
@@ -367,7 +374,7 @@ pub(super) async fn fetch_historical_oi(
             let ts = serde_util::value_as_u64(arr.first()?)?;
             let oi_ccy = serde_util::value_as_f32(arr.get(2)?)?;
             Some(OpenInterest {
-                time: ts,
+                time: ts.into(),
                 value: oi_ccy,
             })
         })

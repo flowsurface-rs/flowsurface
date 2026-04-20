@@ -1,5 +1,5 @@
 use crate::{
-    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Volume,
+    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, UnixMs, Volume,
     adapter::MarketKind,
     depth::{DeOrder, DepthPayload},
     serde_util::{self, de_string_to_number},
@@ -97,7 +97,7 @@ pub(super) async fn fetch_depth_snapshot(
 
     Ok(DepthPayload {
         last_update_id: snapshot.data.version,
-        time: snapshot.data.timestamp,
+        time: snapshot.data.timestamp.into(),
         bids: parse_orders(&snapshot.data.bids),
         asks: parse_orders(&snapshot.data.asks),
     })
@@ -387,7 +387,7 @@ pub(super) async fn fetch_klines(
     hub: &mut HttpHub<MexcLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
@@ -419,6 +419,8 @@ pub(super) async fn fetch_klines(
     };
 
     if let Some((start_ms, end_ms)) = range {
+        let start_ms = start_ms.as_u64();
+        let end_ms = end_ms.as_u64();
         match market_type {
             MarketKind::Spot => {
                 url.push_str(&format!("&startTime={}&endTime={}", start_ms, end_ms));

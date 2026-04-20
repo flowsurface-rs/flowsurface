@@ -187,7 +187,7 @@ impl Flowsurface {
                     }
                     exchange::Event::DepthReceived(stream, depth_update_t, depth) => {
                         let task = dashboard
-                            .ingest_depth(&stream, depth_update_t, &depth, main_window_id)
+                            .ingest_depth(&stream, depth_update_t.as_u64(), &depth, main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,
@@ -197,7 +197,7 @@ impl Flowsurface {
                     }
                     exchange::Event::TradesReceived(stream, update_t, buffer) => {
                         let task = dashboard
-                            .ingest_trades(&stream, &buffer, update_t, main_window_id)
+                            .ingest_trades(&stream, &buffer, update_t.as_u64(), main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,

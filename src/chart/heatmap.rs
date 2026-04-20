@@ -19,7 +19,7 @@ use data::{
     chart::Autoscale,
 };
 use exchange::{
-    SizeUnit, TickerInfo, Trade,
+    SizeUnit, TickerInfo, Trade, UnixMs,
     depth::Depth,
     unit::qty::volume_size_unit,
     unit::{Price, PriceStep},
@@ -206,7 +206,11 @@ impl HeatmapChart {
     pub fn insert_trades(&mut self, buffer: &[Trade], update_t: u64) {
         let rounded_update_t = self.round_to_basis_time(update_t);
 
-        let entry = self.trades.datapoints.entry(rounded_update_t).or_default();
+        let entry = self
+            .trades
+            .datapoints
+            .entry(UnixMs::new(rounded_update_t))
+            .or_default();
 
         let tick_size = self.chart.tick_size;
         for trade in buffer {
@@ -264,14 +268,14 @@ impl HeatmapChart {
                 .keys()
                 .take(CLEANUP_THRESHOLD / 10)
                 .copied()
-                .collect::<Vec<u64>>();
+                .collect::<Vec<UnixMs>>();
 
             for key in keys_to_remove {
                 self.trades.datapoints.remove(&key);
             }
 
             if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
-                self.heatmap.cleanup_old_price_levels(oldest_time);
+                self.heatmap.cleanup_old_price_levels(oldest_time.as_u64());
             }
         }
     }
@@ -413,8 +417,9 @@ impl HeatmapChart {
     ) -> QtyScale {
         let market_type = self.chart.ticker_info.market_type();
 
-        let (max_trade_qty, max_aggr_volume) =
-            self.trades.max_trade_qty_and_aggr_volume(earliest, latest);
+        let (max_trade_qty, max_aggr_volume) = self
+            .trades
+            .max_trade_qty_and_aggr_volume(UnixMs::new(earliest), UnixMs::new(latest));
 
         let max_depth_qty = self.heatmap.max_depth_qty_in_range(
             earliest,
@@ -564,7 +569,7 @@ impl canvas::Program<Message> for HeatmapChart {
             if let Some(latest_timestamp) = self.trades.latest_timestamp() {
                 let max_qty = self
                     .heatmap
-                    .latest_order_runs(highest, lowest, latest_timestamp)
+                    .latest_order_runs(highest, lowest, latest_timestamp.as_u64())
                     .map(|(_, run)| run.qty.to_f32_lossy())
                     .fold(f32::MIN, f32::max)
                     .ceil()
@@ -573,7 +578,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 if !max_qty.is_infinite() {
                     self.heatmap
-                        .latest_order_runs(highest, lowest, latest_timestamp)
+                        .latest_order_runs(highest, lowest, latest_timestamp.as_u64())
                         .for_each(|(price, run)| {
                             let y_position = chart.price_to_y(*price);
                             let bar_width = (run.qty.to_f32_lossy() / max_qty) * 50.0;
@@ -603,9 +608,9 @@ impl canvas::Program<Message> for HeatmapChart {
 
             self.trades
                 .datapoints
-                .range(earliest..=latest)
+                .range(UnixMs::new(earliest)..=UnixMs::new(latest))
                 .for_each(|(time, dp)| {
-                    let x_position = chart.interval_to_x(*time);
+                    let x_position = chart.interval_to_x(time.as_u64());
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
@@ -918,11 +923,11 @@ fn draw_volume_profile(
 ) {
     let (highest, lowest) = chart.price_range(region);
 
-    let time_range = match kind {
+    let (time_start, time_end) = match kind {
         ProfileKind::VisibleRange => {
             let earliest = chart.x_to_interval(region.x);
             let latest = chart.x_to_interval(region.x + region.width);
-            earliest..=latest
+            (earliest, latest)
         }
         ProfileKind::FixedWindow(datapoints) => {
             let basis_interval: u64 = match chart.basis {
@@ -935,7 +940,7 @@ fn draw_volume_profile(
                 .min(chart.x_to_interval(region.x + region.width));
             let earliest = latest.saturating_sub((*datapoints as u64) * basis_interval);
 
-            earliest..=latest
+            (earliest, latest)
         }
     };
 
@@ -956,30 +961,35 @@ fn draw_volume_profile(
     let mut profile = vec![(0.0f32, 0.0f32); num_ticks];
     let mut max_aggr_volume = 0.0f32;
 
-    timeseries.datapoints.range(time_range).for_each(|(_, dp)| {
-        dp.grouped_trades
-            .iter()
-            .filter(|trade| trade.price >= lowest && trade.price <= highest)
-            .for_each(|trade| {
-                let grouped_price = trade.price.round_to_side_step(trade.is_sell, step);
+    timeseries
+        .datapoints
+        .range(UnixMs::new(time_start)..=UnixMs::new(time_end))
+        .for_each(|(_, dp)| {
+            dp.grouped_trades
+                .iter()
+                .filter(|trade| trade.price >= lowest && trade.price <= highest)
+                .for_each(|trade| {
+                    let grouped_price = trade.price.round_to_side_step(trade.is_sell, step);
 
-                if grouped_price.units < first_tick.units || grouped_price.units > last_tick.units {
-                    return;
-                }
-
-                let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
-
-                if let Some(entry) = profile.get_mut(index) {
-                    let trade_qty = f32::from(trade.qty);
-                    if trade.is_sell {
-                        entry.1 += trade_qty;
-                    } else {
-                        entry.0 += trade_qty;
+                    if grouped_price.units < first_tick.units
+                        || grouped_price.units > last_tick.units
+                    {
+                        return;
                     }
-                    max_aggr_volume = max_aggr_volume.max(entry.0 + entry.1);
-                }
-            });
-    });
+
+                    let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
+
+                    if let Some(entry) = profile.get_mut(index) {
+                        let trade_qty = f32::from(trade.qty);
+                        if trade.is_sell {
+                            entry.1 += trade_qty;
+                        } else {
+                            entry.0 += trade_qty;
+                        }
+                        max_aggr_volume = max_aggr_volume.max(entry.0 + entry.1);
+                    }
+                });
+        });
 
     profile
         .iter()

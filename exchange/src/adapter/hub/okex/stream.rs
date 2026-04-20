@@ -214,7 +214,7 @@ pub fn connect_depth_stream(
                                     StreamData::Depth(de_depth, data_type, time) => {
                                         let depth = DepthPayload {
                                             last_update_id: de_depth.update_id,
-                                            time,
+                                            time: time.into(),
                                             bids: de_depth
                                                 .bids
                                                 .iter()
@@ -254,7 +254,7 @@ pub fn connect_depth_stream(
                                                         depth_aggr: StreamTicksize::Client,
                                                         push_freq,
                                                     },
-                                                    time,
+                                                    time.into(),
                                                     orderbook.depth.clone(),
                                                 ))
                                                 .await;
@@ -379,7 +379,7 @@ pub fn connect_trade_stream(
                                             qty_norm.normalize_qty(de_trade.qty, de_trade.price);
 
                                         let trade = Trade {
-                                            time: de_trade.time,
+                                            time: de_trade.time.into(),
                                             is_sell: de_trade.is_sell == "sell"
                                                 || de_trade.is_sell == "SELL",
                                             price,

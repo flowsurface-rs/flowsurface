@@ -161,14 +161,14 @@ impl TradeStore {
         // ~1/10th of retention, min 5s
         let cleanup_step_ms = (retention_ms / 10).max(5_000);
         let threshold_ms = retention_ms + cleanup_step_ms;
-        if now_ms.saturating_sub(oldest.time) < threshold_ms {
+        if now_ms.saturating_sub(oldest.time.as_u64()) < threshold_ms {
             return false;
         }
 
         let keep_from_ms = now_ms.saturating_sub(retention_ms);
         let mut removed = 0usize;
         while let Some(trade) = self.raw.front() {
-            if trade.time < keep_from_ms {
+            if trade.time.as_u64() < keep_from_ms {
                 self.raw.pop_front();
                 removed += 1;
             } else {
