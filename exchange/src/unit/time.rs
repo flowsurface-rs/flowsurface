@@ -125,6 +125,20 @@ impl UnixMs {
     pub const fn saturating_sub(self, delta_ms: u64) -> Self {
         Self(self.0.saturating_sub(delta_ms))
     }
+
+    #[inline]
+    pub fn saturating_add_signed(self, delta_ms: i64) -> Self {
+        if delta_ms >= 0 {
+            self.saturating_add(delta_ms as u64)
+        } else {
+            self.saturating_sub(delta_ms.unsigned_abs())
+        }
+    }
+
+    #[inline]
+    pub const fn saturating_diff(self, earlier: Self) -> u64 {
+        self.0.saturating_sub(earlier.0)
+    }
 }
 
 impl From<u64> for UnixMs {

@@ -150,7 +150,7 @@ pub struct HeatmapChart {
     chart: ViewState,
     trades: TimeSeries<HeatmapDataPoint>,
     indicators: EnumMap<HeatmapIndicator, Option<IndicatorData>>,
-    pause_buffer: Vec<(u64, Box<[Trade]>, Depth)>,
+    pause_buffer: Vec<(UnixMs, Box<[Trade]>, Depth)>,
     heatmap: HistoricalDepth,
     visual_config: Config,
     study_configurator: study::Configurator<HeatmapStudy>,
@@ -203,14 +203,10 @@ impl HeatmapChart {
         }
     }
 
-    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: u64) {
+    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: UnixMs) {
         let rounded_update_t = self.round_to_basis_time(update_t);
 
-        let entry = self
-            .trades
-            .datapoints
-            .entry(UnixMs::new(rounded_update_t))
-            .or_default();
+        let entry = self.trades.datapoints.entry(rounded_update_t).or_default();
 
         let tick_size = self.chart.tick_size;
         for trade in buffer {
@@ -218,8 +214,8 @@ impl HeatmapChart {
         }
     }
 
-    pub fn insert_depth(&mut self, depth: &Depth, depth_update_t: u64) {
-        let rounded_depth_update = self.round_to_basis_time(depth_update_t);
+    pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
+        let rounded_depth_update = self.round_to_basis_time(update_t);
 
         let chart = &mut self.chart;
 
@@ -251,13 +247,13 @@ impl HeatmapChart {
         self.process_depth_at(rounded_depth_update, depth);
     }
 
-    fn process_depth_at(&mut self, rounded_update: u64, depth: &Depth) {
+    fn process_depth_at(&mut self, rounded_update: UnixMs, depth: &Depth) {
         self.heatmap.insert_latest_depth(depth, rounded_update);
 
         let chart = &mut self.chart;
         let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
         chart.base_price_y = mid_price.round_to_step(chart.tick_size);
-        chart.latest_x = chart.latest_x.max(rounded_update);
+        chart.latest_x = chart.latest_x.max(rounded_update.as_u64());
     }
 
     fn cleanup_old_data(&mut self) {
@@ -275,19 +271,14 @@ impl HeatmapChart {
             }
 
             if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
-                self.heatmap.cleanup_old_price_levels(oldest_time.as_u64());
+                self.heatmap.cleanup_old_price_levels(oldest_time);
             }
         }
     }
 
-    fn round_to_basis_time(&self, update_t: u64) -> u64 {
+    fn round_to_basis_time(&self, update_t: UnixMs) -> UnixMs {
         match self.chart.basis {
-            Basis::Time(interval) => {
-                let aggregate_time: u64 = interval.into();
-                update_t
-                    .checked_div(aggregate_time)
-                    .map_or(update_t, |quot| quot * aggregate_time)
-            }
+            Basis::Time(interval) => interval.floor_unix_ms(update_t),
             Basis::Tick(_) => update_t,
         }
     }
@@ -422,8 +413,8 @@ impl HeatmapChart {
             .max_trade_qty_and_aggr_volume(UnixMs::new(earliest), UnixMs::new(latest));
 
         let max_depth_qty = self.heatmap.max_depth_qty_in_range(
-            earliest,
-            latest,
+            UnixMs::new(earliest),
+            UnixMs::new(latest),
             highest,
             lowest,
             market_type,
@@ -499,8 +490,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
             if let Some(merge_strat) = self.visual_config().coalescing {
                 let coalesced_visual_runs = self.heatmap.coalesced_runs(
-                    earliest,
-                    latest,
+                    UnixMs::new(earliest),
+                    UnixMs::new(latest),
                     highest,
                     lowest,
                     market_type,
@@ -511,15 +502,17 @@ impl canvas::Program<Message> for HeatmapChart {
                 for (price_of_run, visual_run) in coalesced_visual_runs {
                     let y_position = chart.price_to_y(price_of_run);
 
-                    let run_start_time_clipped = visual_run.start_time.max(earliest);
-                    let run_until_time_clipped = visual_run.until_time.min(latest);
+                    let run_start_time_clipped = visual_run.start_time.max(UnixMs::new(earliest));
+                    let run_until_time_clipped = visual_run.until_time.min(UnixMs::new(latest));
 
                     if run_start_time_clipped >= run_until_time_clipped {
                         continue;
                     }
 
-                    let start_x = chart.interval_to_x(run_start_time_clipped);
-                    let end_x = chart.interval_to_x(run_until_time_clipped).min(0.0);
+                    let start_x = chart.interval_to_x(run_start_time_clipped.as_u64());
+                    let end_x = chart
+                        .interval_to_x(run_until_time_clipped.as_u64())
+                        .min(0.0);
 
                     let width = end_x - start_x;
 
@@ -535,7 +528,7 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
             } else {
                 self.heatmap
-                    .iter_time_filtered(earliest, latest, highest, lowest)
+                    .iter_time_filtered(UnixMs::new(earliest), UnixMs::new(latest), highest, lowest)
                     .for_each(|(price, runs)| {
                         let y_position = chart.price_to_y(*price);
 
@@ -549,9 +542,12 @@ impl canvas::Program<Message> for HeatmapChart {
                                 order_size > self.visual_config.order_size_filter
                             })
                             .for_each(|run| {
-                                let start_x = chart.interval_to_x(run.start_time.max(earliest));
-                                let end_x =
-                                    chart.interval_to_x(run.until_time.min(latest)).min(0.0);
+                                let start_x = chart.interval_to_x(
+                                    run.start_time.max(UnixMs::new(earliest)).as_u64(),
+                                );
+                                let end_x = chart
+                                    .interval_to_x(run.until_time.min(UnixMs::new(latest)).as_u64())
+                                    .min(0.0);
 
                                 let width = end_x - start_x;
 
@@ -569,7 +565,7 @@ impl canvas::Program<Message> for HeatmapChart {
             if let Some(latest_timestamp) = self.trades.latest_timestamp() {
                 let max_qty = self
                     .heatmap
-                    .latest_order_runs(highest, lowest, latest_timestamp.as_u64())
+                    .latest_order_runs(highest, lowest, latest_timestamp)
                     .map(|(_, run)| run.qty.to_f32_lossy())
                     .fold(f32::MIN, f32::max)
                     .ceil()
@@ -578,7 +574,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 if !max_qty.is_infinite() {
                     self.heatmap
-                        .latest_order_runs(highest, lowest, latest_timestamp.as_u64())
+                        .latest_order_runs(highest, lowest, latest_timestamp)
                         .for_each(|(price, run)| {
                             let y_position = chart.price_to_y(*price);
                             let bar_width = (run.qty.to_f32_lossy() / max_qty) * 50.0;
@@ -775,14 +771,16 @@ impl canvas::Program<Message> for HeatmapChart {
                         return;
                     }
 
-                    let aggr_time: u64 = match chart.basis {
-                        Basis::Time(interval) => interval.into(),
+                    let interval = match chart.basis {
+                        Basis::Time(interval) => interval,
                         Basis::Tick(_) => return,
                     };
+                    let aggr_time: u64 = interval.into();
                     let step = chart.tick_size;
 
                     let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
-                    let base_data_time = (cursor_at_time / aggr_time) * aggr_time;
+                    let base_data_time = interval.floor_unix_ms(UnixMs::new(cursor_at_time));
+                    let base_data_time_ms = base_data_time.as_u64();
 
                     let price_tick_offsets = [1i64, 0, -1];
                     let time_interval_offsets = [-1i64, 0, 1, 2];
@@ -791,12 +789,14 @@ impl canvas::Program<Message> for HeatmapChart {
                         let offset = price_tick_offsets[i];
                         base_data_price.add_steps(offset, step)
                     });
-                    let times_for_display_lookup: [u64; 4] = std::array::from_fn(|i| {
+                    let times_for_display_lookup: [UnixMs; 4] = std::array::from_fn(|i| {
                         let offset = time_interval_offsets[i];
-                        base_data_time.saturating_add_signed(offset * aggr_time as i64)
+                        UnixMs::new(
+                            base_data_time_ms.saturating_add_signed(offset * aggr_time as i64),
+                        )
                     });
 
-                    let display_grid_qtys: FxHashMap<(u64, Price), (exchange::unit::Qty, bool)> =
+                    let display_grid_qtys: FxHashMap<(UnixMs, Price), (exchange::unit::Qty, bool)> =
                         self.heatmap.query_grid_qtys(
                             base_data_time,
                             base_data_price,

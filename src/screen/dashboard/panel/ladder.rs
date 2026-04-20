@@ -4,7 +4,7 @@ use data::panel::ladder::{ChaseTracker, Config, GroupedDepth, Side, TradeStore};
 use exchange::Trade;
 use exchange::unit::qty::Qty;
 use exchange::unit::{Price, PriceStep};
-use exchange::{TickerInfo, depth::Depth};
+use exchange::{TickerInfo, UnixMs, depth::Depth};
 
 use iced::widget::canvas::{self, Path, Stroke, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -61,7 +61,7 @@ pub struct Ladder {
     last_tick: Instant,
     pub step: PriceStep,
     scroll_px: f32,
-    last_exchange_ts_ms: Option<u64>,
+    last_exchange_ts_ms: Option<UnixMs>,
     orderbook: [GroupedDepth; 2],
     trades: TradeStore,
     pending_tick_size: Option<PriceStep>,
@@ -89,7 +89,7 @@ impl Ladder {
         self.trades.insert_trades(buffer, self.step);
     }
 
-    pub fn insert_depth(&mut self, depth: &Depth, update_t: u64) {
+    pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
         if let Some(next) = self.pending_tick_size.take() {
             self.step = next;
             self.trades.rebuild_grouped(self.step);

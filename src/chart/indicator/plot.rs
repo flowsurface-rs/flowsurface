@@ -2,6 +2,7 @@ use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
 
+use exchange::UnixMs;
 use iced::widget::canvas::{self, Cache, Geometry, Path};
 use iced::{Alignment, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
@@ -41,6 +42,31 @@ impl<Y> Series for &BTreeMap<u64, Y> {
         Self: 'a,
     {
         (**self).range((x + 1)..).next().map(|(k, v)| (*k, v))
+    }
+}
+
+impl<Y> Series for &BTreeMap<UnixMs, Y> {
+    type Y = Y;
+
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
+        let start = UnixMs::new(*range.start());
+        let end = UnixMs::new(*range.end());
+
+        for (k, v) in (**self).range(start..=end) {
+            f(k.as_u64(), v);
+        }
+    }
+
+    fn at(&self, x: u64) -> Option<&Self::Y> {
+        (**self).get(&UnixMs::new(x))
+    }
+
+    fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let start = UnixMs::new(x.saturating_add(1));
+        (**self).range(start..).next().map(|(k, v)| (k.as_u64(), v))
     }
 }
 
@@ -86,16 +112,17 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
 }
 
 pub enum AnySeries<'a, Y> {
-    Forward(&'a BTreeMap<u64, Y>),
+    ForwardUnixMs(&'a BTreeMap<UnixMs, Y>),
     Reversed(ReversedBTreeSeries<'a, Y>),
 }
 
 impl<'a, Y> AnySeries<'a, Y> {
-    pub fn for_basis(basis: Basis, data: &'a BTreeMap<u64, Y>) -> Self {
-        match basis {
-            Basis::Tick(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
-            Basis::Time(_) => Self::Forward(data),
-        }
+    pub fn forward_unix_ms(data: &'a BTreeMap<UnixMs, Y>) -> Self {
+        Self::ForwardUnixMs(data)
+    }
+
+    pub fn reversed_u64(data: &'a BTreeMap<u64, Y>) -> Self {
+        Self::Reversed(ReversedBTreeSeries::new(data))
     }
 }
 
@@ -104,9 +131,11 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
 
     fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
         match self {
-            AnySeries::Forward(map) => {
-                for (k, v) in (**map).range(range) {
-                    f(*k, v);
+            AnySeries::ForwardUnixMs(map) => {
+                let start = UnixMs::new(*range.start());
+                let end = UnixMs::new(*range.end());
+                for (k, v) in (**map).range(start..=end) {
+                    f(k.as_u64(), v);
                 }
             }
             AnySeries::Reversed(rv) => rv.for_each_in(range, f),
@@ -115,7 +144,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
 
     fn at(&self, x: u64) -> Option<&Self::Y> {
         match self {
-            AnySeries::Forward(map) => (**map).get(&x),
+            AnySeries::ForwardUnixMs(map) => (**map).get(&UnixMs::new(x)),
             AnySeries::Reversed(rv) => rv.at(x),
         }
     }
@@ -125,7 +154,10 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         Self: 'b,
     {
         match self {
-            AnySeries::Forward(map) => (**map).range((x + 1)..).next().map(|(k, v)| (*k, v)),
+            AnySeries::ForwardUnixMs(map) => (**map)
+                .range(UnixMs::new(x.saturating_add(1))..)
+                .next()
+                .map(|(k, v)| (k.as_u64(), v)),
             AnySeries::Reversed(rv) => rv.next_after(x),
         }
     }
