@@ -348,7 +348,7 @@ impl KlineChart {
                     let latest = chrono::Utc::now().timestamp_millis() as u64;
                     let earliest = latest.saturating_sub(450 * timeframe_ms);
 
-                    let range = FetchRange::Kline(earliest, latest);
+                    let range = FetchRange::Kline(UnixMs::new(earliest), UnixMs::new(latest));
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }
@@ -363,7 +363,7 @@ impl KlineChart {
 
                 // priority 1, initial klines for visible range
                 if visible_earliest_ms < kline_earliest {
-                    let range = FetchRange::Kline(prefetch_earliest, kline_earliest.as_u64());
+                    let range = FetchRange::Kline(UnixMs::new(prefetch_earliest), kline_earliest);
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
@@ -377,7 +377,7 @@ impl KlineChart {
                     && let Some((fetch_from, fetch_to)) =
                         timeseries.suggest_trade_fetch_range(visible_earliest_ms, visible_latest_ms)
                 {
-                    let range = FetchRange::Trades(fetch_from.as_u64(), fetch_to.as_u64());
+                    let range = FetchRange::Trades(fetch_from, fetch_to);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         self.fetching_trades = (true, None);
                         return Some(action);
@@ -389,9 +389,9 @@ impl KlineChart {
                 let ctx = indicator::kline::FetchCtx {
                     main_chart: &self.chart,
                     timeframe: timeseries.interval,
-                    visible_earliest,
-                    kline_latest: kline_latest.as_u64(),
-                    prefetch_earliest,
+                    visible_earliest: visible_earliest_ms,
+                    kline_latest,
+                    prefetch_earliest: UnixMs::new(prefetch_earliest),
                 };
                 for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
                     if let Some(range) = indi.fetch_range(&ctx)
@@ -419,7 +419,7 @@ impl KlineChart {
                         .unwrap_or(&visible_earliest_ms)
                         .saturating_sub(timeframe_ms);
 
-                    let range = FetchRange::Kline(earliest.as_u64(), latest.as_u64());
+                    let range = FetchRange::Kline(earliest, latest);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }

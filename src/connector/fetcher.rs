@@ -23,7 +23,7 @@ pub fn is_trade_fetch_enabled() -> bool {
 pub enum FetchedData {
     Trades {
         batch: Vec<Trade>,
-        until_time: u64,
+        until_time: UnixMs,
     },
     Klines {
         data: Vec<Kline>,
@@ -106,9 +106,9 @@ impl RequestHandler {
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum FetchRange {
-    Kline(u64, u64),
-    OpenInterest(u64, u64),
-    Trades(u64, u64),
+    Kline(UnixMs, UnixMs),
+    OpenInterest(UnixMs, UnixMs),
+    Trades(UnixMs, UnixMs),
 }
 
 #[derive(PartialEq, Debug)]
@@ -360,7 +360,7 @@ pub fn oi_fetch_task(
     pane_id: Uuid,
     stream: StreamKind,
     req_id: Option<Uuid>,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Task<FetchUpdate> {
     let update_status = Task::done(FetchUpdate::Status {
         pane_id,
@@ -373,7 +373,6 @@ pub fn oi_fetch_task(
             timeframe,
         } => {
             let fetch = async move {
-                let range = range.map(|(from, to)| (UnixMs::new(from), UnixMs::new(to)));
                 handles
                     .fetch_open_interest(ticker_info, timeframe, range)
                     .await
@@ -413,7 +412,7 @@ pub fn kline_fetch_task(
     pane_id: Uuid,
     stream: StreamKind,
     req_id: Option<Uuid>,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Task<FetchUpdate> {
     let update_status = Task::done(FetchUpdate::Status {
         pane_id,
@@ -425,10 +424,7 @@ pub fn kline_fetch_task(
             ticker_info,
             timeframe,
         } => {
-            let fetch = async move {
-                let range = range.map(|(from, to)| (UnixMs::new(from), UnixMs::new(to)));
-                handles.fetch_klines(ticker_info, timeframe, range).await
-            };
+            let fetch = async move { handles.fetch_klines(ticker_info, timeframe, range).await };
 
             Task::perform(
                 iced::futures::TryFutureExt::map_err(fetch, |err| {
@@ -464,8 +460,8 @@ pub fn kline_fetch_task(
 pub fn fetch_trades_batched(
     handles: AdapterHandles,
     ticker_info: TickerInfo,
-    from_time: u64,
-    to_time: u64,
+    from_time: UnixMs,
+    to_time: UnixMs,
     data_path: PathBuf,
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
@@ -473,11 +469,7 @@ pub fn fetch_trades_batched(
 
         while latest_trade_t < to_time {
             match handles
-                .fetch_trades(
-                    ticker_info,
-                    UnixMs::new(latest_trade_t),
-                    Some(data_path.clone()),
-                )
+                .fetch_trades(ticker_info, latest_trade_t, Some(data_path.clone()))
                 .await
             {
                 Ok(batch) => {
@@ -485,9 +477,7 @@ pub fn fetch_trades_batched(
                         break;
                     }
 
-                    latest_trade_t = batch
-                        .last()
-                        .map_or(latest_trade_t, |trade| trade.time.as_u64());
+                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
 
                     let () = progress.send(batch).await;
                 }

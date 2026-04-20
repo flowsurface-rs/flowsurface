@@ -18,21 +18,19 @@ use iced::{
         container, row, rule,
     },
 };
-use std::{collections::BTreeMap, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
 /// Creates the indicator plot and its labels. Wraps it under `iced::Element`(row).
 pub fn indicator_row<'a, P, Y>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
     plot: P,
-    datapoints: &'a BTreeMap<u64, Y>,
+    series: AnySeries<'a, Y>,
     visible_range: RangeInclusive<u64>,
 ) -> Element<'a, Message>
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
-    let series = AnySeries::for_basis(main_chart.basis, datapoints);
-
     let (min, max) = plot
         .y_extents(&series, visible_range)
         .map(|(min, max)| plot.adjust_extents(min, max))

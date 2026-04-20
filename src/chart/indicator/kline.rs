@@ -4,7 +4,7 @@ use crate::connector::fetcher::FetchRange;
 use data::chart::PlotData;
 use data::chart::indicator::KlineIndicator;
 use data::chart::kline::KlineDataPoint;
-use exchange::{Kline, Timeframe, Trade};
+use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 pub mod open_interest;
 pub mod volume;
@@ -52,9 +52,9 @@ pub trait KlineIndicatorImpl {
 pub struct FetchCtx<'a> {
     pub main_chart: &'a ViewState,
     pub timeframe: Timeframe,
-    pub visible_earliest: u64,
-    pub kline_latest: u64,
-    pub prefetch_earliest: u64,
+    pub visible_earliest: UnixMs,
+    pub kline_latest: UnixMs,
+    pub prefetch_earliest: UnixMs,
 }
 
 pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {

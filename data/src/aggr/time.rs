@@ -262,11 +262,10 @@ impl TimeSeries<KlineDataPoint> {
         if buffer.is_empty() {
             return;
         }
-        let aggr_time = self.interval.to_milliseconds();
         let mut updated_times = Vec::new();
 
         buffer.iter().for_each(|trade| {
-            let rounded_time = UnixMs::new((trade.time.as_u64() / aggr_time) * aggr_time);
+            let rounded_time = self.interval.floor_unix_ms(trade.time);
 
             if !updated_times.contains(&rounded_time) {
                 updated_times.push(rounded_time);
@@ -301,11 +300,10 @@ impl TimeSeries<KlineDataPoint> {
         if buffer.is_empty() {
             return;
         }
-        let aggr_time = self.interval.to_milliseconds();
         let mut updated_times: Vec<UnixMs> = Vec::new();
 
         for trade in buffer {
-            let rounded_time = UnixMs::new((trade.time.as_u64() / aggr_time) * aggr_time);
+            let rounded_time = self.interval.floor_unix_ms(trade.time);
 
             if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
                 if !updated_times.contains(&rounded_time) {
