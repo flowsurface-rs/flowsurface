@@ -278,7 +278,7 @@ impl HeatmapChart {
 
     fn round_to_basis_time(&self, update_t: UnixMs) -> UnixMs {
         match self.chart.basis {
-            Basis::Time(interval) => interval.floor_unix_ms(update_t),
+            Basis::Time(interval) => update_t.floor_to(interval),
             Basis::Tick(_) => update_t,
         }
     }
@@ -775,11 +775,11 @@ impl canvas::Program<Message> for HeatmapChart {
                         Basis::Time(interval) => interval,
                         Basis::Tick(_) => return,
                     };
-                    let aggr_time: u64 = interval.into();
+                    let aggr_time = interval.to_milliseconds();
                     let step = chart.tick_size;
 
                     let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
-                    let base_data_time = interval.floor_unix_ms(UnixMs::new(cursor_at_time));
+                    let base_data_time = UnixMs::new(cursor_at_time).floor_to(interval);
                     let base_data_time_ms = base_data_time.as_u64();
 
                     let price_tick_offsets = [1i64, 0, -1];

@@ -434,7 +434,7 @@ impl HeatmapShader {
         let aggr_interval = self.depth_history.aggr_time;
         let aggr_time = aggr_interval.to_milliseconds();
         let update_t_ms = update_t.as_u64();
-        let rounded_t = aggr_interval.floor_unix_ms(update_t);
+        let rounded_t = update_t.floor_to(aggr_interval);
         let rounded_t_ms = rounded_t.as_u64();
 
         if let Some(mid) = depth.mid_price() {
@@ -479,7 +479,7 @@ impl HeatmapShader {
         }
 
         let aggr_interval = self.depth_history.aggr_time;
-        let rounded_t = aggr_interval.floor_unix_ms(update_t);
+        let rounded_t = update_t.floor_to(aggr_interval);
 
         self.trades
             .ingest_trades_bucket(rounded_t, buffer, self.step);

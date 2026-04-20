@@ -1,3 +1,4 @@
+use crate::Timeframe;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -53,6 +54,25 @@ impl UnixMs {
     #[inline]
     pub const fn from_millis(ms: u64) -> Self {
         Self(ms)
+    }
+
+    #[inline]
+    pub fn now() -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        Self::from_millis(now_ms)
+    }
+
+    #[inline]
+    pub fn floor_to(self, timeframe: Timeframe) -> Self {
+        let bucket_ms = timeframe.to_milliseconds().max(1);
+        let rounded = (self.as_u64() / bucket_ms) * bucket_ms;
+        Self::from_millis(rounded)
     }
 
     #[inline]
