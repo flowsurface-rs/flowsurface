@@ -339,7 +339,7 @@ impl HeatmapChart {
 
     pub fn basis_interval(&self) -> Option<u64> {
         match self.chart.basis {
-            Basis::Time(interval) => Some(interval.into()),
+            Basis::Time(interval) => Some(interval.to_milliseconds()),
             Basis::Tick(_) => None,
         }
     }
@@ -775,12 +775,10 @@ impl canvas::Program<Message> for HeatmapChart {
                         Basis::Time(interval) => interval,
                         Basis::Tick(_) => return,
                     };
-                    let aggr_time = interval.to_milliseconds();
                     let step = chart.tick_size;
 
                     let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
                     let base_data_time = UnixMs::new(cursor_at_time).floor_to(interval);
-                    let base_data_time_ms = base_data_time.as_u64();
 
                     let price_tick_offsets = [1i64, 0, -1];
                     let time_interval_offsets = [-1i64, 0, 1, 2];
@@ -791,9 +789,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     });
                     let times_for_display_lookup: [UnixMs; 4] = std::array::from_fn(|i| {
                         let offset = time_interval_offsets[i];
-                        UnixMs::new(
-                            base_data_time_ms.saturating_add_signed(offset * aggr_time as i64),
-                        )
+                        base_data_time.offset_by_timeframe(interval, offset)
                     });
 
                     let display_grid_qtys: FxHashMap<(UnixMs, Price), (exchange::unit::Qty, bool)> =
@@ -930,8 +926,8 @@ fn draw_volume_profile(
             (earliest, latest)
         }
         ProfileKind::FixedWindow(datapoints) => {
-            let basis_interval: u64 = match chart.basis {
-                Basis::Time(interval) => interval.into(),
+            let basis_interval = match chart.basis {
+                Basis::Time(interval) => interval.to_milliseconds(),
                 Basis::Tick(_) => return,
             };
 
