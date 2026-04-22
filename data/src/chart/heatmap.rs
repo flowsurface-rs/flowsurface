@@ -384,21 +384,22 @@ impl HistoricalDepth {
         order_size_filter: f32,
         coalesce_kind: Option<CoalesceKind>,
     ) -> FxHashMap<(UnixMs, Price), (Qty, bool)> {
-        let aggr_time = self.aggr_time_ms();
+        let aggr_time_ms = self.aggr_time_ms();
+        let aggr_time = self.aggr_time;
 
         let step = self.tick_size;
 
         let query_earliest_time = time_interval_offsets
             .iter()
-            .map(|offset| center_time.saturating_add_signed(*offset * aggr_time as i64))
+            .map(|offset| center_time.offset_by_timeframe(aggr_time, *offset))
             .min()
             .unwrap_or(center_time);
 
         let query_latest_time = time_interval_offsets
             .iter()
-            .map(|offset| center_time.saturating_add_signed(*offset * aggr_time as i64))
+            .map(|offset| center_time.offset_by_timeframe(aggr_time, *offset))
             .max()
-            .map_or(center_time, |t| t.saturating_add(aggr_time));
+            .map_or(center_time, |t| t.saturating_add(aggr_time_ms));
 
         let query_lowest = price_tick_offsets
             .iter()
@@ -441,8 +442,7 @@ impl HistoricalDepth {
             let target_price_key = center_price.add_steps(*price_offset, step);
 
             for time_offset in time_interval_offsets {
-                let target_time_val =
-                    center_time.saturating_add_signed(*time_offset * aggr_time as i64);
+                let target_time_val = center_time.offset_by_timeframe(aggr_time, *time_offset);
                 let current_grid_key = (target_time_val, target_price_key);
 
                 for (run_price_level, run_data) in &runs_in_vicinity {

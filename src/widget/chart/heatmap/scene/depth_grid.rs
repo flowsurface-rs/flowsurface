@@ -1,8 +1,8 @@
 use data::chart::heatmap::HistoricalDepth;
+use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::UnixMs;
 use std::sync::Arc;
 
 const Y_MAX_BLOCK_HEIGHT_BINS: u32 = 16;
@@ -164,8 +164,7 @@ impl GridRing {
             latest_time_unix.saturating_add(aggr),
             highest,
             lowest,
-        )
-        {
+        ) {
             // Map price -> y bin (view-relative around base_price).
             let dy_steps: i64 = (price.units - base_price.units).div_euclid(step_units);
             let dy_bins: i64 = dy_steps.div_euclid(self.steps_per_y_bin);

@@ -58,10 +58,8 @@ impl UnixMs {
 
     #[inline]
     pub fn now() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
@@ -69,10 +67,27 @@ impl UnixMs {
     }
 
     #[inline]
+    pub fn as_datetime_utc(self) -> Option<chrono::DateTime<chrono::Utc>> {
+        let millis = i64::try_from(self.0).ok()?;
+        chrono::DateTime::from_timestamp_millis(millis)
+    }
+
+    #[inline]
+    pub fn format_utc(self, fmt: &str) -> Option<String> {
+        self.as_datetime_utc().map(|dt| dt.format(fmt).to_string())
+    }
+
+    #[inline]
     pub fn floor_to(self, timeframe: Timeframe) -> Self {
         let bucket_ms = timeframe.to_milliseconds().max(1);
         let rounded = (self.as_u64() / bucket_ms) * bucket_ms;
         Self::from_millis(rounded)
+    }
+
+    #[inline]
+    pub fn offset_by_timeframe(self, timeframe: Timeframe, intervals: i64) -> Self {
+        let interval_ms = i64::try_from(timeframe.to_milliseconds()).unwrap_or(i64::MAX);
+        self.saturating_add_signed(intervals.saturating_mul(interval_ms))
     }
 
     #[inline]
