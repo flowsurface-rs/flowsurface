@@ -174,6 +174,30 @@ impl UnixMs {
     pub const fn saturating_diff(self, earlier: Self) -> u64 {
         self.0.saturating_sub(earlier.0)
     }
+
+    pub fn duration_since(self, earlier: Self) -> Option<std::time::Duration> {
+        self.0
+            .checked_sub(earlier.0)
+            .map(std::time::Duration::from_millis)
+    }
+}
+
+impl std::ops::Add for UnixMs {
+    type Output = Self;
+
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        self.saturating_add(rhs.0)
+    }
+}
+
+impl std::ops::Sub for UnixMs {
+    type Output = Self;
+
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        self.saturating_sub(rhs.0)
+    }
 }
 
 impl From<u64> for UnixMs {

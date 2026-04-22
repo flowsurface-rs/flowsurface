@@ -5,6 +5,7 @@ use data::{
 };
 
 use chrono::{DateTime, Datelike, Months};
+use exchange::UnixMs;
 use iced::theme::palette::Extended;
 use iced_core::Rectangle;
 
@@ -71,8 +72,8 @@ const MS_TIME_STEPS: [u64; 10] = [
 ];
 
 fn calc_time_step(
-    earliest: u64,
-    latest: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     labels_can_fit: i32,
     timeframe: exchange::Timeframe,
 ) -> (u64, u64) {
@@ -91,7 +92,9 @@ fn calc_time_step(
         31.. => &HOURLY_TIME_STEPS,
     };
 
-    let duration = latest - earliest;
+    let duration = latest
+        .duration_since(earliest)
+        .map_or(0, |d| d.as_millis() as u64);
     let mut selected_step = time_steps[0];
 
     for &step in time_steps {
@@ -104,14 +107,15 @@ fn calc_time_step(
         }
     }
 
-    let rounded_earliest = (earliest / selected_step) * selected_step;
+    let rounded_earliest = (earliest.as_u64() / selected_step) * selected_step;
 
     (selected_step, rounded_earliest)
 }
 
-fn calc_x_pos(time_millis: u64, min_millis: u64, max_millis: u64, width: f32) -> f64 {
-    if max_millis > min_millis {
-        ((time_millis - min_millis) as f64 / (max_millis - min_millis) as f64) * f64::from(width)
+fn calc_x_pos(time_millis: u64, earliest: UnixMs, latest: UnixMs, width: f32) -> f64 {
+    if latest > earliest {
+        let span = latest - earliest;
+        ((time_millis - earliest.0) as f64 / span.0 as f64) * f64::from(width)
     } else {
         0.0
     }
@@ -125,13 +129,13 @@ pub fn generate_time_labels(
     timeframe: exchange::Timeframe,
     timezone: UserTimezone,
     axis_bounds: iced_core::Rectangle,
-    x_min: u64,
-    x_max: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     x_labels_can_fit: i32,
     palette: &Extended,
 ) -> Vec<AxisLabel> {
     let (time_step, initial_rounded_earliest) =
-        calc_time_step(x_min, x_max, x_labels_can_fit, timeframe);
+        calc_time_step(earliest, latest, x_labels_can_fit, timeframe);
 
     if time_step == 0 {
         return vec![];
@@ -140,10 +144,10 @@ pub fn generate_time_labels(
     let mut labels = Vec::with_capacity(x_labels_can_fit as usize * 3);
 
     if time_step >= ONE_DAY_MS {
-        let Some(start_utc_dt) = DateTime::from_timestamp_millis(x_min as i64) else {
+        let Some(start_utc_dt) = earliest.as_datetime_utc() else {
             return vec![];
         };
-        let Some(end_utc_dt) = DateTime::from_timestamp_millis(x_max as i64) else {
+        let Some(end_utc_dt) = latest.as_datetime_utc() else {
             return vec![];
         };
 
@@ -151,8 +155,8 @@ pub fn generate_time_labels(
             timezone,
             &mut labels,
             axis_bounds,
-            x_min,
-            x_max,
+            earliest,
+            latest,
             start_utc_dt,
             end_utc_dt,
             calc_x_pos,
@@ -164,8 +168,8 @@ pub fn generate_time_labels(
             timezone,
             &mut labels,
             axis_bounds,
-            x_min,
-            x_max,
+            earliest,
+            latest,
             start_utc_dt,
             end_utc_dt,
             calc_x_pos,
@@ -176,8 +180,8 @@ pub fn generate_time_labels(
         yearly_labels_gen(
             &mut labels,
             axis_bounds,
-            x_min,
-            x_max,
+            earliest,
+            latest,
             start_utc_dt,
             end_utc_dt,
             calc_x_pos,
@@ -189,8 +193,8 @@ pub fn generate_time_labels(
             timezone,
             &mut labels,
             axis_bounds,
-            x_min,
-            x_max,
+            earliest,
+            latest,
             time_step,
             initial_rounded_earliest,
             timeframe,
@@ -206,11 +210,11 @@ pub fn generate_time_labels(
 fn above_daily_labels_gen<Tz, Next, Format, Skip>(
     mut current: chrono::DateTime<Tz>,
     end: &chrono::DateTime<Tz>,
-    x_min: u64,
-    x_max: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     axis_bounds: iced_core::Rectangle,
     all_labels: &mut Vec<AxisLabel>,
-    calc_x_pos: impl Fn(u64, u64, u64, f32) -> f64,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
     next: Next,
     format_label: Format,
@@ -222,11 +226,11 @@ fn above_daily_labels_gen<Tz, Next, Format, Skip>(
     Format: Fn(&chrono::DateTime<Tz>) -> String,
     Skip: Fn(&chrono::DateTime<Tz>) -> bool,
 {
-    while current.timestamp_millis() as u64 <= x_max {
+    while current.timestamp_millis() as u64 <= latest.0 {
         let ts = current.timestamp_millis() as u64;
 
-        if ts >= x_min && !skip_label(&current) {
-            let x_pos = calc_x_pos(ts, x_min, x_max, axis_bounds.width);
+        if ts >= earliest.0 && !skip_label(&current) {
+            let x_pos = calc_x_pos(ts, earliest, latest, axis_bounds.width);
             if is_drawable(x_pos, axis_bounds.width) {
                 let label = format_label(&current);
                 all_labels.push(AxisLabel::new_x(
@@ -255,11 +259,11 @@ fn daily_labels_gen(
     timezone: UserTimezone,
     all_labels: &mut Vec<AxisLabel>,
     axis_bounds: Rectangle,
-    x_min: u64,
-    x_max: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     start_utc_dt: DateTime<chrono::Utc>,
     end_utc_dt: DateTime<chrono::Utc>,
-    calc_x_pos: impl Fn(u64, u64, u64, f32) -> f64,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
     palette: &Extended,
 ) {
@@ -273,8 +277,8 @@ fn daily_labels_gen(
     above_daily_labels_gen(
         current,
         &end_utc_dt,
-        x_min,
-        x_max,
+        earliest,
+        latest,
         axis_bounds,
         all_labels,
         &calc_x_pos,
@@ -290,11 +294,11 @@ fn monthly_labels_gen(
     timezone: UserTimezone,
     all_labels: &mut Vec<AxisLabel>,
     axis_bounds: Rectangle,
-    x_min: u64,
-    x_max: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     start_utc_dt: DateTime<chrono::Utc>,
     end_utc_dt: DateTime<chrono::Utc>,
-    calc_x_pos: impl Fn(u64, u64, u64, f32) -> f64,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
     palette: &Extended,
 ) {
@@ -303,8 +307,8 @@ fn monthly_labels_gen(
     above_daily_labels_gen(
         current,
         &end_utc_dt,
-        x_min,
-        x_max,
+        earliest,
+        latest,
         axis_bounds,
         all_labels,
         &calc_x_pos,
@@ -322,11 +326,11 @@ fn monthly_labels_gen(
 fn yearly_labels_gen(
     all_labels: &mut Vec<AxisLabel>,
     axis_bounds: Rectangle,
-    x_min: u64,
-    x_max: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     start_utc_dt: DateTime<chrono::Utc>,
     end_utc_dt: DateTime<chrono::Utc>,
-    calc_x_pos: impl Fn(u64, u64, u64, f32) -> f64,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
     palette: &Extended,
 ) {
@@ -335,8 +339,8 @@ fn yearly_labels_gen(
     above_daily_labels_gen(
         current,
         &end_utc_dt,
-        x_min,
-        x_max,
+        earliest,
+        latest,
         axis_bounds,
         all_labels,
         &calc_x_pos,
@@ -355,20 +359,20 @@ fn sub_daily_labels_gen(
     timezone: UserTimezone,
     all_labels: &mut Vec<AxisLabel>,
     axis_bounds: Rectangle,
-    x_min: u64,
-    x_max: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
     time_step: u64,
     initial_rounded_earliest: u64,
     timeframe: exchange::Timeframe,
-    calc_x_pos: impl Fn(u64, u64, u64, f32) -> f64,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
     palette: &Extended,
 ) {
     let mut current_time = initial_rounded_earliest;
 
-    while current_time <= x_max {
-        if current_time >= x_min {
-            let x_position = calc_x_pos(current_time, x_min, x_max, axis_bounds.width);
+    while current_time <= latest.0 {
+        if current_time >= earliest.0 {
+            let x_position = calc_x_pos(current_time, earliest, latest, axis_bounds.width);
 
             if is_drawable(x_position, axis_bounds.width) {
                 let label_content = timezone.format_with_kind(
@@ -393,7 +397,7 @@ fn sub_daily_labels_gen(
             break;
         }
 
-        if current_time > x_max && prev_current_time < x_min {
+        if current_time > latest.0 && prev_current_time < earliest.0 {
             break;
         }
     }
