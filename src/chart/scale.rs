@@ -511,15 +511,15 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                     }
                 }
                 Basis::Time(timeframe) => {
-                    let x_min_region = self.x_to_interval(region.x);
-                    let x_max_region = self.x_to_interval(region.x + region.width);
+                    let earliest = exchange::UnixMs(self.x_to_interval(region.x));
+                    let latest = exchange::UnixMs(self.x_to_interval(region.x + region.width));
 
                     let generated_labels = timeseries::generate_time_labels(
                         timeframe,
                         self.timezone,
                         bounds,
-                        x_min_region,
-                        x_max_region,
+                        earliest,
+                        latest,
                         label_count as i32,
                         palette,
                     );
