@@ -1,4 +1,6 @@
-use crate::chart::composition::{ChartComposition, DEFAULT_MIN_PANEL_RATIO, PanelDataHint};
+use crate::chart::composition::{
+    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelDataHint, PanelScaleMode,
+};
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::kline::{
     DEFAULT_ZOOM_POINTS, KlinePanelKind, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
@@ -49,6 +51,10 @@ impl KlineSeriesLike for KlineSeries {
     fn bars(&self) -> &[Kline] {
         &self.bars
     }
+
+    fn secondary_value(&self, bar: &Kline) -> f32 {
+        f32::from(bar.volume.total())
+    }
 }
 
 pub struct KlineChartV2 {
@@ -59,6 +65,8 @@ pub struct KlineChartV2 {
     composition: ChartComposition,
     panel_kinds: Vec<KlinePanelKind>,
     panel_splits: Vec<f32>,
+    panel_marks: Vec<MarkKind>,
+    panel_scale_modes: Vec<PanelScaleMode>,
     last_tick: Instant,
     cache_rev: u64,
 
@@ -80,6 +88,8 @@ impl KlineChartV2 {
             composition,
             panel_kinds: Vec::new(),
             panel_splits: Vec::new(),
+            panel_marks: Vec::new(),
+            panel_scale_modes: Vec::new(),
             last_tick: Instant::now(),
             cache_rev: 0,
             ticker_info,
@@ -93,6 +103,23 @@ impl KlineChartV2 {
 
     pub fn basis(&self) -> Basis {
         self.basis
+    }
+
+    pub fn set_primary_scale_mode(&mut self, scale: PanelScaleMode) -> bool {
+        let Some(primary_panel_id) = self.composition.primary_panel_id() else {
+            return false;
+        };
+
+        if self
+            .composition
+            .set_panel_preferred_scale(primary_panel_id, scale)
+        {
+            self.sync_widget_panel_layout();
+            self.bump_rev();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn ticker_info(&self) -> TickerInfo {
@@ -145,6 +172,7 @@ impl KlineChartV2 {
                 .with_zoom(self.zoom)
                 .with_pan(self.pan)
                 .with_panel_layout(&self.panel_kinds, &self.panel_splits)
+                .with_panel_rendering(&self.panel_marks, &self.panel_scale_modes)
                 .with_timezone(timezone)
                 .version(self.cache_rev)
                 .into();
@@ -245,15 +273,47 @@ impl KlineChartV2 {
     }
 
     fn sync_widget_panel_layout(&mut self) {
-        self.panel_kinds = self
-            .composition
-            .panel_data_hints()
-            .into_iter()
-            .map(|hint| match hint {
-                PanelDataHint::PriceLike => KlinePanelKind::Price,
-                PanelDataHint::VolumeLike => KlinePanelKind::Volume,
-            })
-            .collect();
+        self.panel_kinds.clear();
+        self.panel_marks.clear();
+        self.panel_scale_modes.clear();
+
+        for panel in &self.composition.panels {
+            let panel_hint = panel.data_hint();
+
+            self.panel_kinds.push(match panel_hint {
+                PanelDataHint::ValueLike => KlinePanelKind::Value,
+                PanelDataHint::HistogramLike => KlinePanelKind::Histogram,
+            });
+
+            let fallback_mark = match panel_hint {
+                PanelDataHint::ValueLike => MarkKind::Candle,
+                PanelDataHint::HistogramLike => MarkKind::Bar,
+            };
+
+            let effective_mark = self
+                .composition
+                .resolved_panel_marks(panel.id)
+                .and_then(|marks| {
+                    panel
+                        .base_layer
+                        .and_then(|base| {
+                            marks
+                                .iter()
+                                .find(|(layer_id, _)| *layer_id == base)
+                                .map(|(_, mark)| *mark)
+                        })
+                        .or_else(|| marks.first().map(|(_, mark)| *mark))
+                })
+                .unwrap_or(fallback_mark);
+
+            self.panel_marks.push(effective_mark);
+
+            self.panel_scale_modes.push(
+                self.composition
+                    .panel_effective_scale_mode(panel.id)
+                    .unwrap_or(PanelScaleMode::Absolute),
+            );
+        }
 
         self.panel_splits = self.composition.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
     }

@@ -210,7 +210,7 @@ fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
     }
 }
 
-fn format_price(value: f32, step: f32) -> String {
+fn format_value(value: f32, step: f32) -> String {
     if step >= 10.0 {
         format!("{value:.0}")
     } else if step >= 1.0 {

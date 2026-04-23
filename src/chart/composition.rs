@@ -33,8 +33,8 @@ pub enum LayerDataKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisBinding {
-    Price,
-    Volume,
+    Primary,
+    Secondary,
     Custom,
 }
 
@@ -48,6 +48,7 @@ pub enum DataSourceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelScaleMode {
     Absolute,
+    Logarithmic,
     PercentFromBase,
 }
 
@@ -84,8 +85,8 @@ pub enum LayerSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelDataHint {
-    PriceLike,
-    VolumeLike,
+    ValueLike,
+    HistogramLike,
 }
 
 #[derive(Debug, Clone)]
@@ -116,8 +117,8 @@ pub struct LayerSpec {
 }
 
 impl LayerSpec {
-    pub fn is_volume_like(&self) -> bool {
-        matches!(self.axis, AxisBinding::Volume)
+    pub fn is_histogram_like(&self) -> bool {
+        matches!(self.axis, AxisBinding::Secondary)
             || matches!(self.data_kind, LayerDataKind::Histogram)
     }
 
@@ -149,10 +150,10 @@ pub struct PanelSpec {
 
 impl PanelSpec {
     pub fn data_hint(&self) -> PanelDataHint {
-        if self.layers.iter().any(LayerSpec::is_volume_like) {
-            PanelDataHint::VolumeLike
+        if self.layers.iter().any(LayerSpec::is_histogram_like) {
+            PanelDataHint::HistogramLike
         } else {
-            PanelDataHint::PriceLike
+            PanelDataHint::ValueLike
         }
     }
 
@@ -238,17 +239,17 @@ impl ChartComposition {
             },
             LayerDataKind::Ohlc,
             MarkKind::Candle,
-            AxisBinding::Price,
+            AxisBinding::Primary,
         );
 
-        let volume_layer = composition.new_layer(
-            "Volume",
+        let histogram_layer = composition.new_layer(
+            "Histogram",
             LayerSource::RawKline {
                 source: DataSourceId::Primary,
             },
             LayerDataKind::Histogram,
             MarkKind::Bar,
-            AxisBinding::Volume,
+            AxisBinding::Secondary,
         );
 
         let main_panel_id = composition.new_panel_id();
@@ -262,15 +263,15 @@ impl ChartComposition {
             layers: vec![candle_layer],
         });
 
-        let volume_panel_id = composition.new_panel_id();
+        let histogram_panel_id = composition.new_panel_id();
         composition.panels.push(PanelSpec {
-            id: volume_panel_id,
+            id: histogram_panel_id,
             role: PanelRole::Auxiliary,
-            title: "Volume".to_string(),
-            base_layer: Some(volume_layer.id),
+            title: "Histogram".to_string(),
+            base_layer: Some(histogram_layer.id),
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
-            layers: vec![volume_layer],
+            layers: vec![histogram_layer],
         });
 
         composition.ensure_split_count();
@@ -287,6 +288,17 @@ impl ChartComposition {
                 DataSourceId::Symbol("CMP-01"),
                 "Compare #1",
             );
+        }
+
+        composition
+    }
+
+    pub fn prototype_kline_log_scale() -> Self {
+        let mut composition = Self::prototype_kline();
+
+        if let Some(primary_panel) = composition.primary_panel_id() {
+            let _ =
+                composition.set_panel_preferred_scale(primary_panel, PanelScaleMode::Logarithmic);
         }
 
         composition
@@ -448,8 +460,8 @@ impl ChartComposition {
         let data_hint = self.panel(panel_id)?.data_hint();
 
         let (data_kind, axis) = match data_hint {
-            PanelDataHint::PriceLike => (LayerDataKind::Scalar, AxisBinding::Price),
-            PanelDataHint::VolumeLike => (LayerDataKind::Histogram, AxisBinding::Volume),
+            PanelDataHint::ValueLike => (LayerDataKind::Scalar, AxisBinding::Primary),
+            PanelDataHint::HistogramLike => (LayerDataKind::Histogram, AxisBinding::Secondary),
         };
 
         let layer = self.new_layer(
