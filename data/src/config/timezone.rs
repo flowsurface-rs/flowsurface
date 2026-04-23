@@ -16,6 +16,8 @@ pub enum TimeLabelKind<'a> {
     /// Formatting suitable for axis ticks.  Will choose the appropriate
     /// `HH:MM`, `MM:SS`, or `D` style based on the timeframe.
     Axis { timeframe: exchange::Timeframe },
+    /// Formatting suitable for axis ticks when the step is not an `exchange::Timeframe` variant.
+    AxisStepMs { step_ms: u64 },
     /// Formatting for the crosshair tooltip.
     /// Sub-10-second intervals will show `HH:MM:SS.mmm`,
     /// while larger intervals will show `Day Mon D HH:MM`.
@@ -38,6 +40,9 @@ impl UserTimezone {
             self.with_user_timezone(datetime, |time_with_zone| match kind {
                 TimeLabelKind::Axis { timeframe } => {
                     Self::format_by_timeframe(&time_with_zone, timeframe)
+                }
+                TimeLabelKind::AxisStepMs { step_ms } => {
+                    Self::format_by_step_ms(&time_with_zone, step_ms)
                 }
                 TimeLabelKind::Crosshair { show_millis } => {
                     if show_millis {
@@ -83,6 +88,25 @@ impl UserTimezone {
             datetime.format("%-d").to_string()
         } else {
             datetime.format("%H:%M").to_string()
+        }
+    }
+
+    fn format_by_step_ms(datetime: &DateTime<chrono::FixedOffset>, step_ms: u64) -> String {
+        const S: u64 = 1_000;
+        const M: u64 = 60 * S;
+        const H: u64 = 60 * M;
+        const D: u64 = 24 * H;
+
+        if step_ms < M {
+            datetime.format("%H:%M:%S").to_string()
+        } else if step_ms < D {
+            datetime.format("%H:%M").to_string()
+        } else if step_ms < 7 * D {
+            datetime.format("%b %d").to_string()
+        } else if step_ms < 365 * D {
+            datetime.format("%Y-%m").to_string()
+        } else {
+            datetime.format("%Y").to_string()
         }
     }
 }

@@ -1,4 +1,6 @@
 use crate::style;
+use crate::widget::chart::HitZone;
+use crate::widget::chart::Regions;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 use crate::widget::chart::domain;
@@ -14,8 +16,6 @@ use iced::{
     Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
 };
 use iced_core::renderer::Quad;
-
-use chrono::TimeZone;
 
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
@@ -673,41 +673,11 @@ where
     }
 
     fn format_crosshair_time(ts_ms: u64, tz: UserTimezone) -> String {
-        let ts_i64 = ts_ms as i64;
-        match tz {
-            UserTimezone::Utc => {
-                if let Some(dt) = chrono::Utc.timestamp_millis_opt(ts_i64).single() {
-                    dt.format("%a %b %-d %H:%M").to_string()
-                } else {
-                    ts_ms.to_string()
-                }
-            }
-            UserTimezone::Local => {
-                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_i64).single() {
-                    dt.format("%a %b %-d %H:%M").to_string()
-                } else {
-                    ts_ms.to_string()
-                }
-            }
-        }
-    }
-
-    fn to_tz_ms(ts_ms: u64, tz: UserTimezone) -> u64 {
-        match tz {
-            UserTimezone::Utc => ts_ms,
-            UserTimezone::Local => {
-                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_ms as i64).single() {
-                    let off_ms = (dt.offset().local_minus_utc() as i64) * 1000;
-                    if off_ms >= 0 {
-                        ts_ms.saturating_add(off_ms as u64)
-                    } else {
-                        ts_ms.saturating_sub((-off_ms) as u64)
-                    }
-                } else {
-                    ts_ms
-                }
-            }
-        }
+        tz.format_with_kind(
+            ts_ms as i64,
+            data::config::timezone::TimeLabelKind::Crosshair { show_millis: false },
+        )
+        .unwrap_or_else(|| ts_ms.to_string())
     }
 }
 
@@ -1297,8 +1267,7 @@ where
         for t in ticks {
             let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
 
-            let label_ts = Self::to_tz_ms(t, self.timezone);
-            let label = super::format_time_label(label_ts, step_ms);
+            let label = super::format_time_label(t, step_ms, self.timezone);
 
             let est_w = (label.len() as f32) * CHAR_W + 8.0;
             let left = x_local - est_w * 0.5;
@@ -1686,81 +1655,6 @@ where
 {
     fn from(chart: LineComparison<'a, S>) -> Self {
         Element::new(chart)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HitZone {
-    Plot,
-    XAxis,
-    YAxis,
-    Outside,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Regions {
-    plot: Rectangle,
-    x_axis: Rectangle,
-    y_axis: Rectangle,
-}
-
-impl Regions {
-    fn from_layout(root: Layout<'_>) -> Self {
-        let root_bounds = root.bounds();
-
-        // root.children = [ row, x_axis ]
-        let row = root.child(0);
-        let x_abs = root.child(1).bounds();
-
-        // row.children  = [ plot, y_axis ]
-        let plot_abs = row.child(0).bounds();
-        let y_abs = row.child(1).bounds();
-
-        let to_local = |r: Rectangle| Rectangle {
-            x: r.x - root_bounds.x,
-            y: r.y - root_bounds.y,
-            width: r.width,
-            height: r.height,
-        };
-
-        Regions {
-            plot: to_local(plot_abs),
-            y_axis: to_local(y_abs),
-            x_axis: to_local(x_abs),
-        }
-    }
-
-    fn is_in_plot(&self, p: Point) -> bool {
-        p.x >= self.plot.x
-            && p.x <= self.plot.x + self.plot.width
-            && p.y >= self.plot.y
-            && p.y <= self.plot.y + self.plot.height
-    }
-
-    fn is_in_x_axis(&self, p: Point) -> bool {
-        p.x >= self.x_axis.x
-            && p.x <= self.x_axis.x + self.x_axis.width
-            && p.y >= self.x_axis.y
-            && p.y <= self.x_axis.y + self.x_axis.height
-    }
-
-    fn is_in_y_axis(&self, p: Point) -> bool {
-        p.x >= self.y_axis.x
-            && p.x <= self.y_axis.x + self.y_axis.width
-            && p.y >= self.y_axis.y
-            && p.y <= self.y_axis.y + self.y_axis.height
-    }
-
-    fn hit_test(&self, p: Point) -> HitZone {
-        if self.is_in_plot(p) {
-            HitZone::Plot
-        } else if self.is_in_x_axis(p) {
-            HitZone::XAxis
-        } else if self.is_in_y_axis(p) {
-            HitZone::YAxis
-        } else {
-            HitZone::Outside
-        }
     }
 }
 

@@ -1,7 +1,9 @@
 pub mod comparison;
+pub mod composition;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
+pub mod kline_v2;
 mod scale;
 
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};

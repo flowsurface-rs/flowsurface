@@ -156,6 +156,11 @@ impl From<&pane::State> for data::Pane {
                 indicators: indicators.clone(),
                 link_group: pane.link_group,
             },
+            pane::Content::KlineV2 { .. } => data::Pane::KlineChartV2 {
+                stream_type: streams,
+                settings: pane.settings.clone(),
+                link_group: pane.link_group,
+            },
             pane::Content::TimeAndSales(_) => data::Pane::TimeAndSales {
                 stream_type: streams,
                 settings: pane.settings.clone(),
@@ -257,6 +262,20 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                 layout,
                 kind,
             };
+
+            Configuration::Pane(pane::State::from_config(
+                content,
+                stream_type,
+                settings,
+                link_group,
+            ))
+        }
+        data::Pane::KlineChartV2 {
+            stream_type,
+            settings,
+            link_group,
+        } => {
+            let content = pane::Content::KlineV2 { chart: None };
 
             Configuration::Pane(pane::State::from_config(
                 content,

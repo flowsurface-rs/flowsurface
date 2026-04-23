@@ -989,6 +989,10 @@ impl Dashboard {
                         pane::Content::Kline { chart: Some(c), .. } => {
                             c.update_latest_kline(kline);
                         }
+                        pane::Content::KlineV2 { chart: Some(c) } => {
+                            let ticker_info = stream.ticker_info();
+                            c.update_latest_kline(&ticker_info, kline);
+                        }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
                         }
