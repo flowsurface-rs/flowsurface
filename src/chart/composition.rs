@@ -48,6 +48,7 @@ pub enum DataSourceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelScaleMode {
     Absolute,
+    FitVisible,
     Logarithmic,
     PercentFromBase,
 }
@@ -227,7 +228,7 @@ impl ChartComposition {
     pub fn prototype_kline() -> Self {
         let mut composition = Self {
             panels: Vec::new(),
-            splits: vec![0.75],
+            splits: Vec::new(),
             next_panel_id: 1,
             next_layer_id: 1,
         };
@@ -242,36 +243,15 @@ impl ChartComposition {
             AxisBinding::Primary,
         );
 
-        let histogram_layer = composition.new_layer(
-            "Histogram",
-            LayerSource::RawKline {
-                source: DataSourceId::Primary,
-            },
-            LayerDataKind::Histogram,
-            MarkKind::Bar,
-            AxisBinding::Secondary,
-        );
-
         let main_panel_id = composition.new_panel_id();
         composition.panels.push(PanelSpec {
             id: main_panel_id,
             role: PanelRole::Primary,
-            title: "Main".to_string(),
+            title: "Value".to_string(),
             base_layer: Some(candle_layer.id),
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
             layers: vec![candle_layer],
-        });
-
-        let histogram_panel_id = composition.new_panel_id();
-        composition.panels.push(PanelSpec {
-            id: histogram_panel_id,
-            role: PanelRole::Auxiliary,
-            title: "Histogram".to_string(),
-            base_layer: Some(histogram_layer.id),
-            preferred_scale: PanelScaleMode::Absolute,
-            comparison_policy: PanelComparisonPolicy::default(),
-            layers: vec![histogram_layer],
         });
 
         composition.ensure_split_count();
@@ -518,6 +498,25 @@ impl ChartComposition {
         };
 
         panel.set_layer_mark(layer_id, mark)
+    }
+
+    pub fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        let Some(index) = panel.layers.iter().position(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        panel.layers.remove(index);
+
+        if panel.base_layer == Some(layer_id) {
+            panel.base_layer = panel.layers.first().map(|layer| layer.id);
+        }
+
+        panel.enforce_comparison_mark_policy();
+        true
     }
 
     pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {

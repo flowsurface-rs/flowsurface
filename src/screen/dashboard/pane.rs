@@ -276,17 +276,25 @@ impl State {
                     (content, streams)
                 }
                 ContentKind::CandlestickChartV2 => {
-                    let content = Content::new_kline_v2(
-                        &self.content,
-                        derived_plan.ticker_info,
-                        &self.settings,
-                    );
+                    let content = Content::new_kline_v2(&self.content, &tickers, &self.settings);
 
                     let streams = by_basis_default(
                         derived_plan.basis,
                         Timeframe::M15,
-                        |tf| vec![kline_stream(derived_plan.ticker_info, tf)],
-                        || vec![kline_stream(derived_plan.ticker_info, Timeframe::M15)],
+                        |tf| {
+                            tickers
+                                .iter()
+                                .copied()
+                                .map(|ti| kline_stream(ti, tf))
+                                .collect()
+                        },
+                        || {
+                            tickers
+                                .iter()
+                                .copied()
+                                .map(|ti| kline_stream(ti, Timeframe::M15))
+                                .collect()
+                        },
                     );
 
                     (content, streams)
@@ -426,13 +434,24 @@ impl State {
         streams
     }
 
-    pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
+    pub fn insert_hist_oi(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        oi: &[OpenInterest],
+    ) {
         match &mut self.content {
             Content::Kline { chart, .. } => {
                 let Some(chart) = chart else {
                     panic!("Kline chart wasn't initialized when inserting open interest");
                 };
                 chart.insert_open_interest(req_id, oi);
+            }
+            Content::KlineV2 { chart } => {
+                let Some(chart) = chart else {
+                    panic!("Kline v2 chart wasn't initialized when inserting open interest");
+                };
+                chart.insert_open_interest(req_id, ticker_info, oi);
             }
             _ => {
                 log::error!("pane content not candlestick");
@@ -483,7 +502,25 @@ impl State {
             }
             Content::KlineV2 { chart } => {
                 if chart.is_none() {
-                    *chart = Some(KlineChartV2::new(Basis::Time(timeframe), ticker_info));
+                    let mut tickers = Vec::new();
+
+                    if let Some(ready_streams) = self.streams.ready_iter() {
+                        for stream in ready_streams {
+                            let info = stream.ticker_info();
+                            if !tickers.contains(&info) {
+                                tickers.push(info);
+                            }
+                        }
+                    }
+
+                    if tickers.is_empty() {
+                        tickers.push(ticker_info);
+                    }
+
+                    *chart = Some(KlineChartV2::new_with_tickers(
+                        Basis::Time(timeframe),
+                        &tickers,
+                    ));
                 }
 
                 let Some(chart) = chart else {
@@ -1034,7 +1071,7 @@ impl State {
                         None,
                         compact_controls,
                         || column![].into(),
-                        None,
+                        Some(chart.selected_tickers()),
                         tickers_table,
                     )
                 } else {
@@ -1510,27 +1547,28 @@ impl State {
                                         }
                                     }
                                     Content::KlineV2 { chart: Some(c) } => {
-                                        if let Some(base_ticker) = base_ticker {
-                                            if let Basis::Time(tf) = new_basis {
-                                                self.streams = ResolvedStream::Ready(vec![
-                                                    StreamKind::Kline {
-                                                        ticker_info: base_ticker,
-                                                        timeframe: tf,
-                                                    },
-                                                ]);
+                                        if let Basis::Time(tf) = new_basis {
+                                            let streams: Vec<StreamKind> = c
+                                                .selected_tickers()
+                                                .iter()
+                                                .copied()
+                                                .map(|ti| StreamKind::Kline {
+                                                    ticker_info: ti,
+                                                    timeframe: tf,
+                                                })
+                                                .collect();
 
-                                                if let Some(
-                                                    crate::chart::kline_v2::Action::RequestFetch(
-                                                        fetch,
-                                                    ),
-                                                ) = c.set_basis(new_basis)
-                                                {
-                                                    effect = Some(Effect::RequestFetch(fetch));
-                                                }
-                                            } else {
-                                                // Kline v2 currently supports time-basis only.
-                                                self.settings.selected_basis = Some(c.basis());
+                                            self.streams = ResolvedStream::Ready(streams);
+
+                                            if let Some(
+                                                crate::chart::kline_v2::Action::RequestFetch(fetch),
+                                            ) = c.set_basis(new_basis)
+                                            {
+                                                effect = Some(Effect::RequestFetch(fetch));
                                             }
+                                        } else {
+                                            // Kline v2 currently supports time-basis only.
+                                            self.settings.selected_basis = Some(c.basis());
                                         }
                                     }
                                     Content::Comparison(Some(c)) => {
@@ -1612,11 +1650,23 @@ impl State {
                                 self.streams = ResolvedStream::Ready(rebuilt);
                                 return Some(Effect::RefreshStreams);
                             }
+
+                            if let Content::KlineV2 { chart: Some(c) } = &mut self.content {
+                                let rebuilt = c.add_ticker(&ti);
+                                self.streams = ResolvedStream::Ready(rebuilt);
+                                return Some(Effect::RefreshStreams);
+                            }
                         }
                         crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
                             if let Content::Comparison(chart) = &mut self.content
                                 && let Some(c) = chart
                             {
+                                let rebuilt = c.remove_ticker(&ti);
+                                self.streams = ResolvedStream::Ready(rebuilt);
+                                return Some(Effect::RefreshStreams);
+                            }
+
+                            if let Content::KlineV2 { chart: Some(c) } = &mut self.content {
                                 let rebuilt = c.remove_ticker(&ti);
                                 self.streams = ResolvedStream::Ready(rebuilt);
                                 return Some(Effect::RefreshStreams);
@@ -2154,9 +2204,13 @@ impl Content {
 
     fn new_kline_v2(
         _current_content: &Content,
-        ticker_info: TickerInfo,
+        tickers: &[TickerInfo],
         settings: &Settings,
     ) -> Self {
+        let Some(_base_ticker) = tickers.first().copied() else {
+            return Content::KlineV2 { chart: None };
+        };
+
         let basis = settings
             .selected_basis
             .and_then(|basis| match basis {
@@ -2166,7 +2220,7 @@ impl Content {
             .unwrap_or(Basis::Time(Timeframe::M15));
 
         Content::KlineV2 {
-            chart: Some(KlineChartV2::new(basis, ticker_info)),
+            chart: Some(KlineChartV2::new_with_tickers(basis, tickers)),
         }
     }
 

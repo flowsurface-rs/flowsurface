@@ -27,7 +27,8 @@ const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 const MIN_PANEL_HEIGHT: f32 = 40.0;
 
-const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] = [KlinePanelKind::Value, KlinePanelKind::Histogram];
+const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] =
+    [KlinePanelKind::PrimaryChart, KlinePanelKind::Indicator];
 const DEFAULT_PANEL_SPLITS: [f32; 1] = [0.75];
 const DEFAULT_PANEL_MARKS: [MarkKind; 2] = [MarkKind::Candle, MarkKind::Bar];
 const DEFAULT_PANEL_SCALE_MODES: [PanelScaleMode; 2] =
@@ -127,13 +128,17 @@ impl XAxis {
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
     fn bars(&self) -> &[Kline];
-    fn secondary_value(&self, bar: &Kline) -> f32;
+    fn indicator_value(&self, bar: &Kline) -> f32;
+
+    fn indicator_value_for_panel(&self, _panel_index: usize, bar: &Kline) -> f32 {
+        self.indicator_value(bar)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KlinePanelKind {
-    Value,
-    Histogram,
+    PrimaryChart,
+    Indicator,
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +333,7 @@ pub struct KlineWidget<'a, S> {
     pan: f32,
     panel_kinds: &'a [KlinePanelKind],
     panel_splits: &'a [f32],
+    panel_titles: &'a [String],
     panel_marks: &'a [MarkKind],
     panel_scale_modes: &'a [PanelScaleMode],
     timezone: UserTimezone,
@@ -339,9 +345,17 @@ struct CursorInfo {
     x_unit: i64,
     panel_index: usize,
     y_primary_value: Option<f32>,
-    y_secondary_value: Option<f32>,
+    y_indicator_value: Option<f32>,
     x_plot: f32,
     y_plot: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndicatorPanelScene {
+    panel_index: usize,
+    mark: MarkKind,
+    min_value: f32,
+    max_value: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -356,9 +370,8 @@ struct Scene {
     primary_mark: MarkKind,
     primary_scale_mode: PanelScaleMode,
     primary_scale_anchor: Option<f32>,
-    secondary_panel: Option<usize>,
-    secondary_mark: Option<MarkKind>,
-    secondary_max_value: Option<f32>,
+    series_percent_anchors: Vec<Option<f32>>,
+    indicator_panels: Vec<IndicatorPanelScene>,
     cursor: Option<CursorInfo>,
 }
 
@@ -379,19 +392,40 @@ impl Scene {
             .plot
     }
 
-    fn secondary_plot(&self) -> Option<&Rectangle> {
-        self.secondary_panel
-            .and_then(|index| self.layout.panel(index).map(|panel| &panel.plot))
+    fn indicator_panel_config(&self, panel_index: usize) -> Option<&IndicatorPanelScene> {
+        self.indicator_panels
+            .iter()
+            .find(|indicator| indicator.panel_index == panel_index)
     }
 
-    fn secondary_panel_bottom(&self) -> Option<f32> {
-        self.secondary_plot().map(|rect| rect.y + rect.height)
+    fn indicator_plot(&self, panel_index: usize) -> Option<&Rectangle> {
+        self.layout.panel(panel_index).map(|panel| &panel.plot)
+    }
+
+    fn indicator_panel_bottom(&self, panel_index: usize) -> Option<f32> {
+        self.indicator_plot(panel_index)
+            .map(|rect| rect.y + rect.height)
     }
 
     fn map_x_plot(&self, x_unit: i64) -> f32 {
         let span = self.span_units();
         let ratio = ((x_unit - self.min_x_unit) as f32 / span).clamp(0.0, 1.0);
         ratio * self.primary_plot().width
+    }
+
+    fn primary_value_to_display_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
+        if self.can_use_log_primary_scale()
+            && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic)
+        {
+            value.max(f32::MIN_POSITIVE).log10()
+        } else {
+            match (self.primary_scale_mode, anchor) {
+                (PanelScaleMode::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => {
+                    ((value / base) - 1.0) * 100.0
+                }
+                _ => value,
+            }
+        }
     }
 
     fn primary_domain_display_values(&self) -> (f32, f32) {
@@ -473,18 +507,27 @@ impl Scene {
         }
     }
 
-    fn map_primary_plot(&self, value: f32) -> f32 {
+    fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
         let (min_display, max_display) = self.primary_domain_display_values();
         let range = (max_display - min_display).abs().max(1e-6);
-        let ratio = ((self.primary_to_display_value(value) - min_display) / range).clamp(0.0, 1.0);
+        let display_value = if matches!(self.primary_scale_mode, PanelScaleMode::PercentFromBase) {
+            self.primary_value_to_display_with_anchor(value, anchor)
+        } else {
+            self.primary_to_display_value(value)
+        };
+        let ratio = ((display_value - min_display) / range).clamp(0.0, 1.0);
         let panel = self.primary_plot();
         panel.y + (1.0 - ratio) * panel.height
     }
 
-    fn map_secondary_plot(&self, secondary_value: f32) -> Option<f32> {
-        let panel = self.secondary_plot()?;
-        let secondary_max_value = self.secondary_max_value.unwrap_or(1.0).max(1.0);
-        let ratio = (secondary_value / secondary_max_value).clamp(0.0, 1.0);
+    fn map_indicator_plot(&self, panel_index: usize, indicator_value: f32) -> Option<f32> {
+        let panel = self.indicator_plot(panel_index)?;
+        let (min_value, max_value) = self
+            .indicator_panel_config(panel_index)
+            .map(|indicator| (indicator.min_value, indicator.max_value))
+            .unwrap_or((0.0, 1.0));
+        let range = (max_value - min_value).abs().max(1e-6);
+        let ratio = ((indicator_value - min_value) / range).clamp(0.0, 1.0);
         Some(panel.y + (1.0 - ratio) * panel.height)
     }
 }
@@ -501,6 +544,7 @@ where
             pan: 0.0,
             panel_kinds: &DEFAULT_PANEL_KINDS,
             panel_splits: &DEFAULT_PANEL_SPLITS,
+            panel_titles: &[],
             panel_marks: &DEFAULT_PANEL_MARKS,
             panel_scale_modes: &DEFAULT_PANEL_SCALE_MODES,
             timezone: UserTimezone::Utc,
@@ -525,6 +569,11 @@ where
     ) -> Self {
         self.panel_kinds = panel_kinds;
         self.panel_splits = panel_splits;
+        self
+    }
+
+    pub fn with_panel_titles(mut self, panel_titles: &'a [String]) -> Self {
+        self.panel_titles = panel_titles;
         self
     }
 
@@ -563,9 +612,24 @@ where
 
     fn default_mark_for_panel(kind: KlinePanelKind) -> MarkKind {
         match kind {
-            KlinePanelKind::Value => MarkKind::Candle,
-            KlinePanelKind::Histogram => MarkKind::Bar,
+            KlinePanelKind::PrimaryChart => MarkKind::Candle,
+            KlinePanelKind::Indicator => MarkKind::Bar,
         }
+    }
+
+    fn default_title_for_panel(kind: KlinePanelKind) -> &'static str {
+        match kind {
+            KlinePanelKind::PrimaryChart => "Price",
+            KlinePanelKind::Indicator => "Indicator",
+        }
+    }
+
+    fn resolved_panel_title(&self, panel_index: usize, panel_kind: KlinePanelKind) -> &str {
+        self.panel_titles
+            .get(panel_index)
+            .map(String::as_str)
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| Self::default_title_for_panel(panel_kind))
     }
 
     fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
@@ -591,7 +655,11 @@ where
         let mut first_unit = i64::MAX;
         let mut base_close = None;
 
-        self.for_each_bar_unit(x_axis, |_, unit, bar| {
+        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
+            if series_index != 0 {
+                return;
+            }
+
             if unit < min_x_unit || unit > max_x_unit {
                 return;
             }
@@ -603,6 +671,80 @@ where
         });
 
         base_close
+    }
+
+    fn compute_series_percent_anchors(
+        &self,
+        x_axis: XAxis,
+        min_x_unit: i64,
+        max_x_unit: i64,
+    ) -> Vec<Option<f32>> {
+        let mut anchors = vec![None; self.series.len()];
+        let mut first_units = vec![i64::MAX; self.series.len()];
+
+        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
+            if unit < min_x_unit || unit > max_x_unit {
+                return;
+            }
+
+            if unit < first_units[series_index] {
+                first_units[series_index] = unit;
+                anchors[series_index] = Some(bar.close.to_f32());
+            }
+        });
+
+        anchors
+    }
+
+    fn compute_primary_percent_domain(
+        &self,
+        x_axis: XAxis,
+        min_x_unit: i64,
+        max_x_unit: i64,
+        primary_mark: MarkKind,
+        anchors: &[Option<f32>],
+    ) -> Option<(f32, f32)> {
+        let mut min_pct: Option<f32> = None;
+        let mut max_pct: Option<f32> = None;
+
+        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
+            if unit < min_x_unit || unit > max_x_unit {
+                return;
+            }
+
+            let Some(anchor) = anchors
+                .get(series_index)
+                .copied()
+                .flatten()
+                .filter(|anchor| anchor.abs() > f32::EPSILON)
+            else {
+                return;
+            };
+
+            let mut emit_pct = |value: f32| {
+                let pct = ((value / anchor) - 1.0) * 100.0;
+                min_pct = Some(min_pct.map_or(pct, |current| current.min(pct)));
+                max_pct = Some(max_pct.map_or(pct, |current| current.max(pct)));
+            };
+
+            if series_index == 0 && !matches!(primary_mark, MarkKind::Line) {
+                emit_pct(bar.low.to_f32());
+                emit_pct(bar.high.to_f32());
+            } else {
+                emit_pct(bar.close.to_f32());
+            }
+        });
+
+        let min_pct = min_pct?;
+        let max_pct = max_pct?;
+
+        let pad = if (max_pct - min_pct).abs() <= f32::EPSILON {
+            max_pct.abs().max(1.0)
+        } else {
+            ((max_pct - min_pct).abs() * 0.05).max(0.25)
+        };
+
+        Some((min_pct - pad, max_pct + pad))
     }
 
     fn panel_min_ratio(&self, panel_count: usize, usable_plot_height: f32) -> f32 {
@@ -786,23 +928,32 @@ where
         Zoom::points(new_n)
     }
 
-    fn for_each_bar_unit(&self, x_axis: XAxis, mut f: impl FnMut(&S, i64, &Kline)) {
-        for series in self.series {
+    fn for_each_bar_unit_index(&self, x_axis: XAxis, mut f: impl FnMut(usize, &S, i64, &Kline)) {
+        for (series_index, series) in self.series.iter().enumerate() {
             match x_axis {
                 XAxis::Time { .. } => {
                     for bar in series.bars() {
-                        f(series, x_axis.unit_from_time(bar.time), bar);
+                        f(series_index, series, x_axis.unit_from_time(bar.time), bar);
                     }
                 }
                 XAxis::Tick { .. } => {
                     let len = series.bars().len();
                     for (index, bar) in series.bars().iter().enumerate() {
                         let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                        f(series, x_axis.unit_from_tick(TickIndex(from_latest)), bar);
+                        f(
+                            series_index,
+                            series,
+                            x_axis.unit_from_tick(TickIndex(from_latest)),
+                            bar,
+                        );
                     }
                 }
             }
         }
+    }
+
+    fn for_each_bar_unit(&self, x_axis: XAxis, mut f: impl FnMut(&S, i64, &Kline)) {
+        self.for_each_bar_unit_index(x_axis, |_, series, unit, bar| f(series, unit, bar));
     }
 
     fn data_x_bounds(&self, x_axis: XAxis) -> Option<(i64, i64)> {
@@ -909,25 +1060,50 @@ where
         Some((min_primary_value - pad, max_primary_value + pad))
     }
 
-    fn compute_secondary_max(
+    fn compute_indicator_domain(
         &self,
         x_axis: XAxis,
         min_x_unit: i64,
         max_x_unit: i64,
-    ) -> Option<f32> {
+        indicator_panel_index: usize,
+        scale_mode: PanelScaleMode,
+    ) -> Option<(f32, f32)> {
         let mut any = false;
-        let mut secondary_max_value = 0.0f32;
+        let mut min_value = f32::INFINITY;
+        let mut indicator_max_value = 0.0f32;
 
-        self.for_each_bar_unit(x_axis, |series, unit, bar| {
+        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
+            if series_index != 0 {
+                return;
+            }
+
             if unit < min_x_unit || unit > max_x_unit {
                 return;
             }
 
             any = true;
-            secondary_max_value = secondary_max_value.max(series.secondary_value(bar));
+            let value = series.indicator_value_for_panel(indicator_panel_index, bar);
+            min_value = min_value.min(value);
+            indicator_max_value = indicator_max_value.max(value);
         });
 
-        any.then_some(secondary_max_value.max(1.0))
+        if !any {
+            return None;
+        }
+
+        match scale_mode {
+            PanelScaleMode::FitVisible => {
+                let span = (indicator_max_value - min_value).abs();
+                let pad = if span <= f32::EPSILON {
+                    indicator_max_value.abs().max(1.0) * 0.02
+                } else {
+                    span * 0.05
+                };
+
+                Some((min_value - pad, indicator_max_value + pad))
+            }
+            _ => Some((0.0, indicator_max_value.max(1.0))),
+        }
     }
 
     fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
@@ -936,30 +1112,75 @@ where
         let primary_panel = panel_layout
             .panels
             .iter()
-            .position(|panel| panel.kind == KlinePanelKind::Value)?;
-        let primary_mark = self.resolved_panel_mark(primary_panel, KlinePanelKind::Value);
+            .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)?;
+        let primary_mark = self.resolved_panel_mark(primary_panel, KlinePanelKind::PrimaryChart);
         let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
-        let secondary_panel = panel_layout
-            .panels
-            .iter()
-            .position(|panel| panel.kind == KlinePanelKind::Histogram);
-        let secondary_mark =
-            secondary_panel.map(|index| self.resolved_panel_mark(index, KlinePanelKind::Histogram));
 
         let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window()?;
-        let (min_primary_value, max_primary_value) =
-            self.compute_primary_domain(x_axis, min_x_unit, max_x_unit)?;
-        let primary_scale_anchor = if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
-        {
-            self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit)
-        } else {
-            None
-        };
-        let secondary_max_value = if secondary_panel.is_some() {
-            self.compute_secondary_max(x_axis, min_x_unit, max_x_unit)
-        } else {
-            None
-        };
+
+        let indicator_panels: Vec<IndicatorPanelScene> = panel_layout
+            .panels
+            .iter()
+            .enumerate()
+            .filter_map(|(panel_index, panel)| {
+                if panel.kind != KlinePanelKind::Indicator {
+                    return None;
+                }
+
+                let mark = self.resolved_panel_mark(panel_index, KlinePanelKind::Indicator);
+                let scale_mode = self.resolved_panel_scale_mode(panel_index);
+                let (min_value, max_value) = self
+                    .compute_indicator_domain(
+                        x_axis,
+                        min_x_unit,
+                        max_x_unit,
+                        panel_index,
+                        scale_mode,
+                    )
+                    .unwrap_or((0.0, 1.0));
+
+                Some(IndicatorPanelScene {
+                    panel_index,
+                    mark,
+                    min_value,
+                    max_value,
+                })
+            })
+            .collect();
+
+        let mut series_percent_anchors = Vec::new();
+
+        let (min_primary_value, max_primary_value, primary_scale_anchor) =
+            if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
+                && self.series.len() > 1
+            {
+                let anchors = self.compute_series_percent_anchors(x_axis, min_x_unit, max_x_unit);
+                let (min_value, max_value) = self.compute_primary_percent_domain(
+                    x_axis,
+                    min_x_unit,
+                    max_x_unit,
+                    primary_mark,
+                    &anchors,
+                )?;
+
+                series_percent_anchors = anchors;
+                (min_value, max_value, None)
+            } else {
+                let (min_value, max_value) =
+                    self.compute_primary_domain(x_axis, min_x_unit, max_x_unit)?;
+                let scale_anchor = if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
+                {
+                    self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit)
+                } else {
+                    None
+                };
+
+                (min_value, max_value, scale_anchor)
+            };
+
+        if series_percent_anchors.is_empty() {
+            series_percent_anchors = vec![primary_scale_anchor; self.series.len()];
+        }
 
         let primary_plot = panel_layout.panel(primary_panel)?.plot;
 
@@ -974,9 +1195,8 @@ where
             primary_mark,
             primary_scale_mode,
             primary_scale_anchor,
-            secondary_panel,
-            secondary_mark,
-            secondary_max_value,
+            series_percent_anchors,
+            indicator_panels,
             cursor: None,
         };
 
@@ -1004,8 +1224,8 @@ where
                     let y_in_panel =
                         (plot_local.y - panel.plot.y).clamp(0.0, panel.plot.height.max(1.0));
 
-                    let (y_primary_value, y_secondary_value) = match panel.kind {
-                        KlinePanelKind::Value => {
+                    let (y_primary_value, y_indicator_value) = match panel.kind {
+                        KlinePanelKind::PrimaryChart => {
                             let value_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
                             let (min_display, max_display) = scene.primary_domain_display_values();
                             let y_display_value =
@@ -1014,12 +1234,16 @@ where
 
                             (Some(y_primary_value), None)
                         }
-                        KlinePanelKind::Histogram => {
-                            let secondary_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
-                            let y_secondary_value =
-                                scene.secondary_max_value.unwrap_or(1.0) * secondary_ratio;
+                        KlinePanelKind::Indicator => {
+                            let indicator_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
+                            let (min_value, max_value) = scene
+                                .indicator_panel_config(panel_index)
+                                .map(|indicator| (indicator.min_value, indicator.max_value))
+                                .unwrap_or((0.0, 1.0));
+                            let y_indicator_value =
+                                min_value + (max_value - min_value) * indicator_ratio;
 
-                            (None, Some(y_secondary_value))
+                            (None, Some(y_indicator_value))
                         }
                     };
 
@@ -1027,7 +1251,7 @@ where
                         x_unit: snapped_x_unit,
                         panel_index,
                         y_primary_value,
-                        y_secondary_value,
+                        y_indicator_value,
                         x_plot: snapped_x_plot,
                         y_plot: panel.plot.y + y_in_panel,
                     });
@@ -1053,24 +1277,49 @@ where
         }
     }
 
+    fn comparison_line_color(ticker: &TickerInfo) -> iced::Color {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        ticker.hash(&mut hasher);
+        let seed = hasher.finish();
+
+        let golden = 0.618_034_f32;
+        let base = ((seed as f32 / u64::MAX as f32) + 0.12345).fract();
+        let hue = (base + golden).fract() * 360.0;
+
+        let saturation = 0.62 + (((seed >> 8) & 0xFF) as f32 / 255.0) * 0.2;
+        let value = 0.82 + (((seed >> 16) & 0x7F) as f32 / 127.0) * 0.12;
+
+        data::config::theme::from_hsv_degrees(hue, saturation.min(1.0), value.min(1.0))
+    }
+
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let px_per_unit = scene.primary_plot().width / scene.span_units().max(1.0);
         let candle_width = (px_per_unit * 0.7).clamp(1.0, 22.0);
-        let secondary_width = (px_per_unit * 0.8).clamp(1.0, 24.0);
+        let indicator_width = (px_per_unit * 0.8).clamp(1.0, 24.0);
 
-        let mut primary_line_points: Vec<Point> = Vec::new();
-        let mut secondary_line_points: Vec<Point> = Vec::new();
+        let mut primary_line_points: Vec<Vec<Point>> = vec![Vec::new(); self.series.len()];
+        let mut indicator_line_points: Vec<Vec<Point>> =
+            vec![Vec::new(); scene.indicator_panels.len()];
 
-        self.for_each_bar_unit(scene.x_axis, |series, x_unit, bar| {
+        self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
             if x_unit < scene.min_x_unit || x_unit > scene.max_x_unit {
                 return;
             }
 
             let x = scene.map_x_plot(x_unit);
-            let y_open = scene.map_primary_plot(bar.open.to_f32());
-            let y_high = scene.map_primary_plot(bar.high.to_f32());
-            let y_low = scene.map_primary_plot(bar.low.to_f32());
-            let y_close = scene.map_primary_plot(bar.close.to_f32());
+            let is_base_series = series_index == 0;
+            let series_anchor = scene
+                .series_percent_anchors
+                .get(series_index)
+                .copied()
+                .flatten();
+
+            let y_open = scene.map_primary_plot_with_anchor(bar.open.to_f32(), series_anchor);
+            let y_high = scene.map_primary_plot_with_anchor(bar.high.to_f32(), series_anchor);
+            let y_low = scene.map_primary_plot_with_anchor(bar.low.to_f32(), series_anchor);
+            let y_close = scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor);
 
             let color = if bar.close >= bar.open {
                 palette.success.base.color
@@ -1078,9 +1327,17 @@ where
                 palette.danger.base.color
             };
 
-            match scene.primary_mark {
+            let primary_mark = if is_base_series {
+                scene.primary_mark
+            } else {
+                MarkKind::Line
+            };
+
+            match primary_mark {
                 MarkKind::Line => {
-                    primary_line_points.push(Point::new(x, y_close));
+                    if let Some(points) = primary_line_points.get_mut(series_index) {
+                        points.push(Point::new(x, y_close));
+                    }
                 }
                 MarkKind::Candle | MarkKind::Bar => {
                     let body_top = y_open.min(y_close);
@@ -1101,35 +1358,60 @@ where
                 }
             }
 
-            if let (Some(y_secondary_value), Some(y_secondary_bottom)) = (
-                scene.map_secondary_plot(series.secondary_value(bar)),
-                scene.secondary_panel_bottom(),
-            ) {
-                match scene.secondary_mark.unwrap_or(MarkKind::Bar) {
-                    MarkKind::Line => {
-                        secondary_line_points.push(Point::new(x, y_secondary_value));
-                    }
-                    MarkKind::Candle | MarkKind::Bar => {
-                        frame.fill_rectangle(
-                            Point::new(
-                                x - (secondary_width / 2.0),
-                                y_secondary_value.min(y_secondary_bottom),
-                            ),
-                            Size::new(
-                                secondary_width,
-                                (y_secondary_bottom - y_secondary_value).abs().max(1.0),
-                            ),
-                            color.scale_alpha(0.4),
-                        );
+            if !is_base_series {
+                return;
+            }
+
+            for (indicator_slot, indicator_panel) in scene.indicator_panels.iter().enumerate() {
+                let indicator_value =
+                    series.indicator_value_for_panel(indicator_panel.panel_index, bar);
+
+                if let (Some(y_indicator_value), Some(y_indicator_bottom)) = (
+                    scene.map_indicator_plot(indicator_panel.panel_index, indicator_value),
+                    scene.indicator_panel_bottom(indicator_panel.panel_index),
+                ) {
+                    match indicator_panel.mark {
+                        MarkKind::Line => {
+                            if let Some(points) = indicator_line_points.get_mut(indicator_slot) {
+                                points.push(Point::new(x, y_indicator_value));
+                            }
+                        }
+                        MarkKind::Candle | MarkKind::Bar => {
+                            frame.fill_rectangle(
+                                Point::new(
+                                    x - (indicator_width / 2.0),
+                                    y_indicator_value.min(y_indicator_bottom),
+                                ),
+                                Size::new(
+                                    indicator_width,
+                                    (y_indicator_bottom - y_indicator_value).abs().max(1.0),
+                                ),
+                                color.scale_alpha(0.4),
+                            );
+                        }
                     }
                 }
             }
         });
 
-        if primary_line_points.len() >= 2 {
+        for (series_index, points) in primary_line_points.iter().enumerate() {
+            if points.len() < 2 {
+                continue;
+            }
+
+            let is_base_series = series_index == 0;
+            let line_color = if is_base_series {
+                palette.background.base.text.scale_alpha(0.85)
+            } else {
+                let ticker = self.series[series_index].ticker_info();
+                Self::comparison_line_color(ticker).scale_alpha(0.96)
+            };
+
+            let line_width = if is_base_series { 1.5 } else { 1.3 };
+
             let path = canvas::Path::new(|builder| {
-                builder.move_to(primary_line_points[0]);
-                for point in primary_line_points.iter().skip(1) {
+                builder.move_to(points[0]);
+                for point in points.iter().skip(1) {
                     builder.line_to(*point);
                 }
             });
@@ -1137,15 +1419,19 @@ where
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
-                    .with_width(1.5)
-                    .with_color(palette.background.base.text.scale_alpha(0.85)),
+                    .with_width(line_width)
+                    .with_color(line_color),
             );
         }
 
-        if secondary_line_points.len() >= 2 {
+        for points in &indicator_line_points {
+            if points.len() < 2 {
+                continue;
+            }
+
             let path = canvas::Path::new(|builder| {
-                builder.move_to(secondary_line_points[0]);
-                for point in secondary_line_points.iter().skip(1) {
+                builder.move_to(points[0]);
+                for point in points.iter().skip(1) {
                     builder.line_to(*point);
                 }
             });
@@ -1156,6 +1442,27 @@ where
                     .with_width(1.2)
                     .with_color(palette.background.base.text.scale_alpha(0.55)),
             );
+        }
+
+        self.fill_panel_titles(frame, scene, palette);
+    }
+
+    fn fill_panel_titles(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
+            let title = self.resolved_panel_title(panel_index, panel.kind);
+            let title_x = panel.plot.x + 6.0;
+            let title_y = panel.plot.y + 4.0;
+
+            frame.fill_text(canvas::Text {
+                content: title.to_string(),
+                position: Point::new(title_x, title_y),
+                color: palette.background.base.text.scale_alpha(0.72),
+                size: (TEXT_SIZE - 1.0).into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Start.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
         }
     }
 
@@ -1267,8 +1574,8 @@ where
             .map(|primary_value| scene.format_primary_cursor_label(primary_value))
             .or_else(|| {
                 cursor
-                    .y_secondary_value
-                    .map(|secondary_value| format!("{secondary_value:.2}"))
+                    .y_indicator_value
+                    .map(|indicator_value| format!("{indicator_value:.2}"))
             })
         {
             let y_label_w = (y_text.len() as f32 * TEXT_SIZE * 0.6).clamp(40.0, 96.0);

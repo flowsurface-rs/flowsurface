@@ -919,8 +919,8 @@ impl Dashboard {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
-                    if let StreamKind::Kline { .. } = stream_type {
-                        pane_state.insert_hist_oi(req_id, &data);
+                    if let StreamKind::Kline { ticker_info, .. } = stream_type {
+                        pane_state.insert_hist_oi(req_id, ticker_info, &data);
                     }
                 }
             }
