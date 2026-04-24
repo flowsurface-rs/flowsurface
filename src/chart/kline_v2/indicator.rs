@@ -1,0 +1,172 @@
+mod cumulative_volume_delta;
+mod open_interest;
+mod volume;
+
+use crate::chart::composition::{
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
+};
+use data::chart::Basis;
+use exchange::adapter::MarketKind;
+use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, UnixMs};
+
+use super::KlineIndicator;
+
+pub use cumulative_volume_delta::CapabilityProbe as CvdInputProbe;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorUnsupportedReason {
+    BasisNotSupported,
+    SourceNotSupported,
+    ResolutionNotSupported,
+    MissingRequiredInput,
+    InconsistentInputCoverage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorAvailability {
+    Available,
+    PendingProbe,
+    Partial {
+        available: usize,
+        total: usize,
+        reason: IndicatorUnsupportedReason,
+    },
+    Unsupported(IndicatorUnsupportedReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorPanelRecipe {
+    AuxPanel {
+        panel_title: &'static str,
+        layer_name: &'static str,
+        source: DataSourceId,
+        data_kind: LayerDataKind,
+        mark: MarkKind,
+        axis: AxisBinding,
+        preferred_scale: PanelScaleMode,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AvailabilityContext {
+    pub basis: Basis,
+    pub timeframe: Timeframe,
+    pub base_ticker: TickerInfo,
+}
+
+const FOR_SPOT: [KlineIndicator; 2] = [
+    KlineIndicator::Volume,
+    KlineIndicator::CumulativeVolumeDelta,
+];
+const FOR_PERPS: [KlineIndicator; 3] = [
+    KlineIndicator::Volume,
+    KlineIndicator::OpenInterest,
+    KlineIndicator::CumulativeVolumeDelta,
+];
+const ALL_INDICATORS: [KlineIndicator; 3] = [
+    KlineIndicator::Volume,
+    KlineIndicator::OpenInterest,
+    KlineIndicator::CumulativeVolumeDelta,
+];
+
+pub fn all_indicators() -> &'static [KlineIndicator] {
+    &ALL_INDICATORS
+}
+
+pub fn indicators_for_market(market: MarketKind) -> &'static [KlineIndicator] {
+    match market {
+        MarketKind::Spot => &FOR_SPOT,
+        MarketKind::LinearPerps | MarketKind::InversePerps => &FOR_PERPS,
+    }
+}
+
+pub fn is_supported_for_market(indicator: KlineIndicator, market: MarketKind) -> bool {
+    indicators_for_market(market).contains(&indicator)
+}
+
+pub fn display_name(indicator: KlineIndicator) -> &'static str {
+    match indicator {
+        KlineIndicator::Volume => "Volume",
+        KlineIndicator::OpenInterest => "Open Interest",
+        KlineIndicator::CumulativeVolumeDelta => "CVD",
+    }
+}
+
+pub fn panel_recipe(indicator: KlineIndicator) -> IndicatorPanelRecipe {
+    match indicator {
+        KlineIndicator::Volume => volume::panel_recipe(),
+        KlineIndicator::OpenInterest => open_interest::panel_recipe(),
+        KlineIndicator::CumulativeVolumeDelta => cumulative_volume_delta::panel_recipe(),
+    }
+}
+
+pub fn availability<'a, I>(
+    indicator: KlineIndicator,
+    context: AvailabilityContext,
+    series_data: I,
+) -> IndicatorAvailability
+where
+    I: IntoIterator<Item = &'a SeriesIndicatorData>,
+{
+    if !is_supported_for_market(indicator, context.base_ticker.market_type()) {
+        return IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::SourceNotSupported);
+    }
+
+    match indicator {
+        KlineIndicator::Volume => volume::availability(),
+        KlineIndicator::OpenInterest => {
+            open_interest::availability(context.basis, context.timeframe, context.base_ticker)
+        }
+        KlineIndicator::CumulativeVolumeDelta => cumulative_volume_delta::availability(
+            context.basis,
+            series_data.into_iter().map(SeriesIndicatorData::cvd_probe),
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SeriesIndicatorData {
+    open_interest: open_interest::OpenInterestState,
+    cumulative_volume_delta: cumulative_volume_delta::CumulativeVolumeDeltaState,
+}
+
+impl SeriesIndicatorData {
+    pub fn clear(&mut self) {
+        self.open_interest.clear();
+        self.cumulative_volume_delta.clear();
+    }
+
+    pub fn refresh_from_bars(&mut self, bars: &[Kline]) {
+        self.cumulative_volume_delta.recompute_from_bars(bars);
+    }
+
+    pub fn insert_open_interest_batch(
+        &mut self,
+        data: &[OpenInterest],
+        basis: Basis,
+        timeframe: Timeframe,
+    ) {
+        self.open_interest.insert_batch(data, basis, timeframe);
+    }
+
+    pub fn oi_timerange(&self) -> Option<(UnixMs, UnixMs)> {
+        self.open_interest.timerange()
+    }
+
+    pub fn cvd_probe(&self) -> CvdInputProbe {
+        self.cumulative_volume_delta.probe()
+    }
+
+    pub fn value_for_indicator(&self, indicator: Option<KlineIndicator>, bar: &Kline) -> f32 {
+        match indicator {
+            Some(KlineIndicator::OpenInterest) => {
+                self.open_interest.value_at(bar.time).unwrap_or(0.0)
+            }
+            Some(KlineIndicator::CumulativeVolumeDelta) => self
+                .cumulative_volume_delta
+                .value_at(bar.time)
+                .unwrap_or(0.0),
+            Some(KlineIndicator::Volume) | None => f32::from(bar.volume.total()),
+        }
+    }
+}

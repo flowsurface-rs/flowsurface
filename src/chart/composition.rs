@@ -49,6 +49,7 @@ pub enum DataSourceId {
 pub enum PanelScaleMode {
     Absolute,
     FitVisible,
+    FitVisibleIncludeZero,
     Logarithmic,
     PercentFromBase,
 }

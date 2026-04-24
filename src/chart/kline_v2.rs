@@ -1,8 +1,7 @@
 use crate::chart::composition::{
-    AxisBinding, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, LayerDataKind, LayerId,
-    LayerSource, MarkKind, PanelId, PanelRole, PanelScaleMode,
+    ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, LayerId, LayerSource, MarkKind,
+    PanelId, PanelRole, PanelScaleMode,
 };
-use crate::chart::indicator::kline::open_interest::OpenInterestIndicator;
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::kline::{
     DEFAULT_ZOOM_POINTS, KlinePanelKind, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
@@ -16,7 +15,6 @@ use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, UnixMs};
 use enum_map::{Enum, EnumMap};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::time::Instant;
 
@@ -25,6 +23,11 @@ const DEFAULT_FETCH_BARS: u64 = 500;
 const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
 
+mod indicator;
+
+pub use indicator::IndicatorAvailability;
+use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
+
 pub enum Action {
     RequestFetch(Vec<FetchSpec>),
 }
@@ -32,19 +35,6 @@ pub enum Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IndicatorPanelBinding {
     panel_id: PanelId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IndicatorPanelRecipe {
-    AuxPanel {
-        panel_title: &'static str,
-        layer_name: &'static str,
-        source: DataSourceId,
-        data_kind: LayerDataKind,
-        mark: MarkKind,
-        axis: AxisBinding,
-        preferred_scale: PanelScaleMode,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +47,7 @@ pub struct KlineSeries {
     pub ticker_info: TickerInfo,
     pub name: Option<String>,
     pub bars: Vec<Kline>,
-    pub open_interest: BTreeMap<UnixMs, f32>,
+    indicators: SeriesIndicatorData,
     panel_indicators: Vec<Option<KlineIndicator>>,
 }
 
@@ -67,7 +57,7 @@ impl KlineSeries {
             ticker_info,
             name: None,
             bars: Vec::new(),
-            open_interest: BTreeMap::new(),
+            indicators: SeriesIndicatorData::default(),
             panel_indicators: Vec::new(),
         }
     }
@@ -78,9 +68,11 @@ impl KlineSeries {
     }
 
     fn oi_timerange(&self) -> Option<(UnixMs, UnixMs)> {
-        let earliest = self.open_interest.keys().next().copied()?;
-        let latest = self.open_interest.keys().next_back().copied()?;
-        Some((earliest, latest))
+        self.indicators.oi_timerange()
+    }
+
+    fn refresh_indicator_inputs(&mut self) {
+        self.indicators.refresh_from_bars(&self.bars);
     }
 }
 
@@ -98,14 +90,10 @@ impl KlineSeriesLike for KlineSeries {
     }
 
     fn indicator_value_for_panel(&self, panel_index: usize, bar: &Kline) -> f32 {
-        match self.panel_indicators.get(panel_index).copied().flatten() {
-            Some(KlineIndicator::OpenInterest) => {
-                self.open_interest.get(&bar.time).copied().unwrap_or(0.0)
-            }
-            Some(KlineIndicator::Volume) | Some(KlineIndicator::VolumeLine) | None => {
-                self.indicator_value(bar)
-            }
-        }
+        self.indicators.value_for_indicator(
+            self.panel_indicators.get(panel_index).copied().flatten(),
+            bar,
+        )
     }
 }
 
@@ -336,6 +324,8 @@ impl KlineChartV2 {
 
         merge_bars(&mut self.series[idx].bars, incoming);
         trim_bars(&mut self.series[idx].bars);
+        self.series[idx].refresh_indicator_inputs();
+        self.enforce_indicator_availability();
 
         if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
             handler.mark_completed(req_id);
@@ -356,6 +346,8 @@ impl KlineChartV2 {
 
         merge_bars(&mut self.series[idx].bars, incoming);
         trim_bars(&mut self.series[idx].bars);
+        self.series[idx].refresh_indicator_inputs();
+        self.enforce_indicator_availability();
         self.bump_rev();
     }
 
@@ -379,6 +371,8 @@ impl KlineChartV2 {
         }
 
         trim_bars(&mut series.bars);
+        series.refresh_indicator_inputs();
+        self.enforce_indicator_availability();
         self.bump_rev();
     }
 
@@ -388,8 +382,10 @@ impl KlineChartV2 {
 
         for series in &mut self.series {
             series.bars.clear();
-            series.open_interest.clear();
+            series.indicators.clear();
         }
+
+        self.enforce_indicator_availability();
 
         self.rebuild_handlers();
         self.bump_rev();
@@ -428,9 +424,7 @@ impl KlineChartV2 {
             return false;
         }
 
-        let Some(recipe) = Self::indicator_recipe(indicator) else {
-            return false;
-        };
+        let recipe = indicator::panel_recipe(indicator);
 
         let panel_id = match recipe {
             IndicatorPanelRecipe::AuxPanel {
@@ -463,7 +457,22 @@ impl KlineChartV2 {
     }
 
     fn is_indicator_available(&self, indicator: KlineIndicator) -> bool {
-        KlineIndicator::for_market(self.base_ticker.market_type()).contains(&indicator)
+        !matches!(
+            self.indicator_availability(indicator),
+            IndicatorAvailability::Unsupported(_)
+        )
+    }
+
+    fn indicator_availability(&self, indicator: KlineIndicator) -> IndicatorAvailability {
+        indicator::availability(
+            indicator,
+            AvailabilityContext {
+                basis: self.basis,
+                timeframe: self.timeframe,
+                base_ticker: self.base_ticker,
+            },
+            self.series.iter().map(|series| &series.indicators),
+        )
     }
 
     fn disable_indicator(&mut self, indicator: KlineIndicator) -> bool {
@@ -479,35 +488,25 @@ impl KlineChartV2 {
         }
     }
 
-    fn indicator_recipe(indicator: KlineIndicator) -> Option<IndicatorPanelRecipe> {
-        match indicator {
-            KlineIndicator::Volume => Some(IndicatorPanelRecipe::AuxPanel {
-                panel_title: "Volume",
-                layer_name: "Volume",
-                source: DataSourceId::Primary,
-                data_kind: LayerDataKind::Histogram,
-                mark: MarkKind::Bar,
-                axis: AxisBinding::Secondary,
-                preferred_scale: PanelScaleMode::Absolute,
-            }),
-            KlineIndicator::VolumeLine => Some(IndicatorPanelRecipe::AuxPanel {
-                panel_title: "Volume (Line)",
-                layer_name: "Volume Line",
-                source: DataSourceId::Primary,
-                data_kind: LayerDataKind::Scalar,
-                mark: MarkKind::Line,
-                axis: AxisBinding::Secondary,
-                preferred_scale: PanelScaleMode::Absolute,
-            }),
-            KlineIndicator::OpenInterest => Some(IndicatorPanelRecipe::AuxPanel {
-                panel_title: "Open Interest",
-                layer_name: "Open Interest",
-                source: DataSourceId::Primary,
-                data_kind: LayerDataKind::Scalar,
-                mark: MarkKind::Line,
-                axis: AxisBinding::Secondary,
-                preferred_scale: PanelScaleMode::FitVisible,
-            }),
+    fn enforce_indicator_availability(&mut self) {
+        let mut changed = false;
+
+        for &indicator in indicator::all_indicators() {
+            if self.indicator_panels[indicator].is_none() {
+                continue;
+            }
+
+            if matches!(
+                self.indicator_availability(indicator),
+                IndicatorAvailability::Unsupported(_)
+            ) {
+                changed |= self.disable_indicator(indicator);
+            }
+        }
+
+        if changed {
+            self.sync_widget_panel_layout();
+            self.bump_rev();
         }
     }
 
@@ -566,17 +565,14 @@ impl KlineChartV2 {
     }
 
     fn indicator_for_panel(&self, panel_id: PanelId) -> Option<KlineIndicator> {
-        [
-            KlineIndicator::Volume,
-            KlineIndicator::VolumeLine,
-            KlineIndicator::OpenInterest,
-        ]
-        .into_iter()
-        .find(|indicator| {
-            self.indicator_panels[*indicator]
-                .map(|binding| binding.panel_id == panel_id)
-                .unwrap_or(false)
-        })
+        indicator::all_indicators()
+            .iter()
+            .copied()
+            .find(|indicator| {
+                self.indicator_panels[*indicator]
+                    .map(|binding| binding.panel_id == panel_id)
+                    .unwrap_or(false)
+            })
     }
 
     fn sync_series_panel_indicator_map(&mut self) {
@@ -732,8 +728,10 @@ impl KlineChartV2 {
             }
 
             if self.oi_enabled_for_base()
-                && OpenInterestIndicator::is_supported_exchange(self.base_ticker.exchange())
-                && OpenInterestIndicator::is_supported_timeframe(self.timeframe)
+                && matches!(
+                    self.indicator_availability(KlineIndicator::OpenInterest),
+                    IndicatorAvailability::Available
+                )
                 && let Some(base_series) = self.base_series()
                 && let Some(kline_latest) = base_series.bars.last().map(|bar| bar.time)
             {
@@ -817,21 +815,10 @@ impl KlineChartV2 {
         }
 
         let series = &mut self.series[idx];
-
-        for oi in data {
-            let time = Self::align_oi_time(oi.time, self.basis, self.timeframe);
-            series.open_interest.insert(time, oi.value);
-        }
-
-        trim_oi(&mut series.open_interest);
+        series
+            .indicators
+            .insert_open_interest_batch(data, self.basis, self.timeframe);
         self.bump_rev();
-    }
-
-    fn align_oi_time(time: UnixMs, basis: Basis, timeframe: Timeframe) -> UnixMs {
-        match basis {
-            Basis::Time(_) => time.floor_to(timeframe),
-            Basis::Tick(_) => time,
-        }
     }
 
     fn streams_for_all(&self) -> Vec<StreamKind> {
@@ -988,16 +975,6 @@ fn trim_bars(bars: &mut Vec<Kline>) {
     }
 }
 
-fn trim_oi(oi: &mut BTreeMap<UnixMs, f32>) {
-    while oi.len() > SERIES_MAX_BARS {
-        if let Some((&earliest, _)) = oi.first_key_value() {
-            oi.remove(&earliest);
-        } else {
-            break;
-        }
-    }
-}
-
 pub trait Indicator: PartialEq + Display + 'static {
     fn for_market(market: MarketKind) -> &'static [Self]
     where
@@ -1007,38 +984,18 @@ pub trait Indicator: PartialEq + Display + 'static {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
 pub enum KlineIndicator {
     Volume,
-    VolumeLine,
     OpenInterest,
+    CumulativeVolumeDelta,
 }
 
 impl Indicator for KlineIndicator {
     fn for_market(market: MarketKind) -> &'static [Self] {
-        match market {
-            MarketKind::Spot => &Self::FOR_SPOT,
-            MarketKind::LinearPerps | MarketKind::InversePerps => &Self::FOR_PERPS,
-        }
+        indicator::indicators_for_market(market)
     }
-}
-
-impl KlineIndicator {
-    // Indicator togglers on UI menus depend on these arrays.
-    // Every variant needs to be in either SPOT, PERPS or both.
-    /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 2] = [KlineIndicator::Volume, KlineIndicator::VolumeLine];
-    /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 3] = [
-        KlineIndicator::Volume,
-        KlineIndicator::VolumeLine,
-        KlineIndicator::OpenInterest,
-    ];
 }
 
 impl Display for KlineIndicator {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            KlineIndicator::Volume => write!(f, "Volume"),
-            KlineIndicator::VolumeLine => write!(f, "Volume (Line)"),
-            KlineIndicator::OpenInterest => write!(f, "Open Interest"),
-        }
+        write!(f, "{}", indicator::display_name(*self))
     }
 }

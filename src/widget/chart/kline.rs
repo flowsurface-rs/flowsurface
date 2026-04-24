@@ -1102,6 +1102,18 @@ where
 
                 Some((min_value - pad, indicator_max_value + pad))
             }
+            PanelScaleMode::FitVisibleIncludeZero => {
+                let min_including_zero = min_value.min(0.0);
+                let max_including_zero = indicator_max_value.max(0.0);
+                let span = (max_including_zero - min_including_zero).abs();
+                let pad = if span <= f32::EPSILON {
+                    max_including_zero.abs().max(1.0) * 0.02
+                } else {
+                    span * 0.05
+                };
+
+                Some((min_including_zero - pad, max_including_zero + pad))
+            }
             _ => Some((0.0, indicator_max_value.max(1.0))),
         }
     }
