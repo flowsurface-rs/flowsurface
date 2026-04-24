@@ -223,8 +223,8 @@ impl std::fmt::Display for ContentKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ContentKind::Starter => "Starter Pane",
-            ContentKind::HeatmapChart => "Heatmap Chart",
-            ContentKind::ShaderHeatmap => "Shader Heatmap",
+            ContentKind::HeatmapChart => "Heatmap Chart (Legacy)",
+            ContentKind::ShaderHeatmap => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
             ContentKind::ComparisonChart => "Comparison Chart",
