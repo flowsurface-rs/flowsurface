@@ -27,6 +27,21 @@ fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
     }
 }
 
+enum WsTrafficKind {
+    Public,
+    Market,
+}
+
+fn ws_stream_path(market: MarketKind, traffic_kind: WsTrafficKind) -> &'static str {
+    match market {
+        MarketKind::Spot => "stream",
+        MarketKind::LinearPerps | MarketKind::InversePerps => match traffic_kind {
+            WsTrafficKind::Public => "public/stream",
+            WsTrafficKind::Market => "market/stream",
+        },
+    }
+}
+
 enum DepthReaderMsg {
     Depth(SonicDepth),
     Disconnected(String),
@@ -567,7 +582,8 @@ pub fn connect_kline_stream(
                         .join("/");
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream_str}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Market);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream_str}");
 
                     if let Ok(websocket) = connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                         state = State::Connected(websocket);
@@ -719,7 +735,8 @@ pub fn connect_trade_stream(
                         .join("/");
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Market);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
                     if let Ok(websocket) = connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                         state = State::Connected(websocket);
@@ -849,7 +866,8 @@ pub fn connect_depth_stream(
         loop {
             let stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
             let domain = ws_domain_from_market_type(market);
-            let url = format!("wss://{domain}/stream?streams={stream}");
+            let stream_path = ws_stream_path(market, WsTrafficKind::Public);
+            let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
             let mut websocket = match connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                 Ok(ws) => ws,
