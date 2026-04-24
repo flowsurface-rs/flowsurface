@@ -238,11 +238,11 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                         }
                     }
                 }
-                mouse::Event::ButtonReleased(mouse::Button::Left) => {
-                    if state.dragging_index.is_some() {
-                        state.dragging_index = None;
-                        shell.capture_event();
-                    }
+                mouse::Event::ButtonReleased(mouse::Button::Left)
+                    if state.dragging_index.is_some() =>
+                {
+                    state.dragging_index = None;
+                    shell.capture_event();
                 }
                 _ => {}
             }

@@ -4,9 +4,24 @@ jobs:
     all:
         runs-on: ubuntu-latest
         steps:
-            - uses: hecrj/setup-rust-action@v2
-              with:
-                  components: rustfmt
             - uses: actions/checkout@v4
+
+            - name: Read rust toolchain from rust-toolchain.toml
+              id: rust_toolchain
+              run: |
+                  channel="$(sed -nE 's/^channel\s*=\s*"(.*)"/\1/p' rust-toolchain.toml)"
+                  if [ -z "$channel" ]; then
+                      echo "Failed to read toolchain channel from rust-toolchain.toml" >&2
+                      exit 1
+                  fi
+                  echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+            - name: Install rust toolchain + rustfmt
+              uses: actions-rs/toolchain@v1
+              with:
+                  toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+                  components: rustfmt
+                  override: true
+
             - name: Check format
               run: cargo fmt --all -- --check --verbose
