@@ -565,12 +565,6 @@ impl ChartComposition {
             return false;
         }
 
-        if matches!(self.panels[from_index].role, PanelRole::Primary)
-            || matches!(self.panels[to_index].role, PanelRole::Primary)
-        {
-            return false;
-        }
-
         let panel = self.panels.remove(from_index);
         self.panels.insert(to_index, panel);
         self.ensure_split_count();

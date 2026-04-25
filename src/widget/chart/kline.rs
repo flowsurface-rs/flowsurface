@@ -21,11 +21,25 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
+const CHAR_W: f32 = TEXT_SIZE * 0.64;
 const ZOOM_STEP_PCT: f32 = 0.05;
 const PANEL_X_AXIS_HEIGHT: f32 = 18.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 const MIN_PANEL_HEIGHT: f32 = 40.0;
+const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
+const PANEL_TITLE_TOP_PAD: f32 = 4.0;
+const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
+const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
+const PANEL_CONTROL_GAP: f32 = 4.0;
+const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
+const PANEL_CONTROL_TOOLTIP_GAP: f32 = 3.0;
+
+const TICKER_LEGEND_PADDING: f32 = 4.0;
+const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
+const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 6.0;
+const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
+const TICKER_LEGEND_TOP_OFFSET: f32 = TEXT_SIZE + 10.0;
 
 const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] =
     [KlinePanelKind::PrimaryChart, KlinePanelKind::Indicator];
@@ -146,6 +160,12 @@ pub enum KlineWidgetEvent {
     ZoomChanged(Zoom),
     PanChanged(f32),
     PanelSplitChanged { index: usize, split: f32 },
+    PanelMoveUp { index: usize },
+    PanelMoveDown { index: usize },
+    PanelSettings { index: usize },
+    PanelClose { index: usize },
+    TickerSettings(TickerInfo),
+    TickerRemove(TickerInfo),
     XAxisDoubleClick,
 }
 
@@ -169,6 +189,102 @@ enum LayoutHitZone {
     YAxis,
     Splitter(usize),
     Outside,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelControlKind {
+    MoveUp,
+    MoveDown,
+    Settings,
+    Close,
+}
+
+impl PanelControlKind {
+    fn icon(self) -> &'static str {
+        match self {
+            Self::MoveUp => "^",
+            Self::MoveDown => "v",
+            Self::Settings => "S",
+            Self::Close => "X",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::MoveUp => "Move panel up",
+            Self::MoveDown => "Move panel down",
+            Self::Settings => "Panel settings",
+            Self::Close => "Remove panel",
+        }
+    }
+
+    fn into_event(self, index: usize) -> KlineWidgetEvent {
+        match self {
+            Self::MoveUp => KlineWidgetEvent::PanelMoveUp { index },
+            Self::MoveDown => KlineWidgetEvent::PanelMoveDown { index },
+            Self::Settings => KlineWidgetEvent::PanelSettings { index },
+            Self::Close => KlineWidgetEvent::PanelClose { index },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PanelControlHit {
+    panel_index: usize,
+    kind: PanelControlKind,
+    rect: Rectangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickerLegendIconKind {
+    Settings,
+    Close,
+}
+
+impl TickerLegendIconKind {
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Settings => "S",
+            Self::Close => "X",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::Settings => "Ticker settings",
+            Self::Close => "Remove ticker",
+        }
+    }
+
+    fn into_event(self, ticker: TickerInfo) -> KlineWidgetEvent {
+        match self {
+            Self::Settings => KlineWidgetEvent::TickerSettings(ticker),
+            Self::Close => KlineWidgetEvent::TickerRemove(ticker),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TickerLegendRowHit {
+    ticker: TickerInfo,
+    y_center: f32,
+    row_rect: Rectangle,
+    settings: Rectangle,
+    close: Rectangle,
+    has_close: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TickerLegendLayout {
+    bg: Rectangle,
+    rows: Vec<TickerLegendRowHit>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TickerLegendHit {
+    Background,
+    Row(usize),
+    Icon(usize, TickerLegendIconKind),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -372,6 +488,13 @@ struct Scene {
     primary_scale_anchor: Option<f32>,
     series_percent_anchors: Vec<Option<f32>>,
     indicator_panels: Vec<IndicatorPanelScene>,
+    panel_controls: Vec<PanelControlHit>,
+    ticker_legend: Option<TickerLegendLayout>,
+    controls_visible_for_panel: Option<usize>,
+    hovered_control: Option<PanelControlHit>,
+    hovering_ticker_legend: bool,
+    hovered_ticker_row: Option<usize>,
+    hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
     cursor: Option<CursorInfo>,
 }
 
@@ -644,6 +767,273 @@ where
             .get(panel_index)
             .copied()
             .unwrap_or(PanelScaleMode::Absolute)
+    }
+
+    fn panel_control_kinds(
+        &self,
+        panel_index: usize,
+        panel_count: usize,
+        primary_panel: usize,
+    ) -> Vec<PanelControlKind> {
+        let mut controls = Vec::with_capacity(4);
+        let is_primary = panel_index == primary_panel;
+
+        if panel_index > 0 {
+            controls.push(PanelControlKind::MoveUp);
+        }
+
+        if panel_index + 1 < panel_count {
+            controls.push(PanelControlKind::MoveDown);
+        }
+
+        controls.push(PanelControlKind::Settings);
+
+        if !is_primary {
+            controls.push(PanelControlKind::Close);
+        }
+
+        controls
+    }
+
+    fn build_panel_control_hits(
+        &self,
+        layout: &PanelLayoutTree,
+        primary_panel: usize,
+    ) -> Vec<PanelControlHit> {
+        let panel_count = layout.panels.len();
+        let mut hits = Vec::with_capacity(panel_count.saturating_mul(4));
+
+        for (panel_index, panel) in layout.panels.iter().enumerate() {
+            let title = self.resolved_panel_title(panel_index, panel.kind);
+            let title_w = title.chars().count() as f32 * CHAR_W;
+            let min_x = panel.plot.x + PANEL_TITLE_LEFT_PAD + title_w + PANEL_TITLE_TO_CONTROLS_GAP;
+
+            let mut controls = self.panel_control_kinds(panel_index, panel_count, primary_panel);
+            while !controls.is_empty() {
+                let count = controls.len() as f32;
+                let total_w =
+                    count * PANEL_CONTROL_BOX + (count - 1.0).max(0.0) * PANEL_CONTROL_GAP;
+                let x = panel.plot.x + panel.plot.width - PANEL_TITLE_LEFT_PAD - total_w;
+                let y = panel.plot.y + PANEL_TITLE_TOP_PAD - 1.0;
+
+                if x < min_x {
+                    controls.remove(0);
+                    continue;
+                }
+
+                let mut x_cursor = x;
+                for kind in controls.into_iter() {
+                    hits.push(PanelControlHit {
+                        panel_index,
+                        kind,
+                        rect: Rectangle {
+                            x: x_cursor,
+                            y,
+                            width: PANEL_CONTROL_BOX,
+                            height: PANEL_CONTROL_BOX,
+                        },
+                    });
+
+                    x_cursor += PANEL_CONTROL_BOX + PANEL_CONTROL_GAP;
+                }
+                break;
+            }
+        }
+
+        hits
+    }
+
+    fn hit_panel_control(
+        layout: &PanelLayoutTree,
+        controls: &[PanelControlHit],
+        root_local: Point,
+    ) -> Option<PanelControlHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+
+        controls
+            .iter()
+            .copied()
+            .find(|control| PanelLayoutTree::contains(control.rect, plot_local))
+    }
+
+    fn control_visibility_panel(
+        &self,
+        layout: &PanelLayoutTree,
+        root_local: Point,
+    ) -> Option<usize> {
+        match layout.hit_test(root_local) {
+            LayoutHitZone::PanelPlot(panel_index) | LayoutHitZone::PanelXAxis(panel_index) => {
+                Some(panel_index)
+            }
+            _ => None,
+        }
+    }
+
+    fn build_ticker_legend_layout(
+        &self,
+        layout: &PanelLayoutTree,
+        primary_panel: usize,
+    ) -> Option<TickerLegendLayout> {
+        if self.series.is_empty() {
+            return None;
+        }
+
+        let panel = layout.panel(primary_panel)?;
+        let plot = panel.plot;
+
+        let rows_count = self.series.len();
+        let max_name_chars = self
+            .series
+            .iter()
+            .map(|series| {
+                series
+                    .ticker_info()
+                    .ticker
+                    .symbol_and_exchange_string()
+                    .len()
+            })
+            .max()
+            .unwrap_or(0);
+
+        let text_w = max_name_chars as f32 * CHAR_W;
+        let icon_pack_w = (2.0 * TICKER_LEGEND_ICON_BOX) + TICKER_LEGEND_ICON_GAP;
+
+        let bg_w = (text_w + icon_pack_w + TICKER_LEGEND_PADDING * 2.0 + 10.0)
+            .clamp(120.0, (plot.width * 0.6).max(120.0));
+
+        let max_bg_h = ((rows_count as f32) * TICKER_LEGEND_ROW_H + TICKER_LEGEND_PADDING * 2.0)
+            .min(plot.height * 0.5)
+            .max(TICKER_LEGEND_ROW_H + TICKER_LEGEND_PADDING * 2.0);
+        let max_rows_fit =
+            (((max_bg_h - TICKER_LEGEND_PADDING * 2.0) / TICKER_LEGEND_ROW_H).floor() as usize)
+                .max(1);
+        let visible_rows = rows_count.min(max_rows_fit);
+        let bg_h = visible_rows as f32 * TICKER_LEGEND_ROW_H + TICKER_LEGEND_PADDING * 2.0;
+
+        let bg = Rectangle {
+            x: plot.x + PANEL_TITLE_LEFT_PAD,
+            y: plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_TOP_OFFSET,
+            width: bg_w,
+            height: bg_h,
+        };
+
+        let x_right = bg.x + bg.width - TICKER_LEGEND_PADDING;
+
+        let mut rows = Vec::with_capacity(visible_rows);
+        let mut row_top = bg.y + TICKER_LEGEND_PADDING;
+
+        for (index, series) in self.series.iter().take(visible_rows).enumerate() {
+            let has_close = index != 0;
+            let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
+            let close = Rectangle {
+                x: x_right - TICKER_LEGEND_ICON_BOX,
+                y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
+                width: TICKER_LEGEND_ICON_BOX,
+                height: TICKER_LEGEND_ICON_BOX,
+            };
+            let settings = Rectangle {
+                x: if has_close {
+                    close.x - TICKER_LEGEND_ICON_GAP - TICKER_LEGEND_ICON_BOX
+                } else {
+                    close.x
+                },
+                y: close.y,
+                width: TICKER_LEGEND_ICON_BOX,
+                height: TICKER_LEGEND_ICON_BOX,
+            };
+
+            rows.push(TickerLegendRowHit {
+                ticker: *series.ticker_info(),
+                y_center,
+                row_rect: Rectangle {
+                    x: bg.x,
+                    y: row_top,
+                    width: bg.width,
+                    height: TICKER_LEGEND_ROW_H,
+                },
+                settings,
+                close,
+                has_close,
+            });
+
+            row_top += TICKER_LEGEND_ROW_H;
+        }
+
+        Some(TickerLegendLayout { bg, rows })
+    }
+
+    fn hit_ticker_legend(
+        layout: &PanelLayoutTree,
+        legend: &TickerLegendLayout,
+        root_local: Point,
+    ) -> Option<TickerLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+        if !legend.bg.contains(plot_local) {
+            return None;
+        }
+
+        for (index, row) in legend.rows.iter().enumerate() {
+            if !row.row_rect.contains(plot_local) {
+                continue;
+            }
+
+            if row.settings.contains(plot_local) {
+                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Settings));
+            }
+
+            if row.has_close && row.close.contains(plot_local) {
+                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Close));
+            }
+
+            return Some(TickerLegendHit::Row(index));
+        }
+
+        Some(TickerLegendHit::Background)
+    }
+
+    fn bar_at_or_before_unit<'b>(
+        &self,
+        series: &'b S,
+        x_axis: XAxis,
+        target_unit: i64,
+    ) -> Option<&'b Kline> {
+        let mut best: Option<(i64, &'b Kline)> = None;
+
+        match x_axis {
+            XAxis::Time { .. } => {
+                for bar in series.bars() {
+                    let unit = x_axis.unit_from_time(bar.time);
+                    if unit == target_unit {
+                        return Some(bar);
+                    }
+
+                    if unit <= target_unit
+                        && best.map(|(best_unit, _)| unit > best_unit).unwrap_or(true)
+                    {
+                        best = Some((unit, bar));
+                    }
+                }
+            }
+            XAxis::Tick { .. } => {
+                let len = series.bars().len();
+                for (index, bar) in series.bars().iter().enumerate() {
+                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
+                    let unit = x_axis.unit_from_tick(TickIndex(from_latest));
+
+                    if unit == target_unit {
+                        return Some(bar);
+                    }
+
+                    if unit <= target_unit
+                        && best.map(|(best_unit, _)| unit > best_unit).unwrap_or(true)
+                    {
+                        best = Some((unit, bar));
+                    }
+                }
+            }
+        }
+
+        best.map(|(_, bar)| bar)
     }
 
     fn compute_primary_scale_anchor(
@@ -1196,6 +1586,9 @@ where
 
         let primary_plot = panel_layout.panel(primary_panel)?.plot;
 
+        let panel_controls = self.build_panel_control_hits(&panel_layout, primary_panel);
+        let ticker_legend = self.build_ticker_legend_layout(&panel_layout, primary_panel);
+
         let mut scene = Scene {
             layout: panel_layout,
             x_axis,
@@ -1209,12 +1602,47 @@ where
             primary_scale_anchor,
             series_percent_anchors,
             indicator_panels,
+            panel_controls,
+            ticker_legend,
+            controls_visible_for_panel: None,
+            hovered_control: None,
+            hovering_ticker_legend: false,
+            hovered_ticker_row: None,
+            hovered_ticker_icon: None,
             cursor: None,
         };
 
+        let cursor_root_local = cursor.position_in(layout.bounds());
+
+        if let Some(local) = cursor_root_local {
+            scene.hovered_control =
+                Self::hit_panel_control(&scene.layout, &scene.panel_controls, local);
+
+            if let Some(legend) = scene.ticker_legend.as_ref()
+                && let Some(hit) = Self::hit_ticker_legend(&scene.layout, legend, local)
+            {
+                scene.hovering_ticker_legend = true;
+                match hit {
+                    TickerLegendHit::Background => {}
+                    TickerLegendHit::Row(index) => {
+                        scene.hovered_ticker_row = Some(index);
+                    }
+                    TickerLegendHit::Icon(index, kind) => {
+                        scene.hovered_ticker_row = Some(index);
+                        scene.hovered_ticker_icon = Some((index, kind));
+                    }
+                }
+            }
+
+            scene.controls_visible_for_panel = scene
+                .hovered_control
+                .map(|hit| hit.panel_index)
+                .or_else(|| self.control_visibility_panel(&scene.layout, local));
+        }
+
         let mut cursor_info = None;
 
-        if let Some(local) = cursor.position_in(layout.bounds()) {
+        if let Some(local) = cursor_root_local {
             let zone = scene.layout.hit_test(local);
 
             if matches!(zone, LayoutHitZone::PanelPlot(_))
@@ -1462,8 +1890,8 @@ where
     fn fill_panel_titles(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
             let title = self.resolved_panel_title(panel_index, panel.kind);
-            let title_x = panel.plot.x + 6.0;
-            let title_y = panel.plot.y + 4.0;
+            let title_x = panel.plot.x + PANEL_TITLE_LEFT_PAD;
+            let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD;
 
             frame.fill_text(canvas::Text {
                 content: title.to_string(),
@@ -1472,6 +1900,383 @@ where
                 size: (TEXT_SIZE - 1.0).into(),
                 align_x: iced::Alignment::Start.into(),
                 align_y: iced::Alignment::Start.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+    }
+
+    fn fill_panel_header_values(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        let Some(cursor) = scene.cursor else {
+            return;
+        };
+
+        let Some(base_series) = self.series.first() else {
+            return;
+        };
+
+        let Some(base_bar) = self.bar_at_or_before_unit(base_series, scene.x_axis, cursor.x_unit)
+        else {
+            return;
+        };
+
+        for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
+            let title = self.resolved_panel_title(panel_index, panel.kind);
+            let title_w = title.chars().count() as f32 * CHAR_W;
+
+            let mut x =
+                scene.layout.regions.plot.x + panel.plot.x + PANEL_TITLE_LEFT_PAD + title_w + 8.0;
+            let y = scene.layout.regions.plot.y + panel.plot.y + PANEL_TITLE_TOP_PAD;
+
+            let mut max_x = scene.layout.regions.plot.x + panel.plot.x + panel.plot.width
+                - PANEL_TITLE_LEFT_PAD;
+            if scene.controls_visible_for_panel == Some(panel_index)
+                && let Some(left_control_x) = scene
+                    .panel_controls
+                    .iter()
+                    .filter(|control| control.panel_index == panel_index)
+                    .map(|control| control.rect.x)
+                    .reduce(f32::min)
+            {
+                max_x = max_x.min(scene.layout.regions.plot.x + left_control_x - 4.0);
+            }
+
+            if x >= max_x {
+                continue;
+            }
+
+            if panel_index == scene.primary_panel {
+                let precision = base_series.ticker_info().min_ticksize;
+
+                if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar) {
+                    let open_f = base_bar.open.to_f32();
+                    let close_f = base_bar.close.to_f32();
+                    let change_pct = if open_f.abs() > f32::EPSILON {
+                        ((close_f - open_f) / open_f) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    let value_color = if change_pct >= 0.0 {
+                        palette.success.base.color
+                    } else {
+                        palette.danger.base.color
+                    };
+                    let label_color = palette.background.base.text.scale_alpha(0.82);
+
+                    let segments: Vec<(String, iced::Color, bool)> = vec![
+                        ("O".to_string(), label_color, false),
+                        (base_bar.open.to_string(precision), value_color, true),
+                        ("H".to_string(), label_color, false),
+                        (base_bar.high.to_string(precision), value_color, true),
+                        ("L".to_string(), label_color, false),
+                        (base_bar.low.to_string(precision), value_color, true),
+                        ("C".to_string(), label_color, false),
+                        (base_bar.close.to_string(precision), value_color, true),
+                        (format!("{change_pct:+.2}%"), value_color, true),
+                    ];
+
+                    for (text, color, is_value) in segments {
+                        if x >= max_x {
+                            break;
+                        }
+
+                        frame.fill_text(canvas::Text {
+                            content: text.clone(),
+                            position: Point::new(x, y),
+                            color,
+                            size: (TEXT_SIZE - 1.0).into(),
+                            align_x: iced::Alignment::Start.into(),
+                            align_y: iced::Alignment::Start.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+
+                        x += text.chars().count() as f32 * CHAR_W;
+                        x += if is_value { 6.0 } else { 2.0 };
+                    }
+                } else {
+                    let text = format!("C {}", base_bar.close.to_string(precision));
+                    frame.fill_text(canvas::Text {
+                        content: text,
+                        position: Point::new(x, y),
+                        color: palette.background.base.text.scale_alpha(0.85),
+                        size: (TEXT_SIZE - 1.0).into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Start.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
+            } else {
+                let value = base_series.indicator_value_for_panel(panel_index, base_bar);
+                let text = super::format_value(value, 0.01);
+
+                frame.fill_text(canvas::Text {
+                    content: text,
+                    position: Point::new(x, y),
+                    color: palette.background.base.text.scale_alpha(0.82),
+                    size: (TEXT_SIZE - 1.0).into(),
+                    align_x: iced::Alignment::Start.into(),
+                    align_y: iced::Alignment::Start.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    fn draw_legend_icon_button(
+        frame: &mut canvas::Frame,
+        rect: Rectangle,
+        icon: &str,
+        hovered: bool,
+        danger: bool,
+        palette: &Extended,
+    ) {
+        let fill = if hovered && danger {
+            palette.danger.base.color.scale_alpha(0.22)
+        } else if hovered {
+            palette.background.strong.color
+        } else {
+            palette.background.base.color.scale_alpha(0.72)
+        };
+
+        let text = if hovered && danger {
+            palette.danger.base.text
+        } else if hovered {
+            palette.background.strong.text
+        } else {
+            palette.background.base.text.scale_alpha(0.86)
+        };
+
+        frame.fill_rectangle(rect.position(), rect.size(), fill);
+        frame.fill_text(canvas::Text {
+            content: icon.to_string(),
+            position: Point::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5),
+            color: text,
+            size: PANEL_CONTROL_ICON_SIZE.into(),
+            align_x: iced::Alignment::Center.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+    }
+
+    fn fill_primary_ticker_legend(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        let Some(legend) = scene.ticker_legend.as_ref() else {
+            return;
+        };
+
+        let to_root = |rect: Rectangle| Rectangle {
+            x: scene.layout.regions.plot.x + rect.x,
+            y: scene.layout.regions.plot.y + rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+
+        let bg = to_root(legend.bg);
+        frame.fill_rectangle(
+            bg.position(),
+            bg.size(),
+            palette.background.weak.color.scale_alpha(0.82),
+        );
+
+        for (index, row) in legend.rows.iter().enumerate() {
+            let row_rect = to_root(row.row_rect);
+            let hovered_row = scene.hovered_ticker_row == Some(index);
+
+            if hovered_row {
+                frame.fill_rectangle(
+                    row_rect.position(),
+                    row_rect.size(),
+                    palette.background.strong.color.scale_alpha(0.2),
+                );
+            }
+
+            let label = row.ticker.ticker.symbol_and_exchange_string();
+            let label_color = if index == 0 {
+                palette.background.base.text
+            } else {
+                Self::comparison_line_color(&row.ticker).scale_alpha(0.96)
+            };
+
+            frame.fill_text(canvas::Text {
+                content: label,
+                position: Point::new(
+                    bg.x + TICKER_LEGEND_PADDING,
+                    scene.layout.regions.plot.y + row.y_center,
+                ),
+                color: label_color,
+                size: (TEXT_SIZE - 1.0).into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+
+            if hovered_row {
+                let settings_root = to_root(row.settings);
+                let close_root = to_root(row.close);
+
+                let settings_hovered =
+                    scene.hovered_ticker_icon == Some((index, TickerLegendIconKind::Settings));
+                Self::draw_legend_icon_button(
+                    frame,
+                    settings_root,
+                    TickerLegendIconKind::Settings.icon(),
+                    settings_hovered,
+                    false,
+                    palette,
+                );
+
+                if row.has_close {
+                    let close_hovered =
+                        scene.hovered_ticker_icon == Some((index, TickerLegendIconKind::Close));
+                    Self::draw_legend_icon_button(
+                        frame,
+                        close_root,
+                        TickerLegendIconKind::Close.icon(),
+                        close_hovered,
+                        true,
+                        palette,
+                    );
+                }
+            }
+        }
+
+        if let Some((row_index, icon_kind)) = scene.hovered_ticker_icon
+            && let Some(row) = legend.rows.get(row_index)
+        {
+            let target = match icon_kind {
+                TickerLegendIconKind::Settings => to_root(row.settings),
+                TickerLegendIconKind::Close => to_root(row.close),
+            };
+
+            let label = icon_kind.tooltip();
+            let label_w = (label.chars().count() as f32 * CHAR_W + 10.0).clamp(90.0, 180.0);
+            let label_h = TEXT_SIZE + 4.0;
+
+            let tooltip_x = (target.x + target.width * 0.5 - label_w * 0.5).clamp(
+                scene.layout.regions.plot.x,
+                scene.layout.regions.plot.x + scene.layout.regions.plot.width - label_w,
+            );
+            let tooltip_y =
+                (target.y - label_h - PANEL_CONTROL_TOOLTIP_GAP).max(scene.layout.regions.plot.y);
+
+            frame.fill_rectangle(
+                Point::new(tooltip_x, tooltip_y),
+                Size::new(label_w, label_h),
+                palette.background.strong.color,
+            );
+
+            frame.fill_text(canvas::Text {
+                content: label.to_string(),
+                position: Point::new(tooltip_x + label_w * 0.5, tooltip_y + label_h * 0.5),
+                color: palette.background.strong.text,
+                size: (TEXT_SIZE - 1.0).into(),
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+    }
+
+    fn fill_panel_controls(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        let Some(visible_panel) = scene.controls_visible_for_panel else {
+            return;
+        };
+
+        for control in scene
+            .panel_controls
+            .iter()
+            .copied()
+            .filter(|control| control.panel_index == visible_panel)
+        {
+            let hovered = scene
+                .hovered_control
+                .map(|hit| hit.panel_index == control.panel_index && hit.kind == control.kind)
+                .unwrap_or(false);
+
+            let is_close = matches!(control.kind, PanelControlKind::Close);
+
+            let fill_color = if hovered && is_close {
+                palette.danger.base.color.scale_alpha(0.22)
+            } else if hovered {
+                palette.background.strong.color
+            } else {
+                palette.background.base.color.scale_alpha(0.72)
+            };
+
+            let text_color = if hovered && is_close {
+                palette.danger.base.text
+            } else if hovered {
+                palette.background.strong.text
+            } else {
+                palette.background.base.text.scale_alpha(0.86)
+            };
+
+            let x = scene.layout.regions.plot.x + control.rect.x;
+            let y = scene.layout.regions.plot.y + control.rect.y;
+
+            frame.fill_rectangle(
+                Point::new(x, y),
+                Size::new(control.rect.width, control.rect.height),
+                fill_color,
+            );
+
+            frame.fill_text(canvas::Text {
+                content: control.kind.icon().to_string(),
+                position: Point::new(x + control.rect.width / 2.0, y + control.rect.height / 2.0),
+                color: text_color,
+                size: PANEL_CONTROL_ICON_SIZE.into(),
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+
+        if let Some(hovered) = scene.hovered_control {
+            let label = hovered.kind.tooltip();
+            let label_w = (label.chars().count() as f32 * CHAR_W + 10.0).clamp(68.0, 170.0);
+            let label_h = TEXT_SIZE + 4.0;
+
+            let hovered_x = scene.layout.regions.plot.x + hovered.rect.x;
+            let hovered_y = scene.layout.regions.plot.y + hovered.rect.y;
+
+            let tooltip_x = (hovered_x + hovered.rect.width * 0.5 - label_w * 0.5).clamp(
+                scene.layout.regions.plot.x,
+                scene.layout.regions.plot.x + scene.layout.regions.plot.width - label_w,
+            );
+
+            let tooltip_y =
+                (hovered_y - label_h - PANEL_CONTROL_TOOLTIP_GAP).max(scene.layout.regions.plot.y);
+
+            frame.fill_rectangle(
+                Point::new(tooltip_x, tooltip_y),
+                Size::new(label_w, label_h),
+                palette.background.strong.color,
+            );
+
+            frame.fill_text(canvas::Text {
+                content: label.to_string(),
+                position: Point::new(tooltip_x + label_w * 0.5, tooltip_y + label_h * 0.5),
+                color: palette.background.strong.text,
+                size: (TEXT_SIZE - 1.0).into(),
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
                 font: style::AZERET_MONO,
                 ..Default::default()
             });
@@ -1536,6 +2341,14 @@ where
     }
 
     fn fill_overlay(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        self.fill_panel_controls(frame, scene, palette);
+        self.fill_primary_ticker_legend(frame, scene, palette);
+        self.fill_panel_header_values(frame, scene, palette);
+
+        if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
+            return;
+        }
+
         let Some(cursor) = scene.cursor else {
             return;
         };
@@ -1783,16 +2596,37 @@ where
                         state.dragging_split = None;
                         state.last_cursor = None;
                     }
+                    state.overlay_cache.clear();
                     return;
                 };
 
                 let zone = layout_tree.hit_test(cursor_pos);
+                let primary_panel = layout_tree
+                    .panels
+                    .iter()
+                    .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)
+                    .unwrap_or(0);
+                let panel_controls = self.build_panel_control_hits(&layout_tree, primary_panel);
+                let ticker_legend = self.build_ticker_legend_layout(&layout_tree, primary_panel);
+                let ticker_legend_hit = ticker_legend
+                    .as_ref()
+                    .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_pos));
 
                 match mouse_event {
                     mouse::Event::WheelScrolled {
                         delta: mouse::ScrollDelta::Lines { y, .. },
                     } => {
                         if !matches!(zone, LayoutHitZone::PanelPlot(_)) {
+                            return;
+                        }
+
+                        if Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
+                            .is_some()
+                        {
+                            return;
+                        }
+
+                        if ticker_legend_hit.is_some() {
                             return;
                         }
 
@@ -1830,6 +2664,39 @@ where
                             state.previous_click = None;
                         }
 
+                        if let (Some(legend), Some(TickerLegendHit::Icon(row_index, icon_kind))) =
+                            (ticker_legend.as_ref(), ticker_legend_hit)
+                            && let Some(row) = legend.rows.get(row_index)
+                        {
+                            shell.publish(M::from(icon_kind.into_event(row.ticker)));
+                            state.is_panning = false;
+                            state.dragging_split = None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
+                        if ticker_legend_hit.is_some() {
+                            state.is_panning = false;
+                            state.dragging_split = None;
+                            state.last_cursor = None;
+                            return;
+                        }
+
+                        if matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && let Some(control) =
+                                Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
+                        {
+                            shell.publish(M::from(control.kind.into_event(control.panel_index)));
+                            state.is_panning = false;
+                            state.dragging_split = None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
                         if let LayoutHitZone::Splitter(split_index) = zone {
                             state.dragging_split = Some(split_index);
                             state.is_panning = false;
@@ -1846,6 +2713,8 @@ where
                         state.last_cursor = None;
                     }
                     mouse::Event::CursorMoved { .. } => {
+                        state.overlay_cache.clear();
+
                         if let Some(split_index) = state.dragging_split {
                             if let Some(split) = self.split_ratio_from_cursor(
                                 cursor_pos.y,
@@ -1876,8 +2745,6 @@ where
                             }
 
                             state.last_cursor = Some(cursor_pos);
-                        } else if matches!(zone, LayoutHitZone::PanelPlot(_)) {
-                            state.overlay_cache.clear();
                         }
                     }
                     _ => {}
@@ -2035,6 +2902,25 @@ where
 
         if state.is_panning {
             return advanced::mouse::Interaction::Grabbing;
+        }
+
+        let primary_panel = layout_tree
+            .panels
+            .iter()
+            .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)
+            .unwrap_or(0);
+        let panel_controls = self.build_panel_control_hits(&layout_tree, primary_panel);
+        let ticker_legend = self.build_ticker_legend_layout(&layout_tree, primary_panel);
+        let ticker_legend_hit = ticker_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_local));
+
+        if ticker_legend_hit.is_some() {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
+        if Self::hit_panel_control(&layout_tree, &panel_controls, cursor_local).is_some() {
+            return advanced::mouse::Interaction::Pointer;
         }
 
         match layout_tree.hit_test(cursor_local) {

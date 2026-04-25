@@ -268,6 +268,43 @@ impl KlineChartV2 {
                         self.bump_rev();
                     }
                 }
+                KlineWidgetEvent::PanelMoveUp { index } => {
+                    if index > 0 && self.composition.move_panel(index, index - 1) {
+                        self.sync_widget_panel_layout();
+                        self.bump_rev();
+                    }
+                }
+                KlineWidgetEvent::PanelMoveDown { index } => {
+                    let target = index.saturating_add(1);
+                    if target < self.composition.panels.len()
+                        && self.composition.move_panel(index, target)
+                    {
+                        self.sync_widget_panel_layout();
+                        self.bump_rev();
+                    }
+                }
+                KlineWidgetEvent::PanelSettings { .. } => {
+                    // TODO: Hook for upcoming panel settings modal/workflow.
+                }
+                KlineWidgetEvent::PanelClose { index } => {
+                    if let Some(panel_id) = self.composition.panels.get(index).map(|panel| panel.id)
+                        && self.composition.remove_panel(panel_id)
+                    {
+                        self.prune_stale_indicator_panel_bindings();
+                        self.sync_widget_panel_layout();
+                        self.bump_rev();
+                    }
+                }
+                KlineWidgetEvent::TickerSettings(_ticker) => {
+                    // Hook for ticker-specific settings editor.
+                }
+                KlineWidgetEvent::TickerRemove(ticker) => {
+                    if ticker != self.base_ticker && self.remove_ticker_state(ticker) {
+                        self.sync_primary_panel_comparison_sources();
+                        self.sync_widget_panel_layout();
+                        self.bump_rev();
+                    }
+                }
                 KlineWidgetEvent::XAxisDoubleClick => {
                     self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
                     self.pan = DEFAULT_PAN_POINTS;
@@ -510,7 +547,19 @@ impl KlineChartV2 {
         }
     }
 
+    fn prune_stale_indicator_panel_bindings(&mut self) {
+        for indicator in indicator::all_indicators().iter().copied() {
+            if let Some(binding) = self.indicator_panels[indicator]
+                && self.composition.panel(binding.panel_id).is_none()
+            {
+                self.indicator_panels[indicator] = None;
+            }
+        }
+    }
+
     fn sync_widget_panel_layout(&mut self) {
+        self.prune_stale_indicator_panel_bindings();
+
         self.panel_kinds.clear();
         self.panel_titles.clear();
         self.panel_marks.clear();
