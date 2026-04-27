@@ -32,8 +32,8 @@ rustc-hash = "2.1.1"
 enum-map = "2.7.3"
 url = "2.5.8"
 uuid = { version = "1.11.0", features = ["v4"] }
-exchange = { version = "0.8.7", path = "exchange", package = "flowsurface-exchange" }
-data = { version = "0.8.7", path = "data", package = "flowsurface-data" }
+data = { version = "0.8.8", path = "data", package = "flowsurface-data" }
+exchange = { version = "0.8.8", path = "exchange", package = "flowsurface-exchange" }
 
 [dependencies]
 iced = { version = "0.14.0", default-features = false, features = [
