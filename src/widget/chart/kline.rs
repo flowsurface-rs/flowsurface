@@ -1,14 +1,17 @@
-use crate::chart::composition::{MarkKind, PanelScaleMode};
+mod chrome;
+pub mod composition;
+mod layout;
+mod scene;
+
 use crate::style;
-use crate::widget::chart::Regions;
-use crate::widget::chart::Zoom;
+use composition::{MarkKind, PanelScaleMode};
 
 use data::UserTimezone;
 use data::chart::Basis;
-use exchange::{Kline, TickerInfo, Timeframe, UnixMs};
+use exchange::{Kline, TickerInfo, Timeframe};
 
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
+use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{
@@ -22,7 +25,7 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
-const ZOOM_STEP_PCT: f32 = 0.05;
+const SCALE_STEP_PCT: f32 = 0.08;
 const PANEL_X_AXIS_HEIGHT: f32 = 18.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
@@ -37,9 +40,9 @@ const PANEL_CONTROL_TOOLTIP_GAP: f32 = 3.0;
 
 const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
-const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 6.0;
+const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
-const TICKER_LEGEND_TOP_OFFSET: f32 = TEXT_SIZE + 10.0;
+const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 
 const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] =
     [KlinePanelKind::PrimaryChart, KlinePanelKind::Indicator];
@@ -48,96 +51,26 @@ const DEFAULT_PANEL_MARKS: [MarkKind; 2] = [MarkKind::Candle, MarkKind::Bar];
 const DEFAULT_PANEL_SCALE_MODES: [PanelScaleMode; 2] =
     [PanelScaleMode::Absolute, PanelScaleMode::Absolute];
 
-pub const DEFAULT_ZOOM_POINTS: usize = 150;
-pub const MIN_ZOOM_POINTS: usize = 2;
-pub const MAX_ZOOM_POINTS: usize = 5000;
+pub const DEFAULT_BAR_SPACING_PX: f32 = 8.0;
+pub const MIN_BAR_SPACING_PX: f32 = 2.0;
+pub const MAX_BAR_SPACING_PX: f32 = 48.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TickIndex(u64);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HorizontalScale(pub f32);
 
-impl TickIndex {
-    const ZERO: Self = Self(0);
+impl HorizontalScale {
+    pub fn pixels_per_bar(px: f32) -> Self {
+        Self(px)
+    }
 
-    #[inline]
-    fn as_u64(self) -> u64 {
+    pub fn as_pixels_per_bar(self) -> f32 {
         self.0
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum XAxis {
-    Time {
-        timeframe: Timeframe,
-        anchor: UnixMs,
-    },
-    Tick {
-        anchor: TickIndex,
-    },
-}
-
-impl XAxis {
-    #[inline]
-    fn unit_from_time(self, value: UnixMs) -> i64 {
-        match self {
-            Self::Time { timeframe, anchor } => {
-                let aligned = value.floor_to(timeframe).as_u64() as i128;
-                let anchor = anchor.as_u64() as i128;
-                let step = timeframe.to_milliseconds().max(1) as i128;
-                ((aligned - anchor) / step).clamp(i64::MIN as i128, i64::MAX as i128) as i64
-            }
-            Self::Tick { .. } => 0,
-        }
-    }
-
-    #[inline]
-    fn unit_from_tick(self, value: TickIndex) -> i64 {
-        match self {
-            Self::Tick { anchor } => {
-                let anchor = anchor.as_u64() as i128;
-                let index = value.as_u64() as i128;
-                (anchor - index).clamp(i64::MIN as i128, i64::MAX as i128) as i64
-            }
-            Self::Time { .. } => 0,
-        }
-    }
-
-    #[inline]
-    fn time_from_unit(self, unit: i64) -> Option<UnixMs> {
-        match self {
-            Self::Time { timeframe, anchor } => {
-                let step = i64::try_from(timeframe.to_milliseconds()).unwrap_or(i64::MAX);
-                Some(anchor.saturating_add_signed(unit.saturating_mul(step)))
-            }
-            Self::Tick { .. } => None,
-        }
-    }
-
-    #[inline]
-    fn tick_from_unit(self, unit: i64) -> Option<TickIndex> {
-        match self {
-            Self::Tick { anchor } => {
-                let value = (anchor.as_u64() as i128) - (unit as i128);
-                if value < 0 {
-                    None
-                } else {
-                    Some(TickIndex(value as u64))
-                }
-            }
-            Self::Time { .. } => None,
-        }
-    }
-
-    #[inline]
-    fn step_ms(self, step_units: i64) -> u64 {
-        match self {
-            Self::Time { timeframe, .. } => {
-                let step = step_units.max(1) as u64;
-                timeframe.to_milliseconds().max(1).saturating_mul(step)
-            }
-            Self::Tick { .. } => 1,
-        }
-    }
-}
+use chrome::TickerLegendHit;
+use layout::{LayoutHitZone, PanelLayoutTree};
+use scene::Scene;
 
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
@@ -157,8 +90,8 @@ pub enum KlinePanelKind {
 
 #[derive(Debug, Clone)]
 pub enum KlineWidgetEvent {
-    ZoomChanged(Zoom),
-    PanChanged(f32),
+    HorizontalScaleChanged(HorizontalScale),
+    HorizontalOffsetChanged(f32),
     PanelSplitChanged { index: usize, split: f32 },
     PanelMoveUp { index: usize },
     PanelMoveDown { index: usize },
@@ -174,247 +107,13 @@ struct State {
     y_axis_cache: canvas::Cache,
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
+    interaction_text_cache: canvas::Cache,
+    tooltip_cache: canvas::Cache,
     is_panning: bool,
     dragging_split: Option<usize>,
     last_cursor: Option<Point>,
     last_cache_rev: u64,
     previous_click: Option<iced_core::mouse::Click>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LayoutHitZone {
-    PanelPlot(usize),
-    PanelXAxis(usize),
-    BottomXAxis,
-    YAxis,
-    Splitter(usize),
-    Outside,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PanelControlKind {
-    MoveUp,
-    MoveDown,
-    Settings,
-    Close,
-}
-
-impl PanelControlKind {
-    fn icon(self) -> &'static str {
-        match self {
-            Self::MoveUp => "^",
-            Self::MoveDown => "v",
-            Self::Settings => "S",
-            Self::Close => "X",
-        }
-    }
-
-    fn tooltip(self) -> &'static str {
-        match self {
-            Self::MoveUp => "Move panel up",
-            Self::MoveDown => "Move panel down",
-            Self::Settings => "Panel settings",
-            Self::Close => "Remove panel",
-        }
-    }
-
-    fn into_event(self, index: usize) -> KlineWidgetEvent {
-        match self {
-            Self::MoveUp => KlineWidgetEvent::PanelMoveUp { index },
-            Self::MoveDown => KlineWidgetEvent::PanelMoveDown { index },
-            Self::Settings => KlineWidgetEvent::PanelSettings { index },
-            Self::Close => KlineWidgetEvent::PanelClose { index },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PanelControlHit {
-    panel_index: usize,
-    kind: PanelControlKind,
-    rect: Rectangle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TickerLegendIconKind {
-    Settings,
-    Close,
-}
-
-impl TickerLegendIconKind {
-    fn icon(self) -> &'static str {
-        match self {
-            Self::Settings => "S",
-            Self::Close => "X",
-        }
-    }
-
-    fn tooltip(self) -> &'static str {
-        match self {
-            Self::Settings => "Ticker settings",
-            Self::Close => "Remove ticker",
-        }
-    }
-
-    fn into_event(self, ticker: TickerInfo) -> KlineWidgetEvent {
-        match self {
-            Self::Settings => KlineWidgetEvent::TickerSettings(ticker),
-            Self::Close => KlineWidgetEvent::TickerRemove(ticker),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TickerLegendRowHit {
-    ticker: TickerInfo,
-    y_center: f32,
-    row_rect: Rectangle,
-    settings: Rectangle,
-    close: Rectangle,
-    has_close: bool,
-}
-
-#[derive(Debug, Clone)]
-struct TickerLegendLayout {
-    bg: Rectangle,
-    rows: Vec<TickerLegendRowHit>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TickerLegendHit {
-    Background,
-    Row(usize),
-    Icon(usize, TickerLegendIconKind),
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PanelLayoutNode {
-    kind: KlinePanelKind,
-    plot: Rectangle,
-    x_axis: Rectangle,
-}
-
-#[derive(Debug, Clone)]
-struct PanelLayoutTree {
-    regions: Regions,
-    panels: Vec<PanelLayoutNode>,
-    splitters: Vec<Rectangle>,
-}
-
-impl PanelLayoutTree {
-    fn child_at(layout: Layout<'_>, index: usize) -> Option<Layout<'_>> {
-        (index < layout.children().len()).then(|| layout.child(index))
-    }
-
-    fn from_layout(root: Layout<'_>, panel_kinds: &[KlinePanelKind]) -> Option<Self> {
-        if panel_kinds.is_empty() {
-            return None;
-        }
-
-        let regions = Regions::from_layout(root);
-
-        let row = Self::child_at(root, 0)?;
-        let panels = Self::child_at(row, 0)?;
-
-        let panels_bounds = panels.bounds();
-        let to_plot_local = |r: Rectangle| Rectangle {
-            x: r.x - panels_bounds.x,
-            y: r.y - panels_bounds.y,
-            width: r.width,
-            height: r.height,
-        };
-
-        let mut cursor = 0usize;
-        let mut panel_nodes = Vec::with_capacity(panel_kinds.len());
-        let mut splitters = Vec::with_capacity(panel_kinds.len().saturating_sub(1));
-
-        for (index, kind) in panel_kinds.iter().copied().enumerate() {
-            let plot = to_plot_local(Self::child_at(panels, cursor)?.bounds());
-            cursor += 1;
-
-            let x_axis = to_plot_local(Self::child_at(panels, cursor)?.bounds());
-            cursor += 1;
-
-            panel_nodes.push(PanelLayoutNode { kind, plot, x_axis });
-
-            if index + 1 < panel_kinds.len() {
-                splitters.push(to_plot_local(Self::child_at(panels, cursor)?.bounds()));
-                cursor += 1;
-            }
-        }
-
-        Some(Self {
-            regions,
-            panels: panel_nodes,
-            splitters,
-        })
-    }
-
-    fn panel(&self, index: usize) -> Option<&PanelLayoutNode> {
-        self.panels.get(index)
-    }
-
-    fn primary_plot_width(&self) -> f32 {
-        self.panels
-            .first()
-            .map(|panel| panel.plot.width)
-            .unwrap_or(self.regions.plot.width)
-    }
-
-    fn contains(rect: Rectangle, p: Point) -> bool {
-        p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height
-    }
-
-    fn plot_local_point(&self, root_local: Point) -> Option<Point> {
-        self.regions.is_in_plot(root_local).then_some(Point::new(
-            root_local.x - self.regions.plot.x,
-            root_local.y - self.regions.plot.y,
-        ))
-    }
-
-    fn splitter_hit_rect(splitter: Rectangle) -> Rectangle {
-        let hit_h = PANEL_SPLITTER_HIT_PX;
-        let center_y = splitter.y + splitter.height * 0.5;
-
-        Rectangle {
-            x: splitter.x,
-            y: center_y - hit_h * 0.5,
-            width: splitter.width,
-            height: hit_h,
-        }
-    }
-
-    fn hit_test(&self, root_local: Point) -> LayoutHitZone {
-        if self.regions.is_in_y_axis(root_local) {
-            return LayoutHitZone::YAxis;
-        }
-
-        if self.regions.is_in_x_axis(root_local) {
-            return LayoutHitZone::BottomXAxis;
-        }
-
-        let Some(plot_local) = self.plot_local_point(root_local) else {
-            return LayoutHitZone::Outside;
-        };
-
-        for (index, splitter) in self.splitters.iter().copied().enumerate() {
-            if Self::contains(Self::splitter_hit_rect(splitter), plot_local) {
-                return LayoutHitZone::Splitter(index);
-            }
-        }
-
-        for (index, panel) in self.panels.iter().enumerate() {
-            if Self::contains(panel.plot, plot_local) {
-                return LayoutHitZone::PanelPlot(index);
-            }
-
-            if Self::contains(panel.x_axis, plot_local) {
-                return LayoutHitZone::PanelXAxis(index);
-            }
-        }
-
-        LayoutHitZone::Outside
-    }
 }
 
 impl Default for State {
@@ -424,6 +123,8 @@ impl Default for State {
             y_axis_cache: canvas::Cache::new(),
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
+            interaction_text_cache: canvas::Cache::new(),
+            tooltip_cache: canvas::Cache::new(),
             is_panning: false,
             dragging_split: None,
             last_cursor: None,
@@ -438,221 +139,28 @@ impl State {
         self.plot_cache.clear();
         self.y_axis_cache.clear();
         self.x_axis_cache.clear();
+        self.clear_overlay_caches();
+    }
+
+    fn clear_overlay_caches(&mut self) {
         self.overlay_cache.clear();
+        self.interaction_text_cache.clear();
+        self.tooltip_cache.clear();
     }
 }
 
 pub struct KlineWidget<'a, S> {
     series: &'a [S],
     basis: Basis,
-    zoom: Zoom,
-    pan: f32,
+    horizontal_scale: HorizontalScale,
+    horizontal_offset: f32,
     panel_kinds: &'a [KlinePanelKind],
     panel_splits: &'a [f32],
-    panel_titles: &'a [String],
+    panel_titles: &'a [Option<String>],
     panel_marks: &'a [MarkKind],
     panel_scale_modes: &'a [PanelScaleMode],
     timezone: UserTimezone,
     version: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CursorInfo {
-    x_unit: i64,
-    panel_index: usize,
-    y_primary_value: Option<f32>,
-    y_indicator_value: Option<f32>,
-    x_plot: f32,
-    y_plot: f32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct IndicatorPanelScene {
-    panel_index: usize,
-    mark: MarkKind,
-    min_value: f32,
-    max_value: f32,
-}
-
-#[derive(Debug, Clone)]
-struct Scene {
-    layout: PanelLayoutTree,
-    x_axis: XAxis,
-    min_x_unit: i64,
-    max_x_unit: i64,
-    min_primary_value: f32,
-    max_primary_value: f32,
-    primary_panel: usize,
-    primary_mark: MarkKind,
-    primary_scale_mode: PanelScaleMode,
-    primary_scale_anchor: Option<f32>,
-    series_percent_anchors: Vec<Option<f32>>,
-    indicator_panels: Vec<IndicatorPanelScene>,
-    panel_controls: Vec<PanelControlHit>,
-    ticker_legend: Option<TickerLegendLayout>,
-    controls_visible_for_panel: Option<usize>,
-    hovered_control: Option<PanelControlHit>,
-    hovering_ticker_legend: bool,
-    hovered_ticker_row: Option<usize>,
-    hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
-    cursor: Option<CursorInfo>,
-}
-
-impl Scene {
-    fn plot_rect(&self) -> Rectangle {
-        self.layout.regions.plot
-    }
-
-    fn span_units(&self) -> f32 {
-        (self.max_x_unit - self.min_x_unit).max(1) as f32
-    }
-
-    fn primary_plot(&self) -> &Rectangle {
-        &self
-            .layout
-            .panel(self.primary_panel)
-            .expect("primary panel should exist")
-            .plot
-    }
-
-    fn indicator_panel_config(&self, panel_index: usize) -> Option<&IndicatorPanelScene> {
-        self.indicator_panels
-            .iter()
-            .find(|indicator| indicator.panel_index == panel_index)
-    }
-
-    fn indicator_plot(&self, panel_index: usize) -> Option<&Rectangle> {
-        self.layout.panel(panel_index).map(|panel| &panel.plot)
-    }
-
-    fn indicator_panel_bottom(&self, panel_index: usize) -> Option<f32> {
-        self.indicator_plot(panel_index)
-            .map(|rect| rect.y + rect.height)
-    }
-
-    fn map_x_plot(&self, x_unit: i64) -> f32 {
-        let span = self.span_units();
-        let ratio = ((x_unit - self.min_x_unit) as f32 / span).clamp(0.0, 1.0);
-        ratio * self.primary_plot().width
-    }
-
-    fn primary_value_to_display_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
-        if self.can_use_log_primary_scale()
-            && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic)
-        {
-            value.max(f32::MIN_POSITIVE).log10()
-        } else {
-            match (self.primary_scale_mode, anchor) {
-                (PanelScaleMode::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => {
-                    ((value / base) - 1.0) * 100.0
-                }
-                _ => value,
-            }
-        }
-    }
-
-    fn primary_domain_display_values(&self) -> (f32, f32) {
-        let min_primary_value = self.min_primary_value;
-        let max_primary_value = self.max_primary_value;
-
-        if self.can_use_log_primary_scale()
-            && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic)
-        {
-            (
-                min_primary_value.max(f32::MIN_POSITIVE).log10(),
-                max_primary_value.max(f32::MIN_POSITIVE).log10(),
-            )
-        } else {
-            match (self.primary_scale_mode, self.primary_scale_anchor) {
-                (PanelScaleMode::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => (
-                    ((min_primary_value / base) - 1.0) * 100.0,
-                    ((max_primary_value / base) - 1.0) * 100.0,
-                ),
-                _ => (min_primary_value, max_primary_value),
-            }
-        }
-    }
-
-    fn primary_to_display_value(&self, value: f32) -> f32 {
-        if self.can_use_log_primary_scale()
-            && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic)
-        {
-            value.max(f32::MIN_POSITIVE).log10()
-        } else {
-            match (self.primary_scale_mode, self.primary_scale_anchor) {
-                (PanelScaleMode::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => {
-                    ((value / base) - 1.0) * 100.0
-                }
-                _ => value,
-            }
-        }
-    }
-
-    fn primary_display_to_value(&self, display_value: f32) -> f32 {
-        if self.can_use_log_primary_scale()
-            && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic)
-        {
-            10_f32.powf(display_value).max(f32::MIN_POSITIVE)
-        } else {
-            match (self.primary_scale_mode, self.primary_scale_anchor) {
-                (PanelScaleMode::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => {
-                    base * (1.0 + display_value / 100.0)
-                }
-                _ => display_value,
-            }
-        }
-    }
-
-    fn can_use_log_primary_scale(&self) -> bool {
-        self.min_primary_value > f32::EPSILON && self.max_primary_value > f32::EPSILON
-    }
-
-    fn format_primary_axis_label(&self, display_value: f32, display_step: f32) -> String {
-        match self.primary_scale_mode {
-            PanelScaleMode::PercentFromBase => format!("{display_value:.2}%"),
-            PanelScaleMode::Logarithmic if self.can_use_log_primary_scale() => {
-                let value = self.primary_display_to_value(display_value);
-                let next_value =
-                    self.primary_display_to_value(display_value + display_step.abs().max(1e-3));
-                let value_step = (next_value - value).abs().max(1e-6);
-                super::format_value(value, value_step)
-            }
-            _ => super::format_value(display_value, display_step),
-        }
-    }
-
-    fn format_primary_cursor_label(&self, raw_value: f32) -> String {
-        match self.primary_scale_mode {
-            PanelScaleMode::PercentFromBase => {
-                format!("{:.2}%", self.primary_to_display_value(raw_value))
-            }
-            _ => super::format_value(raw_value, 0.01),
-        }
-    }
-
-    fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
-        let (min_display, max_display) = self.primary_domain_display_values();
-        let range = (max_display - min_display).abs().max(1e-6);
-        let display_value = if matches!(self.primary_scale_mode, PanelScaleMode::PercentFromBase) {
-            self.primary_value_to_display_with_anchor(value, anchor)
-        } else {
-            self.primary_to_display_value(value)
-        };
-        let ratio = ((display_value - min_display) / range).clamp(0.0, 1.0);
-        let panel = self.primary_plot();
-        panel.y + (1.0 - ratio) * panel.height
-    }
-
-    fn map_indicator_plot(&self, panel_index: usize, indicator_value: f32) -> Option<f32> {
-        let panel = self.indicator_plot(panel_index)?;
-        let (min_value, max_value) = self
-            .indicator_panel_config(panel_index)
-            .map(|indicator| (indicator.min_value, indicator.max_value))
-            .unwrap_or((0.0, 1.0));
-        let range = (max_value - min_value).abs().max(1e-6);
-        let ratio = ((indicator_value - min_value) / range).clamp(0.0, 1.0);
-        Some(panel.y + (1.0 - ratio) * panel.height)
-    }
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -663,8 +171,8 @@ where
         Self {
             series,
             basis: Basis::Time(timeframe),
-            zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
-            pan: 0.0,
+            horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
+            horizontal_offset: 0.0,
             panel_kinds: &DEFAULT_PANEL_KINDS,
             panel_splits: &DEFAULT_PANEL_SPLITS,
             panel_titles: &[],
@@ -675,13 +183,13 @@ where
         }
     }
 
-    pub fn with_zoom(mut self, zoom: Zoom) -> Self {
-        self.zoom = zoom;
+    pub fn with_horizontal_scale(mut self, scale: HorizontalScale) -> Self {
+        self.horizontal_scale = scale;
         self
     }
 
-    pub fn with_pan(mut self, pan: f32) -> Self {
-        self.pan = pan;
+    pub fn with_horizontal_offset(mut self, offset: f32) -> Self {
+        self.horizontal_offset = offset;
         self
     }
 
@@ -695,7 +203,7 @@ where
         self
     }
 
-    pub fn with_panel_titles(mut self, panel_titles: &'a [String]) -> Self {
+    pub fn with_panel_titles(mut self, panel_titles: &'a [Option<String>]) -> Self {
         self.panel_titles = panel_titles;
         self
     }
@@ -740,19 +248,19 @@ where
         }
     }
 
-    fn default_title_for_panel(kind: KlinePanelKind) -> &'static str {
+    fn default_title_for_panel(kind: KlinePanelKind) -> Option<&'static str> {
         match kind {
-            KlinePanelKind::PrimaryChart => "Price",
-            KlinePanelKind::Indicator => "Indicator",
+            KlinePanelKind::PrimaryChart => None,
+            KlinePanelKind::Indicator => Some("Indicator"),
         }
     }
 
-    fn resolved_panel_title(&self, panel_index: usize, panel_kind: KlinePanelKind) -> &str {
+    fn resolved_panel_title(&self, panel_index: usize, panel_kind: KlinePanelKind) -> Option<&str> {
         self.panel_titles
             .get(panel_index)
-            .map(String::as_str)
+            .and_then(|title| title.as_deref())
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| Self::default_title_for_panel(panel_kind))
+            .or_else(|| Self::default_title_for_panel(panel_kind))
     }
 
     fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
@@ -767,954 +275,6 @@ where
             .get(panel_index)
             .copied()
             .unwrap_or(PanelScaleMode::Absolute)
-    }
-
-    fn panel_control_kinds(
-        &self,
-        panel_index: usize,
-        panel_count: usize,
-        primary_panel: usize,
-    ) -> Vec<PanelControlKind> {
-        let mut controls = Vec::with_capacity(4);
-        let is_primary = panel_index == primary_panel;
-
-        if panel_index > 0 {
-            controls.push(PanelControlKind::MoveUp);
-        }
-
-        if panel_index + 1 < panel_count {
-            controls.push(PanelControlKind::MoveDown);
-        }
-
-        controls.push(PanelControlKind::Settings);
-
-        if !is_primary {
-            controls.push(PanelControlKind::Close);
-        }
-
-        controls
-    }
-
-    fn build_panel_control_hits(
-        &self,
-        layout: &PanelLayoutTree,
-        primary_panel: usize,
-    ) -> Vec<PanelControlHit> {
-        let panel_count = layout.panels.len();
-        let mut hits = Vec::with_capacity(panel_count.saturating_mul(4));
-
-        for (panel_index, panel) in layout.panels.iter().enumerate() {
-            let title = self.resolved_panel_title(panel_index, panel.kind);
-            let title_w = title.chars().count() as f32 * CHAR_W;
-            let min_x = panel.plot.x + PANEL_TITLE_LEFT_PAD + title_w + PANEL_TITLE_TO_CONTROLS_GAP;
-
-            let mut controls = self.panel_control_kinds(panel_index, panel_count, primary_panel);
-            while !controls.is_empty() {
-                let count = controls.len() as f32;
-                let total_w =
-                    count * PANEL_CONTROL_BOX + (count - 1.0).max(0.0) * PANEL_CONTROL_GAP;
-                let x = panel.plot.x + panel.plot.width - PANEL_TITLE_LEFT_PAD - total_w;
-                let y = panel.plot.y + PANEL_TITLE_TOP_PAD - 1.0;
-
-                if x < min_x {
-                    controls.remove(0);
-                    continue;
-                }
-
-                let mut x_cursor = x;
-                for kind in controls.into_iter() {
-                    hits.push(PanelControlHit {
-                        panel_index,
-                        kind,
-                        rect: Rectangle {
-                            x: x_cursor,
-                            y,
-                            width: PANEL_CONTROL_BOX,
-                            height: PANEL_CONTROL_BOX,
-                        },
-                    });
-
-                    x_cursor += PANEL_CONTROL_BOX + PANEL_CONTROL_GAP;
-                }
-                break;
-            }
-        }
-
-        hits
-    }
-
-    fn hit_panel_control(
-        layout: &PanelLayoutTree,
-        controls: &[PanelControlHit],
-        root_local: Point,
-    ) -> Option<PanelControlHit> {
-        let plot_local = layout.plot_local_point(root_local)?;
-
-        controls
-            .iter()
-            .copied()
-            .find(|control| PanelLayoutTree::contains(control.rect, plot_local))
-    }
-
-    fn control_visibility_panel(
-        &self,
-        layout: &PanelLayoutTree,
-        root_local: Point,
-    ) -> Option<usize> {
-        match layout.hit_test(root_local) {
-            LayoutHitZone::PanelPlot(panel_index) | LayoutHitZone::PanelXAxis(panel_index) => {
-                Some(panel_index)
-            }
-            _ => None,
-        }
-    }
-
-    fn build_ticker_legend_layout(
-        &self,
-        layout: &PanelLayoutTree,
-        primary_panel: usize,
-    ) -> Option<TickerLegendLayout> {
-        if self.series.is_empty() {
-            return None;
-        }
-
-        let panel = layout.panel(primary_panel)?;
-        let plot = panel.plot;
-
-        let rows_count = self.series.len();
-        let max_name_chars = self
-            .series
-            .iter()
-            .map(|series| {
-                series
-                    .ticker_info()
-                    .ticker
-                    .symbol_and_exchange_string()
-                    .len()
-            })
-            .max()
-            .unwrap_or(0);
-
-        let text_w = max_name_chars as f32 * CHAR_W;
-        let icon_pack_w = (2.0 * TICKER_LEGEND_ICON_BOX) + TICKER_LEGEND_ICON_GAP;
-
-        let bg_w = (text_w + icon_pack_w + TICKER_LEGEND_PADDING * 2.0 + 10.0)
-            .clamp(120.0, (plot.width * 0.6).max(120.0));
-
-        let max_bg_h = ((rows_count as f32) * TICKER_LEGEND_ROW_H + TICKER_LEGEND_PADDING * 2.0)
-            .min(plot.height * 0.5)
-            .max(TICKER_LEGEND_ROW_H + TICKER_LEGEND_PADDING * 2.0);
-        let max_rows_fit =
-            (((max_bg_h - TICKER_LEGEND_PADDING * 2.0) / TICKER_LEGEND_ROW_H).floor() as usize)
-                .max(1);
-        let visible_rows = rows_count.min(max_rows_fit);
-        let bg_h = visible_rows as f32 * TICKER_LEGEND_ROW_H + TICKER_LEGEND_PADDING * 2.0;
-
-        let bg = Rectangle {
-            x: plot.x + PANEL_TITLE_LEFT_PAD,
-            y: plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_TOP_OFFSET,
-            width: bg_w,
-            height: bg_h,
-        };
-
-        let x_right = bg.x + bg.width - TICKER_LEGEND_PADDING;
-
-        let mut rows = Vec::with_capacity(visible_rows);
-        let mut row_top = bg.y + TICKER_LEGEND_PADDING;
-
-        for (index, series) in self.series.iter().take(visible_rows).enumerate() {
-            let has_close = index != 0;
-            let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
-            let close = Rectangle {
-                x: x_right - TICKER_LEGEND_ICON_BOX,
-                y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
-                width: TICKER_LEGEND_ICON_BOX,
-                height: TICKER_LEGEND_ICON_BOX,
-            };
-            let settings = Rectangle {
-                x: if has_close {
-                    close.x - TICKER_LEGEND_ICON_GAP - TICKER_LEGEND_ICON_BOX
-                } else {
-                    close.x
-                },
-                y: close.y,
-                width: TICKER_LEGEND_ICON_BOX,
-                height: TICKER_LEGEND_ICON_BOX,
-            };
-
-            rows.push(TickerLegendRowHit {
-                ticker: *series.ticker_info(),
-                y_center,
-                row_rect: Rectangle {
-                    x: bg.x,
-                    y: row_top,
-                    width: bg.width,
-                    height: TICKER_LEGEND_ROW_H,
-                },
-                settings,
-                close,
-                has_close,
-            });
-
-            row_top += TICKER_LEGEND_ROW_H;
-        }
-
-        Some(TickerLegendLayout { bg, rows })
-    }
-
-    fn hit_ticker_legend(
-        layout: &PanelLayoutTree,
-        legend: &TickerLegendLayout,
-        root_local: Point,
-    ) -> Option<TickerLegendHit> {
-        let plot_local = layout.plot_local_point(root_local)?;
-        if !legend.bg.contains(plot_local) {
-            return None;
-        }
-
-        for (index, row) in legend.rows.iter().enumerate() {
-            if !row.row_rect.contains(plot_local) {
-                continue;
-            }
-
-            if row.settings.contains(plot_local) {
-                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Settings));
-            }
-
-            if row.has_close && row.close.contains(plot_local) {
-                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Close));
-            }
-
-            return Some(TickerLegendHit::Row(index));
-        }
-
-        Some(TickerLegendHit::Background)
-    }
-
-    fn bar_at_or_before_unit<'b>(
-        &self,
-        series: &'b S,
-        x_axis: XAxis,
-        target_unit: i64,
-    ) -> Option<&'b Kline> {
-        let mut best: Option<(i64, &'b Kline)> = None;
-
-        match x_axis {
-            XAxis::Time { .. } => {
-                for bar in series.bars() {
-                    let unit = x_axis.unit_from_time(bar.time);
-                    if unit == target_unit {
-                        return Some(bar);
-                    }
-
-                    if unit <= target_unit
-                        && best.map(|(best_unit, _)| unit > best_unit).unwrap_or(true)
-                    {
-                        best = Some((unit, bar));
-                    }
-                }
-            }
-            XAxis::Tick { .. } => {
-                let len = series.bars().len();
-                for (index, bar) in series.bars().iter().enumerate() {
-                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                    let unit = x_axis.unit_from_tick(TickIndex(from_latest));
-
-                    if unit == target_unit {
-                        return Some(bar);
-                    }
-
-                    if unit <= target_unit
-                        && best.map(|(best_unit, _)| unit > best_unit).unwrap_or(true)
-                    {
-                        best = Some((unit, bar));
-                    }
-                }
-            }
-        }
-
-        best.map(|(_, bar)| bar)
-    }
-
-    fn compute_primary_scale_anchor(
-        &self,
-        x_axis: XAxis,
-        min_x_unit: i64,
-        max_x_unit: i64,
-    ) -> Option<f32> {
-        let mut first_unit = i64::MAX;
-        let mut base_close = None;
-
-        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
-            if series_index != 0 {
-                return;
-            }
-
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            if unit < first_unit {
-                first_unit = unit;
-                base_close = Some(bar.close.to_f32());
-            }
-        });
-
-        base_close
-    }
-
-    fn compute_series_percent_anchors(
-        &self,
-        x_axis: XAxis,
-        min_x_unit: i64,
-        max_x_unit: i64,
-    ) -> Vec<Option<f32>> {
-        let mut anchors = vec![None; self.series.len()];
-        let mut first_units = vec![i64::MAX; self.series.len()];
-
-        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            if unit < first_units[series_index] {
-                first_units[series_index] = unit;
-                anchors[series_index] = Some(bar.close.to_f32());
-            }
-        });
-
-        anchors
-    }
-
-    fn compute_primary_percent_domain(
-        &self,
-        x_axis: XAxis,
-        min_x_unit: i64,
-        max_x_unit: i64,
-        primary_mark: MarkKind,
-        anchors: &[Option<f32>],
-    ) -> Option<(f32, f32)> {
-        let mut min_pct: Option<f32> = None;
-        let mut max_pct: Option<f32> = None;
-
-        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            let Some(anchor) = anchors
-                .get(series_index)
-                .copied()
-                .flatten()
-                .filter(|anchor| anchor.abs() > f32::EPSILON)
-            else {
-                return;
-            };
-
-            let mut emit_pct = |value: f32| {
-                let pct = ((value / anchor) - 1.0) * 100.0;
-                min_pct = Some(min_pct.map_or(pct, |current| current.min(pct)));
-                max_pct = Some(max_pct.map_or(pct, |current| current.max(pct)));
-            };
-
-            if series_index == 0 && !matches!(primary_mark, MarkKind::Line) {
-                emit_pct(bar.low.to_f32());
-                emit_pct(bar.high.to_f32());
-            } else {
-                emit_pct(bar.close.to_f32());
-            }
-        });
-
-        let min_pct = min_pct?;
-        let max_pct = max_pct?;
-
-        let pad = if (max_pct - min_pct).abs() <= f32::EPSILON {
-            max_pct.abs().max(1.0)
-        } else {
-            ((max_pct - min_pct).abs() * 0.05).max(0.25)
-        };
-
-        Some((min_pct - pad, max_pct + pad))
-    }
-
-    fn panel_min_ratio(&self, panel_count: usize, usable_plot_height: f32) -> f32 {
-        if panel_count <= 1 {
-            return 0.0;
-        }
-
-        let usable = usable_plot_height.max(1.0);
-        let geometric_min = MIN_PANEL_HEIGHT / usable;
-        let feasible_cap = 1.0 / panel_count as f32;
-
-        geometric_min.min(feasible_cap)
-    }
-
-    fn normalized_panel_splits(&self, panel_count: usize, usable_plot_height: f32) -> Vec<f32> {
-        let split_count = panel_count.saturating_sub(1);
-        if split_count == 0 {
-            return Vec::new();
-        }
-
-        let mut splits = Vec::with_capacity(split_count);
-        for index in 0..split_count {
-            let fallback = (index + 1) as f32 / panel_count as f32;
-            splits.push(self.panel_splits.get(index).copied().unwrap_or(fallback));
-        }
-
-        let min_ratio = self.panel_min_ratio(panel_count, usable_plot_height);
-
-        for index in 0..split_count {
-            let remaining_panels_after = panel_count.saturating_sub(index + 1);
-
-            let lower = if index > 0 {
-                splits[index - 1] + min_ratio
-            } else {
-                min_ratio
-            };
-
-            let upper = 1.0 - (remaining_panels_after as f32 * min_ratio);
-            let (min_bound, max_bound) = if lower <= upper {
-                (lower, upper)
-            } else {
-                (upper, lower)
-            };
-
-            splits[index] = splits[index].clamp(min_bound, max_bound);
-        }
-
-        splits
-    }
-
-    fn panel_plot_heights(&self, panel_stack_height: f32, panel_count: usize) -> Vec<f32> {
-        if panel_count == 0 {
-            return Vec::new();
-        }
-
-        let non_plot = (panel_count as f32 * PANEL_X_AXIS_HEIGHT)
-            + (panel_count.saturating_sub(1) as f32 * PANEL_SPLITTER_HEIGHT);
-        let usable = (panel_stack_height - non_plot).max(0.0);
-
-        if panel_count == 1 {
-            return vec![usable];
-        }
-
-        let splits = self.normalized_panel_splits(panel_count, usable.max(1.0));
-        let mut heights = Vec::with_capacity(panel_count);
-        let mut previous = 0.0;
-
-        for split in splits {
-            let boundary = split.clamp(0.0, 1.0) * usable;
-            heights.push((boundary - previous).max(0.0));
-            previous = boundary;
-        }
-
-        heights.push((usable - previous).max(0.0));
-        heights
-    }
-
-    fn split_ratio_from_cursor(
-        &self,
-        cursor_y: f32,
-        layout: &PanelLayoutTree,
-        split_index: usize,
-    ) -> Option<f32> {
-        let panel_count = layout.panels.len();
-        let split_count = panel_count.saturating_sub(1);
-
-        if split_count == 0 || split_index >= split_count {
-            return None;
-        }
-
-        let local_y = (cursor_y - layout.regions.plot.y).clamp(0.0, layout.regions.plot.height);
-        let usable_plot_height: f32 = layout.panels.iter().map(|panel| panel.plot.height).sum();
-        let usable = usable_plot_height.max(1.0);
-
-        let fixed_before = ((split_index + 1) as f32 * PANEL_X_AXIS_HEIGHT)
-            + (split_index as f32 * PANEL_SPLITTER_HEIGHT)
-            + (PANEL_SPLITTER_HEIGHT * 0.5);
-        let boundary = (local_y - fixed_before).clamp(0.0, usable);
-        let ratio = (boundary / usable).clamp(0.0, 1.0);
-
-        let splits = self.normalized_panel_splits(panel_count, usable);
-        let min_ratio = self.panel_min_ratio(panel_count, usable);
-
-        let lower = if split_index > 0 {
-            splits[split_index - 1] + min_ratio
-        } else {
-            min_ratio
-        };
-
-        let upper = if split_index + 1 < splits.len() {
-            splits[split_index + 1] - min_ratio
-        } else {
-            1.0 - min_ratio
-        };
-
-        let (min_bound, max_bound) = if lower <= upper {
-            (lower, upper)
-        } else {
-            (upper, lower)
-        };
-
-        Some(ratio.clamp(min_bound, max_bound))
-    }
-
-    fn resolve_x_axis(&self) -> Option<XAxis> {
-        match self.basis {
-            Basis::Time(timeframe) => {
-                let anchor = self
-                    .series
-                    .iter()
-                    .flat_map(|s| s.bars().iter())
-                    .map(|bar| bar.time.floor_to(timeframe))
-                    .max()?;
-
-                Some(XAxis::Time { timeframe, anchor })
-            }
-            Basis::Tick(_) => {
-                if self.max_points_available() == 0 {
-                    None
-                } else {
-                    Some(XAxis::Tick {
-                        anchor: TickIndex::ZERO,
-                    })
-                }
-            }
-        }
-    }
-
-    fn normalize_zoom(&self, z: Zoom) -> Zoom {
-        if z.is_all() {
-            return Zoom::all();
-        }
-
-        Zoom::points(z.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS))
-    }
-
-    fn max_points_available(&self) -> usize {
-        self.series
-            .iter()
-            .map(|s| s.bars().len())
-            .max()
-            .unwrap_or_default()
-    }
-
-    fn step_zoom_percent(&self, current: Zoom, zoom_in: bool) -> Zoom {
-        let len = self.max_points_available().max(MIN_ZOOM_POINTS);
-        let base_n = if current.is_all() {
-            len
-        } else {
-            current.0.clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS)
-        };
-
-        let step = ((base_n as f32) * ZOOM_STEP_PCT).ceil().max(1.0) as usize;
-
-        let new_n = if zoom_in {
-            base_n.saturating_sub(step).max(MIN_ZOOM_POINTS)
-        } else {
-            base_n.saturating_add(step).min(MAX_ZOOM_POINTS)
-        };
-
-        Zoom::points(new_n)
-    }
-
-    fn for_each_bar_unit_index(&self, x_axis: XAxis, mut f: impl FnMut(usize, &S, i64, &Kline)) {
-        for (series_index, series) in self.series.iter().enumerate() {
-            match x_axis {
-                XAxis::Time { .. } => {
-                    for bar in series.bars() {
-                        f(series_index, series, x_axis.unit_from_time(bar.time), bar);
-                    }
-                }
-                XAxis::Tick { .. } => {
-                    let len = series.bars().len();
-                    for (index, bar) in series.bars().iter().enumerate() {
-                        let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                        f(
-                            series_index,
-                            series,
-                            x_axis.unit_from_tick(TickIndex(from_latest)),
-                            bar,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn for_each_bar_unit(&self, x_axis: XAxis, mut f: impl FnMut(&S, i64, &Kline)) {
-        self.for_each_bar_unit_index(x_axis, |_, series, unit, bar| f(series, unit, bar));
-    }
-
-    fn data_x_bounds(&self, x_axis: XAxis) -> Option<(i64, i64)> {
-        let mut any = false;
-        let mut min_unit = i64::MAX;
-        let mut max_unit = i64::MIN;
-
-        self.for_each_bar_unit(x_axis, |_, unit, _| {
-            any = true;
-            min_unit = min_unit.min(unit);
-            max_unit = max_unit.max(unit);
-        });
-
-        any.then_some((min_unit, max_unit))
-    }
-
-    fn current_x_span_units(&self) -> f32 {
-        let Some(x_axis) = self.resolve_x_axis() else {
-            return 1.0;
-        };
-        let Some((data_min_x, data_max_x)) = self.data_x_bounds(x_axis) else {
-            return 1.0;
-        };
-
-        if self.zoom.is_all() {
-            (data_max_x - data_min_x).max(1) as f32
-        } else {
-            self.zoom
-                .0
-                .clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS)
-                .saturating_sub(1) as f32
-        }
-    }
-
-    fn compute_x_window(&self) -> Option<(XAxis, i64, i64)> {
-        let x_axis = self.resolve_x_axis()?;
-        let (data_min_x, mut data_max_x) = self.data_x_bounds(x_axis)?;
-
-        if data_max_x == data_min_x {
-            data_max_x = data_max_x.saturating_add(1);
-        }
-
-        let span = if self.zoom.is_all() {
-            (data_max_x - data_min_x).max(1)
-        } else {
-            self.zoom
-                .0
-                .clamp(MIN_ZOOM_POINTS, MAX_ZOOM_POINTS)
-                .saturating_sub(1) as i64
-        };
-
-        let pan_units = self.pan.round() as i64;
-        let mut right = data_max_x.saturating_add(pan_units);
-        let right_cap = data_max_x.saturating_add(span);
-        if right > right_cap {
-            right = right_cap;
-        }
-
-        let mut left = right.saturating_sub(span);
-
-        if left < data_min_x {
-            let shift = data_min_x.saturating_sub(left);
-            left = left.saturating_add(shift);
-            right = right.saturating_add(shift);
-        }
-
-        if right <= left {
-            right = left.saturating_add(1);
-        }
-
-        Some((x_axis, left, right))
-    }
-
-    fn compute_primary_domain(
-        &self,
-        x_axis: XAxis,
-        min_x_unit: i64,
-        max_x_unit: i64,
-    ) -> Option<(f32, f32)> {
-        let mut min_primary_value: Option<f32> = None;
-        let mut max_primary_value: Option<f32> = None;
-
-        self.for_each_bar_unit(x_axis, |_, unit, bar| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            let low = bar.low.to_f32();
-            let high = bar.high.to_f32();
-
-            min_primary_value = Some(min_primary_value.map_or(low, |value| value.min(low)));
-            max_primary_value = Some(max_primary_value.map_or(high, |value| value.max(high)));
-        });
-
-        let min_primary_value = min_primary_value?;
-        let max_primary_value = max_primary_value?;
-
-        let pad = if (max_primary_value - min_primary_value).abs() <= f32::EPSILON {
-            (max_primary_value.abs() / 200.0).max(1e-6)
-        } else {
-            ((max_primary_value - min_primary_value).abs() * 0.05).max(1e-6)
-        };
-
-        Some((min_primary_value - pad, max_primary_value + pad))
-    }
-
-    fn compute_indicator_domain(
-        &self,
-        x_axis: XAxis,
-        min_x_unit: i64,
-        max_x_unit: i64,
-        indicator_panel_index: usize,
-        scale_mode: PanelScaleMode,
-    ) -> Option<(f32, f32)> {
-        let mut any = false;
-        let mut min_value = f32::INFINITY;
-        let mut indicator_max_value = 0.0f32;
-
-        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
-            if series_index != 0 {
-                return;
-            }
-
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            any = true;
-            let value = series.indicator_value_for_panel(indicator_panel_index, bar);
-            min_value = min_value.min(value);
-            indicator_max_value = indicator_max_value.max(value);
-        });
-
-        if !any {
-            return None;
-        }
-
-        match scale_mode {
-            PanelScaleMode::FitVisible => {
-                let span = (indicator_max_value - min_value).abs();
-                let pad = if span <= f32::EPSILON {
-                    indicator_max_value.abs().max(1.0) * 0.02
-                } else {
-                    span * 0.05
-                };
-
-                Some((min_value - pad, indicator_max_value + pad))
-            }
-            PanelScaleMode::FitVisibleIncludeZero => {
-                let min_including_zero = min_value.min(0.0);
-                let max_including_zero = indicator_max_value.max(0.0);
-                let span = (max_including_zero - min_including_zero).abs();
-                let pad = if span <= f32::EPSILON {
-                    max_including_zero.abs().max(1.0) * 0.02
-                } else {
-                    span * 0.05
-                };
-
-                Some((min_including_zero - pad, max_including_zero + pad))
-            }
-            _ => Some((0.0, indicator_max_value.max(1.0))),
-        }
-    }
-
-    fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
-        let panel_kinds = self.resolved_panel_kinds();
-        let panel_layout = PanelLayoutTree::from_layout(layout, panel_kinds)?;
-        let primary_panel = panel_layout
-            .panels
-            .iter()
-            .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)?;
-        let primary_mark = self.resolved_panel_mark(primary_panel, KlinePanelKind::PrimaryChart);
-        let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
-
-        let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window()?;
-
-        let indicator_panels: Vec<IndicatorPanelScene> = panel_layout
-            .panels
-            .iter()
-            .enumerate()
-            .filter_map(|(panel_index, panel)| {
-                if panel.kind != KlinePanelKind::Indicator {
-                    return None;
-                }
-
-                let mark = self.resolved_panel_mark(panel_index, KlinePanelKind::Indicator);
-                let scale_mode = self.resolved_panel_scale_mode(panel_index);
-                let (min_value, max_value) = self
-                    .compute_indicator_domain(
-                        x_axis,
-                        min_x_unit,
-                        max_x_unit,
-                        panel_index,
-                        scale_mode,
-                    )
-                    .unwrap_or((0.0, 1.0));
-
-                Some(IndicatorPanelScene {
-                    panel_index,
-                    mark,
-                    min_value,
-                    max_value,
-                })
-            })
-            .collect();
-
-        let mut series_percent_anchors = Vec::new();
-
-        let (min_primary_value, max_primary_value, primary_scale_anchor) =
-            if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
-                && self.series.len() > 1
-            {
-                let anchors = self.compute_series_percent_anchors(x_axis, min_x_unit, max_x_unit);
-                let (min_value, max_value) = self.compute_primary_percent_domain(
-                    x_axis,
-                    min_x_unit,
-                    max_x_unit,
-                    primary_mark,
-                    &anchors,
-                )?;
-
-                series_percent_anchors = anchors;
-                (min_value, max_value, None)
-            } else {
-                let (min_value, max_value) =
-                    self.compute_primary_domain(x_axis, min_x_unit, max_x_unit)?;
-                let scale_anchor = if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
-                {
-                    self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit)
-                } else {
-                    None
-                };
-
-                (min_value, max_value, scale_anchor)
-            };
-
-        if series_percent_anchors.is_empty() {
-            series_percent_anchors = vec![primary_scale_anchor; self.series.len()];
-        }
-
-        let primary_plot = panel_layout.panel(primary_panel)?.plot;
-
-        let panel_controls = self.build_panel_control_hits(&panel_layout, primary_panel);
-        let ticker_legend = self.build_ticker_legend_layout(&panel_layout, primary_panel);
-
-        let mut scene = Scene {
-            layout: panel_layout,
-            x_axis,
-            min_x_unit,
-            max_x_unit,
-            min_primary_value,
-            max_primary_value,
-            primary_panel,
-            primary_mark,
-            primary_scale_mode,
-            primary_scale_anchor,
-            series_percent_anchors,
-            indicator_panels,
-            panel_controls,
-            ticker_legend,
-            controls_visible_for_panel: None,
-            hovered_control: None,
-            hovering_ticker_legend: false,
-            hovered_ticker_row: None,
-            hovered_ticker_icon: None,
-            cursor: None,
-        };
-
-        let cursor_root_local = cursor.position_in(layout.bounds());
-
-        if let Some(local) = cursor_root_local {
-            scene.hovered_control =
-                Self::hit_panel_control(&scene.layout, &scene.panel_controls, local);
-
-            if let Some(legend) = scene.ticker_legend.as_ref()
-                && let Some(hit) = Self::hit_ticker_legend(&scene.layout, legend, local)
-            {
-                scene.hovering_ticker_legend = true;
-                match hit {
-                    TickerLegendHit::Background => {}
-                    TickerLegendHit::Row(index) => {
-                        scene.hovered_ticker_row = Some(index);
-                    }
-                    TickerLegendHit::Icon(index, kind) => {
-                        scene.hovered_ticker_row = Some(index);
-                        scene.hovered_ticker_icon = Some((index, kind));
-                    }
-                }
-            }
-
-            scene.controls_visible_for_panel = scene
-                .hovered_control
-                .map(|hit| hit.panel_index)
-                .or_else(|| self.control_visibility_panel(&scene.layout, local));
-        }
-
-        let mut cursor_info = None;
-
-        if let Some(local) = cursor_root_local {
-            let zone = scene.layout.hit_test(local);
-
-            if matches!(zone, LayoutHitZone::PanelPlot(_))
-                && let Some(plot_local) = scene.layout.plot_local_point(local)
-            {
-                let x_plot = plot_local.x.clamp(0.0, primary_plot.width.max(1.0));
-
-                let span = (max_x_unit - min_x_unit).max(1) as f32;
-                let ratio = (x_plot / primary_plot.width.max(1.0)).clamp(0.0, 1.0);
-                let raw_x_unit = min_x_unit.saturating_add((ratio * span).round() as i64);
-                let snapped_x_unit = raw_x_unit.clamp(min_x_unit, max_x_unit);
-                let snapped_x_plot = (((snapped_x_unit - min_x_unit) as f32 / span)
-                    .clamp(0.0, 1.0))
-                    * primary_plot.width;
-
-                if let LayoutHitZone::PanelPlot(panel_index) = zone
-                    && let Some(panel) = scene.layout.panel(panel_index)
-                {
-                    let y_in_panel =
-                        (plot_local.y - panel.plot.y).clamp(0.0, panel.plot.height.max(1.0));
-
-                    let (y_primary_value, y_indicator_value) = match panel.kind {
-                        KlinePanelKind::PrimaryChart => {
-                            let value_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
-                            let (min_display, max_display) = scene.primary_domain_display_values();
-                            let y_display_value =
-                                min_display + ((max_display - min_display) * value_ratio);
-                            let y_primary_value = scene.primary_display_to_value(y_display_value);
-
-                            (Some(y_primary_value), None)
-                        }
-                        KlinePanelKind::Indicator => {
-                            let indicator_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
-                            let (min_value, max_value) = scene
-                                .indicator_panel_config(panel_index)
-                                .map(|indicator| (indicator.min_value, indicator.max_value))
-                                .unwrap_or((0.0, 1.0));
-                            let y_indicator_value =
-                                min_value + (max_value - min_value) * indicator_ratio;
-
-                            (None, Some(y_indicator_value))
-                        }
-                    };
-
-                    cursor_info = Some(CursorInfo {
-                        x_unit: snapped_x_unit,
-                        panel_index,
-                        y_primary_value,
-                        y_indicator_value,
-                        x_plot: snapped_x_plot,
-                        y_plot: panel.plot.y + y_in_panel,
-                    });
-                }
-            }
-        }
-
-        scene.cursor = cursor_info;
-        Some(scene)
-    }
-
-    fn format_x_label(&self, x_axis: XAxis, unit: i64, step_units: i64) -> String {
-        match x_axis {
-            XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
-                || unit.to_string(),
-                |ts| {
-                    super::format_time_label(ts.as_u64(), x_axis.step_ms(step_units), self.timezone)
-                },
-            ),
-            XAxis::Tick { .. } => x_axis
-                .tick_from_unit(unit)
-                .map_or_else(|| unit.to_string(), |index| index.as_u64().to_string()),
-        }
     }
 
     fn comparison_line_color(ticker: &TickerInfo) -> iced::Color {
@@ -1735,9 +295,9 @@ where
     }
 
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let px_per_unit = scene.primary_plot().width / scene.span_units().max(1.0);
-        let candle_width = (px_per_unit * 0.7).clamp(1.0, 22.0);
-        let indicator_width = (px_per_unit * 0.8).clamp(1.0, 24.0);
+        let px_per_unit = scene.bar_spacing_px;
+        let candle_width = (px_per_unit * 0.7).clamp(1.0, 22.0).round().max(1.0);
+        let indicator_width = (px_per_unit * 0.8).clamp(1.0, 24.0).round().max(1.0);
 
         let mut primary_line_points: Vec<Vec<Point>> = vec![Vec::new(); self.series.len()];
         let mut indicator_line_points: Vec<Vec<Point>> =
@@ -1748,7 +308,7 @@ where
                 return;
             }
 
-            let x = scene.map_x_plot(x_unit);
+            let x = scene.map_x_plot(x_unit).round();
             let is_base_series = series_index == 0;
             let series_anchor = scene
                 .series_percent_anchors
@@ -1789,7 +349,7 @@ where
                         color,
                     );
 
-                    let wick_w = (candle_width * 0.16).clamp(1.0, 2.0);
+                    let wick_w = (candle_width * 0.16).clamp(1.0, 2.0).round().max(1.0);
                     frame.fill_rectangle(
                         Point::new(x - (wick_w / 2.0), y_high.min(y_low)),
                         Size::new(wick_w, (y_high - y_low).abs().max(1.0)),
@@ -1889,7 +449,10 @@ where
 
     fn fill_panel_titles(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
-            let title = self.resolved_panel_title(panel_index, panel.kind);
+            let Some(title) = self.resolved_panel_title(panel_index, panel.kind) else {
+                continue;
+            };
+
             let title_x = panel.plot.x + PANEL_TITLE_LEFT_PAD;
             let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD;
 
@@ -1900,383 +463,6 @@ where
                 size: (TEXT_SIZE - 1.0).into(),
                 align_x: iced::Alignment::Start.into(),
                 align_y: iced::Alignment::Start.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        }
-    }
-
-    fn fill_panel_header_values(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-    ) {
-        let Some(cursor) = scene.cursor else {
-            return;
-        };
-
-        let Some(base_series) = self.series.first() else {
-            return;
-        };
-
-        let Some(base_bar) = self.bar_at_or_before_unit(base_series, scene.x_axis, cursor.x_unit)
-        else {
-            return;
-        };
-
-        for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
-            let title = self.resolved_panel_title(panel_index, panel.kind);
-            let title_w = title.chars().count() as f32 * CHAR_W;
-
-            let mut x =
-                scene.layout.regions.plot.x + panel.plot.x + PANEL_TITLE_LEFT_PAD + title_w + 8.0;
-            let y = scene.layout.regions.plot.y + panel.plot.y + PANEL_TITLE_TOP_PAD;
-
-            let mut max_x = scene.layout.regions.plot.x + panel.plot.x + panel.plot.width
-                - PANEL_TITLE_LEFT_PAD;
-            if scene.controls_visible_for_panel == Some(panel_index)
-                && let Some(left_control_x) = scene
-                    .panel_controls
-                    .iter()
-                    .filter(|control| control.panel_index == panel_index)
-                    .map(|control| control.rect.x)
-                    .reduce(f32::min)
-            {
-                max_x = max_x.min(scene.layout.regions.plot.x + left_control_x - 4.0);
-            }
-
-            if x >= max_x {
-                continue;
-            }
-
-            if panel_index == scene.primary_panel {
-                let precision = base_series.ticker_info().min_ticksize;
-
-                if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar) {
-                    let open_f = base_bar.open.to_f32();
-                    let close_f = base_bar.close.to_f32();
-                    let change_pct = if open_f.abs() > f32::EPSILON {
-                        ((close_f - open_f) / open_f) * 100.0
-                    } else {
-                        0.0
-                    };
-
-                    let value_color = if change_pct >= 0.0 {
-                        palette.success.base.color
-                    } else {
-                        palette.danger.base.color
-                    };
-                    let label_color = palette.background.base.text.scale_alpha(0.82);
-
-                    let segments: Vec<(String, iced::Color, bool)> = vec![
-                        ("O".to_string(), label_color, false),
-                        (base_bar.open.to_string(precision), value_color, true),
-                        ("H".to_string(), label_color, false),
-                        (base_bar.high.to_string(precision), value_color, true),
-                        ("L".to_string(), label_color, false),
-                        (base_bar.low.to_string(precision), value_color, true),
-                        ("C".to_string(), label_color, false),
-                        (base_bar.close.to_string(precision), value_color, true),
-                        (format!("{change_pct:+.2}%"), value_color, true),
-                    ];
-
-                    for (text, color, is_value) in segments {
-                        if x >= max_x {
-                            break;
-                        }
-
-                        frame.fill_text(canvas::Text {
-                            content: text.clone(),
-                            position: Point::new(x, y),
-                            color,
-                            size: (TEXT_SIZE - 1.0).into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Start.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-
-                        x += text.chars().count() as f32 * CHAR_W;
-                        x += if is_value { 6.0 } else { 2.0 };
-                    }
-                } else {
-                    let text = format!("C {}", base_bar.close.to_string(precision));
-                    frame.fill_text(canvas::Text {
-                        content: text,
-                        position: Point::new(x, y),
-                        color: palette.background.base.text.scale_alpha(0.85),
-                        size: (TEXT_SIZE - 1.0).into(),
-                        align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Start.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
-                }
-            } else {
-                let value = base_series.indicator_value_for_panel(panel_index, base_bar);
-                let text = super::format_value(value, 0.01);
-
-                frame.fill_text(canvas::Text {
-                    content: text,
-                    position: Point::new(x, y),
-                    color: palette.background.base.text.scale_alpha(0.82),
-                    size: (TEXT_SIZE - 1.0).into(),
-                    align_x: iced::Alignment::Start.into(),
-                    align_y: iced::Alignment::Start.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    fn draw_legend_icon_button(
-        frame: &mut canvas::Frame,
-        rect: Rectangle,
-        icon: &str,
-        hovered: bool,
-        danger: bool,
-        palette: &Extended,
-    ) {
-        let fill = if hovered && danger {
-            palette.danger.base.color.scale_alpha(0.22)
-        } else if hovered {
-            palette.background.strong.color
-        } else {
-            palette.background.base.color.scale_alpha(0.72)
-        };
-
-        let text = if hovered && danger {
-            palette.danger.base.text
-        } else if hovered {
-            palette.background.strong.text
-        } else {
-            palette.background.base.text.scale_alpha(0.86)
-        };
-
-        frame.fill_rectangle(rect.position(), rect.size(), fill);
-        frame.fill_text(canvas::Text {
-            content: icon.to_string(),
-            position: Point::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5),
-            color: text,
-            size: PANEL_CONTROL_ICON_SIZE.into(),
-            align_x: iced::Alignment::Center.into(),
-            align_y: iced::Alignment::Center.into(),
-            font: style::AZERET_MONO,
-            ..Default::default()
-        });
-    }
-
-    fn fill_primary_ticker_legend(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-    ) {
-        let Some(legend) = scene.ticker_legend.as_ref() else {
-            return;
-        };
-
-        let to_root = |rect: Rectangle| Rectangle {
-            x: scene.layout.regions.plot.x + rect.x,
-            y: scene.layout.regions.plot.y + rect.y,
-            width: rect.width,
-            height: rect.height,
-        };
-
-        let bg = to_root(legend.bg);
-        frame.fill_rectangle(
-            bg.position(),
-            bg.size(),
-            palette.background.weak.color.scale_alpha(0.82),
-        );
-
-        for (index, row) in legend.rows.iter().enumerate() {
-            let row_rect = to_root(row.row_rect);
-            let hovered_row = scene.hovered_ticker_row == Some(index);
-
-            if hovered_row {
-                frame.fill_rectangle(
-                    row_rect.position(),
-                    row_rect.size(),
-                    palette.background.strong.color.scale_alpha(0.2),
-                );
-            }
-
-            let label = row.ticker.ticker.symbol_and_exchange_string();
-            let label_color = if index == 0 {
-                palette.background.base.text
-            } else {
-                Self::comparison_line_color(&row.ticker).scale_alpha(0.96)
-            };
-
-            frame.fill_text(canvas::Text {
-                content: label,
-                position: Point::new(
-                    bg.x + TICKER_LEGEND_PADDING,
-                    scene.layout.regions.plot.y + row.y_center,
-                ),
-                color: label_color,
-                size: (TEXT_SIZE - 1.0).into(),
-                align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-
-            if hovered_row {
-                let settings_root = to_root(row.settings);
-                let close_root = to_root(row.close);
-
-                let settings_hovered =
-                    scene.hovered_ticker_icon == Some((index, TickerLegendIconKind::Settings));
-                Self::draw_legend_icon_button(
-                    frame,
-                    settings_root,
-                    TickerLegendIconKind::Settings.icon(),
-                    settings_hovered,
-                    false,
-                    palette,
-                );
-
-                if row.has_close {
-                    let close_hovered =
-                        scene.hovered_ticker_icon == Some((index, TickerLegendIconKind::Close));
-                    Self::draw_legend_icon_button(
-                        frame,
-                        close_root,
-                        TickerLegendIconKind::Close.icon(),
-                        close_hovered,
-                        true,
-                        palette,
-                    );
-                }
-            }
-        }
-
-        if let Some((row_index, icon_kind)) = scene.hovered_ticker_icon
-            && let Some(row) = legend.rows.get(row_index)
-        {
-            let target = match icon_kind {
-                TickerLegendIconKind::Settings => to_root(row.settings),
-                TickerLegendIconKind::Close => to_root(row.close),
-            };
-
-            let label = icon_kind.tooltip();
-            let label_w = (label.chars().count() as f32 * CHAR_W + 10.0).clamp(90.0, 180.0);
-            let label_h = TEXT_SIZE + 4.0;
-
-            let tooltip_x = (target.x + target.width * 0.5 - label_w * 0.5).clamp(
-                scene.layout.regions.plot.x,
-                scene.layout.regions.plot.x + scene.layout.regions.plot.width - label_w,
-            );
-            let tooltip_y =
-                (target.y - label_h - PANEL_CONTROL_TOOLTIP_GAP).max(scene.layout.regions.plot.y);
-
-            frame.fill_rectangle(
-                Point::new(tooltip_x, tooltip_y),
-                Size::new(label_w, label_h),
-                palette.background.strong.color,
-            );
-
-            frame.fill_text(canvas::Text {
-                content: label.to_string(),
-                position: Point::new(tooltip_x + label_w * 0.5, tooltip_y + label_h * 0.5),
-                color: palette.background.strong.text,
-                size: (TEXT_SIZE - 1.0).into(),
-                align_x: iced::Alignment::Center.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        }
-    }
-
-    fn fill_panel_controls(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let Some(visible_panel) = scene.controls_visible_for_panel else {
-            return;
-        };
-
-        for control in scene
-            .panel_controls
-            .iter()
-            .copied()
-            .filter(|control| control.panel_index == visible_panel)
-        {
-            let hovered = scene
-                .hovered_control
-                .map(|hit| hit.panel_index == control.panel_index && hit.kind == control.kind)
-                .unwrap_or(false);
-
-            let is_close = matches!(control.kind, PanelControlKind::Close);
-
-            let fill_color = if hovered && is_close {
-                palette.danger.base.color.scale_alpha(0.22)
-            } else if hovered {
-                palette.background.strong.color
-            } else {
-                palette.background.base.color.scale_alpha(0.72)
-            };
-
-            let text_color = if hovered && is_close {
-                palette.danger.base.text
-            } else if hovered {
-                palette.background.strong.text
-            } else {
-                palette.background.base.text.scale_alpha(0.86)
-            };
-
-            let x = scene.layout.regions.plot.x + control.rect.x;
-            let y = scene.layout.regions.plot.y + control.rect.y;
-
-            frame.fill_rectangle(
-                Point::new(x, y),
-                Size::new(control.rect.width, control.rect.height),
-                fill_color,
-            );
-
-            frame.fill_text(canvas::Text {
-                content: control.kind.icon().to_string(),
-                position: Point::new(x + control.rect.width / 2.0, y + control.rect.height / 2.0),
-                color: text_color,
-                size: PANEL_CONTROL_ICON_SIZE.into(),
-                align_x: iced::Alignment::Center.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        }
-
-        if let Some(hovered) = scene.hovered_control {
-            let label = hovered.kind.tooltip();
-            let label_w = (label.chars().count() as f32 * CHAR_W + 10.0).clamp(68.0, 170.0);
-            let label_h = TEXT_SIZE + 4.0;
-
-            let hovered_x = scene.layout.regions.plot.x + hovered.rect.x;
-            let hovered_y = scene.layout.regions.plot.y + hovered.rect.y;
-
-            let tooltip_x = (hovered_x + hovered.rect.width * 0.5 - label_w * 0.5).clamp(
-                scene.layout.regions.plot.x,
-                scene.layout.regions.plot.x + scene.layout.regions.plot.width - label_w,
-            );
-
-            let tooltip_y =
-                (hovered_y - label_h - PANEL_CONTROL_TOOLTIP_GAP).max(scene.layout.regions.plot.y);
-
-            frame.fill_rectangle(
-                Point::new(tooltip_x, tooltip_y),
-                Size::new(label_w, label_h),
-                palette.background.strong.color,
-            );
-
-            frame.fill_text(canvas::Text {
-                content: label.to_string(),
-                position: Point::new(tooltip_x + label_w * 0.5, tooltip_y + label_h * 0.5),
-                color: palette.background.strong.text,
-                size: (TEXT_SIZE - 1.0).into(),
-                align_x: iced::Alignment::Center.into(),
-                align_y: iced::Alignment::Center.into(),
                 font: style::AZERET_MONO,
                 ..Default::default()
             });
@@ -2343,7 +529,10 @@ where
     fn fill_overlay(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette);
-        self.fill_panel_header_values(frame, scene, palette);
+
+        if !scene.hovering_ticker_legend && self.series.len() <= 1 {
+            self.fill_panel_header_values(frame, scene, palette);
+        }
 
         if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
             return;
@@ -2393,6 +582,23 @@ where
             ),
             stroke,
         );
+    }
+
+    fn fill_overlay_interaction_text(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
+            return;
+        }
+
+        let Some(cursor) = scene.cursor else {
+            return;
+        };
+
+        let gy = scene.layout.regions.plot.y + cursor.y_plot;
 
         if let Some(y_text) = cursor
             .y_primary_value
@@ -2455,6 +661,11 @@ where
             ..Default::default()
         });
     }
+
+    fn fill_overlay_tooltips(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        self.fill_panel_controls_tooltip(frame, scene, palette);
+        self.fill_primary_ticker_legend_tooltip(frame, scene, palette);
+    }
 }
 
 impl<'a, S, M> Widget<M, Theme, Renderer> for KlineWidget<'a, S>
@@ -2481,8 +692,8 @@ where
         &mut self,
         _tree: &mut Tree,
         _renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+        limits: &iced_layout::Limits,
+    ) -> iced_layout::Node {
         let panel_count = self.resolved_panel_kinds().len().max(1);
 
         let build_panel_stack = |stack_size: Size| {
@@ -2495,7 +706,7 @@ where
                 let plot_h = plot_heights.get(panel_index).copied().unwrap_or_default();
 
                 children.push(
-                    layout::Node::new(Size::new(stack_size.width, plot_h))
+                    iced_layout::Node::new(Size::new(stack_size.width, plot_h))
                         .move_to(Point::new(0.0, y)),
                 );
                 y += plot_h;
@@ -2507,28 +718,28 @@ where
                 };
 
                 children.push(
-                    layout::Node::new(Size::new(stack_size.width, axis_h))
+                    iced_layout::Node::new(Size::new(stack_size.width, axis_h))
                         .move_to(Point::new(0.0, y)),
                 );
                 y += axis_h;
 
                 if panel_index + 1 < panel_count {
                     children.push(
-                        layout::Node::new(Size::new(stack_size.width, PANEL_SPLITTER_HEIGHT))
+                        iced_layout::Node::new(Size::new(stack_size.width, PANEL_SPLITTER_HEIGHT))
                             .move_to(Point::new(0.0, y)),
                     );
                     y += PANEL_SPLITTER_HEIGHT;
                 }
             }
 
-            layout::Node::with_children(stack_size, children)
+            iced_layout::Node::with_children(stack_size, children)
         };
 
-        let row_node = layout::next_to_each_other(
+        let row_node = iced_layout::next_to_each_other(
             &limits.shrink(Size::new(0.0, X_AXIS_HEIGHT)),
             0.0,
             |l| {
-                let stack_node = layout::atomic(
+                let stack_node = iced_layout::atomic(
                     &l.shrink(Size::new(Y_AXIS_GUTTER, 0.0)),
                     Length::Fill,
                     Length::Fill,
@@ -2536,27 +747,27 @@ where
 
                 build_panel_stack(stack_node.size())
             },
-            |l| layout::atomic(l, Y_AXIS_GUTTER, Length::Fill),
+            |l| iced_layout::atomic(l, Y_AXIS_GUTTER, Length::Fill),
         );
 
-        let x_axis_node = layout::next_to_each_other(
+        let x_axis_node = iced_layout::next_to_each_other(
             limits,
             0.0,
             |l| {
-                layout::atomic(
+                iced_layout::atomic(
                     &l.shrink(Size::new(Y_AXIS_GUTTER, 0.0)),
                     Length::Fill,
                     X_AXIS_HEIGHT,
                 )
             },
-            |l| layout::atomic(l, Y_AXIS_GUTTER, X_AXIS_HEIGHT),
+            |l| iced_layout::atomic(l, Y_AXIS_GUTTER, X_AXIS_HEIGHT),
         );
 
         let row_h = row_node.size().height;
         let total_w = row_node.size().width;
         let total_h = row_h + X_AXIS_HEIGHT;
 
-        layout::Node::with_children(
+        iced_layout::Node::with_children(
             Size::new(total_w, total_h),
             vec![
                 row_node.move_to(Point::new(0.0, 0.0)),
@@ -2596,7 +807,7 @@ where
                         state.dragging_split = None;
                         state.last_cursor = None;
                     }
-                    state.overlay_cache.clear();
+                    state.clear_overlay_caches();
                     return;
                 };
 
@@ -2607,10 +818,24 @@ where
                     .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)
                     .unwrap_or(0);
                 let panel_controls = self.build_panel_control_hits(&layout_tree, primary_panel);
-                let ticker_legend = self.build_ticker_legend_layout(&layout_tree, primary_panel);
-                let ticker_legend_hit = ticker_legend
+                let show_legend_values = matches!(zone, LayoutHitZone::PanelPlot(_));
+                let mut ticker_legend = self.build_ticker_legend_layout(
+                    &layout_tree,
+                    primary_panel,
+                    show_legend_values,
+                    false,
+                );
+                let mut ticker_legend_hit = ticker_legend
                     .as_ref()
                     .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_pos));
+
+                if ticker_legend_hit.is_some() {
+                    ticker_legend =
+                        self.build_ticker_legend_layout(&layout_tree, primary_panel, false, true);
+                    ticker_legend_hit = ticker_legend.as_ref().and_then(|legend| {
+                        Self::hit_ticker_legend(&layout_tree, legend, cursor_pos)
+                    });
+                }
 
                 match mouse_event {
                     mouse::Event::WheelScrolled {
@@ -2631,11 +856,16 @@ where
                         }
 
                         let zoom_in = *y > 0.0;
-                        let new_zoom = self.step_zoom_percent(self.zoom, zoom_in);
+                        let new_scale =
+                            self.step_horizontal_scale_percent(self.horizontal_scale, zoom_in);
 
-                        if new_zoom != self.zoom {
-                            shell.publish(M::from(KlineWidgetEvent::ZoomChanged(
-                                self.normalize_zoom(new_zoom),
+                        if (new_scale.as_pixels_per_bar()
+                            - self.horizontal_scale.as_pixels_per_bar())
+                        .abs()
+                            > f32::EPSILON
+                        {
+                            shell.publish(M::from(KlineWidgetEvent::HorizontalScaleChanged(
+                                self.normalize_horizontal_scale(new_scale),
                             )));
                             state.clear_all_caches();
                         }
@@ -2713,7 +943,7 @@ where
                         state.last_cursor = None;
                     }
                     mouse::Event::CursorMoved { .. } => {
-                        state.overlay_cache.clear();
+                        state.clear_overlay_caches();
 
                         if let Some(split_index) = state.dragging_split {
                             if let Some(split) = self.split_ratio_from_cursor(
@@ -2734,12 +964,14 @@ where
                             let dx_px = cursor_pos.x - prev.x;
 
                             if dx_px.abs() > 0.0 {
-                                let x_span = self.current_x_span_units();
-                                let plot_w = layout_tree.primary_plot_width().max(1.0);
-                                let dx_pts = -(dx_px) * (x_span / plot_w);
+                                let spacing = self
+                                    .normalize_horizontal_scale(self.horizontal_scale)
+                                    .as_pixels_per_bar()
+                                    .max(1e-3);
+                                let dx_units = -(dx_px) / spacing;
 
-                                shell.publish(M::from(KlineWidgetEvent::PanChanged(
-                                    self.pan + dx_pts,
+                                shell.publish(M::from(KlineWidgetEvent::HorizontalOffsetChanged(
+                                    self.horizontal_offset + dx_units,
                                 )));
                                 state.clear_all_caches();
                             }
@@ -2848,6 +1080,17 @@ where
                 self.fill_overlay(frame, &scene, palette);
             });
 
+            let interaction_text_geom =
+                state
+                    .interaction_text_cache
+                    .draw(r, bounds.size(), |frame| {
+                        self.fill_overlay_interaction_text(frame, &scene, palette);
+                    });
+
+            let tooltip_geom = state.tooltip_cache.draw(r, bounds.size(), |frame| {
+                self.fill_overlay_tooltips(frame, &scene, palette);
+            });
+
             r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(plot_geom);
@@ -2863,18 +1106,27 @@ where
                 r.draw_geometry(x_geom);
             });
 
-            r.with_layer(
-                Rectangle {
-                    x: 0.0,
-                    y: 0.0,
-                    width: bounds.width,
-                    height: bounds.height,
-                },
-                |r| {
-                    use iced::advanced::graphics::geometry::Renderer as _;
-                    r.draw_geometry(overlay_geom);
-                },
-            );
+            let layer_bounds = Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: bounds.width,
+                height: bounds.height,
+            };
+
+            r.with_layer(layer_bounds, |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(overlay_geom);
+            });
+
+            r.with_layer(layer_bounds, |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(interaction_text_geom);
+            });
+
+            r.with_layer(layer_bounds, |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(tooltip_geom);
+            });
         });
     }
 
@@ -2909,11 +1161,22 @@ where
             .iter()
             .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)
             .unwrap_or(0);
+        let zone = layout_tree.hit_test(cursor_local);
         let panel_controls = self.build_panel_control_hits(&layout_tree, primary_panel);
-        let ticker_legend = self.build_ticker_legend_layout(&layout_tree, primary_panel);
-        let ticker_legend_hit = ticker_legend
+        let show_legend_values = matches!(zone, LayoutHitZone::PanelPlot(_));
+        let mut ticker_legend =
+            self.build_ticker_legend_layout(&layout_tree, primary_panel, show_legend_values, false);
+        let mut ticker_legend_hit = ticker_legend
             .as_ref()
             .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_local));
+
+        if ticker_legend_hit.is_some() {
+            ticker_legend =
+                self.build_ticker_legend_layout(&layout_tree, primary_panel, false, true);
+            ticker_legend_hit = ticker_legend
+                .as_ref()
+                .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_local));
+        }
 
         if ticker_legend_hit.is_some() {
             return advanced::mouse::Interaction::Pointer;
@@ -2923,7 +1186,7 @@ where
             return advanced::mouse::Interaction::Pointer;
         }
 
-        match layout_tree.hit_test(cursor_local) {
+        match zone {
             LayoutHitZone::Splitter(_) => advanced::mouse::Interaction::ResizingVertically,
             LayoutHitZone::PanelPlot(_) => advanced::mouse::Interaction::Crosshair,
             LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis | LayoutHitZone::YAxis => {

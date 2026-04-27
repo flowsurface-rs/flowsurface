@@ -1,8 +1,8 @@
-mod cumulative_volume_delta;
+mod cvd;
 mod open_interest;
 mod volume;
 
-use crate::chart::composition::{
+use crate::widget::chart::kline::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
 };
 use data::chart::Basis;
@@ -11,7 +11,7 @@ use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, UnixMs};
 
 use super::KlineIndicator;
 
-pub use cumulative_volume_delta::CapabilityProbe as CvdInputProbe;
+pub use cvd::CapabilityProbe as CvdInputProbe;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndicatorUnsupportedReason {
@@ -96,7 +96,7 @@ pub fn panel_recipe(indicator: KlineIndicator) -> IndicatorPanelRecipe {
     match indicator {
         KlineIndicator::Volume => volume::panel_recipe(),
         KlineIndicator::OpenInterest => open_interest::panel_recipe(),
-        KlineIndicator::CumulativeVolumeDelta => cumulative_volume_delta::panel_recipe(),
+        KlineIndicator::CumulativeVolumeDelta => cvd::panel_recipe(),
     }
 }
 
@@ -117,7 +117,7 @@ where
         KlineIndicator::OpenInterest => {
             open_interest::availability(context.basis, context.timeframe, context.base_ticker)
         }
-        KlineIndicator::CumulativeVolumeDelta => cumulative_volume_delta::availability(
+        KlineIndicator::CumulativeVolumeDelta => cvd::availability(
             context.basis,
             series_data.into_iter().map(SeriesIndicatorData::cvd_probe),
         ),
@@ -127,7 +127,7 @@ where
 #[derive(Debug, Clone, Default)]
 pub struct SeriesIndicatorData {
     open_interest: open_interest::OpenInterestState,
-    cumulative_volume_delta: cumulative_volume_delta::CumulativeVolumeDeltaState,
+    cumulative_volume_delta: cvd::CumulativeVolumeDeltaState,
 }
 
 impl SeriesIndicatorData {

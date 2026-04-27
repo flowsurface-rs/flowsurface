@@ -1,12 +1,12 @@
-use crate::chart::composition::{
+use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::widget::chart::kline::composition::{
     ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, LayerId, LayerSource, MarkKind,
     PanelId, PanelRole, PanelScaleMode,
 };
-use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::kline::{
-    DEFAULT_ZOOM_POINTS, KlinePanelKind, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
+    DEFAULT_BAR_SPACING_PX, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
+    KlineWidgetEvent,
 };
-use crate::widget::chart::{Zoom, domain};
 
 use data::chart::Basis;
 use exchange::adapter::{MarketKind, StreamKind};
@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::time::Instant;
 
-const DEFAULT_PAN_POINTS: f32 = 8.0;
+const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
+const FETCH_VIEWPORT_WIDTH_ESTIMATE_PX: f32 = 1200.0;
 const DEFAULT_FETCH_BARS: u64 = 500;
 const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
@@ -100,12 +101,12 @@ impl KlineSeriesLike for KlineSeries {
 pub struct KlineChartV2 {
     basis: Basis,
     timeframe: Timeframe,
-    zoom: Zoom,
-    pan: f32,
+    horizontal_scale: HorizontalScale,
+    horizontal_offset: f32,
     composition: ChartComposition,
     panel_kinds: Vec<KlinePanelKind>,
     panel_splits: Vec<f32>,
-    panel_titles: Vec<String>,
+    panel_titles: Vec<Option<String>>,
     panel_marks: Vec<MarkKind>,
     panel_scale_modes: Vec<PanelScaleMode>,
     panel_indicators: Vec<Option<KlineIndicator>>,
@@ -137,8 +138,8 @@ impl KlineChartV2 {
         let mut chart = Self {
             basis,
             timeframe,
-            zoom: Zoom::points(DEFAULT_ZOOM_POINTS),
-            pan: DEFAULT_PAN_POINTS,
+            horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
+            horizontal_offset: DEFAULT_HORIZONTAL_OFFSET_UNITS,
             composition,
             panel_kinds: Vec::new(),
             panel_splits: Vec::new(),
@@ -251,12 +252,12 @@ impl KlineChartV2 {
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::Chart(event) => match event {
-                KlineWidgetEvent::ZoomChanged(zoom) => {
-                    self.zoom = zoom;
+                KlineWidgetEvent::HorizontalScaleChanged(scale) => {
+                    self.horizontal_scale = scale;
                     self.bump_rev();
                 }
-                KlineWidgetEvent::PanChanged(pan) => {
-                    self.pan = pan;
+                KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
+                    self.horizontal_offset = offset;
                     self.bump_rev();
                 }
                 KlineWidgetEvent::PanelSplitChanged { index, split } => {
@@ -306,8 +307,8 @@ impl KlineChartV2 {
                     }
                 }
                 KlineWidgetEvent::XAxisDoubleClick => {
-                    self.zoom = Zoom::points(DEFAULT_ZOOM_POINTS);
-                    self.pan = DEFAULT_PAN_POINTS;
+                    self.horizontal_scale = HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX);
+                    self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
                     self.bump_rev();
                 }
             },
@@ -323,8 +324,8 @@ impl KlineChartV2 {
 
         let chart: iced::Element<_> = KlineWidget::new(&self.series, self.timeframe)
             .with_basis(self.basis)
-            .with_zoom(self.zoom)
-            .with_pan(self.pan)
+            .with_horizontal_scale(self.horizontal_scale)
+            .with_horizontal_offset(self.horizontal_offset)
             .with_panel_layout(&self.panel_kinds, &self.panel_splits)
             .with_panel_titles(&self.panel_titles)
             .with_panel_rendering(&self.panel_marks, &self.panel_scale_modes)
@@ -427,7 +428,7 @@ impl KlineChartV2 {
         self.rebuild_handlers();
         self.bump_rev();
 
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
         self.fetch_action(reqs)
     }
 
@@ -438,7 +439,7 @@ impl KlineChartV2 {
 
         self.bump_rev();
 
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
+        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
         self.fetch_action(reqs)
     }
 
@@ -716,28 +717,34 @@ impl KlineChartV2 {
         ts.floor_to(self.timeframe)
     }
 
-    fn compute_visible_window(&self, pan_points: f32) -> Option<(UnixMs, UnixMs)> {
-        let dt = self.dt_ms_est();
-
-        let points_owned: Vec<Vec<(u64, f32)>> = self
-            .series
-            .iter()
-            .map(|series| {
-                series
-                    .bars
-                    .iter()
-                    .map(|bar| (bar.time.as_u64(), bar.close.to_f32()))
-                    .collect()
-            })
-            .collect();
-
-        let points: Vec<&[(u64, f32)]> = points_owned.iter().map(Vec::as_slice).collect();
-
-        domain::window(&points, self.zoom, pan_points, dt)
-            .map(|(start, end)| (UnixMs::new(start), UnixMs::new(end)))
+    fn estimate_visible_points_for_fetch(&self) -> i64 {
+        let spacing = self.horizontal_scale.as_pixels_per_bar().max(1e-3);
+        ((FETCH_VIEWPORT_WIDTH_ESTIMATE_PX / spacing).floor() as i64).max(2)
     }
 
-    fn desired_fetch_batches(&self, pan_points: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
+    fn compute_visible_window(&self, horizontal_offset: f32) -> Option<(UnixMs, UnixMs)> {
+        let dt = self.dt_ms_est();
+
+        let max_seen = self
+            .series
+            .iter()
+            .flat_map(|series| series.bars.iter())
+            .map(|bar| bar.time)
+            .max()?;
+
+        let span_units = self.estimate_visible_points_for_fetch().saturating_sub(1);
+        let dt_i128 = i128::from(dt);
+        let right_unit = horizontal_offset.round() as i128;
+        let right = (max_seen.as_u64() as i128) + right_unit.saturating_mul(dt_i128);
+        let left = right.saturating_sub((span_units as i128).saturating_mul(dt_i128));
+
+        let left_u64 = left.max(0).min(u64::MAX as i128) as u64;
+        let right_u64 = right.max(0).min(u64::MAX as i128) as u64;
+
+        Some((UnixMs::new(left_u64), UnixMs::new(right_u64)))
+    }
+
+    fn desired_fetch_batches(&self, horizontal_offset: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
         let dt = self.dt_ms_est();
         let span = DEFAULT_FETCH_BARS.saturating_mul(dt);
         let last_closed = self.align_floor(UnixMs::now());
@@ -757,7 +764,7 @@ impl KlineChartV2 {
             batches.push((FetchRange::Kline(start, end), empty_tickers));
         }
 
-        if let Some((window_min, _window_max)) = self.compute_visible_window(pan_points) {
+        if let Some((window_min, _window_max)) = self.compute_visible_window(horizontal_offset) {
             let mut need: Vec<(UnixMs, TickerInfo)> = Vec::new();
 
             for series in &self.series {
@@ -784,7 +791,7 @@ impl KlineChartV2 {
                 && let Some(base_series) = self.base_series()
                 && let Some(kline_latest) = base_series.bars.last().map(|bar| bar.time)
             {
-                let visible_window = self.compute_visible_window(pan_points);
+                let visible_window = self.compute_visible_window(horizontal_offset);
                 let visible_earliest = visible_window.map(|(start, _)| start).unwrap_or(window_min);
                 let visible_span = visible_window
                     .map(|(start, end)| end.as_u64().saturating_sub(start.as_u64()))

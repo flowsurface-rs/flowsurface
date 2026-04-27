@@ -1,5 +1,4 @@
 pub mod comparison;
-pub mod composition;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;

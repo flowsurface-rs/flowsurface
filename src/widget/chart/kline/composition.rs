@@ -143,7 +143,7 @@ impl LayerSource {
 pub struct PanelSpec {
     pub id: PanelId,
     pub role: PanelRole,
-    pub title: String,
+    pub title: Option<String>,
     pub base_layer: Option<LayerId>,
     pub preferred_scale: PanelScaleMode,
     pub comparison_policy: PanelComparisonPolicy,
@@ -248,7 +248,7 @@ impl ChartComposition {
         composition.panels.push(PanelSpec {
             id: main_panel_id,
             role: PanelRole::Primary,
-            title: "Value".to_string(),
+            title: None,
             base_layer: Some(candle_layer.id),
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -405,7 +405,7 @@ impl ChartComposition {
         self.panels.push(PanelSpec {
             id: panel_id,
             role: PanelRole::Auxiliary,
-            title: title.into(),
+            title: Some(title.into()),
             base_layer,
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),

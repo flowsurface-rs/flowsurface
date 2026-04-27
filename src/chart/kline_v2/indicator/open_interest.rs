@@ -1,8 +1,8 @@
 use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
-use crate::chart::composition::{
+use crate::chart::indicator::kline::open_interest::OpenInterestIndicator;
+use crate::widget::chart::kline::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
 };
-use crate::chart::indicator::kline::open_interest::OpenInterestIndicator;
 use data::chart::Basis;
 use exchange::{OpenInterest, TickerInfo, Timeframe, UnixMs};
 use std::collections::BTreeMap;

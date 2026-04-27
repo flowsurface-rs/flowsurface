@@ -1,5 +1,5 @@
 use super::{IndicatorAvailability, IndicatorPanelRecipe};
-use crate::chart::composition::{
+use crate::widget::chart::kline::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
 };
 
