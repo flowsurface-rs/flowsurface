@@ -5,7 +5,7 @@ use super::{
     MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX,
 };
 use crate::widget::chart::kline::composition::{
-    BarMode, HistogramMode, LayerDataKind, LayerPresentation, MarkKind, PanelScaleMode,
+    BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode,
 };
 
 use exchange::{Kline, Timeframe, UnixMs};
@@ -113,7 +113,7 @@ pub(super) struct CursorInfo {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct IndicatorPanelScene {
     pub(super) panel_index: usize,
-    pub(super) presentation: LayerPresentation,
+    pub(super) mark: MarkKind,
     pub(super) data_kind: LayerDataKind,
     pub(super) min_value: f32,
     pub(super) max_value: f32,
@@ -668,7 +668,7 @@ where
         max_x_unit: i64,
         indicator_panel_index: usize,
         data_kind: LayerDataKind,
-        presentation: LayerPresentation,
+        mark: MarkKind,
         scale_mode: PanelScaleMode,
     ) -> Option<(f32, f32)> {
         let mut any = false;
@@ -695,11 +695,11 @@ where
 
             if matches!(data_kind, LayerDataKind::Histogram)
                 && matches!(
-                    presentation.mark,
+                    mark,
                     MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
                 )
                 && let Some(overlay) =
-                series.indicator_overlay_value_for_panel_opt(indicator_panel_index, bar)
+                    series.indicator_overlay_value_for_panel_opt(indicator_panel_index, bar)
             {
                 let overlay_abs = overlay.abs();
                 min_value = min_value.min(overlay_abs);
@@ -761,8 +761,7 @@ where
                     return None;
                 }
 
-                let presentation =
-                    self.resolved_panel_presentation(panel_index, KlinePanelKind::Indicator);
+                let mark = self.resolved_panel_mark(panel_index, KlinePanelKind::Indicator);
                 let data_kind =
                     self.resolved_panel_data_kind(panel_index, KlinePanelKind::Indicator);
                 let scale_mode = self.resolved_panel_scale_mode(panel_index);
@@ -773,14 +772,14 @@ where
                         max_x_unit,
                         panel_index,
                         data_kind,
-                        presentation,
+                        mark,
                         scale_mode,
                     )
                     .unwrap_or((0.0, 1.0));
 
                 Some(IndicatorPanelScene {
                     panel_index,
-                    presentation,
+                    mark,
                     data_kind,
                     min_value,
                     max_value,

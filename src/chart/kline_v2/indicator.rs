@@ -3,7 +3,7 @@ mod open_interest;
 mod volume;
 
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, LayerPresentation, PanelScaleMode,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
 };
 use data::chart::Basis;
 use exchange::adapter::MarketKind;
@@ -41,7 +41,7 @@ pub enum IndicatorPanelRecipe {
         layer_name: &'static str,
         source: DataSourceId,
         data_kind: LayerDataKind,
-        presentation: LayerPresentation,
+        mark: MarkKind,
         axis: AxisBinding,
         preferred_scale: PanelScaleMode,
     },

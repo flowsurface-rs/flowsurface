@@ -4,9 +4,7 @@ mod layout;
 mod scene;
 
 use crate::style;
-use composition::{
-    BarMode, HistogramMode, LayerDataKind, LayerPresentation, MarkKind, PanelScaleMode,
-};
+use composition::{BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode};
 
 use data::UserTimezone;
 use data::chart::Basis;
@@ -46,13 +44,9 @@ const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] =
     [KlinePanelKind::PrimaryChart, KlinePanelKind::Indicator];
 const DEFAULT_PANEL_SPLITS: [f32; 1] = [0.75];
-const DEFAULT_PANEL_PRESENTATIONS: [LayerPresentation; 2] = [
-    LayerPresentation {
-        mark: MarkKind::Candle,
-    },
-    LayerPresentation {
-        mark: MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
-    },
+const DEFAULT_PANEL_MARKS: [MarkKind; 2] = [
+    MarkKind::Candle,
+    MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
 ];
 const DEFAULT_PANEL_SCALE_MODES: [PanelScaleMode; 2] =
     [PanelScaleMode::Absolute, PanelScaleMode::Absolute];
@@ -196,7 +190,7 @@ pub struct KlineWidget<'a, S> {
     panel_kinds: &'a [KlinePanelKind],
     panel_splits: &'a [f32],
     panel_titles: &'a [Option<String>],
-    panel_presentations: &'a [LayerPresentation],
+    panel_marks: &'a [MarkKind],
     panel_scale_modes: &'a [PanelScaleMode],
     panel_data_kinds: &'a [LayerDataKind],
     timezone: UserTimezone,
@@ -216,7 +210,7 @@ where
             panel_kinds: &DEFAULT_PANEL_KINDS,
             panel_splits: &DEFAULT_PANEL_SPLITS,
             panel_titles: &[],
-            panel_presentations: &DEFAULT_PANEL_PRESENTATIONS,
+            panel_marks: &DEFAULT_PANEL_MARKS,
             panel_scale_modes: &DEFAULT_PANEL_SCALE_MODES,
             panel_data_kinds: &DEFAULT_PANEL_DATA_KINDS,
             timezone: UserTimezone::Utc,
@@ -251,11 +245,11 @@ where
 
     pub fn with_panel_rendering(
         mut self,
-        panel_presentations: &'a [LayerPresentation],
+        panel_marks: &'a [MarkKind],
         panel_scale_modes: &'a [PanelScaleMode],
         panel_data_kinds: &'a [LayerDataKind],
     ) -> Self {
-        self.panel_presentations = panel_presentations;
+        self.panel_marks = panel_marks;
         self.panel_scale_modes = panel_scale_modes;
         self.panel_data_kinds = panel_data_kinds;
         self
@@ -284,14 +278,10 @@ where
         }
     }
 
-    fn default_presentation_for_panel(kind: KlinePanelKind) -> LayerPresentation {
+    fn default_mark_for_panel(kind: KlinePanelKind) -> MarkKind {
         match kind {
-            KlinePanelKind::PrimaryChart => LayerPresentation {
-                mark: MarkKind::Candle,
-            },
-            KlinePanelKind::Indicator => LayerPresentation {
-                mark: MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
-            },
+            KlinePanelKind::PrimaryChart => MarkKind::Candle,
+            KlinePanelKind::Indicator => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
         }
     }
 
@@ -310,20 +300,11 @@ where
             .or_else(|| Self::default_title_for_panel(panel_kind))
     }
 
-    fn resolved_panel_presentation(
-        &self,
-        panel_index: usize,
-        panel_kind: KlinePanelKind,
-    ) -> LayerPresentation {
-        self.panel_presentations
+    fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
+        self.panel_marks
             .get(panel_index)
             .copied()
-            .unwrap_or_else(|| Self::default_presentation_for_panel(panel_kind))
-    }
-
-    fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
-        self.resolved_panel_presentation(panel_index, panel_kind)
-            .mark
+            .unwrap_or_else(|| Self::default_mark_for_panel(panel_kind))
     }
 
     fn resolved_panel_scale_mode(&self, panel_index: usize) -> PanelScaleMode {
@@ -468,7 +449,7 @@ where
                     scene.map_indicator_plot(indicator_panel.panel_index, indicator_value),
                     y_indicator_baseline,
                 ) {
-                    match indicator_panel.presentation.mark {
+                    match indicator_panel.mark {
                         MarkKind::Line => {
                             if let Some(points) = indicator_line_points.get_mut(indicator_slot) {
                                 points.push(Point::new(x_px as f32, y_indicator_value));
@@ -482,7 +463,7 @@ where
 
                             if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
                                 && matches!(
-                                    indicator_panel.presentation.mark,
+                                    indicator_panel.mark,
                                     MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
                                 )
                             {
@@ -532,7 +513,7 @@ where
                                 frame.fill_rectangle(
                                     Point::new(indicator_left as f32, indicator_top),
                                     Size::new(indicator_width as f32, indicator_height),
-                                    color.scale_alpha(0.4),
+                                    palette.secondary.strong.color.scale_alpha(0.5),
                                 );
                             }
                         }

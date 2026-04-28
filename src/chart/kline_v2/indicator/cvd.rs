@@ -1,6 +1,6 @@
 use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, LayerPresentation, MarkKind, PanelScaleMode,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
 };
 use data::chart::Basis;
 use exchange::{Kline, UnixMs};
@@ -90,9 +90,7 @@ pub fn panel_recipe() -> IndicatorPanelRecipe {
         layer_name: "Cumulative Volume Delta",
         source: DataSourceId::Primary,
         data_kind: LayerDataKind::Scalar,
-        presentation: LayerPresentation {
-            mark: MarkKind::Line,
-        },
+        mark: MarkKind::Line,
         axis: AxisBinding::Secondary,
         preferred_scale: PanelScaleMode::FitVisible,
     }
