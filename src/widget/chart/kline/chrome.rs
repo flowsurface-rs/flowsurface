@@ -494,7 +494,7 @@ where
 
                 let precision = base_series.ticker_info().min_ticksize;
 
-                if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar) {
+                if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
                     let open_f = base_bar.open.to_f32();
                     let close_f = base_bar.close.to_f32();
                     let change_pct = if open_f.abs() > f32::EPSILON {

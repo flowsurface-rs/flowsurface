@@ -1,7 +1,9 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::kline::composition::{
-    ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, LayerId, LayerSource, MarkKind,
-    PanelId, PanelRole, PanelScaleMode,
+    BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
+    LayerId, LayerPresentation, LayerPresentationCapabilityReport,
+    LayerPresentationRuntimeCapabilities, LayerSource, MarkKind, PanelId, PanelRole,
+    PanelScaleMode,
 };
 use crate::widget::chart::kline::{
     DEFAULT_BAR_SPACING_PX, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
@@ -27,7 +29,7 @@ const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison")
 mod indicator;
 
 pub use indicator::IndicatorAvailability;
-use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
+use indicator::{AvailabilityContext, CvdInputProbe, IndicatorPanelRecipe, SeriesIndicatorData};
 
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
@@ -104,6 +106,17 @@ impl KlineSeriesLike for KlineSeries {
             bar,
         )
     }
+
+    fn indicator_overlay_value_for_panel_opt(
+        &self,
+        panel_index: usize,
+        bar: &Kline,
+    ) -> Option<f32> {
+        match self.panel_indicators.get(panel_index).copied().flatten() {
+            Some(KlineIndicator::Volume) => self.indicators.volume_overlay_for_bar(bar),
+            _ => None,
+        }
+    }
 }
 
 pub struct KlineChartV2 {
@@ -115,8 +128,9 @@ pub struct KlineChartV2 {
     panel_kinds: Vec<KlinePanelKind>,
     panel_splits: Vec<f32>,
     panel_titles: Vec<Option<String>>,
-    panel_marks: Vec<MarkKind>,
+    panel_presentations: Vec<LayerPresentation>,
     panel_scale_modes: Vec<PanelScaleMode>,
+    panel_data_kinds: Vec<LayerDataKind>,
     panel_indicators: Vec<Option<KlineIndicator>>,
     indicator_panels: EnumMap<KlineIndicator, Option<IndicatorPanelBinding>>,
     last_tick: Instant,
@@ -152,8 +166,9 @@ impl KlineChartV2 {
             panel_kinds: Vec::new(),
             panel_splits: Vec::new(),
             panel_titles: Vec::new(),
-            panel_marks: Vec::new(),
+            panel_presentations: Vec::new(),
             panel_scale_modes: Vec::new(),
+            panel_data_kinds: Vec::new(),
             panel_indicators: Vec::new(),
             indicator_panels: EnumMap::default(),
             last_tick: Instant::now(),
@@ -200,6 +215,110 @@ impl KlineChartV2 {
         } else {
             false
         }
+    }
+
+    pub fn set_panel_mark(&mut self, panel_index: usize, mark: MarkKind) -> bool {
+        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
+            return false;
+        };
+
+        if self
+            .composition
+            .set_panel_layer_mark(panel_id, layer_id, mark)
+        {
+            self.sync_widget_panel_layout();
+            self.bump_rev();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_panel_presentation(
+        &mut self,
+        panel_index: usize,
+        presentation: LayerPresentation,
+    ) -> bool {
+        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
+            return false;
+        };
+
+        if self
+            .composition
+            .set_panel_layer_presentation(panel_id, layer_id, presentation)
+        {
+            self.sync_widget_panel_layout();
+            self.bump_rev();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn panel_resolved_presentation(
+        &self,
+        panel_index: usize,
+    ) -> Option<(LayerPresentation, LayerPresentationCapabilityReport)> {
+        let (panel_id, layer_id) = self.panel_base_layer_ids(panel_index)?;
+        let panel_indicator = self.indicator_for_panel(panel_id);
+        let runtime_caps = self.panel_runtime_presentation_capabilities(panel_indicator);
+
+        let resolved_layers = self
+            .composition
+            .resolved_panel_presentations(panel_id, runtime_caps)?;
+
+        resolved_layers
+            .iter()
+            .find(|entry| entry.layer_id == layer_id)
+            .copied()
+            .or_else(|| resolved_layers.first().copied())
+            .map(|entry| (entry.resolved, entry.capability))
+    }
+
+    pub fn panel_presentation_capability(
+        &self,
+        panel_index: usize,
+    ) -> Option<LayerPresentationCapabilityReport> {
+        self.panel_resolved_presentation(panel_index)
+            .map(|(_, capability)| capability)
+    }
+
+    pub fn set_panel_data_kind(&mut self, panel_index: usize, data_kind: LayerDataKind) -> bool {
+        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
+            return false;
+        };
+
+        if self
+            .composition
+            .set_panel_layer_data_kind(panel_id, layer_id, data_kind)
+        {
+            self.sync_widget_panel_layout();
+            self.bump_rev();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_panel_bar_mode(&mut self, panel_index: usize, mode: BarMode) -> bool {
+        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
+            return false;
+        };
+
+        if self
+            .composition
+            .set_panel_layer_bar_mode(panel_id, layer_id, mode)
+        {
+            self.sync_widget_panel_layout();
+            self.bump_rev();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_panel_histogram_mode(&mut self, panel_index: usize, mode: HistogramMode) -> bool {
+        self.set_panel_bar_mode(panel_index, BarMode::Histogram(mode))
     }
 
     pub fn toggle_indicator(&mut self, indicator: KlineIndicator) -> bool {
@@ -348,7 +467,11 @@ impl KlineChartV2 {
             .with_horizontal_offset(self.horizontal_offset)
             .with_panel_layout(&self.panel_kinds, &self.panel_splits)
             .with_panel_titles(&self.panel_titles)
-            .with_panel_rendering(&self.panel_marks, &self.panel_scale_modes)
+            .with_panel_rendering(
+                &self.panel_presentations,
+                &self.panel_scale_modes,
+                &self.panel_data_kinds,
+            )
             .with_timezone(timezone)
             .version(self.cache_rev)
             .into();
@@ -490,15 +613,15 @@ impl KlineChartV2 {
                 layer_name,
                 source,
                 data_kind,
-                mark,
+                presentation,
                 axis,
                 preferred_scale,
             } => {
-                let layer = self.composition.new_layer(
+                let layer = self.composition.new_layer_with_presentation(
                     layer_name,
                     LayerSource::RawKline { source },
                     data_kind,
-                    mark,
+                    presentation,
                     axis,
                 );
 
@@ -583,8 +706,9 @@ impl KlineChartV2 {
 
         self.panel_kinds.clear();
         self.panel_titles.clear();
-        self.panel_marks.clear();
+        self.panel_presentations.clear();
         self.panel_scale_modes.clear();
+        self.panel_data_kinds.clear();
         self.panel_indicators.clear();
 
         for panel in &self.composition.panels {
@@ -597,30 +721,61 @@ impl KlineChartV2 {
 
             self.panel_titles.push(panel.title.clone());
 
-            let fallback_mark = match panel_kind {
-                KlinePanelKind::PrimaryChart => MarkKind::Candle,
-                KlinePanelKind::Indicator => MarkKind::Bar,
+            let fallback_data_kind = match panel_kind {
+                KlinePanelKind::PrimaryChart => LayerDataKind::Ohlc,
+                KlinePanelKind::Indicator => LayerDataKind::Scalar,
             };
 
-            let effective_mark = self
-                .composition
-                .resolved_panel_marks(panel.id)
-                .and_then(|marks| {
-                    panel
-                        .base_layer
-                        .and_then(|base| {
-                            marks
-                                .iter()
-                                .find(|(layer_id, _)| *layer_id == base)
-                                .map(|(_, mark)| *mark)
-                        })
-                        .or_else(|| marks.first().map(|(_, mark)| *mark))
-                })
-                .unwrap_or(fallback_mark);
+            let base_layer_id = panel
+                .base_layer
+                .or_else(|| panel.layers.first().map(|layer| layer.id));
 
-            self.panel_marks.push(effective_mark);
+            let effective_data_kind = panel
+                .base_layer
+                .and_then(|base| panel.layers.iter().find(|layer| layer.id == base))
+                .or_else(|| panel.layers.first())
+                .map(|layer| layer.data_kind)
+                .unwrap_or(fallback_data_kind);
 
             let panel_indicator = self.indicator_for_panel(panel.id);
+            let runtime_caps = self.panel_runtime_presentation_capabilities(panel_indicator);
+
+            let fallback_presentation = match panel_kind {
+                KlinePanelKind::PrimaryChart => {
+                    LayerPresentation::default_for_data_kind(LayerDataKind::Ohlc)
+                }
+                KlinePanelKind::Indicator => LayerPresentation {
+                    mark: MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+                },
+            };
+
+            let effective_presentation = self
+                .composition
+                .resolved_panel_presentations(panel.id, runtime_caps)
+                .and_then(|resolved_layers| {
+                    base_layer_id
+                        .and_then(|base| {
+                            resolved_layers
+                                .iter()
+                                .find(|entry| entry.layer_id == base)
+                                .copied()
+                        })
+                        .or_else(|| resolved_layers.first().copied())
+                })
+                .map(|entry| entry.resolved)
+                .unwrap_or_else(|| {
+                    base_layer_id
+                        .and_then(|base| panel.layers.iter().find(|layer| layer.id == base))
+                        .or_else(|| panel.layers.first())
+                        .map(|layer| {
+                            layer
+                                .presentation
+                                .resolve_with_capabilities(layer.data_kind, runtime_caps)
+                        })
+                        .unwrap_or(fallback_presentation)
+                });
+
+            self.panel_presentations.push(effective_presentation);
 
             let mut scale_mode = self
                 .composition
@@ -634,6 +789,7 @@ impl KlineChartV2 {
             }
 
             self.panel_scale_modes.push(scale_mode);
+            self.panel_data_kinds.push(effective_data_kind);
             self.panel_indicators.push(panel_indicator);
         }
 
@@ -656,6 +812,34 @@ impl KlineChartV2 {
         for series in &mut self.series {
             series.set_panel_indicators(&self.panel_indicators);
         }
+    }
+
+    fn panel_runtime_presentation_capabilities(
+        &self,
+        panel_indicator: Option<KlineIndicator>,
+    ) -> LayerPresentationRuntimeCapabilities {
+        match panel_indicator {
+            Some(KlineIndicator::Volume) => LayerPresentationRuntimeCapabilities {
+                signed_overlay_input: self.base_series_signed_overlay_capability(),
+            },
+            _ => LayerPresentationRuntimeCapabilities::default(),
+        }
+    }
+
+    fn base_series_signed_overlay_capability(&self) -> bool {
+        self.series
+            .first()
+            .map(|series| matches!(series.indicators.cvd_probe(), CvdInputProbe::Complete))
+            .unwrap_or(false)
+    }
+
+    fn panel_base_layer_ids(&self, panel_index: usize) -> Option<(PanelId, LayerId)> {
+        let panel = self.composition.panels.get(panel_index)?;
+        let layer_id = panel
+            .base_layer
+            .or_else(|| panel.layers.first().map(|layer| layer.id))?;
+
+        Some((panel.id, layer_id))
     }
 
     fn timeframe_for_basis(basis: Basis) -> Timeframe {

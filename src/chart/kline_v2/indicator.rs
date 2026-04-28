@@ -3,7 +3,7 @@ mod open_interest;
 mod volume;
 
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
+    AxisBinding, DataSourceId, LayerDataKind, LayerPresentation, PanelScaleMode,
 };
 use data::chart::Basis;
 use exchange::adapter::MarketKind;
@@ -41,7 +41,7 @@ pub enum IndicatorPanelRecipe {
         layer_name: &'static str,
         source: DataSourceId,
         data_kind: LayerDataKind,
-        mark: MarkKind,
+        presentation: LayerPresentation,
         axis: AxisBinding,
         preferred_scale: PanelScaleMode,
     },
@@ -169,5 +169,15 @@ impl SeriesIndicatorData {
             }
             Some(KlineIndicator::Volume) | None => Some(f32::from(bar.volume.total())),
         }
+    }
+
+    pub fn volume_overlay_for_bar(&self, bar: &Kline) -> Option<f32> {
+        if self.cumulative_volume_delta.probe() != cvd::CapabilityProbe::Complete {
+            return None;
+        }
+
+        bar.volume
+            .buy_sell()
+            .map(|(buy, sell)| f32::from(buy - sell))
     }
 }

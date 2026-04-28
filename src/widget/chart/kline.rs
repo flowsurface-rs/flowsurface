@@ -4,7 +4,9 @@ mod layout;
 mod scene;
 
 use crate::style;
-use composition::{MarkKind, PanelScaleMode};
+use composition::{
+    BarMode, HistogramMode, LayerDataKind, LayerPresentation, MarkKind, PanelScaleMode,
+};
 
 use data::UserTimezone;
 use data::chart::Basis;
@@ -44,9 +46,18 @@ const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] =
     [KlinePanelKind::PrimaryChart, KlinePanelKind::Indicator];
 const DEFAULT_PANEL_SPLITS: [f32; 1] = [0.75];
-const DEFAULT_PANEL_MARKS: [MarkKind; 2] = [MarkKind::Candle, MarkKind::Bar];
+const DEFAULT_PANEL_PRESENTATIONS: [LayerPresentation; 2] = [
+    LayerPresentation {
+        mark: MarkKind::Candle,
+    },
+    LayerPresentation {
+        mark: MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+    },
+];
 const DEFAULT_PANEL_SCALE_MODES: [PanelScaleMode; 2] =
     [PanelScaleMode::Absolute, PanelScaleMode::Absolute];
+const DEFAULT_PANEL_DATA_KINDS: [LayerDataKind; 2] =
+    [LayerDataKind::Ohlc, LayerDataKind::Histogram];
 
 pub const DEFAULT_BAR_SPACING_PX: f32 = 8.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
@@ -102,6 +113,14 @@ pub trait KlineSeriesLike {
 
     fn indicator_value_for_panel_opt(&self, panel_index: usize, bar: &Kline) -> Option<f32> {
         Some(self.indicator_value_for_panel(panel_index, bar))
+    }
+
+    fn indicator_overlay_value_for_panel_opt(
+        &self,
+        _panel_index: usize,
+        _bar: &Kline,
+    ) -> Option<f32> {
+        None
     }
 }
 
@@ -177,8 +196,9 @@ pub struct KlineWidget<'a, S> {
     panel_kinds: &'a [KlinePanelKind],
     panel_splits: &'a [f32],
     panel_titles: &'a [Option<String>],
-    panel_marks: &'a [MarkKind],
+    panel_presentations: &'a [LayerPresentation],
     panel_scale_modes: &'a [PanelScaleMode],
+    panel_data_kinds: &'a [LayerDataKind],
     timezone: UserTimezone,
     version: u64,
 }
@@ -196,8 +216,9 @@ where
             panel_kinds: &DEFAULT_PANEL_KINDS,
             panel_splits: &DEFAULT_PANEL_SPLITS,
             panel_titles: &[],
-            panel_marks: &DEFAULT_PANEL_MARKS,
+            panel_presentations: &DEFAULT_PANEL_PRESENTATIONS,
             panel_scale_modes: &DEFAULT_PANEL_SCALE_MODES,
+            panel_data_kinds: &DEFAULT_PANEL_DATA_KINDS,
             timezone: UserTimezone::Utc,
             version: 0,
         }
@@ -230,11 +251,13 @@ where
 
     pub fn with_panel_rendering(
         mut self,
-        panel_marks: &'a [MarkKind],
+        panel_presentations: &'a [LayerPresentation],
         panel_scale_modes: &'a [PanelScaleMode],
+        panel_data_kinds: &'a [LayerDataKind],
     ) -> Self {
-        self.panel_marks = panel_marks;
+        self.panel_presentations = panel_presentations;
         self.panel_scale_modes = panel_scale_modes;
+        self.panel_data_kinds = panel_data_kinds;
         self
     }
 
@@ -261,10 +284,14 @@ where
         }
     }
 
-    fn default_mark_for_panel(kind: KlinePanelKind) -> MarkKind {
+    fn default_presentation_for_panel(kind: KlinePanelKind) -> LayerPresentation {
         match kind {
-            KlinePanelKind::PrimaryChart => MarkKind::Candle,
-            KlinePanelKind::Indicator => MarkKind::Bar,
+            KlinePanelKind::PrimaryChart => LayerPresentation {
+                mark: MarkKind::Candle,
+            },
+            KlinePanelKind::Indicator => LayerPresentation {
+                mark: MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+            },
         }
     }
 
@@ -283,11 +310,20 @@ where
             .or_else(|| Self::default_title_for_panel(panel_kind))
     }
 
-    fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
-        self.panel_marks
+    fn resolved_panel_presentation(
+        &self,
+        panel_index: usize,
+        panel_kind: KlinePanelKind,
+    ) -> LayerPresentation {
+        self.panel_presentations
             .get(panel_index)
             .copied()
-            .unwrap_or_else(|| Self::default_mark_for_panel(panel_kind))
+            .unwrap_or_else(|| Self::default_presentation_for_panel(panel_kind))
+    }
+
+    fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
+        self.resolved_panel_presentation(panel_index, panel_kind)
+            .mark
     }
 
     fn resolved_panel_scale_mode(&self, panel_index: usize) -> PanelScaleMode {
@@ -295,6 +331,24 @@ where
             .get(panel_index)
             .copied()
             .unwrap_or(PanelScaleMode::Absolute)
+    }
+
+    fn default_data_kind_for_panel(kind: KlinePanelKind) -> LayerDataKind {
+        match kind {
+            KlinePanelKind::PrimaryChart => LayerDataKind::Ohlc,
+            KlinePanelKind::Indicator => LayerDataKind::Scalar,
+        }
+    }
+
+    fn resolved_panel_data_kind(
+        &self,
+        panel_index: usize,
+        panel_kind: KlinePanelKind,
+    ) -> LayerDataKind {
+        self.panel_data_kinds
+            .get(panel_index)
+            .copied()
+            .unwrap_or_else(|| Self::default_data_kind_for_panel(panel_kind))
     }
 
     fn comparison_line_color(ticker: &TickerInfo) -> iced::Color {
@@ -374,7 +428,7 @@ where
                         points.push(Point::new(x_px as f32, y_close));
                     }
                 }
-                MarkKind::Candle | MarkKind::Bar => {
+                MarkKind::Candle | MarkKind::Bar(_) => {
                     let body_top = y_open.min(y_close);
                     let body_h = (y_open - y_close).abs().max(1.0);
                     let candle_left = x_px - (candle_width / 2);
@@ -414,25 +468,73 @@ where
                     scene.map_indicator_plot(indicator_panel.panel_index, indicator_value),
                     y_indicator_baseline,
                 ) {
-                    match indicator_panel.mark {
+                    match indicator_panel.presentation.mark {
                         MarkKind::Line => {
                             if let Some(points) = indicator_line_points.get_mut(indicator_slot) {
                                 points.push(Point::new(x_px as f32, y_indicator_value));
                             }
                         }
-                        MarkKind::Candle | MarkKind::Bar => {
+                        MarkKind::Candle | MarkKind::Bar(_) => {
                             let indicator_left = x_px - (indicator_width / 2);
-                            frame.fill_rectangle(
-                                Point::new(
-                                    indicator_left as f32,
-                                    y_indicator_value.min(y_indicator_baseline),
-                                ),
-                                Size::new(
-                                    indicator_width as f32,
-                                    (y_indicator_baseline - y_indicator_value).abs().max(1.0),
-                                ),
-                                color.scale_alpha(0.4),
-                            );
+                            let indicator_top = y_indicator_value.min(y_indicator_baseline);
+                            let indicator_height =
+                                (y_indicator_baseline - y_indicator_value).abs().max(1.0);
+
+                            if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
+                                && matches!(
+                                    indicator_panel.presentation.mark,
+                                    MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
+                                )
+                            {
+                                if let Some(overlay) = series.indicator_overlay_value_for_panel_opt(
+                                    indicator_panel.panel_index,
+                                    bar,
+                                ) {
+                                    let base_color = if overlay >= 0.0 {
+                                        palette.success.base.color
+                                    } else {
+                                        palette.danger.base.color
+                                    };
+
+                                    frame.fill_rectangle(
+                                        Point::new(indicator_left as f32, indicator_top),
+                                        Size::new(indicator_width as f32, indicator_height),
+                                        base_color.scale_alpha(0.3),
+                                    );
+
+                                    let overlay_abs = overlay.abs();
+                                    if overlay_abs > 0.0
+                                        && let Some(y_overlay) = scene.map_indicator_plot(
+                                            indicator_panel.panel_index,
+                                            overlay_abs,
+                                        )
+                                    {
+                                        frame.fill_rectangle(
+                                            Point::new(
+                                                indicator_left as f32,
+                                                y_overlay.min(y_indicator_baseline),
+                                            ),
+                                            Size::new(
+                                                indicator_width as f32,
+                                                (y_indicator_baseline - y_overlay).abs().max(1.0),
+                                            ),
+                                            base_color,
+                                        );
+                                    }
+                                } else {
+                                    frame.fill_rectangle(
+                                        Point::new(indicator_left as f32, indicator_top),
+                                        Size::new(indicator_width as f32, indicator_height),
+                                        palette.secondary.strong.color,
+                                    );
+                                }
+                            } else {
+                                frame.fill_rectangle(
+                                    Point::new(indicator_left as f32, indicator_top),
+                                    Size::new(indicator_width as f32, indicator_height),
+                                    color.scale_alpha(0.4),
+                                );
+                            }
                         }
                     }
                 }

@@ -20,7 +20,7 @@ pub enum PanelRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkKind {
     Candle,
-    Bar,
+    Bar(BarMode),
     Line,
 }
 
@@ -29,6 +29,149 @@ pub enum LayerDataKind {
     Ohlc,
     Scalar,
     Histogram,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistogramMode {
+    Plain,
+    SignedOverlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarMode {
+    Regular,
+    Histogram(HistogramMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerPresentation {
+    pub mark: MarkKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LayerPresentationRuntimeCapabilities {
+    pub signed_overlay_input: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerPresentationCapabilityReason {
+    UnsupportedMarkForDataKind,
+    UnsupportedBarModeForDataKind,
+    MissingSignedOverlayInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerPresentationCapabilityStatus {
+    Supported,
+    Unsupported(LayerPresentationCapabilityReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerPresentationCapabilityReport {
+    pub mark: LayerPresentationCapabilityStatus,
+    pub bar_mode: LayerPresentationCapabilityStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedLayerPresentation {
+    pub layer_id: LayerId,
+    pub requested: LayerPresentation,
+    pub resolved: LayerPresentation,
+    pub capability: LayerPresentationCapabilityReport,
+}
+
+impl LayerPresentation {
+    pub const fn default_for_data_kind(data_kind: LayerDataKind) -> Self {
+        match data_kind {
+            LayerDataKind::Ohlc => Self {
+                mark: MarkKind::Candle,
+            },
+            LayerDataKind::Scalar => Self {
+                mark: MarkKind::Line,
+            },
+            LayerDataKind::Histogram => Self {
+                mark: MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+            },
+        }
+    }
+
+    pub fn capability_report(
+        self,
+        data_kind: LayerDataKind,
+        runtime: LayerPresentationRuntimeCapabilities,
+    ) -> LayerPresentationCapabilityReport {
+        let mark = if Self::supports_mark(data_kind, self.mark) {
+            LayerPresentationCapabilityStatus::Supported
+        } else {
+            LayerPresentationCapabilityStatus::Unsupported(
+                LayerPresentationCapabilityReason::UnsupportedMarkForDataKind,
+            )
+        };
+
+        let bar_mode = match (data_kind, self.mark) {
+            (_, MarkKind::Bar(BarMode::Regular)) => LayerPresentationCapabilityStatus::Supported,
+            (LayerDataKind::Histogram, MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain))) => {
+                LayerPresentationCapabilityStatus::Supported
+            }
+            (
+                LayerDataKind::Histogram,
+                MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay)),
+            ) if runtime.signed_overlay_input => LayerPresentationCapabilityStatus::Supported,
+            (
+                LayerDataKind::Histogram,
+                MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay)),
+            ) => LayerPresentationCapabilityStatus::Unsupported(
+                LayerPresentationCapabilityReason::MissingSignedOverlayInput,
+            ),
+            (_, MarkKind::Bar(BarMode::Histogram(_))) => {
+                LayerPresentationCapabilityStatus::Unsupported(
+                    LayerPresentationCapabilityReason::UnsupportedBarModeForDataKind,
+                )
+            }
+            _ => LayerPresentationCapabilityStatus::Supported,
+        };
+
+        LayerPresentationCapabilityReport { mark, bar_mode }
+    }
+
+    pub fn resolve_with_capabilities(
+        self,
+        data_kind: LayerDataKind,
+        runtime: LayerPresentationRuntimeCapabilities,
+    ) -> Self {
+        let defaults = Self::default_for_data_kind(data_kind);
+        let capability = self.capability_report(data_kind, runtime);
+
+        let mark = match capability.mark {
+            LayerPresentationCapabilityStatus::Supported => self.mark,
+            LayerPresentationCapabilityStatus::Unsupported(_) => defaults.mark,
+        };
+
+        let mark = match capability.bar_mode {
+            LayerPresentationCapabilityStatus::Supported => mark,
+            LayerPresentationCapabilityStatus::Unsupported(_) => match mark {
+                MarkKind::Bar(_) => MarkKind::Bar(Self::default_bar_mode_for_data_kind(data_kind)),
+                _ => mark,
+            },
+        };
+
+        Self { mark }
+    }
+
+    fn supports_mark(data_kind: LayerDataKind, mark: MarkKind) -> bool {
+        match data_kind {
+            LayerDataKind::Ohlc => matches!(mark, MarkKind::Line | MarkKind::Candle),
+            LayerDataKind::Scalar => matches!(mark, MarkKind::Line | MarkKind::Bar(_)),
+            LayerDataKind::Histogram => matches!(mark, MarkKind::Line | MarkKind::Bar(_)),
+        }
+    }
+
+    const fn default_bar_mode_for_data_kind(data_kind: LayerDataKind) -> BarMode {
+        match data_kind {
+            LayerDataKind::Histogram => BarMode::Histogram(HistogramMode::Plain),
+            LayerDataKind::Ohlc | LayerDataKind::Scalar => BarMode::Regular,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +255,7 @@ pub struct LayerSpec {
     pub name: String,
     pub source: LayerSource,
     pub data_kind: LayerDataKind,
-    pub mark: MarkKind,
+    pub presentation: LayerPresentation,
     pub axis: AxisBinding,
     pub visible: bool,
     pub style: LayerStyle,
@@ -199,7 +342,7 @@ impl PanelSpec {
             return false;
         };
 
-        layer.mark = if force_line { MarkKind::Line } else { mark };
+        layer.presentation.mark = if force_line { MarkKind::Line } else { mark };
         true
     }
 
@@ -210,7 +353,7 @@ impl PanelSpec {
 
         for layer in &mut self.layers {
             if Some(layer.id) != self.base_layer {
-                layer.mark = MarkKind::Line;
+                layer.presentation.mark = MarkKind::Line;
             }
         }
     }
@@ -501,6 +644,111 @@ impl ChartComposition {
         panel.set_layer_mark(layer_id, mark)
     }
 
+    pub fn set_panel_layer_presentation(
+        &mut self,
+        panel_id: PanelId,
+        layer_id: LayerId,
+        presentation: LayerPresentation,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        layer.presentation = presentation;
+        panel.enforce_comparison_mark_policy();
+        true
+    }
+
+    pub fn set_panel_layer_data_kind(
+        &mut self,
+        panel_id: PanelId,
+        layer_id: LayerId,
+        data_kind: LayerDataKind,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        layer.data_kind = data_kind;
+        if matches!(layer.presentation.mark, MarkKind::Bar(_)) {
+            layer.presentation.mark =
+                MarkKind::Bar(LayerPresentation::default_bar_mode_for_data_kind(data_kind));
+        }
+        true
+    }
+
+    pub fn set_panel_layer_bar_mode(
+        &mut self,
+        panel_id: PanelId,
+        layer_id: LayerId,
+        mode: BarMode,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        layer.presentation.mark = MarkKind::Bar(mode);
+        panel.enforce_comparison_mark_policy();
+        true
+    }
+
+    pub fn set_panel_layer_histogram_mode(
+        &mut self,
+        panel_id: PanelId,
+        layer_id: LayerId,
+        mode: HistogramMode,
+    ) -> bool {
+        self.set_panel_layer_bar_mode(panel_id, layer_id, BarMode::Histogram(mode))
+    }
+
+    pub fn resolved_panel_presentations(
+        &self,
+        panel_id: PanelId,
+        runtime: LayerPresentationRuntimeCapabilities,
+    ) -> Option<Vec<ResolvedLayerPresentation>> {
+        let panel = self.panel(panel_id)?;
+        let is_multi_source = panel.uses_multi_source();
+
+        Some(
+            panel
+                .layers
+                .iter()
+                .map(|layer| {
+                    let mut requested = layer.presentation;
+
+                    if panel.comparison_policy.force_line_for_non_base_sources
+                        && is_multi_source
+                        && panel.base_layer != Some(layer.id)
+                    {
+                        requested.mark = MarkKind::Line;
+                    }
+
+                    let capability = requested.capability_report(layer.data_kind, runtime);
+                    let resolved = requested.resolve_with_capabilities(layer.data_kind, runtime);
+
+                    ResolvedLayerPresentation {
+                        layer_id: layer.id,
+                        requested,
+                        resolved,
+                        capability,
+                    }
+                })
+                .collect(),
+        )
+    }
+
     pub fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
         let Some(panel) = self.panel_mut(panel_id) else {
             return false;
@@ -521,27 +769,13 @@ impl ChartComposition {
     }
 
     pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
-        let panel = self.panel(panel_id)?;
-        let is_multi_source = panel.uses_multi_source();
-
-        Some(
-            panel
-                .layers
-                .iter()
-                .map(|layer| {
-                    let mark = if panel.comparison_policy.force_line_for_non_base_sources
-                        && is_multi_source
-                        && panel.base_layer != Some(layer.id)
-                    {
-                        MarkKind::Line
-                    } else {
-                        layer.mark
-                    };
-
-                    (layer.id, mark)
-                })
-                .collect(),
-        )
+        self.resolved_panel_presentations(panel_id, LayerPresentationRuntimeCapabilities::default())
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| (entry.layer_id, entry.resolved.mark))
+                    .collect()
+            })
     }
 
     pub fn remove_panel(&mut self, panel_id: PanelId) -> bool {
@@ -587,12 +821,26 @@ impl ChartComposition {
         mark: MarkKind,
         axis: AxisBinding,
     ) -> LayerSpec {
+        let mut presentation = LayerPresentation::default_for_data_kind(data_kind);
+        presentation.mark = mark;
+
+        self.new_layer_with_presentation(name, source, data_kind, presentation, axis)
+    }
+
+    pub fn new_layer_with_presentation(
+        &mut self,
+        name: impl Into<String>,
+        source: LayerSource,
+        data_kind: LayerDataKind,
+        presentation: LayerPresentation,
+        axis: AxisBinding,
+    ) -> LayerSpec {
         LayerSpec {
             id: self.new_layer_id(),
             name: name.into(),
             source,
             data_kind,
-            mark,
+            presentation,
             axis,
             visible: true,
             style: LayerStyle::default(),
@@ -677,7 +925,7 @@ impl ChartComposition {
 }
 
 pub trait LayerRenderer<Frame> {
-    fn supports(&self, mark: MarkKind, data_kind: LayerDataKind) -> bool;
+    fn supports(&self, data_kind: LayerDataKind, presentation: LayerPresentation) -> bool;
     fn draw_layer(&self, frame: &mut Frame, layer: &LayerSpec);
 }
 
