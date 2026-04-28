@@ -2,9 +2,9 @@ use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::scene::Scene;
 use super::{
     CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, PANEL_CONTROL_BOX, PANEL_CONTROL_GAP,
-    PANEL_CONTROL_ICON_SIZE, PANEL_CONTROL_TOOLTIP_GAP, PANEL_TITLE_LEFT_PAD,
-    PANEL_TITLE_TO_CONTROLS_GAP, PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_ICON_BOX,
-    TICKER_LEGEND_ICON_GAP, TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET,
+    PANEL_CONTROL_ICON_SIZE, PANEL_TITLE_LEFT_PAD, PANEL_TITLE_TO_CONTROLS_GAP,
+    PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_ICON_BOX, TICKER_LEGEND_ICON_GAP,
+    TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET,
 };
 use crate::style;
 use crate::widget::chart::kline::composition::MarkKind;
@@ -28,14 +28,6 @@ impl PanelControlKind {
             Self::MoveUp => "^",
             Self::MoveDown => "v",
             Self::Close => "X",
-        }
-    }
-
-    fn tooltip(self) -> &'static str {
-        match self {
-            Self::MoveUp => "Move panel up",
-            Self::MoveDown => "Move panel down",
-            Self::Close => "Remove panel",
         }
     }
 
@@ -66,13 +58,6 @@ impl TickerLegendIconKind {
         match self {
             Self::Settings => style::Icon::Cog,
             Self::Close => style::Icon::Close,
-        }
-    }
-
-    fn tooltip(self) -> &'static str {
-        match self {
-            Self::Settings => "Ticker settings",
-            Self::Close => "Remove ticker",
         }
     }
 
@@ -452,6 +437,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        show_primary_panel_values: bool,
     ) {
         let Some(cursor) = scene.cursor else {
             return;
@@ -502,6 +488,10 @@ where
             }
 
             if panel_index == scene.primary_panel {
+                if !show_primary_panel_values {
+                    continue;
+                }
+
                 let precision = base_series.ticker_info().min_ticksize;
 
                 if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar) {
@@ -541,7 +531,7 @@ where
                             content: text.clone(),
                             position: Point::new(x, y),
                             color,
-                            size: (TEXT_SIZE - 1.0).into(),
+                            size: TEXT_SIZE.into(),
                             align_x: iced::Alignment::Start.into(),
                             align_y: iced::Alignment::Start.into(),
                             font: style::AZERET_MONO,
@@ -557,7 +547,7 @@ where
                         content: text,
                         position: Point::new(x, y),
                         color: palette.background.base.text.scale_alpha(0.85),
-                        size: (TEXT_SIZE - 1.0).into(),
+                        size: TEXT_SIZE.into(),
                         align_x: iced::Alignment::Start.into(),
                         align_y: iced::Alignment::Start.into(),
                         font: style::AZERET_MONO,
@@ -572,7 +562,7 @@ where
                     content: text,
                     position: Point::new(x, y),
                     color: palette.background.base.text.scale_alpha(0.82),
-                    size: (TEXT_SIZE - 1.0).into(),
+                    size: TEXT_SIZE.into(),
                     align_x: iced::Alignment::Start.into(),
                     align_y: iced::Alignment::Start.into(),
                     font: style::AZERET_MONO,
@@ -646,11 +636,7 @@ where
                     width: (row_rect.width - 2.0).max(0.0),
                     height: row_rect.height,
                 };
-                frame.fill_rectangle(
-                    highlight.position(),
-                    highlight.size(),
-                    row_hover_fill,
-                );
+                frame.fill_rectangle(highlight.position(), highlight.size(), row_hover_fill);
             }
 
             let label = row.ticker.ticker.symbol_and_exchange_string();
@@ -739,76 +725,6 @@ where
         }
     }
 
-    pub(super) fn fill_primary_ticker_legend_tooltip(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-    ) {
-        let Some((row_index, icon_kind)) = scene.hovered_ticker_icon else {
-            return;
-        };
-
-        let Some(legend) = scene.ticker_legend.as_ref() else {
-            return;
-        };
-
-        let Some(row) = legend.rows.get(row_index) else {
-            return;
-        };
-
-        let to_root = |rect: Rectangle| Rectangle {
-            x: scene.layout.regions.plot.x + rect.x,
-            y: scene.layout.regions.plot.y + rect.y,
-            width: rect.width,
-            height: rect.height,
-        };
-
-        let target = match icon_kind {
-            TickerLegendIconKind::Settings => to_root(row.settings),
-            TickerLegendIconKind::Close => to_root(row.close),
-        };
-
-        let label = icon_kind.tooltip();
-        let label_w = (label.chars().count() as f32 * CHAR_W + 10.0).clamp(90.0, 180.0);
-        let label_h = TEXT_SIZE + 4.0;
-
-        let plot_left = scene.layout.regions.plot.x;
-        let plot_right = scene.layout.regions.plot.x + scene.layout.regions.plot.width;
-        let plot_top = scene.layout.regions.plot.y;
-        let plot_bottom = scene.layout.regions.plot.y + scene.layout.regions.plot.height;
-
-        let right_x = target.x + target.width + PANEL_CONTROL_TOOLTIP_GAP;
-        let left_x = target.x - label_w - PANEL_CONTROL_TOOLTIP_GAP;
-        let tooltip_x = if right_x + label_w <= plot_right {
-            right_x
-        } else if left_x >= plot_left {
-            left_x
-        } else {
-            right_x.clamp(plot_left, plot_right - label_w)
-        };
-
-        let tooltip_y = (target.y + (target.height - label_h) * 0.5)
-            .clamp(plot_top, (plot_bottom - label_h).max(plot_top));
-
-        frame.fill_rectangle(
-            Point::new(tooltip_x, tooltip_y),
-            Size::new(label_w, label_h),
-            palette.background.strong.color,
-        );
-
-        frame.fill_text(canvas::Text {
-            content: label.to_string(),
-            position: Point::new(tooltip_x + label_w * 0.5, tooltip_y + label_h * 0.5),
-            color: palette.background.strong.text,
-            size: (TEXT_SIZE - 1.0).into(),
-            align_x: iced::Alignment::Center.into(),
-            align_y: iced::Alignment::Center.into(),
-            font: style::AZERET_MONO,
-            ..Default::default()
-        });
-    }
-
     pub(super) fn fill_panel_controls(
         &self,
         frame: &mut canvas::Frame,
@@ -868,48 +784,5 @@ where
                 ..Default::default()
             });
         }
-    }
-
-    pub(super) fn fill_panel_controls_tooltip(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-    ) {
-        let Some(hovered) = scene.hovered_control else {
-            return;
-        };
-
-        let label = hovered.kind.tooltip();
-        let label_w = (label.chars().count() as f32 * CHAR_W + 10.0).clamp(68.0, 170.0);
-        let label_h = TEXT_SIZE + 4.0;
-
-        let hovered_x = scene.layout.regions.plot.x + hovered.rect.x;
-        let hovered_y = scene.layout.regions.plot.y + hovered.rect.y;
-
-        let tooltip_x = (hovered_x + hovered.rect.width * 0.5 - label_w * 0.5).clamp(
-            scene.layout.regions.plot.x,
-            scene.layout.regions.plot.x + scene.layout.regions.plot.width - label_w,
-        );
-
-        let tooltip_y =
-            (hovered_y - label_h - PANEL_CONTROL_TOOLTIP_GAP).max(scene.layout.regions.plot.y);
-
-        frame.fill_rectangle(
-            Point::new(tooltip_x, tooltip_y),
-            Size::new(label_w, label_h),
-            palette.background.strong.color,
-        );
-
-        frame.fill_text(canvas::Text {
-            content: label.to_string(),
-            position: Point::new(tooltip_x + label_w * 0.5, tooltip_y + label_h * 0.5),
-            color: palette.background.strong.text,
-            size: (TEXT_SIZE - 1.0).into(),
-            align_x: iced::Alignment::Center.into(),
-            align_y: iced::Alignment::Center.into(),
-            font: style::AZERET_MONO,
-            ..Default::default()
-        });
     }
 }

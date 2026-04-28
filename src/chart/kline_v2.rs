@@ -30,7 +30,10 @@ pub use indicator::IndicatorAvailability;
 use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
 
 pub enum Action {
-    RequestFetch(Vec<FetchSpec>),
+    SeriesColorChanged(TickerInfo, iced::Color),
+    SeriesNameChanged(TickerInfo, String),
+    RemoveSeries(TickerInfo),
+    OpenSeriesEditor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +248,20 @@ impl KlineChartV2 {
         self.streams_for_all()
     }
 
+    pub fn set_series_color(&mut self, _ticker_info: TickerInfo, _color: iced::Color) -> bool {
+        todo!()
+    }
+
+    pub fn set_series_name(&mut self, ticker_info: TickerInfo, name: String) -> bool {
+        if let Some(idx) = self.series_index.get(&ticker_info).copied() {
+            self.series[idx].name = Some(name);
+            self.bump_rev();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn last_update(&self) -> Instant {
         self.last_tick
     }
@@ -300,10 +317,8 @@ impl KlineChartV2 {
                     // Hook for ticker-specific settings editor.
                 }
                 KlineWidgetEvent::TickerRemove(ticker) => {
-                    if ticker != self.base_ticker && self.remove_ticker_state(ticker) {
-                        self.sync_primary_panel_comparison_sources();
-                        self.sync_widget_panel_layout();
-                        self.bump_rev();
+                    if ticker != self.base_ticker {
+                        return Some(Action::RemoveSeries(ticker));
                     }
                 }
                 KlineWidgetEvent::XAxisDoubleClick => {
@@ -414,7 +429,7 @@ impl KlineChartV2 {
         self.bump_rev();
     }
 
-    pub fn set_basis(&mut self, basis: Basis) -> Option<Action> {
+    pub fn set_basis(&mut self, basis: Basis) -> Option<super::Action> {
         self.basis = basis;
         self.timeframe = Self::timeframe_for_basis(basis);
 
@@ -432,7 +447,7 @@ impl KlineChartV2 {
         self.fetch_action(reqs)
     }
 
-    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<Action> {
+    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
         if let Some(ts) = now {
             self.last_tick = ts;
         }
@@ -697,7 +712,7 @@ impl KlineChartV2 {
     fn fetch_action(
         &self,
         reqs: Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)>,
-    ) -> Option<Action> {
+    ) -> Option<super::Action> {
         if reqs.is_empty() {
             None
         } else {
@@ -705,7 +720,7 @@ impl KlineChartV2 {
                 .into_iter()
                 .map(FetchSpec::from)
                 .collect::<Vec<FetchSpec>>();
-            Some(Action::RequestFetch(specs))
+            Some(super::Action::RequestFetch(specs))
         }
     }
 

@@ -36,7 +36,6 @@ const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
 const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
 const PANEL_CONTROL_GAP: f32 = 4.0;
 const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
-const PANEL_CONTROL_TOOLTIP_GAP: f32 = 3.0;
 
 const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
@@ -108,7 +107,6 @@ struct State {
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     interaction_text_cache: canvas::Cache,
-    tooltip_cache: canvas::Cache,
     is_panning: bool,
     dragging_split: Option<usize>,
     last_cursor: Option<Point>,
@@ -124,7 +122,6 @@ impl Default for State {
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
             interaction_text_cache: canvas::Cache::new(),
-            tooltip_cache: canvas::Cache::new(),
             is_panning: false,
             dragging_split: None,
             last_cursor: None,
@@ -145,7 +142,6 @@ impl State {
     fn clear_overlay_caches(&mut self) {
         self.overlay_cache.clear();
         self.interaction_text_cache.clear();
-        self.tooltip_cache.clear();
     }
 }
 
@@ -530,8 +526,9 @@ where
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette);
 
-        if !scene.hovering_ticker_legend && self.series.len() <= 1 {
-            self.fill_panel_header_values(frame, scene, palette);
+        if !scene.hovering_ticker_legend {
+            let show_primary_panel_values = scene.ticker_legend.is_none();
+            self.fill_panel_header_values(frame, scene, palette, show_primary_panel_values);
         }
 
         if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
@@ -660,11 +657,6 @@ where
             font: style::AZERET_MONO,
             ..Default::default()
         });
-    }
-
-    fn fill_overlay_tooltips(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        self.fill_panel_controls_tooltip(frame, scene, palette);
-        self.fill_primary_ticker_legend_tooltip(frame, scene, palette);
     }
 }
 
@@ -1087,10 +1079,6 @@ where
                         self.fill_overlay_interaction_text(frame, &scene, palette);
                     });
 
-            let tooltip_geom = state.tooltip_cache.draw(r, bounds.size(), |frame| {
-                self.fill_overlay_tooltips(frame, &scene, palette);
-            });
-
             r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(plot_geom);
@@ -1121,11 +1109,6 @@ where
             r.with_layer(layer_bounds, |r| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(interaction_text_geom);
-            });
-
-            r.with_layer(layer_bounds, |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
-                r.draw_geometry(tooltip_geom);
             });
         });
     }

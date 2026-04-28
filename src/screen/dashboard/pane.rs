@@ -1271,8 +1271,23 @@ impl State {
                 if let Content::KlineV2 { chart: Some(c) } = &mut self.content
                     && let Some(action) = c.update(message)
                 {
-                    let crate::chart::kline_v2::Action::RequestFetch(fetch) = action;
-                    return Some(Effect::RequestFetch(fetch));
+                    match action {
+                        super::chart::kline_v2::Action::SeriesColorChanged(t, color) => {
+                            c.set_series_color(t, color);
+                        }
+                        super::chart::kline_v2::Action::SeriesNameChanged(t, name) => {
+                            c.set_series_name(t, name);
+                        }
+                        super::chart::kline_v2::Action::OpenSeriesEditor => {
+                            self.modal = Some(Modal::Settings);
+                        }
+                        super::chart::kline_v2::Action::RemoveSeries(ti) => {
+                            let rebuilt = c.remove_ticker(&ti);
+                            self.streams = ResolvedStream::Ready(rebuilt);
+
+                            return Some(Effect::RefreshStreams);
+                        }
+                    }
                 }
             }
             Event::PanelInteraction(msg) => match &mut self.content {
@@ -1559,10 +1574,9 @@ impl State {
                                                 .collect();
 
                                             self.streams = ResolvedStream::Ready(streams);
+                                            let action = c.set_basis(new_basis);
 
-                                            if let Some(
-                                                crate::chart::kline_v2::Action::RequestFetch(fetch),
-                                            ) = c.set_basis(new_basis)
+                                            if let Some(chart::Action::RequestFetch(fetch)) = action
                                             {
                                                 effect = Some(Effect::RequestFetch(fetch));
                                             }
@@ -1910,13 +1924,9 @@ impl State {
             Content::Kline { chart, .. } => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
-            Content::KlineV2 { chart } => chart.as_mut().and_then(|c| {
-                c.invalidate(Some(now)).map(|action| match action {
-                    crate::chart::kline_v2::Action::RequestFetch(fetch) => {
-                        Action::Chart(chart::Action::RequestFetch(fetch))
-                    }
-                })
-            }),
+            Content::KlineV2 { chart } => chart
+                .as_mut()
+                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
             Content::TimeAndSales(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
