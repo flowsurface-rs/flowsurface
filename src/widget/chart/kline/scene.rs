@@ -1,8 +1,8 @@
 use super::chrome::{PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
-    HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget, MAX_BAR_SPACING_PX,
-    MIN_BAR_SPACING_PX, SCALE_STEP_PCT,
+    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
+    MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX,
 };
 use crate::widget::chart::kline::composition::{MarkKind, PanelScaleMode};
 
@@ -120,7 +120,7 @@ pub(super) struct IndicatorPanelScene {
 pub(super) struct Scene {
     pub(super) layout: PanelLayoutTree,
     pub(super) x_axis: XAxis,
-    pub(super) bar_spacing_px: f32,
+    bar_spacing_px: BarSpacingPx,
     pub(super) min_x_unit: i64,
     pub(super) max_x_unit: i64,
     pub(super) min_primary_value: f32,
@@ -169,16 +169,27 @@ impl Scene {
             .map(|rect| rect.y + rect.height)
     }
 
+    pub(super) fn bar_spacing_px(&self) -> BarSpacingPx {
+        self.bar_spacing_px
+    }
+
+    fn plot_right_edge_px(&self) -> f32 {
+        self.primary_plot().width.floor().max(1.0)
+    }
+
     pub(super) fn map_x_plot(&self, x_unit: i64) -> f32 {
-        let steps_from_right = (self.max_x_unit - x_unit) as f32;
-        self.primary_plot().width - (steps_from_right * self.bar_spacing_px)
+        let steps_from_right = self.max_x_unit.saturating_sub(x_unit);
+        let right_edge_px = self.plot_right_edge_px() as i64;
+        let spacing_px = i64::from(self.bar_spacing_px.as_i32());
+        let offset_px = steps_from_right.saturating_mul(spacing_px);
+        right_edge_px.saturating_sub(offset_px) as f32
     }
 
     fn unit_from_plot_x(&self, x_plot: f32) -> i64 {
-        let width = self.primary_plot().width.max(1.0);
-        let clamped_x = x_plot.clamp(0.0, width);
-        let spacing = self.bar_spacing_px.max(1e-3);
-        let steps_from_right = ((width - clamped_x) / spacing).round() as i64;
+        let right_edge_px = self.plot_right_edge_px();
+        let clamped_x = x_plot.clamp(0.0, right_edge_px);
+        let spacing = self.bar_spacing_px.as_f32().max(1.0);
+        let steps_from_right = ((right_edge_px - clamped_x) / spacing).round() as i64;
 
         self.max_x_unit
             .saturating_sub(steps_from_right)
@@ -494,6 +505,13 @@ where
         )
     }
 
+    fn render_bar_spacing_px(&self) -> BarSpacingPx {
+        BarSpacingPx::from_logical(
+            self.normalize_horizontal_scale(self.horizontal_scale)
+                .as_pixels_per_bar(),
+        )
+    }
+
     fn max_points_available(&self) -> usize {
         self.series
             .iter()
@@ -507,16 +525,21 @@ where
         current: HorizontalScale,
         zoom_in: bool,
     ) -> HorizontalScale {
-        let base = self.normalize_horizontal_scale(current).as_pixels_per_bar();
-        let factor = if zoom_in {
-            1.0 + SCALE_STEP_PCT
+        let current_px = BarSpacingPx::from_logical(
+            self.normalize_horizontal_scale(current).as_pixels_per_bar(),
+        )
+        .as_i32();
+
+        let min_px = MIN_BAR_SPACING_PX.ceil() as i32;
+        let max_px = MAX_BAR_SPACING_PX.floor() as i32;
+
+        let next_px = if zoom_in {
+            current_px.saturating_add(1).min(max_px)
         } else {
-            1.0 - SCALE_STEP_PCT
+            current_px.saturating_sub(1).max(min_px)
         };
 
-        HorizontalScale::pixels_per_bar(
-            (base * factor).clamp(MIN_BAR_SPACING_PX, MAX_BAR_SPACING_PX),
-        )
+        HorizontalScale::pixels_per_bar(next_px as f32)
     }
 
     pub(super) fn for_each_bar_unit_index(
@@ -566,11 +589,8 @@ where
     }
 
     fn visible_x_span_units_for_width(&self, plot_width: f32) -> i64 {
-        let spacing = self
-            .normalize_horizontal_scale(self.horizontal_scale)
-            .as_pixels_per_bar()
-            .max(1e-3);
-        ((plot_width.max(1.0) / spacing).floor() as i64).max(1)
+        let spacing = self.render_bar_spacing_px().as_f32().max(1.0);
+        ((plot_width.floor().max(1.0) / spacing).floor() as i64).max(1)
     }
 
     fn compute_x_window(&self, plot_width: f32) -> Option<(XAxis, i64, i64)> {
@@ -710,9 +730,7 @@ where
         let primary_mark = self.resolved_panel_mark(primary_panel, KlinePanelKind::PrimaryChart);
         let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
         let primary_plot = panel_layout.panel(primary_panel)?.plot;
-        let bar_spacing_px = self
-            .normalize_horizontal_scale(self.horizontal_scale)
-            .as_pixels_per_bar();
+        let bar_spacing_px = self.render_bar_spacing_px();
 
         let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window(primary_plot.width)?;
 
@@ -867,8 +885,7 @@ where
                 let snapped_x_unit = scene.unit_from_plot_x(x_plot);
                 let snapped_x_plot = scene
                     .map_x_plot(snapped_x_unit)
-                    .round()
-                    .clamp(0.0, primary_plot.width.max(1.0));
+                    .clamp(0.0, scene.plot_right_edge_px());
 
                 if let LayoutHitZone::PanelPlot(panel_index) = zone
                     && let Some(panel) = scene.layout.panel(panel_index)

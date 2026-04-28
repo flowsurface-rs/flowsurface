@@ -565,9 +565,16 @@ impl ChartComposition {
             return false;
         }
 
-        let panel = self.panels.remove(from_index);
-        self.panels.insert(to_index, panel);
         self.ensure_split_count();
+        let mut heights = self.normalized_panel_heights(DEFAULT_MIN_PANEL_RATIO);
+
+        let panel = self.panels.remove(from_index);
+        let panel_height = heights.remove(from_index);
+
+        self.panels.insert(to_index, panel);
+        heights.insert(to_index, panel_height);
+
+        self.splits = Self::splits_from_heights(&heights);
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
         true
     }
@@ -604,6 +611,56 @@ impl ChartComposition {
                 }
             }
         }
+    }
+
+    fn normalized_panel_heights(&self, min_panel_ratio: f32) -> Vec<f32> {
+        let panel_count = self.panel_count();
+        if panel_count == 0 {
+            return Vec::new();
+        }
+
+        let mut heights = Vec::with_capacity(panel_count);
+        let mut previous = 0.0;
+
+        for split in self.normalized_splits(min_panel_ratio) {
+            let clamped = split.clamp(previous, 1.0);
+            heights.push((clamped - previous).max(0.0));
+            previous = clamped;
+        }
+
+        heights.push((1.0 - previous).max(0.0));
+
+        let total: f32 = heights.iter().sum();
+        if total > f32::EPSILON {
+            for height in &mut heights {
+                *height /= total;
+            }
+        }
+
+        heights
+    }
+
+    fn splits_from_heights(heights: &[f32]) -> Vec<f32> {
+        if heights.len() <= 1 {
+            return Vec::new();
+        }
+
+        let total: f32 = heights.iter().copied().sum();
+        if total <= f32::EPSILON {
+            let count = heights.len();
+            return (1..count)
+                .map(|index| index as f32 / count as f32)
+                .collect();
+        }
+
+        let mut splits = Vec::with_capacity(heights.len().saturating_sub(1));
+        let mut acc = 0.0;
+        for height in heights.iter().take(heights.len().saturating_sub(1)) {
+            acc += *height / total;
+            splits.push(acc.clamp(0.0, 1.0));
+        }
+
+        splits
     }
 
     fn new_panel_id(&mut self) -> PanelId {

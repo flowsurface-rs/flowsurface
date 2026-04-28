@@ -25,7 +25,6 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
-const SCALE_STEP_PCT: f32 = 0.08;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 const MIN_PANEL_HEIGHT: f32 = 40.0;
@@ -63,6 +62,28 @@ impl HorizontalScale {
 
     pub fn as_pixels_per_bar(self) -> f32 {
         self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BarSpacingPx(i32);
+
+impl BarSpacingPx {
+    fn from_logical(px: f32) -> Self {
+        let snapped = px
+            .clamp(MIN_BAR_SPACING_PX, MAX_BAR_SPACING_PX)
+            .round()
+            .max(1.0) as i32;
+
+        Self(snapped.max(1))
+    }
+
+    fn as_i32(self) -> i32 {
+        self.0
+    }
+
+    fn as_f32(self) -> f32 {
+        self.0 as f32
     }
 }
 
@@ -294,9 +315,15 @@ where
     }
 
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let px_per_unit = scene.bar_spacing_px;
-        let candle_width = (px_per_unit * 0.7).clamp(1.0, 22.0).round().max(1.0);
-        let indicator_width = (px_per_unit * 0.8).clamp(1.0, 24.0).round().max(1.0);
+        let spacing = scene.bar_spacing_px();
+        let px_per_unit = spacing.as_f32();
+        let max_width = spacing.as_i32().max(1);
+        let candle_width = ((px_per_unit * 0.7).round() as i32)
+            .clamp(1, 22)
+            .min(max_width);
+        let indicator_width = ((px_per_unit * 0.8).round() as i32)
+            .clamp(1, 24)
+            .min(max_width);
 
         let mut primary_line_points: Vec<Vec<Point>> = vec![Vec::new(); self.series.len()];
         let mut indicator_line_points: Vec<Vec<Point>> =
@@ -316,7 +343,7 @@ where
                 return;
             }
 
-            let x = scene.map_x_plot(x_unit).round();
+            let x_px = scene.map_x_plot(x_unit).round() as i32;
             let is_base_series = series_index == 0;
             let series_anchor = scene
                 .series_percent_anchors
@@ -344,23 +371,25 @@ where
             match primary_mark {
                 MarkKind::Line => {
                     if let Some(points) = primary_line_points.get_mut(series_index) {
-                        points.push(Point::new(x, y_close));
+                        points.push(Point::new(x_px as f32, y_close));
                     }
                 }
                 MarkKind::Candle | MarkKind::Bar => {
                     let body_top = y_open.min(y_close);
                     let body_h = (y_open - y_close).abs().max(1.0);
+                    let candle_left = x_px - (candle_width / 2);
 
                     frame.fill_rectangle(
-                        Point::new(x - (candle_width / 2.0), body_top),
-                        Size::new(candle_width, body_h),
+                        Point::new(candle_left as f32, body_top),
+                        Size::new(candle_width as f32, body_h),
                         color,
                     );
 
-                    let wick_w = (candle_width * 0.16).clamp(1.0, 2.0).round().max(1.0);
+                    let wick_w = ((candle_width as f32 * 0.16).round() as i32).clamp(1, 2);
+                    let wick_left = x_px - (wick_w / 2);
                     frame.fill_rectangle(
-                        Point::new(x - (wick_w / 2.0), y_high.min(y_low)),
-                        Size::new(wick_w, (y_high - y_low).abs().max(1.0)),
+                        Point::new(wick_left as f32, y_high.min(y_low)),
+                        Size::new(wick_w as f32, (y_high - y_low).abs().max(1.0)),
                         color.scale_alpha(0.85),
                     );
                 }
@@ -388,17 +417,18 @@ where
                     match indicator_panel.mark {
                         MarkKind::Line => {
                             if let Some(points) = indicator_line_points.get_mut(indicator_slot) {
-                                points.push(Point::new(x, y_indicator_value));
+                                points.push(Point::new(x_px as f32, y_indicator_value));
                             }
                         }
                         MarkKind::Candle | MarkKind::Bar => {
+                            let indicator_left = x_px - (indicator_width / 2);
                             frame.fill_rectangle(
                                 Point::new(
-                                    x - (indicator_width / 2.0),
+                                    indicator_left as f32,
                                     y_indicator_value.min(y_indicator_baseline),
                                 ),
                                 Size::new(
-                                    indicator_width,
+                                    indicator_width as f32,
                                     (y_indicator_baseline - y_indicator_value).abs().max(1.0),
                                 ),
                                 color.scale_alpha(0.4),
@@ -975,10 +1005,11 @@ where
                             let dx_px = cursor_pos.x - prev.x;
 
                             if dx_px.abs() > 0.0 {
-                                let spacing = self
-                                    .normalize_horizontal_scale(self.horizontal_scale)
-                                    .as_pixels_per_bar()
-                                    .max(1e-3);
+                                let spacing = BarSpacingPx::from_logical(
+                                    self.normalize_horizontal_scale(self.horizontal_scale)
+                                        .as_pixels_per_bar(),
+                                )
+                                .as_f32();
                                 let dx_units = -(dx_px) / spacing;
 
                                 shell.publish(M::from(KlineWidgetEvent::HorizontalOffsetChanged(
