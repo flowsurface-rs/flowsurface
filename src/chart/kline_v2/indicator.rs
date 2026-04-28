@@ -157,16 +157,17 @@ impl SeriesIndicatorData {
         self.cumulative_volume_delta.probe()
     }
 
-    pub fn value_for_indicator(&self, indicator: Option<KlineIndicator>, bar: &Kline) -> f32 {
+    pub fn value_for_indicator(
+        &self,
+        indicator: Option<KlineIndicator>,
+        bar: &Kline,
+    ) -> Option<f32> {
         match indicator {
-            Some(KlineIndicator::OpenInterest) => {
-                self.open_interest.value_at(bar.time).unwrap_or(0.0)
+            Some(KlineIndicator::OpenInterest) => self.open_interest.value_at(bar.time),
+            Some(KlineIndicator::CumulativeVolumeDelta) => {
+                self.cumulative_volume_delta.value_at(bar.time)
             }
-            Some(KlineIndicator::CumulativeVolumeDelta) => self
-                .cumulative_volume_delta
-                .value_at(bar.time)
-                .unwrap_or(0.0),
-            Some(KlineIndicator::Volume) | None => f32::from(bar.volume.total()),
+            Some(KlineIndicator::Volume) | None => Some(f32::from(bar.volume.total())),
         }
     }
 }

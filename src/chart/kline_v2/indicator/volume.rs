@@ -11,7 +11,7 @@ pub fn panel_recipe() -> IndicatorPanelRecipe {
         data_kind: LayerDataKind::Histogram,
         mark: MarkKind::Bar,
         axis: AxisBinding::Secondary,
-        preferred_scale: PanelScaleMode::Absolute,
+        preferred_scale: PanelScaleMode::FitVisibleIncludeZero,
     }
 }
 

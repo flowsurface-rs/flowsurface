@@ -26,7 +26,6 @@ const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
 const SCALE_STEP_PCT: f32 = 0.08;
-const PANEL_X_AXIS_HEIGHT: f32 = 18.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 const MIN_PANEL_HEIGHT: f32 = 40.0;
@@ -78,6 +77,10 @@ pub trait KlineSeriesLike {
 
     fn indicator_value_for_panel(&self, _panel_index: usize, bar: &Kline) -> f32 {
         self.indicator_value(bar)
+    }
+
+    fn indicator_value_for_panel_opt(&self, panel_index: usize, bar: &Kline) -> Option<f32> {
+        Some(self.indicator_value_for_panel(panel_index, bar))
     }
 }
 
@@ -298,6 +301,15 @@ where
         let mut primary_line_points: Vec<Vec<Point>> = vec![Vec::new(); self.series.len()];
         let mut indicator_line_points: Vec<Vec<Point>> =
             vec![Vec::new(); scene.indicator_panels.len()];
+        let indicator_zero_baselines: Vec<Option<f32>> = scene
+            .indicator_panels
+            .iter()
+            .map(|panel| {
+                scene
+                    .map_indicator_plot(panel.panel_index, 0.0)
+                    .or_else(|| scene.indicator_panel_bottom(panel.panel_index))
+            })
+            .collect();
 
         self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
             if x_unit < scene.min_x_unit || x_unit > scene.max_x_unit {
@@ -359,12 +371,19 @@ where
             }
 
             for (indicator_slot, indicator_panel) in scene.indicator_panels.iter().enumerate() {
-                let indicator_value =
-                    series.indicator_value_for_panel(indicator_panel.panel_index, bar);
+                let Some(indicator_value) =
+                    series.indicator_value_for_panel_opt(indicator_panel.panel_index, bar)
+                else {
+                    continue;
+                };
+                let y_indicator_baseline = indicator_zero_baselines
+                    .get(indicator_slot)
+                    .copied()
+                    .flatten();
 
-                if let (Some(y_indicator_value), Some(y_indicator_bottom)) = (
+                if let (Some(y_indicator_value), Some(y_indicator_baseline)) = (
                     scene.map_indicator_plot(indicator_panel.panel_index, indicator_value),
-                    scene.indicator_panel_bottom(indicator_panel.panel_index),
+                    y_indicator_baseline,
                 ) {
                     match indicator_panel.mark {
                         MarkKind::Line => {
@@ -376,11 +395,11 @@ where
                             frame.fill_rectangle(
                                 Point::new(
                                     x - (indicator_width / 2.0),
-                                    y_indicator_value.min(y_indicator_bottom),
+                                    y_indicator_value.min(y_indicator_baseline),
                                 ),
                                 Size::new(
                                     indicator_width,
-                                    (y_indicator_bottom - y_indicator_value).abs().max(1.0),
+                                    (y_indicator_baseline - y_indicator_value).abs().max(1.0),
                                 ),
                                 color.scale_alpha(0.4),
                             );
@@ -706,7 +725,7 @@ where
                 let axis_h = if panel_index + 1 == panel_count {
                     (stack_size.height - y).max(0.0)
                 } else {
-                    PANEL_X_AXIS_HEIGHT
+                    0.0
                 };
 
                 children.push(

@@ -94,6 +94,11 @@ impl KlineSeriesLike for KlineSeries {
     }
 
     fn indicator_value_for_panel(&self, panel_index: usize, bar: &Kline) -> f32 {
+        self.indicator_value_for_panel_opt(panel_index, bar)
+            .unwrap_or(0.0)
+    }
+
+    fn indicator_value_for_panel_opt(&self, panel_index: usize, bar: &Kline) -> Option<f32> {
         self.indicators.value_for_indicator(
             self.panel_indicators.get(panel_index).copied().flatten(),
             bar,
@@ -615,14 +620,21 @@ impl KlineChartV2 {
 
             self.panel_marks.push(effective_mark);
 
-            self.panel_scale_modes.push(
-                self.composition
-                    .panel_effective_scale_mode(panel.id)
-                    .unwrap_or(PanelScaleMode::Absolute),
-            );
+            let panel_indicator = self.indicator_for_panel(panel.id);
 
-            self.panel_indicators
-                .push(self.indicator_for_panel(panel.id));
+            let mut scale_mode = self
+                .composition
+                .panel_effective_scale_mode(panel.id)
+                .unwrap_or(PanelScaleMode::Absolute);
+
+            if matches!(panel_indicator, Some(KlineIndicator::Volume))
+                && matches!(scale_mode, PanelScaleMode::Absolute)
+            {
+                scale_mode = PanelScaleMode::FitVisibleIncludeZero;
+            }
+
+            self.panel_scale_modes.push(scale_mode);
+            self.panel_indicators.push(panel_indicator);
         }
 
         self.panel_splits = self.composition.normalized_splits(DEFAULT_MIN_PANEL_RATIO);

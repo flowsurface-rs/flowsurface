@@ -648,7 +648,7 @@ where
     ) -> Option<(f32, f32)> {
         let mut any = false;
         let mut min_value = f32::INFINITY;
-        let mut indicator_max_value = 0.0f32;
+        let mut max_value = f32::NEG_INFINITY;
 
         self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
             if series_index != 0 {
@@ -659,30 +659,34 @@ where
                 return;
             }
 
+            let Some(value) = series.indicator_value_for_panel_opt(indicator_panel_index, bar)
+            else {
+                return;
+            };
+
             any = true;
-            let value = series.indicator_value_for_panel(indicator_panel_index, bar);
             min_value = min_value.min(value);
-            indicator_max_value = indicator_max_value.max(value);
+            max_value = max_value.max(value);
         });
 
-        if !any {
+        if !any || !min_value.is_finite() || !max_value.is_finite() {
             return None;
         }
 
         match scale_mode {
             PanelScaleMode::FitVisible => {
-                let span = (indicator_max_value - min_value).abs();
+                let span = (max_value - min_value).abs();
                 let pad = if span <= f32::EPSILON {
-                    indicator_max_value.abs().max(1.0) * 0.02
+                    max_value.abs().max(1.0) * 0.02
                 } else {
                     span * 0.05
                 };
 
-                Some((min_value - pad, indicator_max_value + pad))
+                Some((min_value - pad, max_value + pad))
             }
             PanelScaleMode::FitVisibleIncludeZero => {
                 let min_including_zero = min_value.min(0.0);
-                let max_including_zero = indicator_max_value.max(0.0);
+                let max_including_zero = max_value.max(0.0);
                 let span = (max_including_zero - min_including_zero).abs();
                 let pad = if span <= f32::EPSILON {
                     max_including_zero.abs().max(1.0) * 0.02
@@ -692,7 +696,7 @@ where
 
                 Some((min_including_zero - pad, max_including_zero + pad))
             }
-            _ => Some((0.0, indicator_max_value.max(1.0))),
+            _ => Some((0.0, max_value.max(1.0))),
         }
     }
 
@@ -823,12 +827,8 @@ where
                 .and_then(|legend| Self::hit_ticker_legend(&scene.layout, legend, local));
 
             if legend_hit.is_some() {
-                scene.ticker_legend = self.build_ticker_legend_layout(
-                    &scene.layout,
-                    primary_panel,
-                    false,
-                    true,
-                );
+                scene.ticker_legend =
+                    self.build_ticker_legend_layout(&scene.layout, primary_panel, false, true);
                 legend_hit = scene
                     .ticker_legend
                     .as_ref()

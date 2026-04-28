@@ -555,19 +555,22 @@ where
                     });
                 }
             } else {
-                let value = base_series.indicator_value_for_panel(panel_index, base_bar);
-                let text = super::super::format_value(value, 0.01);
+                if let Some(value) =
+                    base_series.indicator_value_for_panel_opt(panel_index, base_bar)
+                {
+                    let text = data::util::format_with_commas(value);
 
-                frame.fill_text(canvas::Text {
-                    content: text,
-                    position: Point::new(x, y),
-                    color: palette.background.base.text.scale_alpha(0.82),
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::Start.into(),
-                    align_y: iced::Alignment::Start.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
+                    frame.fill_text(canvas::Text {
+                        content: text,
+                        position: Point::new(x, y),
+                        color: palette.background.base.text.scale_alpha(0.82),
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Start.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
             }
         }
     }

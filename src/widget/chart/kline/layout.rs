@@ -1,6 +1,6 @@
 use super::{
     KlinePanelKind, KlineSeriesLike, KlineWidget, MIN_PANEL_HEIGHT, PANEL_SPLITTER_HEIGHT,
-    PANEL_SPLITTER_HIT_PX, PANEL_X_AXIS_HEIGHT,
+    PANEL_SPLITTER_HIT_PX,
 };
 use crate::widget::chart::Regions;
 use iced::advanced::Layout;
@@ -130,7 +130,7 @@ impl PanelLayoutTree {
                 return LayoutHitZone::PanelPlot(index);
             }
 
-            if Self::contains(panel.x_axis, plot_local) {
+            if panel.x_axis.height > 0.0 && Self::contains(panel.x_axis, plot_local) {
                 return LayoutHitZone::PanelXAxis(index);
             }
         }
@@ -200,8 +200,7 @@ where
             return Vec::new();
         }
 
-        let non_plot = (panel_count as f32 * PANEL_X_AXIS_HEIGHT)
-            + (panel_count.saturating_sub(1) as f32 * PANEL_SPLITTER_HEIGHT);
+        let non_plot = panel_count.saturating_sub(1) as f32 * PANEL_SPLITTER_HEIGHT;
         let usable = (panel_stack_height - non_plot).max(0.0);
 
         if panel_count == 1 {
@@ -239,9 +238,8 @@ where
         let usable_plot_height: f32 = layout.panels.iter().map(|panel| panel.plot.height).sum();
         let usable = usable_plot_height.max(1.0);
 
-        let fixed_before = ((split_index + 1) as f32 * PANEL_X_AXIS_HEIGHT)
-            + (split_index as f32 * PANEL_SPLITTER_HEIGHT)
-            + (PANEL_SPLITTER_HEIGHT * 0.5);
+        let fixed_before =
+            (split_index as f32 * PANEL_SPLITTER_HEIGHT) + (PANEL_SPLITTER_HEIGHT * 0.5);
         let boundary = (local_y - fixed_before).clamp(0.0, usable);
         let ratio = (boundary / usable).clamp(0.0, 1.0);
 
