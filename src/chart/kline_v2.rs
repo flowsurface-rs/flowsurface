@@ -7,8 +7,8 @@ use crate::widget::chart::kline::{
     BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, DrawingAnchor,
     DrawingDraft, DrawingEntity, DrawingId, DrawingObject, DrawingStyle, DrawingTool,
     HorizontalScale, IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
-    OverlayChannelColorRole, OverlayChannelSpec, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY,
-    RSI_UPPER_BAND_FIELD_KEY,
+    OverlayChannelColorRole, OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY,
+    RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY,
 };
 
 use data::chart::Basis;
@@ -216,6 +216,7 @@ pub struct KlineChartV2 {
     timeframe: Timeframe,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
+    panel_y_viewports: Vec<(PanelId, PanelYViewport)>,
     composition: ChartComposition,
     indicator_panels: EnumMap<KlineIndicator, Option<IndicatorPanelBinding>>,
     last_tick: Instant,
@@ -253,6 +254,7 @@ impl KlineChartV2 {
             timeframe,
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: DEFAULT_HORIZONTAL_OFFSET_UNITS,
+            panel_y_viewports: Vec::new(),
             composition,
             cache_rev: 0,
             base_ticker,
@@ -466,6 +468,16 @@ impl KlineChartV2 {
                     self.horizontal_offset = offset;
                     self.bump_rev();
                 }
+                KlineWidgetEvent::PanelYViewportChanged { panel_id, viewport } => {
+                    if self.set_panel_y_viewport(panel_id, viewport) {
+                        self.bump_rev();
+                    }
+                }
+                KlineWidgetEvent::PanelYViewportReset { panel_id } => {
+                    if self.reset_panel_y_viewport(panel_id) {
+                        self.bump_rev();
+                    }
+                }
                 KlineWidgetEvent::PanelSplitChanged { index, split } => {
                     if self
                         .composition
@@ -494,6 +506,7 @@ impl KlineChartV2 {
                     if let Some(panel_id) = self.composition.panels.get(index).map(|panel| panel.id)
                         && self.composition.remove_panel(panel_id)
                     {
+                        let _ = self.reset_panel_y_viewport(panel_id);
                         self.prune_stale_indicator_panel_bindings();
                         self.bump_rev();
                     }
@@ -546,6 +559,7 @@ impl KlineChartV2 {
                 .with_basis(self.basis)
                 .with_horizontal_scale(self.horizontal_scale)
                 .with_horizontal_offset(self.horizontal_offset)
+                .with_panel_y_viewports(&self.panel_y_viewports)
                 .with_active_drawing_tool(self.active_drawing_tool)
                 .with_drawings(&self.drawings)
                 .with_selected_drawing(self.selected_drawing)
@@ -889,7 +903,42 @@ impl KlineChartV2 {
         self.fetch_action(reqs)
     }
 
+    fn panel_y_viewport_index(&self, panel_id: PanelId) -> Option<usize> {
+        self.panel_y_viewports
+            .iter()
+            .position(|(id, _)| *id == panel_id)
+    }
+
+    fn set_panel_y_viewport(&mut self, panel_id: PanelId, viewport: PanelYViewport) -> bool {
+        if let Some(index) = self.panel_y_viewport_index(panel_id) {
+            if self.panel_y_viewports[index].1 == viewport {
+                return false;
+            }
+
+            self.panel_y_viewports[index].1 = viewport;
+            return true;
+        }
+
+        self.panel_y_viewports.push((panel_id, viewport));
+        true
+    }
+
+    fn reset_panel_y_viewport(&mut self, panel_id: PanelId) -> bool {
+        let Some(index) = self.panel_y_viewport_index(panel_id) else {
+            return false;
+        };
+
+        self.panel_y_viewports.remove(index);
+        true
+    }
+
+    fn prune_stale_panel_y_viewports(&mut self) {
+        self.panel_y_viewports
+            .retain(|(panel_id, _)| self.composition.panel(*panel_id).is_some());
+    }
+
     fn bump_rev(&mut self) {
+        self.prune_stale_panel_y_viewports();
         self.cache_rev = self.cache_rev.wrapping_add(1);
     }
 

@@ -140,6 +140,7 @@ pub(super) struct Scene {
     pub(super) primary_scale_mode: PanelScaleMode,
     pub(super) primary_scale_anchor: Option<f32>,
     pub(super) primary_value_step: Option<f32>,
+    pub(super) primary_value_decimals: Option<usize>,
     pub(super) series_percent_anchors: Vec<Option<f32>>,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
     pub(super) panel_controls: Vec<PanelControlHit>,
@@ -381,23 +382,22 @@ impl Scene {
     }
 
     fn decimals_for_step(step: f32) -> usize {
-        let mut scaled = step.abs();
-        if !scaled.is_finite() || scaled <= 0.0 {
+        let step = step.abs();
+        if !step.is_finite() || step <= 0.0 {
             return 4;
         }
 
-        let mut decimals = 0usize;
-        while decimals < 8 {
+        for decimals in 0..=8 {
+            let scaled = (step as f64) * 10_f64.powi(decimals as i32);
             let nearest = scaled.round();
-            if (scaled - nearest).abs() <= 1e-5 {
-                break;
-            }
+            let tolerance = (scaled.abs() * 1e-9).max(1e-12);
 
-            scaled *= 10.0;
-            decimals += 1;
+            if (scaled - nearest).abs() <= tolerance {
+                return decimals;
+            }
         }
 
-        decimals
+        8
     }
 
     fn primary_format_step(&self, fallback: f32) -> f32 {
@@ -437,9 +437,11 @@ impl Scene {
             }
             _ => {
                 let value = self.quantized_primary_value(display_value);
-                if let Some(step) = self.primary_value_step {
-                    let decimals = Self::decimals_for_step(step);
+                if let Some(decimals) = self.primary_value_decimals {
                     format!("{value:.decimals$}")
+                } else if let Some(step) = self.primary_value_step {
+                    let fallback_decimals = Self::decimals_for_step(step);
+                    format!("{value:.fallback_decimals$}")
                 } else {
                     super::super::format_value(value, self.primary_format_step(display_step))
                 }
@@ -477,9 +479,11 @@ impl Scene {
                 format!("{display_value:.precision$}%")
             }
             _ => {
-                if let Some(step) = self.primary_value_step {
-                    let decimals = Self::decimals_for_step(step);
+                if let Some(decimals) = self.primary_value_decimals {
                     format!("{quantized:.decimals$}")
+                } else if let Some(step) = self.primary_value_step {
+                    let fallback_decimals = Self::decimals_for_step(step);
+                    format!("{quantized:.fallback_decimals$}")
                 } else {
                     super::super::format_value(quantized, self.primary_format_step(0.01))
                 }
@@ -1033,8 +1037,22 @@ where
 
         let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window(primary_plot.width)?;
         let primary_value_precision = self.panel_value_precision(primary_panel);
-        let (min_primary_unit, max_primary_unit) =
+        let (mut min_primary_unit, mut max_primary_unit) =
             self.compute_primary_domain(x_axis, min_x_unit, max_x_unit, primary_value_precision)?;
+
+        if let Some(viewport) = self.panel_y_viewport_for_index(primary_panel)
+            && !matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
+        {
+            let view_min_unit =
+                self.panel_value_to_unit(primary_value_precision, viewport.min_value);
+            let view_max_unit =
+                self.panel_value_to_unit(primary_value_precision, viewport.max_value);
+
+            if view_min_unit.0 != view_max_unit.0 {
+                min_primary_unit = YUnit(view_min_unit.0.min(view_max_unit.0));
+                max_primary_unit = YUnit(view_min_unit.0.max(view_max_unit.0));
+            }
+        }
 
         let indicator_panels: Vec<IndicatorPanelScene> = panel_layout
             .panels
@@ -1053,7 +1071,7 @@ where
                 let value_precision = self.panel_value_precision(panel_index);
                 let unit_step =
                     Scene::unit_step_or_default(self.panel_quantization_step(value_precision));
-                let (min_unit, max_unit) = self
+                let (mut min_unit, mut max_unit) = self
                     .compute_indicator_domain(
                         x_axis,
                         min_x_unit,
@@ -1065,6 +1083,18 @@ where
                         scale_mode,
                     )
                     .unwrap_or((YUnit(0), YUnit(1)));
+
+                if let Some(viewport) = self.panel_y_viewport_for_index(panel_index) {
+                    let view_min_unit =
+                        self.panel_value_to_unit(value_precision, viewport.min_value);
+                    let view_max_unit =
+                        self.panel_value_to_unit(value_precision, viewport.max_value);
+
+                    if view_min_unit.0 != view_max_unit.0 {
+                        min_unit = YUnit(view_min_unit.0.min(view_max_unit.0));
+                        max_unit = YUnit(view_min_unit.0.max(view_max_unit.0));
+                    }
+                }
 
                 Some(IndicatorPanelScene {
                     panel_index,
@@ -1119,6 +1149,7 @@ where
             false,
         );
         let primary_value_step = self.panel_quantization_step(primary_value_precision);
+        let primary_value_decimals = self.panel_value_decimals(primary_value_precision);
         let primary_unit_step = Scene::unit_step_or_default(primary_value_step);
 
         let mut scene = Scene {
@@ -1136,6 +1167,7 @@ where
             primary_scale_mode,
             primary_scale_anchor,
             primary_value_step,
+            primary_value_decimals,
             series_percent_anchors,
             indicator_panels,
             panel_controls,

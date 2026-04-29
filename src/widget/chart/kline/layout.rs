@@ -11,7 +11,7 @@ pub(super) enum LayoutHitZone {
     PanelPlot(usize),
     PanelXAxis(usize),
     BottomXAxis,
-    YAxis,
+    YAxis(usize),
     Splitter(usize),
     Outside,
 }
@@ -118,7 +118,23 @@ impl PanelLayoutTree {
 
     pub(super) fn hit_test(&self, root_local: Point) -> LayoutHitZone {
         if self.regions.is_in_y_axis(root_local) {
-            return LayoutHitZone::YAxis;
+            let panel_local_y = root_local.y - self.regions.plot.y;
+
+            for (index, panel) in self.panels.iter().enumerate() {
+                let top = panel.plot.y.min(panel.x_axis.y);
+                let bottom =
+                    (panel.plot.y + panel.plot.height).max(panel.x_axis.y + panel.x_axis.height);
+
+                if panel_local_y >= top && panel_local_y <= bottom {
+                    return LayoutHitZone::YAxis(index);
+                }
+            }
+
+            if let Some(last_index) = self.panels.len().checked_sub(1) {
+                return LayoutHitZone::YAxis(last_index);
+            }
+
+            return LayoutHitZone::Outside;
         }
 
         if self.regions.is_in_x_axis(root_local) {

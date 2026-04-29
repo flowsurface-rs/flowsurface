@@ -40,6 +40,7 @@ const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
 const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
 const PANEL_CONTROL_GAP: f32 = 4.0;
 const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
+const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
 
 const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
@@ -61,6 +62,37 @@ impl HorizontalScale {
 
     pub fn as_pixels_per_bar(self) -> f32 {
         self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelYViewport {
+    pub min_value: f32,
+    pub max_value: f32,
+}
+
+impl PanelYViewport {
+    pub fn normalized(min_value: f32, max_value: f32) -> Option<Self> {
+        if !min_value.is_finite() || !max_value.is_finite() {
+            return None;
+        }
+
+        let (mut min_value, mut max_value) = if min_value <= max_value {
+            (min_value, max_value)
+        } else {
+            (max_value, min_value)
+        };
+
+        if (max_value - min_value).abs() <= 1e-8 {
+            let pad = min_value.abs().max(1.0) * 0.01;
+            min_value -= pad;
+            max_value += pad;
+        }
+
+        Some(Self {
+            min_value,
+            max_value,
+        })
     }
 }
 
@@ -365,11 +397,29 @@ pub enum KlinePanelKind {
 pub enum KlineWidgetEvent {
     HorizontalScaleChanged(HorizontalScale),
     HorizontalOffsetChanged(f32),
-    PanelSplitChanged { index: usize, split: f32 },
-    PanelMoveUp { index: usize },
-    PanelMoveDown { index: usize },
-    PanelSettings { index: usize },
-    PanelClose { index: usize },
+    PanelYViewportChanged {
+        panel_id: PanelId,
+        viewport: PanelYViewport,
+    },
+    PanelYViewportReset {
+        panel_id: PanelId,
+    },
+    PanelSplitChanged {
+        index: usize,
+        split: f32,
+    },
+    PanelMoveUp {
+        index: usize,
+    },
+    PanelMoveDown {
+        index: usize,
+    },
+    PanelSettings {
+        index: usize,
+    },
+    PanelClose {
+        index: usize,
+    },
     TickerSettings(TickerInfo),
     TickerRemove(TickerInfo),
     XAxisDoubleClick,
@@ -378,14 +428,21 @@ pub enum KlineWidgetEvent {
     DrawingDraftCanceled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DragMode {
+    None,
+    Split(usize),
+    AxisScale { panel_index: usize, anchor_y: f32 },
+    Pan { panel_index: usize },
+}
+
 struct State {
     plot_cache: canvas::Cache,
     y_axis_cache: canvas::Cache,
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     interaction_text_cache: canvas::Cache,
-    is_panning: bool,
-    dragging_split: Option<usize>,
+    drag_mode: DragMode,
     last_cursor: Option<Point>,
     last_cache_rev: u64,
     previous_click: Option<iced_core::mouse::Click>,
@@ -399,8 +456,7 @@ impl Default for State {
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
             interaction_text_cache: canvas::Cache::new(),
-            is_panning: false,
-            dragging_split: None,
+            drag_mode: DragMode::None,
             last_cursor: None,
             last_cache_rev: 0,
             previous_click: None,
@@ -432,6 +488,7 @@ pub struct KlineWidget<'a, S> {
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
     active_drawing_tool: DrawingTool,
+    panel_y_viewports: &'a [(PanelId, PanelYViewport)],
     timezone: UserTimezone,
     version: u64,
 }
@@ -451,6 +508,7 @@ where
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: 0.0,
             active_drawing_tool: DrawingTool::Cursor,
+            panel_y_viewports: &[],
             timezone: UserTimezone::Utc,
             version: 0,
         }
@@ -483,6 +541,11 @@ where
 
     pub fn with_active_drawing_tool(mut self, tool: DrawingTool) -> Self {
         self.active_drawing_tool = tool;
+        self
+    }
+
+    pub fn with_panel_y_viewports(mut self, viewports: &'a [(PanelId, PanelYViewport)]) -> Self {
+        self.panel_y_viewports = viewports;
         self
     }
 
@@ -884,6 +947,175 @@ where
             .and_then(|panel| panel.value_precision)
     }
 
+    fn panel_y_viewport(&self, panel_id: PanelId) -> Option<PanelYViewport> {
+        self.panel_y_viewports
+            .iter()
+            .find(|(id, _)| *id == panel_id)
+            .map(|(_, viewport)| *viewport)
+    }
+
+    pub(super) fn panel_y_viewport_for_index(&self, panel_index: usize) -> Option<PanelYViewport> {
+        self.panel_id(panel_index)
+            .and_then(|panel_id| self.panel_y_viewport(panel_id))
+    }
+
+    fn panel_accepts_manual_y_from_scene(&self, scene: &Scene, panel_index: usize) -> bool {
+        if panel_index == scene.primary_panel {
+            !matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+        } else {
+            true
+        }
+    }
+
+    fn panel_value_domain_from_scene(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+    ) -> Option<(f32, f32)> {
+        let panel = scene.layout.panel(panel_index)?;
+
+        match panel.kind {
+            KlinePanelKind::PrimaryChart => {
+                if !self.panel_accepts_manual_y_from_scene(scene, panel_index) {
+                    return None;
+                }
+
+                let (min_display, max_display) = scene.primary_domain_display_values();
+                PanelYViewport::normalized(
+                    scene.primary_display_to_value(min_display),
+                    scene.primary_display_to_value(max_display),
+                )
+                .map(|viewport| (viewport.min_value, viewport.max_value))
+            }
+            KlinePanelKind::Indicator => {
+                let indicator = scene
+                    .indicator_panels
+                    .iter()
+                    .find(|indicator| indicator.panel_index == panel_index)?;
+                let precision = self.panel_value_precision(panel_index);
+
+                PanelYViewport::normalized(
+                    self.panel_unit_to_value(precision, indicator.min_unit),
+                    self.panel_unit_to_value(precision, indicator.max_unit),
+                )
+                .map(|viewport| (viewport.min_value, viewport.max_value))
+            }
+        }
+    }
+
+    fn panel_viewport_after_y_zoom(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        cursor_y: f32,
+        scroll_delta: f32,
+    ) -> Option<PanelYViewport> {
+        if scroll_delta.abs() <= f32::EPSILON {
+            return None;
+        }
+
+        if !self.panel_accepts_manual_y_from_scene(scene, panel_index) {
+            return None;
+        }
+
+        let panel = scene.layout.panel(panel_index)?;
+        let panel_h = panel.plot.height.max(1.0);
+        let y_in_panel =
+            (cursor_y - scene.layout.regions.plot.y - panel.plot.y).clamp(0.0, panel_h);
+        let anchor_ratio = (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0);
+
+        let zoom_amount = scroll_delta.abs().clamp(0.05, 6.0);
+        let zoom_scale = (1.0 + zoom_amount * 0.14).clamp(1.02, 3.0);
+
+        match panel.kind {
+            KlinePanelKind::PrimaryChart => {
+                let (min_display, max_display) = scene.primary_domain_display_values();
+                let display_span = (max_display - min_display).abs().max(1e-6);
+                let min_display_span =
+                    if matches!(scene.primary_scale_mode, PanelScaleMode::Logarithmic) {
+                        1e-3
+                    } else {
+                        let step = self
+                            .panel_quantization_step(self.panel_value_precision(panel_index))
+                            .unwrap_or(1e-4)
+                            .abs()
+                            .max(1e-8);
+                        step * 8.0
+                    };
+
+                let new_display_span = if scroll_delta > 0.0 {
+                    display_span / zoom_scale
+                } else {
+                    display_span * zoom_scale
+                }
+                .max(min_display_span);
+
+                let anchor_display = min_display + anchor_ratio * display_span;
+                let new_min_display = anchor_display - anchor_ratio * new_display_span;
+                let new_max_display = new_min_display + new_display_span;
+
+                PanelYViewport::normalized(
+                    scene.primary_display_to_value(new_min_display),
+                    scene.primary_display_to_value(new_max_display),
+                )
+            }
+            KlinePanelKind::Indicator => {
+                let (min_value, max_value) =
+                    self.panel_value_domain_from_scene(scene, panel_index)?;
+                let span = (max_value - min_value).abs().max(1e-8);
+                let step = self
+                    .panel_quantization_step(self.panel_value_precision(panel_index))
+                    .unwrap_or(1e-4)
+                    .abs()
+                    .max(1e-8);
+                let min_span = step * 8.0;
+
+                let new_span = if scroll_delta > 0.0 {
+                    span / zoom_scale
+                } else {
+                    span * zoom_scale
+                }
+                .max(min_span);
+
+                let anchor_value = min_value + anchor_ratio * span;
+                let new_min = anchor_value - anchor_ratio * new_span;
+                let new_max = new_min + new_span;
+
+                PanelYViewport::normalized(new_min, new_max)
+            }
+        }
+    }
+
+    fn panel_viewport_after_primary_y_pan(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        dy_px: f32,
+    ) -> Option<PanelYViewport> {
+        if dy_px.abs() <= f32::EPSILON {
+            return None;
+        }
+
+        if panel_index != scene.primary_panel
+            || !self.panel_accepts_manual_y_from_scene(scene, panel_index)
+        {
+            return None;
+        }
+
+        let panel = scene.layout.panel(panel_index)?;
+        let panel_h = panel.plot.height.max(1.0);
+        let delta_ratio = dy_px / panel_h;
+
+        let (min_display, max_display) = scene.primary_domain_display_values();
+        let display_span = (max_display - min_display).abs().max(1e-6);
+        let shift = delta_ratio * display_span;
+
+        PanelYViewport::normalized(
+            scene.primary_display_to_value(min_display + shift),
+            scene.primary_display_to_value(max_display + shift),
+        )
+    }
+
     fn panel_uses_signed_overlay_input(&self, panel_index: usize) -> bool {
         let panel_value = self.panel_value_id(panel_index);
 
@@ -1069,24 +1301,42 @@ where
         .map(|step| step.abs().max(1e-8))
     }
 
+    fn decimals_from_power10(power: i8) -> usize {
+        if power < 0 { (-power) as usize } else { 0 }
+    }
+
     fn decimals_for_step(step: f32) -> usize {
-        let mut scaled = step.abs();
-        if !scaled.is_finite() || scaled <= 0.0 {
+        let step = step.abs();
+        if !step.is_finite() || step <= 0.0 {
             return 4;
         }
 
-        let mut decimals = 0usize;
-        while decimals < 8 {
+        for decimals in 0..=8 {
+            let scaled = (step as f64) * 10_f64.powi(decimals as i32);
             let nearest = scaled.round();
-            if (scaled - nearest).abs() <= 1e-5 {
-                break;
-            }
+            let tolerance = (scaled.abs() * 1e-9).max(1e-12);
 
-            scaled *= 10.0;
-            decimals += 1;
+            if (scaled - nearest).abs() <= tolerance {
+                return decimals;
+            }
         }
 
-        decimals
+        8
+    }
+
+    fn panel_value_decimals(&self, value_precision: Option<PanelValuePrecision>) -> Option<usize> {
+        match value_precision {
+            Some(PanelValuePrecision::BaseTickerMinTick) => self
+                .series
+                .first()
+                .map(|series| Self::decimals_from_power10(series.ticker_info().min_ticksize.power)),
+            Some(PanelValuePrecision::BaseTickerMinQty) => self
+                .series
+                .first()
+                .map(|series| Self::decimals_from_power10(series.ticker_info().min_qty.power)),
+            Some(PanelValuePrecision::FixedStep(step)) => Some(Self::decimals_for_step(step)),
+            None => None,
+        }
     }
 
     fn pow10_i64(exp: i32) -> Option<i64> {
@@ -1225,7 +1475,9 @@ where
             .map(|panel_step| panel_step.max(fallback))
             .unwrap_or(fallback);
 
-        let decimals = Self::decimals_for_step(step);
+        let decimals = self
+            .panel_value_decimals(value_precision)
+            .unwrap_or_else(|| Self::decimals_for_step(step));
         format!("{quantized:.decimals$}")
     }
 
@@ -1929,9 +2181,8 @@ where
                 };
 
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
-                    if state.is_panning || state.dragging_split.is_some() {
-                        state.is_panning = false;
-                        state.dragging_split = None;
+                    if !matches!(state.drag_mode, DragMode::None) {
+                        state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                     }
                     state.clear_overlay_caches();
@@ -1965,36 +2216,76 @@ where
                 }
 
                 match mouse_event {
-                    mouse::Event::WheelScrolled {
-                        delta: mouse::ScrollDelta::Lines { y, .. },
-                    } => {
-                        if !matches!(zone, LayoutHitZone::PanelPlot(_)) {
+                    mouse::Event::WheelScrolled { delta } => {
+                        let scroll_y = match delta {
+                            mouse::ScrollDelta::Lines { y, .. }
+                            | mouse::ScrollDelta::Pixels { y, .. } => *y,
+                        };
+
+                        if scroll_y.abs() <= f32::EPSILON {
                             return;
                         }
 
-                        if Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
-                            .is_some()
-                        {
-                            return;
-                        }
+                        match zone {
+                            LayoutHitZone::PanelPlot(_) => {
+                                if Self::hit_panel_control(
+                                    &layout_tree,
+                                    &panel_controls,
+                                    cursor_pos,
+                                )
+                                .is_some()
+                                {
+                                    return;
+                                }
 
-                        if ticker_legend_hit.is_some() {
-                            return;
-                        }
+                                if ticker_legend_hit.is_some() {
+                                    return;
+                                }
 
-                        let zoom_in = *y > 0.0;
-                        let new_scale =
-                            self.step_horizontal_scale_percent(self.horizontal_scale, zoom_in);
+                                let zoom_in = scroll_y > 0.0;
+                                let new_scale = self
+                                    .step_horizontal_scale_percent(self.horizontal_scale, zoom_in);
 
-                        if (new_scale.as_pixels_per_bar()
-                            - self.horizontal_scale.as_pixels_per_bar())
-                        .abs()
-                            > f32::EPSILON
-                        {
-                            shell.publish(M::from(KlineWidgetEvent::HorizontalScaleChanged(
-                                self.normalize_horizontal_scale(new_scale),
-                            )));
-                            state.clear_all_caches();
+                                if (new_scale.as_pixels_per_bar()
+                                    - self.horizontal_scale.as_pixels_per_bar())
+                                .abs()
+                                    > f32::EPSILON
+                                {
+                                    shell.publish(M::from(
+                                        KlineWidgetEvent::HorizontalScaleChanged(
+                                            self.normalize_horizontal_scale(new_scale),
+                                        ),
+                                    ));
+                                    state.clear_all_caches();
+                                    shell.capture_event();
+                                }
+                            }
+                            LayoutHitZone::YAxis(panel_index) => {
+                                let Some(scene) = self.compute_scene(layout, cursor) else {
+                                    return;
+                                };
+
+                                let Some(panel_id) = self.panel_id(panel_index) else {
+                                    return;
+                                };
+
+                                let Some(viewport) = self.panel_viewport_after_y_zoom(
+                                    &scene,
+                                    panel_index,
+                                    cursor_pos.y,
+                                    scroll_y,
+                                ) else {
+                                    return;
+                                };
+
+                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportChanged {
+                                    panel_id,
+                                    viewport,
+                                }));
+                                state.clear_all_caches();
+                                shell.capture_event();
+                            }
+                            _ => {}
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
@@ -2004,6 +2295,18 @@ where
                                 mouse::Button::Left,
                                 state.previous_click,
                             );
+
+                            if let LayoutHitZone::YAxis(panel_index) = zone
+                                && new_click.kind() == iced_core::mouse::click::Kind::Double
+                                && let Some(panel_id) = self.panel_id(panel_index)
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportReset {
+                                    panel_id,
+                                }));
+                                state.clear_all_caches();
+                                state.previous_click = Some(new_click);
+                                return;
+                            }
 
                             if matches!(
                                 zone,
@@ -2026,8 +2329,7 @@ where
                             && let Some(row) = legend.rows.get(row_index)
                         {
                             shell.publish(M::from(icon_kind.into_event(row.ticker)));
-                            state.is_panning = false;
-                            state.dragging_split = None;
+                            state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
@@ -2035,8 +2337,7 @@ where
                         }
 
                         if ticker_legend_hit.is_some() {
-                            state.is_panning = false;
-                            state.dragging_split = None;
+                            state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                             return;
                         }
@@ -2046,8 +2347,7 @@ where
                                 Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                         {
                             shell.publish(M::from(control.kind.into_event(control.panel_index)));
-                            state.is_panning = false;
-                            state.dragging_split = None;
+                            state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
@@ -2055,29 +2355,34 @@ where
                         }
 
                         if let LayoutHitZone::Splitter(split_index) = zone {
-                            state.dragging_split = Some(split_index);
-                            state.is_panning = false;
+                            state.drag_mode = DragMode::Split(split_index);
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
-                        } else if matches!(zone, LayoutHitZone::PanelPlot(_))
+                        } else if let LayoutHitZone::YAxis(panel_index) = zone {
+                            state.drag_mode = DragMode::AxisScale {
+                                panel_index,
+                                anchor_y: cursor_pos.y,
+                            };
+                            state.last_cursor = Some(cursor_pos);
+                            shell.capture_event();
+                        } else if let LayoutHitZone::PanelPlot(_) = zone
                             && !self.drawing_tool_allows_panning()
                             && let Some(anchor) =
                                 self.drawing_anchor_from_layout_cursor(layout, cursor)
                         {
                             shell.publish(M::from(KlineWidgetEvent::DrawingAnchorPressed(anchor)));
-                            state.is_panning = false;
-                            state.dragging_split = None;
+                            state.drag_mode = DragMode::None;
                             state.last_cursor = Some(cursor_pos);
                             state.clear_overlay_caches();
                             state.clear_all_caches();
                             shell.capture_event();
-                        } else if matches!(zone, LayoutHitZone::PanelPlot(_))
-                            && self.drawing_tool_allows_panning()
+                        } else if self.drawing_tool_allows_panning()
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            state.is_panning = true;
+                            state.drag_mode = DragMode::Pan { panel_index };
                             state.last_cursor = Some(cursor_pos);
                         } else {
-                            state.is_panning = false;
+                            state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                         }
                     }
@@ -2085,22 +2390,20 @@ where
                         if self.drawing_draft.is_some() =>
                     {
                         shell.publish(M::from(KlineWidgetEvent::DrawingDraftCanceled));
-                        state.is_panning = false;
-                        state.dragging_split = None;
+                        state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                         state.clear_overlay_caches();
                         state.clear_all_caches();
                         shell.capture_event();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
-                        state.is_panning = false;
-                        state.dragging_split = None;
+                        state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                     }
                     mouse::Event::CursorMoved { .. } => {
                         state.clear_overlay_caches();
 
-                        if let Some(split_index) = state.dragging_split {
+                        if let DragMode::Split(split_index) = state.drag_mode {
                             if let Some(split) = self.split_ratio_from_cursor(
                                 cursor_pos.y,
                                 &layout_tree,
@@ -2114,6 +2417,34 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
+                        } else if let DragMode::AxisScale {
+                            panel_index,
+                            anchor_y,
+                        } = state.drag_mode
+                        {
+                            let prev = state.last_cursor.unwrap_or(cursor_pos);
+                            let dy_px = cursor_pos.y - prev.y;
+                            let scale_delta = (-dy_px) * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
+
+                            if scale_delta.abs() > f32::EPSILON
+                                && let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(panel_id) = self.panel_id(panel_index)
+                                && let Some(viewport) = self.panel_viewport_after_y_zoom(
+                                    &scene,
+                                    panel_index,
+                                    anchor_y,
+                                    scale_delta,
+                                )
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportChanged {
+                                    panel_id,
+                                    viewport,
+                                }));
+                                state.clear_all_caches();
+                                shell.capture_event();
+                            }
+
+                            state.last_cursor = Some(cursor_pos);
                         } else if self.drawing_draft.is_some()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
@@ -2126,11 +2457,12 @@ where
                             state.last_cursor = Some(cursor_pos);
                             state.clear_overlay_caches();
                             shell.capture_event();
-                        } else if state.is_panning {
+                        } else if let DragMode::Pan { panel_index } = state.drag_mode {
                             let prev = state.last_cursor.unwrap_or(cursor_pos);
                             let dx_px = cursor_pos.x - prev.x;
+                            let dy_px = cursor_pos.y - prev.y;
 
-                            if dx_px.abs() > 0.0 {
+                            if dx_px.abs() > f32::EPSILON {
                                 let spacing = BarSpacingPx::from_logical(
                                     self.normalize_horizontal_scale(self.horizontal_scale)
                                         .as_pixels_per_bar(),
@@ -2141,6 +2473,22 @@ where
                                 shell.publish(M::from(KlineWidgetEvent::HorizontalOffsetChanged(
                                     self.horizontal_offset + dx_units,
                                 )));
+                                state.clear_all_caches();
+                            }
+
+                            if dy_px.abs() > f32::EPSILON
+                                && let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(panel_id) = self.panel_id(panel_index)
+                                && let Some(viewport) = self.panel_viewport_after_primary_y_pan(
+                                    &scene,
+                                    panel_index,
+                                    dy_px,
+                                )
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportChanged {
+                                    panel_id,
+                                    viewport,
+                                }));
                                 state.clear_all_caches();
                             }
 
@@ -2307,11 +2655,14 @@ where
         };
         let state = tree.state.downcast_ref::<State>();
 
-        if state.dragging_split.is_some() {
+        if matches!(
+            state.drag_mode,
+            DragMode::Split(_) | DragMode::AxisScale { .. }
+        ) {
             return advanced::mouse::Interaction::ResizingVertically;
         }
 
-        if state.is_panning {
+        if matches!(state.drag_mode, DragMode::Pan { .. }) {
             return advanced::mouse::Interaction::Grabbing;
         }
 
@@ -2348,7 +2699,8 @@ where
         match zone {
             LayoutHitZone::Splitter(_) => advanced::mouse::Interaction::ResizingVertically,
             LayoutHitZone::PanelPlot(_) => advanced::mouse::Interaction::Crosshair,
-            LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis | LayoutHitZone::YAxis => {
+            LayoutHitZone::YAxis(_) => advanced::mouse::Interaction::ResizingVertically,
+            LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis => {
                 advanced::mouse::Interaction::Pointer
             }
             LayoutHitZone::Outside => advanced::mouse::Interaction::default(),
