@@ -7,14 +7,14 @@ use crate::style;
 use chrome::TickerLegendHit;
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
-    PanelScaleMode, PanelValueId,
+    PanelId, PanelScaleMode, PanelValueId,
 };
 use layout::{LayoutHitZone, PanelLayoutTree};
 use scene::Scene;
 
 use data::UserTimezone;
 use data::chart::Basis;
-use exchange::{Kline, TickerInfo, Timeframe};
+use exchange::{Kline, TickerInfo, Timeframe, UnixMs};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
@@ -60,6 +60,119 @@ impl HorizontalScale {
 
     pub fn as_pixels_per_bar(self) -> f32 {
         self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DrawingTool {
+    #[default]
+    Cursor,
+    Trendline,
+    Box,
+    HorizontalLine,
+    VerticalLine,
+}
+
+impl DrawingTool {
+    pub fn allows_panning(self) -> bool {
+        matches!(self, Self::Cursor)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DrawingId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawingAnchor {
+    pub panel_id: PanelId,
+    pub time: UnixMs,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawingStyle {
+    pub stroke_color: iced::Color,
+    pub stroke_width: f32,
+    pub fill_color: Option<iced::Color>,
+}
+
+impl Default for DrawingStyle {
+    fn default() -> Self {
+        Self {
+            stroke_color: iced::Color::from_rgb(0.82, 0.84, 0.90),
+            stroke_width: 1.2,
+            fill_color: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DrawingObject {
+    Trendline {
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    },
+    Box {
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    },
+    HorizontalLine {
+        panel_id: PanelId,
+        value: f32,
+    },
+    VerticalLine {
+        time: UnixMs,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawingEntity {
+    pub id: DrawingId,
+    pub object: DrawingObject,
+    pub style: DrawingStyle,
+    pub locked: bool,
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DrawingDraft {
+    Trendline {
+        start: DrawingAnchor,
+        current: DrawingAnchor,
+        style: DrawingStyle,
+    },
+    Box {
+        start: DrawingAnchor,
+        current: DrawingAnchor,
+        style: DrawingStyle,
+    },
+}
+
+impl DrawingDraft {
+    pub fn tool(&self) -> DrawingTool {
+        match self {
+            Self::Trendline { .. } => DrawingTool::Trendline,
+            Self::Box { .. } => DrawingTool::Box,
+        }
+    }
+
+    pub fn style(&self) -> DrawingStyle {
+        match self {
+            Self::Trendline { style, .. } | Self::Box { style, .. } => *style,
+        }
+    }
+
+    pub fn preview_object(&self) -> DrawingObject {
+        match self {
+            Self::Trendline { start, current, .. } => DrawingObject::Trendline {
+                start: *start,
+                end: *current,
+            },
+            Self::Box { start, current, .. } => DrawingObject::Box {
+                start: *start,
+                end: *current,
+            },
+        }
     }
 }
 
@@ -256,6 +369,9 @@ pub enum KlineWidgetEvent {
     TickerSettings(TickerInfo),
     TickerRemove(TickerInfo),
     XAxisDoubleClick,
+    DrawingAnchorPressed(DrawingAnchor),
+    DrawingAnchorMoved(DrawingAnchor),
+    DrawingDraftCanceled,
 }
 
 struct State {
@@ -305,9 +421,13 @@ impl State {
 pub struct KlineWidget<'a, S> {
     series: &'a [S],
     composition: &'a ChartComposition,
+    drawings: &'a [DrawingEntity],
+    selected_drawing: Option<DrawingId>,
+    drawing_draft: Option<&'a DrawingDraft>,
     basis: Basis,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
+    active_drawing_tool: DrawingTool,
     timezone: UserTimezone,
     version: u64,
 }
@@ -320,9 +440,13 @@ where
         Self {
             series,
             composition,
+            drawings: &[],
+            selected_drawing: None,
+            drawing_draft: None,
             basis: Basis::Time(timeframe),
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: 0.0,
+            active_drawing_tool: DrawingTool::Cursor,
             timezone: UserTimezone::Utc,
             version: 0,
         }
@@ -335,6 +459,26 @@ where
 
     pub fn with_horizontal_offset(mut self, offset: f32) -> Self {
         self.horizontal_offset = offset;
+        self
+    }
+
+    pub fn with_drawings(mut self, drawings: &'a [DrawingEntity]) -> Self {
+        self.drawings = drawings;
+        self
+    }
+
+    pub fn with_selected_drawing(mut self, selected: Option<DrawingId>) -> Self {
+        self.selected_drawing = selected;
+        self
+    }
+
+    pub fn with_drawing_draft(mut self, draft: Option<&'a DrawingDraft>) -> Self {
+        self.drawing_draft = draft;
+        self
+    }
+
+    pub fn with_active_drawing_tool(mut self, tool: DrawingTool) -> Self {
+        self.active_drawing_tool = tool;
         self
     }
 
@@ -355,6 +499,357 @@ where
 
     fn panel_count(&self) -> usize {
         self.composition.panel_count().max(1)
+    }
+
+    fn drawing_tool_allows_panning(&self) -> bool {
+        self.active_drawing_tool.allows_panning()
+    }
+
+    fn has_drawing_state(&self) -> bool {
+        !self.drawings.is_empty() || self.selected_drawing.is_some() || self.drawing_draft.is_some()
+    }
+
+    fn panel_index_for_id(&self, panel_id: PanelId) -> Option<usize> {
+        self.composition
+            .panels
+            .iter()
+            .position(|panel| panel.id == panel_id)
+    }
+
+    fn x_unit_for_anchor_time(&self, scene: &Scene, time: UnixMs) -> Option<i64> {
+        if let Some(unit) = scene.x_unit_for_time(time) {
+            return Some(unit);
+        }
+
+        let mut best: Option<(u64, i64)> = None;
+
+        self.for_each_bar_unit_index(scene.x_axis, |series_index, _, x_unit, bar| {
+            if series_index != 0 {
+                return;
+            }
+
+            let delta = bar.time.as_u64().abs_diff(time.as_u64());
+
+            if best
+                .map(|(best_delta, _)| delta < best_delta)
+                .unwrap_or(true)
+            {
+                best = Some((delta, x_unit));
+            }
+        });
+
+        best.map(|(_, unit)| unit)
+    }
+
+    fn anchor_time_for_cursor_unit(&self, scene: &Scene, x_unit: i64) -> Option<UnixMs> {
+        if let Some(time) = scene.time_for_x_unit(x_unit) {
+            return Some(time);
+        }
+
+        let series = self.series.first()?;
+        self.bar_at_or_before_unit(series, scene.x_axis, x_unit)
+            .map(|bar| bar.time)
+    }
+
+    fn drawing_anchor_from_scene_cursor(&self, scene: &Scene) -> Option<DrawingAnchor> {
+        let cursor = scene.cursor?;
+        let panel_id = self.panel_id(cursor.panel_index)?;
+        let time = self.anchor_time_for_cursor_unit(scene, cursor.x_unit)?;
+        let value = cursor.y_primary_value.or(cursor.y_indicator_value)?;
+
+        Some(DrawingAnchor {
+            panel_id,
+            time,
+            value,
+        })
+    }
+
+    fn drawing_anchor_from_layout_cursor(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> Option<DrawingAnchor> {
+        let scene = self.compute_scene(layout, cursor)?;
+        self.drawing_anchor_from_scene_cursor(&scene)
+    }
+
+    fn panel_plot_bounds_in_overlay(&self, scene: &Scene, panel_index: usize) -> Option<Rectangle> {
+        let panel = scene.layout.panel(panel_index)?;
+        Some(Rectangle {
+            x: scene.layout.regions.plot.x + panel.plot.x,
+            y: scene.layout.regions.plot.y + panel.plot.y,
+            width: panel.plot.width,
+            height: panel.plot.height,
+        })
+    }
+
+    fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
+        let panel_index = self.panel_index_for_id(anchor.panel_id)?;
+        let panel = scene.layout.panel(panel_index)?;
+        let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
+        let x_plot = scene
+            .map_x_plot(x_unit)
+            .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
+        let y_plot = match panel.kind {
+            KlinePanelKind::PrimaryChart => {
+                scene.map_primary_plot_with_anchor(anchor.value, scene.primary_scale_anchor)
+            }
+            KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, anchor.value)?,
+        }
+        .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+        Some(Point::new(
+            scene.layout.regions.plot.x + x_plot,
+            scene.layout.regions.plot.y + y_plot,
+        ))
+    }
+
+    fn draw_drawing_object(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        object: &DrawingObject,
+        style: DrawingStyle,
+        selected: bool,
+    ) {
+        let stroke = canvas::Stroke::default()
+            .with_color(style.stroke_color)
+            .with_width(if selected {
+                (style.stroke_width + 0.6).max(1.0)
+            } else {
+                style.stroke_width.max(1.0)
+            });
+
+        match object {
+            DrawingObject::Trendline { start, end } => {
+                let Some(start) = self.anchor_to_overlay_point(scene, *start) else {
+                    return;
+                };
+                let Some(end) = self.anchor_to_overlay_point(scene, *end) else {
+                    return;
+                };
+
+                frame.stroke(&canvas::Path::line(start, end), stroke);
+            }
+            DrawingObject::Box { start, end } => {
+                let Some(start) = self.anchor_to_overlay_point(scene, *start) else {
+                    return;
+                };
+                let Some(end) = self.anchor_to_overlay_point(scene, *end) else {
+                    return;
+                };
+
+                let left = start.x.min(end.x);
+                let right = start.x.max(end.x);
+                let top = start.y.min(end.y);
+                let bottom = start.y.max(end.y);
+                let size = Size::new((right - left).max(1.0), (bottom - top).max(1.0));
+                let origin = Point::new(left, top);
+
+                if let Some(fill) = style.fill_color {
+                    frame.fill_rectangle(origin, size, fill);
+                }
+
+                frame.stroke(&canvas::Path::rectangle(origin, size), stroke);
+            }
+            DrawingObject::HorizontalLine { panel_id, value } => {
+                let Some(panel_index) = self.panel_index_for_id(*panel_id) else {
+                    return;
+                };
+                let Some(panel) = scene.layout.panel(panel_index) else {
+                    return;
+                };
+                let Some(bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
+                    return;
+                };
+
+                let y_plot = match panel.kind {
+                    KlinePanelKind::PrimaryChart => {
+                        scene.map_primary_plot_with_anchor(*value, scene.primary_scale_anchor)
+                    }
+                    KlinePanelKind::Indicator => {
+                        match scene.map_indicator_plot(panel_index, *value) {
+                            Some(y) => y,
+                            None => return,
+                        }
+                    }
+                }
+                .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+                let y = scene.layout.regions.plot.y + y_plot;
+
+                frame.stroke(
+                    &canvas::Path::line(
+                        Point::new(bounds.x, y),
+                        Point::new(bounds.x + bounds.width, y),
+                    ),
+                    stroke,
+                );
+            }
+            DrawingObject::VerticalLine { time } => {
+                let Some(x_unit) = self.x_unit_for_anchor_time(scene, *time) else {
+                    return;
+                };
+
+                let x_plot = scene
+                    .map_x_plot(x_unit)
+                    .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
+                let x = scene.layout.regions.plot.x + x_plot;
+                let plot = scene.layout.regions.plot;
+
+                frame.stroke(
+                    &canvas::Path::line(Point::new(x, plot.y), Point::new(x, plot.y + plot.height)),
+                    stroke,
+                );
+            }
+        }
+    }
+
+    fn fill_drawings(&self, frame: &mut canvas::Frame, scene: &Scene) {
+        for drawing in self.drawings.iter().filter(|drawing| drawing.visible) {
+            let selected = self.selected_drawing == Some(drawing.id);
+            self.draw_drawing_object(frame, scene, &drawing.object, drawing.style, selected);
+        }
+
+        if let Some(draft) = self.drawing_draft {
+            let mut style = draft.style();
+            style.stroke_color = style.stroke_color.scale_alpha(0.9);
+            if let Some(fill) = style.fill_color {
+                style.fill_color = Some(fill.scale_alpha(0.5));
+            }
+
+            self.draw_drawing_object(frame, scene, &draft.preview_object(), style, false);
+        }
+    }
+
+    fn active_axis_labeled_object(&self) -> Option<DrawingObject> {
+        if let Some(draft) = self.drawing_draft {
+            return Some(draft.preview_object());
+        }
+
+        let selected = self.selected_drawing?;
+        self.drawings
+            .iter()
+            .find(|drawing| drawing.id == selected && drawing.visible)
+            .map(|drawing| drawing.object.clone())
+    }
+
+    fn axis_label_anchors_for_object(
+        object: &DrawingObject,
+    ) -> Option<(DrawingAnchor, DrawingAnchor)> {
+        match object {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
+                Some((*start, *end))
+            }
+            _ => None,
+        }
+    }
+
+    fn format_anchor_y_label(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<String> {
+        let panel_index = self.panel_index_for_id(anchor.panel_id)?;
+        let panel = scene.layout.panel(panel_index)?;
+
+        match panel.kind {
+            KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(anchor.value)),
+            KlinePanelKind::Indicator => Some(format!("{:.2}", anchor.value)),
+        }
+    }
+
+    fn draw_x_axis_badge(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        x: f32,
+        text: &str,
+    ) {
+        let x_label_w = (text.len() as f32 * TEXT_SIZE * 0.62).clamp(60.0, 180.0);
+        let x_label_h = TEXT_SIZE + 6.0;
+        let x_label_x = (x - x_label_w / 2.0).clamp(
+            scene.layout.regions.plot.x,
+            scene.layout.regions.plot.x + scene.layout.regions.plot.width - x_label_w,
+        );
+        let x_label_y = scene.layout.regions.x_axis.y + 2.0;
+
+        frame.fill_rectangle(
+            Point::new(x_label_x, x_label_y),
+            Size::new(x_label_w, x_label_h),
+            palette.background.strong.color,
+        );
+
+        frame.fill_text(canvas::Text {
+            content: text.to_string(),
+            position: Point::new(x_label_x + x_label_w / 2.0, x_label_y + x_label_h / 2.0),
+            color: palette.background.strong.text,
+            size: TEXT_SIZE.into(),
+            align_x: iced::Alignment::Center.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+    }
+
+    fn draw_y_axis_badge(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        y: f32,
+        text: &str,
+    ) {
+        let y_label_w = (text.len() as f32 * TEXT_SIZE * 0.6).clamp(40.0, 96.0);
+        let y_label_h = TEXT_SIZE + 6.0;
+        let y_label_x = scene.layout.regions.y_axis.x + 2.0;
+        let y_label_y = (y - (y_label_h / 2.0)).clamp(
+            scene.layout.regions.plot.y,
+            scene.layout.regions.plot.y + scene.layout.regions.plot.height - y_label_h,
+        );
+
+        frame.fill_rectangle(
+            Point::new(y_label_x, y_label_y),
+            Size::new(y_label_w, y_label_h),
+            palette.background.strong.color,
+        );
+
+        frame.fill_text(canvas::Text {
+            content: text.to_string(),
+            position: Point::new(y_label_x + y_label_w - 4.0, y_label_y + y_label_h / 2.0),
+            color: palette.background.strong.text,
+            size: TEXT_SIZE.into(),
+            align_x: iced::Alignment::End.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+    }
+
+    fn fill_active_drawing_axis_labels(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        let Some(object) = self.active_axis_labeled_object() else {
+            return;
+        };
+        let Some((start, end)) = Self::axis_label_anchors_for_object(&object) else {
+            return;
+        };
+
+        for anchor in [start, end] {
+            let Some(point) = self.anchor_to_overlay_point(scene, anchor) else {
+                continue;
+            };
+
+            if let Some(x_unit) = self.x_unit_for_anchor_time(scene, anchor.time) {
+                let x_text = self.format_x_label(scene.x_axis, x_unit, 1);
+                self.draw_x_axis_badge(frame, scene, palette, point.x, &x_text);
+            }
+
+            if let Some(y_text) = self.format_anchor_y_label(scene, anchor) {
+                self.draw_y_axis_badge(frame, scene, palette, point.y, &y_text);
+            }
+        }
     }
 
     fn panel_id(&self, panel_index: usize) -> Option<composition::PanelId> {
@@ -956,6 +1451,10 @@ where
             self.fill_panel_header_values(frame, scene, palette, show_primary_panel_values);
         }
 
+        if self.has_drawing_state() {
+            self.fill_drawings(frame, scene);
+        }
+
         if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
             return;
         }
@@ -1016,6 +1515,8 @@ where
             return;
         }
 
+        self.fill_active_drawing_axis_labels(frame, scene, palette);
+
         let Some(cursor) = scene.cursor else {
             return;
         };
@@ -1031,57 +1532,17 @@ where
                     .map(|indicator_value| format!("{indicator_value:.2}"))
             })
         {
-            let y_label_w = (y_text.len() as f32 * TEXT_SIZE * 0.6).clamp(40.0, 96.0);
-            let y_label_h = TEXT_SIZE + 6.0;
-            let y_label_x = scene.layout.regions.y_axis.x + 2.0;
-            let y_label_y = (gy - (y_label_h / 2.0)).clamp(
-                scene.layout.regions.plot.y,
-                scene.layout.regions.plot.y + scene.layout.regions.plot.height - y_label_h,
-            );
-
-            frame.fill_rectangle(
-                Point::new(y_label_x, y_label_y),
-                Size::new(y_label_w, y_label_h),
-                palette.background.strong.color,
-            );
-
-            frame.fill_text(canvas::Text {
-                content: y_text,
-                position: Point::new(y_label_x + y_label_w - 4.0, y_label_y + y_label_h / 2.0),
-                color: palette.background.strong.text,
-                size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::End.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
+            self.draw_y_axis_badge(frame, scene, palette, gy, &y_text);
         }
 
         let x_text = self.format_x_label(scene.x_axis, cursor.x_unit, 1);
-        let x_label_w = (x_text.len() as f32 * TEXT_SIZE * 0.62).clamp(60.0, 180.0);
-        let x_label_h = TEXT_SIZE + 6.0;
-        let x_label_x = (scene.layout.regions.plot.x + cursor.x_plot - x_label_w / 2.0).clamp(
-            scene.layout.regions.plot.x,
-            scene.layout.regions.plot.x + scene.layout.regions.plot.width - x_label_w,
+        self.draw_x_axis_badge(
+            frame,
+            scene,
+            palette,
+            scene.layout.regions.plot.x + cursor.x_plot,
+            &x_text,
         );
-        let x_label_y = scene.layout.regions.x_axis.y + 2.0;
-
-        frame.fill_rectangle(
-            Point::new(x_label_x, x_label_y),
-            Size::new(x_label_w, x_label_h),
-            palette.background.strong.color,
-        );
-
-        frame.fill_text(canvas::Text {
-            content: x_text,
-            position: Point::new(x_label_x + x_label_w / 2.0, x_label_y + x_label_h / 2.0),
-            color: palette.background.strong.text,
-            size: TEXT_SIZE.into(),
-            align_x: iced::Alignment::Center.into(),
-            align_y: iced::Alignment::Center.into(),
-            font: style::AZERET_MONO,
-            ..Default::default()
-        });
     }
 }
 
@@ -1349,9 +1810,38 @@ where
                             state.is_panning = false;
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
-                        } else if matches!(zone, LayoutHitZone::PanelPlot(_)) {
+                        } else if matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && !self.drawing_tool_allows_panning()
+                            && let Some(anchor) =
+                                self.drawing_anchor_from_layout_cursor(layout, cursor)
+                        {
+                            shell.publish(M::from(KlineWidgetEvent::DrawingAnchorPressed(anchor)));
+                            state.is_panning = false;
+                            state.dragging_split = None;
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        } else if matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && self.drawing_tool_allows_panning()
+                        {
                             state.is_panning = true;
                             state.last_cursor = Some(cursor_pos);
+                        } else {
+                            state.is_panning = false;
+                            state.last_cursor = None;
+                        }
+                    }
+                    mouse::Event::ButtonPressed(mouse::Button::Right) => {
+                        if self.drawing_draft.is_some() {
+                            shell.publish(M::from(KlineWidgetEvent::DrawingDraftCanceled));
+                            state.is_panning = false;
+                            state.dragging_split = None;
+                            state.last_cursor = None;
+                            state.clear_overlay_caches();
+                            state.clear_all_caches();
+                            shell.capture_event();
                         }
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
@@ -1376,6 +1866,18 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
+                        } else if self.drawing_draft.is_some()
+                            && matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
+                                .is_none()
+                            && ticker_legend_hit.is_none()
+                            && let Some(anchor) =
+                                self.drawing_anchor_from_layout_cursor(layout, cursor)
+                        {
+                            shell.publish(M::from(KlineWidgetEvent::DrawingAnchorMoved(anchor)));
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            shell.capture_event();
                         } else if state.is_panning {
                             let prev = state.last_cursor.unwrap_or(cursor_pos);
                             let dx_px = cursor_pos.x - prev.x;

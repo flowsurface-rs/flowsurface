@@ -1,7 +1,7 @@
+use super::composition::{PanelRole, PanelSpec};
 use super::{
     KlinePanelKind, KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT, PANEL_SPLITTER_HIT_PX,
 };
-use super::composition::{PanelRole, PanelSpec};
 use crate::widget::chart::Regions;
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
@@ -51,13 +51,13 @@ impl PanelLayoutTree {
             height: r.height,
         };
 
-        let panel_kind_for_index = |index: usize| match panels_spec.get(index).map(|panel| panel.role)
-        {
-            Some(PanelRole::Primary) => KlinePanelKind::PrimaryChart,
-            Some(PanelRole::Auxiliary) => KlinePanelKind::Indicator,
-            None if index == 0 => KlinePanelKind::PrimaryChart,
-            None => KlinePanelKind::Indicator,
-        };
+        let panel_kind_for_index =
+            |index: usize| match panels_spec.get(index).map(|panel| panel.role) {
+                Some(PanelRole::Primary) => KlinePanelKind::PrimaryChart,
+                Some(PanelRole::Auxiliary) => KlinePanelKind::Indicator,
+                None if index == 0 => KlinePanelKind::PrimaryChart,
+                None => KlinePanelKind::Indicator,
+            };
 
         let mut cursor = 0usize;
         let mut panel_nodes = Vec::with_capacity(panel_count);

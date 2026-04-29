@@ -1,8 +1,8 @@
 use super::chrome::{PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
-    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget, MAX_BAR_SPACING_PX,
-    MIN_BAR_SPACING_PX,
+    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
+    MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX,
 };
 use crate::widget::chart::kline::composition::{
     BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
@@ -187,6 +187,17 @@ impl Scene {
         let spacing_px = i64::from(self.bar_spacing_px.as_i32());
         let offset_px = steps_from_right.saturating_mul(spacing_px);
         right_edge_px.saturating_sub(offset_px) as f32
+    }
+
+    pub(super) fn x_unit_for_time(&self, time: UnixMs) -> Option<i64> {
+        match self.x_axis {
+            XAxis::Time { .. } => Some(self.x_axis.unit_from_time(time)),
+            XAxis::Tick { .. } => None,
+        }
+    }
+
+    pub(super) fn time_for_x_unit(&self, x_unit: i64) -> Option<UnixMs> {
+        self.x_axis.time_from_unit(x_unit)
     }
 
     fn unit_from_plot_x(&self, x_plot: f32) -> i64 {
@@ -639,13 +650,14 @@ where
             right = right_cap;
         }
 
-        let mut left = right.saturating_sub(span);
-
-        if left < data_min_x {
-            let shift = data_min_x.saturating_sub(left);
-            left = left.saturating_add(shift);
-            right = right.saturating_add(shift);
+        // Keep at least one bar in view when panning far left, but allow the
+        // left bound to extend past loaded history so empty pre-history space is visible.
+        let right_floor = data_min_x.saturating_add(1);
+        if right < right_floor {
+            right = right_floor;
         }
+
+        let left = right.saturating_sub(span);
 
         if right <= left {
             right = left.saturating_add(1);
@@ -694,10 +706,12 @@ where
                     for channel in channels.iter().copied() {
                         if let Some(channel_value) = Self::overlay_channel_value(data, channel) {
                             min_primary_value = Some(
-                                min_primary_value.map_or(channel_value, |value| value.min(channel_value)),
+                                min_primary_value
+                                    .map_or(channel_value, |value| value.min(channel_value)),
                             );
                             max_primary_value = Some(
-                                max_primary_value.map_or(channel_value, |value| value.max(channel_value)),
+                                max_primary_value
+                                    .map_or(channel_value, |value| value.max(channel_value)),
                             );
                         }
                     }
@@ -740,7 +754,8 @@ where
                 return;
             }
 
-            let Some(indicator_data) = series.indicator_data_for_panel_value_opt(panel_value_id, bar)
+            let Some(indicator_data) =
+                series.indicator_data_for_panel_value_opt(panel_value_id, bar)
             else {
                 return;
             };
@@ -751,11 +766,13 @@ where
             max_value = max_value.max(value);
 
             if let Some(value_id) = panel_value_id {
-                for channel in self.overlay_channels_for_panel_value(Some(value_id))
+                for channel in self
+                    .overlay_channels_for_panel_value(Some(value_id))
                     .iter()
                     .copied()
                 {
-                    if let Some(channel_value) = Self::overlay_channel_value(indicator_data, channel)
+                    if let Some(channel_value) =
+                        Self::overlay_channel_value(indicator_data, channel)
                     {
                         min_value = min_value.min(channel_value);
                         max_value = max_value.max(channel_value);
@@ -836,13 +853,7 @@ where
                 let value_id = self.panel_value_id(panel_index);
                 let (min_value, max_value) = self
                     .compute_indicator_domain(
-                        x_axis,
-                        min_x_unit,
-                        max_x_unit,
-                        value_id,
-                        data_kind,
-                        mark,
-                        scale_mode,
+                        x_axis, min_x_unit, max_x_unit, value_id, data_kind, mark, scale_mode,
                     )
                     .unwrap_or((0.0, 1.0));
 
