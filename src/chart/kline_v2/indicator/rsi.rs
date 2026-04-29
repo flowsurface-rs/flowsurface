@@ -1,7 +1,7 @@
 use super::IndicatorAvailability;
 use super::IndicatorPanelRecipe;
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValuePrecision,
 };
 use data::chart::Basis;
 use exchange::{Kline, UnixMs};
@@ -184,11 +184,7 @@ impl RsiState {
                     None => rsi_value,
                 });
 
-                if idx + 1 >= period {
-                    signal_ema
-                } else {
-                    None
-                }
+                if idx + 1 >= period { signal_ema } else { None }
             } else {
                 None
             };
@@ -249,6 +245,7 @@ pub fn panel_recipe() -> IndicatorPanelRecipe {
         data_kind: LayerDataKind::Scalar,
         mark: MarkKind::Line,
         axis: AxisBinding::Secondary,
+        value_precision: PanelValuePrecision::FixedStep(0.1),
         preferred_scale: PanelScaleMode::FitVisible,
     }
 }

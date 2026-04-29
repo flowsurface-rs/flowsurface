@@ -2,16 +2,19 @@ use super::chrome::{PanelControlHit, TickerLegendHit, TickerLegendIconKind, Tick
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
     BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
-    MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX,
+    MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX, YUnit,
 };
 use crate::widget::chart::kline::composition::{
     BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
+    PanelValuePrecision,
 };
 
 use exchange::{Kline, Timeframe, UnixMs};
 
 use iced::advanced::Layout;
 use iced::{Rectangle, mouse};
+
+const Y_UNIT_STEP_FALLBACK: f32 = 1e-4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct TickIndex(u64);
@@ -104,8 +107,8 @@ impl XAxis {
 pub(super) struct CursorInfo {
     pub(super) x_unit: i64,
     pub(super) panel_index: usize,
-    pub(super) y_primary_value: Option<f32>,
-    pub(super) y_indicator_value: Option<f32>,
+    pub(super) y_primary_unit: Option<YUnit>,
+    pub(super) y_indicator_unit: Option<YUnit>,
     pub(super) x_plot: f32,
     pub(super) y_plot: f32,
 }
@@ -114,10 +117,11 @@ pub(super) struct CursorInfo {
 pub(super) struct IndicatorPanelScene {
     pub(super) panel_index: usize,
     pub(super) value_id: Option<PanelValueId>,
+    pub(super) unit_step: f32,
     pub(super) mark: MarkKind,
     pub(super) data_kind: LayerDataKind,
-    pub(super) min_value: f32,
-    pub(super) max_value: f32,
+    pub(super) min_unit: YUnit,
+    pub(super) max_unit: YUnit,
 }
 
 #[derive(Debug, Clone)]
@@ -127,12 +131,15 @@ pub(super) struct Scene {
     bar_spacing_px: BarSpacingPx,
     pub(super) min_x_unit: i64,
     pub(super) max_x_unit: i64,
-    pub(super) min_primary_value: f32,
-    pub(super) max_primary_value: f32,
+    pub(super) min_primary_unit: YUnit,
+    pub(super) max_primary_unit: YUnit,
+    pub(super) primary_domain_display_override: Option<(f32, f32)>,
+    pub(super) primary_unit_step: f32,
     pub(super) primary_panel: usize,
     pub(super) primary_mark: MarkKind,
     pub(super) primary_scale_mode: PanelScaleMode,
     pub(super) primary_scale_anchor: Option<f32>,
+    pub(super) primary_value_step: Option<f32>,
     pub(super) series_percent_anchors: Vec<Option<f32>>,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
     pub(super) panel_controls: Vec<PanelControlHit>,
@@ -146,6 +153,88 @@ pub(super) struct Scene {
 }
 
 impl Scene {
+    fn round_to_i64_saturating(value: f32) -> i64 {
+        if !value.is_finite() {
+            return 0;
+        }
+
+        let rounded = value.round();
+        if rounded > i64::MAX as f32 {
+            i64::MAX
+        } else if rounded < i64::MIN as f32 {
+            i64::MIN
+        } else {
+            rounded as i64
+        }
+    }
+
+    fn unit_step_or_default(step: Option<f32>) -> f32 {
+        step.unwrap_or(Y_UNIT_STEP_FALLBACK).abs().max(1e-8)
+    }
+
+    fn value_to_unit_with_step(value: f32, unit_step: f32) -> YUnit {
+        if !value.is_finite() || !unit_step.is_finite() || unit_step <= 0.0 {
+            return YUnit(0);
+        }
+
+        YUnit(Self::round_to_i64_saturating(value / unit_step))
+    }
+
+    fn unit_to_value_with_step(y_unit: YUnit, unit_step: f32) -> f32 {
+        (y_unit.0 as f32) * unit_step
+    }
+
+    fn primary_value_to_unit(&self, value: f32) -> YUnit {
+        Self::value_to_unit_with_step(value, self.primary_unit_step)
+    }
+
+    fn primary_unit_to_value(&self, y_unit: YUnit) -> f32 {
+        Self::unit_to_value_with_step(y_unit, self.primary_unit_step)
+    }
+
+    fn indicator_value_to_unit(&self, panel_index: usize, value: f32) -> Option<YUnit> {
+        self.indicator_panel_config(panel_index)
+            .map(|panel| Self::value_to_unit_with_step(value, panel.unit_step))
+    }
+
+    fn lerp_unit(min_unit: YUnit, max_unit: YUnit, ratio: f32) -> YUnit {
+        let ratio = ratio.clamp(0.0, 1.0);
+        let min = i128::from(min_unit.0);
+        let max = i128::from(max_unit.0);
+        let span = max - min;
+        if span == 0 {
+            return min_unit;
+        }
+
+        let offset = ((span as f32) * ratio).round() as i128;
+        let value = min + offset;
+        let clamped = value.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+        YUnit(clamped)
+    }
+
+    pub(super) fn map_primary_plot_unit(&self, y_unit: YUnit) -> f32 {
+        let min = i128::from(self.min_primary_unit.0);
+        let max = i128::from(self.max_primary_unit.0);
+        let range = (max - min).abs().max(1);
+        let ratio = ((i128::from(y_unit.0) - min) as f32 / range as f32).clamp(0.0, 1.0);
+        let panel = self.primary_plot();
+        panel.y + (1.0 - ratio) * panel.height
+    }
+
+    pub(super) fn map_indicator_plot_unit(
+        &self,
+        panel_index: usize,
+        indicator_unit: YUnit,
+    ) -> Option<f32> {
+        let panel = self.indicator_plot(panel_index)?;
+        let indicator = self.indicator_panel_config(panel_index)?;
+        let min = i128::from(indicator.min_unit.0);
+        let max = i128::from(indicator.max_unit.0);
+        let range = (max - min).abs().max(1);
+        let ratio = ((i128::from(indicator_unit.0) - min) as f32 / range as f32).clamp(0.0, 1.0);
+        Some(panel.y + (1.0 - ratio) * panel.height)
+    }
+
     pub(super) fn plot_rect(&self) -> Rectangle {
         self.layout.regions.plot
     }
@@ -227,8 +316,12 @@ impl Scene {
     }
 
     pub(super) fn primary_domain_display_values(&self) -> (f32, f32) {
-        let min_primary_value = self.min_primary_value;
-        let max_primary_value = self.max_primary_value;
+        if let Some((min_display, max_display)) = self.primary_domain_display_override {
+            return (min_display, max_display);
+        }
+
+        let min_primary_value = self.primary_unit_to_value(self.min_primary_unit);
+        let max_primary_value = self.primary_unit_to_value(self.max_primary_unit);
 
         if self.can_use_log_primary_scale()
             && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic)
@@ -279,7 +372,39 @@ impl Scene {
     }
 
     fn can_use_log_primary_scale(&self) -> bool {
-        self.min_primary_value > f32::EPSILON && self.max_primary_value > f32::EPSILON
+        self.primary_unit_to_value(self.min_primary_unit) > f32::EPSILON
+            && self.primary_unit_to_value(self.max_primary_unit) > f32::EPSILON
+    }
+
+    fn quantized_primary_value(&self, value: f32) -> f32 {
+        self.primary_unit_to_value(self.primary_value_to_unit(value))
+    }
+
+    fn decimals_for_step(step: f32) -> usize {
+        let mut scaled = step.abs();
+        if !scaled.is_finite() || scaled <= 0.0 {
+            return 4;
+        }
+
+        let mut decimals = 0usize;
+        while decimals < 8 {
+            let nearest = scaled.round();
+            if (scaled - nearest).abs() <= 1e-5 {
+                break;
+            }
+
+            scaled *= 10.0;
+            decimals += 1;
+        }
+
+        decimals
+    }
+
+    fn primary_format_step(&self, fallback: f32) -> f32 {
+        let fallback = fallback.abs().max(1e-6);
+        self.primary_value_step
+            .map(|step| step.max(fallback))
+            .unwrap_or(fallback)
     }
 
     pub(super) fn format_primary_axis_label(
@@ -288,28 +413,90 @@ impl Scene {
         display_step: f32,
     ) -> String {
         match self.primary_scale_mode {
-            PanelScaleMode::PercentFromBase => format!("{display_value:.2}%"),
+            PanelScaleMode::PercentFromBase => {
+                let step = display_step.abs().max(1e-6);
+                let precision = if step >= 1.0 {
+                    1
+                } else if step >= 0.1 {
+                    2
+                } else if step >= 0.01 {
+                    3
+                } else {
+                    4
+                };
+
+                format!("{display_value:.precision$}%")
+            }
             PanelScaleMode::Logarithmic if self.can_use_log_primary_scale() => {
-                let value = self.primary_display_to_value(display_value);
+                let value =
+                    self.quantized_primary_value(self.primary_display_to_value(display_value));
                 let next_value =
                     self.primary_display_to_value(display_value + display_step.abs().max(1e-3));
                 let value_step = (next_value - value).abs().max(1e-6);
-                super::super::format_value(value, value_step)
+                super::super::format_value(value, self.primary_format_step(value_step))
             }
-            _ => super::super::format_value(display_value, display_step),
+            _ => {
+                let value = self.quantized_primary_value(display_value);
+                if let Some(step) = self.primary_value_step {
+                    let decimals = Self::decimals_for_step(step);
+                    format!("{value:.decimals$}")
+                } else {
+                    super::super::format_value(value, self.primary_format_step(display_step))
+                }
+            }
         }
     }
 
     pub(super) fn format_primary_cursor_label(&self, raw_value: f32) -> String {
+        let quantized = self.quantized_primary_value(raw_value);
+
         match self.primary_scale_mode {
             PanelScaleMode::PercentFromBase => {
-                format!("{:.2}%", self.primary_to_display_value(raw_value))
+                let display_value = self.primary_to_display_value(quantized);
+                let display_step = self
+                    .primary_value_step
+                    .and_then(|value_step| {
+                        self.primary_scale_anchor
+                            .filter(|anchor| anchor.abs() > f32::EPSILON)
+                            .map(|anchor| (value_step / anchor.abs()) * 100.0)
+                    })
+                    .unwrap_or(0.01)
+                    .abs()
+                    .max(1e-6);
+
+                let precision = if display_step >= 1.0 {
+                    1
+                } else if display_step >= 0.1 {
+                    2
+                } else if display_step >= 0.01 {
+                    3
+                } else {
+                    4
+                };
+
+                format!("{display_value:.precision$}%")
             }
-            _ => super::super::format_value(raw_value, 0.01),
+            _ => {
+                if let Some(step) = self.primary_value_step {
+                    let decimals = Self::decimals_for_step(step);
+                    format!("{quantized:.decimals$}")
+                } else {
+                    super::super::format_value(quantized, self.primary_format_step(0.01))
+                }
+            }
         }
     }
 
     pub(super) fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
+        let uses_display_transform =
+            matches!(self.primary_scale_mode, PanelScaleMode::PercentFromBase)
+                || (self.can_use_log_primary_scale()
+                    && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic));
+
+        if !uses_display_transform {
+            return self.map_primary_plot_unit(self.primary_value_to_unit(value));
+        }
+
         let (min_display, max_display) = self.primary_domain_display_values();
         let range = (max_display - min_display).abs().max(1e-6);
         let display_value = if matches!(self.primary_scale_mode, PanelScaleMode::PercentFromBase) {
@@ -327,14 +514,8 @@ impl Scene {
         panel_index: usize,
         indicator_value: f32,
     ) -> Option<f32> {
-        let panel = self.indicator_plot(panel_index)?;
-        let (min_value, max_value) = self
-            .indicator_panel_config(panel_index)
-            .map(|indicator| (indicator.min_value, indicator.max_value))
-            .unwrap_or((0.0, 1.0));
-        let range = (max_value - min_value).abs().max(1e-6);
-        let ratio = ((indicator_value - min_value) / range).clamp(0.0, 1.0);
-        Some(panel.y + (1.0 - ratio) * panel.height)
+        let y_unit = self.indicator_value_to_unit(panel_index, indicator_value)?;
+        self.map_indicator_plot_unit(panel_index, y_unit)
     }
 }
 
@@ -671,9 +852,10 @@ where
         x_axis: XAxis,
         min_x_unit: i64,
         max_x_unit: i64,
-    ) -> Option<(f32, f32)> {
-        let mut min_primary_value: Option<f32> = None;
-        let mut max_primary_value: Option<f32> = None;
+        primary_value_precision: Option<PanelValuePrecision>,
+    ) -> Option<(YUnit, YUnit)> {
+        let mut min_primary_unit: Option<YUnit> = None;
+        let mut max_primary_unit: Option<YUnit> = None;
         let primary_overlay_value_ids = self.primary_overlay_value_ids();
         let primary_overlay_channels: Vec<_> = primary_overlay_value_ids
             .iter()
@@ -685,11 +867,13 @@ where
                 return;
             }
 
-            let low = bar.low.to_f32();
-            let high = bar.high.to_f32();
+            let low = self.panel_value_to_unit(primary_value_precision, bar.low.to_f32());
+            let high = self.panel_value_to_unit(primary_value_precision, bar.high.to_f32());
 
-            min_primary_value = Some(min_primary_value.map_or(low, |value| value.min(low)));
-            max_primary_value = Some(max_primary_value.map_or(high, |value| value.max(high)));
+            min_primary_unit =
+                Some(min_primary_unit.map_or(low, |value| YUnit(value.0.min(low.0))));
+            max_primary_unit =
+                Some(max_primary_unit.map_or(high, |value| YUnit(value.0.max(high.0))));
 
             if series_index == 0 {
                 for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
@@ -705,30 +889,39 @@ where
 
                     for channel in channels.iter().copied() {
                         if let Some(channel_value) = Self::overlay_channel_value(data, channel) {
-                            min_primary_value = Some(
-                                min_primary_value
-                                    .map_or(channel_value, |value| value.min(channel_value)),
-                            );
-                            max_primary_value = Some(
-                                max_primary_value
-                                    .map_or(channel_value, |value| value.max(channel_value)),
-                            );
+                            let channel_unit =
+                                self.panel_value_to_unit(primary_value_precision, channel_value);
+                            min_primary_unit =
+                                Some(min_primary_unit.map_or(channel_unit, |value| {
+                                    YUnit(value.0.min(channel_unit.0))
+                                }));
+                            max_primary_unit =
+                                Some(max_primary_unit.map_or(channel_unit, |value| {
+                                    YUnit(value.0.max(channel_unit.0))
+                                }));
                         }
                     }
                 }
             }
         });
 
-        let min_primary_value = min_primary_value?;
-        let max_primary_value = max_primary_value?;
+        let min_primary_unit = min_primary_unit?;
+        let max_primary_unit = max_primary_unit?;
 
-        let pad = if (max_primary_value - min_primary_value).abs() <= f32::EPSILON {
-            (max_primary_value.abs() / 200.0).max(1e-6)
+        let min_i = i128::from(min_primary_unit.0);
+        let max_i = i128::from(max_primary_unit.0);
+        let span = (max_i - min_i).abs();
+        let pad = if span == 0 {
+            (max_i.abs().max(1) + 199) / 200
         } else {
-            ((max_primary_value - min_primary_value).abs() * 0.05).max(1e-6)
-        };
+            ((span * 5) + 99) / 100
+        }
+        .max(1);
 
-        Some((min_primary_value - pad, max_primary_value + pad))
+        let padded_min = (min_i - pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+        let padded_max = (max_i + pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+
+        Some((YUnit(padded_min), YUnit(padded_max)))
     }
 
     fn compute_indicator_domain(
@@ -737,13 +930,14 @@ where
         min_x_unit: i64,
         max_x_unit: i64,
         panel_value_id: Option<PanelValueId>,
+        panel_value_precision: Option<PanelValuePrecision>,
         data_kind: LayerDataKind,
         mark: MarkKind,
         scale_mode: PanelScaleMode,
-    ) -> Option<(f32, f32)> {
+    ) -> Option<(YUnit, YUnit)> {
         let mut any = false;
-        let mut min_value = f32::INFINITY;
-        let mut max_value = f32::NEG_INFINITY;
+        let mut min_unit = i64::MAX;
+        let mut max_unit = i64::MIN;
 
         self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
             if series_index != 0 {
@@ -759,11 +953,12 @@ where
             else {
                 return;
             };
-            let value = indicator_data.value();
+            let value_unit =
+                self.panel_value_to_unit(panel_value_precision, indicator_data.value());
 
             any = true;
-            min_value = min_value.min(value);
-            max_value = max_value.max(value);
+            min_unit = min_unit.min(value_unit.0);
+            max_unit = max_unit.max(value_unit.0);
 
             if let Some(value_id) = panel_value_id {
                 for channel in self
@@ -774,8 +969,10 @@ where
                     if let Some(channel_value) =
                         Self::overlay_channel_value(indicator_data, channel)
                     {
-                        min_value = min_value.min(channel_value);
-                        max_value = max_value.max(channel_value);
+                        let channel_unit =
+                            self.panel_value_to_unit(panel_value_precision, channel_value);
+                        min_unit = min_unit.min(channel_unit.0);
+                        max_unit = max_unit.max(channel_unit.0);
                     }
                 }
             }
@@ -788,39 +985,38 @@ where
                 && let Some(overlay) = indicator_data.signed_overlay()
             {
                 let overlay_abs = overlay.abs();
-                min_value = min_value.min(overlay_abs);
-                max_value = max_value.max(overlay_abs);
+                let overlay_unit = self.panel_value_to_unit(panel_value_precision, overlay_abs);
+                min_unit = min_unit.min(overlay_unit.0);
+                max_unit = max_unit.max(overlay_unit.0);
             }
         });
 
-        if !any || !min_value.is_finite() || !max_value.is_finite() {
+        if !any {
             return None;
         }
 
+        let fit_visible_bounds = |min_unit: i64, max_unit: i64| {
+            let min_i = i128::from(min_unit);
+            let max_i = i128::from(max_unit);
+            let span = (max_i - min_i).abs();
+            let pad = if span == 0 {
+                (max_i.abs().max(1) + 49) / 50
+            } else {
+                ((span * 5) + 99) / 100
+            }
+            .max(1);
+
+            let padded_min = (min_i - pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+            let padded_max = (max_i + pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+            (YUnit(padded_min), YUnit(padded_max))
+        };
+
         match scale_mode {
-            PanelScaleMode::FitVisible => {
-                let span = (max_value - min_value).abs();
-                let pad = if span <= f32::EPSILON {
-                    max_value.abs().max(1.0) * 0.02
-                } else {
-                    span * 0.05
-                };
-
-                Some((min_value - pad, max_value + pad))
-            }
+            PanelScaleMode::FitVisible => Some(fit_visible_bounds(min_unit, max_unit)),
             PanelScaleMode::FitVisibleIncludeZero => {
-                let min_including_zero = min_value.min(0.0);
-                let max_including_zero = max_value.max(0.0);
-                let span = (max_including_zero - min_including_zero).abs();
-                let pad = if span <= f32::EPSILON {
-                    max_including_zero.abs().max(1.0) * 0.02
-                } else {
-                    span * 0.05
-                };
-
-                Some((min_including_zero - pad, max_including_zero + pad))
+                Some(fit_visible_bounds(min_unit.min(0), max_unit.max(0)))
             }
-            _ => Some((0.0, max_value.max(1.0))),
+            _ => Some((YUnit(0), YUnit(max_unit.max(1)))),
         }
     }
 
@@ -836,6 +1032,9 @@ where
         let bar_spacing_px = self.render_bar_spacing_px();
 
         let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window(primary_plot.width)?;
+        let primary_value_precision = self.panel_value_precision(primary_panel);
+        let (min_primary_unit, max_primary_unit) =
+            self.compute_primary_domain(x_axis, min_x_unit, max_x_unit, primary_value_precision)?;
 
         let indicator_panels: Vec<IndicatorPanelScene> = panel_layout
             .panels
@@ -851,52 +1050,57 @@ where
                     self.resolved_panel_data_kind(panel_index, KlinePanelKind::Indicator);
                 let scale_mode = self.resolved_panel_scale_mode(panel_index);
                 let value_id = self.panel_value_id(panel_index);
-                let (min_value, max_value) = self
+                let value_precision = self.panel_value_precision(panel_index);
+                let unit_step =
+                    Scene::unit_step_or_default(self.panel_quantization_step(value_precision));
+                let (min_unit, max_unit) = self
                     .compute_indicator_domain(
-                        x_axis, min_x_unit, max_x_unit, value_id, data_kind, mark, scale_mode,
+                        x_axis,
+                        min_x_unit,
+                        max_x_unit,
+                        value_id,
+                        value_precision,
+                        data_kind,
+                        mark,
+                        scale_mode,
                     )
-                    .unwrap_or((0.0, 1.0));
+                    .unwrap_or((YUnit(0), YUnit(1)));
 
                 Some(IndicatorPanelScene {
                     panel_index,
                     value_id,
+                    unit_step,
                     mark,
                     data_kind,
-                    min_value,
-                    max_value,
+                    min_unit,
+                    max_unit,
                 })
             })
             .collect();
 
         let mut series_percent_anchors = Vec::new();
+        let mut primary_domain_display_override = None;
 
-        let (min_primary_value, max_primary_value, primary_scale_anchor) =
-            if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
-                && self.series.len() > 1
-            {
-                let anchors = self.compute_series_percent_anchors(x_axis, min_x_unit, max_x_unit);
-                let (min_value, max_value) = self.compute_primary_percent_domain(
-                    x_axis,
-                    min_x_unit,
-                    max_x_unit,
-                    primary_mark,
-                    &anchors,
-                )?;
+        let primary_scale_anchor = if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
+            && self.series.len() > 1
+        {
+            let anchors = self.compute_series_percent_anchors(x_axis, min_x_unit, max_x_unit);
+            let (min_display, max_display) = self.compute_primary_percent_domain(
+                x_axis,
+                min_x_unit,
+                max_x_unit,
+                primary_mark,
+                &anchors,
+            )?;
 
-                series_percent_anchors = anchors;
-                (min_value, max_value, None)
-            } else {
-                let (min_value, max_value) =
-                    self.compute_primary_domain(x_axis, min_x_unit, max_x_unit)?;
-                let scale_anchor = if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
-                {
-                    self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit)
-                } else {
-                    None
-                };
-
-                (min_value, max_value, scale_anchor)
-            };
+            series_percent_anchors = anchors;
+            primary_domain_display_override = Some((min_display, max_display));
+            None
+        } else if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase) {
+            self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit)
+        } else {
+            None
+        };
 
         if series_percent_anchors.is_empty() {
             series_percent_anchors = vec![primary_scale_anchor; self.series.len()];
@@ -914,6 +1118,8 @@ where
             show_legend_values,
             false,
         );
+        let primary_value_step = self.panel_quantization_step(primary_value_precision);
+        let primary_unit_step = Scene::unit_step_or_default(primary_value_step);
 
         let mut scene = Scene {
             layout: panel_layout,
@@ -921,12 +1127,15 @@ where
             bar_spacing_px,
             min_x_unit,
             max_x_unit,
-            min_primary_value,
-            max_primary_value,
+            min_primary_unit,
+            max_primary_unit,
+            primary_domain_display_override,
+            primary_unit_step,
             primary_panel,
             primary_mark,
             primary_scale_mode,
             primary_scale_anchor,
+            primary_value_step,
             series_percent_anchors,
             indicator_panels,
             panel_controls,
@@ -994,39 +1203,85 @@ where
                 if let LayoutHitZone::PanelPlot(panel_index) = zone
                     && let Some(panel) = scene.layout.panel(panel_index)
                 {
+                    let panel_value_precision = self.panel_value_precision(panel_index);
                     let y_in_panel =
                         (plot_local.y - panel.plot.y).clamp(0.0, panel.plot.height.max(1.0));
 
-                    let (y_primary_value, y_indicator_value) = match panel.kind {
+                    let (y_primary_unit, y_indicator_unit, snapped_y_plot) = match panel.kind {
                         KlinePanelKind::PrimaryChart => {
                             let value_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
-                            let (min_display, max_display) = scene.primary_domain_display_values();
-                            let y_display_value =
-                                min_display + ((max_display - min_display) * value_ratio);
-                            let y_primary_value = scene.primary_display_to_value(y_display_value);
+                            let uses_display_transform =
+                                matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+                                    || (scene.can_use_log_primary_scale()
+                                        && matches!(
+                                            scene.primary_scale_mode,
+                                            PanelScaleMode::Logarithmic
+                                        ));
 
-                            (Some(y_primary_value), None)
+                            let (y_primary_unit, snapped_y_plot) = if uses_display_transform {
+                                let (min_display, max_display) =
+                                    scene.primary_domain_display_values();
+                                let y_display_value =
+                                    min_display + ((max_display - min_display) * value_ratio);
+                                let y_primary_unit = self.panel_value_to_unit(
+                                    panel_value_precision,
+                                    scene.primary_display_to_value(y_display_value),
+                                );
+                                let y_primary_value =
+                                    self.panel_unit_to_value(panel_value_precision, y_primary_unit);
+                                let y_plot = scene
+                                    .map_primary_plot_with_anchor(
+                                        y_primary_value,
+                                        scene.primary_scale_anchor,
+                                    )
+                                    .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+                                (y_primary_unit, y_plot)
+                            } else {
+                                let y_primary_unit = Scene::lerp_unit(
+                                    scene.min_primary_unit,
+                                    scene.max_primary_unit,
+                                    value_ratio,
+                                );
+                                let y_plot = scene
+                                    .map_primary_plot_unit(y_primary_unit)
+                                    .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+                                (y_primary_unit, y_plot)
+                            };
+
+                            (Some(y_primary_unit), None, snapped_y_plot)
                         }
                         KlinePanelKind::Indicator => {
                             let indicator_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
-                            let (min_value, max_value) = scene
+                            let y_indicator_unit = scene
                                 .indicator_panel_config(panel_index)
-                                .map(|indicator| (indicator.min_value, indicator.max_value))
-                                .unwrap_or((0.0, 1.0));
-                            let y_indicator_value =
-                                min_value + (max_value - min_value) * indicator_ratio;
+                                .map(|indicator| {
+                                    Scene::lerp_unit(
+                                        indicator.min_unit,
+                                        indicator.max_unit,
+                                        indicator_ratio,
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    Scene::lerp_unit(YUnit(0), YUnit(1), indicator_ratio)
+                                });
+                            let snapped_y_plot = scene
+                                .map_indicator_plot_unit(panel_index, y_indicator_unit)
+                                .unwrap_or(panel.plot.y + y_in_panel)
+                                .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
 
-                            (None, Some(y_indicator_value))
+                            (None, Some(y_indicator_unit), snapped_y_plot)
                         }
                     };
 
                     cursor_info = Some(CursorInfo {
                         x_unit: snapped_x_unit,
                         panel_index,
-                        y_primary_value,
-                        y_indicator_value,
+                        y_primary_unit,
+                        y_indicator_unit,
                         x_plot: snapped_x_plot,
-                        y_plot: panel.plot.y + y_in_panel,
+                        y_plot: snapped_y_plot,
                     });
                 }
             }

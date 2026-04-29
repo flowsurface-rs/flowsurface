@@ -689,7 +689,7 @@ impl KlineChartV2 {
             DrawingTool::HorizontalLine => {
                 let object = DrawingObject::HorizontalLine {
                     panel_id: anchor.panel_id,
-                    value: anchor.value,
+                    y_unit: anchor.y_unit,
                 };
                 self.push_drawing(object, Self::style_for_tool(DrawingTool::HorizontalLine));
                 true
@@ -918,6 +918,7 @@ impl KlineChartV2 {
                 data_kind,
                 mark,
                 axis,
+                value_precision,
                 preferred_scale,
             } => {
                 let layer = self.composition.new_layer(
@@ -928,7 +929,9 @@ impl KlineChartV2 {
                     axis,
                 );
 
-                let panel_id = self.composition.add_aux_panel(panel_title, vec![layer]);
+                let panel_id =
+                    self.composition
+                        .add_aux_panel(panel_title, vec![layer], Some(value_precision));
                 let _ = self
                     .composition
                     .set_panel_preferred_scale(panel_id, preferred_scale);

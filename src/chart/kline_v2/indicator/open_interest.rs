@@ -1,7 +1,7 @@
 use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
 use crate::chart::indicator::kline::open_interest::OpenInterestIndicator;
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValuePrecision,
 };
 use data::chart::Basis;
 use exchange::{OpenInterest, TickerInfo, Timeframe, UnixMs};
@@ -64,6 +64,7 @@ pub fn panel_recipe() -> IndicatorPanelRecipe {
         data_kind: LayerDataKind::Scalar,
         mark: MarkKind::Line,
         axis: AxisBinding::Secondary,
+        value_precision: PanelValuePrecision::BaseTickerMinQty,
         preferred_scale: PanelScaleMode::FitVisible,
     }
 }

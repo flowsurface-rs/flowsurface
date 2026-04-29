@@ -469,6 +469,7 @@ where
                 + title_w
                 + title_gap;
             let y = scene.layout.regions.plot.y + panel.plot.y + PANEL_TITLE_TOP_PAD;
+            let panel_precision = self.panel_value_precision(panel_index);
 
             let mut max_x = scene.layout.regions.plot.x + panel.plot.x + panel.plot.width
                 - PANEL_TITLE_LEFT_PAD;
@@ -588,7 +589,7 @@ where
                                 let anchor = primary_anchor.unwrap_or(1.0);
                                 format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
                             } else {
-                                data::util::format_with_commas(value)
+                                self.format_panel_value_with_commas(panel_precision, value)
                             };
 
                         let label_color = Self::overlay_channel_color(channel, palette);
@@ -644,7 +645,7 @@ where
                         break;
                     }
 
-                    let value_text = data::util::format_with_commas(value);
+                    let value_text = self.format_panel_value_with_commas(panel_precision, value);
                     let label_color = Self::overlay_channel_color(channel, palette);
                     let label_text = channel.label.to_string();
 
@@ -682,7 +683,7 @@ where
 
                 if !drew_any_channel {
                     let value = indicator_data.value();
-                    let text = data::util::format_with_commas(value);
+                    let text = self.format_panel_value_with_commas(panel_precision, value);
 
                     frame.fill_text(canvas::Text {
                         content: text,

@@ -6,6 +6,7 @@ mod volume;
 
 use crate::widget::chart::kline::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
+    PanelValuePrecision,
 };
 use data::chart::Basis;
 use exchange::adapter::MarketKind;
@@ -37,7 +38,7 @@ pub enum IndicatorAvailability {
     Unsupported(IndicatorUnsupportedReason),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IndicatorPanelRecipe {
     AuxPanel {
         panel_title: &'static str,
@@ -46,6 +47,7 @@ pub enum IndicatorPanelRecipe {
         data_kind: LayerDataKind,
         mark: MarkKind,
         axis: AxisBinding,
+        value_precision: PanelValuePrecision,
         preferred_scale: PanelScaleMode,
     },
     PrimaryOverlay {

@@ -131,6 +131,13 @@ pub enum PanelValueId {
     CumulativeVolumeDelta,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelValuePrecision {
+    BaseTickerMinTick,
+    BaseTickerMinQty,
+    FixedStep(f32),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelComparisonPolicy {
     pub force_percent_scale_on_multi_source: bool,
@@ -148,7 +155,9 @@ impl Default for PanelComparisonPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
-    RawKline { source: DataSourceId },
+    RawKline {
+        source: DataSourceId,
+    },
     RawIndicator {
         source: DataSourceId,
         value_id: PanelValueId,
@@ -221,6 +230,7 @@ pub struct PanelSpec {
     pub role: PanelRole,
     pub title: Option<String>,
     pub value_id: Option<PanelValueId>,
+    pub value_precision: Option<PanelValuePrecision>,
     pub base_layer: Option<LayerId>,
     pub preferred_scale: PanelScaleMode,
     pub comparison_policy: PanelComparisonPolicy,
@@ -327,6 +337,7 @@ impl ChartComposition {
             role: PanelRole::Primary,
             title: None,
             value_id: None,
+            value_precision: Some(PanelValuePrecision::BaseTickerMinTick),
             base_layer: Some(candle_layer.id),
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -419,6 +430,10 @@ impl ChartComposition {
         self.panel(panel_id).and_then(|panel| panel.value_id)
     }
 
+    pub fn panel_value_precision(&self, panel_id: PanelId) -> Option<PanelValuePrecision> {
+        self.panel(panel_id).and_then(|panel| panel.value_precision)
+    }
+
     pub fn normalized_splits(&self, min_panel_ratio: f32) -> Vec<f32> {
         let panel_count = self.panel_count();
         let split_count = panel_count.saturating_sub(1);
@@ -502,7 +517,12 @@ impl ChartComposition {
         true
     }
 
-    pub fn add_aux_panel(&mut self, title: impl Into<String>, layers: Vec<LayerSpec>) -> PanelId {
+    pub fn add_aux_panel(
+        &mut self,
+        title: impl Into<String>,
+        layers: Vec<LayerSpec>,
+        value_precision: Option<PanelValuePrecision>,
+    ) -> PanelId {
         let panel_id = self.new_panel_id();
         let base_layer = layers.first().map(|layer| layer.id);
         self.panels.push(PanelSpec {
@@ -510,6 +530,7 @@ impl ChartComposition {
             role: PanelRole::Auxiliary,
             title: Some(title.into()),
             value_id: None,
+            value_precision,
             base_layer,
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -588,6 +609,19 @@ impl ChartComposition {
         };
 
         panel.value_id = value_id;
+        true
+    }
+
+    pub fn set_panel_value_precision(
+        &mut self,
+        panel_id: PanelId,
+        value_precision: Option<PanelValuePrecision>,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        panel.value_precision = value_precision;
         true
     }
 

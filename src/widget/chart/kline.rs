@@ -7,13 +7,14 @@ use crate::style;
 use chrome::TickerLegendHit;
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
-    PanelId, PanelScaleMode, PanelValueId,
+    PanelId, PanelScaleMode, PanelValueId, PanelValuePrecision,
 };
 use layout::{LayoutHitZone, PanelLayoutTree};
 use scene::Scene;
 
 use data::UserTimezone;
 use data::chart::Basis;
+use exchange::unit::{Price, Qty};
 use exchange::{Kline, TickerInfo, Timeframe, UnixMs};
 
 use iced::advanced::widget::tree::{self, Tree};
@@ -82,11 +83,14 @@ impl DrawingTool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DrawingId(pub u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct YUnit(pub i64);
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawingAnchor {
     pub panel_id: PanelId,
     pub time: UnixMs,
-    pub value: f32,
+    pub y_unit: YUnit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -118,7 +122,7 @@ pub enum DrawingObject {
     },
     HorizontalLine {
         panel_id: PanelId,
-        value: f32,
+        y_unit: YUnit,
     },
     VerticalLine {
         time: UnixMs,
@@ -555,12 +559,12 @@ where
         let cursor = scene.cursor?;
         let panel_id = self.panel_id(cursor.panel_index)?;
         let time = self.anchor_time_for_cursor_unit(scene, cursor.x_unit)?;
-        let value = cursor.y_primary_value.or(cursor.y_indicator_value)?;
+        let y_unit = cursor.y_primary_unit.or(cursor.y_indicator_unit)?;
 
         Some(DrawingAnchor {
             panel_id,
             time,
-            value,
+            y_unit,
         })
     }
 
@@ -586,15 +590,17 @@ where
     fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
         let panel_index = self.panel_index_for_id(anchor.panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
+        let panel_precision = self.panel_value_precision(panel_index);
+        let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
         let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
         let x_plot = scene
             .map_x_plot(x_unit)
             .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(anchor.value, scene.primary_scale_anchor)
+                scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
             }
-            KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, anchor.value)?,
+            KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
         }
         .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
 
@@ -652,7 +658,7 @@ where
 
                 frame.stroke(&canvas::Path::rectangle(origin, size), stroke);
             }
-            DrawingObject::HorizontalLine { panel_id, value } => {
+            DrawingObject::HorizontalLine { panel_id, y_unit } => {
                 let Some(panel_index) = self.panel_index_for_id(*panel_id) else {
                     return;
                 };
@@ -662,17 +668,18 @@ where
                 let Some(bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
                     return;
                 };
+                let panel_precision = self.panel_value_precision(panel_index);
+                let value = self.panel_unit_to_value(panel_precision, *y_unit);
 
                 let y_plot = match panel.kind {
                     KlinePanelKind::PrimaryChart => {
-                        scene.map_primary_plot_with_anchor(*value, scene.primary_scale_anchor)
+                        scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
                     }
-                    KlinePanelKind::Indicator => {
-                        match scene.map_indicator_plot(panel_index, *value) {
-                            Some(y) => y,
-                            None => return,
-                        }
-                    }
+                    KlinePanelKind::Indicator => match scene.map_indicator_plot(panel_index, value)
+                    {
+                        Some(y) => y,
+                        None => return,
+                    },
                 }
                 .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
 
@@ -748,10 +755,14 @@ where
     fn format_anchor_y_label(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<String> {
         let panel_index = self.panel_index_for_id(anchor.panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
+        let panel_precision = self.panel_value_precision(panel_index);
+        let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
 
         match panel.kind {
-            KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(anchor.value)),
-            KlinePanelKind::Indicator => Some(format!("{:.2}", anchor.value)),
+            KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(value)),
+            KlinePanelKind::Indicator => {
+                Some(self.format_panel_value_compact(panel_precision, value, 0.01))
+            }
         }
     }
 
@@ -864,6 +875,13 @@ where
             .panels
             .get(panel_index)
             .and_then(|panel| panel.value_id)
+    }
+
+    fn panel_value_precision(&self, panel_index: usize) -> Option<PanelValuePrecision> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .and_then(|panel| panel.value_precision)
     }
 
     fn panel_uses_signed_overlay_input(&self, panel_index: usize) -> bool {
@@ -1033,6 +1051,190 @@ where
             OverlayChannelColorRole::Danger => palette.danger.base.color.scale_alpha(0.78),
             OverlayChannelColorRole::Primary => palette.primary.base.color.scale_alpha(0.78),
         }
+    }
+
+    fn panel_quantization_step(&self, value_precision: Option<PanelValuePrecision>) -> Option<f32> {
+        match value_precision {
+            Some(PanelValuePrecision::BaseTickerMinTick) => self
+                .series
+                .first()
+                .map(|series| series.ticker_info().min_ticksize.as_f32()),
+            Some(PanelValuePrecision::BaseTickerMinQty) => self
+                .series
+                .first()
+                .map(|series| series.ticker_info().min_qty.as_f32()),
+            Some(PanelValuePrecision::FixedStep(step)) => Some(step),
+            None => None,
+        }
+        .map(|step| step.abs().max(1e-8))
+    }
+
+    fn decimals_for_step(step: f32) -> usize {
+        let mut scaled = step.abs();
+        if !scaled.is_finite() || scaled <= 0.0 {
+            return 4;
+        }
+
+        let mut decimals = 0usize;
+        while decimals < 8 {
+            let nearest = scaled.round();
+            if (scaled - nearest).abs() <= 1e-5 {
+                break;
+            }
+
+            scaled *= 10.0;
+            decimals += 1;
+        }
+
+        decimals
+    }
+
+    fn pow10_i64(exp: i32) -> Option<i64> {
+        if exp < 0 {
+            return None;
+        }
+
+        10_i64.checked_pow(exp as u32)
+    }
+
+    fn round_to_i64_saturating(value: f32) -> i64 {
+        if !value.is_finite() {
+            return 0;
+        }
+
+        let rounded = value.round();
+        if rounded > i64::MAX as f32 {
+            i64::MAX
+        } else if rounded < i64::MIN as f32 {
+            i64::MIN
+        } else {
+            rounded as i64
+        }
+    }
+
+    fn panel_value_to_unit(
+        &self,
+        value_precision: Option<PanelValuePrecision>,
+        value: f32,
+    ) -> YUnit {
+        if !value.is_finite() {
+            return YUnit(0);
+        }
+
+        match value_precision {
+            Some(PanelValuePrecision::BaseTickerMinTick) => {
+                if let Some(series) = self.series.first() {
+                    let min_tick = series.ticker_info().min_ticksize;
+                    let exp = 8 + i32::from(min_tick.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let price_units = Price::from_f32(value).round_to_min_tick(min_tick).units;
+                        return YUnit(price_units.div_euclid(unit_size));
+                    }
+                }
+            }
+            Some(PanelValuePrecision::BaseTickerMinQty) => {
+                if let Some(series) = self.series.first() {
+                    let min_qty = series.ticker_info().min_qty;
+                    let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let qty_units = Qty::from_f32(value).round_to_min_qty(min_qty).units;
+                        return YUnit(qty_units.div_euclid(unit_size));
+                    }
+                }
+            }
+            Some(PanelValuePrecision::FixedStep(step)) => {
+                let step = step.abs().max(1e-8);
+                return YUnit(Self::round_to_i64_saturating(value / step));
+            }
+            None => {}
+        }
+
+        let step = self
+            .panel_quantization_step(value_precision)
+            .unwrap_or(1e-4)
+            .max(1e-8);
+        YUnit(Self::round_to_i64_saturating(value / step))
+    }
+
+    fn panel_unit_to_value(
+        &self,
+        value_precision: Option<PanelValuePrecision>,
+        y_unit: YUnit,
+    ) -> f32 {
+        match value_precision {
+            Some(PanelValuePrecision::BaseTickerMinTick) => {
+                if let Some(series) = self.series.first() {
+                    let min_tick = series.ticker_info().min_ticksize;
+                    let exp = 8 + i32::from(min_tick.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let units_i128 = i128::from(y_unit.0) * i128::from(unit_size);
+                        let units =
+                            units_i128.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        return Price::from_units(units).to_f32();
+                    }
+                }
+            }
+            Some(PanelValuePrecision::BaseTickerMinQty) => {
+                if let Some(series) = self.series.first() {
+                    let min_qty = series.ticker_info().min_qty;
+                    let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let units_i128 = i128::from(y_unit.0) * i128::from(unit_size);
+                        let units =
+                            units_i128.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        return f32::from(Qty::from_units(units));
+                    }
+                }
+            }
+            Some(PanelValuePrecision::FixedStep(step)) => {
+                return (y_unit.0 as f32) * step.abs().max(1e-8);
+            }
+            None => {}
+        }
+
+        let step = self
+            .panel_quantization_step(value_precision)
+            .unwrap_or(1e-4)
+            .max(1e-8);
+        (y_unit.0 as f32) * step
+    }
+
+    fn quantize_panel_value(
+        &self,
+        value_precision: Option<PanelValuePrecision>,
+        value: f32,
+    ) -> f32 {
+        let y_unit = self.panel_value_to_unit(value_precision, value);
+        self.panel_unit_to_value(value_precision, y_unit)
+    }
+
+    fn format_panel_value_compact(
+        &self,
+        value_precision: Option<PanelValuePrecision>,
+        value: f32,
+        fallback_step: f32,
+    ) -> String {
+        let quantized = self.quantize_panel_value(value_precision, value);
+        let fallback = fallback_step.abs().max(1e-6);
+        let step = self
+            .panel_quantization_step(value_precision)
+            .map(|panel_step| panel_step.max(fallback))
+            .unwrap_or(fallback);
+
+        let decimals = Self::decimals_for_step(step);
+        format!("{quantized:.decimals$}")
+    }
+
+    fn format_panel_value_with_commas(
+        &self,
+        value_precision: Option<PanelValuePrecision>,
+        value: f32,
+    ) -> String {
+        data::util::format_with_commas(self.quantize_panel_value(value_precision, value))
     }
 
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
@@ -1386,10 +1588,51 @@ where
     }
 
     fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let total_ticks = (scene.primary_plot().height / (TEXT_SIZE * 2.5)).floor() as usize;
+        let min_tick_px = (TEXT_SIZE * 2.5).max(20.0);
+        let uses_display_space_ticks = matches!(
+            scene.primary_scale_mode,
+            PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
+        ) || scene.primary_domain_display_override.is_some();
+
+        if !uses_display_space_ticks {
+            let (ticks, step_units) = super::unit_ticks(
+                scene.min_primary_unit.0,
+                scene.max_primary_unit.0,
+                scene.primary_plot().height,
+                min_tick_px,
+            );
+
+            let primary_precision = self.panel_value_precision(scene.primary_panel);
+            let zero_value = self.panel_unit_to_value(primary_precision, YUnit(0));
+            let step_value = (self.panel_unit_to_value(primary_precision, YUnit(step_units))
+                - zero_value)
+                .abs()
+                .max(1e-8);
+
+            for tick in ticks {
+                let tick_unit = YUnit(tick);
+                let value = self.panel_unit_to_value(primary_precision, tick_unit);
+                let y = scene.map_primary_plot_unit(tick_unit);
+                let text = scene.format_primary_axis_label(value, step_value);
+
+                frame.fill_text(canvas::Text {
+                    content: text,
+                    position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
+                    color: palette.background.base.text,
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::End.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
+
+            return;
+        }
+
+        let total_ticks = (scene.primary_plot().height / min_tick_px).floor() as usize;
         let (min_display, max_display) = scene.primary_domain_display_values();
         let (ticks, step) = super::ticks(min_display, max_display, total_ticks.max(2));
-
         let display_range = (max_display - min_display).abs().max(1e-6);
 
         for tick in ticks {
@@ -1524,12 +1767,18 @@ where
         let gy = scene.layout.regions.plot.y + cursor.y_plot;
 
         if let Some(y_text) = cursor
-            .y_primary_value
-            .map(|primary_value| scene.format_primary_cursor_label(primary_value))
+            .y_primary_unit
+            .map(|primary_unit| {
+                let panel_precision = self.panel_value_precision(cursor.panel_index);
+                let primary_value = self.panel_unit_to_value(panel_precision, primary_unit);
+                scene.format_primary_cursor_label(primary_value)
+            })
             .or_else(|| {
-                cursor
-                    .y_indicator_value
-                    .map(|indicator_value| format!("{indicator_value:.2}"))
+                cursor.y_indicator_unit.map(|indicator_unit| {
+                    let panel_precision = self.panel_value_precision(cursor.panel_index);
+                    let indicator_value = self.panel_unit_to_value(panel_precision, indicator_unit);
+                    self.format_panel_value_compact(panel_precision, indicator_value, 0.01)
+                })
             })
         {
             self.draw_y_axis_badge(frame, scene, palette, gy, &y_text);
@@ -1822,7 +2071,6 @@ where
                             state.clear_overlay_caches();
                             state.clear_all_caches();
                             shell.capture_event();
-                            return;
                         } else if matches!(zone, LayoutHitZone::PanelPlot(_))
                             && self.drawing_tool_allows_panning()
                         {
@@ -1833,16 +2081,16 @@ where
                             state.last_cursor = None;
                         }
                     }
-                    mouse::Event::ButtonPressed(mouse::Button::Right) => {
-                        if self.drawing_draft.is_some() {
-                            shell.publish(M::from(KlineWidgetEvent::DrawingDraftCanceled));
-                            state.is_panning = false;
-                            state.dragging_split = None;
-                            state.last_cursor = None;
-                            state.clear_overlay_caches();
-                            state.clear_all_caches();
-                            shell.capture_event();
-                        }
+                    mouse::Event::ButtonPressed(mouse::Button::Right)
+                        if self.drawing_draft.is_some() =>
+                    {
+                        shell.publish(M::from(KlineWidgetEvent::DrawingDraftCanceled));
+                        state.is_panning = false;
+                        state.dragging_split = None;
+                        state.last_cursor = None;
+                        state.clear_overlay_caches();
+                        state.clear_all_caches();
+                        shell.capture_event();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
                         state.is_panning = false;
