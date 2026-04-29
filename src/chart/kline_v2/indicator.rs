@@ -1,9 +1,11 @@
+mod bollinger;
 mod cvd;
 mod open_interest;
+mod rsi;
 mod volume;
 
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
 };
 use data::chart::Basis;
 use exchange::adapter::MarketKind;
@@ -12,6 +14,7 @@ use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, UnixMs};
 use super::KlineIndicator;
 
 pub use cvd::CapabilityProbe as CvdInputProbe;
+pub use rsi::RsiConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndicatorUnsupportedReason {
@@ -45,6 +48,14 @@ pub enum IndicatorPanelRecipe {
         axis: AxisBinding,
         preferred_scale: PanelScaleMode,
     },
+    PrimaryOverlay {
+        layer_name: &'static str,
+        source: DataSourceId,
+        value_id: PanelValueId,
+        data_kind: LayerDataKind,
+        mark: MarkKind,
+        axis: AxisBinding,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -54,17 +65,23 @@ pub struct AvailabilityContext {
     pub base_ticker: TickerInfo,
 }
 
-const FOR_SPOT: [KlineIndicator; 2] = [
+const FOR_SPOT: [KlineIndicator; 4] = [
     KlineIndicator::Volume,
+    KlineIndicator::BollingerBands,
+    KlineIndicator::Rsi,
     KlineIndicator::CumulativeVolumeDelta,
 ];
-const FOR_PERPS: [KlineIndicator; 3] = [
+const FOR_PERPS: [KlineIndicator; 5] = [
     KlineIndicator::Volume,
+    KlineIndicator::BollingerBands,
+    KlineIndicator::Rsi,
     KlineIndicator::OpenInterest,
     KlineIndicator::CumulativeVolumeDelta,
 ];
-const ALL_INDICATORS: [KlineIndicator; 3] = [
+const ALL_INDICATORS: [KlineIndicator; 5] = [
     KlineIndicator::Volume,
+    KlineIndicator::BollingerBands,
+    KlineIndicator::Rsi,
     KlineIndicator::OpenInterest,
     KlineIndicator::CumulativeVolumeDelta,
 ];
@@ -87,6 +104,8 @@ pub fn is_supported_for_market(indicator: KlineIndicator, market: MarketKind) ->
 pub fn display_name(indicator: KlineIndicator) -> &'static str {
     match indicator {
         KlineIndicator::Volume => "Volume",
+        KlineIndicator::BollingerBands => "Bollinger Bands",
+        KlineIndicator::Rsi => "RSI",
         KlineIndicator::OpenInterest => "Open Interest",
         KlineIndicator::CumulativeVolumeDelta => "CVD",
     }
@@ -95,8 +114,20 @@ pub fn display_name(indicator: KlineIndicator) -> &'static str {
 pub fn panel_recipe(indicator: KlineIndicator) -> IndicatorPanelRecipe {
     match indicator {
         KlineIndicator::Volume => volume::panel_recipe(),
+        KlineIndicator::BollingerBands => bollinger::panel_recipe(),
+        KlineIndicator::Rsi => rsi::panel_recipe(),
         KlineIndicator::OpenInterest => open_interest::panel_recipe(),
         KlineIndicator::CumulativeVolumeDelta => cvd::panel_recipe(),
+    }
+}
+
+pub fn kline_warmup_bars(indicator: KlineIndicator, rsi_config: RsiConfig) -> Option<u64> {
+    match indicator {
+        KlineIndicator::Volume => None,
+        KlineIndicator::BollingerBands => Some(bollinger::kline_warmup_bars()),
+        KlineIndicator::Rsi => Some(rsi::kline_warmup_bars(rsi_config)),
+        KlineIndicator::OpenInterest => None,
+        KlineIndicator::CumulativeVolumeDelta => None,
     }
 }
 
@@ -114,6 +145,8 @@ where
 
     match indicator {
         KlineIndicator::Volume => volume::availability(),
+        KlineIndicator::BollingerBands => bollinger::availability(),
+        KlineIndicator::Rsi => rsi::availability(context.basis),
         KlineIndicator::OpenInterest => {
             open_interest::availability(context.basis, context.timeframe, context.base_ticker)
         }
@@ -126,17 +159,27 @@ where
 
 #[derive(Debug, Clone, Default)]
 pub struct SeriesIndicatorData {
+    bollinger_bands: bollinger::BollingerBandsState,
+    rsi: rsi::RsiState,
     open_interest: open_interest::OpenInterestState,
     cumulative_volume_delta: cvd::CumulativeVolumeDeltaState,
 }
 
 impl SeriesIndicatorData {
+    pub fn set_rsi_config(&mut self, config: RsiConfig) -> bool {
+        self.rsi.set_config(config)
+    }
+
     pub fn clear(&mut self) {
+        self.bollinger_bands.clear();
+        self.rsi.clear();
         self.open_interest.clear();
         self.cumulative_volume_delta.clear();
     }
 
     pub fn refresh_from_bars(&mut self, bars: &[Kline]) {
+        self.bollinger_bands.recompute_from_bars(bars);
+        self.rsi.recompute_from_bars(bars);
         self.cumulative_volume_delta.recompute_from_bars(bars);
     }
 
@@ -163,12 +206,27 @@ impl SeriesIndicatorData {
         bar: &Kline,
     ) -> Option<f32> {
         match indicator {
+            Some(KlineIndicator::BollingerBands) => self
+                .bollinger_bands
+                .value_at(bar.time)
+                .map(|bands| bands.basis),
+            Some(KlineIndicator::Rsi) => self.rsi.value_at(bar.time).map(|point| point.value),
             Some(KlineIndicator::OpenInterest) => self.open_interest.value_at(bar.time),
             Some(KlineIndicator::CumulativeVolumeDelta) => {
                 self.cumulative_volume_delta.value_at(bar.time)
             }
             Some(KlineIndicator::Volume) | None => Some(f32::from(bar.volume.total())),
         }
+    }
+
+    pub fn rsi_fields_for_bar(&self, bar: &Kline) -> Option<rsi::RsiPoint> {
+        self.rsi.value_at(bar.time)
+    }
+
+    pub fn bollinger_bands_for_bar(&self, bar: &Kline) -> Option<(f32, f32)> {
+        self.bollinger_bands
+            .value_at(bar.time)
+            .map(|bands| (bands.upper, bands.lower))
     }
 
     pub fn volume_overlay_for_bar(&self, bar: &Kline) -> Option<f32> {

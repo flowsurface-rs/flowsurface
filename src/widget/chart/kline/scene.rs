@@ -1,8 +1,8 @@
 use super::chrome::{PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
-    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
-    MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX,
+    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget, MAX_BAR_SPACING_PX,
+    MIN_BAR_SPACING_PX,
 };
 use crate::widget::chart::kline::composition::{
     BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
@@ -436,8 +436,13 @@ where
     ) -> Option<(f32, f32)> {
         let mut min_pct: Option<f32> = None;
         let mut max_pct: Option<f32> = None;
+        let primary_overlay_value_ids = self.primary_overlay_value_ids();
+        let primary_overlay_channels: Vec<_> = primary_overlay_value_ids
+            .iter()
+            .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
+            .collect();
 
-        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
+        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
             if unit < min_x_unit || unit > max_x_unit {
                 return;
             }
@@ -462,6 +467,26 @@ where
                 emit_pct(bar.high.to_f32());
             } else {
                 emit_pct(bar.close.to_f32());
+            }
+
+            if series_index == 0 {
+                for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
+                    let Some(data) =
+                        series.indicator_data_for_panel_value_opt(Some(*value_id), bar)
+                    else {
+                        continue;
+                    };
+
+                    let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
+                        continue;
+                    };
+
+                    for channel in channels.iter().copied() {
+                        if let Some(channel_value) = Self::overlay_channel_value(data, channel) {
+                            emit_pct(channel_value);
+                        }
+                    }
+                }
             }
         });
 
@@ -637,8 +662,13 @@ where
     ) -> Option<(f32, f32)> {
         let mut min_primary_value: Option<f32> = None;
         let mut max_primary_value: Option<f32> = None;
+        let primary_overlay_value_ids = self.primary_overlay_value_ids();
+        let primary_overlay_channels: Vec<_> = primary_overlay_value_ids
+            .iter()
+            .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
+            .collect();
 
-        self.for_each_bar_unit(x_axis, |_, unit, bar| {
+        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
             if unit < min_x_unit || unit > max_x_unit {
                 return;
             }
@@ -648,6 +678,31 @@ where
 
             min_primary_value = Some(min_primary_value.map_or(low, |value| value.min(low)));
             max_primary_value = Some(max_primary_value.map_or(high, |value| value.max(high)));
+
+            if series_index == 0 {
+                for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
+                    let Some(data) =
+                        series.indicator_data_for_panel_value_opt(Some(*value_id), bar)
+                    else {
+                        continue;
+                    };
+
+                    let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
+                        continue;
+                    };
+
+                    for channel in channels.iter().copied() {
+                        if let Some(channel_value) = Self::overlay_channel_value(data, channel) {
+                            min_primary_value = Some(
+                                min_primary_value.map_or(channel_value, |value| value.min(channel_value)),
+                            );
+                            max_primary_value = Some(
+                                max_primary_value.map_or(channel_value, |value| value.max(channel_value)),
+                            );
+                        }
+                    }
+                }
+            }
         });
 
         let min_primary_value = min_primary_value?;
@@ -694,6 +749,19 @@ where
             any = true;
             min_value = min_value.min(value);
             max_value = max_value.max(value);
+
+            if let Some(value_id) = panel_value_id {
+                for channel in self.overlay_channels_for_panel_value(Some(value_id))
+                    .iter()
+                    .copied()
+                {
+                    if let Some(channel_value) = Self::overlay_channel_value(indicator_data, channel)
+                    {
+                        min_value = min_value.min(channel_value);
+                        max_value = max_value.max(channel_value);
+                    }
+                }
+            }
 
             if matches!(data_kind, LayerDataKind::Histogram)
                 && matches!(

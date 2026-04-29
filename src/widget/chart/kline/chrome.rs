@@ -7,7 +7,7 @@ use super::{
     TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET,
 };
 use crate::style;
-use crate::widget::chart::kline::composition::MarkKind;
+use crate::widget::chart::kline::composition::{MarkKind, PanelScaleMode};
 
 use exchange::TickerInfo;
 
@@ -493,6 +493,7 @@ where
                 }
 
                 let precision = base_series.ticker_info().min_ticksize;
+                let primary_anchor = scene.series_percent_anchors.first().copied().flatten();
 
                 if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
                     let open_f = base_bar.open.to_f32();
@@ -544,7 +545,7 @@ where
                 } else {
                     let text = format!("C {}", base_bar.close.to_string(precision));
                     frame.fill_text(canvas::Text {
-                        content: text,
+                        content: text.clone(),
                         position: Point::new(x, y),
                         color: palette.background.base.text.scale_alpha(0.85),
                         size: TEXT_SIZE.into(),
@@ -553,11 +554,133 @@ where
                         font: style::AZERET_MONO,
                         ..Default::default()
                     });
+
+                    x += text.chars().count() as f32 * CHAR_W + 6.0;
                 }
-            } else {
-                if let Some(indicator_data) = base_series
-                    .indicator_data_for_panel_value_opt(self.panel_value_id(panel_index), base_bar)
+
+                for value_id in self.primary_overlay_value_ids() {
+                    let Some(indicator_data) =
+                        base_series.indicator_data_for_panel_value_opt(Some(value_id), base_bar)
+                    else {
+                        continue;
+                    };
+
+                    for channel in self
+                        .overlay_channels_for_panel_value(Some(value_id))
+                        .iter()
+                        .copied()
+                    {
+                        let Some(value) = Self::overlay_channel_value(indicator_data, channel)
+                        else {
+                            continue;
+                        };
+
+                        if x >= max_x {
+                            break;
+                        }
+
+                        let value_text =
+                            if matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+                                && primary_anchor
+                                    .map(|anchor| anchor.abs() > f32::EPSILON)
+                                    .unwrap_or(false)
+                            {
+                                let anchor = primary_anchor.unwrap_or(1.0);
+                                format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
+                            } else {
+                                data::util::format_with_commas(value)
+                            };
+
+                        let label_color = Self::overlay_channel_color(channel, palette);
+                        let label_text = channel.label.to_string();
+
+                        frame.fill_text(canvas::Text {
+                            content: label_text.clone(),
+                            position: Point::new(x, y),
+                            color: label_color,
+                            size: TEXT_SIZE.into(),
+                            align_x: iced::Alignment::Start.into(),
+                            align_y: iced::Alignment::Start.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+
+                        x += label_text.chars().count() as f32 * CHAR_W + 2.0;
+
+                        if x >= max_x {
+                            break;
+                        }
+
+                        frame.fill_text(canvas::Text {
+                            content: value_text.clone(),
+                            position: Point::new(x, y),
+                            color: label_color,
+                            size: TEXT_SIZE.into(),
+                            align_x: iced::Alignment::Start.into(),
+                            align_y: iced::Alignment::Start.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+
+                        x += value_text.chars().count() as f32 * CHAR_W + 6.0;
+                    }
+                }
+            } else if let Some(value_id) = self.panel_value_id(panel_index)
+                && let Some(indicator_data) =
+                    base_series.indicator_data_for_panel_value_opt(Some(value_id), base_bar)
+            {
+                let mut drew_any_channel = false;
+
+                for channel in self
+                    .overlay_channels_for_panel_value(Some(value_id))
+                    .iter()
+                    .copied()
                 {
+                    let Some(value) = Self::overlay_channel_value(indicator_data, channel) else {
+                        continue;
+                    };
+
+                    if x >= max_x {
+                        break;
+                    }
+
+                    let value_text = data::util::format_with_commas(value);
+                    let label_color = Self::overlay_channel_color(channel, palette);
+                    let label_text = channel.label.to_string();
+
+                    frame.fill_text(canvas::Text {
+                        content: label_text.clone(),
+                        position: Point::new(x, y),
+                        color: label_color,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Start.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+
+                    x += label_text.chars().count() as f32 * CHAR_W + 2.0;
+
+                    if x >= max_x {
+                        break;
+                    }
+
+                    frame.fill_text(canvas::Text {
+                        content: value_text.clone(),
+                        position: Point::new(x, y),
+                        color: label_color,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Start.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+
+                    x += value_text.chars().count() as f32 * CHAR_W + 6.0;
+                    drew_any_channel = true;
+                }
+
+                if !drew_any_channel {
                     let value = indicator_data.value();
                     let text = data::util::format_with_commas(value);
 

@@ -86,24 +86,106 @@ impl BarSpacingPx {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IndicatorData {
-    Scalar(f32),
-    ScalarWithSignedOverlay { value: f32, signed_overlay: f32 },
+pub enum IndicatorDataFieldKey {
+    SignedOverlay,
+    Custom(&'static str),
+}
+
+pub const BOLLINGER_UPPER_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("bollinger.upper");
+pub const BOLLINGER_LOWER_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("bollinger.lower");
+pub const RSI_SIGNAL_FIELD_KEY: IndicatorDataFieldKey = IndicatorDataFieldKey::Custom("rsi.signal");
+pub const RSI_UPPER_BAND_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("rsi.upper_band");
+pub const RSI_LOWER_BAND_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("rsi.lower_band");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayChannelColorRole {
+    Neutral,
+    Success,
+    Danger,
+    Primary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayChannelSpec {
+    pub label: &'static str,
+    pub key: Option<IndicatorDataFieldKey>,
+    pub line_width: f32,
+    pub color_role: OverlayChannelColorRole,
+}
+
+const DEFAULT_OVERLAY_CHANNELS: [OverlayChannelSpec; 1] = [OverlayChannelSpec {
+    label: "V",
+    key: None,
+    line_width: 1.1,
+    color_role: OverlayChannelColorRole::Neutral,
+}];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IndicatorDataField {
+    pub key: IndicatorDataFieldKey,
+    pub value: f32,
+}
+
+const MAX_INDICATOR_EXTRA_FIELDS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IndicatorData {
+    value: f32,
+    extra_fields: [Option<IndicatorDataField>; MAX_INDICATOR_EXTRA_FIELDS],
 }
 
 impl IndicatorData {
-    pub fn value(self) -> f32 {
-        match self {
-            Self::Scalar(value) => value,
-            Self::ScalarWithSignedOverlay { value, .. } => value,
+    pub fn scalar(value: f32) -> Self {
+        Self {
+            value,
+            extra_fields: [None; MAX_INDICATOR_EXTRA_FIELDS],
         }
     }
 
-    pub fn signed_overlay(self) -> Option<f32> {
-        match self {
-            Self::Scalar(_) => None,
-            Self::ScalarWithSignedOverlay { signed_overlay, .. } => Some(signed_overlay),
+    pub fn value(self) -> f32 {
+        self.value
+    }
+
+    pub fn with_field(mut self, key: IndicatorDataFieldKey, value: f32) -> Self {
+        if let Some(slot) = self
+            .extra_fields
+            .iter_mut()
+            .find(|slot| slot.as_ref().map(|field| field.key == key).unwrap_or(false))
+        {
+            *slot = Some(IndicatorDataField { key, value });
+            return self;
         }
+
+        if let Some(slot) = self.extra_fields.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(IndicatorDataField { key, value });
+        } else {
+            debug_assert!(
+                false,
+                "IndicatorData extra field capacity exceeded ({MAX_INDICATOR_EXTRA_FIELDS})"
+            );
+        }
+
+        self
+    }
+
+    pub fn field(self, key: IndicatorDataFieldKey) -> Option<f32> {
+        self.extra_fields
+            .iter()
+            .flatten()
+            .find(|field| field.key == key)
+            .map(|field| field.value)
+    }
+
+    pub fn with_signed_overlay(self, signed_overlay: f32) -> Self {
+        self.with_field(IndicatorDataFieldKey::SignedOverlay, signed_overlay)
+    }
+
+    pub fn signed_overlay(self) -> Option<f32> {
+        self.field(IndicatorDataFieldKey::SignedOverlay)
     }
 }
 
@@ -136,17 +218,23 @@ pub trait KlineSeriesLike {
         bar: &Kline,
     ) -> Option<IndicatorData> {
         let value = self.indicator_value_for_panel_value_opt(panel_value, bar)?;
+        let mut data = IndicatorData::scalar(value);
 
         if let Some(signed_overlay) =
             self.indicator_overlay_value_for_panel_value_opt(panel_value, bar)
         {
-            Some(IndicatorData::ScalarWithSignedOverlay {
-                value,
-                signed_overlay,
-            })
-        } else {
-            Some(IndicatorData::Scalar(value))
+            data = data.with_signed_overlay(signed_overlay);
         }
+
+        Some(data)
+    }
+
+    fn indicator_overlay_channels_for_panel_value(
+        &self,
+        panel_value: PanelValueId,
+    ) -> &'static [OverlayChannelSpec] {
+        let _ = panel_value;
+        &[]
     }
 }
 
@@ -291,10 +379,10 @@ where
         };
 
         base_series.bars().iter().any(|bar| {
-            matches!(
-                base_series.indicator_data_for_panel_value_opt(panel_value, bar),
-                Some(IndicatorData::ScalarWithSignedOverlay { .. })
-            )
+            base_series
+                .indicator_data_for_panel_value_opt(panel_value, bar)
+                .and_then(IndicatorData::signed_overlay)
+                .is_some()
         })
     }
 
@@ -399,6 +487,59 @@ where
         data::config::theme::from_hsv_degrees(hue, saturation.min(1.0), value.min(1.0))
     }
 
+    pub(super) fn primary_overlay_value_ids(&self) -> Vec<PanelValueId> {
+        let Some(primary_panel_id) = self.composition.primary_panel_id() else {
+            return Vec::new();
+        };
+
+        let Some(primary_panel) = self.composition.panel(primary_panel_id) else {
+            return Vec::new();
+        };
+
+        primary_panel
+            .layers
+            .iter()
+            .filter_map(|layer| layer.source.indicator_value_id())
+            .collect()
+    }
+
+    pub(super) fn overlay_channels_for_panel_value(
+        &self,
+        value_id: Option<PanelValueId>,
+    ) -> &'static [OverlayChannelSpec] {
+        if let Some(value_id) = value_id
+            && let Some(series) = self.series.first()
+        {
+            let channels = series.indicator_overlay_channels_for_panel_value(value_id);
+            if !channels.is_empty() {
+                return channels;
+            }
+        }
+
+        &DEFAULT_OVERLAY_CHANNELS
+    }
+
+    pub(super) fn overlay_channel_value(
+        data: IndicatorData,
+        channel: OverlayChannelSpec,
+    ) -> Option<f32> {
+        channel
+            .key
+            .map_or_else(|| Some(data.value()), |key| data.field(key))
+    }
+
+    pub(super) fn overlay_channel_color(
+        channel: OverlayChannelSpec,
+        palette: &Extended,
+    ) -> iced::Color {
+        match channel.color_role {
+            OverlayChannelColorRole::Neutral => palette.background.base.text.scale_alpha(0.72),
+            OverlayChannelColorRole::Success => palette.success.base.color.scale_alpha(0.78),
+            OverlayChannelColorRole::Danger => palette.danger.base.color.scale_alpha(0.78),
+            OverlayChannelColorRole::Primary => palette.primary.base.color.scale_alpha(0.78),
+        }
+    }
+
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let spacing = scene.bar_spacing_px();
         let px_per_unit = spacing.as_f32();
@@ -411,8 +552,25 @@ where
             .min(max_width);
 
         let mut primary_line_points: Vec<Vec<Point>> = vec![Vec::new(); self.series.len()];
-        let mut indicator_line_points: Vec<Vec<Point>> =
-            vec![Vec::new(); scene.indicator_panels.len()];
+        let indicator_panel_channels: Vec<&'static [OverlayChannelSpec]> = scene
+            .indicator_panels
+            .iter()
+            .map(|panel| self.overlay_channels_for_panel_value(panel.value_id))
+            .collect();
+        let mut indicator_line_points: Vec<Vec<Vec<Point>>> = indicator_panel_channels
+            .iter()
+            .map(|channels| vec![Vec::new(); channels.len()])
+            .collect();
+        let primary_overlay_value_ids = self.primary_overlay_value_ids();
+        let primary_overlay_channels: Vec<&'static [OverlayChannelSpec]> =
+            primary_overlay_value_ids
+                .iter()
+                .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
+                .collect();
+        let mut primary_overlay_points: Vec<Vec<Vec<Point>>> = primary_overlay_channels
+            .iter()
+            .map(|channels| vec![Vec::new(); channels.len()])
+            .collect();
         let indicator_zero_baselines: Vec<Option<f32>> = scene
             .indicator_panels
             .iter()
@@ -484,6 +642,31 @@ where
                 return;
             }
 
+            for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
+                let Some(data) = series.indicator_data_for_panel_value_opt(Some(*value_id), bar)
+                else {
+                    continue;
+                };
+
+                let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
+                    continue;
+                };
+
+                for (channel_idx, channel) in channels.iter().copied().enumerate() {
+                    let Some(value) = Self::overlay_channel_value(data, channel) else {
+                        continue;
+                    };
+
+                    let y = scene.map_primary_plot_with_anchor(value, series_anchor);
+                    if let Some(points) = primary_overlay_points
+                        .get_mut(overlay_idx)
+                        .and_then(|overlay| overlay.get_mut(channel_idx))
+                    {
+                        points.push(Point::new(x_px as f32, y));
+                    }
+                }
+            }
+
             for (indicator_slot, indicator_panel) in scene.indicator_panels.iter().enumerate() {
                 let Some(indicator_data) =
                     series.indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
@@ -502,8 +685,30 @@ where
                 ) {
                     match indicator_panel.mark {
                         MarkKind::Line => {
-                            if let Some(points) = indicator_line_points.get_mut(indicator_slot) {
-                                points.push(Point::new(x_px as f32, y_indicator_value));
+                            let Some(channels) = indicator_panel_channels.get(indicator_slot)
+                            else {
+                                continue;
+                            };
+
+                            for (channel_idx, channel) in channels.iter().copied().enumerate() {
+                                let Some(channel_value) =
+                                    Self::overlay_channel_value(indicator_data, channel)
+                                else {
+                                    continue;
+                                };
+
+                                let Some(y_channel_value) = scene
+                                    .map_indicator_plot(indicator_panel.panel_index, channel_value)
+                                else {
+                                    continue;
+                                };
+
+                                if let Some(points) = indicator_line_points
+                                    .get_mut(indicator_slot)
+                                    .and_then(|channel_points| channel_points.get_mut(channel_idx))
+                                {
+                                    points.push(Point::new(x_px as f32, y_channel_value));
+                                }
                             }
                         }
                         MarkKind::Candle | MarkKind::Bar(_) => {
@@ -600,24 +805,64 @@ where
             );
         }
 
-        for points in &indicator_line_points {
-            if points.len() < 2 {
+        for (panel_idx, channel_points) in indicator_line_points.iter().enumerate() {
+            let Some(channels) = indicator_panel_channels.get(panel_idx) else {
                 continue;
-            }
+            };
 
-            let path = canvas::Path::new(|builder| {
-                builder.move_to(points[0]);
-                for point in points.iter().skip(1) {
-                    builder.line_to(*point);
+            for (channel_idx, points) in channel_points.iter().enumerate() {
+                if points.len() < 2 {
+                    continue;
                 }
-            });
 
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(1.2)
-                    .with_color(palette.background.base.text.scale_alpha(0.55)),
-            );
+                let Some(channel) = channels.get(channel_idx).copied() else {
+                    continue;
+                };
+
+                let path = canvas::Path::new(|builder| {
+                    builder.move_to(points[0]);
+                    for point in points.iter().skip(1) {
+                        builder.line_to(*point);
+                    }
+                });
+
+                frame.stroke(
+                    &path,
+                    canvas::Stroke::default()
+                        .with_width(channel.line_width)
+                        .with_color(Self::overlay_channel_color(channel, palette)),
+                );
+            }
+        }
+
+        for (overlay_idx, channels) in primary_overlay_points.iter().enumerate() {
+            let Some(channel_specs) = primary_overlay_channels.get(overlay_idx) else {
+                continue;
+            };
+
+            for (channel_idx, points) in channels.iter().enumerate() {
+                if points.len() < 2 {
+                    continue;
+                }
+
+                let Some(channel) = channel_specs.get(channel_idx).copied() else {
+                    continue;
+                };
+
+                let path = canvas::Path::new(|builder| {
+                    builder.move_to(points[0]);
+                    for point in points.iter().skip(1) {
+                        builder.line_to(*point);
+                    }
+                });
+
+                frame.stroke(
+                    &path,
+                    canvas::Stroke::default()
+                        .with_width(channel.line_width)
+                        .with_color(Self::overlay_channel_color(channel, palette)),
+                );
+            }
         }
 
         self.fill_panel_titles(frame, scene, palette);

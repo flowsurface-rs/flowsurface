@@ -125,6 +125,8 @@ pub enum PanelScaleMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelValueId {
     Volume,
+    BollingerBands,
+    Rsi,
     OpenInterest,
     CumulativeVolumeDelta,
 }
@@ -147,6 +149,10 @@ impl Default for PanelComparisonPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
     RawKline { source: DataSourceId },
+    RawIndicator {
+        source: DataSourceId,
+        value_id: PanelValueId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +203,14 @@ impl LayerSource {
     pub fn source_id(&self) -> Option<DataSourceId> {
         match self {
             Self::RawKline { source } => Some(*source),
+            Self::RawIndicator { source, .. } => Some(*source),
+        }
+    }
+
+    pub fn indicator_value_id(&self) -> Option<PanelValueId> {
+        match self {
+            Self::RawIndicator { value_id, .. } => Some(*value_id),
+            Self::RawKline { .. } => None,
         }
     }
 }

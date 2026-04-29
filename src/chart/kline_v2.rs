@@ -4,8 +4,9 @@ use crate::widget::chart::kline::composition::{
     LayerId, LayerSource, MarkKind, PanelId, PanelScaleMode, PanelValueId,
 };
 use crate::widget::chart::kline::{
-    DEFAULT_BAR_SPACING_PX, HorizontalScale, IndicatorData, KlineSeriesLike, KlineWidget,
-    KlineWidgetEvent,
+    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, HorizontalScale,
+    IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole,
+    OverlayChannelSpec, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY,
 };
 
 use data::chart::Basis;
@@ -21,13 +22,62 @@ use std::time::Instant;
 const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
 const FETCH_VIEWPORT_WIDTH_ESTIMATE_PX: f32 = 1200.0;
 const DEFAULT_FETCH_BARS: u64 = 500;
+const MAX_AUTO_INDICATOR_WARMUP_BARS: u64 = 2000;
 const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
 
+const BOLLINGER_OVERLAY_CHANNELS: [OverlayChannelSpec; 3] = [
+    OverlayChannelSpec {
+        label: "BB",
+        key: None,
+        line_width: 1.1,
+        color_role: OverlayChannelColorRole::Neutral,
+    },
+    OverlayChannelSpec {
+        label: "U",
+        key: Some(BOLLINGER_UPPER_FIELD_KEY),
+        line_width: 1.0,
+        color_role: OverlayChannelColorRole::Success,
+    },
+    OverlayChannelSpec {
+        label: "L",
+        key: Some(BOLLINGER_LOWER_FIELD_KEY),
+        line_width: 1.0,
+        color_role: OverlayChannelColorRole::Danger,
+    },
+];
+
+const RSI_OVERLAY_CHANNELS: [OverlayChannelSpec; 4] = [
+    OverlayChannelSpec {
+        label: "RSI",
+        key: None,
+        line_width: 1.2,
+        color_role: OverlayChannelColorRole::Neutral,
+    },
+    OverlayChannelSpec {
+        label: "S",
+        key: Some(RSI_SIGNAL_FIELD_KEY),
+        line_width: 1.0,
+        color_role: OverlayChannelColorRole::Primary,
+    },
+    OverlayChannelSpec {
+        label: "OB",
+        key: Some(RSI_UPPER_BAND_FIELD_KEY),
+        line_width: 0.9,
+        color_role: OverlayChannelColorRole::Success,
+    },
+    OverlayChannelSpec {
+        label: "OS",
+        key: Some(RSI_LOWER_BAND_FIELD_KEY),
+        line_width: 0.9,
+        color_role: OverlayChannelColorRole::Danger,
+    },
+];
+
 mod indicator;
 
-pub use indicator::IndicatorAvailability;
 use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
+pub use indicator::{IndicatorAvailability, RsiConfig};
 
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
@@ -37,8 +87,14 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IndicatorPanelBinding {
-    panel_id: PanelId,
+enum IndicatorPanelBinding {
+    AuxPanel {
+        panel_id: PanelId,
+    },
+    PrimaryLayer {
+        panel_id: PanelId,
+        layer_id: LayerId,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -93,16 +149,45 @@ impl KlineSeriesLike for KlineSeries {
     ) -> Option<IndicatorData> {
         let indicator = Self::indicator_for_panel_value(panel_value);
         let value = self.indicators.value_for_indicator(indicator, bar)?;
+        let mut data = IndicatorData::scalar(value);
 
         if matches!(indicator, Some(KlineIndicator::Volume))
             && let Some(signed_overlay) = self.indicators.volume_overlay_for_bar(bar)
         {
-            Some(IndicatorData::ScalarWithSignedOverlay {
-                value,
-                signed_overlay,
-            })
-        } else {
-            Some(IndicatorData::Scalar(value))
+            data = data.with_signed_overlay(signed_overlay);
+        }
+
+        if matches!(indicator, Some(KlineIndicator::BollingerBands))
+            && let Some((upper, lower)) = self.indicators.bollinger_bands_for_bar(bar)
+        {
+            data = data
+                .with_field(BOLLINGER_UPPER_FIELD_KEY, upper)
+                .with_field(BOLLINGER_LOWER_FIELD_KEY, lower);
+        }
+
+        if matches!(indicator, Some(KlineIndicator::Rsi))
+            && let Some(rsi_point) = self.indicators.rsi_fields_for_bar(bar)
+        {
+            data = data
+                .with_field(RSI_UPPER_BAND_FIELD_KEY, rsi_point.upper_band)
+                .with_field(RSI_LOWER_BAND_FIELD_KEY, rsi_point.lower_band);
+
+            if let Some(signal) = rsi_point.signal {
+                data = data.with_field(RSI_SIGNAL_FIELD_KEY, signal);
+            }
+        }
+
+        Some(data)
+    }
+
+    fn indicator_overlay_channels_for_panel_value(
+        &self,
+        panel_value: PanelValueId,
+    ) -> &'static [OverlayChannelSpec] {
+        match panel_value {
+            PanelValueId::BollingerBands => &BOLLINGER_OVERLAY_CHANNELS,
+            PanelValueId::Rsi => &RSI_OVERLAY_CHANNELS,
+            _ => &[],
         }
     }
 }
@@ -111,6 +196,8 @@ impl KlineSeries {
     fn indicator_for_panel_value(panel_value: Option<PanelValueId>) -> Option<KlineIndicator> {
         match panel_value {
             Some(PanelValueId::Volume) => Some(KlineIndicator::Volume),
+            Some(PanelValueId::BollingerBands) => Some(KlineIndicator::BollingerBands),
+            Some(PanelValueId::Rsi) => Some(KlineIndicator::Rsi),
             Some(PanelValueId::OpenInterest) => Some(KlineIndicator::OpenInterest),
             Some(PanelValueId::CumulativeVolumeDelta) => {
                 Some(KlineIndicator::CumulativeVolumeDelta)
@@ -134,6 +221,7 @@ pub struct KlineChartV2 {
     series_index: FxHashMap<TickerInfo, usize>,
     comparison_layers: FxHashMap<TickerInfo, LayerId>,
     request_handlers: FxHashMap<TickerInfo, RequestHandler>,
+    rsi_config: RsiConfig,
     pub series: Vec<KlineSeries>,
 }
 
@@ -149,6 +237,7 @@ impl KlineChartV2 {
             .expect("Kline v2 requires a base ticker");
         let timeframe = Self::timeframe_for_basis(basis);
         let composition = ChartComposition::prototype_kline();
+        let rsi_config = RsiConfig::default();
 
         let mut chart = Self {
             basis,
@@ -164,6 +253,7 @@ impl KlineChartV2 {
             series_index: FxHashMap::default(),
             comparison_layers: FxHashMap::default(),
             request_handlers: FxHashMap::default(),
+            rsi_config,
             series: Vec::new(),
         };
 
@@ -199,6 +289,31 @@ impl KlineChartV2 {
         } else {
             false
         }
+    }
+
+    pub fn rsi_config(&self) -> RsiConfig {
+        self.rsi_config
+    }
+
+    pub fn set_rsi_config(&mut self, config: RsiConfig) -> Option<super::Action> {
+        let normalized = config.normalized();
+        if self.rsi_config == normalized {
+            return None;
+        }
+
+        self.rsi_config = normalized;
+
+        for series in &mut self.series {
+            if series.indicators.set_rsi_config(normalized) {
+                series.refresh_indicator_inputs();
+            }
+        }
+
+        self.enforce_indicator_availability();
+        self.bump_rev();
+
+        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
+        self.fetch_action(reqs)
     }
 
     pub fn set_panel_mark(&mut self, panel_index: usize, mark: MarkKind) -> bool {
@@ -526,7 +641,7 @@ impl KlineChartV2 {
 
         let recipe = indicator::panel_recipe(indicator);
 
-        let panel_id = match recipe {
+        let binding = match recipe {
             IndicatorPanelRecipe::AuxPanel {
                 panel_title,
                 layer_name,
@@ -552,11 +667,41 @@ impl KlineChartV2 {
                     panel_id,
                     Some(Self::panel_value_id_for_indicator(indicator)),
                 );
-                panel_id
+                IndicatorPanelBinding::AuxPanel { panel_id }
+            }
+            IndicatorPanelRecipe::PrimaryOverlay {
+                layer_name,
+                source,
+                value_id,
+                data_kind,
+                mark,
+                axis,
+            } => {
+                let Some(primary_panel_id) = self.composition.primary_panel_id() else {
+                    return false;
+                };
+
+                let layer = self.composition.new_layer(
+                    layer_name,
+                    LayerSource::RawIndicator { source, value_id },
+                    data_kind,
+                    mark,
+                    axis,
+                );
+                let layer_id = layer.id;
+
+                if !self.composition.add_layer_to_panel(primary_panel_id, layer) {
+                    return false;
+                }
+
+                IndicatorPanelBinding::PrimaryLayer {
+                    panel_id: primary_panel_id,
+                    layer_id,
+                }
             }
         };
 
-        self.indicator_panels[indicator] = Some(IndicatorPanelBinding { panel_id });
+        self.indicator_panels[indicator] = Some(binding);
         true
     }
 
@@ -584,11 +729,23 @@ impl KlineChartV2 {
             return false;
         };
 
-        if self.composition.remove_panel(binding.panel_id) {
-            true
-        } else {
-            self.indicator_panels[indicator] = Some(binding);
-            false
+        match binding {
+            IndicatorPanelBinding::AuxPanel { panel_id } => {
+                if self.composition.remove_panel(panel_id) {
+                    true
+                } else {
+                    self.indicator_panels[indicator] = Some(binding);
+                    false
+                }
+            }
+            IndicatorPanelBinding::PrimaryLayer { panel_id, layer_id } => {
+                if self.composition.remove_layer_from_panel(panel_id, layer_id) {
+                    true
+                } else {
+                    self.indicator_panels[indicator] = Some(binding);
+                    false
+                }
+            }
         }
     }
 
@@ -615,10 +772,21 @@ impl KlineChartV2 {
 
     fn prune_stale_indicator_panel_bindings(&mut self) {
         for indicator in indicator::all_indicators().iter().copied() {
-            if let Some(binding) = self.indicator_panels[indicator]
-                && self.composition.panel(binding.panel_id).is_none()
-            {
-                self.indicator_panels[indicator] = None;
+            if let Some(binding) = self.indicator_panels[indicator] {
+                let stale = match binding {
+                    IndicatorPanelBinding::AuxPanel { panel_id } => {
+                        self.composition.panel(panel_id).is_none()
+                    }
+                    IndicatorPanelBinding::PrimaryLayer { panel_id, layer_id } => self
+                        .composition
+                        .panel(panel_id)
+                        .map(|panel| !panel.layers.iter().any(|layer| layer.id == layer_id))
+                        .unwrap_or(true),
+                };
+
+                if stale {
+                    self.indicator_panels[indicator] = None;
+                }
             }
         }
     }
@@ -626,6 +794,8 @@ impl KlineChartV2 {
     fn panel_value_id_for_indicator(indicator: KlineIndicator) -> PanelValueId {
         match indicator {
             KlineIndicator::Volume => PanelValueId::Volume,
+            KlineIndicator::BollingerBands => PanelValueId::BollingerBands,
+            KlineIndicator::Rsi => PanelValueId::Rsi,
             KlineIndicator::OpenInterest => PanelValueId::OpenInterest,
             KlineIndicator::CumulativeVolumeDelta => PanelValueId::CumulativeVolumeDelta,
         }
@@ -722,6 +892,17 @@ impl KlineChartV2 {
         self.timeframe.to_milliseconds().max(1)
     }
 
+    fn active_indicator_kline_warmup_bars(&self) -> u64 {
+        indicator::all_indicators()
+            .iter()
+            .copied()
+            .filter(|indicator| self.indicator_panels[*indicator].is_some())
+            .filter_map(|indicator| indicator::kline_warmup_bars(indicator, self.rsi_config))
+            .filter(|bars| *bars <= MAX_AUTO_INDICATOR_WARMUP_BARS)
+            .max()
+            .unwrap_or(0)
+    }
+
     fn align_floor(&self, ts: UnixMs) -> UnixMs {
         ts.floor_to(self.timeframe)
     }
@@ -755,7 +936,11 @@ impl KlineChartV2 {
 
     fn desired_fetch_batches(&self, horizontal_offset: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
         let dt = self.dt_ms_est();
-        let span = DEFAULT_FETCH_BARS.saturating_mul(dt);
+        let visible_points = self.estimate_visible_points_for_fetch().max(0) as u64;
+        let indicator_warmup_bars = self.active_indicator_kline_warmup_bars();
+        let fetch_bars =
+            DEFAULT_FETCH_BARS.max(visible_points.saturating_add(indicator_warmup_bars));
+        let span = fetch_bars.saturating_mul(dt);
         let last_closed = self.align_floor(UnixMs::now());
 
         let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
@@ -774,22 +959,24 @@ impl KlineChartV2 {
         }
 
         if let Some((window_min, _window_max)) = self.compute_visible_window(horizontal_offset) {
-            let mut need: Vec<(UnixMs, TickerInfo)> = Vec::new();
+            let warmup_start = if indicator_warmup_bars > 0 {
+                self.align_floor(
+                    window_min.saturating_sub(indicator_warmup_bars.saturating_mul(dt)),
+                )
+            } else {
+                window_min
+            };
+
+            let target_min = warmup_start.min(window_min);
 
             for series in &self.series {
                 if let Some(series_min) = series.bars.first().map(|bar| bar.time)
-                    && window_min < series_min
+                    && target_min < series_min
                 {
-                    need.push((series_min, series.ticker_info));
+                    let end = self.align_floor(series_min);
+                    let start = end.saturating_sub(span);
+                    batches.push((FetchRange::Kline(start, end), vec![series.ticker_info]));
                 }
-            }
-
-            if !need.is_empty() {
-                let end = need.iter().map(|(end, _)| *end).min().unwrap_or(window_min);
-                let end = self.align_floor(end);
-                let start = end.saturating_sub(span);
-                let tickers = need.into_iter().map(|(_, ticker)| ticker).collect();
-                batches.push((FetchRange::Kline(start, end), tickers));
             }
 
             if self.oi_enabled_for_base()
@@ -903,7 +1090,9 @@ impl KlineChartV2 {
         }
 
         let idx = self.series.len();
-        self.series.push(KlineSeries::new(ticker_info));
+        let mut series = KlineSeries::new(ticker_info);
+        let _ = series.indicators.set_rsi_config(self.rsi_config);
+        self.series.push(series);
         self.series_index.insert(ticker_info, idx);
         self.request_handlers
             .insert(ticker_info, RequestHandler::default());
@@ -1047,6 +1236,8 @@ pub trait Indicator: PartialEq + Display + 'static {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
 pub enum KlineIndicator {
     Volume,
+    BollingerBands,
+    Rsi,
     OpenInterest,
     CumulativeVolumeDelta,
 }
