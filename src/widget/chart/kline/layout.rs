@@ -1,7 +1,7 @@
 use super::{
-    KlinePanelKind, KlineSeriesLike, KlineWidget, MIN_PANEL_HEIGHT, PANEL_SPLITTER_HEIGHT,
-    PANEL_SPLITTER_HIT_PX,
+    KlinePanelKind, KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT, PANEL_SPLITTER_HIT_PX,
 };
+use super::composition::{PanelRole, PanelSpec};
 use crate::widget::chart::Regions;
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
@@ -35,10 +35,8 @@ impl PanelLayoutTree {
         (index < layout.children().len()).then(|| layout.child(index))
     }
 
-    pub(super) fn from_layout(root: Layout<'_>, panel_kinds: &[KlinePanelKind]) -> Option<Self> {
-        if panel_kinds.is_empty() {
-            return None;
-        }
+    pub(super) fn from_layout(root: Layout<'_>, panels_spec: &[PanelSpec]) -> Option<Self> {
+        let panel_count = panels_spec.len().max(1);
 
         let regions = Regions::from_layout(root);
 
@@ -53,20 +51,32 @@ impl PanelLayoutTree {
             height: r.height,
         };
 
-        let mut cursor = 0usize;
-        let mut panel_nodes = Vec::with_capacity(panel_kinds.len());
-        let mut splitters = Vec::with_capacity(panel_kinds.len().saturating_sub(1));
+        let panel_kind_for_index = |index: usize| match panels_spec.get(index).map(|panel| panel.role)
+        {
+            Some(PanelRole::Primary) => KlinePanelKind::PrimaryChart,
+            Some(PanelRole::Auxiliary) => KlinePanelKind::Indicator,
+            None if index == 0 => KlinePanelKind::PrimaryChart,
+            None => KlinePanelKind::Indicator,
+        };
 
-        for (index, kind) in panel_kinds.iter().copied().enumerate() {
+        let mut cursor = 0usize;
+        let mut panel_nodes = Vec::with_capacity(panel_count);
+        let mut splitters = Vec::with_capacity(panel_count.saturating_sub(1));
+
+        for index in 0..panel_count {
             let plot = to_plot_local(Self::child_at(panels, cursor)?.bounds());
             cursor += 1;
 
             let x_axis = to_plot_local(Self::child_at(panels, cursor)?.bounds());
             cursor += 1;
 
-            panel_nodes.push(PanelLayoutNode { kind, plot, x_axis });
+            panel_nodes.push(PanelLayoutNode {
+                kind: panel_kind_for_index(index),
+                plot,
+                x_axis,
+            });
 
-            if index + 1 < panel_kinds.len() {
+            if index + 1 < panel_count {
                 splitters.push(to_plot_local(Self::child_at(panels, cursor)?.bounds()));
                 cursor += 1;
             }
@@ -143,54 +153,6 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
-    fn panel_min_ratio(&self, panel_count: usize, usable_plot_height: f32) -> f32 {
-        if panel_count <= 1 {
-            return 0.0;
-        }
-
-        let usable = usable_plot_height.max(1.0);
-        let geometric_min = MIN_PANEL_HEIGHT / usable;
-        let feasible_cap = 1.0 / panel_count as f32;
-
-        geometric_min.min(feasible_cap)
-    }
-
-    fn normalized_panel_splits(&self, panel_count: usize, usable_plot_height: f32) -> Vec<f32> {
-        let split_count = panel_count.saturating_sub(1);
-        if split_count == 0 {
-            return Vec::new();
-        }
-
-        let mut splits = Vec::with_capacity(split_count);
-        for index in 0..split_count {
-            let fallback = (index + 1) as f32 / panel_count as f32;
-            splits.push(self.panel_splits.get(index).copied().unwrap_or(fallback));
-        }
-
-        let min_ratio = self.panel_min_ratio(panel_count, usable_plot_height);
-
-        for index in 0..split_count {
-            let remaining_panels_after = panel_count.saturating_sub(index + 1);
-
-            let lower = if index > 0 {
-                splits[index - 1] + min_ratio
-            } else {
-                min_ratio
-            };
-
-            let upper = 1.0 - (remaining_panels_after as f32 * min_ratio);
-            let (min_bound, max_bound) = if lower <= upper {
-                (lower, upper)
-            } else {
-                (upper, lower)
-            };
-
-            splits[index] = splits[index].clamp(min_bound, max_bound);
-        }
-
-        splits
-    }
-
     pub(super) fn panel_plot_heights(
         &self,
         panel_stack_height: f32,
@@ -207,7 +169,18 @@ where
             return vec![usable];
         }
 
-        let splits = self.normalized_panel_splits(panel_count, usable.max(1.0));
+        let mut splits = self.normalized_panel_splits();
+        let split_count = panel_count.saturating_sub(1);
+
+        if splits.len() > split_count {
+            splits.truncate(split_count);
+        }
+
+        for index in splits.len()..split_count {
+            let fallback = (index + 1) as f32 / panel_count as f32;
+            splits.push(fallback);
+        }
+
         let mut heights = Vec::with_capacity(panel_count);
         let mut previous = 0.0;
 
@@ -241,29 +214,7 @@ where
         let fixed_before =
             (split_index as f32 * PANEL_SPLITTER_HEIGHT) + (PANEL_SPLITTER_HEIGHT * 0.5);
         let boundary = (local_y - fixed_before).clamp(0.0, usable);
-        let ratio = (boundary / usable).clamp(0.0, 1.0);
 
-        let splits = self.normalized_panel_splits(panel_count, usable);
-        let min_ratio = self.panel_min_ratio(panel_count, usable);
-
-        let lower = if split_index > 0 {
-            splits[split_index - 1] + min_ratio
-        } else {
-            min_ratio
-        };
-
-        let upper = if split_index + 1 < splits.len() {
-            splits[split_index + 1] - min_ratio
-        } else {
-            1.0 - min_ratio
-        };
-
-        let (min_bound, max_bound) = if lower <= upper {
-            (lower, upper)
-        } else {
-            (upper, lower)
-        };
-
-        Some(ratio.clamp(min_bound, max_bound))
+        Some((boundary / usable).clamp(0.0, 1.0))
     }
 }

@@ -4,7 +4,13 @@ mod layout;
 mod scene;
 
 use crate::style;
-use composition::{BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode};
+use chrome::TickerLegendHit;
+use composition::{
+    BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
+    PanelScaleMode, PanelValueId,
+};
+use layout::{LayoutHitZone, PanelLayoutTree};
+use scene::Scene;
 
 use data::UserTimezone;
 use data::chart::Basis;
@@ -27,7 +33,6 @@ const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
-const MIN_PANEL_HEIGHT: f32 = 40.0;
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
 const PANEL_TITLE_TOP_PAD: f32 = 4.0;
 const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
@@ -40,18 +45,6 @@ const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
-
-const DEFAULT_PANEL_KINDS: [KlinePanelKind; 2] =
-    [KlinePanelKind::PrimaryChart, KlinePanelKind::Indicator];
-const DEFAULT_PANEL_SPLITS: [f32; 1] = [0.75];
-const DEFAULT_PANEL_MARKS: [MarkKind; 2] = [
-    MarkKind::Candle,
-    MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
-];
-const DEFAULT_PANEL_SCALE_MODES: [PanelScaleMode; 2] =
-    [PanelScaleMode::Absolute, PanelScaleMode::Absolute];
-const DEFAULT_PANEL_DATA_KINDS: [LayerDataKind; 2] =
-    [LayerDataKind::Ohlc, LayerDataKind::Histogram];
 
 pub const DEFAULT_BAR_SPACING_PX: f32 = 8.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
@@ -92,29 +85,68 @@ impl BarSpacingPx {
     }
 }
 
-use chrome::TickerLegendHit;
-use layout::{LayoutHitZone, PanelLayoutTree};
-use scene::Scene;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IndicatorData {
+    Scalar(f32),
+    ScalarWithSignedOverlay { value: f32, signed_overlay: f32 },
+}
+
+impl IndicatorData {
+    pub fn value(self) -> f32 {
+        match self {
+            Self::Scalar(value) => value,
+            Self::ScalarWithSignedOverlay { value, .. } => value,
+        }
+    }
+
+    pub fn signed_overlay(self) -> Option<f32> {
+        match self {
+            Self::Scalar(_) => None,
+            Self::ScalarWithSignedOverlay { signed_overlay, .. } => Some(signed_overlay),
+        }
+    }
+}
 
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
     fn bars(&self) -> &[Kline];
     fn indicator_value(&self, bar: &Kline) -> f32;
 
-    fn indicator_value_for_panel(&self, _panel_index: usize, bar: &Kline) -> f32 {
-        self.indicator_value(bar)
-    }
-
-    fn indicator_value_for_panel_opt(&self, panel_index: usize, bar: &Kline) -> Option<f32> {
-        Some(self.indicator_value_for_panel(panel_index, bar))
-    }
-
-    fn indicator_overlay_value_for_panel_opt(
+    fn indicator_value_for_panel_value_opt(
         &self,
-        _panel_index: usize,
+        panel_value: Option<PanelValueId>,
+        bar: &Kline,
+    ) -> Option<f32> {
+        let _ = panel_value;
+        Some(self.indicator_value(bar))
+    }
+
+    fn indicator_overlay_value_for_panel_value_opt(
+        &self,
+        panel_value: Option<PanelValueId>,
         _bar: &Kline,
     ) -> Option<f32> {
+        let _ = panel_value;
         None
+    }
+
+    fn indicator_data_for_panel_value_opt(
+        &self,
+        panel_value: Option<PanelValueId>,
+        bar: &Kline,
+    ) -> Option<IndicatorData> {
+        let value = self.indicator_value_for_panel_value_opt(panel_value, bar)?;
+
+        if let Some(signed_overlay) =
+            self.indicator_overlay_value_for_panel_value_opt(panel_value, bar)
+        {
+            Some(IndicatorData::ScalarWithSignedOverlay {
+                value,
+                signed_overlay,
+            })
+        } else {
+            Some(IndicatorData::Scalar(value))
+        }
     }
 }
 
@@ -184,15 +216,10 @@ impl State {
 
 pub struct KlineWidget<'a, S> {
     series: &'a [S],
+    composition: &'a ChartComposition,
     basis: Basis,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
-    panel_kinds: &'a [KlinePanelKind],
-    panel_splits: &'a [f32],
-    panel_titles: &'a [Option<String>],
-    panel_marks: &'a [MarkKind],
-    panel_scale_modes: &'a [PanelScaleMode],
-    panel_data_kinds: &'a [LayerDataKind],
     timezone: UserTimezone,
     version: u64,
 }
@@ -201,18 +228,13 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
-    pub fn new(series: &'a [S], timeframe: Timeframe) -> Self {
+    pub fn new(series: &'a [S], timeframe: Timeframe, composition: &'a ChartComposition) -> Self {
         Self {
             series,
+            composition,
             basis: Basis::Time(timeframe),
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: 0.0,
-            panel_kinds: &DEFAULT_PANEL_KINDS,
-            panel_splits: &DEFAULT_PANEL_SPLITS,
-            panel_titles: &[],
-            panel_marks: &DEFAULT_PANEL_MARKS,
-            panel_scale_modes: &DEFAULT_PANEL_SCALE_MODES,
-            panel_data_kinds: &DEFAULT_PANEL_DATA_KINDS,
             timezone: UserTimezone::Utc,
             version: 0,
         }
@@ -225,33 +247,6 @@ where
 
     pub fn with_horizontal_offset(mut self, offset: f32) -> Self {
         self.horizontal_offset = offset;
-        self
-    }
-
-    pub fn with_panel_layout(
-        mut self,
-        panel_kinds: &'a [KlinePanelKind],
-        panel_splits: &'a [f32],
-    ) -> Self {
-        self.panel_kinds = panel_kinds;
-        self.panel_splits = panel_splits;
-        self
-    }
-
-    pub fn with_panel_titles(mut self, panel_titles: &'a [Option<String>]) -> Self {
-        self.panel_titles = panel_titles;
-        self
-    }
-
-    pub fn with_panel_rendering(
-        mut self,
-        panel_marks: &'a [MarkKind],
-        panel_scale_modes: &'a [PanelScaleMode],
-        panel_data_kinds: &'a [LayerDataKind],
-    ) -> Self {
-        self.panel_marks = panel_marks;
-        self.panel_scale_modes = panel_scale_modes;
-        self.panel_data_kinds = panel_data_kinds;
         self
     }
 
@@ -270,11 +265,44 @@ where
         self
     }
 
-    fn resolved_panel_kinds(&self) -> &[KlinePanelKind] {
-        if self.panel_kinds.is_empty() {
-            &DEFAULT_PANEL_KINDS
+    fn panel_count(&self) -> usize {
+        self.composition.panel_count().max(1)
+    }
+
+    fn panel_id(&self, panel_index: usize) -> Option<composition::PanelId> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.id)
+    }
+
+    fn panel_value_id(&self, panel_index: usize) -> Option<PanelValueId> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .and_then(|panel| panel.value_id)
+    }
+
+    fn panel_uses_signed_overlay_input(&self, panel_index: usize) -> bool {
+        let panel_value = self.panel_value_id(panel_index);
+
+        let Some(base_series) = self.series.first() else {
+            return false;
+        };
+
+        base_series.bars().iter().any(|bar| {
+            matches!(
+                base_series.indicator_data_for_panel_value_opt(panel_value, bar),
+                Some(IndicatorData::ScalarWithSignedOverlay { .. })
+            )
+        })
+    }
+
+    fn normalized_panel_splits(&self) -> Vec<f32> {
+        if self.panel_count() <= 1 {
+            Vec::new()
         } else {
-            self.panel_kinds
+            self.composition.normalized_splits(DEFAULT_MIN_PANEL_RATIO)
         }
     }
 
@@ -293,25 +321,44 @@ where
     }
 
     fn resolved_panel_title(&self, panel_index: usize, panel_kind: KlinePanelKind) -> Option<&str> {
-        self.panel_titles
+        self.composition
+            .panels
             .get(panel_index)
-            .and_then(|title| title.as_deref())
+            .and_then(|panel| panel.title.as_deref())
             .filter(|title| !title.is_empty())
             .or_else(|| Self::default_title_for_panel(panel_kind))
     }
 
     fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
-        self.panel_marks
-            .get(panel_index)
-            .copied()
+        let Some(panel_id) = self.panel_id(panel_index) else {
+            return Self::default_mark_for_panel(panel_kind);
+        };
+
+        self.composition
+            .panel_effective_mark_with_runtime(
+                panel_id,
+                self.panel_uses_signed_overlay_input(panel_index),
+            )
             .unwrap_or_else(|| Self::default_mark_for_panel(panel_kind))
     }
 
     fn resolved_panel_scale_mode(&self, panel_index: usize) -> PanelScaleMode {
-        self.panel_scale_modes
-            .get(panel_index)
-            .copied()
-            .unwrap_or(PanelScaleMode::Absolute)
+        let Some(panel) = self.composition.panels.get(panel_index) else {
+            return PanelScaleMode::Absolute;
+        };
+
+        let mut scale = self
+            .composition
+            .panel_effective_scale_mode(panel.id)
+            .unwrap_or(PanelScaleMode::Absolute);
+
+        if matches!(panel.value_id, Some(PanelValueId::Volume))
+            && matches!(scale, PanelScaleMode::Absolute)
+        {
+            scale = PanelScaleMode::FitVisibleIncludeZero;
+        }
+
+        scale
     }
 
     fn default_data_kind_for_panel(kind: KlinePanelKind) -> LayerDataKind {
@@ -326,9 +373,12 @@ where
         panel_index: usize,
         panel_kind: KlinePanelKind,
     ) -> LayerDataKind {
-        self.panel_data_kinds
-            .get(panel_index)
-            .copied()
+        let Some(panel_id) = self.panel_id(panel_index) else {
+            return Self::default_data_kind_for_panel(panel_kind);
+        };
+
+        self.composition
+            .panel_effective_data_kind(panel_id)
             .unwrap_or_else(|| Self::default_data_kind_for_panel(panel_kind))
     }
 
@@ -435,11 +485,12 @@ where
             }
 
             for (indicator_slot, indicator_panel) in scene.indicator_panels.iter().enumerate() {
-                let Some(indicator_value) =
-                    series.indicator_value_for_panel_opt(indicator_panel.panel_index, bar)
+                let Some(indicator_data) =
+                    series.indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
                 else {
                     continue;
                 };
+                let indicator_value = indicator_data.value();
                 let y_indicator_baseline = indicator_zero_baselines
                     .get(indicator_slot)
                     .copied()
@@ -467,10 +518,7 @@ where
                                     MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
                                 )
                             {
-                                if let Some(overlay) = series.indicator_overlay_value_for_panel_opt(
-                                    indicator_panel.panel_index,
-                                    bar,
-                                ) {
+                                if let Some(overlay) = indicator_data.signed_overlay() {
                                     let base_color = if overlay >= 0.0 {
                                         palette.success.base.color
                                     } else {
@@ -818,7 +866,7 @@ where
         _renderer: &Renderer,
         limits: &iced_layout::Limits,
     ) -> iced_layout::Node {
-        let panel_count = self.resolved_panel_kinds().len().max(1);
+        let panel_count = self.panel_count();
 
         let build_panel_stack = |stack_size: Size| {
             let plot_heights = self.panel_plot_heights(stack_size.height, panel_count);
@@ -920,7 +968,7 @@ where
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
                 let Some(layout_tree) =
-                    PanelLayoutTree::from_layout(layout, self.resolved_panel_kinds())
+                    PanelLayoutTree::from_layout(layout, &self.composition.panels)
                 else {
                     return;
                 };
@@ -1258,7 +1306,7 @@ where
             return advanced::mouse::Interaction::default();
         };
 
-        let Some(layout_tree) = PanelLayoutTree::from_layout(layout, self.resolved_panel_kinds())
+        let Some(layout_tree) = PanelLayoutTree::from_layout(layout, &self.composition.panels)
         else {
             return advanced::mouse::Interaction::default();
         };

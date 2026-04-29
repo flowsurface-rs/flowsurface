@@ -5,7 +5,7 @@ use super::{
     MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX,
 };
 use crate::widget::chart::kline::composition::{
-    BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode,
+    BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
 };
 
 use exchange::{Kline, Timeframe, UnixMs};
@@ -113,6 +113,7 @@ pub(super) struct CursorInfo {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct IndicatorPanelScene {
     pub(super) panel_index: usize,
+    pub(super) value_id: Option<PanelValueId>,
     pub(super) mark: MarkKind,
     pub(super) data_kind: LayerDataKind,
     pub(super) min_value: f32,
@@ -666,7 +667,7 @@ where
         x_axis: XAxis,
         min_x_unit: i64,
         max_x_unit: i64,
-        indicator_panel_index: usize,
+        panel_value_id: Option<PanelValueId>,
         data_kind: LayerDataKind,
         mark: MarkKind,
         scale_mode: PanelScaleMode,
@@ -684,10 +685,11 @@ where
                 return;
             }
 
-            let Some(value) = series.indicator_value_for_panel_opt(indicator_panel_index, bar)
+            let Some(indicator_data) = series.indicator_data_for_panel_value_opt(panel_value_id, bar)
             else {
                 return;
             };
+            let value = indicator_data.value();
 
             any = true;
             min_value = min_value.min(value);
@@ -698,8 +700,7 @@ where
                     mark,
                     MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
                 )
-                && let Some(overlay) =
-                    series.indicator_overlay_value_for_panel_opt(indicator_panel_index, bar)
+                && let Some(overlay) = indicator_data.signed_overlay()
             {
                 let overlay_abs = overlay.abs();
                 min_value = min_value.min(overlay_abs);
@@ -739,8 +740,7 @@ where
     }
 
     pub(super) fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
-        let panel_kinds = self.resolved_panel_kinds();
-        let panel_layout = PanelLayoutTree::from_layout(layout, panel_kinds)?;
+        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
         let primary_panel = panel_layout
             .panels
             .iter()
@@ -765,12 +765,13 @@ where
                 let data_kind =
                     self.resolved_panel_data_kind(panel_index, KlinePanelKind::Indicator);
                 let scale_mode = self.resolved_panel_scale_mode(panel_index);
+                let value_id = self.panel_value_id(panel_index);
                 let (min_value, max_value) = self
                     .compute_indicator_domain(
                         x_axis,
                         min_x_unit,
                         max_x_unit,
-                        panel_index,
+                        value_id,
                         data_kind,
                         mark,
                         scale_mode,
@@ -779,6 +780,7 @@ where
 
                 Some(IndicatorPanelScene {
                     panel_index,
+                    value_id,
                     mark,
                     data_kind,
                     min_value,

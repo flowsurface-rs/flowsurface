@@ -1,10 +1,11 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
-    LayerId, LayerSource, MarkKind, PanelId, PanelScaleMode,
+    LayerId, LayerSource, MarkKind, PanelId, PanelScaleMode, PanelValueId,
 };
 use crate::widget::chart::kline::{
-    DEFAULT_BAR_SPACING_PX, HorizontalScale, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
+    DEFAULT_BAR_SPACING_PX, HorizontalScale, IndicatorData, KlineSeriesLike, KlineWidget,
+    KlineWidgetEvent,
 };
 
 use data::chart::Basis;
@@ -24,11 +25,9 @@ const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
 
 mod indicator;
-mod panel_runtime;
 
 pub use indicator::IndicatorAvailability;
-use indicator::{AvailabilityContext, CvdInputProbe, IndicatorPanelRecipe, SeriesIndicatorData};
-use panel_runtime::{PanelRuntimeState, derive_panel_runtime_state};
+use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
 
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
@@ -53,7 +52,6 @@ pub struct KlineSeries {
     pub name: Option<String>,
     pub bars: Vec<Kline>,
     indicators: SeriesIndicatorData,
-    panel_indicators: Vec<Option<KlineIndicator>>,
 }
 
 impl KlineSeries {
@@ -63,13 +61,7 @@ impl KlineSeries {
             name: None,
             bars: Vec::new(),
             indicators: SeriesIndicatorData::default(),
-            panel_indicators: Vec::new(),
         }
-    }
-
-    fn set_panel_indicators(&mut self, panel_indicators: &[Option<KlineIndicator>]) {
-        self.panel_indicators.clear();
-        self.panel_indicators.extend_from_slice(panel_indicators);
     }
 
     fn oi_timerange(&self) -> Option<(UnixMs, UnixMs)> {
@@ -94,26 +86,36 @@ impl KlineSeriesLike for KlineSeries {
         f32::from(bar.volume.total())
     }
 
-    fn indicator_value_for_panel(&self, panel_index: usize, bar: &Kline) -> f32 {
-        self.indicator_value_for_panel_opt(panel_index, bar)
-            .unwrap_or(0.0)
-    }
-
-    fn indicator_value_for_panel_opt(&self, panel_index: usize, bar: &Kline) -> Option<f32> {
-        self.indicators.value_for_indicator(
-            self.panel_indicators.get(panel_index).copied().flatten(),
-            bar,
-        )
-    }
-
-    fn indicator_overlay_value_for_panel_opt(
+    fn indicator_data_for_panel_value_opt(
         &self,
-        panel_index: usize,
+        panel_value: Option<PanelValueId>,
         bar: &Kline,
-    ) -> Option<f32> {
-        match self.panel_indicators.get(panel_index).copied().flatten() {
-            Some(KlineIndicator::Volume) => self.indicators.volume_overlay_for_bar(bar),
-            _ => None,
+    ) -> Option<IndicatorData> {
+        let indicator = Self::indicator_for_panel_value(panel_value);
+        let value = self.indicators.value_for_indicator(indicator, bar)?;
+
+        if matches!(indicator, Some(KlineIndicator::Volume))
+            && let Some(signed_overlay) = self.indicators.volume_overlay_for_bar(bar)
+        {
+            Some(IndicatorData::ScalarWithSignedOverlay {
+                value,
+                signed_overlay,
+            })
+        } else {
+            Some(IndicatorData::Scalar(value))
+        }
+    }
+}
+
+impl KlineSeries {
+    fn indicator_for_panel_value(panel_value: Option<PanelValueId>) -> Option<KlineIndicator> {
+        match panel_value {
+            Some(PanelValueId::Volume) => Some(KlineIndicator::Volume),
+            Some(PanelValueId::OpenInterest) => Some(KlineIndicator::OpenInterest),
+            Some(PanelValueId::CumulativeVolumeDelta) => {
+                Some(KlineIndicator::CumulativeVolumeDelta)
+            }
+            None => None,
         }
     }
 }
@@ -124,7 +126,6 @@ pub struct KlineChartV2 {
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
     composition: ChartComposition,
-    panel_runtime: PanelRuntimeState,
     indicator_panels: EnumMap<KlineIndicator, Option<IndicatorPanelBinding>>,
     last_tick: Instant,
     cache_rev: u64,
@@ -157,7 +158,6 @@ impl KlineChartV2 {
             composition,
             cache_rev: 0,
             base_ticker,
-            panel_runtime: PanelRuntimeState::default(),
             indicator_panels: EnumMap::default(),
             last_tick: Instant::now(),
             selected_tickers: Vec::new(),
@@ -178,7 +178,6 @@ impl KlineChartV2 {
         chart.sync_primary_panel_comparison_sources();
 
         chart.install_default_indicator_panels();
-        chart.sync_widget_panel_layout();
         chart
     }
 
@@ -195,7 +194,6 @@ impl KlineChartV2 {
             .composition
             .set_panel_preferred_scale(primary_panel_id, scale)
         {
-            self.sync_widget_panel_layout();
             self.bump_rev();
             true
         } else {
@@ -212,7 +210,6 @@ impl KlineChartV2 {
             .composition
             .set_panel_layer_mark(panel_id, layer_id, mark)
         {
-            self.sync_widget_panel_layout();
             self.bump_rev();
             true
         } else {
@@ -229,7 +226,6 @@ impl KlineChartV2 {
             .composition
             .set_panel_layer_data_kind(panel_id, layer_id, data_kind)
         {
-            self.sync_widget_panel_layout();
             self.bump_rev();
             true
         } else {
@@ -246,7 +242,6 @@ impl KlineChartV2 {
             .composition
             .set_panel_layer_bar_mode(panel_id, layer_id, mode)
         {
-            self.sync_widget_panel_layout();
             self.bump_rev();
             true
         } else {
@@ -266,7 +261,6 @@ impl KlineChartV2 {
         };
 
         if changed {
-            self.sync_widget_panel_layout();
             self.bump_rev();
         }
 
@@ -288,7 +282,6 @@ impl KlineChartV2 {
 
         if self.add_ticker_state(*ticker_info) {
             self.sync_primary_panel_comparison_sources();
-            self.sync_widget_panel_layout();
             self.bump_rev();
         }
 
@@ -302,7 +295,6 @@ impl KlineChartV2 {
 
         if self.remove_ticker_state(*ticker_info) {
             self.sync_primary_panel_comparison_sources();
-            self.sync_widget_panel_layout();
             self.bump_rev();
         }
 
@@ -343,13 +335,11 @@ impl KlineChartV2 {
                         .composition
                         .set_split(index, split, DEFAULT_MIN_PANEL_RATIO)
                     {
-                        self.sync_widget_panel_layout();
                         self.bump_rev();
                     }
                 }
                 KlineWidgetEvent::PanelMoveUp { index } => {
                     if index > 0 && self.composition.move_panel(index, index - 1) {
-                        self.sync_widget_panel_layout();
                         self.bump_rev();
                     }
                 }
@@ -358,7 +348,6 @@ impl KlineChartV2 {
                     if target < self.composition.panels.len()
                         && self.composition.move_panel(index, target)
                     {
-                        self.sync_widget_panel_layout();
                         self.bump_rev();
                     }
                 }
@@ -370,7 +359,6 @@ impl KlineChartV2 {
                         && self.composition.remove_panel(panel_id)
                     {
                         self.prune_stale_indicator_panel_bindings();
-                        self.sync_widget_panel_layout();
                         self.bump_rev();
                     }
                 }
@@ -398,20 +386,14 @@ impl KlineChartV2 {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
 
-        let chart: iced::Element<_> = KlineWidget::new(&self.series, self.timeframe)
-            .with_basis(self.basis)
-            .with_horizontal_scale(self.horizontal_scale)
-            .with_horizontal_offset(self.horizontal_offset)
-            .with_panel_layout(&self.panel_runtime.kinds, &self.panel_runtime.splits)
-            .with_panel_titles(&self.panel_runtime.titles)
-            .with_panel_rendering(
-                &self.panel_runtime.marks,
-                &self.panel_runtime.scale_modes,
-                &self.panel_runtime.data_kinds,
-            )
-            .with_timezone(timezone)
-            .version(self.cache_rev)
-            .into();
+        let chart: iced::Element<_> =
+            KlineWidget::new(&self.series, self.timeframe, &self.composition)
+                .with_basis(self.basis)
+                .with_horizontal_scale(self.horizontal_scale)
+                .with_horizontal_offset(self.horizontal_offset)
+                .with_timezone(timezone)
+                .version(self.cache_rev)
+                .into();
 
         iced::widget::container(chart.map(Message::Chart))
             .padding(1)
@@ -431,8 +413,6 @@ impl KlineChartV2 {
             return;
         };
 
-        let had_signed_overlay = self.base_series_signed_overlay_capability();
-
         let incoming = self.klines_to_bars(klines);
 
         if incoming.is_empty() {
@@ -446,7 +426,6 @@ impl KlineChartV2 {
         trim_bars(&mut self.series[idx].bars);
         self.series[idx].refresh_indicator_inputs();
         self.enforce_indicator_availability();
-        self.sync_runtime_panel_layout_after_data_change(had_signed_overlay);
 
         if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
             handler.mark_completed(req_id);
@@ -459,8 +438,6 @@ impl KlineChartV2 {
             return;
         };
 
-        let had_signed_overlay = self.base_series_signed_overlay_capability();
-
         let incoming = self.klines_to_bars(klines);
 
         if incoming.is_empty() {
@@ -471,7 +448,6 @@ impl KlineChartV2 {
         trim_bars(&mut self.series[idx].bars);
         self.series[idx].refresh_indicator_inputs();
         self.enforce_indicator_availability();
-        self.sync_runtime_panel_layout_after_data_change(had_signed_overlay);
         self.bump_rev();
     }
 
@@ -479,8 +455,6 @@ impl KlineChartV2 {
         let Some(idx) = self.series_index.get(ticker_info).copied() else {
             return;
         };
-
-        let had_signed_overlay = self.base_series_signed_overlay_capability();
 
         let new_bar = Self::kline_to_bar(kline, self.basis, self.timeframe);
 
@@ -499,13 +473,10 @@ impl KlineChartV2 {
         trim_bars(&mut series.bars);
         series.refresh_indicator_inputs();
         self.enforce_indicator_availability();
-        self.sync_runtime_panel_layout_after_data_change(had_signed_overlay);
         self.bump_rev();
     }
 
     pub fn set_basis(&mut self, basis: Basis) -> Option<super::Action> {
-        let had_signed_overlay = self.base_series_signed_overlay_capability();
-
         self.basis = basis;
         self.timeframe = Self::timeframe_for_basis(basis);
 
@@ -515,7 +486,6 @@ impl KlineChartV2 {
         }
 
         self.enforce_indicator_availability();
-        self.sync_runtime_panel_layout_after_data_change(had_signed_overlay);
 
         self.rebuild_handlers();
         self.bump_rev();
@@ -578,6 +548,10 @@ impl KlineChartV2 {
                 let _ = self
                     .composition
                     .set_panel_preferred_scale(panel_id, preferred_scale);
+                let _ = self.composition.set_panel_value_id(
+                    panel_id,
+                    Some(Self::panel_value_id_for_indicator(indicator)),
+                );
                 panel_id
             }
         };
@@ -635,7 +609,6 @@ impl KlineChartV2 {
         }
 
         if changed {
-            self.sync_widget_panel_layout();
             self.bump_rev();
         }
     }
@@ -650,52 +623,11 @@ impl KlineChartV2 {
         }
     }
 
-    fn sync_widget_panel_layout(&mut self) {
-        self.prune_stale_indicator_panel_bindings();
-
-        self.panel_runtime = derive_panel_runtime_state(
-            &self.composition,
-            DEFAULT_MIN_PANEL_RATIO,
-            |panel_id| self.indicator_for_panel(panel_id),
-            |panel_indicator| self.panel_signed_overlay_input(panel_indicator),
-        );
-        self.sync_series_panel_indicator_map();
-    }
-
-    fn indicator_for_panel(&self, panel_id: PanelId) -> Option<KlineIndicator> {
-        indicator::all_indicators()
-            .iter()
-            .copied()
-            .find(|indicator| {
-                self.indicator_panels[*indicator]
-                    .map(|binding| binding.panel_id == panel_id)
-                    .unwrap_or(false)
-            })
-    }
-
-    fn sync_series_panel_indicator_map(&mut self) {
-        for series in &mut self.series {
-            series.set_panel_indicators(self.panel_runtime.panel_indicators());
-        }
-    }
-
-    fn panel_signed_overlay_input(&self, panel_indicator: Option<KlineIndicator>) -> bool {
-        match panel_indicator {
-            Some(KlineIndicator::Volume) => self.base_series_signed_overlay_capability(),
-            _ => false,
-        }
-    }
-
-    fn base_series_signed_overlay_capability(&self) -> bool {
-        self.series
-            .first()
-            .map(|series| matches!(series.indicators.cvd_probe(), CvdInputProbe::Complete))
-            .unwrap_or(false)
-    }
-
-    fn sync_runtime_panel_layout_after_data_change(&mut self, previous_signed_overlay: bool) {
-        if previous_signed_overlay != self.base_series_signed_overlay_capability() {
-            self.sync_widget_panel_layout();
+    fn panel_value_id_for_indicator(indicator: KlineIndicator) -> PanelValueId {
+        match indicator {
+            KlineIndicator::Volume => PanelValueId::Volume,
+            KlineIndicator::OpenInterest => PanelValueId::OpenInterest,
+            KlineIndicator::CumulativeVolumeDelta => PanelValueId::CumulativeVolumeDelta,
         }
     }
 
@@ -971,9 +903,7 @@ impl KlineChartV2 {
         }
 
         let idx = self.series.len();
-        let mut series = KlineSeries::new(ticker_info);
-        series.set_panel_indicators(self.panel_runtime.panel_indicators());
-        self.series.push(series);
+        self.series.push(KlineSeries::new(ticker_info));
         self.series_index.insert(ticker_info, idx);
         self.request_handlers
             .insert(ticker_info, RequestHandler::default());

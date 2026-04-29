@@ -123,6 +123,13 @@ pub enum PanelScaleMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelValueId {
+    Volume,
+    OpenInterest,
+    CumulativeVolumeDelta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelComparisonPolicy {
     pub force_percent_scale_on_multi_source: bool,
     pub force_line_for_non_base_sources: bool,
@@ -199,6 +206,7 @@ pub struct PanelSpec {
     pub id: PanelId,
     pub role: PanelRole,
     pub title: Option<String>,
+    pub value_id: Option<PanelValueId>,
     pub base_layer: Option<LayerId>,
     pub preferred_scale: PanelScaleMode,
     pub comparison_policy: PanelComparisonPolicy,
@@ -304,6 +312,7 @@ impl ChartComposition {
             id: main_panel_id,
             role: PanelRole::Primary,
             title: None,
+            value_id: None,
             base_layer: Some(candle_layer.id),
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -344,6 +353,56 @@ impl ChartComposition {
 
     pub fn panel_effective_scale_mode(&self, panel_id: PanelId) -> Option<PanelScaleMode> {
         self.panel(panel_id).map(PanelSpec::effective_scale_mode)
+    }
+
+    pub fn panel_effective_data_kind(&self, panel_id: PanelId) -> Option<LayerDataKind> {
+        let panel = self.panel(panel_id)?;
+
+        let fallback = match panel.role {
+            PanelRole::Primary => LayerDataKind::Ohlc,
+            PanelRole::Auxiliary => LayerDataKind::Scalar,
+        };
+
+        panel
+            .base_layer
+            .and_then(|base| panel.layers.iter().find(|layer| layer.id == base))
+            .or_else(|| panel.layers.first())
+            .map(|layer| layer.data_kind)
+            .or(Some(fallback))
+    }
+
+    pub fn panel_effective_mark_with_runtime(
+        &self,
+        panel_id: PanelId,
+        signed_overlay_input: bool,
+    ) -> Option<MarkKind> {
+        let panel = self.panel(panel_id)?;
+
+        let fallback = match panel.role {
+            PanelRole::Primary => default_mark_for_data_kind(LayerDataKind::Ohlc),
+            PanelRole::Auxiliary => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+        };
+
+        let base_layer_id = panel
+            .base_layer
+            .or_else(|| panel.layers.first().map(|layer| layer.id));
+
+        self.resolved_panel_marks_with_runtime(panel_id, signed_overlay_input)
+            .and_then(|resolved_marks| {
+                base_layer_id
+                    .and_then(|base| {
+                        resolved_marks
+                            .iter()
+                            .find(|(layer_id, _)| *layer_id == base)
+                            .map(|(_, mark)| *mark)
+                    })
+                    .or_else(|| resolved_marks.first().map(|(_, mark)| *mark))
+            })
+            .or(Some(fallback))
+    }
+
+    pub fn panel_value_id(&self, panel_id: PanelId) -> Option<PanelValueId> {
+        self.panel(panel_id).and_then(|panel| panel.value_id)
     }
 
     pub fn normalized_splits(&self, min_panel_ratio: f32) -> Vec<f32> {
@@ -436,6 +495,7 @@ impl ChartComposition {
             id: panel_id,
             role: PanelRole::Auxiliary,
             title: Some(title.into()),
+            value_id: None,
             base_layer,
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -501,6 +561,19 @@ impl ChartComposition {
         };
 
         panel.preferred_scale = scale;
+        true
+    }
+
+    pub fn set_panel_value_id(
+        &mut self,
+        panel_id: PanelId,
+        value_id: Option<PanelValueId>,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        panel.value_id = value_id;
         true
     }
 

@@ -555,9 +555,10 @@ where
                     });
                 }
             } else {
-                if let Some(value) =
-                    base_series.indicator_value_for_panel_opt(panel_index, base_bar)
+                if let Some(indicator_data) = base_series
+                    .indicator_data_for_panel_value_opt(self.panel_value_id(panel_index), base_bar)
                 {
+                    let value = indicator_data.value();
                     let text = data::util::format_with_commas(value);
 
                     frame.fill_text(canvas::Text {
