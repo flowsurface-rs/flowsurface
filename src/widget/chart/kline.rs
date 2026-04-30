@@ -48,6 +48,7 @@ const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
+const DRAWING_HIT_TOLERANCE_PX: f32 = 7.0;
 
 pub const DEFAULT_BAR_SPACING_PX: f32 = 8.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
@@ -424,8 +425,20 @@ pub enum KlineWidgetEvent {
     TickerSettings(TickerInfo),
     TickerRemove(TickerInfo),
     XAxisDoubleClick,
+    DrawingSelected(Option<DrawingId>),
     DrawingAnchorPressed(DrawingAnchor),
     DrawingAnchorMoved(DrawingAnchor),
+    DrawingDragStarted {
+        id: DrawingId,
+        anchor: DrawingAnchor,
+    },
+    DrawingDragMoved {
+        id: DrawingId,
+        anchor: DrawingAnchor,
+    },
+    DrawingDragFinished {
+        id: DrawingId,
+    },
     DrawingDraftCanceled,
 }
 
@@ -435,6 +448,7 @@ enum DragMode {
     Split(usize),
     AxisScale { panel_index: usize, anchor_y: f32 },
     Pan { panel_index: usize },
+    DrawingMove { id: DrawingId },
 }
 
 struct State {
@@ -791,6 +805,125 @@ where
 
             self.draw_drawing_object(frame, scene, &draft.preview_object(), style, false);
         }
+    }
+
+    fn point_segment_distance(point: Point, a: Point, b: Point) -> f32 {
+        let vx = b.x - a.x;
+        let vy = b.y - a.y;
+        let wx = point.x - a.x;
+        let wy = point.y - a.y;
+
+        let len_sq = vx * vx + vy * vy;
+        if len_sq <= f32::EPSILON {
+            return ((point.x - a.x).powi(2) + (point.y - a.y).powi(2)).sqrt();
+        }
+
+        let t = ((wx * vx + wy * vy) / len_sq).clamp(0.0, 1.0);
+        let proj_x = a.x + t * vx;
+        let proj_y = a.y + t * vy;
+
+        ((point.x - proj_x).powi(2) + (point.y - proj_y).powi(2)).sqrt()
+    }
+
+    fn drawing_hit_test_object(&self, scene: &Scene, object: &DrawingObject, point: Point) -> bool {
+        let tolerance = DRAWING_HIT_TOLERANCE_PX;
+
+        match object {
+            DrawingObject::Trendline { start, end } => {
+                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
+                    return false;
+                };
+                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                    return false;
+                };
+
+                Self::point_segment_distance(point, start_point, end_point) <= tolerance
+            }
+            DrawingObject::Box { start, end } => {
+                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
+                    return false;
+                };
+                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                    return false;
+                };
+
+                let left = start_point.x.min(end_point.x);
+                let right = start_point.x.max(end_point.x);
+                let top = start_point.y.min(end_point.y);
+                let bottom = start_point.y.max(end_point.y);
+
+                let within_expanded = point.x >= (left - tolerance)
+                    && point.x <= (right + tolerance)
+                    && point.y >= (top - tolerance)
+                    && point.y <= (bottom + tolerance);
+
+                if !within_expanded {
+                    return false;
+                }
+
+                let near_edge = (point.x - left).abs() <= tolerance
+                    || (point.x - right).abs() <= tolerance
+                    || (point.y - top).abs() <= tolerance
+                    || (point.y - bottom).abs() <= tolerance;
+
+                near_edge
+                    || (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom)
+            }
+            DrawingObject::HorizontalLine { panel_id, y_unit } => {
+                let Some(panel_index) = self.panel_index_for_id(*panel_id) else {
+                    return false;
+                };
+                let Some(panel) = scene.layout.panel(panel_index) else {
+                    return false;
+                };
+                let Some(bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
+                    return false;
+                };
+
+                let value_precision = self.panel_value_precision(panel_index);
+                let value = self.panel_unit_to_value(value_precision, *y_unit);
+                let y_plot = match panel.kind {
+                    KlinePanelKind::PrimaryChart => {
+                        scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
+                    }
+                    KlinePanelKind::Indicator => match scene.map_indicator_plot(panel_index, value)
+                    {
+                        Some(y) => y,
+                        None => return false,
+                    },
+                }
+                .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+                let y = scene.layout.regions.plot.y + y_plot;
+                point.x >= (bounds.x - tolerance)
+                    && point.x <= (bounds.x + bounds.width + tolerance)
+                    && (point.y - y).abs() <= tolerance
+            }
+            DrawingObject::VerticalLine { time } => {
+                let Some(x_unit) = self.x_unit_for_anchor_time(scene, *time) else {
+                    return false;
+                };
+
+                let plot = scene.layout.regions.plot;
+                let x = scene.layout.regions.plot.x
+                    + scene
+                        .map_x_plot(x_unit)
+                        .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
+
+                (point.x - x).abs() <= tolerance
+                    && point.y >= (plot.y - tolerance)
+                    && point.y <= (plot.y + plot.height + tolerance)
+            }
+        }
+    }
+
+    fn hit_test_drawings(&self, scene: &Scene, point: Point) -> Option<DrawingId> {
+        self.drawings
+            .iter()
+            .rev()
+            .filter(|drawing| drawing.visible)
+            .find(|drawing| self.drawing_hit_test_object(scene, &drawing.object, point))
+            .map(|drawing| drawing.id)
     }
 
     fn active_axis_labeled_object(&self) -> Option<DrawingObject> {
@@ -2287,6 +2420,10 @@ where
                 };
 
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
+                    if let DragMode::DrawingMove { id, .. } = state.drag_mode {
+                        shell.publish(M::from(KlineWidgetEvent::DrawingDragFinished { id }));
+                    }
+
                     if !matches!(state.drag_mode, DragMode::None) {
                         state.drag_mode = DragMode::None;
                         state.last_cursor = None;
@@ -2460,6 +2597,60 @@ where
                             return;
                         }
 
+                        if self.drawing_tool_allows_panning()
+                            && matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && let Some(scene) = self.compute_scene(layout, cursor)
+                        {
+                            let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
+
+                            if let Some(id) = hit_drawing {
+                                let was_selected = self.selected_drawing == Some(id);
+
+                                if !was_selected {
+                                    shell.publish(M::from(KlineWidgetEvent::DrawingSelected(
+                                        Some(id),
+                                    )));
+                                    state.drag_mode = DragMode::None;
+                                    state.last_cursor = None;
+                                    state.clear_overlay_caches();
+                                    state.clear_all_caches();
+                                    shell.capture_event();
+                                    return;
+                                }
+
+                                if let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
+                                {
+                                    shell.publish(M::from(KlineWidgetEvent::DrawingDragStarted {
+                                        id,
+                                        anchor,
+                                    }));
+                                    state.drag_mode = DragMode::DrawingMove { id };
+                                    state.last_cursor = Some(cursor_pos);
+                                    state.clear_overlay_caches();
+                                    state.clear_all_caches();
+                                    shell.capture_event();
+                                    return;
+                                }
+
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = Some(cursor_pos);
+                                state.clear_overlay_caches();
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+
+                            if self.selected_drawing.is_some() {
+                                shell.publish(M::from(KlineWidgetEvent::DrawingSelected(None)));
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = None;
+                                state.clear_overlay_caches();
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+                        }
+
                         if let LayoutHitZone::Splitter(split_index) = zone {
                             state.drag_mode = DragMode::Split(split_index);
                             state.last_cursor = Some(cursor_pos);
@@ -2503,6 +2694,13 @@ where
                         shell.capture_event();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
+                        if let DragMode::DrawingMove { id, .. } = state.drag_mode {
+                            shell.publish(M::from(KlineWidgetEvent::DrawingDragFinished { id }));
+                            state.clear_overlay_caches();
+                            state.clear_all_caches();
+                            shell.capture_event();
+                        }
+
                         state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                     }
@@ -2551,6 +2749,28 @@ where
                             }
 
                             state.last_cursor = Some(cursor_pos);
+                        } else if let DragMode::DrawingMove { id, .. } = state.drag_mode {
+                            if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                && Self::hit_panel_control(
+                                    &layout_tree,
+                                    &panel_controls,
+                                    cursor_pos,
+                                )
+                                .is_none()
+                                && ticker_legend_hit.is_none()
+                                && let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(new_anchor) =
+                                    self.drawing_anchor_from_scene_cursor(&scene)
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::DrawingDragMoved {
+                                    id,
+                                    anchor: new_anchor,
+                                }));
+                                state.last_cursor = Some(cursor_pos);
+                                state.clear_overlay_caches();
+                                state.clear_all_caches();
+                                shell.capture_event();
+                            }
                         } else if self.drawing_draft.is_some()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
@@ -2772,6 +2992,10 @@ where
             return advanced::mouse::Interaction::Grabbing;
         }
 
+        if matches!(state.drag_mode, DragMode::DrawingMove { .. }) {
+            return advanced::mouse::Interaction::Grabbing;
+        }
+
         let primary_panel = layout_tree
             .panels
             .iter()
@@ -2799,6 +3023,18 @@ where
         }
 
         if Self::hit_panel_control(&layout_tree, &panel_controls, cursor_local).is_some() {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
+        if self.drawing_tool_allows_panning()
+            && matches!(zone, LayoutHitZone::PanelPlot(_))
+            && let Some(scene) = self.compute_scene(layout, cursor)
+            && let Some(hit_id) = self.hit_test_drawings(&scene, cursor_local)
+        {
+            if self.selected_drawing == Some(hit_id) {
+                return advanced::mouse::Interaction::Grab;
+            }
+
             return advanced::mouse::Interaction::Pointer;
         }
 

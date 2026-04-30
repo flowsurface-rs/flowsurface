@@ -1,4 +1,5 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::style;
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
     LayerId, LayerSource, MarkKind, PanelId, PanelScaleMode, PanelValueId,
@@ -8,7 +9,7 @@ use crate::widget::chart::kline::{
     DrawingDraft, DrawingEntity, DrawingId, DrawingObject, DrawingStyle, DrawingTool,
     HorizontalScale, IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
     OverlayChannelColorRole, OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY,
-    RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY,
+    RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY, YUnit,
 };
 
 use data::chart::Basis;
@@ -27,7 +28,8 @@ const DEFAULT_FETCH_BARS: u64 = 500;
 const MAX_AUTO_INDICATOR_WARMUP_BARS: u64 = 2000;
 const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
-const DRAWING_SIDEBAR_WIDTH: f32 = 42.0;
+const DRAWING_SIDEBAR_WIDTH: f32 = 36.0;
+const DRAWING_DETAILS_SIDEBAR_WIDTH: f32 = 108.0;
 
 const BOLLINGER_OVERLAY_CHANNELS: [OverlayChannelSpec; 3] = [
     OverlayChannelSpec {
@@ -101,9 +103,22 @@ enum IndicatorPanelBinding {
 }
 
 #[derive(Debug, Clone)]
+struct DrawingDragState {
+    id: DrawingId,
+    origin_anchor: DrawingAnchor,
+    origin_object: DrawingObject,
+}
+
+#[derive(Debug, Clone)]
 pub enum Message {
     Chart(KlineWidgetEvent),
     SelectDrawingTool(DrawingTool),
+    SelectedDrawingBorderColor,
+    SelectedDrawingFillColor,
+    SelectedDrawingBorderWidth,
+    SelectedDrawingLineColor,
+    SelectedDrawingLineWidth,
+    DeleteSelectedDrawing,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +245,7 @@ pub struct KlineChartV2 {
     active_drawing_tool: DrawingTool,
     drawings: Vec<DrawingEntity>,
     selected_drawing: Option<DrawingId>,
+    drawing_drag: Option<DrawingDragState>,
     drawing_draft: Option<DrawingDraft>,
     next_drawing_id: u64,
     pub series: Vec<KlineSeries>,
@@ -268,6 +284,7 @@ impl KlineChartV2 {
             active_drawing_tool: DrawingTool::Cursor,
             drawings: Vec::new(),
             selected_drawing: None,
+            drawing_drag: None,
             drawing_draft: None,
             next_drawing_id: 1,
             series: Vec::new(),
@@ -455,9 +472,20 @@ impl KlineChartV2 {
             Message::SelectDrawingTool(tool) => {
                 if self.active_drawing_tool != tool {
                     self.active_drawing_tool = tool;
+                    self.drawing_drag = None;
                     self.drawing_draft = None;
                     self.bump_rev();
                 }
+            }
+            Message::SelectedDrawingBorderColor
+            | Message::SelectedDrawingFillColor
+            | Message::SelectedDrawingBorderWidth
+            | Message::SelectedDrawingLineColor
+            | Message::SelectedDrawingLineWidth => {
+                // Placeholder controls for upcoming drawing style editor.
+            }
+            Message::DeleteSelectedDrawing => {
+                let _ = self.remove_selected_drawing();
             }
             Message::Chart(event) => match event {
                 KlineWidgetEvent::HorizontalScaleChanged(scale) => {
@@ -524,6 +552,9 @@ impl KlineChartV2 {
                     self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
                     self.bump_rev();
                 }
+                KlineWidgetEvent::DrawingSelected(selected) => {
+                    let _ = self.select_drawing(selected);
+                }
                 KlineWidgetEvent::DrawingAnchorPressed(anchor) => {
                     if self.drawing_draft.is_some() {
                         if self.commit_drawing_draft(anchor).is_some() {
@@ -539,6 +570,15 @@ impl KlineChartV2 {
                 KlineWidgetEvent::DrawingAnchorMoved(anchor) => {
                     let _ = self.update_drawing_draft_anchor(anchor);
                 }
+                KlineWidgetEvent::DrawingDragStarted { id, anchor } => {
+                    let _ = self.start_drawing_drag(id, anchor);
+                }
+                KlineWidgetEvent::DrawingDragMoved { id, anchor } => {
+                    let _ = self.update_drawing_drag(id, anchor);
+                }
+                KlineWidgetEvent::DrawingDragFinished { id } => {
+                    let _ = self.finish_drawing_drag(id);
+                }
                 KlineWidgetEvent::DrawingDraftCanceled => {
                     let _ = self.cancel_drawing_draft();
                 }
@@ -553,7 +593,7 @@ impl KlineChartV2 {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
 
-        let drawing_tools = self.view_drawing_tools();
+        let drawing_sidebar = self.view_drawing_sidebar();
         let chart: iced::Element<_> =
             KlineWidget::new(&self.series, self.timeframe, &self.composition)
                 .with_basis(self.basis)
@@ -573,7 +613,136 @@ impl KlineChartV2 {
             .height(iced::Length::Fill)
             .padding(1);
 
-        iced::widget::row![drawing_tools, chart].spacing(4).into()
+        iced::widget::row![drawing_sidebar.padding(4), chart].into()
+    }
+
+    fn view_drawing_sidebar(&self) -> iced::widget::Container<'_, Message> {
+        if let Some(drawing) = self.selected_drawing_entity() {
+            self.view_selected_drawing_sidebar(drawing)
+        } else {
+            self.view_drawing_tools()
+        }
+    }
+
+    fn selected_drawing_entity(&self) -> Option<&DrawingEntity> {
+        let selected = self.selected_drawing?;
+        self.drawings.iter().find(|drawing| drawing.id == selected)
+    }
+
+    fn drawing_object_title(object: &DrawingObject) -> &'static str {
+        match object {
+            DrawingObject::Box { .. } => "Box",
+            DrawingObject::Trendline { .. } => "Trendline",
+            DrawingObject::HorizontalLine { .. } => "Horizontal Line",
+            DrawingObject::VerticalLine { .. } => "Vertical Line",
+        }
+    }
+
+    fn view_selected_drawing_sidebar(
+        &self,
+        drawing: &DrawingEntity,
+    ) -> iced::widget::Container<'_, Message> {
+        let mut details = iced::widget::Column::new()
+            .spacing(4)
+            .push(iced::widget::text(Self::drawing_object_title(&drawing.object)).size(13))
+            .push(iced::widget::rule::horizontal(1.0))
+            .align_x(iced::Alignment::Center);
+
+        match drawing.object {
+            DrawingObject::Box { .. } => {
+                details = details
+                    .push(
+                        iced::widget::button(
+                            iced::widget::text("Border Color").align_x(iced::Alignment::Center),
+                        )
+                        .style(|theme, status| style::button::transparent(theme, status, false))
+                        .width(iced::Length::Fill)
+                        .on_press(Message::SelectedDrawingBorderColor),
+                    )
+                    .push(
+                        iced::widget::button(
+                            iced::widget::text("Fill Color").align_x(iced::Alignment::Center),
+                        )
+                        .style(|theme, status| style::button::transparent(theme, status, false))
+                        .width(iced::Length::Fill)
+                        .on_press(Message::SelectedDrawingFillColor),
+                    )
+                    .push(
+                        iced::widget::button(
+                            iced::widget::text("Border Width").align_x(iced::Alignment::Center),
+                        )
+                        .style(|theme, status| style::button::transparent(theme, status, false))
+                        .width(iced::Length::Fill)
+                        .on_press(Message::SelectedDrawingBorderWidth),
+                    );
+            }
+            DrawingObject::Trendline { .. }
+            | DrawingObject::HorizontalLine { .. }
+            | DrawingObject::VerticalLine { .. } => {
+                details = details
+                    .push(
+                        iced::widget::button(
+                            iced::widget::text("Line Color").align_x(iced::Alignment::Center),
+                        )
+                        .style(|theme, status| style::button::transparent(theme, status, false))
+                        .width(iced::Length::Fill)
+                        .on_press(Message::SelectedDrawingLineColor),
+                    )
+                    .push(
+                        iced::widget::button(
+                            iced::widget::text("Line Width").align_x(iced::Alignment::Center),
+                        )
+                        .style(|theme, status| style::button::transparent(theme, status, false))
+                        .width(iced::Length::Fill)
+                        .on_press(Message::SelectedDrawingLineWidth),
+                    );
+            }
+        }
+
+        details = details.push(
+            iced::widget::button(iced::widget::text("Delete").align_x(iced::Alignment::Center))
+                .style(|theme, status| style::button::cancel(theme, status, false))
+                .width(iced::Length::Fill)
+                .on_press(Message::DeleteSelectedDrawing),
+        );
+
+        iced::widget::container(details)
+            .style(style::chart_sidebar_container)
+            .width(DRAWING_DETAILS_SIDEBAR_WIDTH)
+            .height(iced::Length::Fill)
+    }
+
+    fn view_drawing_tools(&self) -> iced::widget::Container<'_, Message> {
+        let mut tools = iced::widget::Column::new().spacing(6);
+
+        for tool in Self::drawing_tools().iter().copied() {
+            let selected = self.active_drawing_tool == tool;
+            let label = match tool {
+                DrawingTool::Cursor => "C",
+                DrawingTool::HorizontalLine => "H",
+                DrawingTool::VerticalLine => "V",
+                DrawingTool::Trendline => "TL",
+                DrawingTool::Box => "B",
+            }
+            .to_string();
+
+            let btn =
+                iced::widget::button(iced::widget::text(label).align_x(iced::Alignment::Center))
+                    .style(move |theme, status| style::button::transparent(theme, status, selected))
+                    .width(iced::Length::Fill);
+
+            tools = tools.push(if selected {
+                btn
+            } else {
+                btn.on_press(Message::SelectDrawingTool(tool))
+            });
+        }
+
+        iced::widget::container(tools)
+            .style(style::chart_sidebar_container)
+            .width(DRAWING_SIDEBAR_WIDTH)
+            .height(iced::Length::Fill)
+            .padding([4, 2])
     }
 
     fn drawing_tools() -> &'static [DrawingTool] {
@@ -584,39 +753,6 @@ impl KlineChartV2 {
             DrawingTool::HorizontalLine,
             DrawingTool::VerticalLine,
         ]
-    }
-
-    fn drawing_tool_label(tool: DrawingTool) -> &'static str {
-        match tool {
-            DrawingTool::Cursor => "C",
-            DrawingTool::Trendline => "TL",
-            DrawingTool::Box => "B",
-            DrawingTool::HorizontalLine => "H",
-            DrawingTool::VerticalLine => "V",
-        }
-    }
-
-    fn view_drawing_tools(&self) -> iced::widget::Container<'_, Message> {
-        let mut tools = iced::widget::Column::new().spacing(6);
-
-        for tool in Self::drawing_tools().iter().copied() {
-            let selected = self.active_drawing_tool == tool;
-            let label = if selected {
-                format!("[{}]", Self::drawing_tool_label(tool))
-            } else {
-                Self::drawing_tool_label(tool).to_string()
-            };
-
-            tools = tools.push(
-                iced::widget::button(iced::widget::text(label).size(11))
-                    .width(iced::Length::Fill)
-                    .on_press(Message::SelectDrawingTool(tool)),
-            );
-        }
-
-        iced::widget::container(tools)
-            .width(DRAWING_SIDEBAR_WIDTH)
-            .padding([4, 2])
     }
 
     pub fn drawings(&self) -> &[DrawingEntity] {
@@ -643,6 +779,7 @@ impl KlineChartV2 {
         }
 
         self.selected_drawing = selected;
+        self.drawing_drag = None;
         self.bump_rev();
         true
     }
@@ -668,6 +805,14 @@ impl KlineChartV2 {
         if self.selected_drawing == Some(id) {
             self.selected_drawing = None;
         }
+        if self
+            .drawing_drag
+            .as_ref()
+            .map(|drag| drag.id == id)
+            .unwrap_or(false)
+        {
+            self.drawing_drag = None;
+        }
 
         self.bump_rev();
         true
@@ -687,6 +832,7 @@ impl KlineChartV2 {
                     style: Self::style_for_tool(DrawingTool::Trendline),
                 });
                 self.selected_drawing = None;
+                self.drawing_drag = None;
                 self.bump_rev();
                 true
             }
@@ -697,6 +843,7 @@ impl KlineChartV2 {
                     style: Self::style_for_tool(DrawingTool::Box),
                 });
                 self.selected_drawing = None;
+                self.drawing_drag = None;
                 self.bump_rev();
                 true
             }
@@ -753,6 +900,138 @@ impl KlineChartV2 {
         true
     }
 
+    fn drawing_index(&self, id: DrawingId) -> Option<usize> {
+        self.drawings.iter().position(|drawing| drawing.id == id)
+    }
+
+    fn start_drawing_drag(&mut self, id: DrawingId, anchor: DrawingAnchor) -> bool {
+        let Some(index) = self.drawing_index(id) else {
+            self.drawing_drag = None;
+            return false;
+        };
+
+        let drawing = &self.drawings[index];
+        if drawing.locked || !drawing.visible {
+            self.drawing_drag = None;
+            return false;
+        }
+
+        self.selected_drawing = Some(id);
+        self.drawing_drag = Some(DrawingDragState {
+            id,
+            origin_anchor: anchor,
+            origin_object: drawing.object.clone(),
+        });
+        true
+    }
+
+    fn update_drawing_drag(&mut self, id: DrawingId, anchor: DrawingAnchor) -> bool {
+        let Some(drag_state) = self
+            .drawing_drag
+            .as_ref()
+            .filter(|drag| drag.id == id)
+            .cloned()
+        else {
+            return false;
+        };
+
+        let Some(index) = self.drawing_index(id) else {
+            self.drawing_drag = None;
+            return false;
+        };
+
+        if anchor.panel_id != drag_state.origin_anchor.panel_id {
+            return false;
+        }
+
+        if self.drawings[index].locked {
+            self.drawing_drag = None;
+            return false;
+        }
+
+        let moved = Self::translated_drawing_object(
+            &drag_state.origin_object,
+            drag_state.origin_anchor,
+            anchor,
+        );
+
+        if self.drawings[index].object == moved {
+            return false;
+        }
+
+        self.drawings[index].object = moved;
+        self.selected_drawing = Some(id);
+        self.bump_rev();
+        true
+    }
+
+    fn finish_drawing_drag(&mut self, id: DrawingId) -> bool {
+        if self
+            .drawing_drag
+            .as_ref()
+            .map(|drag| drag.id == id)
+            .unwrap_or(false)
+        {
+            self.drawing_drag = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn translated_drawing_object(
+        object: &DrawingObject,
+        origin_anchor: DrawingAnchor,
+        current_anchor: DrawingAnchor,
+    ) -> DrawingObject {
+        let delta_ms =
+            (current_anchor.time.as_u64() as i128) - (origin_anchor.time.as_u64() as i128);
+        let delta_y = current_anchor
+            .y_unit
+            .0
+            .saturating_sub(origin_anchor.y_unit.0);
+
+        match object {
+            DrawingObject::Trendline { start, end } => DrawingObject::Trendline {
+                start: Self::shift_anchor_by_delta(*start, delta_ms, delta_y),
+                end: Self::shift_anchor_by_delta(*end, delta_ms, delta_y),
+            },
+            DrawingObject::Box { start, end } => DrawingObject::Box {
+                start: Self::shift_anchor_by_delta(*start, delta_ms, delta_y),
+                end: Self::shift_anchor_by_delta(*end, delta_ms, delta_y),
+            },
+            DrawingObject::HorizontalLine { panel_id, y_unit } => DrawingObject::HorizontalLine {
+                panel_id: *panel_id,
+                y_unit: Self::shift_y_by_delta(*y_unit, delta_y),
+            },
+            DrawingObject::VerticalLine { time } => DrawingObject::VerticalLine {
+                time: Self::shift_time_by_delta_ms(*time, delta_ms),
+            },
+        }
+    }
+
+    fn shift_anchor_by_delta(anchor: DrawingAnchor, delta_ms: i128, delta_y: i64) -> DrawingAnchor {
+        DrawingAnchor {
+            panel_id: anchor.panel_id,
+            time: Self::shift_time_by_delta_ms(anchor.time, delta_ms),
+            y_unit: Self::shift_y_by_delta(anchor.y_unit, delta_y),
+        }
+    }
+
+    fn shift_y_by_delta(y_unit: YUnit, delta_y: i64) -> YUnit {
+        YUnit(y_unit.0.saturating_add(delta_y))
+    }
+
+    fn shift_time_by_delta_ms(time: UnixMs, delta_ms: i128) -> UnixMs {
+        if delta_ms >= 0 {
+            let add_ms = delta_ms.min(u64::MAX as i128) as u64;
+            time.saturating_add(add_ms)
+        } else {
+            let sub_ms = delta_ms.unsigned_abs().min(u64::MAX as u128) as u64;
+            time.saturating_sub(sub_ms)
+        }
+    }
+
     fn style_for_tool(tool: DrawingTool) -> DrawingStyle {
         let mut style = DrawingStyle::default();
 
@@ -793,6 +1072,7 @@ impl KlineChartV2 {
         });
 
         self.selected_drawing = Some(id);
+        self.drawing_drag = None;
         self.drawing_draft = None;
         self.bump_rev();
         id

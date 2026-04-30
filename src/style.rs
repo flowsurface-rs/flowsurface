@@ -568,6 +568,22 @@ pub fn colored_circle_container(theme: &Theme, color: iced::Color) -> Style {
     }
 }
 
+pub fn chart_sidebar_container(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        background: {
+            if palette.is_dark {
+                Some(palette.background.weak.color.scale_alpha(0.2).into())
+            } else {
+                Some(palette.background.strong.color.scale_alpha(0.2).into())
+            }
+        },
+        snap: true,
+        ..Default::default()
+    }
+}
+
 pub fn dragger_row_container(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
