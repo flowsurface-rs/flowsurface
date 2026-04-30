@@ -1,4 +1,6 @@
-use super::chrome::{PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout};
+use super::chrome::{
+    CornerControlHit, PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
+};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
     BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
@@ -144,9 +146,11 @@ pub(super) struct Scene {
     pub(super) series_percent_anchors: Vec<Option<f32>>,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
     pub(super) panel_controls: Vec<PanelControlHit>,
+    pub(super) corner_controls: Vec<CornerControlHit>,
     pub(super) ticker_legend: Option<TickerLegendLayout>,
     pub(super) controls_visible_for_panel: Option<usize>,
     pub(super) hovered_control: Option<PanelControlHit>,
+    pub(super) hovered_corner_control: Option<CornerControlHit>,
     pub(super) hovering_ticker_legend: bool,
     pub(super) hovered_ticker_row: Option<usize>,
     pub(super) hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
@@ -267,16 +271,22 @@ impl Scene {
         self.bar_spacing_px
     }
 
+    pub(super) fn x_axis_plot_width(&self) -> f32 {
+        (self.layout.regions.x_axis.width - self.layout.regions.y_axis.width)
+            .max(1.0)
+            .min(self.primary_plot().width.max(1.0))
+    }
+
     fn plot_right_edge_px(&self) -> f32 {
-        self.primary_plot().width.floor().max(1.0)
+        self.x_axis_plot_width().floor().max(1.0)
     }
 
     pub(super) fn map_x_plot(&self, x_unit: i64) -> f32 {
-        let steps_from_right = self.max_x_unit.saturating_sub(x_unit);
-        let right_edge_px = self.plot_right_edge_px() as i64;
-        let spacing_px = i64::from(self.bar_spacing_px.as_i32());
-        let offset_px = steps_from_right.saturating_mul(spacing_px);
-        right_edge_px.saturating_sub(offset_px) as f32
+        let steps_from_right = (self.max_x_unit as i128) - (x_unit as i128);
+        let right_edge_px = self.plot_right_edge_px();
+        let spacing_px = self.bar_spacing_px.as_f32().max(1.0);
+
+        right_edge_px - (steps_from_right as f32 * spacing_px)
     }
 
     pub(super) fn x_unit_for_time(&self, time: UnixMs) -> Option<i64> {
@@ -1035,13 +1045,18 @@ where
         let primary_plot = panel_layout.panel(primary_panel)?.plot;
         let bar_spacing_px = self.render_bar_spacing_px();
 
-        let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window(primary_plot.width)?;
+        let x_axis_plot_width = (panel_layout.regions.x_axis.width
+            - panel_layout.regions.y_axis.width)
+            .max(1.0)
+            .min(primary_plot.width.max(1.0));
+
+        let (x_axis, min_x_unit, max_x_unit) = self.compute_x_window(x_axis_plot_width)?;
         let primary_value_precision = self.panel_value_precision(primary_panel);
         let (mut min_primary_unit, mut max_primary_unit) =
             self.compute_primary_domain(x_axis, min_x_unit, max_x_unit, primary_value_precision)?;
 
         if let Some(viewport) = self.panel_y_viewport_for_index(primary_panel)
-            && !matches!(primary_scale_mode, PanelScaleMode::PercentFromBase)
+            && !self.primary_autoscale_enabled_for_mode(primary_scale_mode)
         {
             let view_min_unit =
                 self.panel_value_to_unit(primary_value_precision, viewport.min_value);
@@ -1123,9 +1138,13 @@ where
                 &anchors,
             )?;
 
+            // Keep a stable primary anchor for interactions (drawings/cursor),
+            // while multi-source rendering still uses per-series anchors.
+            let base_anchor = anchors.first().copied().flatten();
+
             series_percent_anchors = anchors;
             primary_domain_display_override = Some((min_display, max_display));
-            None
+            base_anchor
         } else if matches!(primary_scale_mode, PanelScaleMode::PercentFromBase) {
             self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit)
         } else {
@@ -1142,6 +1161,7 @@ where
             .unwrap_or(false);
 
         let panel_controls = self.build_panel_control_hits(&panel_layout, primary_panel);
+        let corner_controls = self.build_corner_control_hits(&panel_layout, primary_scale_mode);
         let ticker_legend = self.build_ticker_legend_layout(
             &panel_layout,
             primary_panel,
@@ -1171,9 +1191,11 @@ where
             series_percent_anchors,
             indicator_panels,
             panel_controls,
+            corner_controls,
             ticker_legend,
             controls_visible_for_panel: None,
             hovered_control: None,
+            hovered_corner_control: None,
             hovering_ticker_legend: false,
             hovered_ticker_row: None,
             hovered_ticker_icon: None,
@@ -1183,6 +1205,7 @@ where
         if let Some(local) = cursor_root_local {
             scene.hovered_control =
                 Self::hit_panel_control(&scene.layout, &scene.panel_controls, local);
+            scene.hovered_corner_control = Self::hit_corner_control(&scene.corner_controls, local);
 
             let mut legend_hit = scene
                 .ticker_legend

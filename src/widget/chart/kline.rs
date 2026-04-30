@@ -399,6 +399,8 @@ pub enum KlinePanelKind {
 pub enum KlineWidgetEvent {
     HorizontalScaleChanged(HorizontalScale),
     HorizontalOffsetChanged(f32),
+    PrimaryAutoscaleToggled,
+    PrimaryScaleModeCycleRequested,
     PanelYViewportChanged {
         panel_id: PanelId,
         viewport: PanelYViewport,
@@ -502,6 +504,7 @@ pub struct KlineWidget<'a, S> {
     basis: Basis,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
+    primary_autoscale: bool,
     active_drawing_tool: DrawingTool,
     panel_y_viewports: &'a [(PanelId, PanelYViewport)],
     timezone: UserTimezone,
@@ -522,6 +525,7 @@ where
             basis: Basis::Time(timeframe),
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: 0.0,
+            primary_autoscale: false,
             active_drawing_tool: DrawingTool::Cursor,
             panel_y_viewports: &[],
             timezone: UserTimezone::Utc,
@@ -536,6 +540,11 @@ where
 
     pub fn with_horizontal_offset(mut self, offset: f32) -> Self {
         self.horizontal_offset = offset;
+        self
+    }
+
+    pub fn with_primary_autoscale(mut self, autoscale: bool) -> Self {
+        self.primary_autoscale = autoscale;
         self
     }
 
@@ -1103,10 +1112,14 @@ where
 
     fn panel_accepts_manual_y_from_scene(&self, scene: &Scene, panel_index: usize) -> bool {
         if panel_index == scene.primary_panel {
-            !matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+            !self.primary_autoscale_enabled_for_mode(scene.primary_scale_mode)
         } else {
             true
         }
+    }
+
+    fn primary_autoscale_enabled_for_mode(&self, mode: PanelScaleMode) -> bool {
+        self.primary_autoscale || matches!(mode, PanelScaleMode::PercentFromBase)
     }
 
     fn panel_value_domain_from_scene(
@@ -1118,7 +1131,9 @@ where
 
         match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                if !self.panel_accepts_manual_y_from_scene(scene, panel_index) {
+                if panel_index == scene.primary_panel
+                    && matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+                {
                     return None;
                 }
 
@@ -1156,7 +1171,9 @@ where
             return None;
         }
 
-        if !self.panel_accepts_manual_y_from_scene(scene, panel_index) {
+        if panel_index == scene.primary_panel
+            && matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+        {
             return None;
         }
 
@@ -2144,7 +2161,7 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let plot_width = scene.primary_plot().width;
+        let plot_width = scene.x_axis_plot_width();
         let (ticks, step_units) = super::unit_ticks(
             scene.min_x_unit,
             scene.max_x_unit,
@@ -2152,26 +2169,46 @@ where
             MIN_X_TICK_PX.max(40.0),
         );
 
-        for tick in ticks {
-            let x = scene.map_x_plot(tick);
-            if x < 0.0 || x > plot_width {
-                continue;
-            }
+        let mut ticks_with_bounds = Vec::with_capacity(ticks.len().saturating_add(2));
 
-            frame.fill_text(canvas::Text {
-                content: self.format_x_label(scene.x_axis, tick, step_units),
-                position: Point::new(x + 2.0, scene.layout.regions.x_axis.height / 2.0),
-                color: palette.background.base.text,
-                size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
+        if let Some(first) = ticks.first().copied() {
+            ticks_with_bounds.push(first.saturating_sub(step_units));
         }
+
+        ticks_with_bounds.extend(ticks);
+
+        if let Some(last) = ticks_with_bounds.last().copied() {
+            ticks_with_bounds.push(last.saturating_add(step_units));
+        }
+
+        let clip_region = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: plot_width,
+            height: scene.layout.regions.x_axis.height,
+        };
+
+        frame.with_clip(clip_region, |frame| {
+            for tick in ticks_with_bounds {
+                let x = scene.map_x_plot(tick);
+                let label = self.format_x_label(scene.x_axis, tick, step_units);
+
+                frame.fill_text(canvas::Text {
+                    content: label,
+                    position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
+                    color: palette.background.base.text,
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::Center.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
+        });
     }
 
     fn fill_overlay(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        self.fill_corner_controls(frame, scene, palette);
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette);
 
@@ -2184,7 +2221,10 @@ where
             self.fill_drawings(frame, scene);
         }
 
-        if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
+        if scene.hovered_control.is_some()
+            || scene.hovered_corner_control.is_some()
+            || scene.hovering_ticker_legend
+        {
             return;
         }
 
@@ -2240,7 +2280,10 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        if scene.hovered_control.is_some() || scene.hovering_ticker_legend {
+        if scene.hovered_control.is_some()
+            || scene.hovered_corner_control.is_some()
+            || scene.hovering_ticker_legend
+        {
             return;
         }
 
@@ -2439,6 +2482,9 @@ where
                     .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)
                     .unwrap_or(0);
                 let panel_controls = self.build_panel_control_hits(&layout_tree, primary_panel);
+                let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
+                let corner_controls =
+                    self.build_corner_control_hits(&layout_tree, primary_scale_mode);
                 let show_legend_values = matches!(zone, LayoutHitZone::PanelPlot(_));
                 let mut ticker_legend = self.build_ticker_legend_layout(
                     &layout_tree,
@@ -2477,6 +2523,11 @@ where
                                     cursor_pos,
                                 )
                                 .is_some()
+                                {
+                                    return;
+                                }
+
+                                if Self::hit_corner_control(&corner_controls, cursor_pos).is_some()
                                 {
                                     return;
                                 }
@@ -2579,6 +2630,17 @@ where
                             return;
                         }
 
+                        if let Some(control) =
+                            Self::hit_corner_control(&corner_controls, cursor_pos)
+                        {
+                            shell.publish(M::from(control.kind.into_event()));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
                         if ticker_legend_hit.is_some() {
                             state.drag_mode = DragMode::None;
                             state.last_cursor = None;
@@ -2601,6 +2663,12 @@ where
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && let Some(scene) = self.compute_scene(layout, cursor)
                         {
+                            if Self::hit_corner_control(&corner_controls, cursor_pos).is_some() {
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = None;
+                                return;
+                            }
+
                             let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
 
                             if let Some(id) = hit_drawing {
@@ -2757,6 +2825,7 @@ where
                                     cursor_pos,
                                 )
                                 .is_none()
+                                && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
                                 && ticker_legend_hit.is_none()
                                 && let Some(scene) = self.compute_scene(layout, cursor)
                                 && let Some(new_anchor) =
@@ -2775,6 +2844,7 @@ where
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                                 .is_none()
+                            && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
                             && ticker_legend_hit.is_none()
                             && let Some(anchor) =
                                 self.drawing_anchor_from_layout_cursor(layout, cursor)
@@ -2784,6 +2854,11 @@ where
                             state.clear_overlay_caches();
                             shell.capture_event();
                         } else if let DragMode::Pan { panel_index } = state.drag_mode {
+                            if Self::hit_corner_control(&corner_controls, cursor_pos).is_some() {
+                                state.last_cursor = Some(cursor_pos);
+                                return;
+                            }
+
                             let prev = state.last_cursor.unwrap_or(cursor_pos);
                             let dx_px = cursor_pos.x - prev.x;
                             let dy_px = cursor_pos.y - prev.y;
@@ -3003,6 +3078,8 @@ where
             .unwrap_or(0);
         let zone = layout_tree.hit_test(cursor_local);
         let panel_controls = self.build_panel_control_hits(&layout_tree, primary_panel);
+        let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
+        let corner_controls = self.build_corner_control_hits(&layout_tree, primary_scale_mode);
         let show_legend_values = matches!(zone, LayoutHitZone::PanelPlot(_));
         let mut ticker_legend =
             self.build_ticker_legend_layout(&layout_tree, primary_panel, show_legend_values, false);
@@ -3023,6 +3100,10 @@ where
         }
 
         if Self::hit_panel_control(&layout_tree, &panel_controls, cursor_local).is_some() {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
+        if Self::hit_corner_control(&corner_controls, cursor_local).is_some() {
             return advanced::mouse::Interaction::Pointer;
         }
 

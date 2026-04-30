@@ -48,6 +48,49 @@ pub(super) struct PanelControlHit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CornerControlKind {
+    PrimaryAutoscaleToggle,
+    PrimaryScaleModeCycle,
+}
+
+impl CornerControlKind {
+    fn label(self, primary_scale_mode: PanelScaleMode) -> &'static str {
+        match self {
+            Self::PrimaryAutoscaleToggle => "A",
+            Self::PrimaryScaleModeCycle => match primary_scale_mode {
+                PanelScaleMode::PercentFromBase => "%",
+                _ => "L",
+            },
+        }
+    }
+
+    fn is_active(self, primary_scale_mode: PanelScaleMode, primary_autoscale: bool) -> bool {
+        match self {
+            Self::PrimaryAutoscaleToggle => primary_autoscale,
+            Self::PrimaryScaleModeCycle => {
+                matches!(
+                    primary_scale_mode,
+                    PanelScaleMode::Logarithmic | PanelScaleMode::PercentFromBase
+                )
+            }
+        }
+    }
+
+    pub(super) fn into_event(self) -> KlineWidgetEvent {
+        match self {
+            Self::PrimaryAutoscaleToggle => KlineWidgetEvent::PrimaryAutoscaleToggled,
+            Self::PrimaryScaleModeCycle => KlineWidgetEvent::PrimaryScaleModeCycleRequested,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CornerControlHit {
+    pub(super) kind: CornerControlKind,
+    pub(super) rect: Rectangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TickerLegendIconKind {
     Settings,
     Close,
@@ -96,6 +139,61 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
+    pub(super) fn build_corner_control_hits(
+        &self,
+        layout: &PanelLayoutTree,
+        primary_scale_mode: PanelScaleMode,
+    ) -> Vec<CornerControlHit> {
+        let mut kinds = Vec::with_capacity(2);
+
+        if !matches!(primary_scale_mode, PanelScaleMode::PercentFromBase) {
+            kinds.push(CornerControlKind::PrimaryAutoscaleToggle);
+        }
+
+        kinds.push(CornerControlKind::PrimaryScaleModeCycle);
+
+        let corner = Rectangle {
+            x: layout.regions.y_axis.x,
+            y: layout.regions.x_axis.y,
+            width: layout.regions.y_axis.width,
+            height: layout.regions.x_axis.height,
+        };
+
+        let count = kinds.len() as f32;
+        let total_w = count * PANEL_CONTROL_BOX + (count - 1.0).max(0.0) * PANEL_CONTROL_GAP;
+        let start_x = (corner.x + corner.width - total_w - 3.0).max(corner.x + 2.0);
+        let y = corner.y + ((corner.height - PANEL_CONTROL_BOX) * 0.5).max(0.0);
+
+        let mut hits = Vec::with_capacity(kinds.len());
+        let mut x_cursor = start_x;
+
+        for kind in kinds {
+            hits.push(CornerControlHit {
+                kind,
+                rect: Rectangle {
+                    x: x_cursor,
+                    y,
+                    width: PANEL_CONTROL_BOX,
+                    height: PANEL_CONTROL_BOX,
+                },
+            });
+
+            x_cursor += PANEL_CONTROL_BOX + PANEL_CONTROL_GAP;
+        }
+
+        hits
+    }
+
+    pub(super) fn hit_corner_control(
+        controls: &[CornerControlHit],
+        root_local: Point,
+    ) -> Option<CornerControlHit> {
+        controls
+            .iter()
+            .copied()
+            .find(|control| PanelLayoutTree::contains(control.rect, root_local))
+    }
+
     fn panel_control_kinds(
         &self,
         panel_index: usize,
@@ -851,6 +949,64 @@ where
                     );
                 }
             }
+        }
+    }
+
+    pub(super) fn fill_corner_controls(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        for control in scene.corner_controls.iter().copied() {
+            let hovered = scene
+                .hovered_corner_control
+                .map(|hit| hit.kind == control.kind)
+                .unwrap_or(false);
+
+            let active = control
+                .kind
+                .is_active(scene.primary_scale_mode, self.primary_autoscale);
+
+            let fill_color = if hovered {
+                if active {
+                    palette.primary.base.color.scale_alpha(0.42)
+                } else {
+                    palette.background.strong.color
+                }
+            } else if active {
+                palette.primary.base.color.scale_alpha(0.24)
+            } else {
+                palette.background.base.color.scale_alpha(0.72)
+            };
+
+            let text_color = if active {
+                palette.primary.base.text
+            } else if hovered {
+                palette.background.strong.text
+            } else {
+                palette.background.base.text.scale_alpha(0.86)
+            };
+
+            frame.fill_rectangle(
+                Point::new(control.rect.x, control.rect.y),
+                Size::new(control.rect.width, control.rect.height),
+                fill_color,
+            );
+
+            frame.fill_text(canvas::Text {
+                content: control.kind.label(scene.primary_scale_mode).to_string(),
+                position: Point::new(
+                    control.rect.x + control.rect.width * 0.5,
+                    control.rect.y + control.rect.height * 0.5,
+                ),
+                color: text_color,
+                size: PANEL_CONTROL_ICON_SIZE.into(),
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
         }
     }
 

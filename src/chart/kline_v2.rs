@@ -231,6 +231,7 @@ pub struct KlineChartV2 {
     timeframe: Timeframe,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
+    primary_autoscale: bool,
     panel_y_viewports: Vec<(PanelId, PanelYViewport)>,
     composition: ChartComposition,
     indicator_panels: EnumMap<KlineIndicator, Option<IndicatorPanelBinding>>,
@@ -270,6 +271,7 @@ impl KlineChartV2 {
             timeframe,
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: DEFAULT_HORIZONTAL_OFFSET_UNITS,
+            primary_autoscale: false,
             panel_y_viewports: Vec::new(),
             composition,
             cache_rev: 0,
@@ -317,6 +319,14 @@ impl KlineChartV2 {
             .composition
             .set_panel_preferred_scale(primary_panel_id, scale)
         {
+            if matches!(
+                self.composition
+                    .panel_effective_scale_mode(primary_panel_id),
+                Some(PanelScaleMode::PercentFromBase)
+            ) {
+                self.primary_autoscale = true;
+                let _ = self.reset_panel_y_viewport(primary_panel_id);
+            }
             self.bump_rev();
             true
         } else {
@@ -496,12 +506,96 @@ impl KlineChartV2 {
                     self.horizontal_offset = offset;
                     self.bump_rev();
                 }
+                KlineWidgetEvent::PrimaryAutoscaleToggled => {
+                    let primary_panel_id = self.composition.primary_panel_id()?;
+
+                    let effective_scale = self
+                        .composition
+                        .panel_effective_scale_mode(primary_panel_id)
+                        .unwrap_or(PanelScaleMode::Absolute);
+
+                    if !matches!(effective_scale, PanelScaleMode::PercentFromBase) {
+                        self.primary_autoscale = !self.primary_autoscale;
+
+                        if self.primary_autoscale {
+                            let _ = self.reset_panel_y_viewport(primary_panel_id);
+                        }
+
+                        self.bump_rev();
+                    }
+                }
+                KlineWidgetEvent::PrimaryScaleModeCycleRequested => {
+                    let primary_panel_id = self.composition.primary_panel_id()?;
+                    let panel = self.composition.panel(primary_panel_id)?;
+
+                    if panel.uses_multi_source() {
+                        // Multi-source primary scale is forced to percent.
+                        return None;
+                    }
+
+                    let next_scale = match panel.preferred_scale {
+                        PanelScaleMode::Absolute => PanelScaleMode::Logarithmic,
+                        PanelScaleMode::Logarithmic => PanelScaleMode::PercentFromBase,
+                        PanelScaleMode::PercentFromBase => PanelScaleMode::Absolute,
+                        PanelScaleMode::FitVisible | PanelScaleMode::FitVisibleIncludeZero => {
+                            PanelScaleMode::Absolute
+                        }
+                    };
+
+                    if self
+                        .composition
+                        .set_panel_preferred_scale(primary_panel_id, next_scale)
+                    {
+                        let now_effective = self
+                            .composition
+                            .panel_effective_scale_mode(primary_panel_id)
+                            .unwrap_or(next_scale);
+
+                        if matches!(now_effective, PanelScaleMode::PercentFromBase)
+                            || self.primary_autoscale
+                        {
+                            let _ = self.reset_panel_y_viewport(primary_panel_id);
+                        }
+
+                        self.bump_rev();
+                    }
+                }
                 KlineWidgetEvent::PanelYViewportChanged { panel_id, viewport } => {
+                    if let Some(primary_id) = self.composition.primary_panel_id()
+                        && primary_id == panel_id
+                    {
+                        if matches!(
+                            self.composition.panel_effective_scale_mode(primary_id),
+                            Some(PanelScaleMode::PercentFromBase)
+                        ) {
+                            return None;
+                        }
+
+                        if self.primary_autoscale {
+                            self.primary_autoscale = false;
+                        }
+                    }
+
                     if self.set_panel_y_viewport(panel_id, viewport) {
                         self.bump_rev();
                     }
                 }
                 KlineWidgetEvent::PanelYViewportReset { panel_id } => {
+                    if let Some(primary_id) = self.composition.primary_panel_id()
+                        && primary_id == panel_id
+                    {
+                        if matches!(
+                            self.composition.panel_effective_scale_mode(primary_id),
+                            Some(PanelScaleMode::PercentFromBase)
+                        ) {
+                            return None;
+                        }
+
+                        if self.primary_autoscale {
+                            self.primary_autoscale = false;
+                        }
+                    }
+
                     if self.reset_panel_y_viewport(panel_id) {
                         self.bump_rev();
                     }
@@ -599,6 +693,7 @@ impl KlineChartV2 {
                 .with_basis(self.basis)
                 .with_horizontal_scale(self.horizontal_scale)
                 .with_horizontal_offset(self.horizontal_offset)
+                .with_primary_autoscale(self.primary_autoscale)
                 .with_panel_y_viewports(&self.panel_y_viewports)
                 .with_active_drawing_tool(self.active_drawing_tool)
                 .with_drawings(&self.drawings)
