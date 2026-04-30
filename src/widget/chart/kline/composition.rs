@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use exchange::unit::Power10;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
@@ -135,7 +136,32 @@ pub enum PanelValueId {
 pub enum PanelValuePrecision {
     BaseTickerMinTick,
     BaseTickerMinQty,
+    FixedPower10(Power10<-8, 8>),
     FixedStep(f32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelValueLabelMode {
+    Compact,
+    Commas,
+    Abbreviated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelValueLabelPolicy {
+    pub axis_mode: PanelValueLabelMode,
+    pub header_mode: PanelValueLabelMode,
+    pub max_decimals: Option<u8>,
+}
+
+impl Default for PanelValueLabelPolicy {
+    fn default() -> Self {
+        Self {
+            axis_mode: PanelValueLabelMode::Compact,
+            header_mode: PanelValueLabelMode::Commas,
+            max_decimals: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +257,7 @@ pub struct PanelSpec {
     pub title: Option<String>,
     pub value_id: Option<PanelValueId>,
     pub value_precision: Option<PanelValuePrecision>,
+    pub value_label_policy: PanelValueLabelPolicy,
     pub base_layer: Option<LayerId>,
     pub preferred_scale: PanelScaleMode,
     pub comparison_policy: PanelComparisonPolicy,
@@ -338,6 +365,7 @@ impl ChartComposition {
             title: None,
             value_id: None,
             value_precision: Some(PanelValuePrecision::BaseTickerMinTick),
+            value_label_policy: PanelValueLabelPolicy::default(),
             base_layer: Some(candle_layer.id),
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -434,6 +462,10 @@ impl ChartComposition {
         self.panel(panel_id).and_then(|panel| panel.value_precision)
     }
 
+    pub fn panel_value_label_policy(&self, panel_id: PanelId) -> Option<PanelValueLabelPolicy> {
+        self.panel(panel_id).map(|panel| panel.value_label_policy)
+    }
+
     pub fn normalized_splits(&self, min_panel_ratio: f32) -> Vec<f32> {
         let panel_count = self.panel_count();
         let split_count = panel_count.saturating_sub(1);
@@ -522,6 +554,7 @@ impl ChartComposition {
         title: impl Into<String>,
         layers: Vec<LayerSpec>,
         value_precision: Option<PanelValuePrecision>,
+        value_label_policy: PanelValueLabelPolicy,
     ) -> PanelId {
         let panel_id = self.new_panel_id();
         let base_layer = layers.first().map(|layer| layer.id);
@@ -531,6 +564,7 @@ impl ChartComposition {
             title: Some(title.into()),
             value_id: None,
             value_precision,
+            value_label_policy,
             base_layer,
             preferred_scale: PanelScaleMode::Absolute,
             comparison_policy: PanelComparisonPolicy::default(),
@@ -622,6 +656,19 @@ impl ChartComposition {
         };
 
         panel.value_precision = value_precision;
+        true
+    }
+
+    pub fn set_panel_value_label_policy(
+        &mut self,
+        panel_id: PanelId,
+        value_label_policy: PanelValueLabelPolicy,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+
+        panel.value_label_policy = value_label_policy;
         true
     }
 

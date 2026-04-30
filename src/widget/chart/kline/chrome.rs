@@ -589,7 +589,7 @@ where
                                 let anchor = primary_anchor.unwrap_or(1.0);
                                 format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
                             } else {
-                                self.format_panel_value_with_commas(panel_precision, value)
+                                self.format_panel_header_value(panel_index, panel_precision, value)
                             };
 
                         let label_color = Self::overlay_channel_color(channel, palette);
@@ -645,7 +645,8 @@ where
                         break;
                     }
 
-                    let value_text = self.format_panel_value_with_commas(panel_precision, value);
+                    let value_text =
+                        self.format_panel_header_value(panel_index, panel_precision, value);
                     let label_color = Self::overlay_channel_color(channel, palette);
                     let label_text = channel.label.to_string();
 
@@ -683,7 +684,7 @@ where
 
                 if !drew_any_channel {
                     let value = indicator_data.value();
-                    let text = self.format_panel_value_with_commas(panel_precision, value);
+                    let text = self.format_panel_header_value(panel_index, panel_precision, value);
 
                     frame.fill_text(canvas::Text {
                         content: text,

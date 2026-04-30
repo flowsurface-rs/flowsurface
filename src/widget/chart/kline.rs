@@ -7,7 +7,8 @@ use crate::style;
 use chrome::TickerLegendHit;
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
-    PanelId, PanelScaleMode, PanelValueId, PanelValuePrecision,
+    PanelId, PanelScaleMode, PanelValueId, PanelValueLabelMode, PanelValueLabelPolicy,
+    PanelValuePrecision,
 };
 use layout::{LayoutHitZone, PanelLayoutTree};
 use scene::Scene;
@@ -824,7 +825,7 @@ where
         match panel.kind {
             KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(value)),
             KlinePanelKind::Indicator => {
-                Some(self.format_panel_value_compact(panel_precision, value, 0.01))
+                Some(self.format_panel_axis_value(panel_index, panel_precision, value, 0.01))
             }
         }
     }
@@ -945,6 +946,14 @@ where
             .panels
             .get(panel_index)
             .and_then(|panel| panel.value_precision)
+    }
+
+    fn panel_value_label_policy(&self, panel_index: usize) -> PanelValueLabelPolicy {
+        self.composition
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.value_label_policy)
+            .unwrap_or_default()
     }
 
     fn panel_y_viewport(&self, panel_id: PanelId) -> Option<PanelYViewport> {
@@ -1295,6 +1304,7 @@ where
                 .series
                 .first()
                 .map(|series| series.ticker_info().min_qty.as_f32()),
+            Some(PanelValuePrecision::FixedPower10(step)) => Some(step.as_f32()),
             Some(PanelValuePrecision::FixedStep(step)) => Some(step),
             None => None,
         }
@@ -1334,6 +1344,9 @@ where
                 .series
                 .first()
                 .map(|series| Self::decimals_from_power10(series.ticker_info().min_qty.power)),
+            Some(PanelValuePrecision::FixedPower10(step)) => {
+                Some(Self::decimals_from_power10(step.power))
+            }
             Some(PanelValuePrecision::FixedStep(step)) => Some(Self::decimals_for_step(step)),
             None => None,
         }
@@ -1394,6 +1407,10 @@ where
                     }
                 }
             }
+            Some(PanelValuePrecision::FixedPower10(step)) => {
+                let step = step.as_f32().abs().max(1e-8);
+                return YUnit(Self::round_to_i64_saturating(value / step));
+            }
             Some(PanelValuePrecision::FixedStep(step)) => {
                 let step = step.abs().max(1e-8);
                 return YUnit(Self::round_to_i64_saturating(value / step));
@@ -1440,6 +1457,9 @@ where
                     }
                 }
             }
+            Some(PanelValuePrecision::FixedPower10(step)) => {
+                return (y_unit.0 as f32) * step.as_f32().abs().max(1e-8);
+            }
             Some(PanelValuePrecision::FixedStep(step)) => {
                 return (y_unit.0 as f32) * step.abs().max(1e-8);
             }
@@ -1464,6 +1484,7 @@ where
 
     fn format_panel_value_compact(
         &self,
+        panel_index: usize,
         value_precision: Option<PanelValuePrecision>,
         value: f32,
         fallback_step: f32,
@@ -1478,15 +1499,54 @@ where
         let decimals = self
             .panel_value_decimals(value_precision)
             .unwrap_or_else(|| Self::decimals_for_step(step));
+        let decimals = self
+            .panel_value_label_policy(panel_index)
+            .max_decimals
+            .map(|max| decimals.min(max as usize))
+            .unwrap_or(decimals);
         format!("{quantized:.decimals$}")
     }
 
-    fn format_panel_value_with_commas(
+    fn format_panel_value_by_mode(
         &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f32,
+        fallback_step: f32,
+        mode: PanelValueLabelMode,
+    ) -> String {
+        match mode {
+            PanelValueLabelMode::Compact => {
+                self.format_panel_value_compact(panel_index, value_precision, value, fallback_step)
+            }
+            PanelValueLabelMode::Commas => {
+                data::util::format_with_commas(self.quantize_panel_value(value_precision, value))
+            }
+            PanelValueLabelMode::Abbreviated => {
+                data::util::abbr_large_numbers(self.quantize_panel_value(value_precision, value))
+            }
+        }
+    }
+
+    fn format_panel_axis_value(
+        &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f32,
+        fallback_step: f32,
+    ) -> String {
+        let mode = self.panel_value_label_policy(panel_index).axis_mode;
+        self.format_panel_value_by_mode(panel_index, value_precision, value, fallback_step, mode)
+    }
+
+    pub(super) fn format_panel_header_value(
+        &self,
+        panel_index: usize,
         value_precision: Option<PanelValuePrecision>,
         value: f32,
     ) -> String {
-        data::util::format_with_commas(self.quantize_panel_value(value_precision, value))
+        let mode = self.panel_value_label_policy(panel_index).header_mode;
+        self.format_panel_value_by_mode(panel_index, value_precision, value, 0.01, mode)
     }
 
     fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
@@ -1878,34 +1938,75 @@ where
                     ..Default::default()
                 });
             }
+        } else {
+            let total_ticks = (scene.primary_plot().height / min_tick_px).floor() as usize;
+            let (min_display, max_display) = scene.primary_domain_display_values();
+            let (ticks, step) = super::ticks(min_display, max_display, total_ticks.max(2));
+            let display_range = (max_display - min_display).abs().max(1e-6);
 
-            return;
+            for tick in ticks {
+                if tick < min_display - f32::EPSILON || tick > max_display + f32::EPSILON {
+                    continue;
+                }
+
+                let ratio = ((tick - min_display) / display_range).clamp(0.0, 1.0);
+                let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
+                let text = scene.format_primary_axis_label(tick, step);
+
+                frame.fill_text(canvas::Text {
+                    content: text,
+                    position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
+                    color: palette.background.base.text,
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::End.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
         }
 
-        let total_ticks = (scene.primary_plot().height / min_tick_px).floor() as usize;
-        let (min_display, max_display) = scene.primary_domain_display_values();
-        let (ticks, step) = super::ticks(min_display, max_display, total_ticks.max(2));
-        let display_range = (max_display - min_display).abs().max(1e-6);
-
-        for tick in ticks {
-            if tick < min_display - f32::EPSILON || tick > max_display + f32::EPSILON {
+        for indicator in &scene.indicator_panels {
+            let panel_index = indicator.panel_index;
+            let Some(panel) = scene.layout.panel(panel_index) else {
                 continue;
+            };
+
+            let (ticks, step_units) = super::unit_ticks(
+                indicator.min_unit.0,
+                indicator.max_unit.0,
+                panel.plot.height,
+                min_tick_px,
+            );
+
+            let panel_precision = self.panel_value_precision(panel_index);
+            let zero_value = self.panel_unit_to_value(panel_precision, YUnit(0));
+            let step_value = (self.panel_unit_to_value(panel_precision, YUnit(step_units))
+                - zero_value)
+                .abs()
+                .max(1e-8);
+
+            for tick in ticks {
+                let tick_unit = YUnit(tick);
+                let Some(y) = scene.map_indicator_plot_unit(panel_index, tick_unit) else {
+                    continue;
+                };
+
+                let value = self.panel_unit_to_value(panel_precision, tick_unit);
+                let text =
+                    self.format_panel_axis_value(panel_index, panel_precision, value, step_value);
+
+                frame.fill_text(canvas::Text {
+                    content: text,
+                    position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
+                    color: palette.background.base.text,
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::End.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
             }
-
-            let ratio = ((tick - min_display) / display_range).clamp(0.0, 1.0);
-            let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
-            let text = scene.format_primary_axis_label(tick, step);
-
-            frame.fill_text(canvas::Text {
-                content: text,
-                position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
-                color: palette.background.base.text,
-                size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::End.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
         }
     }
 
@@ -2029,7 +2130,12 @@ where
                 cursor.y_indicator_unit.map(|indicator_unit| {
                     let panel_precision = self.panel_value_precision(cursor.panel_index);
                     let indicator_value = self.panel_unit_to_value(panel_precision, indicator_unit);
-                    self.format_panel_value_compact(panel_precision, indicator_value, 0.01)
+                    self.format_panel_axis_value(
+                        cursor.panel_index,
+                        panel_precision,
+                        indicator_value,
+                        0.01,
+                    )
                 })
             })
         {

@@ -968,6 +968,7 @@ impl KlineChartV2 {
                 mark,
                 axis,
                 value_precision,
+                value_label_policy,
                 preferred_scale,
             } => {
                 let layer = self.composition.new_layer(
@@ -978,9 +979,12 @@ impl KlineChartV2 {
                     axis,
                 );
 
-                let panel_id =
-                    self.composition
-                        .add_aux_panel(panel_title, vec![layer], Some(value_precision));
+                let panel_id = self.composition.add_aux_panel(
+                    panel_title,
+                    vec![layer],
+                    Some(value_precision),
+                    value_label_policy,
+                );
                 let _ = self
                     .composition
                     .set_panel_preferred_scale(panel_id, preferred_scale);

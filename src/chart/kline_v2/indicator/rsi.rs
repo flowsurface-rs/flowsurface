@@ -1,9 +1,11 @@
 use super::IndicatorAvailability;
 use super::IndicatorPanelRecipe;
 use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValuePrecision,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueLabelMode,
+    PanelValueLabelPolicy, PanelValuePrecision,
 };
 use data::chart::Basis;
+use exchange::unit::Power10;
 use exchange::{Kline, UnixMs};
 use std::collections::BTreeMap;
 
@@ -245,7 +247,12 @@ pub fn panel_recipe() -> IndicatorPanelRecipe {
         data_kind: LayerDataKind::Scalar,
         mark: MarkKind::Line,
         axis: AxisBinding::Secondary,
-        value_precision: PanelValuePrecision::FixedStep(0.1),
+        value_precision: PanelValuePrecision::FixedPower10(Power10::new(-2)),
+        value_label_policy: PanelValueLabelPolicy {
+            axis_mode: PanelValueLabelMode::Compact,
+            header_mode: PanelValueLabelMode::Compact,
+            max_decimals: Some(2),
+        },
         preferred_scale: PanelScaleMode::FitVisible,
     }
 }
