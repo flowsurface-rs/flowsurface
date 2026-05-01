@@ -6,6 +6,7 @@ use data::chart::indicator::KlineIndicator;
 use data::chart::kline::KlineDataPoint;
 use exchange::{Kline, Timeframe, Trade};
 
+pub mod cumulative_delta;
 pub mod open_interest;
 pub mod volume;
 
@@ -60,6 +61,9 @@ pub struct FetchCtx<'a> {
 pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
+        KlineIndicator::CumulativeDelta => {
+            Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new())
+        }
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }

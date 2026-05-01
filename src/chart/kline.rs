@@ -601,6 +601,13 @@ impl KlineChart {
             }
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades_existing_buckets(buffer);
+
+                self.indicators
+                    .values_mut()
+                    .filter_map(Option::as_mut)
+                    .for_each(|indi| indi.on_insert_trades(buffer, 0, &self.data_source));
+
+                self.invalidate(None);
             }
         }
     }
@@ -615,11 +622,18 @@ impl KlineChart {
             }
         }
 
-        self.raw_trades.extend(raw_trades);
+        self.raw_trades.extend_from_slice(&raw_trades);
+
+        self.indicators
+            .values_mut()
+            .filter_map(Option::as_mut)
+            .for_each(|indi| indi.on_insert_trades(&raw_trades, 0, &self.data_source));
 
         if is_batches_done {
             self.fetching_trades = (false, None);
         }
+
+        self.invalidate(None);
     }
 
     pub fn insert_hist_klines(&mut self, req_id: uuid::Uuid, klines_raw: &[Kline]) {
