@@ -2,7 +2,7 @@ use crate::chart::{
     Basis, Caches, Message, ViewState,
     indicator::{
         indicator_row,
-        kline::{FetchCtx, KlineIndicatorImpl},
+        kline::{AvailabilityCause, FetchCtx, IndicatorAvailability, KlineIndicatorImpl},
         plot::{PlotTooltip, line::LinePlot},
     },
 };
@@ -34,31 +34,13 @@ impl OpenInterestIndicator {
         main_chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        match main_chart.basis {
-            Basis::Time(timeframe) => {
-                let exchange = main_chart.ticker_info.exchange();
-                if !Self::is_supported_exchange(exchange) {
-                    return center(text(format!(
-                        "WIP: Open Interest is not available for {exchange}"
-                    )))
-                    .into();
-                }
+        if let Some(message) = self.unavailable_message(main_chart, "Open Interest") {
+            return center(text(message)).into();
+        }
 
-                if !Self::is_supported_timeframe(timeframe) {
-                    return center(text(format!(
-                        "WIP: Open Interest is not available on {timeframe} timeframe"
-                    )))
-                    .into();
-                }
-
-                let (earliest, latest) = visible_range.clone().into_inner();
-                if latest < earliest {
-                    return row![].into();
-                }
-            }
-            Basis::Tick(_) => {
-                return center(text("WIP: Open Interest is not available for tick charts.")).into();
-            }
+        let (earliest, latest) = visible_range.clone().into_inner();
+        if latest < earliest {
+            return row![].into();
         }
 
         let tooltip = |value: &f32, next: Option<&f32>| {
@@ -97,15 +79,30 @@ impl OpenInterestIndicator {
         (from_time, to_time)
     }
 
-    pub fn is_supported_exchange(exchange: Exchange) -> bool {
+    fn is_supported_exchange(exchange: Exchange) -> bool {
         exchange.is_perps()
             && exchange != Exchange::HyperliquidLinear
             && exchange != Exchange::MexcLinear
             && exchange != Exchange::MexcInverse
     }
 
-    pub fn is_supported_timeframe(timeframe: Timeframe) -> bool {
+    fn is_supported_timeframe(timeframe: Timeframe) -> bool {
         timeframe >= Timeframe::M5 && timeframe <= Timeframe::H4 && timeframe != Timeframe::H2
+    }
+
+    fn availability_for(basis: Basis, exchange: Exchange) -> IndicatorAvailability {
+        match basis {
+            Basis::Tick(_) => IndicatorAvailability::Unavailable(AvailabilityCause::Basis(basis)),
+            Basis::Time(timeframe) => {
+                if !Self::is_supported_exchange(exchange) {
+                    IndicatorAvailability::Unavailable(AvailabilityCause::Exchange(exchange))
+                } else if !Self::is_supported_timeframe(timeframe) {
+                    IndicatorAvailability::Unavailable(AvailabilityCause::Timeframe(timeframe))
+                } else {
+                    IndicatorAvailability::Available
+                }
+            }
+        }
     }
 }
 
@@ -126,12 +123,16 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
         self.indicator_elem(chart, visible_range)
     }
 
-    fn fetch_range(&mut self, ctx: &FetchCtx) -> Option<FetchRange> {
-        let exchange = ctx.main_chart.ticker_info.exchange();
-        let is_supported =
-            Self::is_supported_exchange(exchange) && Self::is_supported_timeframe(ctx.timeframe);
+    fn availability(&self, chart: &ViewState) -> IndicatorAvailability {
+        Self::availability_for(chart.basis, chart.ticker_info.exchange())
+    }
 
-        if !is_supported {
+    fn fetch_range(&mut self, ctx: &FetchCtx) -> Option<FetchRange> {
+        let availability = Self::availability_for(
+            Basis::Time(ctx.timeframe),
+            ctx.main_chart.ticker_info.exchange(),
+        );
+        if !matches!(availability, IndicatorAvailability::Available) {
             return None;
         }
 
