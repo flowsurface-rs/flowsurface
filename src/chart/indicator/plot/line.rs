@@ -10,6 +10,8 @@ use crate::chart::{
     indicator::plot::{Plot, PlotTooltip, Series, TooltipFn, YScale},
 };
 
+const DEFAULT_BAR_WIDTH_FACTOR: f32 = 0.9;
+
 pub struct LinePlot<V, T> {
     pub value: V,
     pub tooltip: Option<TooltipFn<T>>,
@@ -18,6 +20,9 @@ pub struct LinePlot<V, T> {
     pub stroke_width: f32,
     pub show_points: bool,
     pub point_radius_factor: f32,
+    /// Horizontal shift in bucket units (screen-space).
+    /// Positive values move points right, negative values move left.
+    pub x_shift_buckets: i32,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -32,6 +37,7 @@ impl<V, T> LinePlot<V, T> {
             stroke_width: 1.0,
             show_points: true,
             point_radius_factor: 0.2,
+            x_shift_buckets: 0,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -56,6 +62,14 @@ impl<V, T> LinePlot<V, T> {
     /// as a factor of cell width, e.g. 0.2 means 20% of cell width, capped at 5px
     pub fn point_radius_factor(mut self, f: f32) -> Self {
         self.point_radius_factor = f;
+        self
+    }
+
+    /// Shift datapoint x-position by whole bucket units in screen-space.
+    ///
+    /// e.g. `shift(1)` moves each point one bucket to the right.
+    pub fn shift(mut self, buckets: i32) -> Self {
+        self.x_shift_buckets = buckets;
         self
     }
 
@@ -124,10 +138,16 @@ where
             color,
         );
 
+        let half_bar_width = (ctx.cell_width * DEFAULT_BAR_WIDTH_FACTOR) / 2.0;
+        let shift_px = (self.x_shift_buckets as f32) * ctx.cell_width;
+
+        // Line points are anchored to the right edge of the default bar width.
+        let x_for = |x: u64| -> f32 { ctx.interval_to_x(x) + half_bar_width + shift_px };
+
         // Polyline
         let mut prev: Option<(f32, f32)> = None;
         datapoints.for_each_in(range.clone(), |x, y| {
-            let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
+            let sx = x_for(x);
             let vy = (self.value)(y);
             let sy = scale.to_y(vy);
             if let Some((px, py)) = prev {
@@ -142,7 +162,7 @@ where
         if self.show_points {
             let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
             datapoints.for_each_in(range, |x, y| {
-                let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
+                let sx = x_for(x);
                 let sy = scale.to_y((self.value)(y));
                 frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
             });
