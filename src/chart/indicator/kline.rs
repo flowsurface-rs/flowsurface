@@ -7,6 +7,7 @@ use data::chart::kline::KlineDataPoint;
 use exchange::adapter::Exchange;
 use exchange::{Kline, Timeframe, Trade};
 
+pub mod cumulative_delta;
 pub mod open_interest;
 pub mod volume;
 
@@ -86,7 +87,7 @@ pub trait KlineIndicatorImpl {
     /// Rebuild data using kline(OHLCV) source
     fn rebuild_from_source(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
-    fn on_insert_klines(&mut self, _klines: &[Kline]) {}
+    fn on_insert_klines(&mut self, _klines: &[Kline], _source: &PlotData<KlineDataPoint>) {}
 
     fn on_insert_trades(
         &mut self,
@@ -115,6 +116,9 @@ pub struct FetchCtx<'a> {
 pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
+        KlineIndicator::CumulativeDelta => {
+            Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new())
+        }
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
