@@ -160,7 +160,7 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
         self.clear_all_caches();
     }
 
-    fn on_insert_klines(&mut self, _klines: &[Kline]) {}
+    fn on_insert_klines(&mut self, _klines: &[Kline], _source: &PlotData<KlineDataPoint>) {}
 
     fn on_insert_trades(
         &mut self,

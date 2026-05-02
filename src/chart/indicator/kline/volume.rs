@@ -97,7 +97,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
         self.clear_all_caches();
     }
 
-    fn on_insert_klines(&mut self, klines: &[Kline]) {
+    fn on_insert_klines(&mut self, klines: &[Kline], _source: &PlotData<KlineDataPoint>) {
         for kline in klines {
             self.data.insert(kline.time, kline.volume);
         }

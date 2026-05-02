@@ -2,16 +2,21 @@ use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
         indicator_row,
-        kline::KlineIndicatorImpl,
+        kline::{AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl},
         plot::{PlotTooltip, line::LinePlot},
     },
 };
 
-use data::chart::{PlotData, kline::KlineDataPoint};
+use data::chart::{
+    PlotData,
+    kline::{KlineDataPoint, KlineTrades},
+};
 use data::util::format_with_commas;
 use exchange::{Kline, Trade, Volume};
 
-use std::collections::BTreeMap;
+use iced::widget::{center, text};
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -28,6 +33,7 @@ pub struct CumulativeDeltaIndicator {
     /// rebuild the cumulative line without needing the full chart source.
     delta: BTreeMap<u64, f32>,
     data: BTreeMap<u64, CumulativeDeltaPoint>,
+    availability: IndicatorAvailability,
 }
 
 impl CumulativeDeltaIndicator {
@@ -36,6 +42,7 @@ impl CumulativeDeltaIndicator {
             cache: Caches::default(),
             delta: BTreeMap::new(),
             data: BTreeMap::new(),
+            availability: IndicatorAvailability::Unknown,
         }
     }
 
@@ -44,6 +51,10 @@ impl CumulativeDeltaIndicator {
         main_chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
+        if let Some(message) = self.unavailable_message(main_chart, "CVD") {
+            return center(text(message)).into();
+        }
+
         let tooltip = |point: &CumulativeDeltaPoint, _next: Option<&CumulativeDeltaPoint>| {
             let cvd = format!("CVD: {}", format_with_commas(point.cumulative));
             let sign = if point.delta >= 0.0 { "+" } else { "" };
@@ -67,6 +78,10 @@ impl CumulativeDeltaIndicator {
         Self::volume_delta(kline.volume)
     }
 
+    fn has_directional_volume(volume: Volume) -> bool {
+        volume.buy_sell().is_some()
+    }
+
     fn volume_delta(volume: Volume) -> f32 {
         volume
             .buy_sell()
@@ -74,19 +89,42 @@ impl CumulativeDeltaIndicator {
             .unwrap_or(0.0)
     }
 
-    fn datapoint_delta(dp: &KlineDataPoint) -> f32 {
-        let footprint_delta: f32 = dp
-            .footprint
+    fn footprint_delta(footprint: &KlineTrades) -> f32 {
+        footprint
             .trades
             .values()
             .map(|group| f32::from(group.delta_qty()))
-            .sum();
+            .sum()
+    }
 
-        if dp.footprint.trades.is_empty() {
-            Self::volume_delta(dp.kline.volume)
+    fn delta_from_parts(footprint: &KlineTrades, volume: Volume) -> f32 {
+        if footprint.trades.is_empty() {
+            Self::volume_delta(volume)
         } else {
-            footprint_delta
+            Self::footprint_delta(footprint)
         }
+    }
+
+    fn is_directional_parts(footprint: &KlineTrades, volume: Volume) -> bool {
+        !footprint.trades.is_empty() || Self::has_directional_volume(volume)
+    }
+
+    fn datapoint_delta(dp: &KlineDataPoint) -> f32 {
+        Self::delta_from_parts(&dp.footprint, dp.kline.volume)
+    }
+
+    fn is_datapoint_directional(dp: &KlineDataPoint) -> bool {
+        Self::is_directional_parts(&dp.footprint, dp.kline.volume)
+    }
+
+    fn set_availability(&mut self, has_points: bool, has_directional: bool) {
+        self.availability = if !has_points {
+            IndicatorAvailability::Unknown
+        } else if has_directional {
+            IndicatorAvailability::Available
+        } else {
+            IndicatorAvailability::Unavailable(AvailabilityCause::TradeData)
+        };
     }
 
     fn rebuild_cumulative(&mut self) {
@@ -95,7 +133,8 @@ impl CumulativeDeltaIndicator {
         let mut cumulative = 0.0;
         for (&x, &delta) in &self.delta {
             cumulative += delta;
-            self.data.insert(x, CumulativeDeltaPoint { delta, cumulative });
+            self.data
+                .insert(x, CumulativeDeltaPoint { delta, cumulative });
         }
 
         self.clear_all_caches();
@@ -124,41 +163,140 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
         self.indicator_elem(chart, visible_range)
     }
 
+    fn availability(&self, _chart: &ViewState) -> IndicatorAvailability {
+        self.availability.clone()
+    }
+
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
-        let deltas = match source {
-            PlotData::TimeBased(timeseries) => timeseries
-                .datapoints
-                .iter()
-                .map(|(&time, dp)| (time, Self::datapoint_delta(dp)))
-                .collect(),
-            PlotData::TickBased(tickseries) => tickseries
-                .datapoints
-                .iter()
-                .enumerate()
-                .map(|(idx, dp)| {
-                    let delta = Self::volume_delta(dp.kline.volume);
-                    (idx as u64, delta)
-                })
-                .collect(),
+        let (deltas, has_points, has_directional) = match source {
+            PlotData::TimeBased(timeseries) => {
+                let has_points = !timeseries.datapoints.is_empty();
+                let has_directional = timeseries
+                    .datapoints
+                    .values()
+                    .any(Self::is_datapoint_directional);
+
+                let deltas = timeseries
+                    .datapoints
+                    .iter()
+                    .map(|(&time, dp)| (time, Self::datapoint_delta(dp)))
+                    .collect();
+
+                (deltas, has_points, has_directional)
+            }
+            PlotData::TickBased(tickseries) => {
+                let has_points = !tickseries.datapoints.is_empty();
+                let has_directional = tickseries
+                    .datapoints
+                    .iter()
+                    .any(|dp| Self::is_directional_parts(&dp.footprint, dp.kline.volume));
+
+                let deltas = tickseries
+                    .datapoints
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, dp)| {
+                        (
+                            idx as u64,
+                            Self::delta_from_parts(&dp.footprint, dp.kline.volume),
+                        )
+                    })
+                    .collect();
+
+                (deltas, has_points, has_directional)
+            }
         };
+
+        self.set_availability(has_points, has_directional);
 
         self.rebuild_from_deltas(deltas);
     }
 
-    fn on_insert_klines(&mut self, klines: &[Kline]) {
+    fn on_insert_klines(&mut self, klines: &[Kline], source: &PlotData<KlineDataPoint>) {
+        let mut has_directional = false;
+
         for kline in klines {
-            self.delta.insert(kline.time, Self::kline_delta(kline));
+            let (delta, directional) = match source {
+                PlotData::TimeBased(timeseries) => {
+                    if let Some(dp) = timeseries.datapoints.get(&kline.time) {
+                        (
+                            Self::datapoint_delta(dp),
+                            Self::is_datapoint_directional(dp),
+                        )
+                    } else {
+                        (
+                            Self::kline_delta(kline),
+                            Self::has_directional_volume(kline.volume),
+                        )
+                    }
+                }
+                PlotData::TickBased(_) => (
+                    Self::kline_delta(kline),
+                    Self::has_directional_volume(kline.volume),
+                ),
+            };
+
+            self.delta.insert(kline.time, delta);
+            has_directional |= directional;
         }
+
+        if has_directional {
+            self.availability = IndicatorAvailability::Available;
+        }
+
+        if self.availability == IndicatorAvailability::Unknown && !self.delta.is_empty() {
+            self.availability = IndicatorAvailability::Unavailable(AvailabilityCause::TradeData);
+        }
+
         self.rebuild_cumulative();
     }
 
     fn on_insert_trades(
         &mut self,
-        _trades: &[Trade],
-        _old_dp_len: usize,
+        trades: &[Trade],
+        old_dp_len: usize,
         source: &PlotData<KlineDataPoint>,
     ) {
-        self.rebuild_from_source(source);
+        let mut touched = false;
+
+        match source {
+            PlotData::TimeBased(timeseries) => {
+                if trades.is_empty() {
+                    return;
+                }
+
+                let aggr_time = timeseries.interval.to_milliseconds();
+                let mut touched_times = BTreeSet::new();
+
+                for trade in trades {
+                    let rounded_time = (trade.time / aggr_time) * aggr_time;
+                    touched_times.insert(rounded_time);
+                }
+
+                for time in touched_times {
+                    if let Some(dp) = timeseries.datapoints.get(&time) {
+                        self.delta.insert(time, Self::datapoint_delta(dp));
+                        touched = true;
+                    }
+                }
+            }
+            PlotData::TickBased(tickseries) => {
+                let start_idx = old_dp_len.saturating_sub(1);
+
+                for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
+                    self.delta.insert(
+                        idx as u64,
+                        Self::delta_from_parts(&dp.footprint, dp.kline.volume),
+                    );
+                    touched = true;
+                }
+            }
+        }
+
+        if touched {
+            self.availability = IndicatorAvailability::Available;
+            self.rebuild_cumulative();
+        }
     }
 
     fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {

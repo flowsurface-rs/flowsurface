@@ -319,7 +319,7 @@ impl KlineChart {
                 self.indicators
                     .values_mut()
                     .filter_map(Option::as_mut)
-                    .for_each(|indi| indi.on_insert_klines(&[*kline]));
+                    .for_each(|indi| indi.on_insert_klines(&[*kline], &self.data_source));
 
                 let chart = self.mut_state();
 
@@ -645,7 +645,7 @@ impl KlineChart {
                 self.indicators
                     .values_mut()
                     .filter_map(Option::as_mut)
-                    .for_each(|indi| indi.on_insert_klines(klines_raw));
+                    .for_each(|indi| indi.on_insert_klines(klines_raw, &self.data_source));
 
                 if klines_raw.is_empty() {
                     self.request_handler

@@ -87,7 +87,7 @@ pub trait KlineIndicatorImpl {
     /// Rebuild data using kline(OHLCV) source
     fn rebuild_from_source(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
-    fn on_insert_klines(&mut self, _klines: &[Kline]) {}
+    fn on_insert_klines(&mut self, _klines: &[Kline], _source: &PlotData<KlineDataPoint>) {}
 
     fn on_insert_trades(
         &mut self,
