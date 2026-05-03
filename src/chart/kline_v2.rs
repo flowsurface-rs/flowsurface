@@ -8,6 +8,7 @@ use crate::widget::chart::kline::{
     IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole,
     OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY,
     RSI_UPPER_BAND_FIELD_KEY,
+    coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits},
 };
 
 use data::chart::Basis;
@@ -1102,7 +1103,7 @@ impl KlineChartV2 {
     }
 
     fn compute_visible_window(&self, horizontal_offset: f32) -> Option<(UnixMs, UnixMs)> {
-        let dt = self.dt_ms_est();
+        let dt = ChartStepMs::from_u64(self.dt_ms_est());
 
         let max_seen = self
             .series
@@ -1111,16 +1112,20 @@ impl KlineChartV2 {
             .map(|bar| bar.time)
             .max()?;
 
+        let max_seen = ChartCoord::from_unix_ms(max_seen);
         let span_units = self.estimate_visible_points_for_fetch().saturating_sub(1);
-        let dt_i128 = i128::from(dt);
-        let right_unit = horizontal_offset.round() as i128;
-        let right = (max_seen.as_u64() as i128) + right_unit.saturating_mul(dt_i128);
-        let left = right.saturating_sub((span_units as i128).saturating_mul(dt_i128));
+        let right_units = RoundedOffsetUnits::from_f32(horizontal_offset)?;
 
-        let left_u64 = left.max(0).min(u64::MAX as i128) as u64;
-        let right_u64 = right.max(0).min(u64::MAX as i128) as u64;
+        let right_offset = right_units.saturating_scale(dt);
+        let right = max_seen.saturating_add_i64(right_offset);
 
-        Some((UnixMs::new(left_u64), UnixMs::new(right_u64)))
+        let span_offset = span_units.saturating_mul(dt.get());
+        let left = right.saturating_sub_i64(span_offset);
+
+        Some((
+            left.to_unix_ms_non_negative(),
+            right.to_unix_ms_non_negative(),
+        ))
     }
 
     fn desired_fetch_batches(&self, horizontal_offset: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {

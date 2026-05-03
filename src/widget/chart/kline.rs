@@ -1,5 +1,6 @@
 mod chrome;
 pub mod composition;
+pub mod coord;
 mod layout;
 mod scene;
 
@@ -679,27 +680,213 @@ where
         })
     }
 
+    fn plot_bounds_in_overlay(&self, scene: &Scene) -> Rectangle {
+        scene.layout.regions.plot
+    }
+
+    fn drawing_object_clip_bounds(
+        &self,
+        scene: &Scene,
+        start_panel_id: PanelId,
+        end_panel_id: PanelId,
+    ) -> Option<Rectangle> {
+        if start_panel_id == end_panel_id {
+            let panel_index = self.panel_index_for_id(start_panel_id)?;
+            self.panel_plot_bounds_in_overlay(scene, panel_index)
+        } else {
+            Some(self.plot_bounds_in_overlay(scene))
+        }
+    }
+
+    fn clip_segment_to_bounds(
+        start: Point,
+        end: Point,
+        bounds: Rectangle,
+    ) -> Option<(Point, Point)> {
+        let left = bounds.x;
+        let right = bounds.x + bounds.width;
+        let top = bounds.y;
+        let bottom = bounds.y + bounds.height;
+
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+
+        let mut t0 = 0.0_f32;
+        let mut t1 = 1.0_f32;
+
+        let mut clip = |p: f32, q: f32| -> bool {
+            if p.abs() <= f32::EPSILON {
+                return q >= 0.0;
+            }
+
+            let r = q / p;
+
+            if p < 0.0 {
+                if r > t1 {
+                    return false;
+                }
+                if r > t0 {
+                    t0 = r;
+                }
+            } else {
+                if r < t0 {
+                    return false;
+                }
+                if r < t1 {
+                    t1 = r;
+                }
+            }
+
+            true
+        };
+
+        if !clip(-dx, start.x - left)
+            || !clip(dx, right - start.x)
+            || !clip(-dy, start.y - top)
+            || !clip(dy, bottom - start.y)
+        {
+            return None;
+        }
+
+        if t0 > t1 {
+            return None;
+        }
+
+        Some((
+            Point::new(start.x + t0 * dx, start.y + t0 * dy),
+            Point::new(start.x + t1 * dx, start.y + t1 * dy),
+        ))
+    }
+
+    fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {
+        let left = a.x.max(b.x);
+        let right = (a.x + a.width).min(b.x + b.width);
+        let top = a.y.max(b.y);
+        let bottom = (a.y + a.height).min(b.y + b.height);
+
+        if right <= left || bottom <= top {
+            return None;
+        }
+
+        Some(Rectangle {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        })
+    }
+
     fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
         let panel_index = self.panel_index_for_id(anchor.panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let panel_precision = self.panel_value_precision(panel_index);
         let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
         let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
-        let x_plot = scene
-            .map_x_plot(x_unit)
-            .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
+        let x_plot = scene.map_x_plot(x_unit);
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
+                scene.map_primary_plot_with_anchor_unclamped(value, scene.primary_scale_anchor)
             }
-            KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
-        }
-        .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+            KlinePanelKind::Indicator => scene.map_indicator_plot_unclamped(panel_index, value)?,
+        };
 
         Some(Point::new(
             scene.layout.regions.plot.x + x_plot,
             scene.layout.regions.plot.y + y_plot,
         ))
+    }
+
+    fn drawing_trendline_geometry(
+        &self,
+        scene: &Scene,
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    ) -> Option<(Point, Point, Point, Point, Rectangle)> {
+        let clip_bounds = self.drawing_object_clip_bounds(scene, start.panel_id, end.panel_id)?;
+        let start_point = self.anchor_to_overlay_point(scene, start)?;
+        let end_point = self.anchor_to_overlay_point(scene, end)?;
+        let (visible_start, visible_end) =
+            Self::clip_segment_to_bounds(start_point, end_point, clip_bounds)?;
+
+        Some((
+            start_point,
+            end_point,
+            visible_start,
+            visible_end,
+            clip_bounds,
+        ))
+    }
+
+    fn drawing_box_geometry(
+        &self,
+        scene: &Scene,
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    ) -> Option<(Point, Size, Rectangle, Rectangle)> {
+        let clip_bounds = self.drawing_object_clip_bounds(scene, start.panel_id, end.panel_id)?;
+        let start_point = self.anchor_to_overlay_point(scene, start)?;
+        let end_point = self.anchor_to_overlay_point(scene, end)?;
+
+        let left = start_point.x.min(end_point.x);
+        let right = start_point.x.max(end_point.x);
+        let top = start_point.y.min(end_point.y);
+        let bottom = start_point.y.max(end_point.y);
+
+        let origin = Point::new(left, top);
+        let size = Size::new((right - left).max(1.0), (bottom - top).max(1.0));
+        let object_bounds = Rectangle {
+            x: origin.x,
+            y: origin.y,
+            width: size.width,
+            height: size.height,
+        };
+        let visible_bounds = Self::intersect_bounds(object_bounds, clip_bounds)?;
+
+        Some((origin, size, clip_bounds, visible_bounds))
+    }
+
+    fn drawing_horizontal_line_geometry(
+        &self,
+        scene: &Scene,
+        panel_id: PanelId,
+        y_unit: YUnit,
+    ) -> Option<(Rectangle, f32)> {
+        let panel_index = self.panel_index_for_id(panel_id)?;
+        let panel = scene.layout.panel(panel_index)?;
+        let clip_bounds = self.panel_plot_bounds_in_overlay(scene, panel_index)?;
+        let panel_precision = self.panel_value_precision(panel_index);
+        let value = self.panel_unit_to_value(panel_precision, y_unit);
+
+        let y_plot = match panel.kind {
+            KlinePanelKind::PrimaryChart => {
+                scene.map_primary_plot_with_anchor_unclamped(value, scene.primary_scale_anchor)
+            }
+            KlinePanelKind::Indicator => scene.map_indicator_plot_unclamped(panel_index, value)?,
+        };
+
+        let panel_top = panel.plot.y;
+        let panel_bottom = panel.plot.y + panel.plot.height;
+        if y_plot < panel_top || y_plot > panel_bottom {
+            return None;
+        }
+
+        Some((clip_bounds, scene.layout.regions.plot.y + y_plot))
+    }
+
+    fn drawing_vertical_line_geometry(
+        &self,
+        scene: &Scene,
+        time: UnixMs,
+    ) -> Option<(Rectangle, f32)> {
+        let x_unit = self.x_unit_for_anchor_time(scene, time)?;
+        let clip_bounds = self.plot_bounds_in_overlay(scene);
+        let x = scene.layout.regions.plot.x + scene.map_x_plot(x_unit);
+
+        if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
+            return None;
+        }
+
+        Some((clip_bounds, x))
     }
 
     fn draw_drawing_object(
@@ -720,86 +907,62 @@ where
 
         match object {
             DrawingObject::Trendline { start, end } => {
-                let Some(start) = self.anchor_to_overlay_point(scene, *start) else {
-                    return;
-                };
-                let Some(end) = self.anchor_to_overlay_point(scene, *end) else {
+                let Some((start, end, _, _, bounds)) =
+                    self.drawing_trendline_geometry(scene, *start, *end)
+                else {
                     return;
                 };
 
-                frame.stroke(&canvas::Path::line(start, end), stroke);
+                frame.with_clip(bounds, |frame| {
+                    frame.stroke(&canvas::Path::line(start, end), stroke);
+                });
             }
             DrawingObject::Box { start, end } => {
-                let Some(start) = self.anchor_to_overlay_point(scene, *start) else {
+                let Some((origin, size, bounds, _)) =
+                    self.drawing_box_geometry(scene, *start, *end)
+                else {
                     return;
                 };
-                let Some(end) = self.anchor_to_overlay_point(scene, *end) else {
-                    return;
-                };
 
-                let left = start.x.min(end.x);
-                let right = start.x.max(end.x);
-                let top = start.y.min(end.y);
-                let bottom = start.y.max(end.y);
-                let size = Size::new((right - left).max(1.0), (bottom - top).max(1.0));
-                let origin = Point::new(left, top);
+                frame.with_clip(bounds, |frame| {
+                    if let Some(fill) = style.fill_color {
+                        frame.fill_rectangle(origin, size, fill);
+                    }
 
-                if let Some(fill) = style.fill_color {
-                    frame.fill_rectangle(origin, size, fill);
-                }
-
-                frame.stroke(&canvas::Path::rectangle(origin, size), stroke);
+                    frame.stroke_rectangle(origin, size, stroke);
+                });
             }
             DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                let Some(panel_index) = self.panel_index_for_id(*panel_id) else {
+                let Some((bounds, y)) =
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit)
+                else {
                     return;
                 };
-                let Some(panel) = scene.layout.panel(panel_index) else {
-                    return;
-                };
-                let Some(bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
-                    return;
-                };
-                let panel_precision = self.panel_value_precision(panel_index);
-                let value = self.panel_unit_to_value(panel_precision, *y_unit);
 
-                let y_plot = match panel.kind {
-                    KlinePanelKind::PrimaryChart => {
-                        scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
-                    }
-                    KlinePanelKind::Indicator => match scene.map_indicator_plot(panel_index, value)
-                    {
-                        Some(y) => y,
-                        None => return,
-                    },
-                }
-                .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
-
-                let y = scene.layout.regions.plot.y + y_plot;
-
-                frame.stroke(
-                    &canvas::Path::line(
-                        Point::new(bounds.x, y),
-                        Point::new(bounds.x + bounds.width, y),
-                    ),
-                    stroke,
-                );
+                frame.with_clip(bounds, |frame| {
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(bounds.x, y),
+                            Point::new(bounds.x + bounds.width, y),
+                        ),
+                        stroke,
+                    );
+                });
             }
             DrawingObject::VerticalLine { time } => {
-                let Some(x_unit) = self.x_unit_for_anchor_time(scene, *time) else {
+                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
                     return;
                 };
 
-                let x_plot = scene
-                    .map_x_plot(x_unit)
-                    .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
-                let x = scene.layout.regions.plot.x + x_plot;
-                let plot = scene.layout.regions.plot;
-
-                frame.stroke(
-                    &canvas::Path::line(Point::new(x, plot.y), Point::new(x, plot.y + plot.height)),
-                    stroke,
-                );
+                frame.with_clip(plot, |frame| {
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(x, plot.y),
+                            Point::new(x, plot.y + plot.height),
+                        ),
+                        stroke,
+                    );
+                });
             }
         }
     }
@@ -839,90 +1002,88 @@ where
         ((point.x - proj_x).powi(2) + (point.y - proj_y).powi(2)).sqrt()
     }
 
-    fn drawing_hit_test_object(&self, scene: &Scene, object: &DrawingObject, point: Point) -> bool {
+    fn drawing_hit_test_object(
+        &self,
+        scene: &Scene,
+        object: &DrawingObject,
+        style: DrawingStyle,
+        point: Point,
+    ) -> bool {
         let tolerance = DRAWING_HIT_TOLERANCE_PX;
 
         match object {
             DrawingObject::Trendline { start, end } => {
-                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
-                    return false;
-                };
-                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                let Some((_, _, visible_start, visible_end, _)) =
+                    self.drawing_trendline_geometry(scene, *start, *end)
+                else {
                     return false;
                 };
 
-                Self::point_segment_distance(point, start_point, end_point) <= tolerance
+                Self::point_segment_distance(point, visible_start, visible_end) <= tolerance
             }
             DrawingObject::Box { start, end } => {
-                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
-                    return false;
-                };
-                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                let Some((origin, size, bounds, visible_bounds)) =
+                    self.drawing_box_geometry(scene, *start, *end)
+                else {
                     return false;
                 };
 
-                let left = start_point.x.min(end_point.x);
-                let right = start_point.x.max(end_point.x);
-                let top = start_point.y.min(end_point.y);
-                let bottom = start_point.y.max(end_point.y);
+                let left = origin.x;
+                let right = origin.x + size.width;
+                let top = origin.y;
+                let bottom = origin.y + size.height;
 
-                let within_expanded = point.x >= (left - tolerance)
-                    && point.x <= (right + tolerance)
-                    && point.y >= (top - tolerance)
-                    && point.y <= (bottom + tolerance);
+                let within_expanded = point.x >= (visible_bounds.x - tolerance)
+                    && point.x <= (visible_bounds.x + visible_bounds.width + tolerance)
+                    && point.y >= (visible_bounds.y - tolerance)
+                    && point.y <= (visible_bounds.y + visible_bounds.height + tolerance);
 
                 if !within_expanded {
                     return false;
                 }
 
-                let near_edge = (point.x - left).abs() <= tolerance
-                    || (point.x - right).abs() <= tolerance
-                    || (point.y - top).abs() <= tolerance
-                    || (point.y - bottom).abs() <= tolerance;
+                let top_left = Point::new(left, top);
+                let top_right = Point::new(right, top);
+                let bottom_right = Point::new(right, bottom);
+                let bottom_left = Point::new(left, bottom);
 
-                near_edge
-                    || (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom)
+                let near_edge = [
+                    (top_left, top_right),
+                    (top_right, bottom_right),
+                    (bottom_right, bottom_left),
+                    (bottom_left, top_left),
+                ]
+                .into_iter()
+                .filter_map(|(edge_start, edge_end)| {
+                    Self::clip_segment_to_bounds(edge_start, edge_end, bounds)
+                })
+                .any(|(edge_start, edge_end)| {
+                    Self::point_segment_distance(point, edge_start, edge_end) <= tolerance
+                });
+
+                let inside_visible_fill = style.fill_color.is_some()
+                    && point.x >= visible_bounds.x
+                    && point.x <= (visible_bounds.x + visible_bounds.width)
+                    && point.y >= visible_bounds.y
+                    && point.y <= (visible_bounds.y + visible_bounds.height);
+
+                near_edge || inside_visible_fill
             }
             DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                let Some(panel_index) = self.panel_index_for_id(*panel_id) else {
-                    return false;
-                };
-                let Some(panel) = scene.layout.panel(panel_index) else {
-                    return false;
-                };
-                let Some(bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
+                let Some((bounds, y)) =
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit)
+                else {
                     return false;
                 };
 
-                let value_precision = self.panel_value_precision(panel_index);
-                let value = self.panel_unit_to_value(value_precision, *y_unit);
-                let y_plot = match panel.kind {
-                    KlinePanelKind::PrimaryChart => {
-                        scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
-                    }
-                    KlinePanelKind::Indicator => match scene.map_indicator_plot(panel_index, value)
-                    {
-                        Some(y) => y,
-                        None => return false,
-                    },
-                }
-                .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
-
-                let y = scene.layout.regions.plot.y + y_plot;
                 point.x >= (bounds.x - tolerance)
                     && point.x <= (bounds.x + bounds.width + tolerance)
                     && (point.y - y).abs() <= tolerance
             }
             DrawingObject::VerticalLine { time } => {
-                let Some(x_unit) = self.x_unit_for_anchor_time(scene, *time) else {
+                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
                     return false;
                 };
-
-                let plot = scene.layout.regions.plot;
-                let x = scene.layout.regions.plot.x
-                    + scene
-                        .map_x_plot(x_unit)
-                        .clamp(0.0, scene.layout.regions.plot.width.max(1.0));
 
                 (point.x - x).abs() <= tolerance
                     && point.y >= (plot.y - tolerance)
@@ -936,7 +1097,9 @@ where
             .iter()
             .rev()
             .filter(|drawing| drawing.visible)
-            .find(|drawing| self.drawing_hit_test_object(scene, &drawing.object, point))
+            .find(|drawing| {
+                self.drawing_hit_test_object(scene, &drawing.object, drawing.style, point)
+            })
             .map(|drawing| drawing.id)
     }
 
@@ -1018,14 +1181,14 @@ where
         palette: &Extended,
         y: f32,
         text: &str,
+        clamp_bounds: Rectangle,
     ) {
         let y_label_w = (text.len() as f32 * TEXT_SIZE * 0.6).clamp(40.0, 96.0);
         let y_label_h = TEXT_SIZE + 6.0;
         let y_label_x = scene.layout.regions.y_axis.x + 2.0;
-        let y_label_y = (y - (y_label_h / 2.0)).clamp(
-            scene.layout.regions.plot.y,
-            scene.layout.regions.plot.y + scene.layout.regions.plot.height - y_label_h,
-        );
+        let y_min = clamp_bounds.y;
+        let y_max = (clamp_bounds.y + clamp_bounds.height - y_label_h).max(y_min);
+        let y_label_y = (y - (y_label_h / 2.0)).clamp(y_min, y_max);
 
         frame.fill_rectangle(
             Point::new(y_label_x, y_label_y),
@@ -1069,7 +1232,15 @@ where
             }
 
             if let Some(y_text) = self.format_anchor_y_label(scene, anchor) {
-                self.draw_y_axis_badge(frame, scene, palette, point.y, &y_text);
+                let Some(panel_index) = self.panel_index_for_id(anchor.panel_id) else {
+                    continue;
+                };
+                let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index)
+                else {
+                    continue;
+                };
+
+                self.draw_y_axis_badge(frame, scene, palette, point.y, &y_text, panel_bounds);
             }
         }
     }
@@ -1592,9 +1763,7 @@ where
                     let exp = 8 + i32::from(min_tick.power);
 
                     if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let units_i128 = i128::from(y_unit.0) * i128::from(unit_size);
-                        let units =
-                            units_i128.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        let units = y_unit.0.saturating_mul(unit_size);
                         return Price::from_units(units).to_f32();
                     }
                 }
@@ -1605,9 +1774,7 @@ where
                     let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
 
                     if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let units_i128 = i128::from(y_unit.0) * i128::from(unit_size);
-                        let units =
-                            units_i128.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        let units = y_unit.0.saturating_mul(unit_size);
                         return f32::from(Qty::from_units(units));
                     }
                 }
@@ -2320,7 +2487,10 @@ where
                 })
             })
         {
-            self.draw_y_axis_badge(frame, scene, palette, gy, &y_text);
+            let y_badge_bounds = self
+                .panel_plot_bounds_in_overlay(scene, cursor.panel_index)
+                .unwrap_or_else(|| self.plot_bounds_in_overlay(scene));
+            self.draw_y_axis_badge(frame, scene, palette, gy, &y_text, y_badge_bounds);
         }
 
         let x_text = self.format_x_label(scene.x_axis, cursor.x_unit, 1);

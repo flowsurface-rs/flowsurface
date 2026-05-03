@@ -1,6 +1,7 @@
 use super::chrome::{
     CornerControlHit, PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
 };
+use super::coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
     BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
@@ -46,10 +47,11 @@ impl XAxis {
     fn unit_from_time(self, value: UnixMs) -> i64 {
         match self {
             Self::Time { timeframe, anchor } => {
-                let aligned = value.floor_to(timeframe).as_u64() as i128;
-                let anchor = anchor.as_u64() as i128;
-                let step = timeframe.to_milliseconds().max(1) as i128;
-                ((aligned - anchor) / step).clamp(i64::MIN as i128, i64::MAX as i128) as i64
+                let aligned = ChartCoord::from_unix_ms(value.floor_to(timeframe)).get();
+                let anchor = ChartCoord::from_unix_ms(anchor).get();
+                let step = ChartStepMs::from_u64(timeframe.to_milliseconds().max(1)).get();
+
+                aligned.saturating_sub(anchor) / step
             }
             Self::Tick { .. } => 0,
         }
@@ -59,9 +61,10 @@ impl XAxis {
     fn unit_from_tick(self, value: TickIndex) -> i64 {
         match self {
             Self::Tick { anchor } => {
-                let anchor = anchor.as_u64() as i128;
-                let index = value.as_u64() as i128;
-                (anchor - index).clamp(i64::MIN as i128, i64::MAX as i128) as i64
+                let anchor = ChartCoord::from_u64_clamped(anchor.as_u64()).get();
+                let index = ChartCoord::from_u64_clamped(value.as_u64()).get();
+
+                anchor.saturating_sub(index)
             }
             Self::Time { .. } => 0,
         }
@@ -82,11 +85,11 @@ impl XAxis {
     fn tick_from_unit(self, unit: i64) -> Option<TickIndex> {
         match self {
             Self::Tick { anchor } => {
-                let value = (anchor.as_u64() as i128) - (unit as i128);
-                if value < 0 {
-                    None
+                let anchor = anchor.as_u64();
+                if unit >= 0 {
+                    anchor.checked_sub(unit as u64).map(TickIndex)
                 } else {
-                    Some(TickIndex(value as u64))
+                    anchor.checked_add(unit.unsigned_abs()).map(TickIndex)
                 }
             }
             Self::Time { .. } => None,
@@ -204,24 +207,30 @@ impl Scene {
 
     fn lerp_unit(min_unit: YUnit, max_unit: YUnit, ratio: f32) -> YUnit {
         let ratio = ratio.clamp(0.0, 1.0);
-        let min = i128::from(min_unit.0);
-        let max = i128::from(max_unit.0);
-        let span = max - min;
+        let min = min_unit.0;
+        let max = max_unit.0;
+        let span = max.saturating_sub(min);
         if span == 0 {
             return min_unit;
         }
 
-        let offset = ((span as f32) * ratio).round() as i128;
-        let value = min + offset;
-        let clamped = value.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-        YUnit(clamped)
+        let offset = ((span as f32) * ratio).round() as i64;
+        let value = min.saturating_add(offset);
+        YUnit(value)
     }
 
     pub(super) fn map_primary_plot_unit(&self, y_unit: YUnit) -> f32 {
-        let min = i128::from(self.min_primary_unit.0);
-        let max = i128::from(self.max_primary_unit.0);
-        let range = (max - min).abs().max(1);
-        let ratio = ((i128::from(y_unit.0) - min) as f32 / range as f32).clamp(0.0, 1.0);
+        let panel = self.primary_plot();
+        self.map_primary_plot_unit_unclamped(y_unit)
+            .clamp(panel.y, panel.y + panel.height)
+    }
+
+    pub(super) fn map_primary_plot_unit_unclamped(&self, y_unit: YUnit) -> f32 {
+        let min = self.min_primary_unit.0;
+        let max = self.max_primary_unit.0;
+        let range = max.saturating_sub(min).unsigned_abs().max(1);
+        let delta = y_unit.0.saturating_sub(min);
+        let ratio = delta as f32 / range as f32;
         let panel = self.primary_plot();
         panel.y + (1.0 - ratio) * panel.height
     }
@@ -232,11 +241,22 @@ impl Scene {
         indicator_unit: YUnit,
     ) -> Option<f32> {
         let panel = self.indicator_plot(panel_index)?;
+        self.map_indicator_plot_unit_unclamped(panel_index, indicator_unit)
+            .map(|y| y.clamp(panel.y, panel.y + panel.height))
+    }
+
+    pub(super) fn map_indicator_plot_unit_unclamped(
+        &self,
+        panel_index: usize,
+        indicator_unit: YUnit,
+    ) -> Option<f32> {
+        let panel = self.indicator_plot(panel_index)?;
         let indicator = self.indicator_panel_config(panel_index)?;
-        let min = i128::from(indicator.min_unit.0);
-        let max = i128::from(indicator.max_unit.0);
-        let range = (max - min).abs().max(1);
-        let ratio = ((i128::from(indicator_unit.0) - min) as f32 / range as f32).clamp(0.0, 1.0);
+        let min = indicator.min_unit.0;
+        let max = indicator.max_unit.0;
+        let range = max.saturating_sub(min).unsigned_abs().max(1);
+        let delta = indicator_unit.0.saturating_sub(min);
+        let ratio = delta as f32 / range as f32;
         Some(panel.y + (1.0 - ratio) * panel.height)
     }
 
@@ -245,11 +265,11 @@ impl Scene {
     }
 
     pub(super) fn primary_plot(&self) -> &Rectangle {
-        &self
-            .layout
+        self.layout
             .panel(self.primary_panel)
-            .expect("primary panel should exist")
-            .plot
+            .map(|panel| &panel.plot)
+            .or_else(|| self.layout.panels.first().map(|panel| &panel.plot))
+            .unwrap_or(&self.layout.regions.plot)
     }
 
     fn indicator_panel_config(&self, panel_index: usize) -> Option<&IndicatorPanelScene> {
@@ -282,7 +302,7 @@ impl Scene {
     }
 
     pub(super) fn map_x_plot(&self, x_unit: i64) -> f32 {
-        let steps_from_right = (self.max_x_unit as i128) - (x_unit as i128);
+        let steps_from_right = self.max_x_unit.saturating_sub(x_unit);
         let right_edge_px = self.plot_right_edge_px();
         let spacing_px = self.bar_spacing_px.as_f32().max(1.0);
 
@@ -502,13 +522,23 @@ impl Scene {
     }
 
     pub(super) fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
+        let panel = self.primary_plot();
+        self.map_primary_plot_with_anchor_unclamped(value, anchor)
+            .clamp(panel.y, panel.y + panel.height)
+    }
+
+    pub(super) fn map_primary_plot_with_anchor_unclamped(
+        &self,
+        value: f32,
+        anchor: Option<f32>,
+    ) -> f32 {
         let uses_display_transform =
             matches!(self.primary_scale_mode, PanelScaleMode::PercentFromBase)
                 || (self.can_use_log_primary_scale()
                     && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic));
 
         if !uses_display_transform {
-            return self.map_primary_plot_unit(self.primary_value_to_unit(value));
+            return self.map_primary_plot_unit_unclamped(self.primary_value_to_unit(value));
         }
 
         let (min_display, max_display) = self.primary_domain_display_values();
@@ -518,7 +548,7 @@ impl Scene {
         } else {
             self.primary_to_display_value(value)
         };
-        let ratio = ((display_value - min_display) / range).clamp(0.0, 1.0);
+        let ratio = (display_value - min_display) / range;
         let panel = self.primary_plot();
         panel.y + (1.0 - ratio) * panel.height
     }
@@ -528,8 +558,18 @@ impl Scene {
         panel_index: usize,
         indicator_value: f32,
     ) -> Option<f32> {
+        let panel = self.indicator_plot(panel_index)?;
+        self.map_indicator_plot_unclamped(panel_index, indicator_value)
+            .map(|y| y.clamp(panel.y, panel.y + panel.height))
+    }
+
+    pub(super) fn map_indicator_plot_unclamped(
+        &self,
+        panel_index: usize,
+        indicator_value: f32,
+    ) -> Option<f32> {
         let y_unit = self.indicator_value_to_unit(panel_index, indicator_value)?;
-        self.map_indicator_plot_unit(panel_index, y_unit)
+        self.map_indicator_plot_unit_unclamped(panel_index, y_unit)
     }
 }
 
@@ -838,7 +878,9 @@ where
 
         let span = self.visible_x_span_units_for_width(plot_width);
 
-        let pan_units = self.horizontal_offset.round() as i64;
+        let pan_units = RoundedOffsetUnits::from_f32(self.horizontal_offset)
+            .map(RoundedOffsetUnits::get)
+            .unwrap_or(0);
         let mut right = data_max_x.saturating_add(pan_units);
         let right_cap = data_max_x.saturating_add(span);
         if right > right_cap {
@@ -922,18 +964,19 @@ where
         let min_primary_unit = min_primary_unit?;
         let max_primary_unit = max_primary_unit?;
 
-        let min_i = i128::from(min_primary_unit.0);
-        let max_i = i128::from(max_primary_unit.0);
-        let span = (max_i - min_i).abs();
+        let min_i = min_primary_unit.0;
+        let max_i = max_primary_unit.0;
+        let span = max_i.abs_diff(min_i);
         let pad = if span == 0 {
-            (max_i.abs().max(1) + 199) / 200
+            max_i.unsigned_abs().max(1).saturating_add(199) / 200
         } else {
-            ((span * 5) + 99) / 100
+            span.saturating_mul(5).saturating_add(99) / 100
         }
         .max(1);
+        let pad = i64::try_from(pad).unwrap_or(i64::MAX);
 
-        let padded_min = (min_i - pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-        let padded_max = (max_i + pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+        let padded_min = min_i.saturating_sub(pad);
+        let padded_max = max_i.saturating_add(pad);
 
         Some((YUnit(padded_min), YUnit(padded_max)))
     }
@@ -1010,18 +1053,17 @@ where
         }
 
         let fit_visible_bounds = |min_unit: i64, max_unit: i64| {
-            let min_i = i128::from(min_unit);
-            let max_i = i128::from(max_unit);
-            let span = (max_i - min_i).abs();
+            let span = max_unit.abs_diff(min_unit);
             let pad = if span == 0 {
-                (max_i.abs().max(1) + 49) / 50
+                max_unit.unsigned_abs().max(1).saturating_add(49) / 50
             } else {
-                ((span * 5) + 99) / 100
+                span.saturating_mul(5).saturating_add(99) / 100
             }
             .max(1);
+            let pad = i64::try_from(pad).unwrap_or(i64::MAX);
 
-            let padded_min = (min_i - pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-            let padded_max = (max_i + pad).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+            let padded_min = min_unit.saturating_sub(pad);
+            let padded_max = max_unit.saturating_add(pad);
             (YUnit(padded_min), YUnit(padded_max))
         };
 
