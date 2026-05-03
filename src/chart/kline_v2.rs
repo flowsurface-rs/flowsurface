@@ -1,15 +1,13 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
-use crate::style;
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
-    LayerId, LayerSource, MarkKind, PanelId, PanelScaleMode, PanelValueId,
+    LayerId, LayerSource, MarkKind, PanelId, PanelRole, PanelScaleMode, PanelValueId,
 };
 use crate::widget::chart::kline::{
-    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, DrawingAnchor,
-    DrawingDraft, DrawingEntity, DrawingId, DrawingObject, DrawingStyle, DrawingTool,
-    HorizontalScale, IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent,
-    OverlayChannelColorRole, OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY,
-    RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY, YUnit,
+    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, HorizontalScale,
+    IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole,
+    OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY,
+    RSI_UPPER_BAND_FIELD_KEY,
 };
 
 use data::chart::Basis;
@@ -28,8 +26,6 @@ const DEFAULT_FETCH_BARS: u64 = 500;
 const MAX_AUTO_INDICATOR_WARMUP_BARS: u64 = 2000;
 const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
-const DRAWING_SIDEBAR_WIDTH: f32 = 36.0;
-const DRAWING_DETAILS_SIDEBAR_WIDTH: f32 = 108.0;
 
 const BOLLINGER_OVERLAY_CHANNELS: [OverlayChannelSpec; 3] = [
     OverlayChannelSpec {
@@ -79,8 +75,10 @@ const RSI_OVERLAY_CHANNELS: [OverlayChannelSpec; 4] = [
     },
 ];
 
+mod drawing;
 mod indicator;
 
+use drawing::{DrawingMessage, DrawingTools, DrawingUpdate};
 use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
 pub use indicator::{IndicatorAvailability, RsiConfig};
 
@@ -103,22 +101,9 @@ enum IndicatorPanelBinding {
 }
 
 #[derive(Debug, Clone)]
-struct DrawingDragState {
-    id: DrawingId,
-    origin_anchor: DrawingAnchor,
-    origin_object: DrawingObject,
-}
-
-#[derive(Debug, Clone)]
 pub enum Message {
     Chart(KlineWidgetEvent),
-    SelectDrawingTool(DrawingTool),
-    SelectedDrawingBorderColor,
-    SelectedDrawingFillColor,
-    SelectedDrawingBorderWidth,
-    SelectedDrawingLineColor,
-    SelectedDrawingLineWidth,
-    DeleteSelectedDrawing,
+    Sidebar(DrawingMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -243,12 +228,7 @@ pub struct KlineChartV2 {
     comparison_layers: FxHashMap<TickerInfo, LayerId>,
     request_handlers: FxHashMap<TickerInfo, RequestHandler>,
     rsi_config: RsiConfig,
-    active_drawing_tool: DrawingTool,
-    drawings: Vec<DrawingEntity>,
-    selected_drawing: Option<DrawingId>,
-    drawing_drag: Option<DrawingDragState>,
-    drawing_draft: Option<DrawingDraft>,
-    next_drawing_id: u64,
+    drawing: DrawingTools,
     pub series: Vec<KlineSeries>,
 }
 
@@ -271,7 +251,7 @@ impl KlineChartV2 {
             timeframe,
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: DEFAULT_HORIZONTAL_OFFSET_UNITS,
-            primary_autoscale: false,
+            primary_autoscale: true,
             panel_y_viewports: Vec::new(),
             composition,
             cache_rev: 0,
@@ -283,12 +263,7 @@ impl KlineChartV2 {
             comparison_layers: FxHashMap::default(),
             request_handlers: FxHashMap::default(),
             rsi_config,
-            active_drawing_tool: DrawingTool::Cursor,
-            drawings: Vec::new(),
-            selected_drawing: None,
-            drawing_drag: None,
-            drawing_draft: None,
-            next_drawing_id: 1,
+            drawing: DrawingTools::default(),
             series: Vec::new(),
         };
 
@@ -304,6 +279,221 @@ impl KlineChartV2 {
 
         chart.install_default_indicator_panels();
         chart
+    }
+
+    pub fn update(&mut self, message: Message) -> Option<Action> {
+        match message {
+            Message::Sidebar(message) => {
+                let update = self.drawing.update(message);
+                self.apply_drawing_update(update);
+            }
+            Message::Chart(event) => {
+                if let Some(update) = self.drawing.handle_kline_widget_event(&event) {
+                    self.apply_drawing_update(update);
+                    return None;
+                }
+
+                match event {
+                    KlineWidgetEvent::HorizontalScaleChanged(scale) => {
+                        self.horizontal_scale = scale;
+                        self.bump_rev();
+                    }
+                    KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
+                        self.horizontal_offset = offset;
+                        self.bump_rev();
+                    }
+                    KlineWidgetEvent::PrimaryAutoscaleToggled => {
+                        let primary_panel_id = self.composition.primary_panel_id()?;
+
+                        let effective_scale = self
+                            .composition
+                            .panel_effective_scale_mode(primary_panel_id)
+                            .unwrap_or(PanelScaleMode::Absolute);
+
+                        if !matches!(effective_scale, PanelScaleMode::PercentFromBase) {
+                            self.primary_autoscale = !self.primary_autoscale;
+
+                            if self.primary_autoscale {
+                                let _ = self.reset_panel_y_viewport(primary_panel_id);
+                            }
+
+                            self.bump_rev();
+                        }
+                    }
+                    KlineWidgetEvent::PrimaryScaleModeCycleRequested => {
+                        let primary_panel_id = self.composition.primary_panel_id()?;
+                        let panel = self.composition.panel(primary_panel_id)?;
+
+                        if panel.uses_multi_source() {
+                            // Multi-source primary scale is forced to percent.
+                            return None;
+                        }
+
+                        let next_scale = match panel.preferred_scale {
+                            PanelScaleMode::Absolute => PanelScaleMode::Logarithmic,
+                            PanelScaleMode::Logarithmic => PanelScaleMode::PercentFromBase,
+                            PanelScaleMode::PercentFromBase => PanelScaleMode::Absolute,
+                            PanelScaleMode::FitVisible | PanelScaleMode::FitVisibleIncludeZero => {
+                                PanelScaleMode::Absolute
+                            }
+                        };
+
+                        if self
+                            .composition
+                            .set_panel_preferred_scale(primary_panel_id, next_scale)
+                        {
+                            let now_effective = self
+                                .composition
+                                .panel_effective_scale_mode(primary_panel_id)
+                                .unwrap_or(next_scale);
+
+                            if matches!(now_effective, PanelScaleMode::PercentFromBase)
+                                || self.primary_autoscale
+                            {
+                                let _ = self.reset_panel_y_viewport(primary_panel_id);
+                            }
+
+                            self.bump_rev();
+                        }
+                    }
+                    KlineWidgetEvent::PanelYViewportChanged { panel_id, viewport } => {
+                        if let Some(primary_id) = self.composition.primary_panel_id()
+                            && primary_id == panel_id
+                        {
+                            if matches!(
+                                self.composition.panel_effective_scale_mode(primary_id),
+                                Some(PanelScaleMode::PercentFromBase)
+                            ) {
+                                return None;
+                            }
+
+                            if self.primary_autoscale {
+                                self.primary_autoscale = false;
+                            }
+                        }
+
+                        if self.set_panel_y_viewport(panel_id, viewport) {
+                            self.bump_rev();
+                        }
+                    }
+                    KlineWidgetEvent::PanelYViewportReset { panel_id } => {
+                        if let Some(primary_id) = self.composition.primary_panel_id()
+                            && primary_id == panel_id
+                        {
+                            if matches!(
+                                self.composition.panel_effective_scale_mode(primary_id),
+                                Some(PanelScaleMode::PercentFromBase)
+                            ) {
+                                return None;
+                            }
+
+                            if !self.primary_autoscale {
+                                self.primary_autoscale = true;
+                            }
+                        }
+
+                        if self.reset_panel_y_viewport(panel_id) {
+                            self.bump_rev();
+                        }
+                    }
+                    KlineWidgetEvent::PanelSplitChanged { index, split }
+                        if self
+                            .composition
+                            .set_split(index, split, DEFAULT_MIN_PANEL_RATIO) =>
+                    {
+                        self.bump_rev();
+                    }
+                    KlineWidgetEvent::PanelMoveUp { index }
+                        if index > 0 && self.composition.move_panel(index, index - 1) =>
+                    {
+                        self.bump_rev();
+                    }
+                    KlineWidgetEvent::PanelMoveDown { index } => {
+                        let target = index.saturating_add(1);
+                        if target < self.composition.panels.len()
+                            && self.composition.move_panel(index, target)
+                        {
+                            self.bump_rev();
+                        }
+                    }
+                    KlineWidgetEvent::PanelSettings { .. } => {
+                        // TODO: Hook for upcoming panel settings modal/workflow.
+                    }
+                    KlineWidgetEvent::PanelClose { index } => {
+                        if let Some((panel_id, panel_role)) = self
+                            .composition
+                            .panels
+                            .get(index)
+                            .map(|panel| (panel.id, panel.role))
+                            && !matches!(panel_role, PanelRole::Primary)
+                        {
+                            // Remove panel-local drawings while panel coordinates are still valid.
+                            let _ = self.drawing.prune_panel_drawings(panel_id);
+
+                            if self.composition.remove_panel(panel_id) {
+                                let _ = self.reset_panel_y_viewport(panel_id);
+                                self.prune_stale_indicator_panel_bindings();
+                                self.bump_rev();
+                            }
+                        }
+                    }
+                    KlineWidgetEvent::TickerSettings(_ticker) => {
+                        // Hook for ticker-specific settings editor.
+                    }
+                    KlineWidgetEvent::TickerRemove(ticker) if ticker != self.base_ticker => {
+                        return Some(Action::RemoveSeries(ticker));
+                    }
+                    KlineWidgetEvent::XAxisDoubleClick => {
+                        self.horizontal_scale =
+                            HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX);
+                        self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
+                        self.bump_rev();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
+        if self.series.iter().all(|series| series.bars.is_empty()) {
+            return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
+        }
+
+        let drawing_sidebar = self.drawing.view(Message::Sidebar);
+        let chart: iced::Element<_> =
+            KlineWidget::new(&self.series, self.timeframe, &self.composition)
+                .with_basis(self.basis)
+                .with_horizontal_scale(self.horizontal_scale)
+                .with_horizontal_offset(self.horizontal_offset)
+                .with_primary_autoscale(self.primary_autoscale)
+                .with_panel_y_viewports(&self.panel_y_viewports)
+                .with_active_drawing_tool(self.drawing.active_tool())
+                .with_drawings(self.drawing.drawings())
+                .with_selected_drawing(self.drawing.selected_drawing())
+                .with_drawing_draft(self.drawing.drawing_draft())
+                .with_timezone(timezone)
+                .version(self.cache_rev)
+                .into();
+
+        let chart = iced::widget::container(chart.map(Message::Chart))
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .padding(1);
+
+        iced::widget::row![drawing_sidebar.padding(4), chart].into()
+    }
+
+    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
+        if let Some(ts) = now {
+            self.last_tick = ts;
+        }
+
+        self.bump_rev();
+
+        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
+        self.fetch_action(reqs)
     }
 
     pub fn basis(&self) -> Basis {
@@ -477,700 +667,10 @@ impl KlineChartV2 {
         self.last_tick
     }
 
-    pub fn update(&mut self, message: Message) -> Option<Action> {
-        match message {
-            Message::SelectDrawingTool(tool) => {
-                if self.active_drawing_tool != tool {
-                    self.active_drawing_tool = tool;
-                    self.drawing_drag = None;
-                    self.drawing_draft = None;
-                    self.bump_rev();
-                }
-            }
-            Message::SelectedDrawingBorderColor
-            | Message::SelectedDrawingFillColor
-            | Message::SelectedDrawingBorderWidth
-            | Message::SelectedDrawingLineColor
-            | Message::SelectedDrawingLineWidth => {
-                // Placeholder controls for upcoming drawing style editor.
-            }
-            Message::DeleteSelectedDrawing => {
-                let _ = self.remove_selected_drawing();
-            }
-            Message::Chart(event) => match event {
-                KlineWidgetEvent::HorizontalScaleChanged(scale) => {
-                    self.horizontal_scale = scale;
-                    self.bump_rev();
-                }
-                KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
-                    self.horizontal_offset = offset;
-                    self.bump_rev();
-                }
-                KlineWidgetEvent::PrimaryAutoscaleToggled => {
-                    let primary_panel_id = self.composition.primary_panel_id()?;
-
-                    let effective_scale = self
-                        .composition
-                        .panel_effective_scale_mode(primary_panel_id)
-                        .unwrap_or(PanelScaleMode::Absolute);
-
-                    if !matches!(effective_scale, PanelScaleMode::PercentFromBase) {
-                        self.primary_autoscale = !self.primary_autoscale;
-
-                        if self.primary_autoscale {
-                            let _ = self.reset_panel_y_viewport(primary_panel_id);
-                        }
-
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PrimaryScaleModeCycleRequested => {
-                    let primary_panel_id = self.composition.primary_panel_id()?;
-                    let panel = self.composition.panel(primary_panel_id)?;
-
-                    if panel.uses_multi_source() {
-                        // Multi-source primary scale is forced to percent.
-                        return None;
-                    }
-
-                    let next_scale = match panel.preferred_scale {
-                        PanelScaleMode::Absolute => PanelScaleMode::Logarithmic,
-                        PanelScaleMode::Logarithmic => PanelScaleMode::PercentFromBase,
-                        PanelScaleMode::PercentFromBase => PanelScaleMode::Absolute,
-                        PanelScaleMode::FitVisible | PanelScaleMode::FitVisibleIncludeZero => {
-                            PanelScaleMode::Absolute
-                        }
-                    };
-
-                    if self
-                        .composition
-                        .set_panel_preferred_scale(primary_panel_id, next_scale)
-                    {
-                        let now_effective = self
-                            .composition
-                            .panel_effective_scale_mode(primary_panel_id)
-                            .unwrap_or(next_scale);
-
-                        if matches!(now_effective, PanelScaleMode::PercentFromBase)
-                            || self.primary_autoscale
-                        {
-                            let _ = self.reset_panel_y_viewport(primary_panel_id);
-                        }
-
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PanelYViewportChanged { panel_id, viewport } => {
-                    if let Some(primary_id) = self.composition.primary_panel_id()
-                        && primary_id == panel_id
-                    {
-                        if matches!(
-                            self.composition.panel_effective_scale_mode(primary_id),
-                            Some(PanelScaleMode::PercentFromBase)
-                        ) {
-                            return None;
-                        }
-
-                        if self.primary_autoscale {
-                            self.primary_autoscale = false;
-                        }
-                    }
-
-                    if self.set_panel_y_viewport(panel_id, viewport) {
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PanelYViewportReset { panel_id } => {
-                    if let Some(primary_id) = self.composition.primary_panel_id()
-                        && primary_id == panel_id
-                    {
-                        if matches!(
-                            self.composition.panel_effective_scale_mode(primary_id),
-                            Some(PanelScaleMode::PercentFromBase)
-                        ) {
-                            return None;
-                        }
-
-                        if self.primary_autoscale {
-                            self.primary_autoscale = false;
-                        }
-                    }
-
-                    if self.reset_panel_y_viewport(panel_id) {
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PanelSplitChanged { index, split } => {
-                    if self
-                        .composition
-                        .set_split(index, split, DEFAULT_MIN_PANEL_RATIO)
-                    {
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PanelMoveUp { index } => {
-                    if index > 0 && self.composition.move_panel(index, index - 1) {
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PanelMoveDown { index } => {
-                    let target = index.saturating_add(1);
-                    if target < self.composition.panels.len()
-                        && self.composition.move_panel(index, target)
-                    {
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::PanelSettings { .. } => {
-                    // TODO: Hook for upcoming panel settings modal/workflow.
-                }
-                KlineWidgetEvent::PanelClose { index } => {
-                    if let Some(panel_id) = self.composition.panels.get(index).map(|panel| panel.id)
-                        && self.composition.remove_panel(panel_id)
-                    {
-                        let _ = self.reset_panel_y_viewport(panel_id);
-                        self.prune_stale_indicator_panel_bindings();
-                        self.bump_rev();
-                    }
-                }
-                KlineWidgetEvent::TickerSettings(_ticker) => {
-                    // Hook for ticker-specific settings editor.
-                }
-                KlineWidgetEvent::TickerRemove(ticker) => {
-                    if ticker != self.base_ticker {
-                        return Some(Action::RemoveSeries(ticker));
-                    }
-                }
-                KlineWidgetEvent::XAxisDoubleClick => {
-                    self.horizontal_scale = HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX);
-                    self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
-                    self.bump_rev();
-                }
-                KlineWidgetEvent::DrawingSelected(selected) => {
-                    let _ = self.select_drawing(selected);
-                }
-                KlineWidgetEvent::DrawingAnchorPressed(anchor) => {
-                    if self.drawing_draft.is_some() {
-                        if self.commit_drawing_draft(anchor).is_some() {
-                            self.active_drawing_tool = DrawingTool::Cursor;
-                        }
-                    } else {
-                        let started = self.start_drawing_from_anchor(anchor);
-                        if started && self.drawing_draft.is_none() {
-                            self.active_drawing_tool = DrawingTool::Cursor;
-                        }
-                    }
-                }
-                KlineWidgetEvent::DrawingAnchorMoved(anchor) => {
-                    let _ = self.update_drawing_draft_anchor(anchor);
-                }
-                KlineWidgetEvent::DrawingDragStarted { id, anchor } => {
-                    let _ = self.start_drawing_drag(id, anchor);
-                }
-                KlineWidgetEvent::DrawingDragMoved { id, anchor } => {
-                    let _ = self.update_drawing_drag(id, anchor);
-                }
-                KlineWidgetEvent::DrawingDragFinished { id } => {
-                    let _ = self.finish_drawing_drag(id);
-                }
-                KlineWidgetEvent::DrawingDraftCanceled => {
-                    let _ = self.cancel_drawing_draft();
-                }
-            },
+    fn apply_drawing_update(&mut self, update: DrawingUpdate) {
+        if update.should_bump() {
+            self.bump_rev();
         }
-
-        None
-    }
-
-    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
-        if self.series.iter().all(|series| series.bars.is_empty()) {
-            return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
-        }
-
-        let drawing_sidebar = self.view_drawing_sidebar();
-        let chart: iced::Element<_> =
-            KlineWidget::new(&self.series, self.timeframe, &self.composition)
-                .with_basis(self.basis)
-                .with_horizontal_scale(self.horizontal_scale)
-                .with_horizontal_offset(self.horizontal_offset)
-                .with_primary_autoscale(self.primary_autoscale)
-                .with_panel_y_viewports(&self.panel_y_viewports)
-                .with_active_drawing_tool(self.active_drawing_tool)
-                .with_drawings(&self.drawings)
-                .with_selected_drawing(self.selected_drawing)
-                .with_drawing_draft(self.drawing_draft.as_ref())
-                .with_timezone(timezone)
-                .version(self.cache_rev)
-                .into();
-
-        let chart = iced::widget::container(chart.map(Message::Chart))
-            .width(iced::Length::Fill)
-            .height(iced::Length::Fill)
-            .padding(1);
-
-        iced::widget::row![drawing_sidebar.padding(4), chart].into()
-    }
-
-    fn view_drawing_sidebar(&self) -> iced::widget::Container<'_, Message> {
-        if let Some(drawing) = self.selected_drawing_entity() {
-            self.view_selected_drawing_sidebar(drawing)
-        } else {
-            self.view_drawing_tools()
-        }
-    }
-
-    fn selected_drawing_entity(&self) -> Option<&DrawingEntity> {
-        let selected = self.selected_drawing?;
-        self.drawings.iter().find(|drawing| drawing.id == selected)
-    }
-
-    fn drawing_object_title(object: &DrawingObject) -> &'static str {
-        match object {
-            DrawingObject::Box { .. } => "Box",
-            DrawingObject::Trendline { .. } => "Trendline",
-            DrawingObject::HorizontalLine { .. } => "Horizontal Line",
-            DrawingObject::VerticalLine { .. } => "Vertical Line",
-        }
-    }
-
-    fn view_selected_drawing_sidebar(
-        &self,
-        drawing: &DrawingEntity,
-    ) -> iced::widget::Container<'_, Message> {
-        let mut details = iced::widget::Column::new()
-            .spacing(4)
-            .push(iced::widget::text(Self::drawing_object_title(&drawing.object)).size(13))
-            .push(iced::widget::rule::horizontal(1.0))
-            .align_x(iced::Alignment::Center);
-
-        match drawing.object {
-            DrawingObject::Box { .. } => {
-                details = details
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Border Color").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(Message::SelectedDrawingBorderColor),
-                    )
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Fill Color").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(Message::SelectedDrawingFillColor),
-                    )
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Border Width").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(Message::SelectedDrawingBorderWidth),
-                    );
-            }
-            DrawingObject::Trendline { .. }
-            | DrawingObject::HorizontalLine { .. }
-            | DrawingObject::VerticalLine { .. } => {
-                details = details
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Line Color").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(Message::SelectedDrawingLineColor),
-                    )
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Line Width").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(Message::SelectedDrawingLineWidth),
-                    );
-            }
-        }
-
-        details = details.push(
-            iced::widget::button(iced::widget::text("Delete").align_x(iced::Alignment::Center))
-                .style(|theme, status| style::button::cancel(theme, status, false))
-                .width(iced::Length::Fill)
-                .on_press(Message::DeleteSelectedDrawing),
-        );
-
-        iced::widget::container(details)
-            .style(style::chart_sidebar_container)
-            .width(DRAWING_DETAILS_SIDEBAR_WIDTH)
-            .height(iced::Length::Fill)
-    }
-
-    fn view_drawing_tools(&self) -> iced::widget::Container<'_, Message> {
-        let mut tools = iced::widget::Column::new().spacing(6);
-
-        for tool in Self::drawing_tools().iter().copied() {
-            let selected = self.active_drawing_tool == tool;
-            let label = match tool {
-                DrawingTool::Cursor => "C",
-                DrawingTool::HorizontalLine => "H",
-                DrawingTool::VerticalLine => "V",
-                DrawingTool::Trendline => "TL",
-                DrawingTool::Box => "B",
-            }
-            .to_string();
-
-            let btn =
-                iced::widget::button(iced::widget::text(label).align_x(iced::Alignment::Center))
-                    .style(move |theme, status| style::button::transparent(theme, status, selected))
-                    .width(iced::Length::Fill);
-
-            tools = tools.push(if selected {
-                btn
-            } else {
-                btn.on_press(Message::SelectDrawingTool(tool))
-            });
-        }
-
-        iced::widget::container(tools)
-            .style(style::chart_sidebar_container)
-            .width(DRAWING_SIDEBAR_WIDTH)
-            .height(iced::Length::Fill)
-            .padding([4, 2])
-    }
-
-    fn drawing_tools() -> &'static [DrawingTool] {
-        &[
-            DrawingTool::Cursor,
-            DrawingTool::Trendline,
-            DrawingTool::Box,
-            DrawingTool::HorizontalLine,
-            DrawingTool::VerticalLine,
-        ]
-    }
-
-    pub fn drawings(&self) -> &[DrawingEntity] {
-        &self.drawings
-    }
-
-    pub fn selected_drawing(&self) -> Option<DrawingId> {
-        self.selected_drawing
-    }
-
-    pub fn drawing_draft(&self) -> Option<&DrawingDraft> {
-        self.drawing_draft.as_ref()
-    }
-
-    pub fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
-        if let Some(id) = selected
-            && !self.drawings.iter().any(|drawing| drawing.id == id)
-        {
-            return false;
-        }
-
-        if self.selected_drawing == selected {
-            return false;
-        }
-
-        self.selected_drawing = selected;
-        self.drawing_drag = None;
-        self.bump_rev();
-        true
-    }
-
-    pub fn remove_selected_drawing(&mut self) -> bool {
-        let Some(id) = self.selected_drawing else {
-            return false;
-        };
-
-        self.remove_drawing(id)
-    }
-
-    pub fn remove_drawing(&mut self, id: DrawingId) -> bool {
-        let Some(index) = self.drawings.iter().position(|drawing| drawing.id == id) else {
-            return false;
-        };
-
-        if self.drawings[index].locked {
-            return false;
-        }
-
-        self.drawings.remove(index);
-        if self.selected_drawing == Some(id) {
-            self.selected_drawing = None;
-        }
-        if self
-            .drawing_drag
-            .as_ref()
-            .map(|drag| drag.id == id)
-            .unwrap_or(false)
-        {
-            self.drawing_drag = None;
-        }
-
-        self.bump_rev();
-        true
-    }
-
-    pub fn add_drawing(&mut self, object: DrawingObject, style: Option<DrawingStyle>) -> DrawingId {
-        self.push_drawing(object, style.unwrap_or_default())
-    }
-
-    pub fn start_drawing_from_anchor(&mut self, anchor: DrawingAnchor) -> bool {
-        match self.active_drawing_tool {
-            DrawingTool::Cursor => false,
-            DrawingTool::Trendline => {
-                self.drawing_draft = Some(DrawingDraft::Trendline {
-                    start: anchor,
-                    current: anchor,
-                    style: Self::style_for_tool(DrawingTool::Trendline),
-                });
-                self.selected_drawing = None;
-                self.drawing_drag = None;
-                self.bump_rev();
-                true
-            }
-            DrawingTool::Box => {
-                self.drawing_draft = Some(DrawingDraft::Box {
-                    start: anchor,
-                    current: anchor,
-                    style: Self::style_for_tool(DrawingTool::Box),
-                });
-                self.selected_drawing = None;
-                self.drawing_drag = None;
-                self.bump_rev();
-                true
-            }
-            DrawingTool::HorizontalLine => {
-                let object = DrawingObject::HorizontalLine {
-                    panel_id: anchor.panel_id,
-                    y_unit: anchor.y_unit,
-                };
-                self.push_drawing(object, Self::style_for_tool(DrawingTool::HorizontalLine));
-                true
-            }
-            DrawingTool::VerticalLine => {
-                let object = DrawingObject::VerticalLine { time: anchor.time };
-                self.push_drawing(object, Self::style_for_tool(DrawingTool::VerticalLine));
-                true
-            }
-        }
-    }
-
-    pub fn update_drawing_draft_anchor(&mut self, anchor: DrawingAnchor) -> bool {
-        let Some(draft) = self.drawing_draft.as_mut() else {
-            return false;
-        };
-
-        match draft {
-            DrawingDraft::Trendline { current, .. } | DrawingDraft::Box { current, .. } => {
-                *current = anchor;
-            }
-        }
-
-        self.bump_rev();
-        true
-    }
-
-    pub fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
-        let draft = self.drawing_draft.take()?;
-
-        let (object, style) = match draft {
-            DrawingDraft::Trendline { start, style, .. } => {
-                (DrawingObject::Trendline { start, end }, style)
-            }
-            DrawingDraft::Box { start, style, .. } => (DrawingObject::Box { start, end }, style),
-        };
-
-        Some(self.push_drawing(object, style))
-    }
-
-    pub fn cancel_drawing_draft(&mut self) -> bool {
-        if self.drawing_draft.take().is_none() {
-            return false;
-        }
-
-        self.bump_rev();
-        true
-    }
-
-    fn drawing_index(&self, id: DrawingId) -> Option<usize> {
-        self.drawings.iter().position(|drawing| drawing.id == id)
-    }
-
-    fn start_drawing_drag(&mut self, id: DrawingId, anchor: DrawingAnchor) -> bool {
-        let Some(index) = self.drawing_index(id) else {
-            self.drawing_drag = None;
-            return false;
-        };
-
-        let drawing = &self.drawings[index];
-        if drawing.locked || !drawing.visible {
-            self.drawing_drag = None;
-            return false;
-        }
-
-        self.selected_drawing = Some(id);
-        self.drawing_drag = Some(DrawingDragState {
-            id,
-            origin_anchor: anchor,
-            origin_object: drawing.object.clone(),
-        });
-        true
-    }
-
-    fn update_drawing_drag(&mut self, id: DrawingId, anchor: DrawingAnchor) -> bool {
-        let Some(drag_state) = self
-            .drawing_drag
-            .as_ref()
-            .filter(|drag| drag.id == id)
-            .cloned()
-        else {
-            return false;
-        };
-
-        let Some(index) = self.drawing_index(id) else {
-            self.drawing_drag = None;
-            return false;
-        };
-
-        if anchor.panel_id != drag_state.origin_anchor.panel_id {
-            return false;
-        }
-
-        if self.drawings[index].locked {
-            self.drawing_drag = None;
-            return false;
-        }
-
-        let moved = Self::translated_drawing_object(
-            &drag_state.origin_object,
-            drag_state.origin_anchor,
-            anchor,
-        );
-
-        if self.drawings[index].object == moved {
-            return false;
-        }
-
-        self.drawings[index].object = moved;
-        self.selected_drawing = Some(id);
-        self.bump_rev();
-        true
-    }
-
-    fn finish_drawing_drag(&mut self, id: DrawingId) -> bool {
-        if self
-            .drawing_drag
-            .as_ref()
-            .map(|drag| drag.id == id)
-            .unwrap_or(false)
-        {
-            self.drawing_drag = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn translated_drawing_object(
-        object: &DrawingObject,
-        origin_anchor: DrawingAnchor,
-        current_anchor: DrawingAnchor,
-    ) -> DrawingObject {
-        let delta_ms =
-            (current_anchor.time.as_u64() as i128) - (origin_anchor.time.as_u64() as i128);
-        let delta_y = current_anchor
-            .y_unit
-            .0
-            .saturating_sub(origin_anchor.y_unit.0);
-
-        match object {
-            DrawingObject::Trendline { start, end } => DrawingObject::Trendline {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, delta_y),
-            },
-            DrawingObject::Box { start, end } => DrawingObject::Box {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, delta_y),
-            },
-            DrawingObject::HorizontalLine { panel_id, y_unit } => DrawingObject::HorizontalLine {
-                panel_id: *panel_id,
-                y_unit: Self::shift_y_by_delta(*y_unit, delta_y),
-            },
-            DrawingObject::VerticalLine { time } => DrawingObject::VerticalLine {
-                time: Self::shift_time_by_delta_ms(*time, delta_ms),
-            },
-        }
-    }
-
-    fn shift_anchor_by_delta(anchor: DrawingAnchor, delta_ms: i128, delta_y: i64) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: anchor.panel_id,
-            time: Self::shift_time_by_delta_ms(anchor.time, delta_ms),
-            y_unit: Self::shift_y_by_delta(anchor.y_unit, delta_y),
-        }
-    }
-
-    fn shift_y_by_delta(y_unit: YUnit, delta_y: i64) -> YUnit {
-        YUnit(y_unit.0.saturating_add(delta_y))
-    }
-
-    fn shift_time_by_delta_ms(time: UnixMs, delta_ms: i128) -> UnixMs {
-        if delta_ms >= 0 {
-            let add_ms = delta_ms.min(u64::MAX as i128) as u64;
-            time.saturating_add(add_ms)
-        } else {
-            let sub_ms = delta_ms.unsigned_abs().min(u64::MAX as u128) as u64;
-            time.saturating_sub(sub_ms)
-        }
-    }
-
-    fn style_for_tool(tool: DrawingTool) -> DrawingStyle {
-        let mut style = DrawingStyle::default();
-
-        match tool {
-            DrawingTool::Cursor => {}
-            DrawingTool::Trendline => {
-                style.stroke_color = iced::Color::from_rgb(0.78, 0.86, 0.98);
-                style.stroke_width = 1.2;
-            }
-            DrawingTool::Box => {
-                style.stroke_color = iced::Color::from_rgb(0.72, 0.84, 0.98);
-                style.stroke_width = 1.2;
-                style.fill_color = Some(iced::Color::from_rgba(0.50, 0.66, 0.98, 0.16));
-            }
-            DrawingTool::HorizontalLine => {
-                style.stroke_color = iced::Color::from_rgb(0.96, 0.80, 0.40);
-                style.stroke_width = 1.0;
-            }
-            DrawingTool::VerticalLine => {
-                style.stroke_color = iced::Color::from_rgb(0.74, 0.90, 0.74);
-                style.stroke_width = 1.0;
-            }
-        }
-
-        style
-    }
-
-    fn push_drawing(&mut self, object: DrawingObject, style: DrawingStyle) -> DrawingId {
-        let id = DrawingId(self.next_drawing_id.max(1));
-        self.next_drawing_id = self.next_drawing_id.wrapping_add(1).max(1);
-
-        self.drawings.push(DrawingEntity {
-            id,
-            object,
-            style,
-            locked: false,
-            visible: true,
-        });
-
-        self.selected_drawing = Some(id);
-        self.drawing_drag = None;
-        self.drawing_draft = None;
-        self.bump_rev();
-        id
     }
 
     pub fn insert_history(
@@ -1261,17 +761,6 @@ impl KlineChartV2 {
         self.enforce_indicator_availability();
 
         self.rebuild_handlers();
-        self.bump_rev();
-
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
-        self.fetch_action(reqs)
-    }
-
-    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {
-        if let Some(ts) = now {
-            self.last_tick = ts;
-        }
-
         self.bump_rev();
 
         let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));

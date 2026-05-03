@@ -50,7 +50,7 @@ const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 const DRAWING_HIT_TOLERANCE_PX: f32 = 7.0;
 
-pub const DEFAULT_BAR_SPACING_PX: f32 = 8.0;
+pub const DEFAULT_BAR_SPACING_PX: f32 = 5.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
 pub const MAX_BAR_SPACING_PX: f32 = 48.0;
 
@@ -395,6 +395,25 @@ pub enum KlinePanelKind {
     Indicator,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KlineWidgetDrawingEvent {
+    Selected(Option<DrawingId>),
+    AnchorPressed(DrawingAnchor),
+    AnchorMoved(DrawingAnchor),
+    DragStarted {
+        id: DrawingId,
+        anchor: DrawingAnchor,
+    },
+    DragMoved {
+        id: DrawingId,
+        anchor: DrawingAnchor,
+    },
+    DragFinished {
+        id: DrawingId,
+    },
+    DraftCanceled,
+}
+
 #[derive(Debug, Clone)]
 pub enum KlineWidgetEvent {
     HorizontalScaleChanged(HorizontalScale),
@@ -427,21 +446,7 @@ pub enum KlineWidgetEvent {
     TickerSettings(TickerInfo),
     TickerRemove(TickerInfo),
     XAxisDoubleClick,
-    DrawingSelected(Option<DrawingId>),
-    DrawingAnchorPressed(DrawingAnchor),
-    DrawingAnchorMoved(DrawingAnchor),
-    DrawingDragStarted {
-        id: DrawingId,
-        anchor: DrawingAnchor,
-    },
-    DrawingDragMoved {
-        id: DrawingId,
-        anchor: DrawingAnchor,
-    },
-    DrawingDragFinished {
-        id: DrawingId,
-    },
-    DrawingDraftCanceled,
+    Drawing(KlineWidgetDrawingEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2464,7 +2469,9 @@ where
 
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
                     if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                        shell.publish(M::from(KlineWidgetEvent::DrawingDragFinished { id }));
+                        shell.publish(M::from(KlineWidgetEvent::Drawing(
+                            KlineWidgetDrawingEvent::DragFinished { id },
+                        )));
                     }
 
                     if !matches!(state.drag_mode, DragMode::None) {
@@ -2675,8 +2682,8 @@ where
                                 let was_selected = self.selected_drawing == Some(id);
 
                                 if !was_selected {
-                                    shell.publish(M::from(KlineWidgetEvent::DrawingSelected(
-                                        Some(id),
+                                    shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                        KlineWidgetDrawingEvent::Selected(Some(id)),
                                     )));
                                     state.drag_mode = DragMode::None;
                                     state.last_cursor = None;
@@ -2688,10 +2695,9 @@ where
 
                                 if let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
                                 {
-                                    shell.publish(M::from(KlineWidgetEvent::DrawingDragStarted {
-                                        id,
-                                        anchor,
-                                    }));
+                                    shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                        KlineWidgetDrawingEvent::DragStarted { id, anchor },
+                                    )));
                                     state.drag_mode = DragMode::DrawingMove { id };
                                     state.last_cursor = Some(cursor_pos);
                                     state.clear_overlay_caches();
@@ -2709,7 +2715,9 @@ where
                             }
 
                             if self.selected_drawing.is_some() {
-                                shell.publish(M::from(KlineWidgetEvent::DrawingSelected(None)));
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::Selected(None),
+                                )));
                                 state.drag_mode = DragMode::None;
                                 state.last_cursor = None;
                                 state.clear_overlay_caches();
@@ -2735,7 +2743,9 @@ where
                             && let Some(anchor) =
                                 self.drawing_anchor_from_layout_cursor(layout, cursor)
                         {
-                            shell.publish(M::from(KlineWidgetEvent::DrawingAnchorPressed(anchor)));
+                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                KlineWidgetDrawingEvent::AnchorPressed(anchor),
+                            )));
                             state.drag_mode = DragMode::None;
                             state.last_cursor = Some(cursor_pos);
                             state.clear_overlay_caches();
@@ -2754,7 +2764,9 @@ where
                     mouse::Event::ButtonPressed(mouse::Button::Right)
                         if self.drawing_draft.is_some() =>
                     {
-                        shell.publish(M::from(KlineWidgetEvent::DrawingDraftCanceled));
+                        shell.publish(M::from(KlineWidgetEvent::Drawing(
+                            KlineWidgetDrawingEvent::DraftCanceled,
+                        )));
                         state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                         state.clear_overlay_caches();
@@ -2763,7 +2775,9 @@ where
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
                         if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                            shell.publish(M::from(KlineWidgetEvent::DrawingDragFinished { id }));
+                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                KlineWidgetDrawingEvent::DragFinished { id },
+                            )));
                             state.clear_overlay_caches();
                             state.clear_all_caches();
                             shell.capture_event();
@@ -2831,10 +2845,12 @@ where
                                 && let Some(new_anchor) =
                                     self.drawing_anchor_from_scene_cursor(&scene)
                             {
-                                shell.publish(M::from(KlineWidgetEvent::DrawingDragMoved {
-                                    id,
-                                    anchor: new_anchor,
-                                }));
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::DragMoved {
+                                        id,
+                                        anchor: new_anchor,
+                                    },
+                                )));
                                 state.last_cursor = Some(cursor_pos);
                                 state.clear_overlay_caches();
                                 state.clear_all_caches();
@@ -2849,7 +2865,9 @@ where
                             && let Some(anchor) =
                                 self.drawing_anchor_from_layout_cursor(layout, cursor)
                         {
-                            shell.publish(M::from(KlineWidgetEvent::DrawingAnchorMoved(anchor)));
+                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                KlineWidgetDrawingEvent::AnchorMoved(anchor),
+                            )));
                             state.last_cursor = Some(cursor_pos);
                             state.clear_overlay_caches();
                             shell.capture_event();
