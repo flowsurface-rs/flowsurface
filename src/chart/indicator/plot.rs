@@ -1,7 +1,5 @@
 use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
-use data::util::{guesstimate_ticks, round_to_tick};
-
 use iced::widget::canvas::{self, Cache, Geometry, Path};
 use iced::{Alignment, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
@@ -19,6 +17,10 @@ pub trait Series {
     fn at(&self, x: u64) -> Option<&Self::Y>;
 
     fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a;
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
     where
         Self: 'a;
 }
@@ -41,6 +43,13 @@ impl<Y> Series for &BTreeMap<u64, Y> {
         Self: 'a,
     {
         (**self).range((x + 1)..).next().map(|(k, v)| (*k, v))
+    }
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        (**self).range(range).next_back().map(|(k, v)| (*k, v))
     }
 }
 
@@ -82,6 +91,18 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
             .range(..k)
             .next_back()
             .map(|(kk, v)| (self.offset - *kk, v))
+    }
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let earliest = self.offset.saturating_sub(*range.end());
+        let latest = self.offset.saturating_sub(*range.start());
+        self.inner
+            .range(earliest..=latest)
+            .next()
+            .map(|(k, v)| (self.offset - *k, v))
     }
 }
 
@@ -127,6 +148,16 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         match self {
             AnySeries::Forward(map) => (**map).range((x + 1)..).next().map(|(k, v)| (*k, v)),
             AnySeries::Reversed(rv) => rv.next_after(x),
+        }
+    }
+
+    fn last_in<'b>(&'b self, range: RangeInclusive<u64>) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        match self {
+            AnySeries::Forward(map) => (**map).range(range).next_back().map(|(k, v)| (*k, v)),
+            AnySeries::Reversed(rv) => rv.last_in(range),
         }
     }
 }
@@ -261,30 +292,33 @@ where
 
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             let dashed = dashed_line(theme);
-            if let Some(cursor_position) = cursor.position_in(ctx.bounds) {
-                // vertical snap by basis
-                let width = frame.width() / ctx.scaling;
-                let region = Rectangle {
-                    x: -ctx.translation.x - width / 2.0,
-                    y: 0.0,
-                    width,
-                    height: frame.height() / ctx.scaling,
-                };
-                let earliest = ctx.x_to_interval(region.x) as f64;
-                let latest = ctx.x_to_interval(region.x + region.width) as f64;
+            let width = frame.width() / ctx.scaling;
+            let region = Rectangle {
+                x: -ctx.translation.x - width / 2.0,
+                y: 0.0,
+                width,
+                height: frame.height() / ctx.scaling,
+            };
+            let (earliest, latest) = ctx.interval_range(&region);
+            if latest < earliest {
+                return;
+            }
 
+            if let Some(cursor_position) = cursor.position_in(ctx.bounds) {
+                let earliest_f = ctx.x_to_interval(region.x) as f64;
+                let latest_f = ctx.x_to_interval(region.x + region.width) as f64;
                 let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
                 let (rounded_x, snap_ratio) = match ctx.basis {
                     Basis::Time(tf) => {
                         let step = tf.to_milliseconds() as f64;
-                        let rx = ((earliest + crosshair_ratio * (latest - earliest)) / step).round()
-                            as u64
+                        let rx = ((earliest_f + crosshair_ratio * (latest_f - earliest_f)) / step)
+                            .round() as u64
                             * step as u64;
 
-                        let sr = if latest <= earliest {
+                        let sr = if latest_f <= earliest_f {
                             0.5
                         } else {
-                            ((rx as f64 - earliest) / (latest - earliest)) as f32
+                            ((rx as f64 - earliest_f) / (latest_f - earliest_f)) as f32
                         };
                         (rx, sr)
                     }
@@ -314,24 +348,14 @@ where
                         tooltip.draw(frame, theme, bounds, cursor_position.x);
                     }
                 }
-            } else if let Some(cursor_position) = cursor.position_in(bounds) {
-                // horizontal snap uses label extents
-                let highest = self.max_for_labels;
-                let lowest = self.min_for_labels;
-                let tick = guesstimate_ticks(highest - lowest);
+            } else if ctx.layout.indicator_labels_always_visible
+                && let Some((x, y)) = self.series.last_in(earliest..=latest)
+            {
+                let next = self.series.next_after(x).map(|(_, v)| v);
 
-                let ratio = cursor_position.y / bounds.height;
-                let value = highest + ratio * (lowest - highest);
-                let rounded = round_to_tick(value, tick);
-                let snap_ratio = (rounded - highest) / (lowest - highest);
-
-                frame.stroke(
-                    &Path::line(
-                        Point::new(0.0, snap_ratio * bounds.height),
-                        Point::new(bounds.width, snap_ratio * bounds.height),
-                    ),
-                    dashed,
-                );
+                if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
+                    tooltip.draw_static(frame, theme, bounds);
+                }
             }
         });
 
@@ -428,6 +452,26 @@ impl PlotTooltip {
             color: palette.background.base.text,
             font: style::AZERET_MONO,
             align_x: align_x.into(),
+            ..canvas::Text::default()
+        });
+    }
+
+    pub fn draw_static(&self, frame: &mut canvas::Frame, theme: &Theme, _bounds: Rectangle) {
+        let (tooltip_w, tooltip_h) = self.guesstimate();
+        let palette = theme.extended_palette();
+
+        frame.fill_rectangle(
+            Point::new(TOOLTIP_MARGIN, 0.0),
+            Size::new(tooltip_w, tooltip_h),
+            palette.background.weakest.color.scale_alpha(0.9),
+        );
+        frame.fill_text(canvas::Text {
+            content: self.text.clone(),
+            position: Point::new(TOOLTIP_MARGIN + TOOLTIP_PADDING, 2.0),
+            size: iced::Pixels(10.0),
+            color: palette.background.base.text,
+            font: style::AZERET_MONO,
+            align_x: Alignment::Start.into(),
             ..canvas::Text::default()
         });
     }

@@ -333,7 +333,10 @@ impl std::fmt::Display for ClusterKind {
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {}
+#[serde(default)]
+pub struct Config {
+    pub indicator_labels_always_visible: bool,
+}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {
