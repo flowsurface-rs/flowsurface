@@ -1068,6 +1068,7 @@ impl ViewState {
         ViewConfig {
             splits: layout.splits.clone(),
             autoscale: layout.autoscale,
+            indicator_labels_always_visible: layout.indicator_labels_always_visible,
         }
     }
 

@@ -210,8 +210,9 @@ impl KlineChart {
                     step.decimal_places(),
                     ticker_info,
                     ViewConfig {
-                        splits: layout.splits,
+                        splits: layout.splits.clone(),
                         autoscale: Some(Autoscale::FitToVisible),
+                        indicator_labels_always_visible: layout.indicator_labels_always_visible,
                     },
                     cell_width,
                     cell_height,
@@ -268,8 +269,9 @@ impl KlineChart {
                     step.decimal_places(),
                     ticker_info,
                     ViewConfig {
-                        splits: layout.splits,
+                        splits: layout.splits.clone(),
                         autoscale: Some(Autoscale::FitToVisible),
+                        indicator_labels_always_visible: layout.indicator_labels_always_visible,
                     },
                     cell_width,
                     cell_height,
@@ -482,6 +484,11 @@ impl KlineChart {
 
     pub fn chart_layout(&self) -> ViewConfig {
         self.chart.layout()
+    }
+
+    pub fn set_indicator_labels_always_visible(&mut self, value: bool) {
+        self.chart.layout.indicator_labels_always_visible = value;
+        self.chart.cache.clear_all();
     }
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
