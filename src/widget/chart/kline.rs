@@ -1567,20 +1567,29 @@ where
         data::config::theme::from_hsv_degrees(hue, saturation.min(1.0), value.min(1.0))
     }
 
-    pub(super) fn primary_overlay_value_ids(&self) -> Vec<PanelValueId> {
+    fn collect_primary_overlay_value_ids(&self, out: &mut Vec<PanelValueId>) {
+        out.clear();
+
         let Some(primary_panel_id) = self.composition.primary_panel_id() else {
-            return Vec::new();
+            return;
         };
 
         let Some(primary_panel) = self.composition.panel(primary_panel_id) else {
-            return Vec::new();
+            return;
         };
 
-        primary_panel
-            .layers
-            .iter()
-            .filter_map(|layer| layer.source.indicator_value_id())
-            .collect()
+        out.extend(
+            primary_panel
+                .layers
+                .iter()
+                .filter_map(|layer| layer.source.indicator_value_id()),
+        );
+    }
+
+    pub(super) fn primary_overlay_value_ids(&self) -> Vec<PanelValueId> {
+        let mut out = Vec::new();
+        self.collect_primary_overlay_value_ids(&mut out);
+        out
     }
 
     pub(super) fn overlay_channels_for_panel_value(
@@ -1881,233 +1890,237 @@ where
         let indicator_width = ((px_per_unit * 0.8).round() as i32)
             .clamp(1, 24)
             .min(max_width);
+        let in_visible_range =
+            |x_unit: i64| x_unit >= scene.min_x_unit && x_unit <= scene.max_x_unit;
 
-        let mut primary_line_points: Vec<Vec<Point>> = vec![Vec::new(); self.series.len()];
-        let indicator_panel_channels: Vec<&'static [OverlayChannelSpec]> = scene
-            .indicator_panels
-            .iter()
-            .map(|panel| self.overlay_channels_for_panel_value(panel.value_id))
-            .collect();
-        let mut indicator_line_points: Vec<Vec<Vec<Point>>> = indicator_panel_channels
-            .iter()
-            .map(|channels| vec![Vec::new(); channels.len()])
-            .collect();
-        let primary_overlay_value_ids = self.primary_overlay_value_ids();
-        let primary_overlay_channels: Vec<&'static [OverlayChannelSpec]> =
-            primary_overlay_value_ids
-                .iter()
-                .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
-                .collect();
-        let mut primary_overlay_points: Vec<Vec<Vec<Point>>> = primary_overlay_channels
-            .iter()
-            .map(|channels| vec![Vec::new(); channels.len()])
-            .collect();
-        let indicator_zero_baselines: Vec<Option<f32>> = scene
-            .indicator_panels
-            .iter()
-            .map(|panel| {
-                scene
-                    .map_indicator_plot(panel.panel_index, 0.0)
-                    .or_else(|| scene.indicator_panel_bottom(panel.panel_index))
-            })
-            .collect();
-
-        self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
-            if x_unit < scene.min_x_unit || x_unit > scene.max_x_unit {
-                return;
+        for indicator_panel in &scene.indicator_panels {
+            if !matches!(indicator_panel.mark, MarkKind::Candle | MarkKind::Bar(_)) {
+                continue;
             }
 
-            let x_px = scene.map_x_plot(x_unit).round() as i32;
-            let is_base_series = series_index == 0;
-            let series_anchor = scene
-                .series_percent_anchors
-                .get(series_index)
-                .copied()
-                .flatten();
-
-            let y_open = scene.map_primary_plot_with_anchor(bar.open.to_f32(), series_anchor);
-            let y_high = scene.map_primary_plot_with_anchor(bar.high.to_f32(), series_anchor);
-            let y_low = scene.map_primary_plot_with_anchor(bar.low.to_f32(), series_anchor);
-            let y_close = scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor);
-
-            let color = if bar.close >= bar.open {
-                palette.success.base.color
-            } else {
-                palette.danger.base.color
+            let Some(y_indicator_baseline) = scene
+                .map_indicator_plot(indicator_panel.panel_index, 0.0)
+                .or_else(|| scene.indicator_panel_bottom(indicator_panel.panel_index))
+            else {
+                continue;
             };
 
-            let primary_mark = if is_base_series {
-                scene.primary_mark
-            } else {
-                MarkKind::Line
-            };
-
-            match primary_mark {
-                MarkKind::Line => {
-                    if let Some(points) = primary_line_points.get_mut(series_index) {
-                        points.push(Point::new(x_px as f32, y_close));
-                    }
+            self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
+                if series_index != 0 || !in_visible_range(x_unit) {
+                    return;
                 }
-                MarkKind::Candle | MarkKind::Bar(_) => {
-                    let body_top = y_open.min(y_close);
-                    let body_h = (y_open - y_close).abs().max(1.0);
-                    let candle_left = x_px - (candle_width / 2);
 
-                    frame.fill_rectangle(
-                        Point::new(candle_left as f32, body_top),
-                        Size::new(candle_width as f32, body_h),
-                        color,
-                    );
-
-                    let wick_w = ((candle_width as f32 * 0.16).round() as i32).clamp(1, 2);
-                    let wick_left = x_px - (wick_w / 2);
-                    frame.fill_rectangle(
-                        Point::new(wick_left as f32, y_high.min(y_low)),
-                        Size::new(wick_w as f32, (y_high - y_low).abs().max(1.0)),
-                        color.scale_alpha(0.85),
-                    );
-                }
-            }
-
-            if !is_base_series {
-                return;
-            }
-
-            for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
-                let Some(data) = series.indicator_data_for_panel_value_opt(Some(*value_id), bar)
-                else {
-                    continue;
-                };
-
-                let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
-                    continue;
-                };
-
-                for (channel_idx, channel) in channels.iter().copied().enumerate() {
-                    let Some(value) = Self::overlay_channel_value(data, channel) else {
-                        continue;
-                    };
-
-                    let y = scene.map_primary_plot_with_anchor(value, series_anchor);
-                    if let Some(points) = primary_overlay_points
-                        .get_mut(overlay_idx)
-                        .and_then(|overlay| overlay.get_mut(channel_idx))
-                    {
-                        points.push(Point::new(x_px as f32, y));
-                    }
-                }
-            }
-
-            for (indicator_slot, indicator_panel) in scene.indicator_panels.iter().enumerate() {
                 let Some(indicator_data) =
                     series.indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
                 else {
+                    return;
+                };
+
+                let indicator_value = indicator_data.value();
+                let Some(y_indicator_value) =
+                    scene.map_indicator_plot(indicator_panel.panel_index, indicator_value)
+                else {
+                    return;
+                };
+
+                let x_px = scene.map_x_plot(x_unit).round() as i32;
+                let indicator_left = x_px - (indicator_width / 2);
+                let indicator_top = y_indicator_value.min(y_indicator_baseline);
+                let indicator_height = (y_indicator_baseline - y_indicator_value).abs().max(1.0);
+
+                if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
+                    && matches!(
+                        indicator_panel.mark,
+                        MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
+                    )
+                {
+                    if let Some(overlay) = indicator_data.signed_overlay() {
+                        let base_color = if overlay >= 0.0 {
+                            palette.success.base.color
+                        } else {
+                            palette.danger.base.color
+                        };
+
+                        frame.fill_rectangle(
+                            Point::new(indicator_left as f32, indicator_top),
+                            Size::new(indicator_width as f32, indicator_height),
+                            base_color.scale_alpha(0.3),
+                        );
+
+                        let overlay_abs = overlay.abs();
+                        if overlay_abs > 0.0
+                            && let Some(y_overlay) =
+                                scene.map_indicator_plot(indicator_panel.panel_index, overlay_abs)
+                        {
+                            frame.fill_rectangle(
+                                Point::new(
+                                    indicator_left as f32,
+                                    y_overlay.min(y_indicator_baseline),
+                                ),
+                                Size::new(
+                                    indicator_width as f32,
+                                    (y_indicator_baseline - y_overlay).abs().max(1.0),
+                                ),
+                                base_color,
+                            );
+                        }
+                    } else {
+                        frame.fill_rectangle(
+                            Point::new(indicator_left as f32, indicator_top),
+                            Size::new(indicator_width as f32, indicator_height),
+                            palette.secondary.strong.color,
+                        );
+                    }
+                } else {
+                    frame.fill_rectangle(
+                        Point::new(indicator_left as f32, indicator_top),
+                        Size::new(indicator_width as f32, indicator_height),
+                        palette.secondary.strong.color.scale_alpha(0.5),
+                    );
+                }
+            });
+        }
+
+        if let Some(primary_panel_id) = self.composition.primary_panel_id()
+            && let Some(primary_panel) = self.composition.panel(primary_panel_id)
+        {
+            let base_series_anchor = scene.series_percent_anchors.first().copied().flatten();
+
+            for layer in &primary_panel.layers {
+                let Some(value_id) = layer.source.indicator_value_id() else {
                     continue;
                 };
-                let indicator_value = indicator_data.value();
-                let y_indicator_baseline = indicator_zero_baselines
-                    .get(indicator_slot)
+
+                for channel in self
+                    .overlay_channels_for_panel_value(Some(value_id))
+                    .iter()
                     .copied()
-                    .flatten();
+                {
+                    let mut point_count = 0usize;
+                    let path = canvas::Path::new(|builder| {
+                        self.for_each_bar_unit_index(
+                            scene.x_axis,
+                            |series_index, series, x_unit, bar| {
+                                if series_index != 0 || !in_visible_range(x_unit) {
+                                    return;
+                                }
 
-                if let (Some(y_indicator_value), Some(y_indicator_baseline)) = (
-                    scene.map_indicator_plot(indicator_panel.panel_index, indicator_value),
-                    y_indicator_baseline,
-                ) {
-                    match indicator_panel.mark {
-                        MarkKind::Line => {
-                            let Some(channels) = indicator_panel_channels.get(indicator_slot)
-                            else {
-                                continue;
-                            };
-
-                            for (channel_idx, channel) in channels.iter().copied().enumerate() {
-                                let Some(channel_value) =
-                                    Self::overlay_channel_value(indicator_data, channel)
+                                let Some(data) =
+                                    series.indicator_data_for_panel_value_opt(Some(value_id), bar)
                                 else {
-                                    continue;
+                                    return;
                                 };
 
-                                let Some(y_channel_value) = scene
-                                    .map_indicator_plot(indicator_panel.panel_index, channel_value)
-                                else {
-                                    continue;
+                                let Some(value) = Self::overlay_channel_value(data, channel) else {
+                                    return;
                                 };
 
-                                if let Some(points) = indicator_line_points
-                                    .get_mut(indicator_slot)
-                                    .and_then(|channel_points| channel_points.get_mut(channel_idx))
-                                {
-                                    points.push(Point::new(x_px as f32, y_channel_value));
-                                }
-                            }
-                        }
-                        MarkKind::Candle | MarkKind::Bar(_) => {
-                            let indicator_left = x_px - (indicator_width / 2);
-                            let indicator_top = y_indicator_value.min(y_indicator_baseline);
-                            let indicator_height =
-                                (y_indicator_baseline - y_indicator_value).abs().max(1.0);
-
-                            if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
-                                && matches!(
-                                    indicator_panel.mark,
-                                    MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
-                                )
-                            {
-                                if let Some(overlay) = indicator_data.signed_overlay() {
-                                    let base_color = if overlay >= 0.0 {
-                                        palette.success.base.color
-                                    } else {
-                                        palette.danger.base.color
-                                    };
-
-                                    frame.fill_rectangle(
-                                        Point::new(indicator_left as f32, indicator_top),
-                                        Size::new(indicator_width as f32, indicator_height),
-                                        base_color.scale_alpha(0.3),
-                                    );
-
-                                    let overlay_abs = overlay.abs();
-                                    if overlay_abs > 0.0
-                                        && let Some(y_overlay) = scene.map_indicator_plot(
-                                            indicator_panel.panel_index,
-                                            overlay_abs,
-                                        )
-                                    {
-                                        frame.fill_rectangle(
-                                            Point::new(
-                                                indicator_left as f32,
-                                                y_overlay.min(y_indicator_baseline),
-                                            ),
-                                            Size::new(
-                                                indicator_width as f32,
-                                                (y_indicator_baseline - y_overlay).abs().max(1.0),
-                                            ),
-                                            base_color,
-                                        );
-                                    }
-                                } else {
-                                    frame.fill_rectangle(
-                                        Point::new(indicator_left as f32, indicator_top),
-                                        Size::new(indicator_width as f32, indicator_height),
-                                        palette.secondary.strong.color,
-                                    );
-                                }
-                            } else {
-                                frame.fill_rectangle(
-                                    Point::new(indicator_left as f32, indicator_top),
-                                    Size::new(indicator_width as f32, indicator_height),
-                                    palette.secondary.strong.color.scale_alpha(0.5),
+                                let point = Point::new(
+                                    scene.map_x_plot(x_unit),
+                                    scene.map_primary_plot_with_anchor(value, base_series_anchor),
                                 );
-                            }
-                        }
+
+                                if point_count == 0 {
+                                    builder.move_to(point);
+                                } else {
+                                    builder.line_to(point);
+                                }
+                                point_count += 1;
+                            },
+                        );
+                    });
+
+                    if point_count < 2 {
+                        continue;
                     }
+
+                    frame.stroke(
+                        &path,
+                        canvas::Stroke::default()
+                            .with_width(channel.line_width)
+                            .with_color(Self::overlay_channel_color(channel, palette)),
+                    );
                 }
             }
-        });
+        }
 
-        for (series_index, points) in primary_line_points.iter().enumerate() {
-            if points.len() < 2 {
+        if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
+            self.for_each_bar_unit_index(scene.x_axis, |series_index, _series, x_unit, bar| {
+                if series_index != 0 || !in_visible_range(x_unit) {
+                    return;
+                }
+
+                let series_anchor = scene.series_percent_anchors.first().copied().flatten();
+                let y_open = scene.map_primary_plot_with_anchor(bar.open.to_f32(), series_anchor);
+                let y_high = scene.map_primary_plot_with_anchor(bar.high.to_f32(), series_anchor);
+                let y_low = scene.map_primary_plot_with_anchor(bar.low.to_f32(), series_anchor);
+                let y_close = scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor);
+
+                let color = if bar.close >= bar.open {
+                    palette.success.base.color
+                } else {
+                    palette.danger.base.color
+                };
+
+                let x_px = scene.map_x_plot(x_unit).round() as i32;
+                let body_top = y_open.min(y_close);
+                let body_h = (y_open - y_close).abs().max(1.0);
+                let candle_width_px = candle_width as f32;
+                let candle_left = (x_px as f32) - (candle_width_px * 0.5);
+                let wick_w = ((candle_width_px * 0.16).round() as i32).clamp(1, 2);
+                let wick_width_px = wick_w as f32;
+                let wick_left = candle_left + ((candle_width_px - wick_width_px) * 0.5);
+
+                frame.fill_rectangle(
+                    Point::new(candle_left, body_top),
+                    Size::new(candle_width_px, body_h),
+                    color,
+                );
+                frame.fill_rectangle(
+                    Point::new(wick_left, y_high.min(y_low)),
+                    Size::new(wick_width_px, (y_high - y_low).abs().max(1.0)),
+                    color.scale_alpha(0.85),
+                );
+            });
+        }
+
+        for series_index in 0..self.series.len() {
+            let mut point_count = 0usize;
+
+            let path = canvas::Path::new(|builder| {
+                self.for_each_bar_unit_index(
+                    scene.x_axis,
+                    |iter_series_index, _series, x_unit, bar| {
+                        if iter_series_index != series_index || !in_visible_range(x_unit) {
+                            return;
+                        }
+
+                        let is_base_series = iter_series_index == 0;
+                        if is_base_series && !matches!(scene.primary_mark, MarkKind::Line) {
+                            return;
+                        }
+
+                        let series_anchor = scene
+                            .series_percent_anchors
+                            .get(iter_series_index)
+                            .copied()
+                            .flatten();
+                        let point = Point::new(
+                            scene.map_x_plot(x_unit),
+                            scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor),
+                        );
+
+                        if point_count == 0 {
+                            builder.move_to(point);
+                        } else {
+                            builder.line_to(point);
+                        }
+                        point_count += 1;
+                    },
+                );
+            });
+
+            if point_count < 2 {
                 continue;
             }
 
@@ -2120,14 +2133,6 @@ where
             };
 
             let line_width = if is_base_series { 1.5 } else { 1.3 };
-
-            let path = canvas::Path::new(|builder| {
-                builder.move_to(points[0]);
-                for point in points.iter().skip(1) {
-                    builder.line_to(*point);
-                }
-            });
-
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
@@ -2136,56 +2141,58 @@ where
             );
         }
 
-        for (panel_idx, channel_points) in indicator_line_points.iter().enumerate() {
-            let Some(channels) = indicator_panel_channels.get(panel_idx) else {
+        for indicator_panel in &scene.indicator_panels {
+            if !matches!(indicator_panel.mark, MarkKind::Line) {
                 continue;
-            };
-
-            for (channel_idx, points) in channel_points.iter().enumerate() {
-                if points.len() < 2 {
-                    continue;
-                }
-
-                let Some(channel) = channels.get(channel_idx).copied() else {
-                    continue;
-                };
-
-                let path = canvas::Path::new(|builder| {
-                    builder.move_to(points[0]);
-                    for point in points.iter().skip(1) {
-                        builder.line_to(*point);
-                    }
-                });
-
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default()
-                        .with_width(channel.line_width)
-                        .with_color(Self::overlay_channel_color(channel, palette)),
-                );
             }
-        }
 
-        for (overlay_idx, channels) in primary_overlay_points.iter().enumerate() {
-            let Some(channel_specs) = primary_overlay_channels.get(overlay_idx) else {
-                continue;
-            };
-
-            for (channel_idx, points) in channels.iter().enumerate() {
-                if points.len() < 2 {
-                    continue;
-                }
-
-                let Some(channel) = channel_specs.get(channel_idx).copied() else {
-                    continue;
-                };
+            for channel in self
+                .overlay_channels_for_panel_value(indicator_panel.value_id)
+                .iter()
+                .copied()
+            {
+                let mut point_count = 0usize;
 
                 let path = canvas::Path::new(|builder| {
-                    builder.move_to(points[0]);
-                    for point in points.iter().skip(1) {
-                        builder.line_to(*point);
-                    }
+                    self.for_each_bar_unit_index(
+                        scene.x_axis,
+                        |series_index, series, x_unit, bar| {
+                            if series_index != 0 || !in_visible_range(x_unit) {
+                                return;
+                            }
+
+                            let Some(indicator_data) = series
+                                .indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
+                            else {
+                                return;
+                            };
+
+                            let Some(channel_value) =
+                                Self::overlay_channel_value(indicator_data, channel)
+                            else {
+                                return;
+                            };
+
+                            let Some(y_channel_value) = scene
+                                .map_indicator_plot(indicator_panel.panel_index, channel_value)
+                            else {
+                                return;
+                            };
+
+                            let point = Point::new(scene.map_x_plot(x_unit), y_channel_value);
+                            if point_count == 0 {
+                                builder.move_to(point);
+                            } else {
+                                builder.line_to(point);
+                            }
+                            point_count += 1;
+                        },
+                    );
                 });
+
+                if point_count < 2 {
+                    continue;
+                }
 
                 frame.stroke(
                     &path,
