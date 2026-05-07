@@ -259,35 +259,41 @@ impl KlineChartKind {
     pub fn min_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 0.4,
-            KlineChartKind::Candles => 0.6,
+            // Lock to 1.0 so the overall canvas scale never changes.
+            // All horizontal zoom is handled exclusively through cell_width,
+            // which is how TradingView works (time-scale drag / scroll wheel).
+            KlineChartKind::Candles => 1.0,
         }
     }
 
     pub fn max_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 1.2,
-            KlineChartKind::Candles => 2.5,
+            KlineChartKind::Candles => 1.0,
         }
     }
 
     pub fn max_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 360.0,
-            KlineChartKind::Candles => 16.0,
+            // Allow deep zoom-in (wide candles like TradingView).
+            KlineChartKind::Candles => 80.0,
         }
     }
 
     pub fn min_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles => 1.0,
+            // TV lightweight-charts: minBarSpacing = 0.5 px.
+            KlineChartKind::Candles => 0.5,
         }
     }
 
     pub fn max_cell_height(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 90.0,
-            KlineChartKind::Candles => 8.0,
+            // Generous Y range for dragging the price axis.
+            KlineChartKind::Candles => 20.0,
         }
     }
 
@@ -301,7 +307,8 @@ impl KlineChartKind {
     pub fn default_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles => 4.0,
+            // TV lightweight-charts: barSpacing default = 6 px.
+            KlineChartKind::Candles => 6.0,
         }
     }
 }

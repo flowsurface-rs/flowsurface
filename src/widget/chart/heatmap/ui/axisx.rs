@@ -307,7 +307,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                             content: label,
                             position: iced::Point::new(x_px, y),
                             color: text_color,
-                            font: crate::style::AZERET_MONO,
+                            font: crate::style::ZED_MONO,
                             size: AXIS_TEXT_SIZE.into(),
                             align_x: iced::Alignment::Center.into(),
                             align_y: iced::Alignment::Center.into(),
@@ -345,7 +345,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     position: iced::Point::new(cursor_label.x_px, y),
                     color: palette.secondary.base.text,
                     size: AXIS_TEXT_SIZE.into(),
-                    font: crate::style::AZERET_MONO,
+                    font: crate::style::ZED_MONO,
                     align_x: iced::Alignment::Center.into(),
                     align_y: iced::Alignment::Center.into(),
                     ..Default::default()

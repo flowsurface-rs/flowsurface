@@ -320,7 +320,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         position: iced::Point::new(x, *y_px),
                         color: text_color,
                         size: AXIS_TEXT_SIZE.into(),
-                        font: crate::style::AZERET_MONO,
+                        font: crate::style::ZED_MONO,
                         align_x: iced::Alignment::Center.into(),
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
@@ -349,7 +349,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         position: iced::Point::new(x, y_px_base),
                         color: palette.primary.strong.text,
                         size: AXIS_TEXT_SIZE.into(),
-                        font: crate::style::AZERET_MONO,
+                        font: crate::style::ZED_MONO,
                         align_x: iced::Alignment::Center.into(),
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
@@ -373,7 +373,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                     position: iced::Point::new(x, y_px),
                     color: palette.secondary.base.text,
                     size: AXIS_TEXT_SIZE.into(),
-                    font: crate::style::AZERET_MONO,
+                    font: crate::style::ZED_MONO,
                     align_x: iced::Alignment::Center.into(),
                     align_y: iced::Alignment::Center.into(),
                     ..Default::default()

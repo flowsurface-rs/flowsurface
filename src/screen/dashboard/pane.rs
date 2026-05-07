@@ -2319,7 +2319,7 @@ fn link_group_modal<'a>(
 
         for &group in row_groups {
             let is_selected = selected_group == Some(group);
-            let btn_content = text(group.to_string()).font(style::AZERET_MONO);
+            let btn_content = text(group.to_string()).font(style::ZED_MONO);
 
             let btn = if is_selected {
                 button_with_tooltip(

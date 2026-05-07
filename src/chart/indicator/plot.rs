@@ -426,7 +426,7 @@ impl PlotTooltip {
             position: Point::new(text_x, 2.0),
             size: iced::Pixels(10.0),
             color: palette.background.base.text,
-            font: style::AZERET_MONO,
+            font: style::ZED_MONO,
             align_x: align_x.into(),
             ..canvas::Text::default()
         });

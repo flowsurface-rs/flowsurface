@@ -19,8 +19,8 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Stroke};
+use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
 use std::time::Instant;
@@ -37,7 +37,9 @@ impl Chart for KlineChart {
     }
 
     fn invalidate_crosshair(&mut self) {
-        self.chart.cache.clear_crosshair();
+        // Crosshair and axis cursor labels are now drawn with Frame::new
+        // (uncached). With unconditional-rendering they refresh every frame
+        // automatically — no cache invalidation needed for cursor moves.
         self.indicators
             .values_mut()
             .filter_map(Option::as_mut)
@@ -771,11 +773,16 @@ impl KlineChart {
                         .data_source
                         .visible_price_range(start_interval, end_interval)
                     {
-                        let padding = (highest - lowest) * 0.05;
-                        let price_span = (highest - lowest) + (2.0 * padding);
+                        // TV lightweight-charts price-scale defaults:
+                        //   scaleMargins.top    = 0.20  (20 % headroom above)
+                        //   scaleMargins.bottom = 0.10  (10 % headroom below)
+                        let range = highest - lowest;
+                        let top_padding    = range * 0.20;
+                        let bottom_padding = range * 0.10;
+                        let price_span     = range + top_padding + bottom_padding;
 
                         if price_span > 0.0 && chart.bounds.height > f32::EPSILON {
-                            let padded_highest = highest + padding;
+                            let padded_highest = highest + top_padding;
                             let chart_height = chart.bounds.height;
                             let tick_size = chart.tick_size.to_f32_lossy();
 
@@ -856,6 +863,10 @@ impl canvas::Program<Message> for KlineChart {
         let palette = theme.extended_palette();
 
         let klines = chart.cache.main.draw(renderer, bounds_size, |frame| {
+            // White background — fill before any transforms so it covers
+            // the full bounds in screen space.
+            frame.fill_rectangle(Point::ORIGIN, bounds_size, Color::WHITE);
+
             let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
 
             frame.translate(center);
@@ -969,7 +980,17 @@ impl canvas::Program<Message> for KlineChart {
                     );
                 }
                 KlineChartKind::Candles => {
-                    let candle_width = chart.cell_width * 0.8;
+                    let candle_width = optimal_candle_width(chart.cell_width);
+
+                    // The screen transform is:
+                    //   screen = center + scaling * (translation + canvas_pt)
+                    // px_offset captures the translation-invariant part so the
+                    // snap inside draw_candle_dp can round to an exact pixel
+                    // boundary regardless of zoom level or pan position.
+                    let px_offset = Vector {
+                        x: bounds.width  / 2.0 + chart.scaling * chart.translation.x,
+                        y: bounds.height / 2.0 + chart.scaling * chart.translation.y,
+                    };
 
                     render_data_source(
                         &self.data_source,
@@ -982,9 +1003,10 @@ impl canvas::Program<Message> for KlineChart {
                                 frame,
                                 price_to_y,
                                 candle_width,
-                                palette,
                                 x_position,
                                 kline,
+                                chart.scaling,
+                                px_offset,
                             );
                         },
                     );
@@ -994,20 +1016,23 @@ impl canvas::Program<Message> for KlineChart {
             chart.draw_last_price_line(frame, palette, region);
         });
 
-        let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
-            if let Some(cursor_position) = cursor.position_in(bounds) {
-                let (_, rounded_aggregation) =
-                    chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
+        // Crosshair is drawn uncached so it is always pixel-fresh without
+        // requiring a cache-clear → message → update round-trip on every
+        // cursor move. unconditional-rendering calls draw() every frame.
+        let mut crosshair_frame = Frame::new(renderer, bounds_size);
+        if let Some(cursor_position) = cursor.position_in(bounds) {
+            let (_, rounded_aggregation) =
+                chart.draw_crosshair(&mut crosshair_frame, theme, bounds_size, cursor_position, interaction);
 
-                draw_crosshair_tooltip(
-                    &self.data_source,
-                    &chart.ticker_info,
-                    frame,
-                    palette,
-                    rounded_aggregation,
-                );
-            }
-        });
+            draw_crosshair_tooltip(
+                &self.data_source,
+                &chart.ticker_info,
+                &mut crosshair_frame,
+                palette,
+                rounded_aggregation,
+            );
+        }
+        let crosshair = crosshair_frame.into_geometry();
 
         vec![klines, crosshair]
     }
@@ -1077,40 +1102,108 @@ fn draw_footprint_kline(
     );
 }
 
+// ── Candle body width ────────────────────────────────────────────────────────
+//
+// Sliding-coefficient formula from TV lightweight-charts
+// (`src/renderers/optimal-bar-width.ts`), with two key differences:
+//
+//  1. No floor() — fractional width, snapped per-candle by sx().  The old
+//     floor() made every candle jump to the next integer simultaneously,
+//     producing the "tick tick" staircase feel during zoom.
+//
+//  2. Capped at (bar_spacing − 1) so adjacent bodies are always separated
+//     by AT LEAST 1 screen pixel.  Proof: body_right of candle N equals
+//     round(phase + N·cell + body/2); body_left of candle N+1 equals
+//     round(phase + (N+1)·cell − body/2).  Their difference is exactly
+//     round(phase + A + 1) − round(phase + A) = 1, because adding an
+//     integer to a real shifts its rounding by that exact integer. ✓
+//
+// Result: tight zoom keeps a clean 1 px gap; wide zoom tracks TV's ~80 %.
+fn optimal_candle_width(bar_spacing: f32) -> f32 {
+    if bar_spacing < 1.0 {
+        return bar_spacing; // sub-pixel spacing: fill completely
+    }
+    // coeff: 1.0 (tight) → ≈0.80 (wide)
+    let coeff = 1.0
+        - 0.2 * f32::atan(f32::max(4.0, bar_spacing) - 4.0)
+            / (std::f32::consts::PI * 0.5);
+    // Clamp: never wider than (bar_spacing − 1) so the 1 px gap is
+    // guaranteed, never narrower than 1 px.
+    (bar_spacing * coeff).min(bar_spacing - 1.0).max(1.0)
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Candle colour palette ────────────────────────────────────────────────────
+const BULL_BODY:   Color = Color::from_rgb8(0x6b, 0xa5, 0x83); // #6ba583
+const BULL_DETAIL: Color = Color::from_rgb8(0x22, 0x54, 0x37); // #225437  border + wick
+const BEAR_BODY:   Color = Color::from_rgb8(0xd7, 0x54, 0x42); // #d75442
+const BEAR_DETAIL: Color = Color::from_rgb8(0x5b, 0x1a, 0x13); // #5b1a13  border + wick
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn draw_candle_dp(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(Price) -> f32,
     candle_width: f32,
-    palette: &Extended,
     x_position: f32,
     kline: &Kline,
+    scaling: f32,
+    px_offset: Vector,
 ) {
-    let y_open = price_to_y(kline.open);
-    let y_high = price_to_y(kline.high);
-    let y_low = price_to_y(kline.low);
-    let y_close = price_to_y(kline.close);
+    // screen = px_offset + scaling * canvas_pt
+    // Rounding the full screen coordinate (not just canvas_pt * scaling)
+    // cancels the sub-pixel phase from translation+center so every edge
+    // lands on an exact pixel boundary regardless of pan/zoom.
+    let px = 1.0 / scaling;
+    let sx = |x: f32| -> f32 { ((px_offset.x + scaling * x).round() - px_offset.x) / scaling };
+    let sy = |y: f32| -> f32 { ((px_offset.y + scaling * y).round() - px_offset.y) / scaling };
 
-    let body_color = if kline.close >= kline.open {
-        palette.success.base.color
+    let y_open  = sy(price_to_y(kline.open));
+    let y_high  = sy(price_to_y(kline.high));
+    let y_low   = sy(price_to_y(kline.low));
+    let y_close = sy(price_to_y(kline.close));
+
+    let is_bullish = kline.close >= kline.open;
+    let (body_color, detail_color) = if is_bullish {
+        (BULL_BODY, BULL_DETAIL)
     } else {
-        palette.danger.base.color
+        (BEAR_BODY, BEAR_DETAIL)
     };
+
+    let body_top    = y_open.min(y_close);
+    let body_height = (y_open - y_close).abs().max(px);
+    let body_left   = sx(x_position - candle_width / 2.0);
+    let body_right  = sx(x_position + candle_width / 2.0);
+    let body_width  = (body_right - body_left).max(px);
+    let cx          = sx(x_position);
+
+    // 1. Wick — 1 px fill_rectangle, drawn before the body.
     frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
-        Size::new(candle_width, (y_open - y_close).abs()),
-        body_color,
+        Point::new(cx, y_high),
+        Size::new(px, y_low - y_high),
+        detail_color,
     );
 
-    let wick_color = if kline.close >= kline.open {
-        palette.success.base.color
-    } else {
-        palette.danger.base.color
-    };
+    // 2. Body outline: fill the whole body rect in detail_color …
     frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 8.0), y_high),
-        Size::new(candle_width / 4.0, (y_high - y_low).abs()),
-        wick_color,
+        Point::new(body_left, body_top),
+        Size::new(body_width, body_height),
+        detail_color,
     );
+
+    // 3. Inner fill: overdraw the interior in body_color, leaving a 1 px
+    //    border of detail_color visible around the edge.  Because the fill
+    //    stays strictly INSIDE the body rect it never bleeds into adjacent
+    //    candles (unlike the old outer-expand approach which could overflow
+    //    into the neighbouring cell and make candles look merged).
+    let inner_w = body_width  - 2.0 * px;
+    let inner_h = (body_height - 2.0 * px).max(0.0);
+    if inner_w > 0.0 && inner_h > 0.0 {
+        frame.fill_rectangle(
+            Point::new(body_left + px, body_top + px),
+            Size::new(inner_w, inner_h),
+            body_color,
+        );
+    }
 }
 
 fn render_data_source<F>(
@@ -1708,7 +1801,7 @@ fn draw_cluster_text(
         color,
         align_x: align_x.into(),
         align_y: align_y.into(),
-        font: style::AZERET_MONO,
+        font: style::ZED_MONO,
         ..canvas::Text::default()
     });
 }
@@ -1798,7 +1891,7 @@ fn draw_crosshair_tooltip(
                 position: Point::new(x, position.y),
                 size: iced::Pixels(12.0),
                 color: seg_color,
-                font: style::AZERET_MONO,
+                font: style::ZED_MONO,
                 ..canvas::Text::default()
             });
             x += text.len() as f32 * 8.0;

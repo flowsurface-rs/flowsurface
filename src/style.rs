@@ -10,13 +10,15 @@ use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
 pub const ICONS_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
 pub const ICONS_FONT: Font = Font::with_name("icons");
 
-pub const AZERET_MONO_BYTES: &[u8] = include_bytes!("../assets/fonts/AzeretMono-Regular.ttf");
-pub const AZERET_MONO: Font = Font {
-    family: Family::Name("Azeret Mono"),
+pub const ZED_MONO_BYTES: &[u8] = include_bytes!("../assets/fonts/zed-mono-regular.ttf");
+pub const ZED_MONO: Font = Font {
+    family: Family::Name("Zed Mono"),
     weight: Weight::Normal,
     stretch: Stretch::Normal,
     style: iced::font::Style::Normal,
 };
+
+
 
 pub const TITLE_PADDING_TOP: f32 = if cfg!(target_os = "macos") { 20.0 } else { 0.0 };
 
@@ -453,26 +455,20 @@ pub fn pane_title_bar(theme: &Theme) -> Style {
 pub fn pane_background(theme: &Theme, is_focused: bool) -> Style {
     let palette = theme.extended_palette();
 
-    let color = if palette.is_dark {
-        palette.background.weak.color
-    } else {
-        palette.background.strong.color
-    };
-
     Style {
         text_color: Some(palette.background.base.text),
-        background: Some(palette.background.weakest.color.into()),
+        background: Some(iced::Color::WHITE.into()),
         border: {
             if is_focused {
                 Border {
                     width: 1.0,
-                    color: palette.background.strong.color,
+                    color: iced::Color::from_rgb8(180, 180, 180),
                     radius: 4.0.into(),
                 }
             } else {
                 Border {
                     width: 1.0,
-                    color: color.scale_alpha(0.5),
+                    color: iced::Color::from_rgb8(210, 210, 210),
                     radius: 2.0.into(),
                 }
             }

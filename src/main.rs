@@ -48,10 +48,11 @@ fn main() {
         .settings(iced::Settings {
             antialiasing: true,
             fonts: vec![
-                Cow::Borrowed(style::AZERET_MONO_BYTES),
+                Cow::Borrowed(style::ZED_MONO_BYTES),
                 Cow::Borrowed(style::ICONS_BYTES),
             ],
-            default_text_size: iced::Pixels(12.0),
+            default_font: style::ZED_MONO,
+            default_text_size: iced::Pixels(14.0),
             ..Default::default()
         })
         .title(Flowsurface::title)
