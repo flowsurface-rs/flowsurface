@@ -50,6 +50,8 @@ const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 const DRAWING_HIT_TOLERANCE_PX: f32 = 7.0;
+const DRAWING_HANDLE_RADIUS_PX: f32 = 4.0;
+const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 
 pub const DEFAULT_BAR_SPACING_PX: f32 = 5.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
@@ -213,6 +215,22 @@ impl DrawingDraft {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawingHandleKind {
+    TrendlineStart,
+    TrendlineEnd,
+    BoxTopLeft,
+    BoxTopRight,
+    BoxBottomRight,
+    BoxBottomLeft,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawingDragTarget {
+    Translate,
+    Handle(DrawingHandleKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,10 +421,12 @@ pub enum KlineWidgetDrawingEvent {
     AnchorMoved(DrawingAnchor),
     DragStarted {
         id: DrawingId,
+        target: DrawingDragTarget,
         anchor: DrawingAnchor,
     },
     DragMoved {
         id: DrawingId,
+        target: DrawingDragTarget,
         anchor: DrawingAnchor,
     },
     DragFinished {
@@ -454,9 +474,18 @@ pub enum KlineWidgetEvent {
 enum DragMode {
     None,
     Split(usize),
-    AxisScale { panel_index: usize, anchor_y: f32 },
-    Pan { panel_index: usize },
-    DrawingMove { id: DrawingId },
+    AxisScale {
+        panel_index: usize,
+        anchor_y: f32,
+    },
+    Pan {
+        panel_index: usize,
+    },
+    DrawingMove {
+        id: DrawingId,
+        target: DrawingDragTarget,
+        panel_id: PanelId,
+    },
 }
 
 struct State {
@@ -661,13 +690,73 @@ where
         })
     }
 
-    fn drawing_anchor_from_layout_cursor(
+    fn drawing_draft_panel_id(&self) -> Option<PanelId> {
+        match self.drawing_draft? {
+            DrawingDraft::Trendline { start, .. } | DrawingDraft::Box { start, .. } => {
+                Some(start.panel_id)
+            }
+        }
+    }
+
+    fn drawing_anchor_from_scene_point(
         &self,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
+        scene: &Scene,
+        panel_id: PanelId,
+        cursor_local: Point,
     ) -> Option<DrawingAnchor> {
-        let scene = self.compute_scene(layout, cursor)?;
-        self.drawing_anchor_from_scene_cursor(&scene)
+        let panel_index = self.panel_index_for_id(panel_id)?;
+        let panel = scene.layout.panel(panel_index)?;
+
+        let x_plot = cursor_local.x - scene.layout.regions.plot.x;
+        let right_edge_px = scene.x_axis_plot_width().floor().max(1.0);
+        let spacing_px = scene.bar_spacing_px().as_f32().max(1.0);
+        let steps_from_right = ((right_edge_px - x_plot) / spacing_px).round() as i64;
+        let x_unit = scene.max_x_unit.saturating_sub(steps_from_right);
+        let time = self.anchor_time_for_cursor_unit(scene, x_unit)?;
+
+        let panel_h = panel.plot.height.max(1.0);
+        let y_in_panel = cursor_local.y - scene.layout.regions.plot.y - panel.plot.y;
+        let ratio = 1.0 - (y_in_panel / panel_h);
+        let panel_precision = self.panel_value_precision(panel_index);
+
+        let y_unit = match panel.kind {
+            KlinePanelKind::PrimaryChart => {
+                let uses_display_space = matches!(
+                    scene.primary_scale_mode,
+                    PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
+                ) || scene.primary_domain_display_override.is_some();
+
+                if uses_display_space {
+                    let (min_display, max_display) = scene.primary_domain_display_values();
+                    let display_value = min_display + (max_display - min_display) * ratio;
+                    let value = scene.primary_display_to_value(display_value);
+                    self.panel_value_to_unit(panel_precision, value)
+                } else {
+                    let min_value =
+                        self.panel_unit_to_value(panel_precision, scene.min_primary_unit);
+                    let max_value =
+                        self.panel_unit_to_value(panel_precision, scene.max_primary_unit);
+                    let value = min_value + (max_value - min_value) * ratio;
+                    self.panel_value_to_unit(panel_precision, value)
+                }
+            }
+            KlinePanelKind::Indicator => {
+                let indicator = scene
+                    .indicator_panels
+                    .iter()
+                    .find(|indicator| indicator.panel_index == panel_index)?;
+                let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit);
+                let max_value = self.panel_unit_to_value(panel_precision, indicator.max_unit);
+                let value = min_value + (max_value - min_value) * ratio;
+                self.panel_value_to_unit(panel_precision, value)
+            }
+        };
+
+        Some(DrawingAnchor {
+            panel_id,
+            time,
+            y_unit,
+        })
     }
 
     fn panel_plot_bounds_in_overlay(&self, scene: &Scene, panel_index: usize) -> Option<Rectangle> {
@@ -684,18 +773,9 @@ where
         scene.layout.regions.plot
     }
 
-    fn drawing_object_clip_bounds(
-        &self,
-        scene: &Scene,
-        start_panel_id: PanelId,
-        end_panel_id: PanelId,
-    ) -> Option<Rectangle> {
-        if start_panel_id == end_panel_id {
-            let panel_index = self.panel_index_for_id(start_panel_id)?;
-            self.panel_plot_bounds_in_overlay(scene, panel_index)
-        } else {
-            Some(self.plot_bounds_in_overlay(scene))
-        }
+    fn drawing_object_clip_bounds(&self, scene: &Scene, panel_id: PanelId) -> Option<Rectangle> {
+        let panel_index = self.panel_index_for_id(panel_id)?;
+        self.panel_plot_bounds_in_overlay(scene, panel_index)
     }
 
     fn clip_segment_to_bounds(
@@ -802,7 +882,11 @@ where
         start: DrawingAnchor,
         end: DrawingAnchor,
     ) -> Option<(Point, Point, Point, Point, Rectangle)> {
-        let clip_bounds = self.drawing_object_clip_bounds(scene, start.panel_id, end.panel_id)?;
+        if start.panel_id != end.panel_id {
+            return None;
+        }
+
+        let clip_bounds = self.drawing_object_clip_bounds(scene, start.panel_id)?;
         let start_point = self.anchor_to_overlay_point(scene, start)?;
         let end_point = self.anchor_to_overlay_point(scene, end)?;
         let (visible_start, visible_end) =
@@ -823,7 +907,11 @@ where
         start: DrawingAnchor,
         end: DrawingAnchor,
     ) -> Option<(Point, Size, Rectangle, Rectangle)> {
-        let clip_bounds = self.drawing_object_clip_bounds(scene, start.panel_id, end.panel_id)?;
+        if start.panel_id != end.panel_id {
+            return None;
+        }
+
+        let clip_bounds = self.drawing_object_clip_bounds(scene, start.panel_id)?;
         let start_point = self.anchor_to_overlay_point(scene, start)?;
         let end_point = self.anchor_to_overlay_point(scene, end)?;
 
@@ -967,10 +1055,157 @@ where
         }
     }
 
-    fn fill_drawings(&self, frame: &mut canvas::Frame, scene: &Scene) {
+    fn selected_visible_drawing(&self) -> Option<&DrawingEntity> {
+        let selected = self.selected_drawing?;
+        self.drawings
+            .iter()
+            .find(|drawing| drawing.id == selected && drawing.visible)
+    }
+
+    fn drawing_handle_points(
+        &self,
+        scene: &Scene,
+        object: &DrawingObject,
+    ) -> Vec<(DrawingHandleKind, Point)> {
+        match object {
+            DrawingObject::Trendline { start, end } => {
+                let mut points = Vec::with_capacity(2);
+
+                if let Some(start_point) = self.anchor_to_overlay_point(scene, *start) {
+                    points.push((DrawingHandleKind::TrendlineStart, start_point));
+                }
+
+                if let Some(end_point) = self.anchor_to_overlay_point(scene, *end) {
+                    points.push((DrawingHandleKind::TrendlineEnd, end_point));
+                }
+
+                points
+            }
+            DrawingObject::Box { start, end } => {
+                if start.panel_id != end.panel_id {
+                    return Vec::new();
+                }
+
+                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
+                    return Vec::new();
+                };
+                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                    return Vec::new();
+                };
+
+                let left = start_point.x.min(end_point.x);
+                let right = start_point.x.max(end_point.x);
+                let top = start_point.y.min(end_point.y);
+                let bottom = start_point.y.max(end_point.y);
+
+                vec![
+                    (DrawingHandleKind::BoxTopLeft, Point::new(left, top)),
+                    (DrawingHandleKind::BoxTopRight, Point::new(right, top)),
+                    (DrawingHandleKind::BoxBottomRight, Point::new(right, bottom)),
+                    (DrawingHandleKind::BoxBottomLeft, Point::new(left, bottom)),
+                ]
+            }
+            DrawingObject::HorizontalLine { .. } | DrawingObject::VerticalLine { .. } => Vec::new(),
+        }
+    }
+
+    fn drawing_handle_clip_bounds(
+        &self,
+        scene: &Scene,
+        object: &DrawingObject,
+    ) -> Option<Rectangle> {
+        let panel_id = match object {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
+                if start.panel_id != end.panel_id {
+                    return None;
+                }
+
+                start.panel_id
+            }
+            DrawingObject::HorizontalLine { .. } | DrawingObject::VerticalLine { .. } => {
+                return None;
+            }
+        };
+
+        let panel_index = self.panel_index_for_id(panel_id)?;
+        self.panel_plot_bounds_in_overlay(scene, panel_index)
+    }
+
+    fn draw_selected_drawing_handles(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        drawing: &DrawingEntity,
+    ) {
+        let handles = self.drawing_handle_points(scene, &drawing.object);
+        if handles.is_empty() {
+            return;
+        }
+
+        let Some(clip_bounds) = self.drawing_handle_clip_bounds(scene, &drawing.object) else {
+            return;
+        };
+
+        let fill_color = palette.background.strongest.color;
+        let stroke_color = palette.primary.base.color.scale_alpha(0.92);
+
+        frame.with_clip(clip_bounds, |frame| {
+            for (_, point) in handles {
+                let circle = canvas::Path::circle(point, DRAWING_HANDLE_RADIUS_PX);
+
+                frame.fill(&circle, fill_color);
+                frame.stroke(
+                    &circle,
+                    canvas::Stroke::default()
+                        .with_color(stroke_color)
+                        .with_width(1.2),
+                );
+            }
+        });
+    }
+
+    fn hit_test_selected_drawing_handle(
+        &self,
+        scene: &Scene,
+        point: Point,
+    ) -> Option<(DrawingId, DrawingHandleKind)> {
+        let drawing = self.selected_visible_drawing()?;
+        if drawing.locked {
+            return None;
+        }
+
+        let hit_radius_sq = DRAWING_HANDLE_HIT_RADIUS_PX * DRAWING_HANDLE_HIT_RADIUS_PX;
+        let mut best: Option<(f32, DrawingHandleKind)> = None;
+
+        for (kind, handle_point) in self.drawing_handle_points(scene, &drawing.object) {
+            let dx = point.x - handle_point.x;
+            let dy = point.y - handle_point.y;
+            let dist_sq = dx * dx + dy * dy;
+
+            if dist_sq > hit_radius_sq {
+                continue;
+            }
+
+            if best
+                .map(|(best_dist_sq, _)| dist_sq < best_dist_sq)
+                .unwrap_or(true)
+            {
+                best = Some((dist_sq, kind));
+            }
+        }
+
+        best.map(|(_, kind)| (drawing.id, kind))
+    }
+
+    fn fill_drawings(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         for drawing in self.drawings.iter().filter(|drawing| drawing.visible) {
             let selected = self.selected_drawing == Some(drawing.id);
             self.draw_drawing_object(frame, scene, &drawing.object, drawing.style, selected);
+        }
+
+        if let Some(selected_drawing) = self.selected_visible_drawing() {
+            self.draw_selected_drawing_handles(frame, scene, palette, selected_drawing);
         }
 
         if let Some(draft) = self.drawing_draft {
@@ -2397,7 +2632,7 @@ where
         }
 
         if self.has_drawing_state() {
-            self.fill_drawings(frame, scene);
+            self.fill_drawings(frame, scene, palette);
         }
 
         if scene.hovered_control.is_some()
@@ -2644,13 +2879,24 @@ where
                     return;
                 };
 
-                let Some(cursor_pos) = cursor.position_in(bounds) else {
-                    if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                        shell.publish(M::from(KlineWidgetEvent::Drawing(
-                            KlineWidgetDrawingEvent::DragFinished { id },
-                        )));
-                    }
+                let cursor_pos = if let Some(local) = cursor.position_in(bounds) {
+                    local
+                } else if matches!(state.drag_mode, DragMode::DrawingMove { .. }) {
+                    if let Some(global) = cursor.position() {
+                        Point::new(global.x - bounds.x, global.y - bounds.y)
+                    } else {
+                        if let DragMode::DrawingMove { id, .. } = state.drag_mode {
+                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                KlineWidgetDrawingEvent::DragFinished { id },
+                            )));
+                        }
 
+                        state.drag_mode = DragMode::None;
+                        state.last_cursor = None;
+                        state.clear_overlay_caches();
+                        return;
+                    }
+                } else {
                     if !matches!(state.drag_mode, DragMode::None) {
                         state.drag_mode = DragMode::None;
                         state.last_cursor = None;
@@ -2853,6 +3099,27 @@ where
                                 return;
                             }
 
+                            if let Some((id, handle_kind)) =
+                                self.hit_test_selected_drawing_handle(&scene, cursor_pos)
+                                && let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
+                            {
+                                let target = DrawingDragTarget::Handle(handle_kind);
+
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::DragStarted { id, target, anchor },
+                                )));
+                                state.drag_mode = DragMode::DrawingMove {
+                                    id,
+                                    target,
+                                    panel_id: anchor.panel_id,
+                                };
+                                state.last_cursor = Some(cursor_pos);
+                                state.clear_overlay_caches();
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+
                             let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
 
                             if let Some(id) = hit_drawing {
@@ -2872,10 +3139,16 @@ where
 
                                 if let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
                                 {
+                                    let target = DrawingDragTarget::Translate;
+
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                        KlineWidgetDrawingEvent::DragStarted { id, anchor },
+                                        KlineWidgetDrawingEvent::DragStarted { id, target, anchor },
                                     )));
-                                    state.drag_mode = DragMode::DrawingMove { id };
+                                    state.drag_mode = DragMode::DrawingMove {
+                                        id,
+                                        target,
+                                        panel_id: anchor.panel_id,
+                                    };
                                     state.last_cursor = Some(cursor_pos);
                                     state.clear_overlay_caches();
                                     state.clear_all_caches();
@@ -2915,19 +3188,40 @@ where
                             };
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
-                        } else if let LayoutHitZone::PanelPlot(_) = zone
-                            && !self.drawing_tool_allows_panning()
-                            && let Some(anchor) =
-                                self.drawing_anchor_from_layout_cursor(layout, cursor)
-                        {
-                            shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                KlineWidgetDrawingEvent::AnchorPressed(anchor),
-                            )));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = Some(cursor_pos);
-                            state.clear_overlay_caches();
-                            state.clear_all_caches();
-                            shell.capture_event();
+                        } else if !self.drawing_tool_allows_panning() {
+                            let anchor = if let Some(panel_id) = self.drawing_draft_panel_id() {
+                                self.compute_scene(layout, cursor).and_then(|scene| {
+                                    self.drawing_anchor_from_scene_point(
+                                        &scene, panel_id, cursor_pos,
+                                    )
+                                })
+                            } else if let LayoutHitZone::PanelPlot(panel_index) = zone {
+                                let panel_id = self.panel_id(panel_index);
+
+                                panel_id.and_then(|panel_id| {
+                                    self.compute_scene(layout, cursor).and_then(|scene| {
+                                        self.drawing_anchor_from_scene_point(
+                                            &scene, panel_id, cursor_pos,
+                                        )
+                                    })
+                                })
+                            } else {
+                                None
+                            };
+
+                            if let Some(anchor) = anchor {
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::AnchorPressed(anchor),
+                                )));
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = Some(cursor_pos);
+                                state.clear_overlay_caches();
+                                state.clear_all_caches();
+                                shell.capture_event();
+                            } else {
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = None;
+                            }
                         } else if self.drawing_tool_allows_panning()
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
@@ -3008,23 +3302,20 @@ where
                             }
 
                             state.last_cursor = Some(cursor_pos);
-                        } else if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                            if matches!(zone, LayoutHitZone::PanelPlot(_))
-                                && Self::hit_panel_control(
-                                    &layout_tree,
-                                    &panel_controls,
-                                    cursor_pos,
-                                )
-                                .is_none()
-                                && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
-                                && ticker_legend_hit.is_none()
-                                && let Some(scene) = self.compute_scene(layout, cursor)
-                                && let Some(new_anchor) =
-                                    self.drawing_anchor_from_scene_cursor(&scene)
+                        } else if let DragMode::DrawingMove {
+                            id,
+                            target,
+                            panel_id,
+                        } = state.drag_mode
+                        {
+                            if let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(new_anchor) = self
+                                    .drawing_anchor_from_scene_point(&scene, panel_id, cursor_pos)
                             {
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
                                     KlineWidgetDrawingEvent::DragMoved {
                                         id,
+                                        target,
                                         anchor: new_anchor,
                                     },
                                 )));
@@ -3033,14 +3324,17 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
-                        } else if self.drawing_draft.is_some()
-                            && matches!(zone, LayoutHitZone::PanelPlot(_))
+                        } else if let Some(draft_panel_id) = self.drawing_draft_panel_id()
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                                 .is_none()
                             && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
                             && ticker_legend_hit.is_none()
-                            && let Some(anchor) =
-                                self.drawing_anchor_from_layout_cursor(layout, cursor)
+                            && let Some(scene) = self.compute_scene(layout, cursor)
+                            && let Some(anchor) = self.drawing_anchor_from_scene_point(
+                                &scene,
+                                draft_panel_id,
+                                cursor_pos,
+                            )
                         {
                             shell.publish(M::from(KlineWidgetEvent::Drawing(
                                 KlineWidgetDrawingEvent::AnchorMoved(anchor),
@@ -3300,6 +3594,16 @@ where
 
         if Self::hit_corner_control(&corner_controls, cursor_local).is_some() {
             return advanced::mouse::Interaction::Pointer;
+        }
+
+        if self.drawing_tool_allows_panning()
+            && matches!(zone, LayoutHitZone::PanelPlot(_))
+            && let Some(scene) = self.compute_scene(layout, cursor)
+            && self
+                .hit_test_selected_drawing_handle(&scene, cursor_local)
+                .is_some()
+        {
+            return advanced::mouse::Interaction::Grab;
         }
 
         if self.drawing_tool_allows_panning()

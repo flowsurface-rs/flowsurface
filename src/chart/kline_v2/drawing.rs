@@ -1,8 +1,8 @@
 use crate::style;
 use crate::widget::chart::kline::composition::PanelId;
 use crate::widget::chart::kline::{
-    DrawingAnchor, DrawingDraft, DrawingEntity, DrawingId, DrawingObject, DrawingStyle,
-    DrawingTool, KlineWidgetDrawingEvent, KlineWidgetEvent, YUnit,
+    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId,
+    DrawingObject, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent, KlineWidgetEvent, YUnit,
 };
 
 use exchange::UnixMs;
@@ -13,6 +13,7 @@ const DETAILS_SIDEBAR_WIDTH: f32 = 108.0;
 #[derive(Debug, Clone)]
 struct DrawingDragState {
     id: DrawingId,
+    target: DrawingDragTarget,
     origin_anchor: DrawingAnchor,
     origin_object: DrawingObject,
 }
@@ -55,10 +56,12 @@ enum Event {
     AnchorMoved(DrawingAnchor),
     DragStarted {
         id: DrawingId,
+        target: DrawingDragTarget,
         anchor: DrawingAnchor,
     },
     DragMoved {
         id: DrawingId,
+        target: DrawingDragTarget,
         anchor: DrawingAnchor,
     },
     DragFinished {
@@ -80,8 +83,12 @@ impl Event {
             KlineWidgetDrawingEvent::Selected(selected) => Self::Selected(selected),
             KlineWidgetDrawingEvent::AnchorPressed(anchor) => Self::AnchorPressed(anchor),
             KlineWidgetDrawingEvent::AnchorMoved(anchor) => Self::AnchorMoved(anchor),
-            KlineWidgetDrawingEvent::DragStarted { id, anchor } => Self::DragStarted { id, anchor },
-            KlineWidgetDrawingEvent::DragMoved { id, anchor } => Self::DragMoved { id, anchor },
+            KlineWidgetDrawingEvent::DragStarted { id, target, anchor } => {
+                Self::DragStarted { id, target, anchor }
+            }
+            KlineWidgetDrawingEvent::DragMoved { id, target, anchor } => {
+                Self::DragMoved { id, target, anchor }
+            }
             KlineWidgetDrawingEvent::DragFinished { id } => Self::DragFinished { id },
             KlineWidgetDrawingEvent::DraftCanceled => Self::DraftCanceled,
         }
@@ -171,15 +178,15 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
-            Event::DragStarted { id, anchor } => {
-                if self.start_drawing_drag(id, anchor) {
+            Event::DragStarted { id, target, anchor } => {
+                if self.start_drawing_drag(id, target, anchor) {
                     DrawingUpdate::StateOnly
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::DragMoved { id, anchor } => {
-                if self.update_drawing_drag(id, anchor) {
+            Event::DragMoved { id, target, anchor } => {
+                if self.update_drawing_drag(id, target, anchor) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
@@ -474,7 +481,12 @@ impl DrawingTools {
         };
 
         match draft {
-            DrawingDraft::Trendline { current, .. } | DrawingDraft::Box { current, .. } => {
+            DrawingDraft::Trendline { start, current, .. }
+            | DrawingDraft::Box { start, current, .. } => {
+                if anchor.panel_id != start.panel_id {
+                    return false;
+                }
+
                 *current = anchor;
             }
         }
@@ -483,6 +495,16 @@ impl DrawingTools {
     }
 
     pub fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
+        let start_panel_id = match &self.interaction {
+            DrawingInteraction::Drafting(DrawingDraft::Trendline { start, .. })
+            | DrawingInteraction::Drafting(DrawingDraft::Box { start, .. }) => start.panel_id,
+            DrawingInteraction::Idle | DrawingInteraction::Dragging(_) => return None,
+        };
+
+        if end.panel_id != start_panel_id {
+            return None;
+        }
+
         let draft = self.take_draft()?;
 
         let (object, style) = match draft {
@@ -543,7 +565,12 @@ impl DrawingTools {
         changed
     }
 
-    fn start_drawing_drag(&mut self, id: DrawingId, anchor: DrawingAnchor) -> bool {
+    fn start_drawing_drag(
+        &mut self,
+        id: DrawingId,
+        target: DrawingDragTarget,
+        anchor: DrawingAnchor,
+    ) -> bool {
         let Some(index) = self.drawing_index(id) else {
             self.clear_drag();
             return false;
@@ -558,23 +585,41 @@ impl DrawingTools {
         self.selected_drawing = Some(id);
         self.interaction = DrawingInteraction::Dragging(DrawingDragState {
             id,
+            target,
             origin_anchor: anchor,
             origin_object: drawing.object.clone(),
         });
         true
     }
 
-    fn update_drawing_drag(&mut self, id: DrawingId, anchor: DrawingAnchor) -> bool {
+    fn update_drawing_drag(
+        &mut self,
+        id: DrawingId,
+        target: DrawingDragTarget,
+        anchor: DrawingAnchor,
+    ) -> bool {
         let Some(drag_state) = self.active_drag(id).cloned() else {
             return false;
         };
+
+        if drag_state.target != target {
+            return false;
+        }
 
         let Some(index) = self.drawing_index(id) else {
             self.clear_drag();
             return false;
         };
 
-        if anchor.panel_id != drag_state.origin_anchor.panel_id {
+        if matches!(target, DrawingDragTarget::Translate)
+            && anchor.panel_id != drag_state.origin_anchor.panel_id
+        {
+            return false;
+        }
+
+        if matches!(target, DrawingDragTarget::Handle(_))
+            && anchor.panel_id != drag_state.origin_anchor.panel_id
+        {
             return false;
         }
 
@@ -583,11 +628,22 @@ impl DrawingTools {
             return false;
         }
 
-        let moved = Self::translated_drawing_object(
-            &drag_state.origin_object,
-            drag_state.origin_anchor,
-            anchor,
-        );
+        let moved = match target {
+            DrawingDragTarget::Translate => Self::translated_drawing_object(
+                &drag_state.origin_object,
+                drag_state.origin_anchor,
+                anchor,
+            ),
+            DrawingDragTarget::Handle(handle) => {
+                let Some(edited) =
+                    Self::handle_dragged_drawing_object(&drag_state.origin_object, handle, anchor)
+                else {
+                    return false;
+                };
+
+                edited
+            }
+        };
 
         if self.drawings[index].object == moved {
             return false;
@@ -728,6 +784,102 @@ impl DrawingTools {
                 time: Self::shift_time_by_delta_ms(*time, delta_ms, forward_in_time),
             },
         }
+    }
+
+    fn handle_dragged_drawing_object(
+        object: &DrawingObject,
+        handle: DrawingHandleKind,
+        anchor: DrawingAnchor,
+    ) -> Option<DrawingObject> {
+        match (object, handle) {
+            (DrawingObject::Trendline { start, end }, DrawingHandleKind::TrendlineStart) => {
+                Some(DrawingObject::Trendline {
+                    start: DrawingAnchor {
+                        panel_id: start.panel_id,
+                        ..anchor
+                    },
+                    end: *end,
+                })
+            }
+            (DrawingObject::Trendline { start, end }, DrawingHandleKind::TrendlineEnd) => {
+                Some(DrawingObject::Trendline {
+                    start: *start,
+                    end: DrawingAnchor {
+                        panel_id: end.panel_id,
+                        ..anchor
+                    },
+                })
+            }
+            (DrawingObject::Box { start, end }, corner) => {
+                Self::resized_box_object(*start, *end, corner, anchor)
+            }
+            _ => None,
+        }
+    }
+
+    fn resized_box_object(
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+        corner: DrawingHandleKind,
+        anchor: DrawingAnchor,
+    ) -> Option<DrawingObject> {
+        if start.panel_id != end.panel_id {
+            return None;
+        }
+
+        let panel_id = start.panel_id;
+        if anchor.panel_id != panel_id {
+            return None;
+        }
+
+        let mut left = if start.time <= end.time {
+            start.time
+        } else {
+            end.time
+        };
+        let mut right = if start.time <= end.time {
+            end.time
+        } else {
+            start.time
+        };
+
+        let mut top = start.y_unit.0.max(end.y_unit.0);
+        let mut bottom = start.y_unit.0.min(end.y_unit.0);
+
+        match corner {
+            DrawingHandleKind::BoxTopLeft => {
+                left = anchor.time;
+                top = anchor.y_unit.0;
+            }
+            DrawingHandleKind::BoxTopRight => {
+                right = anchor.time;
+                top = anchor.y_unit.0;
+            }
+            DrawingHandleKind::BoxBottomRight => {
+                right = anchor.time;
+                bottom = anchor.y_unit.0;
+            }
+            DrawingHandleKind::BoxBottomLeft => {
+                left = anchor.time;
+                bottom = anchor.y_unit.0;
+            }
+            DrawingHandleKind::TrendlineStart | DrawingHandleKind::TrendlineEnd => {
+                return None;
+            }
+        }
+
+        Some(DrawingObject::Box {
+            start: DrawingAnchor {
+                panel_id,
+                time: left,
+                y_unit: YUnit(top),
+            },
+            end: DrawingAnchor {
+                panel_id,
+                time: right,
+                y_unit: YUnit(bottom),
+            },
+        })
     }
 
     fn shift_anchor_by_delta(

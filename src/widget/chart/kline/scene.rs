@@ -992,15 +992,21 @@ where
         mark: MarkKind,
         scale_mode: PanelScaleMode,
     ) -> Option<(YUnit, YUnit)> {
+        let series = self.series.first()?;
+        let overlay_channels = panel_value_id
+            .map(|value_id| self.overlay_channels_for_panel_value(Some(value_id)))
+            .unwrap_or(&[]);
+        let uses_signed_overlay_histogram = matches!(data_kind, LayerDataKind::Histogram)
+            && matches!(
+                mark,
+                MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
+            );
+
         let mut any = false;
         let mut min_unit = i64::MAX;
         let mut max_unit = i64::MIN;
 
-        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
-            if series_index != 0 {
-                return;
-            }
-
+        let mut visit_bar = |unit: i64, bar: &Kline| {
             if unit < min_x_unit || unit > max_x_unit {
                 return;
             }
@@ -1017,36 +1023,38 @@ where
             min_unit = min_unit.min(value_unit.0);
             max_unit = max_unit.max(value_unit.0);
 
-            if let Some(value_id) = panel_value_id {
-                for channel in self
-                    .overlay_channels_for_panel_value(Some(value_id))
-                    .iter()
-                    .copied()
-                {
-                    if let Some(channel_value) =
-                        Self::overlay_channel_value(indicator_data, channel)
-                    {
-                        let channel_unit =
-                            self.panel_value_to_unit(panel_value_precision, channel_value);
-                        min_unit = min_unit.min(channel_unit.0);
-                        max_unit = max_unit.max(channel_unit.0);
-                    }
+            for &channel in overlay_channels {
+                if let Some(channel_value) = Self::overlay_channel_value(indicator_data, channel) {
+                    let channel_unit =
+                        self.panel_value_to_unit(panel_value_precision, channel_value);
+                    min_unit = min_unit.min(channel_unit.0);
+                    max_unit = max_unit.max(channel_unit.0);
                 }
             }
 
-            if matches!(data_kind, LayerDataKind::Histogram)
-                && matches!(
-                    mark,
-                    MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
-                )
-                && let Some(overlay) = indicator_data.signed_overlay()
+            if uses_signed_overlay_histogram && let Some(overlay) = indicator_data.signed_overlay()
             {
                 let overlay_abs = overlay.abs();
                 let overlay_unit = self.panel_value_to_unit(panel_value_precision, overlay_abs);
                 min_unit = min_unit.min(overlay_unit.0);
                 max_unit = max_unit.max(overlay_unit.0);
             }
-        });
+        };
+
+        match x_axis {
+            XAxis::Time { .. } => {
+                for bar in series.bars() {
+                    visit_bar(x_axis.unit_from_time(bar.time), bar);
+                }
+            }
+            XAxis::Tick { .. } => {
+                let len = series.bars().len();
+                for (index, bar) in series.bars().iter().enumerate() {
+                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
+                    visit_bar(x_axis.unit_from_tick(TickIndex(from_latest)), bar);
+                }
+            }
+        }
 
         if !any {
             return None;
@@ -1180,8 +1188,6 @@ where
                 &anchors,
             )?;
 
-            // Keep a stable primary anchor for interactions (drawings/cursor),
-            // while multi-source rendering still uses per-series anchors.
             let base_anchor = anchors.first().copied().flatten();
 
             series_percent_anchors = anchors;
