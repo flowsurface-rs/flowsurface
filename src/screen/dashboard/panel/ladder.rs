@@ -322,7 +322,7 @@ impl canvas::Program<Message> for Ladder {
                                     ),
                                     color: palette.secondary.strong.color,
                                     size: (TEXT_SIZE - 1.0).into(),
-                                    font: style::AZERET_MONO,
+                                    font: style::ZED_MONO,
                                     align_x: Alignment::Center.into(),
                                     align_y: Alignment::Center.into(),
                                     ..Default::default()
@@ -706,7 +706,7 @@ impl Ladder {
             position: Point::new(x_anchor, y + ROW_HEIGHT / 2.0),
             color,
             size: TEXT_SIZE.into(),
-            font: style::AZERET_MONO,
+            font: style::ZED_MONO,
             align_x: align.into(),
             align_y: Alignment::Center.into(),
             ..Default::default()

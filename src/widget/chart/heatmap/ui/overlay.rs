@@ -224,7 +224,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         position: Point::new(x_pos, strip_top_y),
                         size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                         color: palette.background.base.text.scale_alpha(0.85),
-                        font: style::AZERET_MONO,
+                        font: style::ZED_MONO,
                         align_x: Alignment::End.into(),
                         align_y: Alignment::Center.into(),
                         ..canvas::Text::default()
@@ -258,7 +258,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                                 position: Point::new(tx, ty),
                                 size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                                 color: palette.background.base.text.scale_alpha(0.85),
-                                font: style::AZERET_MONO,
+                                font: style::ZED_MONO,
                                 align_x: Alignment::End.into(),
                                 align_y: Alignment::Start.into(),
                                 ..canvas::Text::default()
@@ -299,7 +299,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                                 position: Point::new(tx, ty),
                                 size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
                                 color: palette.background.base.text.scale_alpha(0.85),
-                                font: style::AZERET_MONO,
+                                font: style::ZED_MONO,
                                 align_x: Alignment::Start.into(),
                                 align_y: Alignment::Start.into(),
                                 ..canvas::Text::default()
@@ -466,7 +466,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         color: color.scale_alpha(0.95),
                         align_x: Alignment::Center.into(),
                         align_y: Alignment::Center.into(),
-                        font: crate::style::AZERET_MONO,
+                        font: crate::style::ZED_MONO,
                         ..canvas::Text::default()
                     });
                 }
@@ -573,7 +573,7 @@ impl<'a> OverlayCanvas<'a> {
             ),
             size: iced::Pixels(PAUSED_CTRL_LABEL_TEXT_SIZE),
             color: palette.background.base.text.scale_alpha(0.82),
-            font: style::AZERET_MONO,
+            font: style::ZED_MONO,
             align_x: Alignment::End.into(),
             align_y: Alignment::Center.into(),
             ..canvas::Text::default()

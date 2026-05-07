@@ -21,7 +21,13 @@ use iced::{
     widget::{button, center, column, container, mouse_area, row, rule, text},
 };
 
-const ZOOM_SENSITIVITY: f32 = 30.0;
+// Divisor used in zoom formulas.  Lower = faster zoom.
+//
+// After delta normalisation (see scroll handler below) one scroll notch
+// produces a normalised delta of 1.0.  ZOOM_SENSITIVITY = 6 therefore
+// gives Δwidth = cell_width × (1 / 6) ≈ +17 % per notch — noticeably
+// snappier than TV's 10 %, matching user expectation.
+const ZOOM_SENSITIVITY: f32 = 6.0;
 const TEXT_SIZE: f32 = 12.0;
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -169,9 +175,21 @@ fn canvas_interaction<T: Chart>(
                     }
 
                     let cursor_to_center = cursor.position_from(bounds.center())?;
-                    let y = match delta {
-                        mouse::ScrollDelta::Lines { y, .. }
-                        | mouse::ScrollDelta::Pixels { y, .. } => y,
+
+                    // Normalise the raw OS scroll delta so every platform
+                    // produces the same zoom step per physical notch.
+                    //
+                    // • Lines  – X11 reports y = 3.0 per notch; Wayland y = 1.0.
+                    //   Cap at 1.0 (mirrors TV's Math.min(1, |Δ|)) so both
+                    //   platforms advance exactly one step per notch.
+                    // • Pixels – trackpad / smooth-scroll; scale to line-
+                    //   equivalent units (100 px ≈ 1 line step).
+                    let y: f32 = match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => {
+                            let v = *y;
+                            v.signum() * v.abs().min(1.0)
+                        }
+                        mouse::ScrollDelta::Pixels { y, .. } => *y / 100.0,
                     };
 
                     if let Some(Autoscale::FitToVisible) = state.layout.autoscale {
@@ -212,7 +230,7 @@ fn canvas_interaction<T: Chart>(
                     if should_adjust_cell_width {
                         return Some(
                             canvas::Action::publish(Message::XScaling(
-                                y / 2.0,
+                                y,
                                 cursor_to_center.x,
                                 true,
                             ))
@@ -221,8 +239,8 @@ fn canvas_interaction<T: Chart>(
                     }
 
                     // normal scaling cases
-                    if (*y < 0.0 && state.scaling > min_scaling)
-                        || (*y > 0.0 && state.scaling < max_scaling)
+                    if (y < 0.0 && state.scaling > min_scaling)
+                        || (y > 0.0 && state.scaling < max_scaling)
                     {
                         let old_scaling = state.scaling;
                         let scaling = (state.scaling * (1.0 + y / ZOOM_SENSITIVITY))
@@ -971,7 +989,7 @@ impl ViewState {
                     2 | 3 => Alignment::End.into(),
                     _ => Alignment::Center.into(),
                 },
-                font: style::AZERET_MONO,
+                font: style::ZED_MONO,
                 ..Default::default()
             });
         }

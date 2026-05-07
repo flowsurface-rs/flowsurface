@@ -1221,7 +1221,7 @@ where
                     position: label.pos - Vector::new(4.0, 0.0),
                     color: label.text_color,
                     size: TEXT_SIZE.into(),
-                    font: style::AZERET_MONO,
+                    font: style::ZED_MONO,
                     align_x: iced::Alignment::End.into(),
                     align_y: iced::Alignment::Center.into(),
                     ..Default::default()
@@ -1248,7 +1248,7 @@ where
                 position: Point::new(sym_rect.x + sym_rect.width - 4.0, label.pos.y),
                 color: label.text_color,
                 size: TEXT_SIZE.into(),
-                font: style::AZERET_MONO,
+                font: style::ZED_MONO,
                 align_x: iced::Alignment::End.into(),
                 align_y: iced::Alignment::Center.into(),
                 ..Default::default()
@@ -1276,7 +1276,7 @@ where
                 position: Point::new(right_x, y_local),
                 color: palette.background.base.text,
                 size: TEXT_SIZE.into(),
-                font: style::AZERET_MONO,
+                font: style::ZED_MONO,
                 align_x: iced::Alignment::End.into(),
                 align_y: iced::Alignment::Center.into(),
                 ..Default::default()
@@ -1313,7 +1313,7 @@ where
                 position: Point::new(x_local, y_center_local),
                 color: palette.background.base.text,
                 size: TEXT_SIZE.into(),
-                font: style::AZERET_MONO,
+                font: style::ZED_MONO,
                 align_x: iced::Alignment::Center.into(),
                 align_y: iced::Alignment::Center.into(),
                 ..Default::default()
@@ -1393,7 +1393,7 @@ where
                     position: Point::new(x0, y),
                     color: s.color(),
                     size: TEXT_SIZE.into(),
-                    font: style::AZERET_MONO,
+                    font: style::ZED_MONO,
                     align_x: iced::Alignment::Start.into(),
                     align_y: iced::Alignment::Center.into(),
                     ..Default::default()
@@ -1526,7 +1526,7 @@ where
                 position: Point::new(x0, y),
                 color: s.color(),
                 size: TEXT_SIZE.into(),
-                font: style::AZERET_MONO,
+                font: style::ZED_MONO,
                 align_x: iced::Alignment::Start.into(),
                 align_y: iced::Alignment::Center.into(),
                 ..Default::default()
@@ -1590,7 +1590,7 @@ where
             position: Point::new(time_x, time_y),
             color: text_col,
             size: TEXT_SIZE.into(),
-            font: style::AZERET_MONO,
+            font: style::ZED_MONO,
             align_x: iced::Alignment::Center.into(),
             align_y: iced::Alignment::Center.into(),
             ..Default::default()
@@ -1619,7 +1619,7 @@ where
             position: Point::new(ylbl_x_right - 4.0, ylbl_y),
             color: text_col,
             size: TEXT_SIZE.into(),
-            font: style::AZERET_MONO,
+            font: style::ZED_MONO,
             align_x: iced::Alignment::End.into(),
             align_y: iced::Alignment::Center.into(),
             ..Default::default()

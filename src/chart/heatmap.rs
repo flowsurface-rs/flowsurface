@@ -595,7 +595,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         position: text_position,
                         size: iced::Pixels(text_size),
                         color: palette.background.base.text,
-                        font: style::AZERET_MONO,
+                        font: style::ZED_MONO,
                         ..canvas::Text::default()
                     });
                 }
@@ -681,7 +681,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     position: text_position,
                     size: text_size.into(),
                     color: palette.background.base.text,
-                    font: style::AZERET_MONO,
+                    font: style::ZED_MONO,
                     ..canvas::Text::default()
                 });
             }
@@ -863,7 +863,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     position: Point::new(text_pos_x, text_pos_y),
                                     size: iced::Pixels(TEXT_SIZE - 2.0),
                                     color,
-                                    font: style::AZERET_MONO,
+                                    font: style::ZED_MONO,
                                     align_y: Alignment::Center.into(),
                                     align_x: Alignment::Center.into(),
                                     ..canvas::Text::default()
@@ -1021,7 +1021,7 @@ fn draw_volume_profile(
             position: text_position,
             size: iced::Pixels(text_size),
             color: palette.background.base.text,
-            font: style::AZERET_MONO,
+            font: style::ZED_MONO,
             ..canvas::Text::default()
         });
     }

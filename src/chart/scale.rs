@@ -1,7 +1,7 @@
 pub mod linear;
 pub mod timeseries;
 
-use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
+use crate::{chart::TEXT_SIZE, style::ZED_MONO};
 
 use super::{Basis, Interaction, Message};
 use data::chart::Autoscale;
@@ -165,7 +165,7 @@ impl AxisLabel {
                     color: label.text_color,
                     align_y: Alignment::Center.into(),
                     align_x: Alignment::Center.into(),
-                    font: AZERET_MONO,
+                    font: ZED_MONO,
                     ..canvas::Text::default()
                 };
 
@@ -190,7 +190,7 @@ impl AxisLabel {
                         position: Point::new(bounds.x + 4.0, bounds.y + 2.0),
                         color: value_label.text_color,
                         size: value_label.text_size.into(),
-                        font: AZERET_MONO,
+                        font: ZED_MONO,
                         ..canvas::Text::default()
                     };
 
@@ -201,7 +201,7 @@ impl AxisLabel {
                         position: Point::new(bounds.x + 4.0, bounds.y + 15.0),
                         color: timer_label.text_color,
                         size: timer_label.text_size.into(),
-                        font: AZERET_MONO,
+                        font: ZED_MONO,
                         ..canvas::Text::default()
                     };
 
@@ -212,7 +212,7 @@ impl AxisLabel {
                         position: Point::new(bounds.x + 4.0, bounds.y + 4.0),
                         color: value_label.text_color,
                         size: value_label.text_size.into(),
-                        font: AZERET_MONO,
+                        font: ZED_MONO,
                         ..canvas::Text::default()
                     };
 
@@ -464,6 +464,8 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
         let palette = theme.extended_palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), Color::WHITE);
+
             let region = self.visible_region(frame.size());
 
             let target_spacing = REGULAR_LABEL_WIDTH * 2.0;
@@ -528,16 +530,21 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                 }
             }
 
-            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds)
-                && let Some(label) = self.generate_crosshair(cursor_pos, region, bounds, palette)
-            {
-                labels.push(label);
-            }
-
             AxisLabel::filter_and_draw(&labels, frame);
         });
 
-        vec![labels]
+        // Cursor time label drawn uncached so it is always fresh without
+        // clearing the static labels cache on every mouse move.
+        // unconditional-rendering calls draw() every frame automatically.
+        let mut cursor_frame = Frame::new(renderer, bounds.size());
+        if let Some(cursor_pos) = cursor.position_in(self.chart_bounds) {
+            let region = self.visible_region(bounds.size());
+            if let Some(label) = self.generate_crosshair(cursor_pos, region, bounds, palette) {
+                AxisLabel::filter_and_draw(&[label], &mut cursor_frame);
+            }
+        }
+
+        vec![labels, cursor_frame.into_geometry()]
     }
 
     fn mouse_interaction(
@@ -677,6 +684,8 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         let palette = theme.extended_palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), Color::WHITE);
+
             let region = self.visible_region(frame.size());
 
             let highest = self.y_to_price(region.y);
@@ -762,32 +771,38 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 });
             }
 
-            // Crosshair price (priority 3)
-            if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
-                let rounded_price = round_to_tick(
-                    lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height),
-                    self.tick_size,
-                );
-                let y_position = bounds.height - ((rounded_price - lowest) / range * bounds.height);
+            AxisLabel::filter_and_draw(&all_labels, frame);
+        });
 
-                let label = LabelContent {
+        // Cursor price label drawn uncached — no cache clear needed on mouse move.
+        let mut cursor_frame = Frame::new(renderer, bounds.size());
+        if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
+            let region = self.visible_region(bounds.size());
+            let highest = self.y_to_price(region.y);
+            let lowest  = self.y_to_price(region.y + region.height);
+            let range   = highest - lowest;
+
+            let rounded_price = round_to_tick(
+                lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height),
+                self.tick_size,
+            );
+            let y_position =
+                bounds.height - ((rounded_price - lowest) / range * bounds.height);
+
+            let cursor_label = AxisLabel::Y {
+                bounds: calc_label_rect(y_position, 1, text_size, bounds),
+                value_label: LabelContent {
                     content: format!("{:.*}", self.decimals, rounded_price),
                     background_color: Some(palette.secondary.base.color),
                     text_color: palette.secondary.base.text,
                     text_size: 12.0,
-                };
+                },
+                timer_label: None,
+            };
+            AxisLabel::filter_and_draw(&[cursor_label], &mut cursor_frame);
+        }
 
-                all_labels.push(AxisLabel::Y {
-                    bounds: calc_label_rect(y_position, 1, text_size, bounds),
-                    value_label: label,
-                    timer_label: None,
-                });
-            }
-
-            AxisLabel::filter_and_draw(&all_labels, frame);
-        });
-
-        vec![labels]
+        vec![labels, cursor_frame.into_geometry()]
     }
 
     fn mouse_interaction(

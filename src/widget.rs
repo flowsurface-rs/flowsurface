@@ -251,7 +251,7 @@ where
     };
 
     button(
-        icon.font(style::AZERET_MONO)
+        icon.font(style::ZED_MONO)
             .align_x(Alignment::Start)
             .align_y(Alignment::Center),
     )
