@@ -76,6 +76,80 @@ pub struct DrawingAnchor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KlineWidgetDrawingEvent {
+    Selected(Option<DrawingId>),
+    AnchorPressed(DrawingAnchor),
+    AnchorMoved(DrawingAnchor),
+    DragStarted {
+        id: DrawingId,
+        target: DrawingDragTarget,
+        anchor: DrawingAnchor,
+    },
+    DragMoved {
+        id: DrawingId,
+        target: DrawingDragTarget,
+        anchor: DrawingAnchor,
+    },
+    DragFinished {
+        id: DrawingId,
+    },
+    DraftCanceled,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DrawingSnapshot<'a> {
+    pub active_tool: DrawingTool,
+    pub entities: &'a [DrawingEntity],
+    pub selected_drawing: Option<DrawingId>,
+    pub drawing_draft: Option<&'a DrawingDraft>,
+}
+
+impl<'a> DrawingSnapshot<'a> {
+    pub const fn new(
+        active_tool: DrawingTool,
+        entities: &'a [DrawingEntity],
+        selected_drawing: Option<DrawingId>,
+        drawing_draft: Option<&'a DrawingDraft>,
+    ) -> Self {
+        Self {
+            active_tool,
+            entities,
+            selected_drawing,
+            drawing_draft,
+        }
+    }
+
+    pub fn allows_panning(&self) -> bool {
+        self.active_tool.allows_panning()
+    }
+
+    pub fn has_state(&self) -> bool {
+        !self.entities.is_empty() || self.selected_drawing.is_some() || self.drawing_draft.is_some()
+    }
+
+    pub fn draft_panel_id(&self) -> Option<PanelId> {
+        self.drawing_draft.map(DrawingDraft::panel_id)
+    }
+
+    pub fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
+        let selected = self.selected_drawing?;
+
+        self.entities
+            .iter()
+            .find(|drawing| drawing.id == selected && drawing.visible)
+    }
+
+    pub fn active_axis_labeled_object(&self) -> Option<DrawingObject> {
+        if let Some(draft) = self.drawing_draft {
+            return Some(draft.preview_object());
+        }
+
+        self.selected_visible_drawing()
+            .map(|drawing| drawing.object.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawingStyle {
     pub stroke_color: iced::Color,
     pub stroke_width: f32,
@@ -161,6 +235,12 @@ impl DrawingDraft {
         }
     }
 
+    pub fn panel_id(&self) -> PanelId {
+        match self {
+            Self::Trendline { start, .. } | Self::Box { start, .. } => start.panel_id,
+        }
+    }
+
     pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
         match self {
             Self::Trendline { start, current, .. } | Self::Box { start, current, .. } => {
@@ -220,6 +300,22 @@ impl DrawingObject {
             Self::Trendline { start, .. } | Self::Box { start, .. } => Some(start.panel_id),
             Self::HorizontalLine { panel_id, .. } => Some(*panel_id),
             Self::VerticalLine { .. } => None,
+        }
+    }
+
+    pub fn handle_panel_id(&self) -> Option<PanelId> {
+        match self {
+            Self::Trendline { start, end } | Self::Box { start, end } => {
+                (start.panel_id == end.panel_id).then_some(start.panel_id)
+            }
+            Self::HorizontalLine { .. } | Self::VerticalLine { .. } => None,
+        }
+    }
+
+    pub fn axis_label_anchors(&self) -> Option<(DrawingAnchor, DrawingAnchor)> {
+        match self {
+            Self::Trendline { start, end } | Self::Box { start, end } => Some((*start, *end)),
+            Self::HorizontalLine { .. } | Self::VerticalLine { .. } => None,
         }
     }
 

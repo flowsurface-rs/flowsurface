@@ -289,7 +289,8 @@ impl KlineChartV2 {
                 self.apply_drawing_update(update);
             }
             Message::Chart(event) => {
-                if let Some(update) = self.drawing.handle_kline_widget_event(&event) {
+                if let KlineWidgetEvent::Drawing(drawing_event) = &event {
+                    let update = self.drawing.handle_widget_drawing_event(*drawing_event);
                     self.apply_drawing_update(update);
                     return None;
                 }
@@ -470,10 +471,7 @@ impl KlineChartV2 {
                 .with_horizontal_offset(self.horizontal_offset)
                 .with_primary_autoscale(self.primary_autoscale)
                 .with_panel_y_viewports(&self.panel_y_viewports)
-                .with_active_drawing_tool(self.drawing.active_tool())
-                .with_drawings(self.drawing.drawings())
-                .with_selected_drawing(self.drawing.selected_drawing())
-                .with_drawing_draft(self.drawing.drawing_draft())
+                .with_drawing_snapshot(self.drawing.snapshot())
                 .with_timezone(timezone)
                 .version(self.cache_rev)
                 .into();

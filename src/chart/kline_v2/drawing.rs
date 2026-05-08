@@ -2,9 +2,8 @@ use crate::style;
 use crate::widget::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
 use crate::widget::chart::kline::drawing::{
     DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingId, DrawingObject,
-    DrawingStyle, DrawingTool,
+    DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
 };
-use crate::widget::chart::kline::{KlineWidgetDrawingEvent, KlineWidgetEvent};
 
 use iced::widget::row;
 
@@ -61,52 +60,6 @@ pub enum DrawingMessage {
 enum SidebarPage {
     Tools,
     ObjectList,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Event {
-    Selected(Option<DrawingId>),
-    AnchorPressed(DrawingAnchor),
-    AnchorMoved(DrawingAnchor),
-    DragStarted {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        anchor: DrawingAnchor,
-    },
-    DragMoved {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        anchor: DrawingAnchor,
-    },
-    DragFinished {
-        id: DrawingId,
-    },
-    DraftCanceled,
-}
-
-impl Event {
-    pub fn from_kline_widget_event(event: &KlineWidgetEvent) -> Option<Self> {
-        match event {
-            KlineWidgetEvent::Drawing(event) => Some(Self::from_widget_drawing_event(*event)),
-            _ => None,
-        }
-    }
-
-    fn from_widget_drawing_event(event: KlineWidgetDrawingEvent) -> Self {
-        match event {
-            KlineWidgetDrawingEvent::Selected(selected) => Self::Selected(selected),
-            KlineWidgetDrawingEvent::AnchorPressed(anchor) => Self::AnchorPressed(anchor),
-            KlineWidgetDrawingEvent::AnchorMoved(anchor) => Self::AnchorMoved(anchor),
-            KlineWidgetDrawingEvent::DragStarted { id, target, anchor } => {
-                Self::DragStarted { id, target, anchor }
-            }
-            KlineWidgetDrawingEvent::DragMoved { id, target, anchor } => {
-                Self::DragMoved { id, target, anchor }
-            }
-            KlineWidgetDrawingEvent::DragFinished { id } => Self::DragFinished { id },
-            KlineWidgetDrawingEvent::DraftCanceled => Self::DraftCanceled,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -464,16 +417,25 @@ impl DrawingTools {
             .padding([4, 2])
     }
 
-    pub fn handle_kline_widget_event(&mut self, event: &KlineWidgetEvent) -> Option<DrawingUpdate> {
-        let update = match Event::from_kline_widget_event(event)? {
-            Event::Selected(selected) => {
+    pub fn snapshot(&self) -> DrawingSnapshot<'_> {
+        DrawingSnapshot::new(
+            self.active_tool,
+            &self.drawings,
+            self.selected_drawing,
+            self.drawing_draft(),
+        )
+    }
+
+    pub fn handle_widget_drawing_event(&mut self, event: KlineWidgetDrawingEvent) -> DrawingUpdate {
+        match event {
+            KlineWidgetDrawingEvent::Selected(selected) => {
                 if self.select_drawing(selected) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::AnchorPressed(anchor) => {
+            KlineWidgetDrawingEvent::AnchorPressed(anchor) => {
                 if self.drawing_draft().is_some() {
                     if self.commit_drawing_draft(anchor).is_some() {
                         self.active_tool = DrawingTool::Cursor;
@@ -494,55 +456,42 @@ impl DrawingTools {
                     }
                 }
             }
-            Event::AnchorMoved(anchor) => {
+            KlineWidgetDrawingEvent::AnchorMoved(anchor) => {
                 if self.update_drawing_draft_anchor(anchor) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::DragStarted { id, target, anchor } => {
+            KlineWidgetDrawingEvent::DragStarted { id, target, anchor } => {
                 if self.start_drawing_drag(id, target, anchor) {
                     DrawingUpdate::StateOnly
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::DragMoved { id, target, anchor } => {
+            KlineWidgetDrawingEvent::DragMoved { id, target, anchor } => {
                 if self.update_drawing_drag(id, target, anchor) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::DragFinished { id } => {
+            KlineWidgetDrawingEvent::DragFinished { id } => {
                 if self.finish_drawing_drag(id) {
                     DrawingUpdate::StateOnly
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::DraftCanceled => {
+            KlineWidgetDrawingEvent::DraftCanceled => {
                 if self.cancel_drawing_draft() {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
                 }
             }
-        };
-        Some(update)
-    }
-
-    pub fn active_tool(&self) -> DrawingTool {
-        self.active_tool
-    }
-
-    pub fn drawings(&self) -> &[DrawingEntity] {
-        &self.drawings
-    }
-
-    pub fn selected_drawing(&self) -> Option<DrawingId> {
-        self.selected_drawing
+        }
     }
 
     pub fn drawing_draft(&self) -> Option<&DrawingDraft> {

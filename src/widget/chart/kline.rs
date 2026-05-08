@@ -7,8 +7,8 @@ mod scene;
 
 use crate::style;
 use crate::widget::chart::kline::drawing::{
-    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId,
-    DrawingObject, DrawingStyle, DrawingTool,
+    DrawingAnchor, DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId, DrawingObject,
+    DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
 };
 use chrome::TickerLegendHit;
 use composition::{
@@ -290,27 +290,6 @@ pub enum KlinePanelKind {
     Indicator,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum KlineWidgetDrawingEvent {
-    Selected(Option<DrawingId>),
-    AnchorPressed(DrawingAnchor),
-    AnchorMoved(DrawingAnchor),
-    DragStarted {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        anchor: DrawingAnchor,
-    },
-    DragMoved {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        anchor: DrawingAnchor,
-    },
-    DragFinished {
-        id: DrawingId,
-    },
-    DraftCanceled,
-}
-
 #[derive(Debug, Clone)]
 pub enum KlineWidgetEvent {
     HorizontalScaleChanged(HorizontalScale),
@@ -409,14 +388,11 @@ impl State {
 pub struct KlineWidget<'a, S> {
     series: &'a [S],
     composition: &'a ChartComposition,
-    drawings: &'a [DrawingEntity],
-    selected_drawing: Option<DrawingId>,
-    drawing_draft: Option<&'a DrawingDraft>,
+    drawings: DrawingSnapshot<'a>,
     basis: Basis,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
     primary_autoscale: bool,
-    active_drawing_tool: DrawingTool,
     panel_y_viewports: &'a [(PanelId, PanelYViewport)],
     timezone: UserTimezone,
     version: u64,
@@ -430,14 +406,11 @@ where
         Self {
             series,
             composition,
-            drawings: &[],
-            selected_drawing: None,
-            drawing_draft: None,
+            drawings: DrawingSnapshot::new(DrawingTool::Cursor, &[], None, None),
             basis: Basis::Time(timeframe),
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: 0.0,
             primary_autoscale: false,
-            active_drawing_tool: DrawingTool::Cursor,
             panel_y_viewports: &[],
             timezone: UserTimezone::Utc,
             version: 0,
@@ -459,23 +432,8 @@ where
         self
     }
 
-    pub fn with_drawings(mut self, drawings: &'a [DrawingEntity]) -> Self {
-        self.drawings = drawings;
-        self
-    }
-
-    pub fn with_selected_drawing(mut self, selected: Option<DrawingId>) -> Self {
-        self.selected_drawing = selected;
-        self
-    }
-
-    pub fn with_drawing_draft(mut self, draft: Option<&'a DrawingDraft>) -> Self {
-        self.drawing_draft = draft;
-        self
-    }
-
-    pub fn with_active_drawing_tool(mut self, tool: DrawingTool) -> Self {
-        self.active_drawing_tool = tool;
+    pub fn with_drawing_snapshot(mut self, snapshot: DrawingSnapshot<'a>) -> Self {
+        self.drawings = snapshot;
         self
     }
 
@@ -501,14 +459,6 @@ where
 
     fn panel_count(&self) -> usize {
         self.composition.panel_count().max(1)
-    }
-
-    fn drawing_tool_allows_panning(&self) -> bool {
-        self.active_drawing_tool.allows_panning()
-    }
-
-    fn has_drawing_state(&self) -> bool {
-        !self.drawings.is_empty() || self.selected_drawing.is_some() || self.drawing_draft.is_some()
     }
 
     fn panel_index_for_id(&self, panel_id: PanelId) -> Option<usize> {
@@ -564,14 +514,6 @@ where
             time,
             y_unit,
         })
-    }
-
-    fn drawing_draft_panel_id(&self) -> Option<PanelId> {
-        match self.drawing_draft? {
-            DrawingDraft::Trendline { start, .. } | DrawingDraft::Box { start, .. } => {
-                Some(start.panel_id)
-            }
-        }
     }
 
     fn drawing_anchor_from_scene_point(
@@ -931,13 +873,6 @@ where
         }
     }
 
-    fn selected_visible_drawing(&self) -> Option<&DrawingEntity> {
-        let selected = self.selected_drawing?;
-        self.drawings
-            .iter()
-            .find(|drawing| drawing.id == selected && drawing.visible)
-    }
-
     fn drawing_handle_points(
         &self,
         scene: &Scene,
@@ -990,18 +925,7 @@ where
         scene: &Scene,
         object: &DrawingObject,
     ) -> Option<Rectangle> {
-        let panel_id = match object {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
-                if start.panel_id != end.panel_id {
-                    return None;
-                }
-
-                start.panel_id
-            }
-            DrawingObject::HorizontalLine { .. } | DrawingObject::VerticalLine { .. } => {
-                return None;
-            }
-        };
+        let panel_id = object.handle_panel_id()?;
 
         let panel_index = self.panel_index_for_id(panel_id)?;
         self.panel_plot_bounds_in_overlay(scene, panel_index)
@@ -1046,7 +970,7 @@ where
         scene: &Scene,
         point: Point,
     ) -> Option<(DrawingId, DrawingHandleKind)> {
-        let drawing = self.selected_visible_drawing()?;
+        let drawing = self.drawings.selected_visible_drawing()?;
         if drawing.locked {
             return None;
         }
@@ -1075,16 +999,22 @@ where
     }
 
     fn fill_drawings(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        for drawing in self.drawings.iter().filter(|drawing| drawing.visible) {
-            let selected = self.selected_drawing == Some(drawing.id);
+        let drawing_state = &self.drawings;
+
+        for drawing in drawing_state
+            .entities
+            .iter()
+            .filter(|drawing| drawing.visible)
+        {
+            let selected = drawing_state.selected_drawing == Some(drawing.id);
             self.draw_drawing_object(frame, scene, &drawing.object, drawing.style, selected);
         }
 
-        if let Some(selected_drawing) = self.selected_visible_drawing() {
+        if let Some(selected_drawing) = drawing_state.selected_visible_drawing() {
             self.draw_selected_drawing_handles(frame, scene, palette, selected_drawing);
         }
 
-        if let Some(draft) = self.drawing_draft {
+        if let Some(draft) = drawing_state.drawing_draft {
             let mut style = draft.style();
             style.stroke_color = style.stroke_color.scale_alpha(0.9);
             if let Some(fill) = style.fill_color {
@@ -1205,6 +1135,7 @@ where
 
     fn hit_test_drawings(&self, scene: &Scene, point: Point) -> Option<DrawingId> {
         self.drawings
+            .entities
             .iter()
             .rev()
             .filter(|drawing| drawing.visible)
@@ -1212,29 +1143,6 @@ where
                 self.drawing_hit_test_object(scene, &drawing.object, drawing.style, point)
             })
             .map(|drawing| drawing.id)
-    }
-
-    fn active_axis_labeled_object(&self) -> Option<DrawingObject> {
-        if let Some(draft) = self.drawing_draft {
-            return Some(draft.preview_object());
-        }
-
-        let selected = self.selected_drawing?;
-        self.drawings
-            .iter()
-            .find(|drawing| drawing.id == selected && drawing.visible)
-            .map(|drawing| drawing.object.clone())
-    }
-
-    fn axis_label_anchors_for_object(
-        object: &DrawingObject,
-    ) -> Option<(DrawingAnchor, DrawingAnchor)> {
-        match object {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
-                Some((*start, *end))
-            }
-            _ => None,
-        }
     }
 
     fn format_anchor_y_label(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<String> {
@@ -1325,10 +1233,10 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        let Some(object) = self.active_axis_labeled_object() else {
+        let Some(object) = self.drawings.active_axis_labeled_object() else {
             return;
         };
-        let Some((start, end)) = Self::axis_label_anchors_for_object(&object) else {
+        let Some((start, end)) = object.axis_label_anchors() else {
             return;
         };
 
@@ -2507,7 +2415,7 @@ where
             self.fill_panel_header_values(frame, scene, palette, show_primary_panel_values);
         }
 
-        if self.has_drawing_state() {
+        if self.drawings.has_state() {
             self.fill_drawings(frame, scene, palette);
         }
 
@@ -2965,7 +2873,7 @@ where
                             return;
                         }
 
-                        if self.drawing_tool_allows_panning()
+                        if self.drawings.allows_panning()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && let Some(scene) = self.compute_scene(layout, cursor)
                         {
@@ -2999,7 +2907,7 @@ where
                             let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
 
                             if let Some(id) = hit_drawing {
-                                let was_selected = self.selected_drawing == Some(id);
+                                let was_selected = self.drawings.selected_drawing == Some(id);
 
                                 if !was_selected {
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
@@ -3040,7 +2948,7 @@ where
                                 return;
                             }
 
-                            if self.selected_drawing.is_some() {
+                            if self.drawings.selected_drawing.is_some() {
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
                                     KlineWidgetDrawingEvent::Selected(None),
                                 )));
@@ -3064,8 +2972,8 @@ where
                             };
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
-                        } else if !self.drawing_tool_allows_panning() {
-                            let anchor = if let Some(panel_id) = self.drawing_draft_panel_id() {
+                        } else if !self.drawings.allows_panning() {
+                            let anchor = if let Some(panel_id) = self.drawings.draft_panel_id() {
                                 self.compute_scene(layout, cursor).and_then(|scene| {
                                     self.drawing_anchor_from_scene_point(
                                         &scene, panel_id, cursor_pos,
@@ -3098,7 +3006,7 @@ where
                                 state.drag_mode = DragMode::None;
                                 state.last_cursor = None;
                             }
-                        } else if self.drawing_tool_allows_panning()
+                        } else if self.drawings.allows_panning()
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
                             state.drag_mode = DragMode::Pan { panel_index };
@@ -3109,7 +3017,7 @@ where
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Right)
-                        if self.drawing_draft.is_some() =>
+                        if self.drawings.drawing_draft.is_some() =>
                     {
                         shell.publish(M::from(KlineWidgetEvent::Drawing(
                             KlineWidgetDrawingEvent::DraftCanceled,
@@ -3200,7 +3108,7 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
-                        } else if let Some(draft_panel_id) = self.drawing_draft_panel_id()
+                        } else if let Some(draft_panel_id) = self.drawings.draft_panel_id()
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                                 .is_none()
                             && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
@@ -3472,7 +3380,7 @@ where
             return advanced::mouse::Interaction::Pointer;
         }
 
-        if self.drawing_tool_allows_panning()
+        if self.drawings.allows_panning()
             && matches!(zone, LayoutHitZone::PanelPlot(_))
             && let Some(scene) = self.compute_scene(layout, cursor)
             && self
@@ -3482,12 +3390,12 @@ where
             return advanced::mouse::Interaction::Grab;
         }
 
-        if self.drawing_tool_allows_panning()
+        if self.drawings.allows_panning()
             && matches!(zone, LayoutHitZone::PanelPlot(_))
             && let Some(scene) = self.compute_scene(layout, cursor)
             && let Some(hit_id) = self.hit_test_drawings(&scene, cursor_local)
         {
-            if self.selected_drawing == Some(hit_id) {
+            if self.drawings.selected_drawing == Some(hit_id) {
                 return advanced::mouse::Interaction::Grab;
             }
 
