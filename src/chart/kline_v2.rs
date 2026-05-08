@@ -462,7 +462,7 @@ impl KlineChartV2 {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
 
-        let drawing_sidebar = self.drawing.view(Message::Sidebar);
+        let drawing_sidebar = self.drawing.view(&self.composition, Message::Sidebar);
         let chart: iced::Element<_> =
             KlineWidget::new(&self.series, self.timeframe, &self.composition)
                 .with_basis(self.basis)

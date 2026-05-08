@@ -1,14 +1,16 @@
 use crate::style;
-use crate::widget::chart::kline::composition::PanelId;
-use crate::widget::chart::kline::{
-    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId,
-    DrawingObject, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent, KlineWidgetEvent, YUnit,
+use crate::widget::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
+use crate::widget::chart::kline::drawing::{
+    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingId, DrawingObject,
+    DrawingStyle, DrawingTool,
 };
+use crate::widget::chart::kline::{KlineWidgetDrawingEvent, KlineWidgetEvent};
 
-use exchange::UnixMs;
+use iced::widget::row;
 
 const SIDEBAR_WIDTH: f32 = 36.0;
 const DETAILS_SIDEBAR_WIDTH: f32 = 108.0;
+const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
 
 #[derive(Debug, Clone)]
 struct DrawingDragState {
@@ -41,12 +43,24 @@ impl DrawingUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawingMessage {
     SelectTool(DrawingTool),
+    ShowToolsPage,
+    ShowObjectListPage,
+    SelectDrawing(DrawingId),
+    OpenDrawingSettings(DrawingId),
     SelectedDrawingBorderColor,
     SelectedDrawingFillColor,
     SelectedDrawingBorderWidth,
     SelectedDrawingLineColor,
     SelectedDrawingLineWidth,
     DeleteSelectedDrawing,
+    DeleteDrawing(DrawingId),
+    DeleteAllDrawings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarPage {
+    Tools,
+    ObjectList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,6 +112,7 @@ impl Event {
 #[derive(Debug, Clone)]
 pub struct DrawingTools {
     active_tool: DrawingTool,
+    sidebar_page: SidebarPage,
     drawings: Vec<DrawingEntity>,
     selected_drawing: Option<DrawingId>,
     interaction: DrawingInteraction,
@@ -108,6 +123,7 @@ impl Default for DrawingTools {
     fn default() -> Self {
         Self {
             active_tool: DrawingTool::Cursor,
+            sidebar_page: SidebarPage::Tools,
             drawings: Vec::new(),
             selected_drawing: None,
             interaction: DrawingInteraction::Idle,
@@ -126,6 +142,36 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
+            DrawingMessage::ShowToolsPage => {
+                self.selected_drawing = None;
+
+                if self.set_sidebar_page(SidebarPage::Tools) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::ShowObjectListPage => {
+                if self.set_sidebar_page(SidebarPage::ObjectList) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SelectDrawing(id) => {
+                if self.select_drawing(Some(id)) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::OpenDrawingSettings(id) => {
+                if self.open_drawing_settings(id) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
             DrawingMessage::SelectedDrawingBorderColor
             | DrawingMessage::SelectedDrawingFillColor
             | DrawingMessage::SelectedDrawingBorderWidth
@@ -138,126 +184,42 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
-        }
-    }
-
-    fn handle_event(&mut self, event: Event) -> DrawingUpdate {
-        match event {
-            Event::Selected(selected) => {
-                if self.select_drawing(selected) {
+            DrawingMessage::DeleteDrawing(id) => {
+                if self.remove_drawing(id) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
                 }
             }
-            Event::AnchorPressed(anchor) => {
-                if self.drawing_draft().is_some() {
-                    if self.commit_drawing_draft(anchor).is_some() {
-                        self.active_tool = DrawingTool::Cursor;
-                        DrawingUpdate::Visual
-                    } else {
-                        DrawingUpdate::None
-                    }
-                } else {
-                    let started = self.start_drawing_from_anchor(anchor);
-                    if started && self.drawing_draft().is_none() {
-                        self.active_tool = DrawingTool::Cursor;
-                    }
-
-                    if started {
-                        DrawingUpdate::Visual
-                    } else {
-                        DrawingUpdate::None
-                    }
-                }
-            }
-            Event::AnchorMoved(anchor) => {
-                if self.update_drawing_draft_anchor(anchor) {
-                    DrawingUpdate::Visual
-                } else {
-                    DrawingUpdate::None
-                }
-            }
-            Event::DragStarted { id, target, anchor } => {
-                if self.start_drawing_drag(id, target, anchor) {
-                    DrawingUpdate::StateOnly
-                } else {
-                    DrawingUpdate::None
-                }
-            }
-            Event::DragMoved { id, target, anchor } => {
-                if self.update_drawing_drag(id, target, anchor) {
-                    DrawingUpdate::Visual
-                } else {
-                    DrawingUpdate::None
-                }
-            }
-            Event::DragFinished { id } => {
-                if self.finish_drawing_drag(id) {
-                    DrawingUpdate::StateOnly
-                } else {
-                    DrawingUpdate::None
-                }
-            }
-            Event::DraftCanceled => {
-                if self.cancel_drawing_draft() {
+            DrawingMessage::DeleteAllDrawings => {
+                if self.remove_all_drawings() {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
                 }
             }
         }
-    }
-
-    pub fn handle_kline_widget_event(&mut self, event: &KlineWidgetEvent) -> Option<DrawingUpdate> {
-        let event = Event::from_kline_widget_event(event)?;
-        Some(self.handle_event(event))
     }
 
     pub fn view<'a, Message>(
         &'a self,
+        composition: &'a ChartComposition,
         on_sidebar_message: fn(DrawingMessage) -> Message,
     ) -> iced::widget::Container<'a, Message>
     where
         Message: Clone + 'a,
     {
-        if let Some(drawing) = self.selected_entity() {
-            self.view_selected_sidebar(drawing, on_sidebar_message)
-        } else {
-            self.view_tools_sidebar(on_sidebar_message)
-        }
-    }
-
-    pub fn active_tool(&self) -> DrawingTool {
-        self.active_tool
-    }
-
-    pub fn drawings(&self) -> &[DrawingEntity] {
-        &self.drawings
-    }
-
-    pub fn selected_drawing(&self) -> Option<DrawingId> {
-        self.selected_drawing
-    }
-
-    pub fn drawing_draft(&self) -> Option<&DrawingDraft> {
-        match &self.interaction {
-            DrawingInteraction::Drafting(draft) => Some(draft),
-            DrawingInteraction::Idle | DrawingInteraction::Dragging(_) => None,
-        }
-    }
-
-    fn selected_entity(&self) -> Option<&DrawingEntity> {
-        let selected = self.selected_drawing?;
-        self.drawings.iter().find(|drawing| drawing.id == selected)
-    }
-
-    fn drawing_object_title(object: &DrawingObject) -> &'static str {
-        match object {
-            DrawingObject::Box { .. } => "Box",
-            DrawingObject::Trendline { .. } => "Trendline",
-            DrawingObject::HorizontalLine { .. } => "Horizontal Line",
-            DrawingObject::VerticalLine { .. } => "Vertical Line",
+        match self.sidebar_page {
+            SidebarPage::Tools => {
+                if let Some(drawing) = self.selected_entity() {
+                    self.view_selected_sidebar(drawing, on_sidebar_message)
+                } else {
+                    self.view_tools_sidebar(on_sidebar_message)
+                }
+            }
+            SidebarPage::ObjectList => {
+                self.view_object_list_sidebar(composition, on_sidebar_message)
+            }
         }
     }
 
@@ -271,7 +233,8 @@ impl DrawingTools {
     {
         let mut details = iced::widget::Column::new()
             .spacing(4)
-            .push(iced::widget::text(Self::drawing_object_title(&drawing.object)).size(13))
+            .height(iced::Length::Fill)
+            .push(iced::widget::text(drawing.object.title()).size(13))
             .push(iced::widget::rule::horizontal(1.0))
             .align_x(iced::Alignment::Center);
 
@@ -341,6 +304,121 @@ impl DrawingTools {
             .style(style::chart_sidebar_container)
             .width(DETAILS_SIDEBAR_WIDTH)
             .height(iced::Length::Fill)
+            .padding([4, 6])
+    }
+
+    fn view_object_row<'a, Message>(
+        &'a self,
+        drawing: &DrawingEntity,
+        on_sidebar_message: fn(DrawingMessage) -> Message,
+    ) -> iced::widget::Row<'a, Message>
+    where
+        Message: Clone + 'a,
+    {
+        let selected = self.selected_drawing == Some(drawing.id);
+        let object_label = format!("{} #{}", drawing.object.title(), drawing.id.0);
+
+        let select_button = iced::widget::button(iced::widget::text(object_label).size(12))
+            .style(move |theme, status| style::button::transparent(theme, status, selected))
+            .width(iced::Length::Fill)
+            .on_press(on_sidebar_message(DrawingMessage::SelectDrawing(
+                drawing.id,
+            )));
+
+        let settings_button = iced::widget::button(style::icon_text(style::Icon::Cog, 12))
+            .style(|theme, status| style::button::transparent(theme, status, false))
+            .padding([2, 6])
+            .on_press(on_sidebar_message(DrawingMessage::OpenDrawingSettings(
+                drawing.id,
+            )));
+
+        let remove_button = iced::widget::button(style::icon_text(style::Icon::TrashBin, 12))
+            .style(|theme, status| style::button::cancel(theme, status, false))
+            .padding([2, 6]);
+
+        let remove_button = if drawing.locked {
+            remove_button
+        } else {
+            remove_button.on_press(on_sidebar_message(DrawingMessage::DeleteDrawing(
+                drawing.id,
+            )))
+        };
+
+        iced::widget::row![select_button, settings_button, remove_button]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+            .width(iced::Length::Fill)
+    }
+
+    fn view_object_list_sidebar<'a, Message>(
+        &'a self,
+        composition: &'a ChartComposition,
+        on_sidebar_message: fn(DrawingMessage) -> Message,
+    ) -> iced::widget::Container<'a, Message>
+    where
+        Message: Clone + 'a,
+    {
+        let header_nav = row![
+            iced::widget::space::horizontal(),
+            iced::widget::button(style::icon_text(style::Icon::Return, 12))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .on_press(on_sidebar_message(DrawingMessage::ShowToolsPage))
+        ];
+
+        let mut content = iced::widget::Column::new()
+            .spacing(4)
+            .push(header_nav)
+            .push(iced::widget::rule::horizontal(1.0));
+
+        if self.drawings.is_empty() {
+            content = content.push(iced::widget::text("No drawings").size(12));
+        } else {
+            let mut grouped: Vec<(Option<PanelId>, Vec<&DrawingEntity>)> = Vec::new();
+
+            for drawing in &self.drawings {
+                let panel_id = drawing.object.panel_id();
+
+                if let Some((_, entries)) = grouped
+                    .iter_mut()
+                    .find(|(group_panel_id, _)| *group_panel_id == panel_id)
+                {
+                    entries.push(drawing);
+                } else {
+                    grouped.push((panel_id, vec![drawing]));
+                }
+            }
+
+            grouped.sort_by_key(|(panel_id, _)| panel_id.map(|id| id.0).unwrap_or(u32::MAX));
+
+            for (panel_id, drawings) in grouped {
+                content = content.push(
+                    iced::widget::text(Self::panel_group_title(composition, panel_id)).size(12),
+                );
+
+                for drawing in drawings {
+                    content = content.push(self.view_object_row(drawing, on_sidebar_message));
+                }
+
+                content = content.push(iced::widget::rule::horizontal(1.0));
+            }
+        }
+
+        let remove_all_button =
+            iced::widget::button(iced::widget::text("Remove All").align_x(iced::Alignment::Center))
+                .style(|theme, status| style::button::cancel(theme, status, false))
+                .width(iced::Length::Fill);
+
+        content = content.push(if self.drawings.is_empty() {
+            remove_all_button
+        } else {
+            remove_all_button.on_press(on_sidebar_message(DrawingMessage::DeleteAllDrawings))
+        });
+
+        iced::widget::container(iced::widget::scrollable(content).height(iced::Length::Fill))
+            .style(style::chart_sidebar_container)
+            .width(OBJECT_LIST_SIDEBAR_WIDTH)
+            .height(iced::Length::Fill)
+            .padding([4, 6])
     }
 
     fn view_tools_sidebar<'a, Message>(
@@ -350,18 +428,13 @@ impl DrawingTools {
     where
         Message: Clone + 'a,
     {
-        let mut tools = iced::widget::Column::new().spacing(6);
+        let mut tools = iced::widget::Column::new()
+            .spacing(6)
+            .height(iced::Length::Fill);
 
-        for tool in Self::drawing_tools().iter().copied() {
+        for tool in DrawingTool::all().iter().copied() {
             let selected = self.active_tool == tool;
-            let label = match tool {
-                DrawingTool::Cursor => "C",
-                DrawingTool::HorizontalLine => "H",
-                DrawingTool::VerticalLine => "V",
-                DrawingTool::Trendline => "TL",
-                DrawingTool::Box => "B",
-            }
-            .to_string();
+            let label = tool.short_label().to_string();
 
             let btn =
                 iced::widget::button(iced::widget::text(label).align_x(iced::Alignment::Center))
@@ -375,6 +448,15 @@ impl DrawingTools {
             });
         }
 
+        tools = tools.push(iced::widget::space::vertical());
+
+        tools = tools.push(
+            iced::widget::button(iced::widget::text("O").align_x(iced::Alignment::Center))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .width(iced::Length::Fill)
+                .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage)),
+        );
+
         iced::widget::container(tools)
             .style(style::chart_sidebar_container)
             .width(SIDEBAR_WIDTH)
@@ -382,14 +464,92 @@ impl DrawingTools {
             .padding([4, 2])
     }
 
-    fn drawing_tools() -> &'static [DrawingTool] {
-        &[
-            DrawingTool::Cursor,
-            DrawingTool::Trendline,
-            DrawingTool::Box,
-            DrawingTool::HorizontalLine,
-            DrawingTool::VerticalLine,
-        ]
+    pub fn handle_kline_widget_event(&mut self, event: &KlineWidgetEvent) -> Option<DrawingUpdate> {
+        let update = match Event::from_kline_widget_event(event)? {
+            Event::Selected(selected) => {
+                if self.select_drawing(selected) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            Event::AnchorPressed(anchor) => {
+                if self.drawing_draft().is_some() {
+                    if self.commit_drawing_draft(anchor).is_some() {
+                        self.active_tool = DrawingTool::Cursor;
+                        DrawingUpdate::Visual
+                    } else {
+                        DrawingUpdate::None
+                    }
+                } else {
+                    let started = self.start_drawing_from_anchor(anchor);
+                    if started && self.drawing_draft().is_none() {
+                        self.active_tool = DrawingTool::Cursor;
+                    }
+
+                    if started {
+                        DrawingUpdate::Visual
+                    } else {
+                        DrawingUpdate::None
+                    }
+                }
+            }
+            Event::AnchorMoved(anchor) => {
+                if self.update_drawing_draft_anchor(anchor) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            Event::DragStarted { id, target, anchor } => {
+                if self.start_drawing_drag(id, target, anchor) {
+                    DrawingUpdate::StateOnly
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            Event::DragMoved { id, target, anchor } => {
+                if self.update_drawing_drag(id, target, anchor) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            Event::DragFinished { id } => {
+                if self.finish_drawing_drag(id) {
+                    DrawingUpdate::StateOnly
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            Event::DraftCanceled => {
+                if self.cancel_drawing_draft() {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+        };
+        Some(update)
+    }
+
+    pub fn active_tool(&self) -> DrawingTool {
+        self.active_tool
+    }
+
+    pub fn drawings(&self) -> &[DrawingEntity] {
+        &self.drawings
+    }
+
+    pub fn selected_drawing(&self) -> Option<DrawingId> {
+        self.selected_drawing
+    }
+
+    pub fn drawing_draft(&self) -> Option<&DrawingDraft> {
+        match &self.interaction {
+            DrawingInteraction::Drafting(draft) => Some(draft),
+            DrawingInteraction::Idle | DrawingInteraction::Dragging(_) => None,
+        }
     }
 
     pub fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
@@ -438,6 +598,20 @@ impl DrawingTools {
         true
     }
 
+    pub fn remove_all_drawings(&mut self) -> bool {
+        if self.drawings.is_empty()
+            && matches!(self.interaction, DrawingInteraction::Idle)
+            && self.selected_drawing.is_none()
+        {
+            return false;
+        }
+
+        self.drawings.clear();
+        self.selected_drawing = None;
+        self.interaction = DrawingInteraction::Idle;
+        true
+    }
+
     pub fn start_drawing_from_anchor(&mut self, anchor: DrawingAnchor) -> bool {
         match self.active_tool {
             DrawingTool::Cursor => false,
@@ -445,7 +619,7 @@ impl DrawingTools {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Trendline {
                     start: anchor,
                     current: anchor,
-                    style: Self::style_for_tool(DrawingTool::Trendline),
+                    style: DrawingTool::Trendline.default_style(),
                 });
                 self.selected_drawing = None;
                 true
@@ -454,7 +628,7 @@ impl DrawingTools {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Box {
                     start: anchor,
                     current: anchor,
-                    style: Self::style_for_tool(DrawingTool::Box),
+                    style: DrawingTool::Box.default_style(),
                 });
                 self.selected_drawing = None;
                 true
@@ -464,12 +638,12 @@ impl DrawingTools {
                     panel_id: anchor.panel_id,
                     y_unit: anchor.y_unit,
                 };
-                self.push_drawing(object, Self::style_for_tool(DrawingTool::HorizontalLine));
+                self.push_drawing(object, DrawingTool::HorizontalLine.default_style());
                 true
             }
             DrawingTool::VerticalLine => {
                 let object = DrawingObject::VerticalLine { time: anchor.time };
-                self.push_drawing(object, Self::style_for_tool(DrawingTool::VerticalLine));
+                self.push_drawing(object, DrawingTool::VerticalLine.default_style());
                 true
             }
         }
@@ -495,24 +669,8 @@ impl DrawingTools {
     }
 
     pub fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
-        let start_panel_id = match &self.interaction {
-            DrawingInteraction::Drafting(DrawingDraft::Trendline { start, .. })
-            | DrawingInteraction::Drafting(DrawingDraft::Box { start, .. }) => start.panel_id,
-            DrawingInteraction::Idle | DrawingInteraction::Dragging(_) => return None,
-        };
-
-        if end.panel_id != start_panel_id {
-            return None;
-        }
-
         let draft = self.take_draft()?;
-
-        let (object, style) = match draft {
-            DrawingDraft::Trendline { start, style, .. } => {
-                (DrawingObject::Trendline { start, end }, style)
-            }
-            DrawingDraft::Box { start, style, .. } => (DrawingObject::Box { start, end }, style),
-        };
+        let (object, style) = draft.try_commit(end)?;
 
         Some(self.push_drawing(object, style))
     }
@@ -529,7 +687,7 @@ impl DrawingTools {
     pub fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
         let before = self.drawings.len();
         self.drawings
-            .retain(|drawing| !Self::drawing_belongs_to_panel(drawing, panel_id));
+            .retain(|drawing| !drawing.belongs_to_panel(panel_id));
 
         let drawings_pruned = before != self.drawings.len();
 
@@ -555,7 +713,7 @@ impl DrawingTools {
 
         if self
             .drawing_draft()
-            .map(|draft| Self::draft_belongs_to_panel(draft, panel_id))
+            .map(|draft| draft.belongs_to_panel(panel_id))
             .unwrap_or(false)
         {
             self.interaction = DrawingInteraction::Idle;
@@ -563,6 +721,50 @@ impl DrawingTools {
         }
 
         changed
+    }
+
+    fn open_drawing_settings(&mut self, id: DrawingId) -> bool {
+        let mut changed = false;
+        changed |= self.select_drawing(Some(id));
+        changed |= self.set_sidebar_page(SidebarPage::Tools);
+        changed
+    }
+
+    fn selected_entity(&self) -> Option<&DrawingEntity> {
+        let selected = self.selected_drawing?;
+        self.drawings.iter().find(|drawing| drawing.id == selected)
+    }
+
+    fn set_sidebar_page(&mut self, page: SidebarPage) -> bool {
+        if self.sidebar_page == page {
+            return false;
+        }
+
+        self.sidebar_page = page;
+        true
+    }
+
+    fn panel_group_title(composition: &ChartComposition, panel_id: Option<PanelId>) -> String {
+        match panel_id {
+            Some(panel_id) => {
+                let Some(panel) = composition.panel(panel_id) else {
+                    return format!("Panel {}", panel_id.0);
+                };
+
+                if let Some(title) = panel.title.as_deref()
+                    && !title.is_empty()
+                {
+                    return title.to_string();
+                }
+
+                if matches!(panel.role, PanelRole::Primary) {
+                    "Main".to_string()
+                } else {
+                    format!("Panel {}", panel_id.0)
+                }
+            }
+            None => "All Panels".to_string(),
+        }
     }
 
     fn start_drawing_drag(
@@ -629,15 +831,11 @@ impl DrawingTools {
         }
 
         let moved = match target {
-            DrawingDragTarget::Translate => Self::translated_drawing_object(
-                &drag_state.origin_object,
-                drag_state.origin_anchor,
-                anchor,
-            ),
+            DrawingDragTarget::Translate => drag_state
+                .origin_object
+                .translated(drag_state.origin_anchor, anchor),
             DrawingDragTarget::Handle(handle) => {
-                let Some(edited) =
-                    Self::handle_dragged_drawing_object(&drag_state.origin_object, handle, anchor)
-                else {
+                let Some(edited) = drag_state.origin_object.handle_dragged(handle, anchor) else {
                     return false;
                 };
 
@@ -712,33 +910,6 @@ impl DrawingTools {
         }
     }
 
-    fn style_for_tool(tool: DrawingTool) -> DrawingStyle {
-        let mut style = DrawingStyle::default();
-
-        match tool {
-            DrawingTool::Cursor => {}
-            DrawingTool::Trendline => {
-                style.stroke_color = iced::Color::from_rgb(0.78, 0.86, 0.98);
-                style.stroke_width = 1.2;
-            }
-            DrawingTool::Box => {
-                style.stroke_color = iced::Color::from_rgb(0.72, 0.84, 0.98);
-                style.stroke_width = 1.2;
-                style.fill_color = Some(iced::Color::from_rgba(0.50, 0.66, 0.98, 0.16));
-            }
-            DrawingTool::HorizontalLine => {
-                style.stroke_color = iced::Color::from_rgb(0.96, 0.80, 0.40);
-                style.stroke_width = 1.0;
-            }
-            DrawingTool::VerticalLine => {
-                style.stroke_color = iced::Color::from_rgb(0.74, 0.90, 0.74);
-                style.stroke_width = 1.0;
-            }
-        }
-
-        style
-    }
-
     fn push_drawing(&mut self, object: DrawingObject, style: DrawingStyle) -> DrawingId {
         let id = DrawingId(self.next_drawing_id.max(1));
         self.next_drawing_id = self.next_drawing_id.wrapping_add(1).max(1);
@@ -754,186 +925,5 @@ impl DrawingTools {
         self.selected_drawing = Some(id);
         self.interaction = DrawingInteraction::Idle;
         id
-    }
-
-    fn translated_drawing_object(
-        object: &DrawingObject,
-        origin_anchor: DrawingAnchor,
-        current_anchor: DrawingAnchor,
-    ) -> DrawingObject {
-        let (delta_ms, forward_in_time) = Self::time_delta(origin_anchor.time, current_anchor.time);
-        let delta_y = current_anchor
-            .y_unit
-            .0
-            .saturating_sub(origin_anchor.y_unit.0);
-
-        match object {
-            DrawingObject::Trendline { start, end } => DrawingObject::Trendline {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, forward_in_time, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, forward_in_time, delta_y),
-            },
-            DrawingObject::Box { start, end } => DrawingObject::Box {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, forward_in_time, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, forward_in_time, delta_y),
-            },
-            DrawingObject::HorizontalLine { panel_id, y_unit } => DrawingObject::HorizontalLine {
-                panel_id: *panel_id,
-                y_unit: Self::shift_y_by_delta(*y_unit, delta_y),
-            },
-            DrawingObject::VerticalLine { time } => DrawingObject::VerticalLine {
-                time: Self::shift_time_by_delta_ms(*time, delta_ms, forward_in_time),
-            },
-        }
-    }
-
-    fn handle_dragged_drawing_object(
-        object: &DrawingObject,
-        handle: DrawingHandleKind,
-        anchor: DrawingAnchor,
-    ) -> Option<DrawingObject> {
-        match (object, handle) {
-            (DrawingObject::Trendline { start, end }, DrawingHandleKind::TrendlineStart) => {
-                Some(DrawingObject::Trendline {
-                    start: DrawingAnchor {
-                        panel_id: start.panel_id,
-                        ..anchor
-                    },
-                    end: *end,
-                })
-            }
-            (DrawingObject::Trendline { start, end }, DrawingHandleKind::TrendlineEnd) => {
-                Some(DrawingObject::Trendline {
-                    start: *start,
-                    end: DrawingAnchor {
-                        panel_id: end.panel_id,
-                        ..anchor
-                    },
-                })
-            }
-            (DrawingObject::Box { start, end }, corner) => {
-                Self::resized_box_object(*start, *end, corner, anchor)
-            }
-            _ => None,
-        }
-    }
-
-    fn resized_box_object(
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-        corner: DrawingHandleKind,
-        anchor: DrawingAnchor,
-    ) -> Option<DrawingObject> {
-        if start.panel_id != end.panel_id {
-            return None;
-        }
-
-        let panel_id = start.panel_id;
-        if anchor.panel_id != panel_id {
-            return None;
-        }
-
-        let mut left = if start.time <= end.time {
-            start.time
-        } else {
-            end.time
-        };
-        let mut right = if start.time <= end.time {
-            end.time
-        } else {
-            start.time
-        };
-
-        let mut top = start.y_unit.0.max(end.y_unit.0);
-        let mut bottom = start.y_unit.0.min(end.y_unit.0);
-
-        match corner {
-            DrawingHandleKind::BoxTopLeft => {
-                left = anchor.time;
-                top = anchor.y_unit.0;
-            }
-            DrawingHandleKind::BoxTopRight => {
-                right = anchor.time;
-                top = anchor.y_unit.0;
-            }
-            DrawingHandleKind::BoxBottomRight => {
-                right = anchor.time;
-                bottom = anchor.y_unit.0;
-            }
-            DrawingHandleKind::BoxBottomLeft => {
-                left = anchor.time;
-                bottom = anchor.y_unit.0;
-            }
-            DrawingHandleKind::TrendlineStart | DrawingHandleKind::TrendlineEnd => {
-                return None;
-            }
-        }
-
-        Some(DrawingObject::Box {
-            start: DrawingAnchor {
-                panel_id,
-                time: left,
-                y_unit: YUnit(top),
-            },
-            end: DrawingAnchor {
-                panel_id,
-                time: right,
-                y_unit: YUnit(bottom),
-            },
-        })
-    }
-
-    fn shift_anchor_by_delta(
-        anchor: DrawingAnchor,
-        delta_ms: u64,
-        forward_in_time: bool,
-        delta_y: i64,
-    ) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: anchor.panel_id,
-            time: Self::shift_time_by_delta_ms(anchor.time, delta_ms, forward_in_time),
-            y_unit: Self::shift_y_by_delta(anchor.y_unit, delta_y),
-        }
-    }
-
-    fn shift_y_by_delta(y_unit: YUnit, delta_y: i64) -> YUnit {
-        YUnit(y_unit.0.saturating_add(delta_y))
-    }
-
-    fn shift_time_by_delta_ms(time: UnixMs, delta_ms: u64, forward_in_time: bool) -> UnixMs {
-        if forward_in_time {
-            time.saturating_add(delta_ms)
-        } else {
-            time.saturating_sub(delta_ms)
-        }
-    }
-
-    fn time_delta(origin: UnixMs, current: UnixMs) -> (u64, bool) {
-        if current >= origin {
-            (current.saturating_diff(origin), true)
-        } else {
-            (origin.saturating_diff(current), false)
-        }
-    }
-
-    fn drawing_belongs_to_panel(drawing: &DrawingEntity, panel_id: PanelId) -> bool {
-        match drawing.object {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
-                start.panel_id == panel_id || end.panel_id == panel_id
-            }
-            DrawingObject::HorizontalLine {
-                panel_id: drawing_panel,
-                ..
-            } => drawing_panel == panel_id,
-            DrawingObject::VerticalLine { .. } => false,
-        }
-    }
-
-    fn draft_belongs_to_panel(draft: &DrawingDraft, panel_id: PanelId) -> bool {
-        match draft {
-            DrawingDraft::Trendline { start, current, .. }
-            | DrawingDraft::Box { start, current, .. } => {
-                start.panel_id == panel_id || current.panel_id == panel_id
-            }
-        }
     }
 }

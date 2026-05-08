@@ -1,10 +1,15 @@
 mod chrome;
 pub mod composition;
 pub mod coord;
+pub mod drawing;
 mod layout;
 mod scene;
 
 use crate::style;
+use crate::widget::chart::kline::drawing::{
+    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId,
+    DrawingObject, DrawingStyle, DrawingTool,
+};
 use chrome::TickerLegendHit;
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
@@ -101,137 +106,8 @@ impl PanelYViewport {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DrawingTool {
-    #[default]
-    Cursor,
-    Trendline,
-    Box,
-    HorizontalLine,
-    VerticalLine,
-}
-
-impl DrawingTool {
-    pub fn allows_panning(self) -> bool {
-        matches!(self, Self::Cursor)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DrawingId(pub u64);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct YUnit(pub i64);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DrawingAnchor {
-    pub panel_id: PanelId,
-    pub time: UnixMs,
-    pub y_unit: YUnit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DrawingStyle {
-    pub stroke_color: iced::Color,
-    pub stroke_width: f32,
-    pub fill_color: Option<iced::Color>,
-}
-
-impl Default for DrawingStyle {
-    fn default() -> Self {
-        Self {
-            stroke_color: iced::Color::from_rgb(0.82, 0.84, 0.90),
-            stroke_width: 1.2,
-            fill_color: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DrawingObject {
-    Trendline {
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-    },
-    Box {
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-    },
-    HorizontalLine {
-        panel_id: PanelId,
-        y_unit: YUnit,
-    },
-    VerticalLine {
-        time: UnixMs,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DrawingEntity {
-    pub id: DrawingId,
-    pub object: DrawingObject,
-    pub style: DrawingStyle,
-    pub locked: bool,
-    pub visible: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DrawingDraft {
-    Trendline {
-        start: DrawingAnchor,
-        current: DrawingAnchor,
-        style: DrawingStyle,
-    },
-    Box {
-        start: DrawingAnchor,
-        current: DrawingAnchor,
-        style: DrawingStyle,
-    },
-}
-
-impl DrawingDraft {
-    pub fn tool(&self) -> DrawingTool {
-        match self {
-            Self::Trendline { .. } => DrawingTool::Trendline,
-            Self::Box { .. } => DrawingTool::Box,
-        }
-    }
-
-    pub fn style(&self) -> DrawingStyle {
-        match self {
-            Self::Trendline { style, .. } | Self::Box { style, .. } => *style,
-        }
-    }
-
-    pub fn preview_object(&self) -> DrawingObject {
-        match self {
-            Self::Trendline { start, current, .. } => DrawingObject::Trendline {
-                start: *start,
-                end: *current,
-            },
-            Self::Box { start, current, .. } => DrawingObject::Box {
-                start: *start,
-                end: *current,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrawingHandleKind {
-    TrendlineStart,
-    TrendlineEnd,
-    BoxTopLeft,
-    BoxTopRight,
-    BoxBottomRight,
-    BoxBottomLeft,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrawingDragTarget {
-    Translate,
-    Handle(DrawingHandleKind),
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BarSpacingPx(i32);
